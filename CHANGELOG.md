@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 (2026-11-10)
+
+### Added
+
+- `keepgoing status --json` includes `primaryAgent` and `targetAgent`, with the adapter, provider, model, and BB thread or working directory, so tools can match a loop to the session it supervises.
+- A thin BB plugin in `integrations/bb-plugin-keepgoing`. It shows keepgoing's state in a supervised thread's context banner or context card, with Pause and Resume, and adds `bb keepgoing status`, `pause`, `resume`, and `stop`.
+
 ## 0.1.0 (2026-11-10)
 
 ### Fixed
