@@ -64,7 +64,7 @@ See [testing.md](testing.md) for the per-platform results. The suite passes on m
 
 | Integration | Status | Next check |
 | --- | --- | --- |
-| BB plugin (`integrations/bb-plugin-keepgoing`) | **Live**: installed in BB against a real loop. `bb keepgoing status`, `pause`, and `resume` ran through the plugin host. The context card row builds and typechecks, but has not been checked visually. | Confirm the row renders on a supervised thread. |
+| BB plugin (`integrations/bb-plugin-keepgoing`) | **Live**: installed in BB against a real loop. `bb keepgoing status`, `pause`, and `resume` ran through the plugin host. In BB's default context banner, the segment was checked in a browser against a real supervised thread: it showed `keepgoing: running`, expanded to the loop details, and showed a Pause button. The context card row has not been seen yet, because the card is an experiment that is off by default. | Turn on the context card experiment and check the row. |
 
 ## Not planned
 

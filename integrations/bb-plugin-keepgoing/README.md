@@ -1,6 +1,6 @@
 # keepgoing for BB
 
-A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state in the context card of every thread a loop supervises, with a Pause or Resume button. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
+A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with a Pause or Resume button. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
 ## Install
 
@@ -17,13 +17,18 @@ bb plugin config keepgoing set configs "/absolute/path/to/keepgoing.yaml"
 
 ## What it shows
 
-A supervised thread's context card gets one row:
+BB shows thread context in one of two places. The plugin uses whichever one is showing:
+
+- **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop name, the last time something was sent, and a Pause or Resume button.
+- **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The keepgoing row sits in the card's lower group.
+
+Both read:
 
 - `keepgoing: running`: the loop is enabled and this thread is the one it supervises right now.
 - `keepgoing: watching (<target>)`: this is the loop's primary, but a fallback has taken over.
 - `keepgoing: paused`, `stop requested`, `awaiting user`, or `disabled`: the loop's control state.
 
-The tooltip carries the loop's note, the last time something was sent, and the fallback health summary.
+Hovering shows the loop's note, the last time something was sent, and the fallback health summary.
 
 ## Commands
 
