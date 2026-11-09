@@ -1,0 +1,69 @@
+package config
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+const valid = `
+version: 1
+loop:
+  name: example-loop
+  state_dir: state
+  adapter: bb
+  bb:
+    thread: thr_example123
+  prompt: Continue the loop.
+`
+
+func TestParseAppliesDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loop.BB.CLI != "bb" {
+		t.Errorf("cli default = %q", cfg.Loop.BB.CLI)
+	}
+	if cfg.Loop.Progress.StallAfter.Duration != 30*time.Minute {
+		t.Errorf("stall_after default = %v", cfg.Loop.Progress.StallAfter)
+	}
+	if cfg.Loop.Errors.MaxReprompts != 3 {
+		t.Errorf("max_reprompts default = %d", cfg.Loop.Errors.MaxReprompts)
+	}
+}
+
+func TestParseRejects(t *testing.T) {
+	cases := map[string]string{
+		"wrong version":    strings.Replace(valid, "version: 1", "version: 2", 1),
+		"bad name":         strings.Replace(valid, "example-loop", "Example Loop", 1),
+		"no prompt":        strings.Replace(valid, "  prompt: Continue the loop.\n", "", 1),
+		"unknown field":    valid + "  surprise: true\n",
+		"bad adapter":      strings.Replace(valid, "adapter: bb", "adapter: magic", 1),
+		"process w/o cmds": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1), "  bb:\n    thread: thr_example123\n", "  process: {}\n", 1),
+		"bad window day":   valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
+		"bad window time":  valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
+		"bad exit class": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
+			"  bb:\n    thread: thr_example123\n",
+			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {3: nonsense}\n", 1),
+	}
+	for name, src := range cases {
+		if _, err := Parse([]byte(src)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestDurationParsing(t *testing.T) {
+	src := valid + "  progress:\n    stall_after: 45m\n    min_wake_interval: 2h\n"
+	cfg, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loop.Progress.StallAfter.Duration != 45*time.Minute || cfg.Loop.Progress.MinWakeInterval.Duration != 2*time.Hour {
+		t.Errorf("durations = %v %v", cfg.Loop.Progress.StallAfter, cfg.Loop.Progress.MinWakeInterval)
+	}
+	if _, err := Parse([]byte(valid + "  progress:\n    stall_after: soon\n")); err == nil {
+		t.Error("expected an error for a non-duration")
+	}
+}
