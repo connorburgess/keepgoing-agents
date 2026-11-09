@@ -19,14 +19,13 @@
 
 See [integrations.md](integrations.md) for what is verified live.
 
-**Agent chats.** BB pending interactions mean waiting on a person. `await-user` reports at once. A guide covers supervising a live chat thread.
+**Agent chats.** BB pending interactions mean waiting on a person. `await-user` reports at once. A guide covers supervising a live chat thread. A session that stays stalled through `max_nudges` nudges now asks a person.
 
 ## Next
 
 - Supervise a real working chat thread end to end with the daemon and a webhook, as the first live proof.
 - Run the live checks listed in [integrations.md](integrations.md), starting with BB send and stop against a scratch thread.
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
-- Escalate a session that stays stalled after several nudges.
 - A thin BB plugin that calls the CLI and renders its JSON.
 - Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
 - Headless runners on Windows.

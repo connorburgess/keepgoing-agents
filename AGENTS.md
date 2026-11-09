@@ -12,7 +12,19 @@
 - Use Conventional Commit titles: `type(optional-scope): describe the result`. See CONTRIBUTING.md.
 - Sign off every contribution commit with the human contributor's identity (`git commit -s`).
 - Keep PRs focused. Report checks actually run and say what could not be verified.
-- Never enable automatic merging or bypass required checks without an explicit instruction.
+- Never bypass required checks, force-push to `main`, or merge with admin rights.
+
+## Merging
+
+The owner has authorized the agent working in this repository to merge its own pull requests. keepgoing itself never merges: the decision belongs to the agent keepgoing keeps alive. Merge only when all of these hold:
+
+1. Every check has passed on the pull request's current head commit, against the base it merges into. A run on an older commit or an older base does not count.
+2. No review finding is unresolved, and no reviewer has requested changes.
+3. The pull request is open, not a draft, and GitHub reports it mergeable.
+4. Use a merge commit, so each signed-off commit survives. Never squash.
+5. Pin the merge to the checked commit with `gh pr merge --merge --match-head-commit <sha>`, so nothing pushed in between is merged unchecked.
+
+Merge stacked pull requests from the bottom up. After each merge, wait for the next one to be retargeted and for its checks to pass again on the new base before merging it. Report each merge with the pull request, the commit, and the CI run that cleared it.
 
 ## Pull request and review comments
 

@@ -192,6 +192,40 @@ func TestStallNudges(t *testing.T) {
 	}
 }
 
+func TestStalledSessionEscalatesAfterMaxNudges(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Progress.Repositories = []string{"/fictional/repo"}
+	w.cfg.Loop.Progress.MaxNudges = 2
+	fp := "a"
+	p := w.primary(decide.Observation{State: decide.Active})
+	run := func(at time.Duration) Result {
+		o := w.opts(t0.Add(at))
+		o.Fingerprint = func([]string) (string, error) { return fp, nil }
+		res, _ := Tick(context.Background(), w.cfg, o)
+		return res
+	}
+	run(0)
+	want := []struct {
+		at     time.Duration
+		action string
+	}{{31 * time.Minute, "nudge"}, {95 * time.Minute, "nudge"}, {160 * time.Minute, "await_user"}}
+	for _, s := range want {
+		if res := run(s.at); res.Action != s.action {
+			t.Fatalf("at %v: %+v", s.at, res)
+		}
+	}
+	if len(p.sent) != 2 || !strings.HasSuffix(w.reportTypes(), "await_user") {
+		t.Errorf("sent=%d reports=%s", len(p.sent), w.reportTypes())
+	}
+	// Progress resets the count: after resume, nudging starts again.
+	control.Update(w.dir, func(f *control.File) { f.AwaitingUser = false })
+	fp = "b"
+	run(170 * time.Minute)
+	if res := run(205 * time.Minute); res.Action != "nudge" {
+		t.Fatalf("after progress: %+v", res)
+	}
+}
+
 func TestErrorRepromptsThenAwaitsUser(t *testing.T) {
 	w := newWorld(t, true, false)
 	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
