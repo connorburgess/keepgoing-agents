@@ -23,7 +23,8 @@ import (
 )
 
 // fakeBB emulates the bb CLI over files in $FAKE_BB: <thread>.show and
-// <thread>.log are returned as-is; tell, update, and stop are recorded.
+// <thread>.log are returned as-is (log fixtures carry seq numbers, as bb's
+// events do); tell, update, and stop are recorded.
 const fakeBB = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
@@ -189,9 +190,9 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	// Primary hits a structured rate limit with a far reset.
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0o600)
 	reset := time.Now().Add(4 * time.Hour).UnixMilli()
-	write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"type":"turn/started","data":{}},
-{"type":"provider/error","data":{"message":"Usage limit reached","willRetry":false,"errorInfo":{"category":"rate-limit","httpStatusCode":429,"providerCode":"rate_limit_event"}}},
-{"type":"provider/rateLimits/updated","data":{"rateLimits":{"status":"blocked","windows":[{"status":"blocked","resetsAtMs":%d}]}}}]`, reset), 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"seq":1,"type":"turn/started","data":{}},
+{"seq":2,"type":"provider/error","data":{"message":"Usage limit reached","willRetry":false,"errorInfo":{"category":"rate-limit","httpStatusCode":429,"providerCode":"rate_limit_event"}}},
+{"seq":3,"type":"provider/rateLimits/updated","data":{"rateLimits":{"status":"blocked","windows":[{"status":"blocked","resetsAtMs":%d}]}}}]`, reset), 0o600)
 	v = f.tick()
 	if v["action"] != "handoff" || v["target"] != "claude-other-account" {
 		t.Fatalf("handoff: %v", v)
@@ -275,7 +276,7 @@ func TestEndToEndUnknownErrorNeverHandsOff(t *testing.T) {
 	f.run("enable")
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0o600)
 	// Prose says "usage limit" but the structured category is unknown.
-	write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"type":"turn/started","data":{}},{"type":"provider/error","data":{"message":"usage limit reached","willRetry":false,"errorInfo":{"category":"unknown","httpStatusCode":null,"providerCode":"unknown"}}}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"seq":1,"type":"turn/started","data":{}},{"seq":2,"type":"provider/error","data":{"message":"usage limit reached","willRetry":false,"errorInfo":{"category":"unknown","httpStatusCode":null,"providerCode":"unknown"}}}]`, 0o600)
 	if v := f.tick(); v["action"] != "reprompt" || v["target"] != "primary" {
 		t.Fatalf("%v", v)
 	}

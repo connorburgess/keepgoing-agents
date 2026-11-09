@@ -18,7 +18,7 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 	dir := filepath.Join(stateDir, "targets", target)
 	switch a.Adapter {
 	case "bb":
-		return bb.New(*a.BB), nil
+		return bb.New(*a.BB).WithStateDir(dir), nil
 	case "process":
 		return process.New(*a.Process), nil
 	case "claude":

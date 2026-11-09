@@ -2,8 +2,10 @@ package bb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +39,7 @@ func newFakeWithInteractions(show, log, interactions string, fail bool) (*Adapte
 			}
 			return []byte(show), nil
 		case "log":
-			return []byte(log), nil
+			return pageLog(log, args), nil
 		case "interactions":
 			if interactions == "error" {
 				return []byte(`{"ok":false,"error":{"code":"unknown_command"}}`), errors.New("exit 1")
@@ -47,6 +49,42 @@ func newFakeWithInteractions(show, log, interactions string, fail bool) (*Adapte
 		return []byte(`{"ok":true}`), nil
 	}
 	return a, &calls
+}
+
+// pageLog behaves like bb: events oldest first, numbered from 1 when the
+// fixture leaves seq out, filtered by --after-seq, and capped by --limit.
+func pageLog(log string, args []string) []byte {
+	var events []map[string]any
+	if json.Unmarshal([]byte(log), &events) != nil {
+		return []byte(log)
+	}
+	after, limit := int64(0), 100
+	for i := 0; i+1 < len(args); i++ {
+		switch args[i] {
+		case "--after-seq":
+			after, _ = strconv.ParseInt(args[i+1], 10, 64)
+		case "--limit":
+			limit, _ = strconv.Atoi(args[i+1])
+		}
+	}
+	var out []map[string]any
+	for i, e := range events {
+		if _, ok := e["seq"]; !ok {
+			e["seq"] = i + 1
+		}
+		seq := int64(0)
+		switch v := e["seq"].(type) {
+		case float64:
+			seq = int64(v)
+		case int:
+			seq = int64(v)
+		}
+		if seq > after && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	b, _ := json.Marshal(out)
+	return b
 }
 
 func TestObserveIdle(t *testing.T) {
@@ -219,5 +257,46 @@ func TestSendStopActivate(t *testing.T) {
 	}
 	if err := a.Send(ctx, "x", adapter.ModeAuto); err == nil || !strings.Contains(err.Error(), "thread_not_found") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestLongThreadReadsTheNewestEvents(t *testing.T) {
+	// 1200 old events, then a turn and a structured rate limit. The old code
+	// read the first 60 events and missed the error entirely.
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < 1200; i++ {
+		b.WriteString(`{"type":"message","data":{"text":"old"}},`)
+	}
+	b.WriteString(turnStarted + "," + providerError("rate-limit", 429, "rate_limit_event", nil) + "]")
+	a, _ := newFake(`{"thread":{"status":"error"}}`, b.String(), false)
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRateLimit {
+		t.Fatalf("newest error not found: %+v", obs)
+	}
+}
+
+func TestCursorPersistsAndReadsOnlyNewEvents(t *testing.T) {
+	dir := t.TempDir()
+	log := "[" + turnStarted + `,{"type":"message","data":{}}]`
+	a, calls := newFake(`{"thread":{"status":"idle"}}`, log, false)
+	a.WithStateDir(dir)
+	a.Observe(context.Background())
+	// A fresh adapter, as on the next tick, resumes after seq 2.
+	log2 := "[" + turnStarted + `,{"type":"message","data":{}},` + providerError("rate-limit", 429, "", nil) + "]"
+	b, calls2 := newFake(`{"thread":{"status":"error"}}`, log2, false)
+	b.WithStateDir(dir)
+	obs, _ := b.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRateLimit {
+		t.Errorf("new error not seen: %+v", obs)
+	}
+	var after []string
+	for _, c := range append(*calls, *calls2...) {
+		if len(c.args) > 1 && c.args[1] == "log" {
+			after = append(after, c.args[5])
+		}
+	}
+	if len(after) < 2 || after[0] != "0" || after[len(after)-1] != "2" {
+		t.Errorf("--after-seq values = %v, want 0 then 2", after)
 	}
 }
