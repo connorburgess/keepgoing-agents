@@ -59,6 +59,7 @@ Every `tick` prints one JSON line describing what it saw and did, so a scheduler
 - [docs/configuration.md](docs/configuration.md): every field in `keepgoing.yaml`.
 - [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
 - [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
+- [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
 - [docs/roadmap.md](docs/roadmap.md): what comes next.
 - [examples/](examples/): configurations and scheduler setups to copy.
 - [schema/](schema/): JSON Schemas for editor completion and validation.
