@@ -67,6 +67,7 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, note |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target |
 | `health.json` | the tool | probe evidence per candidate |
+| `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `tick.lock`, `daemon.lock` | the tool | advisory locks, released by the OS on exit |
 | `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |

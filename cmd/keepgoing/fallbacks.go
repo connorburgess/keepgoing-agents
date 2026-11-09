@@ -75,6 +75,9 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		r := probe.Run(ctx, c, tier, fb.Probe.Timeout.Duration)
 		cancel()
 		reg.Record(c.ID, r)
+		if err := probe.KeepFailure(cfg.Loop.StateDir, c.ID, r); err != nil {
+			e.errf("warning: could not keep failed probe output for %s: %v", c.ID, err)
+		}
 		ran++
 	}
 	if only != "" && ran == 0 {
