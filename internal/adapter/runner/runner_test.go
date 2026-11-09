@@ -147,6 +147,22 @@ const codexFailedCoded = `{"type":"thread.started","thread_id":"t"}
 {"type":"error","message":"x","code":"rate_limit_exceeded"}
 {"type":"turn.failed","error":{"message":"x","code":"usage_limit_reached"}}`
 
+// Follows the event shapes of a real `codex exec --json` probe, including an
+// error item emitted before the turn by a local hook warning. That item must
+// not fail the turn. Ids and text are fictional.
+const codexWithHookWarning = `{"type":"thread.started","thread_id":"00000000-0000-7000-8000-0000000000c2"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"example hook warning"}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":21000,"cached_input_tokens":13000,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}`
+
+func TestParseCodexEventsIgnoresErrorItems(t *testing.T) {
+	o := ParseCodexEvents([]byte(codexWithHookWarning))
+	if !o.Completed || o.Failed || o.ThreadID == "" {
+		t.Errorf("%+v", o)
+	}
+}
+
 func TestParseCodexEvents(t *testing.T) {
 	o := ParseCodexEvents([]byte(codexOK))
 	if !o.Completed || o.Failed || o.ThreadID != "00000000-0000-4000-8000-0000000000c1" {
