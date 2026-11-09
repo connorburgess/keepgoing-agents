@@ -21,12 +21,17 @@ See [integrations.md](integrations.md) for what is verified live.
 
 **Agent chats.** BB pending interactions mean waiting on a person. `await-user` reports at once. A guide covers supervising a live chat thread. A session that stays stalled through `max_nudges` nudges now asks a person.
 
+**0.1.0, released.** keepgoing supervises a live BB chat through a BB automation, reporting to a real webhook. The live checks verified:
+
+- BB send, stop, and model switching against a scratch thread;
+- the daemon's wakes, await-user hold, and SIGTERM exit;
+- signed reports in the bearer and text formats;
+- the release workflow, by publishing 0.1.0.
+
 ## Next
 
-- Supervise a real working chat thread end to end with the daemon and a webhook, as the first live proof.
-- Run the live checks listed in [integrations.md](integrations.md), starting with BB send and stop against a scratch thread.
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
 - A thin BB plugin that calls the CLI and renders its JSON.
 - Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
-- Headless runners on Windows.
+- Headless runners on Windows. A draft exists; it needs a passing run in a Windows VM.
 - Homebrew formula once releases are public.
