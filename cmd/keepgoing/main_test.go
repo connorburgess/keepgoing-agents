@@ -30,6 +30,7 @@ echo "$*" >> "$d/calls"
 case "$1 $2" in
 "thread show") if [ -f "$d/$t.show" ]; then cat "$d/$t.show"; else echo '{"thread":{"status":"idle"}}'; fi ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
+"thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
 *) echo '{"ok":true}' ;;
 esac
@@ -237,6 +238,35 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	}
 	if code, _, _ := f.run("retarget", "nope"); code != exitUsage {
 		t.Errorf("retarget unknown: %d", code)
+	}
+}
+
+func TestEndToEndAgentWaitingOnAPerson(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	// The agent asked the person something: an idle thread with a pending interaction.
+	write(t, filepath.Join(f.bbDir, "thr_primary.interactions"), `[{"id":"pint_example1","status":"pending"}]`, 0o600)
+	if v := f.tick(); v["action"] != "none" || f.read("thr_primary.told") != "" {
+		t.Fatalf("woke a thread that is waiting on a person: %v", v)
+	}
+	if f.hooks.types() != "keepgoing.await_user" {
+		t.Errorf("webhooks = %s", f.hooks.types())
+	}
+	// Answered, but the agent then declares it needs the person for something else.
+	os.Remove(filepath.Join(f.bbDir, "thr_primary.interactions"))
+	if code, _, _ := f.run("await-user", "--note", "run the fictional probe command"); code != 0 {
+		t.Fatal("await-user failed")
+	}
+	if !strings.HasSuffix(f.hooks.types(), "keepgoing.await_user,keepgoing.await_user") {
+		t.Errorf("await-user did not report: %s", f.hooks.types())
+	}
+	if v := f.tick(); v["action"] != "none" || f.read("thr_primary.told") != "" {
+		t.Fatalf("woke a loop marked awaiting user: %v", v)
+	}
+	// The person answers and resumes the loop: the idle thread is woken again.
+	f.run("resume")
+	if v := f.tick(); v["action"] != "wake" {
+		t.Fatalf("after resume: %v", v)
 	}
 }
 

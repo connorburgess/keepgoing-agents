@@ -21,6 +21,10 @@ type call struct {
 }
 
 func newFake(show, log string, fail bool) (*Adapter, *[]call) {
+	return newFakeWithInteractions(show, log, `[]`, fail)
+}
+
+func newFakeWithInteractions(show, log, interactions string, fail bool) (*Adapter, *[]call) {
 	a := New(config.BB{Thread: "thr_example123"})
 	a.now = func() time.Time { return now }
 	var calls []call
@@ -34,6 +38,11 @@ func newFake(show, log string, fail bool) (*Adapter, *[]call) {
 			return []byte(show), nil
 		case "log":
 			return []byte(log), nil
+		case "interactions":
+			if interactions == "error" {
+				return []byte(`{"ok":false,"error":{"code":"unknown_command"}}`), errors.New("exit 1")
+			}
+			return []byte(interactions), nil
 		}
 		return []byte(`{"ok":true}`), nil
 	}
@@ -144,6 +153,38 @@ func TestObserveGoneArchivedAndFailures(t *testing.T) {
 	a, _ = newFake(``, "", true)
 	if obs, err := a.Observe(context.Background()); err == nil || obs.State != decide.Unknown {
 		t.Errorf("cli failure: %+v %v", obs, err)
+	}
+}
+
+func TestPendingInteractionMeansWaitingOnAPerson(t *testing.T) {
+	// Synthetic, following the field names bb reports.
+	a, _ := newFakeWithInteractions(`{"thread":{"status":"idle"}}`, `[]`, `[{"id":"pint_example1","status":"pending"}]`, false)
+	if obs, _ := a.Observe(context.Background()); !obs.AwaitingInput {
+		t.Errorf("idle with a pending interaction: %+v", obs)
+	}
+	a, _ = newFakeWithInteractions(`{"thread":{"status":"active"}}`, `[]`, `[{"id":"pint_example1","status":"pending"}]`, false)
+	if obs, _ := a.Observe(context.Background()); !obs.AwaitingInput || obs.State != decide.Active {
+		t.Errorf("active with a pending interaction: %+v", obs)
+	}
+	a, _ = newFakeWithInteractions(`{"thread":{"status":"idle"}}`, `[]`, `[{"id":"pint_example1","status":"resolved"}]`, false)
+	if obs, _ := a.Observe(context.Background()); obs.AwaitingInput {
+		t.Errorf("resolved interaction: %+v", obs)
+	}
+}
+
+func TestPendingInteractionFallsBackToLifecycleEvents(t *testing.T) {
+	lifecycle := func(id, status string) string {
+		return fmt.Sprintf(`{"type":"system/interaction/lifecycle","data":{"interaction":{"id":%q,"status":%q,"origin":{"kind":"plugin"}}}}`, id, status)
+	}
+	log := "[" + lifecycle("pint_a", "pending") + "," + lifecycle("pint_a", "resolved") + "," + lifecycle("pint_b", "pending") + "]"
+	a, _ := newFakeWithInteractions(`{"thread":{"status":"idle"}}`, log, "error", false)
+	if obs, _ := a.Observe(context.Background()); !obs.AwaitingInput {
+		t.Errorf("pint_b is still pending: %+v", obs)
+	}
+	log = "[" + lifecycle("pint_a", "pending") + "," + lifecycle("pint_a", "resolved") + "]"
+	a, _ = newFakeWithInteractions(`{"thread":{"status":"idle"}}`, log, "error", false)
+	if obs, _ := a.Observe(context.Background()); obs.AwaitingInput {
+		t.Errorf("everything resolved: %+v", obs)
 	}
 }
 

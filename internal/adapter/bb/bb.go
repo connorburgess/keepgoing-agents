@@ -81,7 +81,15 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		Background: t.BackgroundJobs,
 		Gone:       t.ArchivedAt != nil || t.DeletedAt != nil,
 	}
-	if obs.Gone || (obs.State != decide.Error && obs.State != decide.Idle) {
+	if obs.Gone {
+		return obs, nil
+	}
+	// A pending permission prompt, question, or form means the thread is
+	// waiting on a person, whatever its status says.
+	if obs.State != decide.Stopping {
+		obs.AwaitingInput = a.pendingInteraction(ctx)
+	}
+	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
 	}
 	sig := a.signals(ctx)
@@ -208,6 +216,54 @@ func firstKnown(codes ...string) decide.ErrorClass {
 		}
 	}
 	return decide.ErrUnknown
+}
+
+// pendingInteraction reports whether the thread has an unresolved
+// interaction. It reads `bb thread interactions list --json`; if that fails
+// it falls back to the newest system/interaction/lifecycle events. Only the
+// structured status field is read, never the interaction's text.
+func (a *Adapter) pendingInteraction(ctx context.Context) bool {
+	if out, err := a.run(ctx, "", "thread", "interactions", "list", a.cfg.Thread, "--json"); err == nil {
+		var items []struct {
+			Status *string `json:"status"`
+		}
+		if json.Unmarshal(out, &items) == nil {
+			for _, it := range items {
+				if it.Status == nil || *it.Status == "pending" {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--limit", "60")
+	if err != nil {
+		return false
+	}
+	var events []struct {
+		Type string `json:"type"`
+		Data struct {
+			Interaction struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"interaction"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(out, &events) != nil {
+		return false
+	}
+	latest := map[string]string{}
+	for _, e := range events { // oldest first, so the last status per id wins
+		if e.Type == "system/interaction/lifecycle" && e.Data.Interaction.ID != "" {
+			latest[e.Data.Interaction.ID] = e.Data.Interaction.Status
+		}
+	}
+	for _, status := range latest {
+		if status == "pending" {
+			return true
+		}
+	}
+	return false
 }
 
 // Send implements adapter.Adapter via `bb thread tell`.

@@ -206,6 +206,12 @@ func (t *tick) run() error {
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
 	}
+	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun {
+		t.st.AwaitingReported = true
+		t.report("await_user", fmt.Sprintf("%s: %s is waiting on a person (pending interaction)", loop.Name, target), map[string]any{"target": target, "pendingInteraction": true})
+	} else if !obs.AwaitingInput {
+		t.st.AwaitingReported = false
+	}
 	if !obs.ResetsAt.IsZero() {
 		r := obs.ResetsAt.UTC()
 		res.ResetsAt = &r
@@ -246,6 +252,7 @@ func (t *tick) run() error {
 		}
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
 			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
+			t.st.Nudges = 0
 		}
 		unchangedFor = t.now.Sub(t.st.LastProgressAt)
 		res.UnchangedFor = unchangedFor.Truncate(time.Second).String()
@@ -261,6 +268,9 @@ func (t *tick) run() error {
 	if obs.State == decide.Active || obs.State == decide.Idle {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 	}
+	if obs.State != decide.Active {
+		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -274,7 +284,8 @@ func (t *tick) run() error {
 		Obs: obs, Control: gate, InWindow: inWindow,
 		UnchangedFor: unchangedFor, SinceWake: sinceWake,
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
-		Failover:  failover,
+		Failover: failover,
+		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 	}
@@ -433,6 +444,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			return err
 		}
 		t.st.LastWakeAt = t.now
+		if d.Action == decide.Nudge {
+			t.st.Nudges++
+		}
 		if d.Action == decide.Reprompt {
 			t.st.Reprompts++
 			t.st.LastRepromptAt = t.now

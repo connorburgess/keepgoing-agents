@@ -40,6 +40,8 @@ type Status struct {
 	Queued     int    `json:"queued,omitempty"`
 	Background int    `json:"background,omitempty"`
 	Gone       bool   `json:"gone,omitempty"`
+	// AwaitingInput: the session is blocked on a person.
+	AwaitingInput bool `json:"awaitingInput,omitempty"`
 }
 
 // Observe implements adapter.Adapter.
@@ -60,11 +62,12 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		return decide.Observation{State: decide.Unknown}, errors.New("status command: stdout is not a JSON status object")
 	}
 	obs := decide.Observation{
-		State:      adapter.ParseState(st.State),
-		ErrorClass: decide.ErrNone,
-		Queued:     st.Queued,
-		Background: st.Background,
-		Gone:       st.Gone,
+		State:         adapter.ParseState(st.State),
+		ErrorClass:    decide.ErrNone,
+		Queued:        st.Queued,
+		Background:    st.Background,
+		Gone:          st.Gone,
+		AwaitingInput: st.AwaitingInput,
 	}
 	if obs.State == decide.Error {
 		obs.ErrorClass = decide.ErrUnknown

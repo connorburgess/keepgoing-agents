@@ -15,9 +15,13 @@
 
 ### Added
 
+- BB threads with a pending permission prompt, question, or form count as waiting on a person. keepgoing sends nothing to them and reports `await_user` once.
+- `keepgoing await-user` sends an `await_user` report at once, with the note.
+- The process adapter's status object accepts `awaitingInput`.
+- `progress.max_nudges`, default 3: a session that stays stalled through that many nudges marks the loop awaiting user instead of being nudged forever.
+- `docs/agent-chats.md` and `examples/chat-loop-prompt.md` for supervising a chat thread.
 - `probe.env` for probing a candidate that uses a different account.
 - `docs/integrations.md` and `docs/testing.md`, and a test bundle for machines without Go.
-
 - Supervision of one loop through BB threads, generic processes, and headless Claude Code or Codex sessions.
 - A decision engine that wakes idle sessions, nudges stalled ones, and re-prompts errors with backoff, then waits for a person.
 - `fallbacks.yaml` with scheduled, exact, and manual probes, a health registry, redundancy rules, and handoff to confirmed fallbacks.
