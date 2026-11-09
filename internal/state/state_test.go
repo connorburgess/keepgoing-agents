@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestStateRoundTripAndLog(t *testing.T) {
 		t.Fatalf("round trip: %+v %v", g, err)
 	}
 	info, _ := os.Stat(filepath.Join(dir, FileName))
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("state.json mode = %v", info.Mode().Perm())
 	}
 	for i := 0; i < 2; i++ {

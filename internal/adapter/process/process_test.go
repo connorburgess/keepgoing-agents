@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
@@ -11,17 +13,27 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
-func script(t *testing.T, body string) string {
+// script writes a test command: a shell script on Unix, a batch file on
+// Windows. Each test passes both bodies.
+func script(t *testing.T, sh, bat string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "cmd.sh")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(dir, "cmd.bat")
+		if err := os.WriteFile(p, []byte("@echo off\r\n"+bat+"\r\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := filepath.Join(dir, "cmd.sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+sh+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return p
 }
 
 func TestObserveJSON(t *testing.T) {
-	a := New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"active","background":2}'`)}})
+	a := New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"active","background":2}'`, `echo {"state":"active","background":2}`)}})
 	obs, err := a.Observe(context.Background())
 	if err != nil || obs.State != decide.Active || obs.Background != 2 {
 		t.Errorf("%+v %v", obs, err)
@@ -29,12 +41,12 @@ func TestObserveJSON(t *testing.T) {
 }
 
 func TestObserveExitCodeMap(t *testing.T) {
-	a := New(config.Process{StatusCommand: []string{script(t, `echo "quota exhausted" >&2; exit 75`)}, ExitCodes: map[int]string{75: "rate_limit"}})
+	a := New(config.Process{StatusCommand: []string{script(t, `echo "quota exhausted" >&2; exit 75`, "echo quota exhausted 1>&2\r\nexit /b 75")}, ExitCodes: map[int]string{75: "rate_limit"}})
 	obs, err := a.Observe(context.Background())
 	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit {
 		t.Errorf("%+v %v", obs, err)
 	}
-	a = New(config.Process{StatusCommand: []string{script(t, `exit 9`)}})
+	a = New(config.Process{StatusCommand: []string{script(t, `exit 9`, "exit /b 9")}})
 	obs, _ = a.Observe(context.Background())
 	if obs.ErrorClass != decide.ErrUnknown {
 		t.Errorf("unmapped exit should be unknown, got %s", obs.ErrorClass)
@@ -42,7 +54,7 @@ func TestObserveExitCodeMap(t *testing.T) {
 }
 
 func TestObserveBadJSONIsUnknown(t *testing.T) {
-	a := New(config.Process{StatusCommand: []string{script(t, `echo "all good, rate limit fine"`)}})
+	a := New(config.Process{StatusCommand: []string{script(t, `echo "all good, rate limit fine"`, "echo all good, rate limit fine")}})
 	obs, err := a.Observe(context.Background())
 	if err == nil || obs.State != decide.Unknown {
 		t.Errorf("%+v %v", obs, err)
@@ -51,12 +63,13 @@ func TestObserveBadJSONIsUnknown(t *testing.T) {
 
 func TestSendPassesPromptAndMode(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "got.txt")
-	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`)}, Env: map[string]string{"OUT": out}})
+	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`, "findstr \"^\" > \"%OUT%\"\r\necho %KEEPGOING_MODE%>> \"%OUT%\"")}, Env: map[string]string{"OUT": out}})
 	if err := a.Send(context.Background(), "keep going", adapter.ModeQueue); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)
-	if string(b) != "keep goingqueue\n" {
+	got := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r", ""), "\n", "")
+	if got != "keep goingqueue" {
 		t.Errorf("got %q", b)
 	}
 }

@@ -5,6 +5,8 @@ package window
 import (
 	"fmt"
 	"time"
+	// Windows has no system zoneinfo; embed it so configured windows load everywhere.
+	_ "time/tzdata"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 )

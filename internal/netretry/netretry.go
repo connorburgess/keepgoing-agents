@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"time"
 )
 
@@ -117,7 +118,7 @@ func exitCode(err error) int {
 // KEEPGOING_NET_PROBE_URL (default https://api.github.com/zen) must answer.
 func DefaultOnline(ctx context.Context) bool {
 	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
-		return exec.CommandContext(ctx, "/bin/sh", "-c", probe).Run() == nil
+		return shell(ctx, probe).Run() == nil
 	}
 	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
 	if url == "" {
@@ -135,6 +136,14 @@ func DefaultOnline(ctx context.Context) bool {
 	}
 	resp.Body.Close()
 	return true
+}
+
+// shell runs a command line with the platform's shell.
+func shell(ctx context.Context, line string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/C", line)
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", line)
 }
 
 func itoa(n int) string {
