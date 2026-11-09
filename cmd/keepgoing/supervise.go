@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
@@ -64,7 +66,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) i
 // stop or pause is acted on within one control_poll rather than waiting for
 // the next interval. SIGINT or SIGTERM ends the daemon at once; a tick in
 // flight is cancelled and its child commands are killed.
-func daemon(e env, cfg *config.Config, cfgPath string) int {
+func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 	l, err := lock.AcquireNamed(cfg.Loop.StateDir, lock.Daemon)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another daemon is running for %s", cfg.Loop.Name)
@@ -88,17 +90,22 @@ func daemon(e env, cfg *config.Config, cfgPath string) int {
 		if e.ctx.Err() != nil {
 			return exitOK
 		}
-		tickOnce(e, cfg, time.Time{}, false, false)
-		if !waitForNext(e.ctx, cfg) {
+		// Take the control signature before the pass, so a stop or pause
+		// written while the pass runs starts the next pass immediately.
+		sig := controlSignature(cfg.Loop.StateDir)
+		tickOnce(e, cfg, time.Time{}, dryRun, false)
+		if !waitForNext(e.ctx, cfg, sig) {
 			return exitOK
 		}
 	}
 }
 
 // waitForNext returns false when the daemon should exit.
-func waitForNext(ctx context.Context, cfg *config.Config) bool {
+func waitForNext(ctx context.Context, cfg *config.Config, sig string) bool {
+	if controlSignature(cfg.Loop.StateDir) != sig {
+		return ctx.Err() == nil
+	}
 	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
-	sig := controlSignature(cfg.Loop.StateDir)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -270,6 +277,18 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 		return exitFailed
 	}
 	from := st.Target()
+	agent := cfg.Loop.Agent
+	if c, ok := cfg.FallbackSet.Find(id); ok {
+		agent = c.Agent
+	}
+	if a, err := factory.New(agent, cfg.Loop.StateDir, id); err == nil {
+		if act, ok := a.(adapter.Activator); ok {
+			if err := act.Activate(e.ctx); err != nil {
+				e.errf("retarget: could not apply %s's model, so the target is unchanged: %v", id, err)
+				return exitFailed
+			}
+		}
+	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {

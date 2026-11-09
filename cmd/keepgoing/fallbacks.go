@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"text/tabwriter"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -45,6 +47,16 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		return exitUsage
 	}
 	fb := cfg.FallbackSet
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if errors.Is(err, lock.ErrHeld) {
+		e.errf("a tick is running; try again in a moment")
+		return exitSkipped
+	}
+	if err != nil {
+		e.errf("lock: %v", err)
+		return exitFailed
+	}
+	defer l.Release()
 	reg, err := health.Load(cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("%v", err)
@@ -159,7 +171,7 @@ func reportTest(e env, cfg *config.Config, dryRun bool) int {
 		e.errf("%v", err)
 		return exitFailed
 	}
-	ev := report.Event{Type: "handoff", Loop: cfg.Loop.Name, Text: cfg.Loop.Name + ": test report from keepgoing", At: time.Now(), Data: map[string]any{"test": true}}
+	ev := report.Event{Type: "test", Loop: cfg.Loop.Name, Text: cfg.Loop.Name + ": test report from keepgoing", At: time.Now(), Data: map[string]any{"test": true}}
 	if dryRun {
 		body, err := w.Body(ev)
 		if err != nil {
