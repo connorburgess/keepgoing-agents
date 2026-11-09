@@ -44,6 +44,9 @@ type Observation struct {
 	Retrying bool
 	// ResetsAt, when known, is when the current usage limit lifts.
 	ResetsAt time.Time
+	// AwaitingInput means the session is blocked on a person: a pending
+	// permission prompt, question, or form, reported by the provider.
+	AwaitingInput bool
 }
 
 // Control is the operator's gate.
@@ -130,6 +133,9 @@ func Decide(in Input) Decision {
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
+	}
+	if o.AwaitingInput {
+		return none("waiting on a person (pending interaction)")
 	}
 	if !in.InWindow {
 		return none("outside window")

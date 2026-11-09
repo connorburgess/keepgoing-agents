@@ -480,6 +480,30 @@ func TestNoScheduledProbesOutsideWindow(t *testing.T) {
 	}
 }
 
+func TestPendingInteractionIsLeftAloneAndReportedOnce(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle, AwaitingInput: true})
+	for i := 0; i < 3; i++ {
+		if res := runTick(t, w, t0.Add(time.Duration(i)*time.Hour)); res.Action != "none" {
+			t.Fatalf("tick %d: %+v", i, res)
+		}
+	}
+	if len(p.sent) != 0 || w.reportTypes() != "await_user" {
+		t.Errorf("sent=%v reports=%s", p.sent, w.reportTypes())
+	}
+	// Answered: the next idle tick wakes the session again, and a later
+	// pending interaction is reported again.
+	p.obs = decide.Observation{State: decide.Idle}
+	if res := runTick(t, w, t0.Add(4*time.Hour)); res.Action != "wake" {
+		t.Fatalf("after answer: %+v", res)
+	}
+	p.obs.AwaitingInput = true
+	runTick(t, w, t0.Add(5*time.Hour))
+	if w.reportTypes() != "await_user,wake,await_user" {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+}
+
 func TestGoneTargetAsksForAPerson(t *testing.T) {
 	w := newWorld(t, true, false)
 	w.primary(decide.Observation{State: decide.Unknown, Gone: true})

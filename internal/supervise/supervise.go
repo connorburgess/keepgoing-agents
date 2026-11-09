@@ -206,6 +206,12 @@ func (t *tick) run() error {
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
 	}
+	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun {
+		t.st.AwaitingReported = true
+		t.report("await_user", fmt.Sprintf("%s: %s is waiting on a person (pending interaction)", loop.Name, target), map[string]any{"target": target, "pendingInteraction": true})
+	} else if !obs.AwaitingInput {
+		t.st.AwaitingReported = false
+	}
 	if !obs.ResetsAt.IsZero() {
 		r := obs.ResetsAt.UTC()
 		res.ResetsAt = &r

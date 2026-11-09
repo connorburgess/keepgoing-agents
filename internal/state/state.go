@@ -36,6 +36,9 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// AwaitingReported is set once a pending interaction has been reported,
+	// so the person is told once, not on every tick.
+	AwaitingReported bool `json:"awaitingReported,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.

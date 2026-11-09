@@ -51,6 +51,17 @@ func TestDecide(t *testing.T) {
 		{"error exhausted", func(i *Input) { i.Obs.State = Error; i.Reprompts = 3 }, AwaitUser},
 		{"error with queued message waits", func(i *Input) { i.Obs.State = Error; i.Obs.Queued = 1 }, None},
 		{"provider retrying", func(i *Input) { i.Obs.State = Error; i.Obs.Retrying = true }, None},
+		{"idle but waiting on a person", func(i *Input) { i.Obs.AwaitingInput = true }, None},
+		{"stalled but waiting on a person", func(i *Input) {
+			i.Obs.State, i.Obs.AwaitingInput, i.UnchangedFor = Active, true, 2*time.Hour
+		}, None},
+		{"errored but waiting on a person", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.Obs.AwaitingInput = Error, ErrRateLimit, true
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, None},
+		{"stop still wins over a pending interaction", func(i *Input) {
+			i.Control.Stop, i.Obs.State, i.Obs.AwaitingInput = true, Active, true
+		}, Stop},
 		{"rate limit hands off when available", func(i *Input) {
 			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
 			i.Failover = Failover{Eligible: true, Available: true}
