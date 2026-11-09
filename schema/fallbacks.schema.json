@@ -140,6 +140,13 @@
               },
               "workdir": {
                 "type": "string"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "extra environment for the probe, for example CLAUDE_CONFIG_DIR or CODEX_HOME to check another account's login"
               }
             }
           }

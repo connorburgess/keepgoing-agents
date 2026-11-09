@@ -2,7 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- A stop request is now honored while the loop is paused, disabled, or awaiting a person, and when state files cannot be read.
+- The daemon now acts on a stop or pause written during a pass, instead of waiting a full interval.
+- Relative `state_dir` and command paths now resolve against the config file, so headless runners and `./script.sh` commands work from any directory.
+- `retarget` now applies the target agent's model and reasoning level.
+- A handoff brief that cannot be written no longer leaves a candidate's model switched.
+- A failed manual or exact probe no longer delays the next scheduled probe. The active target's quota group is no longer probed on schedule.
+- A gone target now marks the loop awaiting user instead of staying silent.
+- Time zones now load on Windows, and the network probe command works there.
+
 ### Added
+
+- `probe.env` for probing a candidate that uses a different account.
+- `docs/integrations.md` and `docs/testing.md`, and a test bundle for machines without Go.
 
 - Supervision of one loop through BB threads, generic processes, and headless Claude Code or Codex sessions.
 - A decision engine that wakes idle sessions, nudges stalled ones, and re-prompts errors with backoff, then waits for a person.

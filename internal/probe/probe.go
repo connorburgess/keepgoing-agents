@@ -36,16 +36,16 @@ const Prompt = "Reply with exactly: OK"
 
 // Result is the evidence a probe leaves in the health registry.
 type Result struct {
-	At                  time.Time `json:"at"`
-	Tier                Tier      `json:"tier"`
-	Kind                string    `json:"kind"`
-	Model               string    `json:"model,omitempty"`
-	OK                  bool      `json:"ok"`
-	LatencyMs           int64     `json:"latencyMs"`
-	ExitCode            int       `json:"exitCode"`
-	ErrorClass          string    `json:"errorClass,omitempty"`
-	Detail              string    `json:"detail,omitempty"` // a short code, never model output
-	CredentialExpiresAt time.Time `json:"credentialExpiresAt,omitempty"`
+	At                  time.Time  `json:"at"`
+	Tier                Tier       `json:"tier"`
+	Kind                string     `json:"kind"`
+	Model               string     `json:"model,omitempty"`
+	OK                  bool       `json:"ok"`
+	LatencyMs           int64      `json:"latencyMs"`
+	ExitCode            int        `json:"exitCode"`
+	ErrorClass          string     `json:"errorClass,omitempty"`
+	Detail              string     `json:"detail,omitempty"` // a short code, never model output
+	CredentialExpiresAt *time.Time `json:"credentialExpiresAt,omitempty"`
 }
 
 // Run probes one candidate. exact selects the target model over the cheap
@@ -57,6 +57,9 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	defer cancel()
 	var argv []string
 	env := []string{"KEEPGOING_PROBE_TIER=" + string(tier), "KEEPGOING_PROBE_MODEL=" + model, "KEEPGOING_CANDIDATE=" + c.ID}
+	for k, v := range c.Probe.Env {
+		env = append(env, k+"="+v)
+	}
 	switch c.Probe.Kind {
 	case "claude":
 		argv = []string{c.ProbeCLI(), "-p", Prompt, "--output-format", "json", "--no-session-persistence",
@@ -112,8 +115,10 @@ func judgeClaude(res *Result, stdout []byte, code int) {
 	var extra struct {
 		CredentialExpiresAt time.Time `json:"credential_expires_at"`
 	}
-	json.Unmarshal(lastLine(stdout), &extra)
-	res.CredentialExpiresAt = extra.CredentialExpiresAt
+	if json.Unmarshal(lastLine(stdout), &extra) == nil && !extra.CredentialExpiresAt.IsZero() {
+		t := extra.CredentialExpiresAt
+		res.CredentialExpiresAt = &t
+	}
 	switch {
 	case !ok:
 		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "no result object"

@@ -14,7 +14,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 - **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
 - **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
-- **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs a minimum number of healthy fallbacks spread across providers.
+- **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs at least `min_healthy` confirmed fallbacks, counted across distinct providers by default. The default is 1; set 2 for real redundancy.
 - **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
 - **Honors stop and pause at once.** The daemon watches the control file and acts on a change within seconds.
 - **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
@@ -51,7 +51,7 @@ keepgoing stop                 # stop the running turn, then send nothing more
 keepgoing retarget primary     # move back from a fallback by hand
 ```
 
-Every `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it.
+Every completed `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it. A tick skipped because the lock was held, or stopped by a config error, prints only to stderr.
 
 ## Documentation
 
@@ -60,6 +60,7 @@ Every `tick` prints one JSON line describing what it saw and did, so a scheduler
 - [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
 - [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
 - [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
+- [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
 - [docs/roadmap.md](docs/roadmap.md): what comes next.
 - [examples/](examples/): configurations and scheduler setups to copy.
 - [schema/](schema/): JSON Schemas for editor completion and validation.
@@ -70,6 +71,8 @@ Every `tick` prints one JSON line describing what it saw and did, so a scheduler
 - The headless Codex adapter reads error codes from `codex exec --json` events, but it has not yet been checked against a real Codex usage-limit event. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
 - Headless runners need macOS or Linux. On Windows, the BB and process adapters work, but the Claude Code and Codex runners do not.
 - Switching back to the primary after a handoff is manual, with `keepgoing retarget primary`.
+- A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account.
+- A session that stays active without progress is nudged every `min_wake_interval` and never escalates to a person on its own.
 
 ## Contributing
 

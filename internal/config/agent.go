@@ -172,10 +172,20 @@ func (a Agent) Describe() string {
 }
 
 func (a *Agent) resolvePaths(base string) {
+	if a.BB != nil {
+		a.BB.CLI = resolveExec(base, a.BB.CLI)
+	}
+	if a.Process != nil {
+		resolveArgv(base, a.Process.StatusCommand)
+		resolveArgv(base, a.Process.ResumeCommand)
+		resolveArgv(base, a.Process.StopCommand)
+	}
 	if a.Claude != nil {
 		a.Claude.Workdir = resolve(base, a.Claude.Workdir)
+		a.Claude.CLI = resolveExec(base, a.Claude.CLI)
 	}
 	if a.Codex != nil {
 		a.Codex.Workdir = resolve(base, a.Codex.Workdir)
+		a.Codex.CLI = resolveExec(base, a.Codex.CLI)
 	}
 }

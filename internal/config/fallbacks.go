@@ -46,12 +46,13 @@ type Candidate struct {
 
 // Probe says how to confirm a candidate works.
 type Probe struct {
-	Kind      string         `yaml:"kind,omitempty"`  // claude, codex, or command
-	Model     string         `yaml:"model,omitempty"` // cheap model for scheduled probes
-	Command   []string       `yaml:"command,omitempty"`
-	ExitCodes map[int]string `yaml:"exit_codes,omitempty"`
-	CLI       string         `yaml:"cli,omitempty"`
-	Workdir   string         `yaml:"workdir,omitempty"`
+	Kind      string            `yaml:"kind,omitempty"`  // claude, codex, or command
+	Model     string            `yaml:"model,omitempty"` // cheap model for scheduled probes
+	Command   []string          `yaml:"command,omitempty"`
+	ExitCodes map[int]string    `yaml:"exit_codes,omitempty"`
+	CLI       string            `yaml:"cli,omitempty"`
+	Workdir   string            `yaml:"workdir,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty"` // for example CLAUDE_CONFIG_DIR or CODEX_HOME for another account
 }
 
 // Fallback defaults.
@@ -65,6 +66,9 @@ const (
 
 // LoadFallbacks reads and validates a fallbacks file.
 func LoadFallbacks(path string) (*Fallbacks, error) {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -80,6 +84,8 @@ func LoadFallbacks(path string) (*Fallbacks, error) {
 		if c.Probe.Workdir != "" {
 			c.Probe.Workdir = resolve(base, c.Probe.Workdir)
 		}
+		c.Probe.CLI = resolveExec(base, c.Probe.CLI)
+		resolveArgv(base, c.Probe.Command)
 	}
 	return fb, nil
 }

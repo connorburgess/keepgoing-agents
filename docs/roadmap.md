@@ -8,9 +8,22 @@
 
 **Milestone 3: operate it.** The daemon with immediate control handling and config reload. Signed webhook reports in the Standard Webhooks format, checked against its published test vector. `ci-wait`, `net-retry`, yield checks, scheduler examples, JSON Schemas with a drift test, Windows locking, and release automation.
 
+**Verification pass.** The test suite was run on Ubuntu 26.04 ARM64 and Windows 11 Arm VMs. An independent audit of the docs against the code fixed these:
+
+- Stop now wins even while the loop is paused or disabled.
+- The daemon now notices a control change made during a pass.
+- Relative config paths now work with headless runners and commands.
+- Retarget now applies the target's model.
+- A brief error no longer half-switches a candidate.
+- Failed manual probes no longer delay scheduled probes.
+
+See [integrations.md](integrations.md) for what is verified live.
+
 ## Next
 
+- Run the live checks listed in [integrations.md](integrations.md), starting with BB send and stop against a scratch thread and a real Codex probe.
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
+- Escalate a session that stays stalled after several nudges.
 - A thin BB plugin that calls the CLI and renders its JSON.
 - Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
 - Headless runners on Windows.

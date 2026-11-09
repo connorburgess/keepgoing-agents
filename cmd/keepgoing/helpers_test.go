@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
 type safeBuffer struct {
@@ -59,4 +61,13 @@ func dirOf(p string) string {
 		}
 	}
 	return "."
+}
+
+func loadFixture(t *testing.T, path string) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
