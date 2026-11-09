@@ -23,11 +23,19 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 ## Install
 
+With Homebrew on macOS or Linux:
+
+```sh
+brew install connorburgess/tap/keepgoing
+```
+
+With Go 1.24 or newer:
+
 ```sh
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 ```
 
-Go 1.24 or newer. Release binaries for macOS, Linux, and Windows are built by the release workflow when a version is tagged.
+Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on the [releases page](https://github.com/connorburgess/keepgoing-agents/releases).
 
 ## Quick start
 
