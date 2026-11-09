@@ -26,7 +26,7 @@ Other coding agents can be supervised today through the process adapter, given a
 
 | Integration | Status | Next check |
 | --- | --- | --- |
-| Supervising a live BB chat thread | **Live** dry-run ticks against a real chat. **Fakes** for waking, pending interactions, `await-user` reports, and resume. | Supervise a real working chat with `keepgoing daemon` and a webhook. See [agent-chats.md](agent-chats.md). |
+| Supervising a live BB chat thread | **Live**: keepgoing supervises a real working chat through a BB automation. It woke the chat when it went idle, the agent ran `keepgoing await-user` when blocked, and the owner got the report. **Fakes** for pending interactions. | Catch a real pending interaction. |
 
 ## Schedulers and hosts
 
@@ -35,17 +35,17 @@ Other coding agents can be supervised today through the process adapter, given a
 | launchd (`examples/schedulers/launchd.plist`) | **Untested** example | load it on a test account and confirm one tick every interval |
 | cron (`examples/schedulers/crontab.txt`) | **Untested** example | run it on a Linux VM |
 | systemd user unit (`examples/schedulers/keepgoing@.service`) | **Untested** example | enable it on the Ubuntu VM and confirm `systemctl stop` ends the daemon at once |
-| BB automation (`examples/schedulers/bb-automation.sh`) | **Untested** example | run it from a scratch BB automation against a scratch thread |
+| BB automation (`examples/schedulers/bb-automation.sh`) | **Live**: a 10-minute BB script automation runs `keepgoing tick` for a real chat. It woke the chat when it went idle and stayed quiet while the chat was busy or awaiting its owner. | none |
 | GitHub Actions (`examples/schedulers/github-actions.yml`) | **Untested** example | run it in a scratch repository with fake candidates |
-| `keepgoing daemon` | **Fakes**, through an end-to-end test of stop handling, the single instance rule, and exit | a long-running soak on a VM |
+| `keepgoing daemon` | **Live** against a scratch BB chat: it woke the idle chat every interval, held off while the loop was awaiting its owner, ran a pass as soon as the control file changed, and exited cleanly on SIGTERM. | a long-running soak on a VM |
 
 ## Reporting
 
 | Integration | Status | Next check |
 | --- | --- | --- |
 | Standard Webhooks signing | **Live** against the specification's published test vector. **Fakes** for delivery to a local receiver. | none |
-| Text format (`source`, `sent_at`, `text`) | **Fakes** | deliver one `keepgoing report test` to a real receiver that expects this shape |
-| Bearer scheme | **Untested** | add a delivery test |
+| Text format (`source`, `sent_at`, `text`) | **Live**: test, wake, and await-user reports were delivered to a real receiver | none |
+| Bearer scheme | **Live** with a real receiver. No unit test yet. | add a delivery test |
 
 ## Developer tooling
 
@@ -54,7 +54,7 @@ Other coding agents can be supervised today through the process adapter, given a
 | `gh` for `ci-wait` | **Fakes** | run it against a real pull request in this repository |
 | `net-retry` connectivity probe | **Fakes** | run it with the network cut on a VM |
 | GitHub Actions CI (`.github/workflows/checks.yml`) | runs on every push and pull request | none |
-| Release workflow | **Untested**. The build script was run locally. | push a pre-release tag |
+| Release workflow | **Live**: tagging v0.1.0 published binaries for six platforms with checksums. A downloaded binary's checksum and version were checked. | none |
 
 ## Operating systems
 
