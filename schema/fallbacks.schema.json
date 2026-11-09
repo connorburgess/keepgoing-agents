@@ -267,6 +267,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment overrides for turns and inherited by probes. Values are literal; use absolute account configuration paths."
         }
       }
     },
@@ -298,6 +305,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment overrides for turns and inherited by probes. Values are literal; use absolute account configuration paths."
         }
       }
     }

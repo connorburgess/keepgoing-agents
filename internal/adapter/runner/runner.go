@@ -123,3 +123,13 @@ func (d Dir) Stop() error {
 	}
 	return terminate(st.Record.PID)
 }
+
+// envList supplies overrides to subprocesses without changing the supervisor's
+// environment or persisting values in turn metadata.
+func envList(env map[string]string) []string {
+	entries := make([]string, 0, len(env))
+	for k, v := range env {
+		entries = append(entries, k+"="+v)
+	}
+	return entries
+}

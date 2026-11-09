@@ -39,23 +39,25 @@ type Process struct {
 // Claude configures a headless Claude Code session that keepgoing runs
 // itself, one turn at a time, resuming the same session each turn.
 type Claude struct {
-	CLI            string   `yaml:"cli,omitempty"`
-	Workdir        string   `yaml:"workdir"`
-	Model          string   `yaml:"model,omitempty"`
-	Effort         string   `yaml:"effort,omitempty"`
-	PermissionMode string   `yaml:"permission_mode,omitempty"`
-	MaxBudgetUSD   float64  `yaml:"max_budget_usd,omitempty"`
-	ExtraArgs      []string `yaml:"extra_args,omitempty"`
+	CLI            string            `yaml:"cli,omitempty"`
+	Workdir        string            `yaml:"workdir"`
+	Model          string            `yaml:"model,omitempty"`
+	Effort         string            `yaml:"effort,omitempty"`
+	PermissionMode string            `yaml:"permission_mode,omitempty"`
+	MaxBudgetUSD   float64           `yaml:"max_budget_usd,omitempty"`
+	ExtraArgs      []string          `yaml:"extra_args,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty"`
 }
 
 // Codex configures a headless Codex session run with `codex exec`.
 type Codex struct {
-	CLI              string   `yaml:"cli,omitempty"`
-	Workdir          string   `yaml:"workdir"`
-	Model            string   `yaml:"model,omitempty"`
-	Sandbox          string   `yaml:"sandbox,omitempty"`
-	SkipGitRepoCheck bool     `yaml:"skip_git_repo_check,omitempty"`
-	ExtraArgs        []string `yaml:"extra_args,omitempty"`
+	CLI              string            `yaml:"cli,omitempty"`
+	Workdir          string            `yaml:"workdir"`
+	Model            string            `yaml:"model,omitempty"`
+	Sandbox          string            `yaml:"sandbox,omitempty"`
+	SkipGitRepoCheck bool              `yaml:"skip_git_repo_check,omitempty"`
+	ExtraArgs        []string          `yaml:"extra_args,omitempty"`
+	Env              map[string]string `yaml:"env,omitempty"`
 }
 
 // Adapters lists the supported adapter names.

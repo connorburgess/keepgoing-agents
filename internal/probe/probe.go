@@ -66,7 +66,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	defer cancel()
 	var argv []string
 	env := []string{"KEEPGOING_PROBE_TIER=" + string(tier), "KEEPGOING_PROBE_MODEL=" + model, "KEEPGOING_CANDIDATE=" + c.ID}
-	for k, v := range c.Probe.Env {
+	for k, v := range c.ProbeEnv() {
 		env = append(env, k+"="+v)
 	}
 	switch c.Probe.Kind {
@@ -120,7 +120,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		// Codex reports a usage limit only as prose in its event stream, so
 		// ask its app-server for the structured rate-limit snapshot.
 		if !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
-			if l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI()); err == nil && l.Blocked {
+			if l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI(), env); err == nil && l.Blocked {
 				res.ErrorClass = string(decide.ErrRateLimit)
 				res.Detail = "account/rateLimits/read: " + l.ReachedType
 				if !l.ResetsAt.IsZero() {

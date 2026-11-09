@@ -41,7 +41,7 @@ Other probe settings:
 - `probe.cli` overrides the executable.
 - `probe.workdir` sets where the probe runs. The default is a fresh temporary directory.
 - `probe.exit_codes` maps a command probe's exit codes to error classes.
-- `probe.env` adds environment variables. A command probe also receives `KEEPGOING_PROBE_TIER`, `KEEPGOING_PROBE_MODEL`, and `KEEPGOING_CANDIDATE`.
+- `probe.env` adds environment variables, overriding inherited `claude.env` or `codex.env` values. This applies to scheduled, manual, handoff, and primary switch-back probes, including Codex rate-limit checks. Values are literal, with no `~` or shell-variable expansion. A command probe also receives `KEEPGOING_PROBE_TIER`, `KEEPGOING_PROBE_MODEL`, and `KEEPGOING_CANDIDATE`.
 
 A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
@@ -90,6 +90,35 @@ A handoff is allowed only when the healthy, eligible candidates cover at least `
 - `none`: each candidate counts.
 
 Below the minimum, keepgoing warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
+
+## Multiple subscriptions
+
+For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; keepgoing selects an existing login and never creates accounts or copies credentials.
+
+Copy [keepgoing.multi-account.yaml](../examples/keepgoing.multi-account.yaml) and [fallbacks.multi-account.yaml](../examples/fallbacks.multi-account.yaml), replacing the fictional absolute paths. The primary uses account A:
+
+```yaml
+loop:
+  adapter: claude
+  group: claude-account-a
+  claude:
+    workdir: /fictional/src/example-app
+    model: sonnet
+    env:
+      CLAUDE_CONFIG_DIR: /fictional/accounts/claude-a
+  fallbacks: fallbacks.multi-account.yaml
+  switch_back: {enabled: true}
+```
+
+The fallback file lists B and C in order, each with its own group and directory. It sets `redundancy: {min_healthy: 1, span: group}`, so one healthy alternative account is enough. With `min_healthy: 2`, both other accounts must be healthy before the first handoff. Accounts sharing a quota must share a group, even if their config directories differ.
+
+When A is limited, keepgoing probes B with B's environment and target model, then starts B's turn with that same environment. C is next if B cannot take over. A later limit on B can hand off to a healthy C. With switch-back enabled, the loop can return to A after the reset and a passing probe using A's environment. Each target retains its own session; a handoff sends the brief to the target rather than copying the previous account's session.
+
+Leave account selection in `claude.env` or `codex.env` so turns and probes agree. An explicit `probe.env` override wins for probes only; pointing it at another account would no longer verify the account that runs the work. Environment entries override matching inherited variables, but other inherited authentication settings remain in effect. Verify each CLI's active login with the intended environment before enabling the loop. Keep credentials out of committed YAML and use the CLI's login storage.
+
+The same pattern works for Codex with `adapter: codex`, a `codex` block, and a separate absolute `CODEX_HOME` per account. The Codex [authentication storage](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/storage.rs) uses that home for credentials. Its turns, probes, and structured rate-limit checks all receive the selected environment.
+
+BB candidates still use the account selected by BB. Setting `probe.env` only changes the local probe; it cannot switch a BB thread's account.
 
 ## Handoff
 

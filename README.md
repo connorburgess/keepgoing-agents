@@ -15,6 +15,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 - **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
 - **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn, and after `max_nudges` nudges without progress the loop asks a person. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
 - **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs at least `min_healthy` confirmed fallbacks, counted across distinct providers by default. The default is 1; set 2 for real redundancy.
+- **Supports multiple accounts in headless runners.** Set `claude.env` or `codex.env` per account, with separate quota groups. Turns, probes, and Codex limit checks use that account's environment. See the [three-subscription setup](docs/fallbacks.md#multiple-subscriptions).
 - **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
 - **Knows when a person is needed.** A pending permission prompt or question, or a loop marked with `keepgoing await-user`, means nothing is sent. The person gets an `await_user` report instead of the loop sitting idle. See [docs/agent-chats.md](docs/agent-chats.md).
 - **Honors stop and pause at once.** The daemon watches the control file and acts on a change within seconds.
@@ -82,7 +83,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - Codex reports a usage limit only as prose in `codex exec --json`. When a Codex probe or turn fails without a recognized code, keepgoing asks the Codex app-server for its structured rate-limit snapshot (`account/rateLimits/read`) instead. This needs a Codex CLI with `app-server`. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
 - On Windows, headless Claude Code and Codex turns run through a detached copy of the keepgoing binary instead of a shell wrapper. This is tested in a Windows 11 Arm VM; x64 Windows has not been checked.
 - Switching back to the primary after a handoff is manual by default. Turn on `switch_back` to return automatically once the primary's limit resets and it passes a probe.
-- A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account.
+- A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account. This selects the probe's account only; keepgoing cannot switch a BB thread's login.
 
 ## Contributing
 

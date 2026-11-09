@@ -101,7 +101,7 @@ func (c *Codex) Observe(ctx context.Context) (decide.Observation, error) {
 	// Codex's event stream reports a usage limit only as prose. Ask the
 	// app-server for the structured snapshot instead.
 	if obs.ErrorClass == decide.ErrUnknown {
-		if l, err := ReadCodexLimits(ctx, c.cfg.CLI); err == nil && l.Blocked {
+		if l, err := ReadCodexLimits(ctx, c.cfg.CLI, envList(c.cfg.Env)); err == nil && l.Blocked {
 			obs.ErrorClass, obs.ResetsAt = decide.ErrRateLimit, l.ResetsAt
 		}
 	}
@@ -149,7 +149,7 @@ func (c *Codex) Send(ctx context.Context, prompt string, mode adapter.Mode) erro
 	if st.Phase == Finished {
 		c.dir.SaveSession(ParseCodexEvents(st.Stdout).ThreadID)
 	}
-	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, nil)
+	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, envList(c.cfg.Env))
 }
 
 // Stop implements adapter.Adapter.

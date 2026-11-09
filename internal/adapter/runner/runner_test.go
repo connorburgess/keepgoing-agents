@@ -215,11 +215,11 @@ const fakeAppServer = `while IFS= read -r line; do
 done`
 
 func TestReadCodexLimitsSpeaksTheAppServerProtocol(t *testing.T) {
-	l, err := readCodexLimits(context.Background(), fakeCLI(t, fakeAppServer))
+	l, err := readCodexLimits(context.Background(), fakeCLI(t, fakeAppServer), nil)
 	if err != nil || !l.Blocked || l.ReachedType != "rate_limit_reached" || l.ResetsAt.Unix() != 1794393286 {
 		t.Fatalf("%+v %v", l, err)
 	}
-	if _, err := readCodexLimits(context.Background(), fakeCLI(t, "exit 1")); err == nil {
+	if _, err := readCodexLimits(context.Background(), fakeCLI(t, "exit 1"), nil); err == nil {
 		t.Error("a CLI without app-server must be an error, not a limit")
 	}
 }
@@ -240,15 +240,91 @@ func TestCodexTurnLimitClassifiedFromAppServerNotProse(t *testing.T) {
 	}
 	waitPhase(t, c.dir, Finished)
 	reset := time.Unix(1794393286, 0).UTC()
-	defer func(orig func(context.Context, string) (CodexLimits, error)) { ReadCodexLimits = orig }(ReadCodexLimits)
-	ReadCodexLimits = func(context.Context, string) (CodexLimits, error) {
+	defer func(orig func(context.Context, string, []string) (CodexLimits, error)) { ReadCodexLimits = orig }(ReadCodexLimits)
+	ReadCodexLimits = func(context.Context, string, []string) (CodexLimits, error) {
 		return CodexLimits{Blocked: true, ReachedType: "rate_limit_reached", ResetsAt: reset}, nil
 	}
 	if obs, _ := c.Observe(context.Background()); obs.ErrorClass != decide.ErrRateLimit || !obs.ResetsAt.Equal(reset) {
 		t.Errorf("blocked snapshot: %+v", obs)
 	}
-	ReadCodexLimits = func(context.Context, string) (CodexLimits, error) { return CodexLimits{}, nil }
+	ReadCodexLimits = func(context.Context, string, []string) (CodexLimits, error) { return CodexLimits{}, nil }
 	if obs, _ := c.Observe(context.Background()); obs.ErrorClass != decide.ErrUnknown {
 		t.Errorf("allowed snapshot must leave the prose failure unknown: %+v", obs)
+	}
+}
+
+func TestAccountEnvironmentOnFreshAndResumedTurns(t *testing.T) {
+	for _, kind := range []string{"claude", "codex"} {
+		t.Run(kind, func(t *testing.T) {
+			key := "CLAUDE_CONFIG_DIR"
+			output := claudeOK
+			if kind == "codex" {
+				key, output = "CODEX_HOME", codexOK
+			}
+			t.Setenv(key, "/fictional/default")
+			t.Setenv("KEEPGOING_TEST_INHERITED", "parent")
+			for _, account := range []string{"account-a", "account-b"} {
+				dir := t.TempDir()
+				accountPath := "/fictional/" + account + " with spaces"
+				cli := fakeCLI(t, `test "$`+key+`" = '`+accountPath+`' || exit 1
+ test "$KEEPGOING_TEST_INHERITED" = parent || exit 2
+ cat > /dev/null
+ printf '%s\n' "$@" > args
+ echo '`+output+`'`)
+				env := map[string]string{key: accountPath}
+				var a adapter.Adapter
+				target := filepath.Join(dir, "target")
+				if kind == "claude" {
+					a = NewClaude(config.Claude{CLI: cli, Workdir: dir, Env: env}, target)
+				} else {
+					a = NewCodex(config.Codex{CLI: cli, Workdir: dir, Env: env}, target)
+				}
+				for turn := 0; turn < 2; turn++ {
+					if err := a.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
+						t.Fatal(err)
+					}
+					st := waitPhase(t, Dir(target), Finished)
+					if st.ExitCode != 0 {
+						t.Fatalf("%s turn %d used wrong environment: exit %d", account, turn, st.ExitCode)
+					}
+					if obs, err := a.Observe(context.Background()); err != nil || obs.State != decide.Idle {
+						t.Fatalf("observation: %+v %v", obs, err)
+					}
+				}
+				args, err := os.ReadFile(filepath.Join(dir, "args"))
+				if err != nil || !strings.Contains(string(args), "resume") {
+					t.Fatalf("second turn did not resume: %s %v", args, err)
+				}
+				record, err := os.ReadFile(filepath.Join(target, "run.json"))
+				if err != nil || strings.Contains(string(record), accountPath) {
+					t.Fatalf("environment leaked into turn metadata: %s %v", record, err)
+				}
+			}
+			if os.Getenv(key) != "/fictional/default" {
+				t.Fatal("parent account changed")
+			}
+		})
+	}
+}
+
+func TestCodexLimitCheckUsesTurnAccount(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/fictional/default")
+	cli := fakeCLI(t, `test "$CODEX_HOME" = /fictional/account-b || exit 2
+if [ "$1" = app-server ]; then
+`+fakeAppServer+`
+else
+cat > /dev/null
+ echo '`+codexLimitProse+`'
+ exit 1
+fi`)
+	dir := t.TempDir()
+	c := NewCodex(config.Codex{CLI: cli, Workdir: dir, Env: map[string]string{"CODEX_HOME": "/fictional/account-b"}}, filepath.Join(dir, "target"))
+	if err := c.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, c.dir, Finished)
+	obs, err := c.Observe(context.Background())
+	if err != nil || obs.ErrorClass != decide.ErrRateLimit || obs.ResetsAt.IsZero() {
+		t.Fatalf("limit check used wrong account: %+v %v", obs, err)
 	}
 }
