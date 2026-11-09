@@ -35,3 +35,10 @@ func TestHandoffFileWins(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestSwitchBackBrief(t *testing.T) {
+	got, err := Brief(config.Loop{Name: "example-loop", Prompt: "Ship it."}, Facts{Loop: "example-loop", At: time.Date(2026, 11, 9, 3, 0, 0, 0, time.UTC), From: "codex-main", To: "primary", SwitchBack: true})
+	if err != nil || !strings.Contains(got, "limit has reset") || !strings.Contains(got, "from the fallback that covered for you (codex-main)") || strings.Contains(got, "error at") {
+		t.Errorf("%v\n%s", err, got)
+	}
+}

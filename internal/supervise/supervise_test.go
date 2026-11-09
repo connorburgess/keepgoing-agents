@@ -545,3 +545,88 @@ func TestGoneTargetAsksForAPerson(t *testing.T) {
 		t.Errorf("%+v reports=%s", res, w.reportTypes())
 	}
 }
+
+func switchBackWorld(t *testing.T) (*world, *fakeAdapter, *fakeAdapter) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.SwitchBack = config.SwitchBack{Enabled: true, MinAfter: config.Duration{Duration: time.Hour}, RetryEvery: config.Duration{Duration: 30 * time.Minute}}
+	w.cfg.Loop.Probe = config.Probe{Kind: "command", Command: []string{"x"}}
+	obs := limited
+	obs.ResetsAt = t0.Add(2 * time.Hour)
+	p := w.primary(obs)
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	if res := runTick(t, w, t0); res.Target != "claude-other" {
+		t.Fatalf("setup handoff: %+v", res)
+	}
+	fb := w.adapters["claude-other"]
+	fb.obs = decide.Observation{State: decide.Idle}
+	return w, p, fb
+}
+
+func TestSwitchBackAfterThePrimaryResets(t *testing.T) {
+	w, p, fb := switchBackWorld(t)
+	// Before the reset: the fallback keeps working.
+	if res := runTick(t, w, t0.Add(time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
+		t.Fatalf("before reset: %+v", res)
+	}
+	// After the reset, between turns: confirm the primary and move back.
+	w.probeOK["primary"] = true
+	p.obs = decide.Observation{State: decide.Idle}
+	res := runTick(t, w, t0.Add(2*time.Hour+time.Minute))
+	if res.Action != "switch_back" || res.Target != state.Primary {
+		t.Fatalf("switch back: %+v", res)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "limit has reset") {
+		t.Errorf("primary brief = %v", p.sent)
+	}
+	if !strings.Contains(w.reportTypes(), "switch_back") {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+	st, _ := state.Load(w.dir)
+	if st.Target() != state.Primary || !st.PrimaryResetsAt.IsZero() {
+		t.Errorf("state = %+v", st)
+	}
+	_ = fb
+}
+
+func TestSwitchBackWaitsWhilePrimaryFailsAndNeverInterruptsATurn(t *testing.T) {
+	w, p, fb := switchBackWorld(t)
+	after := t0.Add(2*time.Hour + time.Minute)
+	// The primary fails its probe: wake the fallback instead.
+	res := runTick(t, w, after)
+	if res.Action != "wake" || res.Target != "claude-other" || !strings.Contains(res.Reason, "primary failed its probe") {
+		t.Fatalf("failed probe: %+v", res)
+	}
+	// Not retried before retry_every.
+	runTick(t, w, after.Add(10*time.Minute))
+	if n := strings.Count(strings.Join(w.probes, ","), "primary:exact"); n != 1 {
+		t.Errorf("primary probed %d times before retry_every", n)
+	}
+	// Mid-turn on the fallback: no switch even though the primary is ready.
+	w.probeOK["primary"] = true
+	fb.obs = decide.Observation{State: decide.Active}
+	if res := runTick(t, w, after.Add(40*time.Minute)); res.Action != "none" || res.Target != "claude-other" {
+		t.Fatalf("mid-turn: %+v", res)
+	}
+	// The fallback's turn ends: switch back.
+	fb.obs = decide.Observation{State: decide.Idle}
+	if res := runTick(t, w, after.Add(45*time.Minute)); res.Action != "switch_back" {
+		t.Fatalf("after turn: %+v", res)
+	}
+	if len(p.sent) != 1 {
+		t.Errorf("primary sent = %v", p.sent)
+	}
+}
+
+func TestSwitchBackOffByDefault(t *testing.T) {
+	w, _, _ := switchBackWorld(t)
+	w.cfg.Loop.SwitchBack.Enabled = false
+	w.probeOK["primary"] = true
+	if res := runTick(t, w, t0.Add(5*time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
+		t.Fatalf("%+v", res)
+	}
+}

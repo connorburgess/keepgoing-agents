@@ -288,6 +288,7 @@ func (t *tick) run() error {
 		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
+		SwitchBackReady: t.switchBackReady(target),
 	}
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
@@ -296,8 +297,23 @@ func (t *tick) run() error {
 	res.Action, res.Reason = string(d.Action), d.Reason
 
 	var actErr error
-	if d.Action == decide.Handoff {
+	if d.Action == decide.SwitchBack {
+		if t.opts.DryRun {
+			res.Handoff = &HandoffNote{From: target, To: state.Primary, Reason: "switch_back", DryRun: true}
+		} else if moved, err := t.switchBack(target); err != nil {
+			actErr = err
+		} else if !moved {
+			// The primary is not ready yet: keep the fallback working.
+			in.SwitchBackReady = false
+			d = decide.Decide(in)
+			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
+			actErr = t.act(a, d)
+		}
+	} else if d.Action == decide.Handoff {
 		moved, err := t.handoff(target, agent, obs.ErrorClass, summary)
+		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
+			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
+		}
 		if err != nil {
 			actErr = err
 		} else if !moved && !t.opts.DryRun {
@@ -421,6 +437,71 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		return true, nil
 	}
 	return false, nil
+}
+
+// switchBackReady reports whether the loop may try to return to its primary:
+// switch-back is on, a fallback is active, the primary's reported reset time
+// (or min_after since the handoff, when none was reported) has passed, and
+// the last failed attempt is at least retry_every ago.
+func (t *tick) switchBackReady(target string) bool {
+	sb := t.loop.SwitchBack
+	if !sb.Enabled || target == state.Primary || t.st.LastHandoffAt.IsZero() {
+		return false
+	}
+	earliest := t.st.LastHandoffAt.Add(sb.MinAfter.Duration)
+	if !t.st.PrimaryResetsAt.IsZero() {
+		earliest = t.st.PrimaryResetsAt
+	}
+	if t.now.Before(earliest) {
+		return false
+	}
+	return t.st.LastSwitchBackTry.IsZero() || t.now.Sub(t.st.LastSwitchBackTry) >= sb.RetryEvery.Duration
+}
+
+// switchBack confirms the primary with an exact probe, then activates it and
+// sends it a brief. It returns false when the primary is not ready.
+func (t *tick) switchBack(from string) (bool, error) {
+	t.st.LastSwitchBackTry = t.now
+	c := t.loop.PrimaryCandidate()
+	timeout := config.DefaultProbeTimeout
+	if t.fb != nil {
+		timeout = t.fb.Probe.Timeout.Duration
+	}
+	r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+	r.At, r.Tier = t.now, probe.Exact
+	if t.reg != nil {
+		t.reg.Record(state.Primary, r)
+	}
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: state.Primary, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	if !r.OK {
+		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
+		return false, nil
+	}
+	brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
+	if err != nil {
+		return false, fmt.Errorf("switch-back brief: %w", err)
+	}
+	pa, err := t.opts.NewAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
+	if err != nil {
+		return false, err
+	}
+	if act, ok := pa.(adapter.Activator); ok {
+		if err := act.Activate(t.ctx); err != nil {
+			t.warn("switch-back: activate primary: %v", err)
+			return false, nil
+		}
+	}
+	if err := pa.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
+		t.warn("switch-back: send to primary: %v", err)
+		return false, nil
+	}
+	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
+	t.res.Target = state.Primary
+	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
+	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
+	t.st.Reprompts, t.st.LastRepromptAt, t.st.Nudges = 0, time.Time{}, 0
+	t.report("switch_back", fmt.Sprintf("%s: switched back from %s to the primary", t.loop.Name, from), map[string]any{"from": from, "to": state.Primary})
+	return true, nil
 }
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
