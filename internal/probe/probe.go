@@ -46,7 +46,14 @@ type Result struct {
 	ErrorClass          string     `json:"errorClass,omitempty"`
 	Detail              string     `json:"detail,omitempty"` // a short code, never model output
 	CredentialExpiresAt *time.Time `json:"credentialExpiresAt,omitempty"`
+	// Raw is the probe's stdout, capped. It is never part of health.json and
+	// never read for a decision; KeepFailure saves it so unrecognised error
+	// shapes can be mapped later.
+	Raw []byte `json:"-"`
 }
+
+// rawCap bounds the stdout a result carries.
+const rawCap = 64 << 10
 
 // Run probes one candidate. exact selects the target model over the cheap
 // probe model.
@@ -89,6 +96,10 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	}
 	start := time.Now()
 	stdout, code, err := run(ctx, argv, workdir, env)
+	res.Raw = stdout
+	if len(res.Raw) > rawCap {
+		res.Raw = res.Raw[:rawCap]
+	}
 	res.LatencyMs = time.Since(start).Milliseconds()
 	res.ExitCode = code
 	switch {

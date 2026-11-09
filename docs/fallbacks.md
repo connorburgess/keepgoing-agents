@@ -45,13 +45,22 @@ Other probe settings:
 
 A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
+Probe cost depends on the CLI:
+
+- A Claude Code probe on a small model costs a fraction of a cent.
+- A Codex probe sends Codex's own system prompt. One real run used about 21,000 input tokens, most of them cached.
+
+Set `probe.every` and `probe.daily_cap` with that in mind.
+
 There are three tiers:
 
 - **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. A passing probe of any tier also resets the interval. A failed manual or exact probe does not, so the scheduled re-check still runs. A failed scheduled probe sends a `probe_failed` report. They use `probe.model` when set, so a cheap model can confirm the path for almost nothing. `scheduled_disabled: true` turns them off.
 - **Exact probes** run right before a handoff, against the candidate's real target model. A candidate that fails is skipped and the next one is tried.
 - **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it. It holds the tick lock while it runs, and it ignores pause and the time window. Naming a disabled candidate with `--id` probes it anyway.
 
-Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored. A candidate is healthy while its last probe passed within `probe.ttl`.
+Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there.
+
+A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
 
 ## Defaults
 
@@ -93,8 +102,33 @@ A handoff happens only when all of these hold:
 
 The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows.
 
-Returning to the primary is manual:
+## Switching back
+
+By default, returning to the primary is manual:
 
 ```sh
 keepgoing retarget primary
 ```
+
+To return automatically, turn on switch-back in `keepgoing.yaml`:
+
+```yaml
+loop:
+  provider: claude-code       # lets the primary be probed like a claude-code candidate
+  switch_back:
+    enabled: true
+    min_after: 1h             # when the provider reported no reset time
+    retry_every: 30m          # after the primary fails its probe
+  probe: {model: claude-haiku-5-5}   # optional; the switch-back probe uses the primary's own model
+```
+
+Switch-back only happens when all of these hold:
+
+1. A fallback is active and has just finished a turn, so the fallback is never interrupted mid-turn.
+2. The primary's limit has had time to lift. That means the reset time the provider reported at the handoff, or `min_after` since the handoff when none was reported.
+3. The last failed attempt was at least `retry_every` ago.
+4. The primary passes an exact probe right now.
+
+The primary then gets a short brief saying its limit has reset and the loop is back with it, and a `switch_back` report is sent. If the probe fails, the fallback keeps working and switch-back tries again later.
+
+`loop.probe` takes the same fields as a candidate's `probe`. Its kind defaults from `loop.provider`. Switch-back needs `loop.fallbacks`, and it needs a way to probe the primary.

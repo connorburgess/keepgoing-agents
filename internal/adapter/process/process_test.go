@@ -40,6 +40,13 @@ func TestObserveJSON(t *testing.T) {
 	}
 }
 
+func TestObserveAwaitingInput(t *testing.T) {
+	a := New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"idle","awaitingInput":true}'`, `echo {"state":"idle","awaitingInput":true}`)}})
+	if obs, err := a.Observe(context.Background()); err != nil || !obs.AwaitingInput {
+		t.Errorf("%+v %v", obs, err)
+	}
+}
+
 func TestObserveExitCodeMap(t *testing.T) {
 	a := New(config.Process{StatusCommand: []string{script(t, `echo "quota exhausted" >&2; exit 75`, "echo quota exhausted 1>&2\r\nexit /b 75")}, ExitCodes: map[int]string{75: "rate_limit"}})
 	obs, err := a.Observe(context.Background())

@@ -192,6 +192,40 @@ func TestStallNudges(t *testing.T) {
 	}
 }
 
+func TestStalledSessionEscalatesAfterMaxNudges(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Progress.Repositories = []string{"/fictional/repo"}
+	w.cfg.Loop.Progress.MaxNudges = 2
+	fp := "a"
+	p := w.primary(decide.Observation{State: decide.Active})
+	run := func(at time.Duration) Result {
+		o := w.opts(t0.Add(at))
+		o.Fingerprint = func([]string) (string, error) { return fp, nil }
+		res, _ := Tick(context.Background(), w.cfg, o)
+		return res
+	}
+	run(0)
+	want := []struct {
+		at     time.Duration
+		action string
+	}{{31 * time.Minute, "nudge"}, {95 * time.Minute, "nudge"}, {160 * time.Minute, "await_user"}}
+	for _, s := range want {
+		if res := run(s.at); res.Action != s.action {
+			t.Fatalf("at %v: %+v", s.at, res)
+		}
+	}
+	if len(p.sent) != 2 || !strings.HasSuffix(w.reportTypes(), "await_user") {
+		t.Errorf("sent=%d reports=%s", len(p.sent), w.reportTypes())
+	}
+	// Progress resets the count: after resume, nudging starts again.
+	control.Update(w.dir, func(f *control.File) { f.AwaitingUser = false })
+	fp = "b"
+	run(170 * time.Minute)
+	if res := run(205 * time.Minute); res.Action != "nudge" {
+		t.Fatalf("after progress: %+v", res)
+	}
+}
+
 func TestErrorRepromptsThenAwaitsUser(t *testing.T) {
 	w := newWorld(t, true, false)
 	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
@@ -480,10 +514,119 @@ func TestNoScheduledProbesOutsideWindow(t *testing.T) {
 	}
 }
 
+func TestPendingInteractionIsLeftAloneAndReportedOnce(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle, AwaitingInput: true})
+	for i := 0; i < 3; i++ {
+		if res := runTick(t, w, t0.Add(time.Duration(i)*time.Hour)); res.Action != "none" {
+			t.Fatalf("tick %d: %+v", i, res)
+		}
+	}
+	if len(p.sent) != 0 || w.reportTypes() != "await_user" {
+		t.Errorf("sent=%v reports=%s", p.sent, w.reportTypes())
+	}
+	// Answered: the next idle tick wakes the session again, and a later
+	// pending interaction is reported again.
+	p.obs = decide.Observation{State: decide.Idle}
+	if res := runTick(t, w, t0.Add(4*time.Hour)); res.Action != "wake" {
+		t.Fatalf("after answer: %+v", res)
+	}
+	p.obs.AwaitingInput = true
+	runTick(t, w, t0.Add(5*time.Hour))
+	if w.reportTypes() != "await_user,wake,await_user" {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+}
+
 func TestGoneTargetAsksForAPerson(t *testing.T) {
 	w := newWorld(t, true, false)
 	w.primary(decide.Observation{State: decide.Unknown, Gone: true})
 	if res := runTick(t, w, t0); res.Action != "await_user" || !strings.Contains(w.reportTypes(), "await_user") {
 		t.Errorf("%+v reports=%s", res, w.reportTypes())
+	}
+}
+
+func switchBackWorld(t *testing.T) (*world, *fakeAdapter, *fakeAdapter) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.SwitchBack = config.SwitchBack{Enabled: true, MinAfter: config.Duration{Duration: time.Hour}, RetryEvery: config.Duration{Duration: 30 * time.Minute}}
+	w.cfg.Loop.Probe = config.Probe{Kind: "command", Command: []string{"x"}}
+	obs := limited
+	obs.ResetsAt = t0.Add(2 * time.Hour)
+	p := w.primary(obs)
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	if res := runTick(t, w, t0); res.Target != "claude-other" {
+		t.Fatalf("setup handoff: %+v", res)
+	}
+	fb := w.adapters["claude-other"]
+	fb.obs = decide.Observation{State: decide.Idle}
+	return w, p, fb
+}
+
+func TestSwitchBackAfterThePrimaryResets(t *testing.T) {
+	w, p, fb := switchBackWorld(t)
+	// Before the reset: the fallback keeps working.
+	if res := runTick(t, w, t0.Add(time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
+		t.Fatalf("before reset: %+v", res)
+	}
+	// After the reset, between turns: confirm the primary and move back.
+	w.probeOK["primary"] = true
+	p.obs = decide.Observation{State: decide.Idle}
+	res := runTick(t, w, t0.Add(2*time.Hour+time.Minute))
+	if res.Action != "switch_back" || res.Target != state.Primary {
+		t.Fatalf("switch back: %+v", res)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "limit has reset") {
+		t.Errorf("primary brief = %v", p.sent)
+	}
+	if !strings.Contains(w.reportTypes(), "switch_back") {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+	st, _ := state.Load(w.dir)
+	if st.Target() != state.Primary || !st.PrimaryResetsAt.IsZero() {
+		t.Errorf("state = %+v", st)
+	}
+	_ = fb
+}
+
+func TestSwitchBackWaitsWhilePrimaryFailsAndNeverInterruptsATurn(t *testing.T) {
+	w, p, fb := switchBackWorld(t)
+	after := t0.Add(2*time.Hour + time.Minute)
+	// The primary fails its probe: wake the fallback instead.
+	res := runTick(t, w, after)
+	if res.Action != "wake" || res.Target != "claude-other" || !strings.Contains(res.Reason, "primary failed its probe") {
+		t.Fatalf("failed probe: %+v", res)
+	}
+	// Not retried before retry_every.
+	runTick(t, w, after.Add(10*time.Minute))
+	if n := strings.Count(strings.Join(w.probes, ","), "primary:exact"); n != 1 {
+		t.Errorf("primary probed %d times before retry_every", n)
+	}
+	// Mid-turn on the fallback: no switch even though the primary is ready.
+	w.probeOK["primary"] = true
+	fb.obs = decide.Observation{State: decide.Active}
+	if res := runTick(t, w, after.Add(40*time.Minute)); res.Action != "none" || res.Target != "claude-other" {
+		t.Fatalf("mid-turn: %+v", res)
+	}
+	// The fallback's turn ends: switch back.
+	fb.obs = decide.Observation{State: decide.Idle}
+	if res := runTick(t, w, after.Add(45*time.Minute)); res.Action != "switch_back" {
+		t.Fatalf("after turn: %+v", res)
+	}
+	if len(p.sent) != 1 {
+		t.Errorf("primary sent = %v", p.sent)
+	}
+}
+
+func TestSwitchBackOffByDefault(t *testing.T) {
+	w, _, _ := switchBackWorld(t)
+	w.cfg.Loop.SwitchBack.Enabled = false
+	w.probeOK["primary"] = true
+	if res := runTick(t, w, t0.Add(5*time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
+		t.Fatalf("%+v", res)
 	}
 }

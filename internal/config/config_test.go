@@ -142,3 +142,18 @@ func TestWindowStartEqualsEndIsRejected(t *testing.T) {
 		t.Error("equal start and end should be rejected")
 	}
 }
+
+func TestSwitchBackValidation(t *testing.T) {
+	on := valid + "  switch_back: {enabled: true}\n"
+	if _, err := Parse([]byte(on)); err == nil {
+		t.Error("switch-back without a probe or fallbacks should be rejected")
+	}
+	ok := strings.Replace(valid, "  adapter: bb\n", "  adapter: bb\n  provider: claude-code\n", 1) + "  fallbacks: fallbacks.yaml\n  switch_back: {enabled: true}\n"
+	cfg, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loop.Probe.Kind != "claude" || cfg.Loop.SwitchBack.MinAfter.Duration != time.Hour || cfg.Loop.SwitchBack.RetryEvery.Duration != 30*time.Minute {
+		t.Errorf("defaults: %+v %+v", cfg.Loop.Probe, cfg.Loop.SwitchBack)
+	}
+}

@@ -60,6 +60,22 @@ type Loop struct {
 	Report    *Report    `yaml:"report,omitempty"`
 	Yield     *Yield     `yaml:"yield,omitempty"`
 	Daemon    Daemon     `yaml:"daemon"`
+
+	// SwitchBack returns the loop to its primary after a handoff, once the
+	// primary's limit has reset and an exact probe of it passes. Off by default.
+	SwitchBack SwitchBack `yaml:"switch_back"`
+	// Probe says how to confirm the primary works; used by switch-back.
+	Probe Probe `yaml:"probe"`
+}
+
+// SwitchBack controls the automatic return to the primary.
+type SwitchBack struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+	// MinAfter is the earliest a switch-back is tried after a handoff when the
+	// provider reported no reset time.
+	MinAfter Duration `yaml:"min_after,omitempty"`
+	// RetryEvery spaces out attempts after a failed probe of the primary.
+	RetryEvery Duration `yaml:"retry_every,omitempty"`
 }
 
 // Progress controls stall detection.
@@ -67,6 +83,9 @@ type Progress struct {
 	Repositories    []string `yaml:"repositories,omitempty"`
 	StallAfter      Duration `yaml:"stall_after,omitempty"`
 	MinWakeInterval Duration `yaml:"min_wake_interval,omitempty"`
+	// MaxNudges is how many nudges a stalled session gets before the loop
+	// asks a person. Progress resets the count.
+	MaxNudges int `yaml:"max_nudges,omitempty"`
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -115,6 +134,7 @@ const (
 	DefaultStallAfter        = 30 * time.Minute
 	DefaultMinWakeInterval   = 60 * time.Minute
 	DefaultMaxReprompts      = 3
+	DefaultMaxNudges         = 3
 	DefaultBackoff           = 10 * time.Minute
 	DefaultWaitIfResetWithin = 30 * time.Minute
 	DefaultProcessTimeout    = 20 * time.Second
@@ -123,13 +143,15 @@ const (
 	DefaultControlPoll       = 2 * time.Second
 	DefaultReportTimeout     = 20 * time.Second
 	DefaultYieldTimeout      = 10 * time.Second
+	DefaultSwitchBackAfter   = time.Hour
+	DefaultSwitchBackRetry   = 30 * time.Minute
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed", "switch_back", "test"}
 
 // DefaultReportEvents are sent when report.events is empty.
-var DefaultReportEvents = []string{"handoff", "degraded", "recovered", "await_user", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -166,6 +188,11 @@ func Load(path string) (*Config, error) {
 		l.Progress.Repositories[i] = resolve(base, r)
 	}
 	l.Agent.resolvePaths(base)
+	l.Probe.CLI = resolveExec(base, l.Probe.CLI)
+	resolveArgv(base, l.Probe.Command)
+	if l.Probe.Workdir != "" {
+		l.Probe.Workdir = resolve(base, l.Probe.Workdir)
+	}
 	if l.Yield != nil {
 		resolveArgv(base, l.Yield.BusyCommand)
 	}
@@ -202,6 +229,9 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.Progress.StallAfter, DefaultStallAfter)
 	setDur(&l.Progress.MinWakeInterval, DefaultMinWakeInterval)
+	if l.Progress.MaxNudges == 0 {
+		l.Progress.MaxNudges = DefaultMaxNudges
+	}
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
@@ -209,6 +239,16 @@ func (c *Config) applyDefaults() {
 	setDur(&l.Errors.WaitIfResetWithin, DefaultWaitIfResetWithin)
 	if l.Errors.FailoverOn == nil {
 		l.Errors.FailoverOn = []string{"rate_limit"}
+	}
+	setDur(&l.SwitchBack.MinAfter, DefaultSwitchBackAfter)
+	setDur(&l.SwitchBack.RetryEvery, DefaultSwitchBackRetry)
+	if l.Probe.Kind == "" {
+		switch l.Provider {
+		case "claude-code":
+			l.Probe.Kind = "claude"
+		case "codex":
+			l.Probe.Kind = "codex"
+		}
 	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
@@ -271,6 +311,9 @@ func (c *Config) Validate() error {
 	if l.Progress.MinWakeInterval.Duration < time.Minute {
 		add("loop.progress.min_wake_interval must be at least 1m")
 	}
+	if l.Progress.MaxNudges < 1 {
+		add("loop.progress.max_nudges must be at least 1")
+	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
 	}
@@ -314,6 +357,22 @@ func (c *Config) Validate() error {
 			if e != "all" && !contains(ReportEvents, e) {
 				add("loop.report.events: unknown event %q", e)
 			}
+		}
+	}
+	if l.SwitchBack.Enabled {
+		switch l.Probe.Kind {
+		case "claude", "codex":
+		case "command":
+			if len(l.Probe.Command) == 0 {
+				add("loop.probe.command is required for a command probe")
+			}
+		case "":
+			add("loop.switch_back needs a way to probe the primary: set loop.provider to claude-code or codex, or set loop.probe")
+		default:
+			add("loop.probe.kind must be claude, codex, or command")
+		}
+		if l.Fallbacks == "" {
+			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
 		}
 	}
 	if y := l.Yield; y != nil && len(y.BusyCommand) == 0 {

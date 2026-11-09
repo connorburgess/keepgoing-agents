@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -140,6 +141,32 @@ type statusOut struct {
 	Redundancy   *health.Summary `json:"redundancy,omitempty"`
 	StateDir     string          `json:"stateDir"`
 	Version      string          `json:"version"`
+	// Structured identities for tools that match a loop to a session, such
+	// as an agent workspace showing keepgoing's state beside a thread.
+	PrimaryAgent agentRef `json:"primaryAgent"`
+	TargetAgent  agentRef `json:"targetAgent"`
+}
+
+// agentRef identifies the session an agent definition points at.
+type agentRef struct {
+	Adapter  string `json:"adapter"`
+	Provider string `json:"provider,omitempty"`
+	BBThread string `json:"bbThread,omitempty"`
+	Workdir  string `json:"workdir,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+func refOf(a config.Agent) agentRef {
+	r := agentRef{Adapter: a.Adapter, Provider: a.Provider, Model: a.Model()}
+	switch {
+	case a.BB != nil:
+		r.BBThread = a.BB.Thread
+	case a.Claude != nil:
+		r.Workdir = a.Claude.Workdir
+	case a.Codex != nil:
+		r.Workdir = a.Codex.Workdir
+	}
+	return r
 }
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
@@ -160,6 +187,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	out.PrimaryAgent, out.TargetAgent = refOf(l.Agent), refOf(l.Agent)
+	if c, ok := cfg.FallbackSet.Find(st.Target()); ok {
+		out.TargetAgent = refOf(c.Agent)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
 		if err == nil {
@@ -242,6 +273,15 @@ func controlCmd(e env, cfg *config.Config, cmd, note string) int {
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
 		return exitFailed
+	}
+	if cmd == "await-user" {
+		text := cfg.Loop.Name + ": needs a person"
+		if f.Note != "" {
+			text += ": " + f.Note
+		}
+		if err := reporter(e, cfg).Report(e.ctx, report.Event{Type: "await_user", Loop: cfg.Loop.Name, Text: text, At: time.Now(), Data: map[string]any{"note": f.Note}}); err != nil {
+			e.errf("warning: report not delivered: %v", err)
+		}
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
 	return exitOK

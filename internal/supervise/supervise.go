@@ -206,6 +206,12 @@ func (t *tick) run() error {
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
 	}
+	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun {
+		t.st.AwaitingReported = true
+		t.report("await_user", fmt.Sprintf("%s: %s is waiting on a person (pending interaction)", loop.Name, target), map[string]any{"target": target, "pendingInteraction": true})
+	} else if !obs.AwaitingInput {
+		t.st.AwaitingReported = false
+	}
 	if !obs.ResetsAt.IsZero() {
 		r := obs.ResetsAt.UTC()
 		res.ResetsAt = &r
@@ -246,6 +252,7 @@ func (t *tick) run() error {
 		}
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
 			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
+			t.st.Nudges = 0
 		}
 		unchangedFor = t.now.Sub(t.st.LastProgressAt)
 		res.UnchangedFor = unchangedFor.Truncate(time.Second).String()
@@ -261,6 +268,9 @@ func (t *tick) run() error {
 	if obs.State == decide.Active || obs.State == decide.Idle {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 	}
+	if obs.State != decide.Active {
+		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -274,9 +284,11 @@ func (t *tick) run() error {
 		Obs: obs, Control: gate, InWindow: inWindow,
 		UnchangedFor: unchangedFor, SinceWake: sinceWake,
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
-		Failover:  failover,
+		Failover: failover,
+		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
+		SwitchBackReady: t.switchBackReady(target),
 	}
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
@@ -285,8 +297,23 @@ func (t *tick) run() error {
 	res.Action, res.Reason = string(d.Action), d.Reason
 
 	var actErr error
-	if d.Action == decide.Handoff {
+	if d.Action == decide.SwitchBack {
+		if t.opts.DryRun {
+			res.Handoff = &HandoffNote{From: target, To: state.Primary, Reason: "switch_back", DryRun: true}
+		} else if moved, err := t.switchBack(target); err != nil {
+			actErr = err
+		} else if !moved {
+			// The primary is not ready yet: keep the fallback working.
+			in.SwitchBackReady = false
+			d = decide.Decide(in)
+			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
+			actErr = t.act(a, d)
+		}
+	} else if d.Action == decide.Handoff {
 		moved, err := t.handoff(target, agent, obs.ErrorClass, summary)
+		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
+			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
+		}
 		if err != nil {
 			actErr = err
 		} else if !moved && !t.opts.DryRun {
@@ -354,6 +381,7 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Scheduled
 		t.reg.Record(c.ID, r)
+		t.keepFailure(c.ID, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
 		if !r.OK {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
@@ -381,6 +409,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		r := t.opts.Probe(t.ctx, c, probe.Exact, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
+		t.keepFailure(id, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
 		note.Tried = append(note.Tried, id)
 		if !r.OK {
@@ -412,6 +441,80 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 	return false, nil
 }
 
+// switchBackReady reports whether the loop may try to return to its primary:
+// switch-back is on, a fallback is active, the primary's reported reset time
+// (or min_after since the handoff, when none was reported) has passed, and
+// the last failed attempt is at least retry_every ago.
+func (t *tick) switchBackReady(target string) bool {
+	sb := t.loop.SwitchBack
+	if !sb.Enabled || target == state.Primary || t.st.LastHandoffAt.IsZero() {
+		return false
+	}
+	earliest := t.st.LastHandoffAt.Add(sb.MinAfter.Duration)
+	if !t.st.PrimaryResetsAt.IsZero() {
+		earliest = t.st.PrimaryResetsAt
+	}
+	if t.now.Before(earliest) {
+		return false
+	}
+	return t.st.LastSwitchBackTry.IsZero() || t.now.Sub(t.st.LastSwitchBackTry) >= sb.RetryEvery.Duration
+}
+
+// switchBack confirms the primary with an exact probe, then activates it and
+// sends it a brief. It returns false when the primary is not ready.
+func (t *tick) switchBack(from string) (bool, error) {
+	t.st.LastSwitchBackTry = t.now
+	c := t.loop.PrimaryCandidate()
+	timeout := config.DefaultProbeTimeout
+	if t.fb != nil {
+		timeout = t.fb.Probe.Timeout.Duration
+	}
+	r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+	r.At, r.Tier = t.now, probe.Exact
+	if t.reg != nil {
+		t.reg.Record(state.Primary, r)
+	}
+	t.keepFailure(state.Primary, r)
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: state.Primary, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	if !r.OK {
+		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
+		return false, nil
+	}
+	brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
+	if err != nil {
+		return false, fmt.Errorf("switch-back brief: %w", err)
+	}
+	pa, err := t.opts.NewAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
+	if err != nil {
+		return false, err
+	}
+	if act, ok := pa.(adapter.Activator); ok {
+		if err := act.Activate(t.ctx); err != nil {
+			t.warn("switch-back: activate primary: %v", err)
+			return false, nil
+		}
+	}
+	if err := pa.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
+		t.warn("switch-back: send to primary: %v", err)
+		return false, nil
+	}
+	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
+	t.res.Target = state.Primary
+	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
+	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
+	t.st.Reprompts, t.st.LastRepromptAt, t.st.Nudges = 0, time.Time{}, 0
+	t.report("switch_back", fmt.Sprintf("%s: switched back from %s to the primary", t.loop.Name, from), map[string]any{"from": from, "to": state.Primary})
+	return true, nil
+}
+
+// keepFailure saves a failed probe's raw output for later mapping. Losing
+// it is only a warning.
+func (t *tick) keepFailure(id string, r probe.Result) {
+	if err := probe.KeepFailure(t.loop.StateDir, id, r); err != nil {
+		t.warn("could not keep failed probe output for %s: %v", id, err)
+	}
+}
+
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
 	switch d.Action {
@@ -433,6 +536,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			return err
 		}
 		t.st.LastWakeAt = t.now
+		if d.Action == decide.Nudge {
+			t.st.Nudges++
+		}
 		if d.Action == decide.Reprompt {
 			t.st.Reprompts++
 			t.st.LastRepromptAt = t.now

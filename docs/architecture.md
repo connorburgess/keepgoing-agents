@@ -54,7 +54,7 @@ internal/ciwait             wait for CI on an exact commit
 
 An adapter implements `Name`, `Observe`, `Send`, and `Stop`. It may also implement `Activate`, which runs before the first message after a handoff. The BB adapter uses it to switch the thread's model.
 
-- **bb** reads `bb thread show --json` and the newest log events. It classifies errors from `provider/error` events, using their category, HTTP status, and provider code, and from `system/error` codes. Only errors after the latest turn started count. A `willRetry` flag means BB is already retrying, so keepgoing waits. A blocked `provider/rateLimits/updated` window with a future reset marks the thread rate limited and supplies the reset time.
+- **bb** reads `bb thread show --json` and the thread's new log events. bb returns events oldest first, so the adapter keeps a cursor in `targets/<id>/bb-cursor.json`. On the first tick it pages through the whole log once. After that it reads only events newer than the last one it saw, folding them into a running summary: the latest turn start, the latest error since then, the latest rate-limit window, and pending interactions. It classifies errors from `provider/error` events, using their category, HTTP status, and provider code, and from `system/error` codes. Only errors after the latest turn started count. A `willRetry` flag means BB is already retrying, so keepgoing waits. A blocked `provider/rateLimits/updated` window with a future reset marks the thread rate limited and supplies the reset time.
 - **process** runs a status command that prints a small JSON object. A non-zero exit maps through `exit_codes`.
 - **claude** and **codex** start one headless turn per send as a detached process. The process writes its stdout and exit code into the target's directory, so a short-lived tick never waits for a turn. The next tick reads the result: the `is_error`, `subtype`, and `api_error_status` fields for Claude Code, and the event types for Codex. Each new turn resumes the saved session.
 
@@ -67,6 +67,7 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, note |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target |
 | `health.json` | the tool | probe evidence per candidate |
+| `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `tick.lock`, `daemon.lock` | the tool | advisory locks, released by the OS on exit |
-| `targets/<id>/` | the tool | headless turn files: `run.json`, prompt, stdout, stderr, exit code, session id |
+| `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |

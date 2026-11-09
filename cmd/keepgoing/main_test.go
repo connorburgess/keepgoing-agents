@@ -23,13 +23,15 @@ import (
 )
 
 // fakeBB emulates the bb CLI over files in $FAKE_BB: <thread>.show and
-// <thread>.log are returned as-is; tell, update, and stop are recorded.
+// <thread>.log are returned as-is (log fixtures carry seq numbers, as bb's
+// events do); tell, update, and stop are recorded.
 const fakeBB = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
 case "$1 $2" in
 "thread show") if [ -f "$d/$t.show" ]; then cat "$d/$t.show"; else echo '{"thread":{"status":"idle"}}'; fi ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
+"thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
 *) echo '{"ok":true}' ;;
 esac
@@ -188,9 +190,9 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	// Primary hits a structured rate limit with a far reset.
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0o600)
 	reset := time.Now().Add(4 * time.Hour).UnixMilli()
-	write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"type":"turn/started","data":{}},
-{"type":"provider/error","data":{"message":"Usage limit reached","willRetry":false,"errorInfo":{"category":"rate-limit","httpStatusCode":429,"providerCode":"rate_limit_event"}}},
-{"type":"provider/rateLimits/updated","data":{"rateLimits":{"status":"blocked","windows":[{"status":"blocked","resetsAtMs":%d}]}}}]`, reset), 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"seq":1,"type":"turn/started","data":{}},
+{"seq":2,"type":"provider/error","data":{"message":"Usage limit reached","willRetry":false,"errorInfo":{"category":"rate-limit","httpStatusCode":429,"providerCode":"rate_limit_event"}}},
+{"seq":3,"type":"provider/rateLimits/updated","data":{"rateLimits":{"status":"blocked","windows":[{"status":"blocked","resetsAtMs":%d}]}}}]`, reset), 0o600)
 	v = f.tick()
 	if v["action"] != "handoff" || v["target"] != "claude-other-account" {
 		t.Fatalf("handoff: %v", v)
@@ -207,6 +209,19 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	}
 	if f.hooks.types() != "keepgoing.handoff" {
 		t.Errorf("webhooks = %s", f.hooks.types())
+	}
+
+	// Status JSON names the sessions structurally, for tools that match loops to threads.
+	_, js, _ := f.run("status", "--json")
+	var st struct {
+		PrimaryAgent struct{ BBThread string } `json:"primaryAgent"`
+		TargetAgent  struct {
+			BBThread string
+			Model    string
+		} `json:"targetAgent"`
+	}
+	if err := json.Unmarshal([]byte(js), &st); err != nil || st.PrimaryAgent.BBThread != "thr_primary" || st.TargetAgent.BBThread != "thr_alt" || st.TargetAgent.Model != "claude-fable-5-1" {
+		t.Errorf("status json agents: %+v %v", st, err)
 	}
 
 	// Status and fallbacks list reflect the move.
@@ -240,12 +255,41 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	}
 }
 
+func TestEndToEndAgentWaitingOnAPerson(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	// The agent asked the person something: an idle thread with a pending interaction.
+	write(t, filepath.Join(f.bbDir, "thr_primary.interactions"), `[{"id":"pint_example1","status":"pending"}]`, 0o600)
+	if v := f.tick(); v["action"] != "none" || f.read("thr_primary.told") != "" {
+		t.Fatalf("woke a thread that is waiting on a person: %v", v)
+	}
+	if f.hooks.types() != "keepgoing.await_user" {
+		t.Errorf("webhooks = %s", f.hooks.types())
+	}
+	// Answered, but the agent then declares it needs the person for something else.
+	os.Remove(filepath.Join(f.bbDir, "thr_primary.interactions"))
+	if code, _, _ := f.run("await-user", "--note", "run the fictional probe command"); code != 0 {
+		t.Fatal("await-user failed")
+	}
+	if !strings.HasSuffix(f.hooks.types(), "keepgoing.await_user,keepgoing.await_user") {
+		t.Errorf("await-user did not report: %s", f.hooks.types())
+	}
+	if v := f.tick(); v["action"] != "none" || f.read("thr_primary.told") != "" {
+		t.Fatalf("woke a loop marked awaiting user: %v", v)
+	}
+	// The person answers and resumes the loop: the idle thread is woken again.
+	f.run("resume")
+	if v := f.tick(); v["action"] != "wake" {
+		t.Fatalf("after resume: %v", v)
+	}
+}
+
 func TestEndToEndUnknownErrorNeverHandsOff(t *testing.T) {
 	f := newFixture(t)
 	f.run("enable")
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0o600)
 	// Prose says "usage limit" but the structured category is unknown.
-	write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"type":"turn/started","data":{}},{"type":"provider/error","data":{"message":"usage limit reached","willRetry":false,"errorInfo":{"category":"unknown","httpStatusCode":null,"providerCode":"unknown"}}}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"seq":1,"type":"turn/started","data":{}},{"seq":2,"type":"provider/error","data":{"message":"usage limit reached","willRetry":false,"errorInfo":{"category":"unknown","httpStatusCode":null,"providerCode":"unknown"}}}]`, 0o600)
 	if v := f.tick(); v["action"] != "reprompt" || v["target"] != "primary" {
 		t.Fatalf("%v", v)
 	}
@@ -370,6 +414,15 @@ func TestFallbacksCheckExitsOneWhenRedundancyIsUnmet(t *testing.T) {
 	}
 	if code, _, _ := f.run("fallbacks", "check", "--id", "claude-other-account"); code != exitFailed {
 		t.Errorf("--id check still reports the unmet rule: %d", code)
+	}
+	// The failed Codex probe left a capture for later mapping, and its raw
+	// output stays out of health.json.
+	caps, _ := filepath.Glob(filepath.Join(f.dir, "state", "probe-failures", "codex-main", "*.out"))
+	if len(caps) != 1 {
+		t.Errorf("captures = %v", caps)
+	}
+	if h, _ := os.ReadFile(filepath.Join(f.dir, "state", "health.json")); strings.Contains(string(h), "raw") || strings.Contains(string(h), "Raw") {
+		t.Errorf("health.json carries raw output:\n%s", h)
 	}
 }
 

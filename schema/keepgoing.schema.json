@@ -80,6 +80,12 @@
             },
             "min_wake_interval": {
               "$ref": "#/$defs/duration"
+            },
+            "max_nudges": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3,
+              "description": "nudges a stalled session gets before the loop asks a person"
             }
           }
         },
@@ -187,6 +193,7 @@
                   "stop",
                   "error",
                   "probe_failed",
+                  "switch_back",
                   "test"
                 ]
               }
@@ -220,6 +227,72 @@
             },
             "control_poll": {
               "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "switch_back": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "min_after": {
+              "$ref": "#/$defs/duration"
+            },
+            "retry_every": {
+              "$ref": "#/$defs/duration"
+            }
+          },
+          "description": "return to the primary after a handoff once its limit resets and an exact probe passes"
+        },
+        "probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "claude",
+                "codex",
+                "command"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "description": "cheap model for scheduled probes"
+            },
+            "command": {
+              "$ref": "#/$defs/argv"
+            },
+            "exit_codes": {
+              "type": "object",
+              "patternProperties": {
+                "^[0-9]+$": {
+                  "enum": [
+                    "none",
+                    "rate_limit",
+                    "auth",
+                    "overloaded",
+                    "network",
+                    "unknown"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "cli": {
+              "type": "string"
+            },
+            "workdir": {
+              "type": "string"
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "extra environment for the probe, for example CLAUDE_CONFIG_DIR or CODEX_HOME to check another account's login"
             }
           }
         }

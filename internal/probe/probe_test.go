@@ -56,6 +56,11 @@ func TestCodexProbe(t *testing.T) {
 	if r := Run(context.Background(), c, Scheduled, 10*time.Second); !r.OK {
 		t.Errorf("%+v", r)
 	}
+	// The shape of a real probe: an error item from a hook warning before the turn.
+	warned := fake(t, `printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"example hook warning"}}' '{"type":"turn.started"}' '{"type":"turn.completed","usage":{}}'`)
+	if r := Run(context.Background(), cand("codex", warned), Scheduled, 10*time.Second); !r.OK {
+		t.Errorf("hook warning item failed the probe: %+v", r)
+	}
 	bad := fake(t, `printf '%s\n' '{"type":"turn.failed","error":{"message":"usage limit"}}'; exit 1`)
 	if r := Run(context.Background(), cand("codex", bad), Scheduled, 10*time.Second); r.OK || r.ErrorClass != "unknown" {
 		t.Errorf("%+v", r)

@@ -13,20 +13,29 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 ## What it does
 
 - **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
-- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
+- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn, and after `max_nudges` nudges without progress the loop asks a person. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
 - **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs at least `min_healthy` confirmed fallbacks, counted across distinct providers by default. The default is 1; set 2 for real redundancy.
 - **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
+- **Knows when a person is needed.** A pending permission prompt or question, or a loop marked with `keepgoing await-user`, means nothing is sent. The person gets an `await_user` report instead of the loop sitting idle. See [docs/agent-chats.md](docs/agent-chats.md).
 - **Honors stop and pause at once.** The daemon watches the control file and acts on a change within seconds.
 - **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
 - **Includes two helpers.** `ci-wait` waits for every workflow on an exact commit and follows a replacement run after a cancellation. `net-retry` reruns a command only while the network is down.
 
 ## Install
 
+With Homebrew on macOS or Linux:
+
+```sh
+brew install connorburgess/tap/keepgoing
+```
+
+With Go 1.24 or newer:
+
 ```sh
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 ```
 
-Go 1.24 or newer. Release binaries for macOS, Linux, and Windows are built by the release workflow when a version is tagged.
+Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on the [releases page](https://github.com/connorburgess/keepgoing-agents/releases).
 
 ## Quick start
 
@@ -60,6 +69,8 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
 - [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
 - [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
+- [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
+- [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.
 - [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
 - [docs/roadmap.md](docs/roadmap.md): what comes next.
 - [examples/](examples/): configurations and scheduler setups to copy.
@@ -68,11 +79,10 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 ## Limitations
 
 - The BB adapter needs the `bb` CLI. Error classification relies on BB's structured provider events. When those are missing, the error is `unknown`.
-- The headless Codex adapter reads error codes from `codex exec --json` events, but it has not yet been checked against a real Codex usage-limit event. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
+- The headless Codex adapter reads error codes from `codex exec --json` events. A real probe has been checked, but a real Codex usage-limit event has not. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
 - Headless runners need macOS or Linux. On Windows, the BB and process adapters work, but the Claude Code and Codex runners do not.
-- Switching back to the primary after a handoff is manual, with `keepgoing retarget primary`.
+- Switching back to the primary after a handoff is manual by default. Turn on `switch_back` to return automatically once the primary's limit resets and it passes a probe.
 - A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account.
-- A session that stays active without progress is nudged every `min_wake_interval` and never escalates to a person on its own.
 
 ## Contributing
 

@@ -19,12 +19,22 @@
 
 See [integrations.md](integrations.md) for what is verified live.
 
+**Agent chats.** BB pending interactions mean waiting on a person. `await-user` reports at once. A guide covers supervising a live chat thread. A session that stays stalled through `max_nudges` nudges now asks a person.
+
+**0.1.0, released.** keepgoing supervises a live BB chat through a BB automation, reporting to a real webhook. The live checks verified:
+
+- BB send, stop, and model switching against a scratch thread;
+- the daemon's wakes, await-user hold, and SIGTERM exit;
+- signed reports in the bearer and text formats;
+- the release workflow, by publishing 0.1.0.
+
+**BB plugin.** `integrations/bb-plugin-keepgoing` shows keepgoing's state in each supervised thread's context card and adds `bb keepgoing status`, `pause`, `resume`, and `stop`.
+
+**Homebrew.** `brew install connorburgess/tap/keepgoing` installs the release binaries from the [homebrew-tap](https://github.com/connorburgess/homebrew-tap) repository.
+
+**Switch-back.** With `switch_back` on, the loop returns to the primary between the fallback's turns once the primary's limit resets and it passes an exact probe.
+
 ## Next
 
-- Run the live checks listed in [integrations.md](integrations.md), starting with BB send and stop against a scratch thread and a real Codex probe.
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
-- Escalate a session that stays stalled after several nudges.
-- A thin BB plugin that calls the CLI and renders its JSON.
-- Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
-- Headless runners on Windows.
-- Homebrew formula once releases are public.
+- Headless runners on Windows. A draft exists; it needs a passing run in a Windows VM.

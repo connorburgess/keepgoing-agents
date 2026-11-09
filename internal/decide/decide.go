@@ -44,6 +44,9 @@ type Observation struct {
 	Retrying bool
 	// ResetsAt, when known, is when the current usage limit lifts.
 	ResetsAt time.Time
+	// AwaitingInput means the session is blocked on a person: a pending
+	// permission prompt, question, or form, reported by the provider.
+	AwaitingInput bool
 }
 
 // Control is the operator's gate.
@@ -66,6 +69,14 @@ type Input struct {
 	MinWakeInterval time.Duration
 
 	Failover Failover
+
+	// SwitchBackReady: the loop is on a fallback, switch-back is enabled, and
+	// the primary's limit has had time to reset. The tick still confirms the
+	// primary with an exact probe before moving.
+	SwitchBackReady bool
+
+	Nudges    int // nudges sent since progress was last seen
+	MaxNudges int
 
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
@@ -92,13 +103,14 @@ type Action string
 
 // Actions.
 const (
-	None      Action = "none"       // do nothing this tick
-	Wake      Action = "wake"       // start a turn on an idle session
-	Nudge     Action = "nudge"      // queue a progress check behind a live turn
-	Reprompt  Action = "reprompt"   // start a turn after an error, counted and bounded
-	AwaitUser Action = "await_user" // give up until the operator intervenes
-	Stop      Action = "stop"       // stop the running session now
-	Handoff   Action = "handoff"    // move the loop to a confirmed fallback
+	None       Action = "none"        // do nothing this tick
+	Wake       Action = "wake"        // start a turn on an idle session
+	Nudge      Action = "nudge"       // queue a progress check behind a live turn
+	Reprompt   Action = "reprompt"    // start a turn after an error, counted and bounded
+	AwaitUser  Action = "await_user"  // give up until the operator intervenes
+	Stop       Action = "stop"        // stop the running session now
+	Handoff    Action = "handoff"     // move the loop to a confirmed fallback
+	SwitchBack Action = "switch_back" // return the loop to its primary
 )
 
 // Decision is an action and the rule that produced it.
@@ -131,6 +143,9 @@ func Decide(in Input) Decision {
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
 	}
+	if o.AwaitingInput {
+		return none("waiting on a person (pending interaction)")
+	}
 	if !in.InWindow {
 		return none("outside window")
 	}
@@ -148,9 +163,16 @@ func Decide(in Input) Decision {
 		if o.Queued > 0 {
 			return none("messages already queued")
 		}
+		// Only between turns: never pull the loop from a fallback mid-turn.
+		if in.SwitchBackReady {
+			return Decision{SwitchBack, "primary's limit has reset"}
+		}
 		return Decision{Wake, "idle"}
 	case Active:
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
+				return Decision{AwaitUser, "no progress after " + itoa(in.Nudges) + " nudges"}
+			}
 			return Decision{Nudge, "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
 		}
 		return none("active")
@@ -191,6 +213,17 @@ func decideError(in Input) Decision {
 		return none("backing off after error")
 	}
 	return Decision{Reprompt, "error: " + string(classOrUnknown(o.ErrorClass))}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for ; n > 0; n /= 10 {
+		s = string(rune('0'+n%10)) + s
+	}
+	return s
 }
 
 func classOrUnknown(c ErrorClass) ErrorClass {

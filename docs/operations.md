@@ -20,6 +20,10 @@ Ending the daemon does not stop the agent. To stop the agent, run `keepgoing sto
 | 75 | skipped: the lock is held, a yield check reported other work, or `net-retry` waited longer than `--max-wait` for the network |
 | 124 | `ci-wait`: timed out |
 
+## Status for other tools
+
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show keepgoing's state beside the right thread.
+
 ## Yielding to other work
 
 ```yaml
@@ -51,10 +55,12 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `degraded`, `recovered`, `await_user`, `stop`, `error`, `probe_failed`, `test`, or `all`. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `stop`, `error`, `probe_failed`, `test`, or `all`. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 
+- **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.
+- **The session stays stalled.** After `progress.max_nudges` nudges without visible progress, the loop is marked awaiting user and reports `await_user`.
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
 - **Only `resume` clears a stop.** `enable` does not.

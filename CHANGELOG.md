@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- `switch_back`, off by default, returns the loop to its primary between the fallback's turns. It waits until the primary's reported reset time, or `min_after` when none was reported, and until the primary passes an exact probe. It sends a `switch_back` report. `loop.probe` sets how the primary is probed.
+- A failed probe saves its raw output to `probe-failures/<candidate>/` in the state directory, keeping the newest five, so unrecognised error shapes such as a provider's usage-limit event can be mapped later. It is never read for a decision.
+
+## 0.1.1 (2026-11-10)
+
+### Added
+
+- `keepgoing status --json` includes `primaryAgent` and `targetAgent`, with the adapter, provider, model, and BB thread or working directory, so tools can match a loop to the session it supervises.
+- A thin BB plugin in `integrations/bb-plugin-keepgoing`. It shows keepgoing's state in a supervised thread's context banner or context card, with Pause and Resume, and adds `bb keepgoing status`, `pause`, `resume`, and `stop`.
+
+## 0.1.0 (2026-11-10)
+
 ### Fixed
 
+- The BB adapter read the oldest 60 log events instead of the newest, because `bb thread log --limit` returns events oldest first. On a long thread it missed current errors, rate limits, and interactions. It now keeps a cursor and reads only new events after a one-time full pass.
 - A stop request is now honored while the loop is paused, disabled, or awaiting a person, and when state files cannot be read.
 - The daemon now acts on a stop or pause written during a pass, instead of waiting a full interval.
 - Relative `state_dir` and command paths now resolve against the config file, so headless runners and `./script.sh` commands work from any directory.
@@ -15,9 +30,13 @@
 
 ### Added
 
+- BB threads with a pending permission prompt, question, or form count as waiting on a person. keepgoing sends nothing to them and reports `await_user` once.
+- `keepgoing await-user` sends an `await_user` report at once, with the note.
+- The process adapter's status object accepts `awaitingInput`.
+- `progress.max_nudges`, default 3: a session that stays stalled through that many nudges marks the loop awaiting user instead of being nudged forever.
+- `docs/agent-chats.md` and `examples/chat-loop-prompt.md` for supervising a chat thread.
 - `probe.env` for probing a candidate that uses a different account.
 - `docs/integrations.md` and `docs/testing.md`, and a test bundle for machines without Go.
-
 - Supervision of one loop through BB threads, generic processes, and headless Claude Code or Codex sessions.
 - A decision engine that wakes idle sessions, nudges stalled ones, and re-prompts errors with backoff, then waits for a person.
 - `fallbacks.yaml` with scheduled, exact, and manual probes, a health registry, redundancy rules, and handoff to confirmed fallbacks.

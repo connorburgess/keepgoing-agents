@@ -36,9 +36,15 @@ func TestDecide(t *testing.T) {
 		{"outside window", func(i *Input) { i.InWindow = false }, None},
 		{"idle with background work", func(i *Input) { i.Obs.Background = 1 }, None},
 		{"idle with queued messages", func(i *Input) { i.Obs.Queued = 2 }, None},
+		{"idle and primary ready switches back", func(i *Input) { i.SwitchBackReady = true }, SwitchBack},
+		{"active never switches back mid-turn", func(i *Input) { i.Obs.State, i.SwitchBackReady = Active, true }, None},
+		{"queued work blocks switch-back", func(i *Input) { i.Obs.Queued, i.SwitchBackReady = 1, true }, None},
+		{"paused blocks switch-back", func(i *Input) { i.Control.Paused, i.SwitchBackReady = true, true }, None},
 		{"active and progressing", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 5 * m }, None},
 		{"active stalled", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 31 * m }, Nudge},
 		{"active stalled but woken recently", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 31 * m; i.SinceWake = 20 * m }, None},
+		{"stalled with nudges left", func(i *Input) { i.Obs.State, i.UnchangedFor, i.Nudges, i.MaxNudges = Active, 31*m, 2, 3 }, Nudge},
+		{"stalled after the last nudge asks a person", func(i *Input) { i.Obs.State, i.UnchangedFor, i.Nudges, i.MaxNudges = Active, 31*m, 3, 3 }, AwaitUser},
 		{"stopping", func(i *Input) { i.Obs.State = Stopping }, None},
 		{"pending", func(i *Input) { i.Obs.State = Pending }, None},
 		{"unknown status never acts", func(i *Input) { i.Obs.State = Unknown }, None},
@@ -51,6 +57,17 @@ func TestDecide(t *testing.T) {
 		{"error exhausted", func(i *Input) { i.Obs.State = Error; i.Reprompts = 3 }, AwaitUser},
 		{"error with queued message waits", func(i *Input) { i.Obs.State = Error; i.Obs.Queued = 1 }, None},
 		{"provider retrying", func(i *Input) { i.Obs.State = Error; i.Obs.Retrying = true }, None},
+		{"idle but waiting on a person", func(i *Input) { i.Obs.AwaitingInput = true }, None},
+		{"stalled but waiting on a person", func(i *Input) {
+			i.Obs.State, i.Obs.AwaitingInput, i.UnchangedFor = Active, true, 2*time.Hour
+		}, None},
+		{"errored but waiting on a person", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.Obs.AwaitingInput = Error, ErrRateLimit, true
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, None},
+		{"stop still wins over a pending interaction", func(i *Input) {
+			i.Control.Stop, i.Obs.State, i.Obs.AwaitingInput = true, Active, true
+		}, Stop},
 		{"rate limit hands off when available", func(i *Input) {
 			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
 			i.Failover = Failover{Eligible: true, Available: true}

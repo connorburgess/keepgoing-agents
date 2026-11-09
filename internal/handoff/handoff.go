@@ -18,13 +18,14 @@ type Facts struct {
 	From         string
 	To           string
 	Reason       string
+	SwitchBack   bool // returning to the primary rather than failing over
 	Goal         string
 	Repositories []string
 }
 
 var tmpl = template.Must(template.New("brief").Parse(`You are taking over the "{{.Loop}}" loop from another agent.
 
-What happened: {{.From}} stopped with a {{.Reason}} error at {{.At.UTC.Format "2006-01-02 15:04 UTC"}}. A supervisor moved the loop to you ({{.To}}). It confirmed you were working moments ago.
+{{if .SwitchBack}}What happened: you are this loop's primary agent. Your usage limit has reset, so at {{.At.UTC.Format "2006-01-02 15:04 UTC"}} a supervisor moved the loop back to you ({{.To}}) from the fallback that covered for you ({{.From}}). It confirmed you were working moments ago.{{else}}What happened: {{.From}} stopped with a {{.Reason}} error at {{.At.UTC.Format "2006-01-02 15:04 UTC"}}. A supervisor moved the loop to you ({{.To}}). It confirmed you were working moments ago.{{end}}
 {{if .Repositories}}
 Repositories:
 {{range .Repositories}}- {{.}}

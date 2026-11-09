@@ -32,6 +32,8 @@ loop:
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
+| `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
+| `probe` | for switch-back | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
 
 ## bb
 
@@ -55,10 +57,10 @@ loop:
 The status object looks like this:
 
 ```json
-{"state": "idle", "errorClass": "rate_limit", "queued": 0, "background": 0, "gone": false}
+{"state": "idle", "errorClass": "rate_limit", "queued": 0, "background": 0, "gone": false, "awaitingInput": false}
 ```
 
-`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Common synonyms are accepted too: `running`, `busy`, and `working` mean active, `completed`, `done`, and `waiting` mean idle, `failed` means error, and `queued` and `starting` mean pending. Anything else is `unknown`. `errorClass` is read only when the state is `error`. It may be a class name or a well-known code such as `429`. Stderr is never captured.
+`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Common synonyms are accepted too: `running`, `busy`, and `working` mean active, `completed`, `done`, and `waiting` mean idle, `failed` means error, and `queued` and `starting` mean pending. Anything else is `unknown`. `awaitingInput: true` means the session is blocked on a person, and nothing is sent to it. `errorClass` is read only when the state is `error`. It may be a class name or a well-known code such as `429`. Stderr is never captured.
 
 ## claude
 
@@ -93,6 +95,7 @@ A running headless turn cannot be steered or queued into. A nudge to a stalled h
 | --- | --- | --- |
 | `repositories` | none | Repositories whose worktrees are fingerprinted. Without this, stall detection is off and an active session is left alone. |
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
+| `max_nudges` | `3` | Nudges a stalled session gets before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
@@ -131,7 +134,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, degraded, recovered, await_user, stop, error` |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, stop, error` |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
