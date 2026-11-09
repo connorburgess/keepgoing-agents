@@ -211,6 +211,19 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 		t.Errorf("webhooks = %s", f.hooks.types())
 	}
 
+	// Status JSON names the sessions structurally, for tools that match loops to threads.
+	_, js, _ := f.run("status", "--json")
+	var st struct {
+		PrimaryAgent struct{ BBThread string } `json:"primaryAgent"`
+		TargetAgent  struct {
+			BBThread string
+			Model    string
+		} `json:"targetAgent"`
+	}
+	if err := json.Unmarshal([]byte(js), &st); err != nil || st.PrimaryAgent.BBThread != "thr_primary" || st.TargetAgent.BBThread != "thr_alt" || st.TargetAgent.Model != "claude-fable-5-1" {
+		t.Errorf("status json agents: %+v %v", st, err)
+	}
+
 	// Status and fallbacks list reflect the move.
 	if _, out, _ := f.run("status"); !strings.Contains(out, "target:    claude-other-account (1 handoffs") {
 		t.Errorf("status:\n%s", out)
