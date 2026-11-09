@@ -34,7 +34,8 @@ See [integrations.md](integrations.md) for what is verified live.
 
 **Switch-back.** With `switch_back` on, the loop returns to the primary between the fallback's turns once the primary's limit resets and it passes an exact probe.
 
+**Windows runners.** Headless Claude Code and Codex turns now run on Windows, through a detached copy of the keepgoing binary. Tested in a Windows 11 Arm VM.
+
 ## Next
 
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
-- Headless runners on Windows. A draft exists; it needs a passing run in a Windows VM.

@@ -34,6 +34,6 @@ These results come from runs of the full bundle. A VM result covers that configu
 | --- | --- | --- | --- |
 | macOS 26, Apple silicon | `go test -race ./...` | all packages pass | none |
 | Ubuntu 26.04 LTS ARM64 | test bundle in a Parallels VM, run as an ordinary user | all 18 test packages pass, including end-to-end, headless runner, and lock tests | x86-64 |
-| Windows 11 Arm (build 26300) | test bundle in a Parallels VM | all 16 test packages pass, including the Windows lock | the end-to-end tests and headless runners (POSIX only), x64 |
+| Windows 11 Arm (build 26300) | test bundle in a Parallels VM | all 18 test packages pass, including the Windows lock and the headless runner's lifecycle, error, and stop tests | the end-to-end CLI tests (POSIX only), x64 |
 
 CI runs the suite on Ubuntu x86-64 and macOS and cross-compiles for Windows. Check the Actions tab for the latest run.
