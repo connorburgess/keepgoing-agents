@@ -1,0 +1,4 @@
+# One tick every five minutes; a tick that finds the lock held exits 75 quietly.
+*/5 * * * * /usr/local/bin/keepgoing tick -c "$HOME/.config/keepgoing/example-bb-loop/keepgoing.yaml" >> "$HOME/.local/state/keepgoing/cron.log" 2>&1
+# Probe all fallbacks every morning and exit 1 if redundancy is not met.
+0 7 * * * /usr/local/bin/keepgoing fallbacks check -c "$HOME/.config/keepgoing/example-bb-loop/keepgoing.yaml" >> "$HOME/.local/state/keepgoing/cron.log" 2>&1

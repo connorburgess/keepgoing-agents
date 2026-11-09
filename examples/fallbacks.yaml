@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=../schema/fallbacks.schema.json
+# Ordered fallbacks. Each is confirmed by a probe before it is trusted, and
+# again with an exact-target probe right before a handoff. Fictional values.
+version: 1
+redundancy:
+  min_healthy: 2      # at least two confirmed fallbacks...
+  span: provider      # ...on two different providers
+probe:
+  every: 4h           # scheduled probe per candidate
+  ttl: 6h             # a passing probe counts as healthy this long
+  daily_cap: 6        # scheduled probes per candidate per UTC day
+  timeout: 90s
+candidates:
+  # Same BB thread, different model, different account.
+  - id: claude-second-account
+    adapter: bb
+    provider: claude-code
+    group: claude-second-account
+    bb: {thread: thr_example123, model: claude-fable-5-1, reasoning: medium}
+    probe: {model: claude-haiku-5-5}     # cheap scheduled probe; the handoff probe uses the target model
+
+  # A prepared Codex thread in BB.
+  - id: codex-thread
+    adapter: bb
+    provider: codex
+    bb: {thread: thr_example456}
+
+  # A headless Codex session keepgoing runs itself.
+  - id: codex-headless
+    adapter: codex
+    provider: codex
+    group: codex-second-account
+    codex: {workdir: ~/src/example-app, sandbox: workspace-write}
+
+  # Anything else, through a probe command you write.
+  - id: example-cli
+    adapter: process
+    provider: example-cli
+    process:
+      status_command: ["./agent-status.sh"]
+      resume_command: ["./agent-resume.sh"]
+    probe:
+      kind: command
+      command: ["./agent-probe.sh"]
+      exit_codes: {75: rate_limit, 77: auth}
+    disabled: true

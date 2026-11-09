@@ -1,0 +1,18 @@
+# Probe fallbacks on a schedule from CI and fail the job when redundancy is
+# not met. Store the agent CLIs' credentials as repository secrets; this
+# example only shows the shape.
+name: keepgoing fallbacks
+on:
+  schedule: [{cron: "0 */6 * * *"}]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.24"}
+      - run: go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
+      - run: keepgoing fallbacks check -c ci/keepgoing.yaml

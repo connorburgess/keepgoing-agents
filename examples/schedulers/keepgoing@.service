@@ -1,0 +1,14 @@
+# systemd user unit running the daemon for one loop:
+#   cp keepgoing@.service ~/.config/systemd/user/
+#   systemctl --user enable --now keepgoing@example-bb-loop
+# SIGTERM from systemctl stop ends the daemon at once.
+[Unit]
+Description=keepgoing daemon for %i
+
+[Service]
+ExecStart=/usr/local/bin/keepgoing daemon -c %h/.config/keepgoing/%i/keepgoing.yaml
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,12 +1,17 @@
-# Supervise a BB thread. Fictional values throughout.
+# yaml-language-server: $schema=../schema/keepgoing.schema.json
+# Supervise a BB thread, with confirmed fallbacks and signed reports.
+# Fictional values throughout.
 version: 1
 loop:
   name: example-bb-loop
   state_dir: ~/.local/state/keepgoing/example-bb-loop
   adapter: bb
+  provider: claude-code
+  group: claude-example-account   # the quota pool; fallbacks in the same group are skipped on a limit
   bb:
     thread: thr_example123
   prompt_file: HANDOFF.md
+  handoff_file: HANDOFF.md        # sent to a fallback when it takes over; generated if missing
   progress:
     repositories:
       - ~/src/example-app
@@ -20,7 +25,18 @@ loop:
       Tue: ["08:00", "23:00"]
       Wed: ["08:00", "23:00"]
       Thu: ["08:00", "23:00"]
-      Fri: ["08:00", "02:00"]
+      Fri: ["08:00", "02:00"]     # runs past midnight into Saturday
   errors:
     max_reprompts: 3
     backoff: 10m
+    failover_on: [rate_limit]
+    wait_if_reset_within: 30m
+  fallbacks: fallbacks.yaml
+  report:
+    secret_file: ~/.config/keepgoing/example-bb-loop.env   # KEEPGOING_WEBHOOK_URL and KEEPGOING_WEBHOOK_SECRET
+    events: [handoff, degraded, recovered, await_user, stop, error]
+  yield:
+    busy_command: ["./busy-check.sh"]
+  daemon:
+    interval: 5m
+    control_poll: 2s

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Run one tick every five minutes. Copy to ~/Library/LaunchAgents/,
+     replace the fictional paths, then: launchctl load <file>. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.keepgoing.example-bb-loop</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/keepgoing</string>
+    <string>tick</string>
+    <string>-c</string>
+    <string>/Users/example/.config/keepgoing/example-bb-loop/keepgoing.yaml</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>/Users/example/Library/Logs/keepgoing-example.log</string>
+  <key>StandardErrorPath</key><string>/Users/example/Library/Logs/keepgoing-example.log</string>
+</dict>
+</plist>

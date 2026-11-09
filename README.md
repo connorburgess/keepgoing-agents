@@ -1,16 +1,24 @@
 # keepgoing-agents
 
-`keepgoing` keeps a long-running coding-agent loop going. It watches an agent session, notices when the session has gone idle, stalled, or hit an error, and re-prompts it, with a hard rule that a person's stop or pause always wins. It is a single binary with no runtime, built to be called from cron, launchd, CI, or an agent IDE's automation. It is not tied to any IDE or provider.
+`keepgoing` keeps long-running coding-agent loops going. It watches an agent session, re-prompts it when it goes idle or stalls, and hands the loop to a confirmed fallback when the session hits a usage limit. A person's stop or pause always wins. It is a single static binary with no runtime, built to be called from cron, launchd, systemd, CI, or an agent IDE's automations. It is not tied to any IDE or provider.
 
 The tool never edits, commits to, or merges a repository. The agent does the work. `keepgoing` only keeps the agent working.
 
 ## Why
 
-Unattended agent loops die for boring reasons: the session finishes a turn and nobody sends the next one, a turn hangs with no progress, or the provider returns an error at three in the morning. Watching for that by hand does not scale, and watching for it by grepping transcripts for words like "limit" produces false positives that reroute whole loops. `keepgoing` decides from structured status only (exit codes, JSON fields, HTTP status) and treats anything it cannot classify as unknown, which never triggers a drastic action.
+Unattended agent loops die for boring reasons. A session finishes a turn and nobody sends the next one. A turn hangs with no progress. The provider hits a usage limit at three in the morning. Watching for this by hand does not scale. Watching for it by searching transcripts for words like "limit" produces false positives that reroute whole loops.
 
-## Status
+`keepgoing` decides from structured status only: exit codes, JSON fields, HTTP status, and provider events. Anything it cannot classify is `unknown`, and `unknown` never moves a loop to another provider.
 
-Early. Milestone one is in place: supervise one loop through a BB thread or any process you can describe with a status command and a resume command. Confirmed fallbacks across providers, signed webhook reports, and a daemon mode are the next milestones; see [docs/roadmap.md](docs/roadmap.md).
+## What it does
+
+- **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
+- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
+- **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs a minimum number of healthy fallbacks spread across providers.
+- **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
+- **Honors stop and pause at once.** The daemon watches the control file and acts on a change within seconds.
+- **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
+- **Includes two helpers.** `ci-wait` waits for every workflow on an exact commit and follows a replacement run after a cancellation. `net-retry` reruns a command only while the network is down.
 
 ## Install
 
@@ -18,71 +26,49 @@ Early. Milestone one is in place: supervise one loop through a BB thread or any 
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 ```
 
-Go 1.24 or newer. Prebuilt binaries will come with the first tagged release.
+Go 1.24 or newer. Release binaries for macOS, Linux, and Windows are built by the release workflow when a version is tagged.
 
 ## Quick start
 
-Write `keepgoing.yaml`:
-
-```yaml
-version: 1
-loop:
-  name: example-loop
-  state_dir: ~/.local/state/keepgoing/example-loop
-  adapter: bb
-  bb:
-    thread: thr_example123
-  prompt: |
-    Continue the authorized loop. Honor any newer stop or pause request first.
-  progress:
-    repositories: [~/src/example-app]
-    stall_after: 30m
-    min_wake_interval: 60m
-  window:
-    tz: UTC
-    days:
-      Mon: ["08:00", "23:00"]
-      Tue: ["08:00", "23:00"]
+```sh
+cp examples/keepgoing.bb.yaml keepgoing.yaml        # edit the thread id and paths
+cp examples/fallbacks.yaml fallbacks.yaml           # list your real fallbacks
+keepgoing validate
+keepgoing fallbacks check                           # probe every candidate once
+keepgoing enable
+keepgoing tick                                      # or: keepgoing daemon
+keepgoing status
 ```
 
-Then:
+Nothing is sent until you run `enable`. A missing control file means disabled.
+
+Control the loop at any time:
 
 ```sh
-keepgoing validate
-keepgoing enable
-keepgoing tick          # run one pass; schedule this every few minutes
-keepgoing status
 keepgoing pause --note "reviewing by hand"
 keepgoing resume
-keepgoing stop          # stop the running session on the next tick, send nothing more
+keepgoing stop                 # stop the running turn, then send nothing more
+keepgoing retarget primary     # move back from a fallback by hand
 ```
 
-Each `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it. Nothing is sent until you run `enable`; a missing control file means disabled.
-
-## How a tick decides
-
-1. Stop requested: stop the session if it is running. Nothing else happens.
-2. Disabled, paused, or awaiting user: do nothing, do not even query the provider.
-3. Observe the session through the adapter. If the adapter cannot report, take no action.
-4. Outside the configured time window: do nothing.
-5. Idle with nothing queued and no background work: send the prompt.
-6. Active but the progress fingerprint has not changed for `stall_after`, and nothing was sent in the last `min_wake_interval`: queue a nudge behind the live turn.
-7. Error: re-prompt with backoff, up to `max_reprompts`, then mark the loop awaiting user. An auth error goes straight to awaiting user. No error class causes a provider switch in this milestone.
-8. Anything else (stopping, pending, unknown): do nothing.
-
-The progress fingerprint hashes Git metadata and the size and modification time of changed tracked files. It never reads file contents or transcripts.
-
-## Adapters
-
-- **bb**: a [BB](https://getbb.app) thread, observed with `bb thread show --json` and prompted with `bb thread tell`.
-- **process**: any session you can describe with three commands. The status command prints a small JSON object; the resume command receives the prompt on stdin and the mode in `KEEPGOING_MODE`; an optional stop command halts the session. Non-zero exit codes from the status command can be mapped to error classes. See [docs/configuration.md](docs/configuration.md).
+Every `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): packages, boundaries, and the rules that do not bend.
 - [docs/configuration.md](docs/configuration.md): every field in `keepgoing.yaml`.
+- [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
+- [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
 - [docs/roadmap.md](docs/roadmap.md): what comes next.
-- [examples/](examples/): configurations to copy.
+- [examples/](examples/): configurations and scheduler setups to copy.
+- [schema/](schema/): JSON Schemas for editor completion and validation.
+
+## Limitations
+
+- The BB adapter needs the `bb` CLI. Error classification relies on BB's structured provider events. When those are missing, the error is `unknown`.
+- The headless Codex adapter reads error codes from `codex exec --json` events, but it has not yet been checked against a real Codex usage-limit event. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
+- Headless runners need macOS or Linux. On Windows, the BB and process adapters work, but the Claude Code and Codex runners do not.
+- Switching back to the primary after a handoff is manual, with `keepgoing retarget primary`.
 
 ## Contributing
 
