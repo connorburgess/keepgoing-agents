@@ -42,11 +42,13 @@ Get-ChildItem -Path $root -Recurse -Filter *.test.exe | Where-Object { $_.Name -
   $out = Join-Path $env:TEMP ("kg-" + $_.BaseName + ".out")
   $err = Join-Path $env:TEMP ("kg-" + $_.BaseName + ".err")
   $p = Start-Process -FilePath $_.FullName -ArgumentList "-test.timeout","300s" -WorkingDirectory $_.DirectoryName -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+  # Read the handle now: without it, PowerShell reports no exit code later.
+  $null = $p.Handle
   if (-not $p.WaitForExit($limit * 1000)) {
     & taskkill /PID $p.Id /T /F | Out-Null
     "FAIL .$rel (killed after ${limit}s)"
     $fail = 1
-  } elseif ($p.ExitCode -eq 0) {
+  } elseif (($p.WaitForExit() -or $true) -and $p.ExitCode -eq 0) {
     "ok   .$rel"
   } else {
     "FAIL .$rel"
