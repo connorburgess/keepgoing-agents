@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -45,10 +46,11 @@ type rateLimitsResponse struct {
 	} `json:"rateLimits"`
 }
 
-func readCodexLimits(ctx context.Context, cli string) (CodexLimits, error) {
+func readCodexLimits(ctx context.Context, cli string, env []string) (CodexLimits, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cli, "app-server")
+	cmd.Env = append(os.Environ(), env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return CodexLimits{}, err

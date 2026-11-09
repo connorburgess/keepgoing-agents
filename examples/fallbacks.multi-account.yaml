@@ -1,0 +1,27 @@
+version: 1
+redundancy:
+  min_healthy: 1
+  span: group
+probe:
+  every: 4h
+  ttl: 6h
+  daily_cap: 6
+candidates:
+  - id: claude-account-b
+    adapter: claude
+    group: claude-account-b
+    claude:
+      workdir: /fictional/src/example-app
+      model: sonnet
+      env:
+        CLAUDE_CONFIG_DIR: /fictional/accounts/claude-b
+    probe: {model: haiku}
+  - id: claude-account-c
+    adapter: claude
+    group: claude-account-c
+    claude:
+      workdir: /fictional/src/example-app
+      model: sonnet
+      env:
+        CLAUDE_CONFIG_DIR: /fictional/accounts/claude-c
+    probe: {model: haiku}

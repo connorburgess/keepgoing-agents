@@ -132,7 +132,7 @@ func (c *Claude) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 			c.dir.SaveSession(r.SessionID)
 		}
 	}
-	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, nil)
+	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, envList(c.cfg.Env))
 }
 
 // Stop implements adapter.Adapter.

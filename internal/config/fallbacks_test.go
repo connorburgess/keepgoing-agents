@@ -72,3 +72,29 @@ func TestParseFallbacksRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestPrimaryProbeInheritsAccountEnvironment(t *testing.T) {
+	for _, kind := range []string{"claude", "codex"} {
+		src := `version: 1
+loop:
+  name: example-loop
+  state_dir: /fictional/state
+  prompt: Continue.
+  adapter: ` + kind + `
+  ` + kind + `:
+    workdir: /fictional/app
+    env: {ACCOUNT_DIR: /fictional/account-a, SETTING: target}
+  probe:
+    env: {SETTING: probe}
+`
+		cfg, err := Parse([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := cfg.Loop.PrimaryCandidate()
+		env := c.ProbeEnv()
+		if env["ACCOUNT_DIR"] != "/fictional/account-a" || env["SETTING"] != "probe" {
+			t.Fatalf("%s switch-back environment = %v", kind, env)
+		}
+	}
+}

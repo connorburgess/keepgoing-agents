@@ -72,15 +72,17 @@ func TestCodexProbe(t *testing.T) {
 func TestCodexProbeLimitFromAppServer(t *testing.T) {
 	prose := fake(t, `printf '%s\n' '{"type":"turn.started"}' '{"type":"turn.failed","error":{"message":"Example usage limit message"}}'; exit 1`)
 	reset := time.Unix(1794393286, 0).UTC()
-	defer func(orig func(context.Context, string) (runner.CodexLimits, error)) { runner.ReadCodexLimits = orig }(runner.ReadCodexLimits)
-	runner.ReadCodexLimits = func(context.Context, string) (runner.CodexLimits, error) {
+	defer func(orig func(context.Context, string, []string) (runner.CodexLimits, error)) {
+		runner.ReadCodexLimits = orig
+	}(runner.ReadCodexLimits)
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
 		return runner.CodexLimits{Blocked: true, ReachedType: "rate_limit_reached", ResetsAt: reset}, nil
 	}
 	r := Run(context.Background(), cand("codex", prose), Scheduled, 10*time.Second)
 	if r.OK || r.ErrorClass != "rate_limit" || r.ResetsAt == nil || !r.ResetsAt.Equal(reset) || r.Detail != "account/rateLimits/read: rate_limit_reached" {
 		t.Errorf("%+v", r)
 	}
-	runner.ReadCodexLimits = func(context.Context, string) (runner.CodexLimits, error) {
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
 		return runner.CodexLimits{}, errors.New("no app-server")
 	}
 	if r := Run(context.Background(), cand("codex", prose), Scheduled, 10*time.Second); r.ErrorClass != "unknown" {
@@ -120,5 +122,59 @@ func TestTimeoutAndMissingBinary(t *testing.T) {
 	c.Probe.Command = []string{"/nonexistent/keepgoing-probe"}
 	if r := Run(context.Background(), c, Scheduled, time.Second); r.OK || r.Detail != "not runnable" {
 		t.Errorf("%+v", r)
+	}
+}
+
+func TestProbesInheritTargetAccount(t *testing.T) {
+	for _, kind := range []string{"claude", "codex", "command"} {
+		for _, tier := range []Tier{Scheduled, Exact, Manual} {
+			t.Run(kind+"/"+string(tier), func(t *testing.T) {
+				key, output := "CLAUDE_CONFIG_DIR", `{"type":"result","is_error":false}`
+				if kind == "codex" {
+					key, output = "CODEX_HOME", `{"type":"turn.completed"}`
+				}
+				if kind == "command" {
+					output = `{"ok":true}`
+				}
+				t.Setenv(key, "/fictional/default")
+				cli := fake(t, `test "$`+key+`" = /fictional/account-b || exit 2
+ test "$KEEPGOING_TEST_SETTING" = probe || exit 3
+ echo '`+output+`'`)
+				env := map[string]string{key: "/fictional/account-b", "KEEPGOING_TEST_SETTING": "target"}
+				c := config.Candidate{ID: "account-b", Agent: config.Agent{Adapter: "claude", Claude: &config.Claude{CLI: cli, Env: env}}, Probe: config.Probe{Kind: kind, Env: map[string]string{"KEEPGOING_TEST_SETTING": "probe"}}}
+				if kind == "codex" {
+					c.Agent = config.Agent{Adapter: "codex", Codex: &config.Codex{CLI: cli, Env: env}}
+				}
+				if kind == "command" {
+					c.Probe.Command = []string{cli}
+				}
+				if r := Run(context.Background(), c, tier, 10*time.Second); !r.OK {
+					t.Fatalf("account not inherited: %+v", r)
+				}
+				if env["KEEPGOING_TEST_SETTING"] != "target" || os.Getenv(key) != "/fictional/default" {
+					t.Fatal("probe mutated target or parent environment")
+				}
+			})
+		}
+	}
+}
+
+func TestCodexProbeLimitCheckUsesProbeAccount(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/fictional/default")
+	cli := fake(t, `test "$CODEX_HOME" = /fictional/probe-account || exit 2
+if [ "$1" = app-server ]; then
+ while IFS= read -r line; do
+ case "$line" in
+ *'"id":1'*) echo '{"id":1,"result":{}}' ;;
+ *'"id":2'*) echo '{"id":2,"result":{"ordinaryUsageAllowed":false}}' ;;
+ esac
+ done
+else
+ echo '{"type":"turn.failed"}'
+ exit 1
+fi`)
+	c := config.Candidate{ID: "account-b", Agent: config.Agent{Adapter: "codex", Codex: &config.Codex{CLI: cli, Env: map[string]string{"CODEX_HOME": "/fictional/account-b"}}}, Probe: config.Probe{Kind: "codex", Env: map[string]string{"CODEX_HOME": "/fictional/probe-account"}}}
+	if r := Run(context.Background(), c, Exact, 10*time.Second); r.ErrorClass != "rate_limit" {
+		t.Fatalf("limit check did not use effective probe environment: %+v", r)
 	}
 }

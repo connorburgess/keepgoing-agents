@@ -73,6 +73,7 @@ keepgoing runs `claude -p --output-format json` itself, one turn per send. Each 
 | `model`, `effort`, `permission_mode` | none | Passed through as flags. |
 | `max_budget_usd` | none | Passed as `--max-budget-usd`. |
 | `extra_args` | none | Appended as is. |
+| `env` | none | Environment overrides for fresh and resumed turns, inherited by probes. For separate accounts, set `CLAUDE_CONFIG_DIR` (Claude) or `CODEX_HOME` (Codex). Values are literal; use absolute paths. |
 
 ## codex
 
@@ -86,6 +87,9 @@ keepgoing runs `codex exec --json` itself, one turn per send. Later turns resume
 | `sandbox` | none | Passed as `-s` on the first turn, and as a `sandbox_mode` override on resumed turns. |
 | `skip_git_repo_check` | `false` | Passes `--skip-git-repo-check`. |
 | `extra_args` | none | Appended as is. |
+| `env` | none | Environment overrides for fresh and resumed turns, inherited by probes. For separate accounts, set `CLAUDE_CONFIG_DIR` (Claude) or `CODEX_HOME` (Codex). Values are literal; use absolute paths. |
+
+Environment overrides inherit the rest of the supervisor's environment. They do not change the supervisor's login or environment. Codex's structured rate-limit check uses the same overrides as its turn. `probe.env` overrides inherited values for probes only, including their rate-limit checks. See the [three-account example](fallbacks.md#multiple-subscriptions).
 
 A running headless turn cannot be steered or queued into. A nudge to a stalled headless turn is recorded as a warning instead.
 

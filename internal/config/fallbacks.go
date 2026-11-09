@@ -244,3 +244,27 @@ func (c Candidate) ProbeCLI() string {
 	}
 	return c.Probe.Kind
 }
+
+// ProbeEnv inherits the headless target's environment. Explicit probe values
+// override inherited values without changing the target's configuration.
+func (c Candidate) ProbeEnv() map[string]string {
+	env := make(map[string]string)
+	var inherited map[string]string
+	switch c.Adapter {
+	case "claude":
+		if c.Claude != nil {
+			inherited = c.Claude.Env
+		}
+	case "codex":
+		if c.Codex != nil {
+			inherited = c.Codex.Env
+		}
+	}
+	for k, v := range inherited {
+		env[k] = v
+	}
+	for k, v := range c.Probe.Env {
+		env[k] = v
+	}
+	return env
+}
