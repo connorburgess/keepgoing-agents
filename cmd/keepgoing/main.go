@@ -131,7 +131,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "tick":
 		return tickOnce(e, cfg, now, *f.dryRun, *f.now != "")
 	case "daemon":
-		return daemon(e, cfg, *f.cfgPath)
+		return daemon(e, cfg, *f.cfgPath, *f.dryRun)
 	case "status":
 		return status(e, cfg, now, *f.asJSON)
 	case "enable", "disable", "pause", "resume", "stop", "await-user":

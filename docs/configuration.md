@@ -1,6 +1,6 @@
 # Configuration
 
-`keepgoing.yaml` describes one loop. Relative paths resolve against the directory holding the file, and a leading `~/` expands to the home directory. Unknown fields are errors. Editors that support JSON Schema can use [schema/keepgoing.schema.json](../schema/keepgoing.schema.json). Fallbacks have their own file, described in [fallbacks.md](fallbacks.md).
+`keepgoing.yaml` describes one loop. Relative paths resolve against the directory holding the file, and a leading `~/` expands to the home directory. This includes `state_dir`, prompt and handoff files, repositories, working directories, and commands written as a path such as `./status.sh`. A bare command name such as `bb` is looked up on `PATH`. Unknown fields are errors. Editors that support JSON Schema can use [schema/keepgoing.schema.json](../schema/keepgoing.schema.json). Fallbacks have their own file, described in [fallbacks.md](fallbacks.md).
 
 ```yaml
 version: 1
@@ -58,7 +58,7 @@ The status object looks like this:
 {"state": "idle", "errorClass": "rate_limit", "queued": 0, "background": 0, "gone": false}
 ```
 
-`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Anything else is `unknown`. `errorClass` is read only when the state is `error`. Stderr is never captured.
+`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Common synonyms are accepted too: `running`, `busy`, and `working` mean active, `completed`, `done`, and `waiting` mean idle, `failed` means error, and `queued` and `starting` mean pending. Anything else is `unknown`. `errorClass` is read only when the state is `error`. It may be a class name or a well-known code such as `429`. Stderr is never captured.
 
 ## claude
 
@@ -93,7 +93,7 @@ A running headless turn cannot be steered or queued into. A nudge to a stalled h
 | --- | --- | --- |
 | `repositories` | none | Repositories whose worktrees are fingerprinted. Without this, stall detection is off and an active session is left alone. |
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
-| `min_wake_interval` | `60m` | Minimum gap between nudges. |
+| `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
 
@@ -110,7 +110,15 @@ This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to 
 | `failover_on` | `[rate_limit]` | Error classes that may trigger a handoff: `rate_limit`, `auth`, `overloaded`, or `network`. `unknown` is not allowed. |
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
 
-The re-prompt budget resets as soon as the session is seen active or idle. An `auth` error that is not in `failover_on` goes straight to awaiting user, because retrying cannot fix it. When the provider reports a reset time and no fallback is available, the loop waits for the reset instead of spending re-prompts.
+The re-prompt budget resets as soon as the session is seen active or idle. An `auth` error goes to awaiting user unless a handoff happens, because retrying cannot fix it. For a class listed in `failover_on`, a reported reset time is honored: the loop waits for the reset instead of spending re-prompts when no fallback is available. For other classes the reset time is ignored. `failover_on: []` turns handoff off.
+
+## Validation and defaults
+
+- Durations use Go syntax such as `90s`, `10m`, or `4h`.
+- `stall_after` and `min_wake_interval` must be at least `1m`. `daemon.interval` must be at least `10s`, and `daemon.control_poll` at least `100ms`.
+- A zero or omitted number means its default. `max_reprompts: 0` means 3, not zero.
+- A window span whose start equals its end is rejected.
+- The BB CLI is given 30 seconds per call.
 
 ## report, yield, daemon
 

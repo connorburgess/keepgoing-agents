@@ -32,7 +32,7 @@ func TestDecide(t *testing.T) {
 		{"disabled", func(i *Input) { i.Control.Enabled = false }, None},
 		{"paused", func(i *Input) { i.Control.Paused = true }, None},
 		{"awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None},
-		{"target gone", func(i *Input) { i.Obs.Gone = true }, None},
+		{"target gone needs a person", func(i *Input) { i.Obs.Gone = true }, AwaitUser},
 		{"outside window", func(i *Input) { i.InWindow = false }, None},
 		{"idle with background work", func(i *Input) { i.Obs.Background = 1 }, None},
 		{"idle with queued messages", func(i *Input) { i.Obs.Queued = 2 }, None},

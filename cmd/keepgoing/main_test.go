@@ -326,15 +326,62 @@ esac
 
 func TestReportTestDryRunAndBadConfig(t *testing.T) {
 	f := newFixture(t)
-	if code, out, _ := f.run("report", "test", "--dry-run"); code != 0 || !strings.Contains(out, `"type":"keepgoing.handoff"`) {
+	if code, out, _ := f.run("report", "test", "--dry-run"); code != 0 || !strings.Contains(out, `"type":"keepgoing.test"`) {
 		t.Errorf("%d %s", code, out)
 	}
-	if code, _, _ := f.run("report", "test"); code != 0 || f.hooks.types() != "keepgoing.handoff" {
+	if code, _, _ := f.run("report", "test"); code != 0 || f.hooks.types() != "keepgoing.test" {
 		t.Errorf("delivery: %d %s", code, f.hooks.types())
 	}
 	bad := filepath.Join(f.dir, "bad.yaml")
 	write(t, bad, "version: 1\nloop: {name: Bad Name}\n", 0o600)
 	if code := run(context.Background(), []string{"validate", "-c", bad}, io.Discard, io.Discard); code != exitUsage {
 		t.Errorf("bad config exit = %d", code)
+	}
+}
+
+func TestDaemonWakesForControlChangeDuringAPass(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	code, _, _ := f.run("validate")
+	if code != 0 {
+		t.Fatal("fixture does not validate")
+	}
+	cfgPath := f.cfg
+	cfgLoaded := loadFixture(t, cfgPath)
+	sig := controlSignature(cfgLoaded.Loop.StateDir)
+	time.Sleep(20 * time.Millisecond)
+	f.run("stop") // written "during the pass", after the signature was taken
+	start := time.Now()
+	if !waitForNext(context.Background(), cfgLoaded, sig) {
+		t.Fatal("waitForNext asked the daemon to exit")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("waited %v for a change made during the pass; interval is 30s", d)
+	}
+}
+
+func TestFallbacksCheckExitsOneWhenRedundancyIsUnmet(t *testing.T) {
+	f := newFixture(t)
+	// Break the codex candidate's probe so only one provider is healthy.
+	os.WriteFile(filepath.Join(f.dir, "bin", "codex"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	code, out, _ := f.run("fallbacks", "check")
+	if code != exitFailed || !strings.Contains(out, "handoffs refused") {
+		t.Errorf("%d\n%s", code, out)
+	}
+	if code, _, _ := f.run("fallbacks", "check", "--id", "claude-other-account"); code != exitFailed {
+		t.Errorf("--id check still reports the unmet rule: %d", code)
+	}
+}
+
+func TestRetargetPrimaryAppliesItsModel(t *testing.T) {
+	f := newFixture(t)
+	b, _ := os.ReadFile(f.cfg)
+	s := strings.Replace(string(b), "bb: {thread: thr_primary, cli:", "bb: {thread: thr_primary, model: claude-opus-5-5, cli:", 1)
+	os.WriteFile(f.cfg, []byte(s), 0o600)
+	if code, out, errs := f.run("retarget", "primary"); code != 0 {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	if !strings.Contains(f.read("calls"), "thread update thr_primary --json --model claude-opus-5-5") {
+		t.Errorf("calls = %s", f.read("calls"))
 	}
 }

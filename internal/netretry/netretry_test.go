@@ -3,6 +3,8 @@ package netretry
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -62,13 +64,37 @@ func TestAttemptsCap(t *testing.T) {
 	}
 }
 
+// exitWith re-runs this test binary as a command that exits with code.
+func exitWith(t *testing.T, code int) []string {
+	t.Setenv("NETRETRY_HELPER_EXIT", strconv.Itoa(code))
+	return []string{os.Args[0], "-test.run=TestHelperExit"}
+}
+
+func TestHelperExit(t *testing.T) {
+	if v := os.Getenv("NETRETRY_HELPER_EXIT"); v != "" {
+		n, _ := strconv.Atoi(v)
+		os.Exit(n)
+	}
+}
+
 func TestCommandExitCodes(t *testing.T) {
 	on := Options{Online: func(context.Context) bool { return true }}
-	if code := Command(context.Background(), on, []string{"/bin/sh", "-c", "exit 7"}); code != 7 {
+	if code := Command(context.Background(), on, exitWith(t, 7)); code != 7 {
 		t.Errorf("code = %d", code)
 	}
 	off := Options{MaxWait: time.Millisecond, Online: func(context.Context) bool { return false }, Sleep: func(context.Context, time.Duration) { time.Sleep(2 * time.Millisecond) }}
-	if code := Command(context.Background(), off, []string{"/bin/sh", "-c", "exit 1"}); code != ExitNetworkGone {
+	if code := Command(context.Background(), off, exitWith(t, 1)); code != ExitNetworkGone {
 		t.Errorf("code = %d", code)
+	}
+}
+
+func TestNetProbeCommand(t *testing.T) {
+	t.Setenv("KEEPGOING_NET_PROBE", "exit 0")
+	if !DefaultOnline(context.Background()) {
+		t.Error("exit 0 probe should be online")
+	}
+	t.Setenv("KEEPGOING_NET_PROBE", "exit 3")
+	if DefaultOnline(context.Background()) {
+		t.Error("exit 3 probe should be offline")
 	}
 }

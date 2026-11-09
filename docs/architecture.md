@@ -8,7 +8,7 @@
 - **Structured signals only.** Session state and error class come from exit codes, JSON fields, HTTP status, or provider events. Transcript and message text is never read for a decision. Stderr from agent commands is never parsed.
 - **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
 - **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
-- **Stop and pause win.** They are evaluated first on every tick. Paused, disabled, or awaiting-user means the provider is not even queried and no probe runs.
+- **Stop and pause win.** A stop is handled before anything else on every tick, even while the loop is paused, disabled, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, or awaiting-user without a stop means the provider is not even queried and no probe runs.
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
@@ -40,14 +40,15 @@ internal/ciwait             wait for CI on an exact commit
 
 1. Take the tick lock. If another tick holds it, exit 75.
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
-3. If disabled, paused, or awaiting a person, record and stop here.
-4. If a yield command reports other work, record and exit 75.
-5. Observe the active target through its adapter. If it cannot be observed, record and take no action.
-6. Inside the time window, run any scheduled probes that are due, within the daily cap.
-7. Evaluate redundancy among eligible fallbacks. Eligible means enabled, not the active target, and not in the active target's quota group. Report a change into or out of the degraded state.
-8. Update the progress fingerprint, then run the decision engine.
-9. Act. A wake or re-prompt starts or steers a turn. A nudge is queued behind the live turn. A stop calls the adapter's stop once. Awaiting-user flips the control file. A handoff tries healthy candidates in order: an exact probe, then the adapter's activate step, then the brief. The first success becomes the active target. If every exact probe fails, the ordinary error rules apply to the current target.
-10. Save state and health, append an event to `runs.jsonl`, send any subscribed reports, and print the result.
+3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
+4. If disabled, paused, or awaiting a person, record and stop here.
+5. If a yield command reports other work, record and exit 75.
+6. Observe the active target through its adapter. If it cannot be observed, record and take no action.
+7. Inside the time window, run any scheduled probes that are due, within the daily cap. The active target and candidates in its quota group are skipped, so probes never spend the pool the loop is using.
+8. Evaluate redundancy among eligible fallbacks. Eligible means enabled, not the active target, and not in the active target's quota group. Report a change into or out of the degraded state.
+9. Update the progress fingerprint, then run the decision engine.
+10. Act. A wake or re-prompt starts or steers a turn. A nudge is queued behind the live turn. Awaiting-user flips the control file. A handoff tries healthy candidates in order. For each one it writes the brief, runs an exact probe, runs the adapter's activate step, and sends the brief. A brief that cannot be written ends the handoff before any candidate is touched. The first success becomes the active target. If no candidate can take over, the ordinary error rules apply to the current target.
+11. Save state and health, append an event to `runs.jsonl`, send any subscribed reports, and print the result.
 
 ## Adapters
 
@@ -68,4 +69,4 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 | `health.json` | the tool | probe evidence per candidate |
 | `runs.jsonl` | the tool | append-only events |
 | `tick.lock`, `daemon.lock` | the tool | advisory locks, released by the OS on exit |
-| `targets/<id>/` | the tool | headless turn files: prompt, stdout, exit code, session id |
+| `targets/<id>/` | the tool | headless turn files: `run.json`, prompt, stdout, stderr, exit code, session id |

@@ -18,7 +18,7 @@ candidates:
 
 - `id` is how state, health, and reports refer to the candidate. `primary` is reserved for the loop's own agent.
 - `provider` is required. Redundancy counts by it.
-- `group` is the account or quota pool and defaults to the provider. When the active target hits a limit, candidates in its group are skipped, because they draw on the same exhausted quota. Set the primary's `group` in `keepgoing.yaml` too.
+- `group` is the account or quota pool and defaults to the provider. Candidates in the active target's group are never handoff targets, never count toward redundancy, and are not probed on schedule, because they draw on the same quota. Set the primary's `group` in `keepgoing.yaml` too.
 - Order matters. A handoff tries healthy candidates from the top.
 - `disabled: true` keeps a candidate in the file without using it.
 
@@ -36,13 +36,35 @@ A probe is one tiny real request: "Reply with exactly: OK", with no tools, one t
 
 The kind defaults from the provider: `claude-code` uses `claude`, and `codex` uses `codex`. Other providers need `kind: command`.
 
+Other probe settings:
+
+- `probe.cli` overrides the executable.
+- `probe.workdir` sets where the probe runs. The default is a fresh temporary directory.
+- `probe.exit_codes` maps a command probe's exit codes to error classes.
+- `probe.env` adds environment variables. A command probe also receives `KEEPGOING_PROBE_TIER`, `KEEPGOING_PROBE_MODEL`, and `KEEPGOING_CANDIDATE`.
+
+A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
+
 There are three tiers:
 
-- **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. They use `probe.model` when set, so a cheap model can confirm the path for almost nothing. `scheduled_disabled: true` turns them off.
+- **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. A passing probe of any tier also resets the interval. A failed manual or exact probe does not, so the scheduled re-check still runs. A failed scheduled probe sends a `probe_failed` report. They use `probe.model` when set, so a cheap model can confirm the path for almost nothing. `scheduled_disabled: true` turns them off.
 - **Exact probes** run right before a handoff, against the candidate's real target model. A candidate that fails is skipped and the next one is tried.
-- **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it.
+- **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it. It holds the tick lock while it runs, and it ignores pause and the time window. Naming a disabled candidate with `--id` probes it anyway.
 
 Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored. A candidate is healthy while its last probe passed within `probe.ttl`.
+
+## Defaults
+
+| Field | Default |
+| --- | --- |
+| `redundancy.min_healthy` | 1 |
+| `redundancy.span` | `provider` |
+| `probe.every` | `4h` |
+| `probe.ttl` | `6h`, and it must be at least `every` |
+| `probe.daily_cap` | 6 |
+| `probe.timeout` | `90s` |
+
+Scheduled probes run one after another inside the tick, so a long list of slow probes makes that tick long. The daemon still notices a stop or pause written during the tick and acts on it right after.
 
 ## Redundancy
 

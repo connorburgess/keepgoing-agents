@@ -106,9 +106,8 @@ type Yield struct {
 
 // Daemon configures `keepgoing daemon`.
 type Daemon struct {
-	Interval     Duration `yaml:"interval,omitempty"`
-	ControlPoll  Duration `yaml:"control_poll,omitempty"`
-	ProbeOnStart bool     `yaml:"probe_on_start,omitempty"`
+	Interval    Duration `yaml:"interval,omitempty"`
+	ControlPoll Duration `yaml:"control_poll,omitempty"`
 }
 
 // Defaults applied when a field is omitted.
@@ -127,7 +126,7 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed", "test"}
 
 // DefaultReportEvents are sent when report.events is empty.
 var DefaultReportEvents = []string{"handoff", "degraded", "recovered", "await_user", "stop", "error"}
@@ -141,6 +140,9 @@ var (
 // Load reads, defaults, and validates a config file and its fallbacks file.
 // Relative paths inside a file resolve against that file's directory.
 func Load(path string) (*Config, error) {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs // so state_dir and every relative path become absolute
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -164,6 +166,9 @@ func Load(path string) (*Config, error) {
 		l.Progress.Repositories[i] = resolve(base, r)
 	}
 	l.Agent.resolvePaths(base)
+	if l.Yield != nil {
+		resolveArgv(base, l.Yield.BusyCommand)
+	}
 	if l.Fallbacks != "" {
 		fb, err := LoadFallbacks(l.Fallbacks)
 		if err != nil {
@@ -293,6 +298,8 @@ func (c *Config) Validate() error {
 			}
 			if len(span) != 2 || !timeRE.MatchString(span[0]) || !timeRE.MatchString(span[1]) {
 				add("loop.window.days.%s must be [\"HH:MM\", \"HH:MM\"]", day)
+			} else if span[0] == span[1] {
+				add("loop.window.days.%s: start and end are equal; use [\"00:00\", \"23:59\"] for a whole day", day)
 			}
 		}
 	}
@@ -368,6 +375,24 @@ func readNonEmpty(path string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return s, nil
+}
+
+// resolveExec makes a relative executable path such as ./status.sh absolute
+// against base. A bare name such as bb is left for PATH lookup.
+func resolveExec(base, p string) string {
+	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "~/") || !strings.ContainsAny(p, `/\`) {
+		if strings.HasPrefix(p, "~/") {
+			return resolve(base, p)
+		}
+		return p
+	}
+	return resolve(base, p)
+}
+
+func resolveArgv(base string, argv []string) {
+	if len(argv) > 0 {
+		argv[0] = resolveExec(base, argv[0])
+	}
 }
 
 func resolve(base, p string) string {

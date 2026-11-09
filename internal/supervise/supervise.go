@@ -167,6 +167,9 @@ func (t *tick) run() error {
 	res.Target = target
 
 	gate := ctl.Gate()
+	if gate.Stop {
+		return t.stop(target, agent, gate)
+	}
 	if !gate.Enabled || gate.Paused || gate.AwaitingUser {
 		switch {
 		case !gate.Enabled:
@@ -179,7 +182,7 @@ func (t *tick) run() error {
 		res.State, res.Window = "not observed", "not checked"
 		return t.record(nil)
 	}
-	if y := loop.Yield; y != nil && !gate.Stop {
+	if y := loop.Yield; y != nil {
 		busy, err := t.opts.Busy(t.ctx, *y)
 		if err != nil {
 			t.warn("busy check failed; not yielding: %v", err)
@@ -219,8 +222,8 @@ func (t *tick) run() error {
 		if t.reg, err = health.Load(loop.StateDir); err != nil {
 			return err
 		}
-		if inWindow && !t.opts.DryRun && !gate.Stop {
-			t.scheduledProbes()
+		if inWindow && !t.opts.DryRun {
+			t.scheduledProbes(target, agent.Group)
 		}
 		summary = health.Evaluate(t.fb, t.reg, t.now, target, agent.Group)
 		res.Redundancy = &summary
@@ -279,9 +282,6 @@ func (t *tick) run() error {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
 	d := decide.Decide(in)
-	if d.Action == decide.Stop && t.st.StopRequestedSent {
-		d = decide.Decision{Action: decide.None, Reason: "stop already requested"}
-	}
 	res.Action, res.Reason = string(d.Action), d.Reason
 
 	var actErr error
@@ -294,7 +294,7 @@ func (t *tick) run() error {
 			// ordinary error rules for the current target.
 			in.Failover.Available = false
 			d = decide.Decide(in)
-			res.Action, res.Reason = string(d.Action), d.Reason+" (no fallback passed its exact probe)"
+			res.Action, res.Reason = string(d.Action), d.Reason+" (no fallback could take over; see probes and warnings)"
 			actErr = t.act(a, d)
 		}
 	} else if !t.opts.DryRun {
@@ -310,8 +310,43 @@ func (t *tick) run() error {
 	return t.record(actErr)
 }
 
-func (t *tick) scheduledProbes() {
+// stop handles a stop request before anything else: it does not depend on
+// the loop being enabled or unpaused, on the window, on yield, or on the
+// fingerprint and health files being readable.
+func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
+	res := t.res
+	res.Window = "not checked"
+	a, err := t.opts.NewAdapter(agent, t.loop.StateDir, target)
+	if err != nil {
+		return err
+	}
+	obs, err := a.Observe(t.ctx)
+	if err != nil {
+		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
+		return t.record(err)
+	}
+	res.State = string(obs.State)
+	d := decide.Decide(decide.Input{Obs: obs, Control: gate})
+	if d.Action == decide.Stop && t.st.StopRequestedSent {
+		d = decide.Decision{Action: decide.None, Reason: "stop already requested"}
+	}
+	res.Action, res.Reason = string(d.Action), d.Reason
+	var actErr error
+	if !t.opts.DryRun && d.Action == decide.Stop {
+		actErr = t.act(a, d)
+	}
+	t.st.LastState = string(obs.State)
+	return t.record(actErr)
+}
+
+// scheduledProbes runs due probes. The active target and candidates in its
+// quota group are skipped: the running session is already the evidence for
+// that pool, and probing it would spend the quota the loop depends on.
+func (t *tick) scheduledProbes(active, activeGroup string) {
 	for _, c := range t.fb.Candidates {
+		if c.ID == active || (activeGroup != "" && c.Group == activeGroup) {
+			continue
+		}
 		due, _ := t.reg.Due(c, t.fb.Probe, t.now)
 		if !due {
 			continue
@@ -339,6 +374,10 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 	}
 	for _, id := range summary.Healthy {
 		c, _ := t.fb.Find(id)
+		brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
+		if err != nil {
+			return false, fmt.Errorf("handoff brief: %w", err)
+		}
 		r := t.opts.Probe(t.ctx, c, probe.Exact, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
@@ -357,10 +396,6 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 				t.warn("handoff to %s: activate: %v", id, err)
 				continue
 			}
-		}
-		brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
-		if err != nil {
-			return false, err
 		}
 		if err := ta.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
 			t.warn("handoff to %s: send: %v", id, err)
