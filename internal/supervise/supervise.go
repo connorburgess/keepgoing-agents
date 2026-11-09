@@ -381,6 +381,7 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Scheduled
 		t.reg.Record(c.ID, r)
+		t.keepFailure(c.ID, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
 		if !r.OK {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
@@ -408,6 +409,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		r := t.opts.Probe(t.ctx, c, probe.Exact, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
+		t.keepFailure(id, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
 		note.Tried = append(note.Tried, id)
 		if !r.OK {
@@ -472,6 +474,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	if t.reg != nil {
 		t.reg.Record(state.Primary, r)
 	}
+	t.keepFailure(state.Primary, r)
 	t.res.Probes = append(t.res.Probes, ProbeNote{ID: state.Primary, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
 	if !r.OK {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
@@ -502,6 +505,14 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.st.Reprompts, t.st.LastRepromptAt, t.st.Nudges = 0, time.Time{}, 0
 	t.report("switch_back", fmt.Sprintf("%s: switched back from %s to the primary", t.loop.Name, from), map[string]any{"from": from, "to": state.Primary})
 	return true, nil
+}
+
+// keepFailure saves a failed probe's raw output for later mapping. Losing
+// it is only a warning.
+func (t *tick) keepFailure(id string, r probe.Result) {
+	if err := probe.KeepFailure(t.loop.StateDir, id, r); err != nil {
+		t.warn("could not keep failed probe output for %s: %v", id, err)
+	}
 }
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {

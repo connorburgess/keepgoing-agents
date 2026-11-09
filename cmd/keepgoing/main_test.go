@@ -415,6 +415,15 @@ func TestFallbacksCheckExitsOneWhenRedundancyIsUnmet(t *testing.T) {
 	if code, _, _ := f.run("fallbacks", "check", "--id", "claude-other-account"); code != exitFailed {
 		t.Errorf("--id check still reports the unmet rule: %d", code)
 	}
+	// The failed Codex probe left a capture for later mapping, and its raw
+	// output stays out of health.json.
+	caps, _ := filepath.Glob(filepath.Join(f.dir, "state", "probe-failures", "codex-main", "*.out"))
+	if len(caps) != 1 {
+		t.Errorf("captures = %v", caps)
+	}
+	if h, _ := os.ReadFile(filepath.Join(f.dir, "state", "health.json")); strings.Contains(string(h), "raw") || strings.Contains(string(h), "Raw") {
+		t.Errorf("health.json carries raw output:\n%s", h)
+	}
 }
 
 func TestRetargetPrimaryAppliesItsModel(t *testing.T) {
