@@ -39,6 +39,11 @@ type Observation struct {
 	Queued     int  // messages already waiting for the session
 	Background int  // background workers still running
 	Gone       bool // target deleted or archived
+	// Retrying means the provider itself has scheduled a retry of the
+	// failed turn, so the supervisor should leave it alone.
+	Retrying bool
+	// ResetsAt, when known, is when the current usage limit lifts.
+	ResetsAt time.Time
 }
 
 // Control is the operator's gate.
@@ -60,10 +65,26 @@ type Input struct {
 	StallAfter      time.Duration
 	MinWakeInterval time.Duration
 
+	Failover Failover
+
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
 	SinceLastReprompt time.Duration
 	Backoff           time.Duration
+}
+
+// Failover is the supervisor's view of whether a handoff is possible.
+type Failover struct {
+	// Eligible: the error class is one the loop fails over on.
+	Eligible bool
+	// Available: a confirmed, healthy fallback exists and the redundancy
+	// rule is met.
+	Available bool
+	// ResetIn is how long until the limit lifts; zero when unknown.
+	ResetIn time.Duration
+	// WaitIfResetWithin: wait rather than hand off when the limit lifts
+	// this soon.
+	WaitIfResetWithin time.Duration
 }
 
 // Action is what the command layer should do.
@@ -77,6 +98,7 @@ const (
 	Reprompt  Action = "reprompt"   // start a turn after an error, counted and bounded
 	AwaitUser Action = "await_user" // give up until the operator intervenes
 	Stop      Action = "stop"       // stop the running session now
+	Handoff   Action = "handoff"    // move the loop to a confirmed fallback
 )
 
 // Decision is an action and the rule that produced it.
@@ -136,15 +158,31 @@ func Decide(in Input) Decision {
 	return none("unrecognised state")
 }
 
-// decideError bounds recovery from an errored session. Nothing here fails
-// over; that is a separate, confirmed-fallback step. Auth errors cannot be
-// fixed by retrying, so they go straight to the operator.
+// decideError bounds recovery from an errored session. A handoff happens
+// only for an error class the loop is configured to fail over on, and only
+// when a confirmed fallback is available. Unknown errors never hand off.
 func decideError(in Input) Decision {
-	if in.Obs.ErrorClass == ErrAuth {
-		return Decision{AwaitUser, "auth error"}
+	o, f := in.Obs, in.Failover
+	if o.Retrying {
+		return none("provider is retrying the turn")
 	}
-	if in.Obs.Queued > 0 {
+	if o.Queued > 0 {
 		return none("messages already queued after error")
+	}
+	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
+		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
+			return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; waiting")
+		}
+		if f.Available {
+			return Decision{Handoff, "error: " + string(o.ErrorClass)}
+		}
+		if f.ResetIn > 0 {
+			return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; no confirmed fallback")
+		}
+	}
+	// Retrying cannot fix an auth error.
+	if o.ErrorClass == ErrAuth {
+		return Decision{AwaitUser, "auth error"}
 	}
 	if in.Reprompts >= in.MaxReprompts {
 		return Decision{AwaitUser, "error persisted after re-prompts"}
@@ -152,7 +190,7 @@ func decideError(in Input) Decision {
 	if in.Reprompts > 0 && in.SinceLastReprompt < in.Backoff {
 		return none("backing off after error")
 	}
-	return Decision{Reprompt, "error: " + string(classOrUnknown(in.Obs.ErrorClass))}
+	return Decision{Reprompt, "error: " + string(classOrUnknown(o.ErrorClass))}
 }
 
 func classOrUnknown(c ErrorClass) ErrorClass {

@@ -50,6 +50,44 @@ func TestDecide(t *testing.T) {
 		{"error backoff elapsed", func(i *Input) { i.Obs.State = Error; i.Reprompts = 1; i.SinceLastReprompt = 11 * m }, Reprompt},
 		{"error exhausted", func(i *Input) { i.Obs.State = Error; i.Reprompts = 3 }, AwaitUser},
 		{"error with queued message waits", func(i *Input) { i.Obs.State = Error; i.Obs.Queued = 1 }, None},
+		{"provider retrying", func(i *Input) { i.Obs.State = Error; i.Obs.Retrying = true }, None},
+		{"rate limit hands off when available", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, Handoff},
+		{"rate limit waits when reset is near", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true, ResetIn: 10 * m, WaitIfResetWithin: 30 * m}
+		}, None},
+		{"rate limit hands off when reset is far", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true, ResetIn: 3 * time.Hour, WaitIfResetWithin: 30 * m}
+		}, Handoff},
+		{"rate limit with no fallback waits for a known reset", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, ResetIn: 3 * time.Hour, WaitIfResetWithin: 30 * m}
+		}, None},
+		{"rate limit with no fallback and no reset re-prompts", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true}
+		}, Reprompt},
+		{"unknown error never hands off", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrUnknown
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, Reprompt},
+		{"ineligible class never hands off", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrNetwork
+			i.Failover = Failover{Eligible: false, Available: true}
+		}, Reprompt},
+		{"auth hands off when configured", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrAuth
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, Handoff},
+		{"handoff blocked by stop", func(i *Input) {
+			i.Control.Stop = true
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, None},
 	}
 	for _, tc := range cases {
 		in := base()
