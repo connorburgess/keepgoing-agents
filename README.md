@@ -62,6 +62,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
 - [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
 - [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
+- [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.
 - [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
 - [docs/roadmap.md](docs/roadmap.md): what comes next.
 - [examples/](examples/): configurations and scheduler setups to copy.

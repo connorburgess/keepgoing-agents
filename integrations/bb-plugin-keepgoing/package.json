@@ -1,0 +1,39 @@
+{
+  "name": "bb-plugin-keepgoing",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.48",
+    "bbPluginSdk": ">=0.6.104"
+  },
+  "bb": {
+    "name": "keepgoing",
+    "description": "Shows keepgoing's state beside the threads it supervises, with pause, resume, and stop.",
+    "branding": {
+      "icon": "Repeat"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.104",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "description": "Shows keepgoing's state beside the BB threads it supervises.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit"
+  }
+}
