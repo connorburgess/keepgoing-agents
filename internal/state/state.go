@@ -1,0 +1,110 @@
+// Package state owns the machine-written records in a loop's state
+// directory: state.json for what the last tick knew and runs.jsonl for an
+// append-only event log.
+package state
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// FileName of the state record.
+const FileName = "state.json"
+
+// LogName of the event log.
+const LogName = "runs.jsonl"
+
+// File is what one tick leaves for the next.
+type File struct {
+	Fingerprint       string    `json:"fingerprint,omitempty"`
+	LastProgressAt    time.Time `json:"lastProgressAt,omitempty"`
+	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time `json:"checkedAt,omitempty"`
+	LastState         string    `json:"lastState,omitempty"`
+	Reprompts         int       `json:"reprompts,omitempty"`
+	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool      `json:"stopSent,omitempty"`
+}
+
+// Load reads state.json; a missing file is an empty record.
+func Load(stateDir string) (File, error) {
+	var f File
+	b, err := os.ReadFile(filepath.Join(stateDir, FileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return f, nil
+	}
+	if err != nil {
+		return f, err
+	}
+	if err := json.Unmarshal(b, &f); err != nil {
+		return File{}, fmt.Errorf("%s: %w", FileName, err)
+	}
+	return f, nil
+}
+
+// Save writes state.json atomically with owner-only permissions.
+func Save(stateDir string, f File) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(stateDir, FileName)
+	tmp, err := os.CreateTemp(stateDir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// Event is one line of runs.jsonl.
+type Event struct {
+	At     time.Time      `json:"at"`
+	Loop   string         `json:"loop"`
+	Event  string         `json:"event"`
+	Action string         `json:"action,omitempty"`
+	Reason string         `json:"reason,omitempty"`
+	State  string         `json:"state,omitempty"`
+	Error  string         `json:"error,omitempty"`
+	Extra  map[string]any `json:"extra,omitempty"`
+}
+
+// Append adds an event to runs.jsonl.
+func Append(stateDir string, e Event) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	if e.At.IsZero() {
+		e.At = time.Now().UTC()
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(stateDir, LogName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(b, '\n'))
+	return err
+}
