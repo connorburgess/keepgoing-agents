@@ -55,10 +55,10 @@ loop:
 The status object looks like this:
 
 ```json
-{"state": "idle", "errorClass": "rate_limit", "queued": 0, "background": 0, "gone": false}
+{"state": "idle", "errorClass": "rate_limit", "queued": 0, "background": 0, "gone": false, "awaitingInput": false}
 ```
 
-`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Common synonyms are accepted too: `running`, `busy`, and `working` mean active, `completed`, `done`, and `waiting` mean idle, `failed` means error, and `queued` and `starting` mean pending. Anything else is `unknown`. `errorClass` is read only when the state is `error`. It may be a class name or a well-known code such as `429`. Stderr is never captured.
+`state` is one of `active`, `idle`, `error`, `stopping`, or `pending`. Common synonyms are accepted too: `running`, `busy`, and `working` mean active, `completed`, `done`, and `waiting` mean idle, `failed` means error, and `queued` and `starting` mean pending. Anything else is `unknown`. `awaitingInput: true` means the session is blocked on a person, and nothing is sent to it. `errorClass` is read only when the state is `error`. It may be a class name or a well-known code such as `429`. Stderr is never captured.
 
 ## claude
 

@@ -55,6 +55,7 @@ Events: `wake`, `nudge`, `reprompt`, `handoff`, `degraded`, `recovered`, `await_
 
 ## Situations that need a person
 
+- **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
 - **Only `resume` clears a stop.** `enable` does not.

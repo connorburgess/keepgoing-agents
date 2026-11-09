@@ -45,6 +45,13 @@ Other probe settings:
 
 A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
+Probe cost depends on the CLI:
+
+- A Claude Code probe on a small model costs a fraction of a cent.
+- A Codex probe sends Codex's own system prompt. One real run used about 21,000 input tokens, most of them cached.
+
+Set `probe.every` and `probe.daily_cap` with that in mind.
+
 There are three tiers:
 
 - **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. A passing probe of any tier also resets the interval. A failed manual or exact probe does not, so the scheduled re-check still runs. A failed scheduled probe sends a `probe_failed` report. They use `probe.model` when set, so a cheap model can confirm the path for almost nothing. `scheduled_disabled: true` turns them off.
