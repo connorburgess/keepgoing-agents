@@ -32,6 +32,23 @@ jobs:
           PR_TEXT: ${{ github.event.pull_request.title }}${{ '\n' }}${{ github.event.pull_request.body }}
         run: ./scripts/check-contributions.sh "$BASE" "$HEAD"
 
+  bb-plugin:
+    name: BB plugin typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: integrations/bb-plugin-keepgoing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+
   go:
     name: Build and test
     strategy:

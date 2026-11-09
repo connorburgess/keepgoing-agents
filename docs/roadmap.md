@@ -28,10 +28,11 @@ See [integrations.md](integrations.md) for what is verified live.
 - signed reports in the bearer and text formats;
 - the release workflow, by publishing 0.1.0.
 
+**BB plugin.** `integrations/bb-plugin-keepgoing` shows keepgoing's state in each supervised thread's context card and adds `bb keepgoing status`, `pause`, `resume`, and `stop`.
+
 ## Next
 
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
-- A thin BB plugin that calls the CLI and renders its JSON.
 - Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
 - Headless runners on Windows. A draft exists; it needs a passing run in a Windows VM.
 - Homebrew formula once releases are public.

@@ -60,6 +60,12 @@ Other coding agents can be supervised today through the process adapter, given a
 
 See [testing.md](testing.md) for the per-platform results. The suite passes on macOS, on Ubuntu 26.04 ARM64, and on Windows 11 Arm. On Windows, the headless Claude Code and Codex runners and the end-to-end tests are POSIX only.
 
+## Agent workspaces
+
+| Integration | Status | Next check |
+| --- | --- | --- |
+| BB plugin (`integrations/bb-plugin-keepgoing`) | **Live**: installed in BB against a real loop. `bb keepgoing status`, `pause`, and `resume` ran through the plugin host. The context card row builds and typechecks, but has not been checked visually. | Confirm the row renders on a supervised thread. |
+
 ## Not planned
 
-keepgoing is IDE-independent. An IDE or agent workspace integrates by calling the CLI and reading its JSON. A thin BB plugin that renders `keepgoing status --json` is on the roadmap. Editor extensions are not planned.
+keepgoing is IDE-independent. An IDE or agent workspace integrates by calling the CLI and reading its JSON, as the BB plugin does. Editor extensions are not planned.
