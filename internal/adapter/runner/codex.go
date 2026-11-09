@@ -97,7 +97,15 @@ func (c *Codex) Observe(ctx context.Context) (decide.Observation, error) {
 	if o.Completed && !o.Failed && st.ExitCode == 0 {
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
 	}
-	return decide.Observation{State: decide.Error, ErrorClass: o.Class}, nil
+	obs := decide.Observation{State: decide.Error, ErrorClass: o.Class}
+	// Codex's event stream reports a usage limit only as prose. Ask the
+	// app-server for the structured snapshot instead.
+	if obs.ErrorClass == decide.ErrUnknown {
+		if l, err := ReadCodexLimits(ctx, c.cfg.CLI); err == nil && l.Blocked {
+			obs.ErrorClass, obs.ResetsAt = decide.ErrRateLimit, l.ResetsAt
+		}
+	}
+	return obs, nil
 }
 
 // Args builds the codex argv for one turn. The prompt is read from stdin.

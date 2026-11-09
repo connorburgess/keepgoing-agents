@@ -4,6 +4,8 @@
 
 ### Added
 
+- Codex usage limits are classified as `rate_limit` with a reset time. `codex exec --json` reports a limit only as prose, so when a Codex probe or headless turn fails without a recognized code, keepgoing reads the Codex app-server's structured `account/rateLimits/read` snapshot.
+
 - Headless Claude Code and Codex runners on Windows. Each turn runs through a detached copy of the keepgoing binary acting as the wrapper. Stop ends the turn's process tree with `taskkill`.
 
 - `switch_back`, off by default, returns the loop to its primary between the fallback's turns. It waits until the primary's reported reset time, or `min_after` when none was reported, and until the primary passes an exact probe. It sends a `switch_back` report. `loop.probe` sets how the primary is probed.

@@ -4,12 +4,14 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
@@ -64,6 +66,25 @@ func TestCodexProbe(t *testing.T) {
 	bad := fake(t, `printf '%s\n' '{"type":"turn.failed","error":{"message":"usage limit"}}'; exit 1`)
 	if r := Run(context.Background(), cand("codex", bad), Scheduled, 10*time.Second); r.OK || r.ErrorClass != "unknown" {
 		t.Errorf("%+v", r)
+	}
+}
+
+func TestCodexProbeLimitFromAppServer(t *testing.T) {
+	prose := fake(t, `printf '%s\n' '{"type":"turn.started"}' '{"type":"turn.failed","error":{"message":"Example usage limit message"}}'; exit 1`)
+	reset := time.Unix(1794393286, 0).UTC()
+	defer func(orig func(context.Context, string) (runner.CodexLimits, error)) { runner.ReadCodexLimits = orig }(runner.ReadCodexLimits)
+	runner.ReadCodexLimits = func(context.Context, string) (runner.CodexLimits, error) {
+		return runner.CodexLimits{Blocked: true, ReachedType: "rate_limit_reached", ResetsAt: reset}, nil
+	}
+	r := Run(context.Background(), cand("codex", prose), Scheduled, 10*time.Second)
+	if r.OK || r.ErrorClass != "rate_limit" || r.ResetsAt == nil || !r.ResetsAt.Equal(reset) || r.Detail != "account/rateLimits/read: rate_limit_reached" {
+		t.Errorf("%+v", r)
+	}
+	runner.ReadCodexLimits = func(context.Context, string) (runner.CodexLimits, error) {
+		return runner.CodexLimits{}, errors.New("no app-server")
+	}
+	if r := Run(context.Background(), cand("codex", prose), Scheduled, 10*time.Second); r.ErrorClass != "unknown" {
+		t.Errorf("unreadable snapshot must stay unknown: %+v", r)
 	}
 }
 

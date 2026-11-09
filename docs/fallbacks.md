@@ -31,7 +31,7 @@ A probe is one tiny real request: "Reply with exactly: OK", with no tools, one t
 | Kind | What runs | Healthy when |
 | --- | --- | --- |
 | `claude` | `claude -p` with JSON output, no session persistence, restricted tools | exit 0 and the result is not an error |
-| `codex` | `codex exec --json --ephemeral` in a read-only sandbox | exit 0 and a `turn.completed` event |
+| `codex` | `codex exec --json --ephemeral` in a read-only sandbox | exit 0 and a `turn.completed` event. On failure without a recognized code, the Codex app-server's `account/rateLimits/read` decides whether it was a usage limit, and when it resets. |
 | `command` | your `probe.command` | exit 0, unless stdout says `{"ok": false}` |
 
 The kind defaults from the provider: `claude-code` uses `claude`, and `codex` uses `codex`. Other providers need `kind: command`.

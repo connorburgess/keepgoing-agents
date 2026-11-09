@@ -204,3 +204,51 @@ func TestCodexTurn(t *testing.T) {
 		t.Errorf("session = %q", c.dir.Session())
 	}
 }
+
+// fakeAppServer answers the initialize handshake and account/rateLimits/read
+// the way codex app-server does over stdio JSON-RPC.
+const fakeAppServer = `while IFS= read -r line; do
+  case "$line" in
+    *'"id":1'*) echo '{"id":1,"result":{"userAgent":"fake"}}' ;;
+    *'"id":2'*) echo '{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1794393286}}}}' ;;
+  esac
+done`
+
+func TestReadCodexLimitsSpeaksTheAppServerProtocol(t *testing.T) {
+	l, err := readCodexLimits(context.Background(), fakeCLI(t, fakeAppServer))
+	if err != nil || !l.Blocked || l.ReachedType != "rate_limit_reached" || l.ResetsAt.Unix() != 1794393286 {
+		t.Fatalf("%+v %v", l, err)
+	}
+	if _, err := readCodexLimits(context.Background(), fakeCLI(t, "exit 1")); err == nil {
+		t.Error("a CLI without app-server must be an error, not a limit")
+	}
+}
+
+// The real Codex usage-limit stream carries the limit only as prose.
+const codexLimitProse = `{"type":"thread.started","thread_id":"00000000-0000-7000-8000-0000000000c3"}
+{"type":"turn.started"}
+{"type":"error","message":"Example usage limit message, try again later."}
+{"type":"turn.failed","error":{"message":"Example usage limit message, try again later."}}`
+
+func TestCodexTurnLimitClassifiedFromAppServerNotProse(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "events")
+	os.WriteFile(out, []byte(codexLimitProse), 0o600)
+	c := NewCodex(config.Codex{CLI: fakeCLI(t, "cat > /dev/null; cat "+out+"; exit 1"), Workdir: dir}, filepath.Join(dir, "target"))
+	if err := c.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, c.dir, Finished)
+	reset := time.Unix(1794393286, 0).UTC()
+	defer func(orig func(context.Context, string) (CodexLimits, error)) { ReadCodexLimits = orig }(ReadCodexLimits)
+	ReadCodexLimits = func(context.Context, string) (CodexLimits, error) {
+		return CodexLimits{Blocked: true, ReachedType: "rate_limit_reached", ResetsAt: reset}, nil
+	}
+	if obs, _ := c.Observe(context.Background()); obs.ErrorClass != decide.ErrRateLimit || !obs.ResetsAt.Equal(reset) {
+		t.Errorf("blocked snapshot: %+v", obs)
+	}
+	ReadCodexLimits = func(context.Context, string) (CodexLimits, error) { return CodexLimits{}, nil }
+	if obs, _ := c.Observe(context.Background()); obs.ErrorClass != decide.ErrUnknown {
+		t.Errorf("allowed snapshot must leave the prose failure unknown: %+v", obs)
+	}
+}
