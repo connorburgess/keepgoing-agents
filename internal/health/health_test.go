@@ -100,6 +100,25 @@ func TestDueRespectsIntervalAndDailyCap(t *testing.T) {
 	}
 }
 
+func TestFailedManualProbeDoesNotDelaySchedule(t *testing.T) {
+	fb := fallbacks(1, "none")
+	c := fb.Candidates[0]
+	r := &Registry{Candidates: map[string]*Entry{}}
+	r.Record(c.ID, probe.Result{At: now.Add(-time.Minute), Tier: probe.Manual, ErrorClass: "rate_limit"})
+	if due, why := r.Due(c, fb.Probe, now); !due {
+		t.Errorf("failed manual probe blocked the schedule: %s", why)
+	}
+	r.Record(c.ID, probe.Result{At: now.Add(-time.Minute), Tier: probe.Manual, OK: true})
+	if due, _ := r.Due(c, fb.Probe, now); due {
+		t.Error("a passing manual probe is fresh evidence")
+	}
+	r2 := &Registry{Candidates: map[string]*Entry{}}
+	r2.Record(c.ID, probe.Result{At: now.Add(-time.Hour), Tier: probe.Manual, OK: true})
+	if r2.Candidates[c.ID].ProbesToday != 0 {
+		t.Error("manual probes must not count toward the daily cap")
+	}
+}
+
 func TestSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	r := &Registry{Candidates: map[string]*Entry{}}

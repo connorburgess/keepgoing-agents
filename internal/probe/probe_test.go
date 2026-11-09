@@ -30,7 +30,7 @@ func TestClaudeProbe(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args")
 	ok := fake(t, `echo "$@" > `+argsFile+`; echo '{"type":"result","subtype":"success","is_error":false,"session_id":"s","credential_expires_at":"2026-12-04T18:46:30.684Z","result":"OK"}'`)
 	r := Run(context.Background(), cand("claude", ok), Scheduled, 10*time.Second)
-	if !r.OK || r.Model != "cheap-model" || r.CredentialExpiresAt.IsZero() {
+	if !r.OK || r.Model != "cheap-model" || r.CredentialExpiresAt == nil {
 		t.Errorf("%+v", r)
 	}
 	args, _ := os.ReadFile(argsFile)
@@ -68,6 +68,12 @@ func TestCommandProbe(t *testing.T) {
 	if r := Run(context.Background(), c, Exact, 10*time.Second); !r.OK {
 		t.Errorf("env not passed: %+v", r)
 	}
+	c.Probe.Env = map[string]string{"CLAUDE_CONFIG_DIR": "/fictional/second-account"}
+	c.Probe.Command = []string{fake(t, `test "$CLAUDE_CONFIG_DIR" = /fictional/second-account`)}
+	if r := Run(context.Background(), c, Scheduled, 10*time.Second); !r.OK {
+		t.Errorf("probe.env not passed: %+v", r)
+	}
+	c.Probe.Env = nil
 	c.Probe.Command = []string{fake(t, `exit 75`)}
 	c.Probe.ExitCodes = map[int]string{75: "rate_limit"}
 	if r := Run(context.Background(), c, Scheduled, 10*time.Second); r.OK || r.ErrorClass != "rate_limit" {

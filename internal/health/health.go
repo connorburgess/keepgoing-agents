@@ -125,7 +125,12 @@ func (r *Registry) Due(c config.Candidate, p config.ProbePolicy, now time.Time) 
 	if e != nil && e.ProbeDay == now.UTC().Format("2006-01-02") && e.ProbesToday >= p.DailyCap {
 		return false, "daily cap reached"
 	}
-	if e != nil && e.Last != nil && now.Sub(e.Last.At) < p.Every.Duration {
+	// A recent passing probe of any tier is fresh evidence. A failed manual or
+	// exact probe is not, so it does not hold off the scheduled re-check.
+	if e != nil && e.Last != nil && e.Last.OK && now.Sub(e.Last.At) < p.Every.Duration {
+		return false, "probed recently"
+	}
+	if e != nil && !e.LastSched.IsZero() && now.Sub(e.LastSched) < p.Every.Duration {
 		return false, "probed recently"
 	}
 	return true, "due"
