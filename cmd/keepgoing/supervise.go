@@ -141,6 +141,32 @@ type statusOut struct {
 	Redundancy   *health.Summary `json:"redundancy,omitempty"`
 	StateDir     string          `json:"stateDir"`
 	Version      string          `json:"version"`
+	// Structured identities for tools that match a loop to a session, such
+	// as an agent workspace showing keepgoing's state beside a thread.
+	PrimaryAgent agentRef `json:"primaryAgent"`
+	TargetAgent  agentRef `json:"targetAgent"`
+}
+
+// agentRef identifies the session an agent definition points at.
+type agentRef struct {
+	Adapter  string `json:"adapter"`
+	Provider string `json:"provider,omitempty"`
+	BBThread string `json:"bbThread,omitempty"`
+	Workdir  string `json:"workdir,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+func refOf(a config.Agent) agentRef {
+	r := agentRef{Adapter: a.Adapter, Provider: a.Provider, Model: a.Model()}
+	switch {
+	case a.BB != nil:
+		r.BBThread = a.BB.Thread
+	case a.Claude != nil:
+		r.Workdir = a.Claude.Workdir
+	case a.Codex != nil:
+		r.Workdir = a.Codex.Workdir
+	}
+	return r
 }
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
@@ -161,6 +187,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	out.PrimaryAgent, out.TargetAgent = refOf(l.Agent), refOf(l.Agent)
+	if c, ok := cfg.FallbackSet.Find(st.Target()); ok {
+		out.TargetAgent = refOf(c.Agent)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
 		if err == nil {

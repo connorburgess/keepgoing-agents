@@ -20,6 +20,10 @@ Ending the daemon does not stop the agent. To stop the agent, run `keepgoing sto
 | 75 | skipped: the lock is held, a yield check reported other work, or `net-retry` waited longer than `--max-wait` for the network |
 | 124 | `ci-wait`: timed out |
 
+## Status for other tools
+
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show keepgoing's state beside the right thread.
+
 ## Yielding to other work
 
 ```yaml
