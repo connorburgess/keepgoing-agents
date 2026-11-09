@@ -100,8 +100,33 @@ A handoff happens only when all of these hold:
 
 The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows.
 
-Returning to the primary is manual:
+## Switching back
+
+By default, returning to the primary is manual:
 
 ```sh
 keepgoing retarget primary
 ```
+
+To return automatically, turn on switch-back in `keepgoing.yaml`:
+
+```yaml
+loop:
+  provider: claude-code       # lets the primary be probed like a claude-code candidate
+  switch_back:
+    enabled: true
+    min_after: 1h             # when the provider reported no reset time
+    retry_every: 30m          # after the primary fails its probe
+  probe: {model: claude-haiku-5-5}   # optional; the switch-back probe uses the primary's own model
+```
+
+Switch-back only happens when all of these hold:
+
+1. A fallback is active and has just finished a turn, so the fallback is never interrupted mid-turn.
+2. The primary's limit has had time to lift. That means the reset time the provider reported at the handoff, or `min_after` since the handoff when none was reported.
+3. The last failed attempt was at least `retry_every` ago.
+4. The primary passes an exact probe right now.
+
+The primary then gets a short brief saying its limit has reset and the loop is back with it, and a `switch_back` report is sent. If the probe fails, the fallback keeps working and switch-back tries again later.
+
+`loop.probe` takes the same fields as a candidate's `probe`. Its kind defaults from `loop.provider`. Switch-back needs `loop.fallbacks`, and it needs a way to probe the primary.

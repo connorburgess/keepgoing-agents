@@ -32,6 +32,8 @@ loop:
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
+| `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
+| `probe` | for switch-back | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
 
 ## bb
 
@@ -132,7 +134,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, degraded, recovered, await_user, stop, error` |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, stop, error` |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |

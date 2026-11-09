@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `switch_back`, off by default, returns the loop to its primary between the fallback's turns. It waits until the primary's reported reset time, or `min_after` when none was reported, and until the primary passes an exact probe. It sends a `switch_back` report. `loop.probe` sets how the primary is probed.
+
 ## 0.1.1 (2026-11-10)
 
 ### Added
