@@ -33,6 +33,12 @@ type Adapter interface {
 	Stop(ctx context.Context) error
 }
 
+// Activator is implemented by adapters that must prepare the session before
+// the first message after a handoff, for example switching its model.
+type Activator interface {
+	Activate(ctx context.Context) error
+}
+
 // ErrUnsupported marks an operation the adapter cannot perform.
 type ErrUnsupported struct{ Op string }
 
@@ -59,13 +65,13 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrUnknown
 	}
 	switch c {
-	case "rate_limit", "rate_limited", "ratelimit", "usage_limit", "quota_exceeded", "insufficient_quota", "too_many_requests":
+	case "rate_limit", "rate-limit", "rate_limited", "ratelimit", "rate_limit_event", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked":
 		return decide.ErrRateLimit
-	case "auth", "unauthorized", "unauthenticated", "authentication_error", "permission_denied", "forbidden", "invalid_api_key":
+	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
-	case "overloaded", "overloaded_error", "service_unavailable", "capacity":
+	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
-	case "network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error":
+	case "network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error", "stream-disconnected", "stream_disconnected", "responsestreamdisconnected":
 		return decide.ErrNetwork
 	}
 	return decide.ErrUnknown
