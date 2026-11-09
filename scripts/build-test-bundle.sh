@@ -30,15 +30,31 @@ done
 exit $fail
 RUN
 cat > "$out/src/run-tests.ps1" <<'RUN'
-# Run every compiled test binary from its own package directory.
+# Run every compiled test binary from its own package directory. Each runs as
+# its own process with output to files and a hard time limit; on timeout its
+# whole process tree is killed, so a hung test or a leftover child process
+# can never hold this script open.
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $fail = 0
+$limit = 360
 Get-ChildItem -Path $root -Recurse -Filter *.test.exe | Where-Object { $_.Name -notlike '._*' } | Sort-Object FullName | ForEach-Object {
-  Push-Location $_.DirectoryName
-  $out = & $_.FullName "-test.timeout" "300s" 2>&1 | Out-String
   $rel = $_.DirectoryName.Substring($root.Length)
-  if ($LASTEXITCODE -eq 0) { "ok   .$rel" } else { "FAIL .$rel"; ($out -split "`n" | Select-Object -Last 25) -join "`n"; $fail = 1 }
-  Pop-Location
+  $out = Join-Path $env:TEMP ("kg-" + $_.BaseName + ".out")
+  $err = Join-Path $env:TEMP ("kg-" + $_.BaseName + ".err")
+  $p = Start-Process -FilePath $_.FullName -ArgumentList "-test.timeout","300s" -WorkingDirectory $_.DirectoryName -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+  # Read the handle now: without it, PowerShell reports no exit code later.
+  $null = $p.Handle
+  if (-not $p.WaitForExit($limit * 1000)) {
+    & taskkill /PID $p.Id /T /F | Out-Null
+    "FAIL .$rel (killed after ${limit}s)"
+    $fail = 1
+  } elseif (($p.WaitForExit() -or $true) -and $p.ExitCode -eq 0) {
+    "ok   .$rel"
+  } else {
+    "FAIL .$rel"
+    (Get-Content $out, $err -ErrorAction SilentlyContinue | Select-Object -Last 25) -join "`n"
+    $fail = 1
+  }
 }
 exit $fail
 RUN

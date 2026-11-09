@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 )
@@ -61,6 +62,9 @@ Exit codes: 0 ok, 1 failed, 2 usage or config error, 75 skipped (lock held or yi
 `
 
 func main() {
+	// On platforms without a POSIX shell, headless turns run through a copy
+	// of this binary; this returns immediately in every other case.
+	runner.MaybeRunTurn()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	cancel()

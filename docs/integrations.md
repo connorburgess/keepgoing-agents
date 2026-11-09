@@ -58,7 +58,7 @@ Other coding agents can be supervised today through the process adapter, given a
 
 ## Operating systems
 
-See [testing.md](testing.md) for the per-platform results. The suite passes on macOS, on Ubuntu 26.04 ARM64, and on Windows 11 Arm. On Windows, the headless Claude Code and Codex runners and the end-to-end tests are POSIX only.
+See [testing.md](testing.md) for the per-platform results. The suite passes on macOS, on Ubuntu 26.04 ARM64, and on Windows 11 Arm, including the headless runners on Windows. The end-to-end CLI tests are POSIX only.
 
 ## Agent workspaces
 

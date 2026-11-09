@@ -80,7 +80,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 
 - The BB adapter needs the `bb` CLI. Error classification relies on BB's structured provider events. When those are missing, the error is `unknown`.
 - The headless Codex adapter reads error codes from `codex exec --json` events. A real probe has been checked, but a real Codex usage-limit event has not. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
-- Headless runners need macOS or Linux. On Windows, the BB and process adapters work, but the Claude Code and Codex runners do not.
+- On Windows, headless Claude Code and Codex turns run through a detached copy of the keepgoing binary instead of a shell wrapper. This is tested in a Windows 11 Arm VM; x64 Windows has not been checked.
 - Switching back to the primary after a handoff is manual by default. Turn on `switch_back` to return automatically once the primary's limit resets and it passes a probe.
 - A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account.
 
