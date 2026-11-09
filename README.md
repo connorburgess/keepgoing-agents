@@ -13,7 +13,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 ## What it does
 
 - **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
-- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
+- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn, and after `max_nudges` nudges without progress the loop asks a person. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
 - **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs at least `min_healthy` confirmed fallbacks, counted across distinct providers by default. The default is 1; set 2 for real redundancy.
 - **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
 - **Knows when a person is needed.** A pending permission prompt or question, or a loop marked with `keepgoing await-user`, means nothing is sent. The person gets an `await_user` report instead of the loop sitting idle. See [docs/agent-chats.md](docs/agent-chats.md).
@@ -74,7 +74,6 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - Headless runners need macOS or Linux. On Windows, the BB and process adapters work, but the Claude Code and Codex runners do not.
 - Switching back to the primary after a handoff is manual, with `keepgoing retarget primary`.
 - A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account.
-- A session that stays active without progress is nudged every `min_wake_interval` and never escalates to a person on its own.
 
 ## Contributing
 
