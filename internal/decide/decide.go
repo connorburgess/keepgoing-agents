@@ -129,7 +129,7 @@ func Decide(in Input) Decision {
 		return none("awaiting user")
 	}
 	if o.Gone {
-		return none("target gone")
+		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
 	}
 	if !in.InWindow {
 		return none("outside window")

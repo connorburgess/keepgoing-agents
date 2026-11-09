@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +19,15 @@ import (
 )
 
 type fakeAdapter struct {
-	name      string
-	obs       decide.Observation
-	obsErr    error
-	sent      []string
-	modes     []adapter.Mode
-	stopped   int
-	noStop    bool
-	activated int
+	name        string
+	obs         decide.Observation
+	obsErr      error
+	sent        []string
+	modes       []adapter.Mode
+	stopped     int
+	noStop      bool
+	activated   int
+	activateErr error
 }
 
 func (f *fakeAdapter) Name() string { return "fake" }
@@ -44,7 +46,13 @@ func (f *fakeAdapter) Stop(context.Context) error {
 	f.stopped++
 	return nil
 }
-func (f *fakeAdapter) Activate(context.Context) error { f.activated++; return nil }
+func (f *fakeAdapter) Activate(context.Context) error {
+	if f.activateErr != nil {
+		return f.activateErr
+	}
+	f.activated++
+	return nil
+}
 
 type world struct {
 	cfg      *config.Config
@@ -245,21 +253,22 @@ func TestScheduledProbesRunWhenDueOnly(t *testing.T) {
 	w.primary(decide.Observation{State: decide.Active})
 	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
 	res := runTick(t, w, t0)
-	if len(w.probes) != 3 || res.Redundancy == nil || !res.Redundancy.Meets {
+	// same-account shares the primary's quota group, so it is never probed on schedule.
+	if len(w.probes) != 2 || res.Redundancy == nil || !res.Redundancy.Meets {
 		t.Fatalf("probes=%v res=%+v", w.probes, res.Redundancy)
 	}
 	runTick(t, w, t0.Add(time.Hour))
-	if len(w.probes) != 3 {
+	if len(w.probes) != 2 {
 		t.Errorf("probed again too soon: %v", w.probes)
 	}
 	runTick(t, w, t0.Add(5*time.Hour))
-	if len(w.probes) != 6 {
+	if len(w.probes) != 4 {
 		t.Errorf("not probed when due: %v", w.probes)
 	}
 	// Paused: no probes at all.
 	control.Update(w.dir, func(f *control.File) { f.Paused = true })
 	runTick(t, w, t0.Add(10*time.Hour))
-	if len(w.probes) != 6 {
+	if len(w.probes) != 4 {
 		t.Errorf("probed while paused: %v", w.probes)
 	}
 }
@@ -326,7 +335,7 @@ func TestAllExactProbesFailFallsBackToRepromptRules(t *testing.T) {
 	}
 	reg.Save(w.dir)
 	res := runTick(t, w, t0) // probeOK empty: exact probes fail
-	if res.Action != "reprompt" || !strings.Contains(res.Reason, "no fallback passed") || len(p.sent) != 1 {
+	if res.Action != "reprompt" || !strings.Contains(res.Reason, "no fallback could take over") || len(p.sent) != 1 {
 		t.Fatalf("%+v", res)
 	}
 	st, _ := state.Load(w.dir)
@@ -363,5 +372,118 @@ func TestRemovedTargetReturnsToPrimary(t *testing.T) {
 	res := runTick(t, w, t0)
 	if res.Target != state.Primary || len(res.Warnings) == 0 {
 		t.Errorf("%+v", res)
+	}
+}
+
+type failingReporter struct{}
+
+func (failingReporter) Report(context.Context, report.Event) error {
+	return errors.New("endpoint down")
+}
+
+func TestStopWinsOverPauseDisableAndBrokenState(t *testing.T) {
+	cases := map[string]func(w *world){
+		"paused":        func(w *world) { control.Update(w.dir, func(f *control.File) { f.Paused = true }) },
+		"disabled":      func(w *world) { control.Update(w.dir, func(f *control.File) { f.Enabled = false }) },
+		"awaiting user": func(w *world) { control.Update(w.dir, func(f *control.File) { f.AwaitingUser = true }) },
+		"broken fingerprint": func(w *world) {
+			w.cfg.Loop.Progress.Repositories = []string{"/fictional/missing"}
+		},
+		"busy yield": func(w *world) { w.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"x"}} },
+	}
+	for name, setup := range cases {
+		w := newWorld(t, true, true)
+		p := w.primary(decide.Observation{State: decide.Active})
+		setup(w)
+		control.Update(w.dir, func(f *control.File) { f.Stop = true })
+		o := w.opts(t0)
+		o.Fingerprint = func([]string) (string, error) { return "", errors.New("no such repository") }
+		o.Busy = func(context.Context, config.Yield) (bool, error) { return true, nil }
+		res, err := Tick(context.Background(), w.cfg, o)
+		if err != nil || res.Action != "stop" || p.stopped != 1 || len(w.probes) != 0 {
+			t.Errorf("%s: %+v err=%v stopped=%d probes=%v", name, res, err, p.stopped, w.probes)
+		}
+	}
+}
+
+func TestHandoffSkipsCandidateThatCannotActivate(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(limited)
+	w.adapters["claude-other"] = &fakeAdapter{obs: decide.Observation{State: decide.Idle}, activateErr: errors.New("model not available")}
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	res := runTick(t, w, t0)
+	if res.Target != "codex-main" || !strings.Contains(strings.Join(res.Warnings, ";"), "activate") {
+		t.Fatalf("%+v", res)
+	}
+}
+
+func TestBriefErrorSwitchesNothing(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(limited)
+	w.cfg.Loop.HandoffFile = w.dir + "/HANDOFF.md"
+	os.WriteFile(w.cfg.Loop.HandoffFile, []byte("   \n"), 0o600) // empty brief is an error
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	_, err := Tick(context.Background(), w.cfg, w.opts(t0))
+	if err == nil {
+		t.Fatal("expected the brief error")
+	}
+	for id, a := range w.adapters {
+		if id != state.Primary && (a.activated > 0 || len(a.sent) > 0) {
+			t.Errorf("%s was touched: activated=%d sent=%d", id, a.activated, len(a.sent))
+		}
+	}
+	if st, _ := state.Load(w.dir); st.Target() != state.Primary {
+		t.Errorf("target moved to %s", st.Target())
+	}
+}
+
+func TestReportFailureNeverFailsTheTick(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrAuth})
+	o := w.opts(t0)
+	o.Reporter = failingReporter{}
+	res, err := Tick(context.Background(), w.cfg, o)
+	if err != nil || res.Action != "await_user" || len(res.Warnings) == 0 || len(p.sent) != 0 {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestDegradedThenRecovered(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(decide.Observation{State: decide.Active})
+	w.probeOK = map[string]bool{"claude-other": true}
+	runTick(t, w, t0)
+	w.probeOK["codex-main"] = true
+	runTick(t, w, t0.Add(5*time.Hour))
+	if got := w.reportTypes(); !strings.HasSuffix(got, "degraded,recovered") || strings.Count(got, "degraded") != 1 {
+		t.Errorf("reports = %s", got)
+	}
+}
+
+func TestNoScheduledProbesOutsideWindow(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(decide.Observation{State: decide.Active})
+	w.cfg.Loop.Window = &config.Window{TZ: "UTC", Days: map[string][]string{"Tue": {"09:00", "17:00"}}}
+	runTick(t, w, t0) // a Monday
+	if len(w.probes) != 0 {
+		t.Errorf("probed outside the window: %v", w.probes)
+	}
+}
+
+func TestGoneTargetAsksForAPerson(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.primary(decide.Observation{State: decide.Unknown, Gone: true})
+	if res := runTick(t, w, t0); res.Action != "await_user" || !strings.Contains(w.reportTypes(), "await_user") {
+		t.Errorf("%+v reports=%s", res, w.reportTypes())
 	}
 }
