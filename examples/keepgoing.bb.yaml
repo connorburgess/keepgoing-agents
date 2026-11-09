@@ -1,0 +1,26 @@
+# Supervise a BB thread. Fictional values throughout.
+version: 1
+loop:
+  name: example-bb-loop
+  state_dir: ~/.local/state/keepgoing/example-bb-loop
+  adapter: bb
+  bb:
+    thread: thr_example123
+  prompt_file: HANDOFF.md
+  progress:
+    repositories:
+      - ~/src/example-app
+      - ~/src/example-web
+    stall_after: 30m
+    min_wake_interval: 60m
+  window:
+    tz: America/New_York
+    days:
+      Mon: ["08:00", "23:00"]
+      Tue: ["08:00", "23:00"]
+      Wed: ["08:00", "23:00"]
+      Thu: ["08:00", "23:00"]
+      Fri: ["08:00", "02:00"]
+  errors:
+    max_reprompts: 3
+    backoff: 10m
