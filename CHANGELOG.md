@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- The BB adapter read the oldest 60 log events instead of the newest, because `bb thread log --limit` returns events oldest first. On a long thread it missed current errors, rate limits, and interactions. It now keeps a cursor and reads only new events after a one-time full pass.
 - A stop request is now honored while the loop is paused, disabled, or awaiting a person, and when state files cannot be read.
 - The daemon now acts on a stop or pause written during a pass, instead of waiting a full interval.
 - Relative `state_dir` and command paths now resolve against the config file, so headless runners and `./script.sh` commands work from any directory.
