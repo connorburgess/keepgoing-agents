@@ -36,6 +36,8 @@ See [integrations.md](integrations.md) for what is verified live.
 
 **Windows runners.** Headless Claude Code and Codex turns now run on Windows, through a detached copy of the keepgoing binary. Tested in a Windows 11 Arm VM.
 
+**Codex limits.** A real Codex limit showed that `codex exec --json` reports it only as prose. keepgoing now classifies Codex failures from the app-server's structured rate-limit snapshot, with the reset time.
+
 ## Next
 
-- Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
+- Nothing scheduled. Ideas welcome as issues.
