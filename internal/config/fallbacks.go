@@ -204,6 +204,12 @@ func (f *Fallbacks) Find(id string) (Candidate, bool) {
 	return Candidate{}, false
 }
 
+// PrimaryCandidate presents the loop's own agent as a probe-able candidate,
+// so the primary can be confirmed before a switch-back.
+func (l Loop) PrimaryCandidate() Candidate {
+	return Candidate{ID: "primary", Agent: l.Agent, Probe: l.Probe}
+}
+
 // ProbeModel is the model a probe should use for a tier: the target model
 // for an exact probe, the cheap probe model for a scheduled one.
 func (c Candidate) ProbeModel(exact bool) string {

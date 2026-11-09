@@ -70,6 +70,11 @@ type Input struct {
 
 	Failover Failover
 
+	// SwitchBackReady: the loop is on a fallback, switch-back is enabled, and
+	// the primary's limit has had time to reset. The tick still confirms the
+	// primary with an exact probe before moving.
+	SwitchBackReady bool
+
 	Nudges    int // nudges sent since progress was last seen
 	MaxNudges int
 
@@ -98,13 +103,14 @@ type Action string
 
 // Actions.
 const (
-	None      Action = "none"       // do nothing this tick
-	Wake      Action = "wake"       // start a turn on an idle session
-	Nudge     Action = "nudge"      // queue a progress check behind a live turn
-	Reprompt  Action = "reprompt"   // start a turn after an error, counted and bounded
-	AwaitUser Action = "await_user" // give up until the operator intervenes
-	Stop      Action = "stop"       // stop the running session now
-	Handoff   Action = "handoff"    // move the loop to a confirmed fallback
+	None       Action = "none"        // do nothing this tick
+	Wake       Action = "wake"        // start a turn on an idle session
+	Nudge      Action = "nudge"       // queue a progress check behind a live turn
+	Reprompt   Action = "reprompt"    // start a turn after an error, counted and bounded
+	AwaitUser  Action = "await_user"  // give up until the operator intervenes
+	Stop       Action = "stop"        // stop the running session now
+	Handoff    Action = "handoff"     // move the loop to a confirmed fallback
+	SwitchBack Action = "switch_back" // return the loop to its primary
 )
 
 // Decision is an action and the rule that produced it.
@@ -156,6 +162,10 @@ func Decide(in Input) Decision {
 		}
 		if o.Queued > 0 {
 			return none("messages already queued")
+		}
+		// Only between turns: never pull the loop from a fallback mid-turn.
+		if in.SwitchBackReady {
+			return Decision{SwitchBack, "primary's limit has reset"}
 		}
 		return Decision{Wake, "idle"}
 	case Active:

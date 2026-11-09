@@ -37,6 +37,10 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// PrimaryResetsAt is when the primary's limit was reported to lift at the
+	// handoff away from it; switch-back waits for it.
+	PrimaryResetsAt   time.Time `json:"primaryResetsAt,omitempty"`
+	LastSwitchBackTry time.Time `json:"lastSwitchBackTry,omitempty"`
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`

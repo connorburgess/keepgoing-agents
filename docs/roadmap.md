@@ -32,8 +32,9 @@ See [integrations.md](integrations.md) for what is verified live.
 
 **Homebrew.** `brew install connorburgess/tap/keepgoing` installs the release binaries from the [homebrew-tap](https://github.com/connorburgess/homebrew-tap) repository.
 
+**Switch-back.** With `switch_back` on, the loop returns to the primary between the fallback's turns once the primary's limit resets and it passes an exact probe.
+
 ## Next
 
 - Check the Codex adapter against a real Codex usage-limit event and map its structured fields.
-- Optional automatic switch-back to the primary once its limit resets and an exact probe passes. Off by default.
 - Headless runners on Windows. A draft exists; it needs a passing run in a Windows VM.
