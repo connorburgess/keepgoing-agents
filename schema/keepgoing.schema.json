@@ -186,7 +186,8 @@
                   "await_user",
                   "stop",
                   "error",
-                  "probe_failed"
+                  "probe_failed",
+                  "test"
                 ]
               }
             },
@@ -219,9 +220,6 @@
             },
             "control_poll": {
               "$ref": "#/$defs/duration"
-            },
-            "probe_on_start": {
-              "type": "boolean"
             }
           }
         }

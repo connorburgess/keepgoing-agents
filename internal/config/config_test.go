@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +77,68 @@ func TestDurationParsing(t *testing.T) {
 	}
 	if _, err := Parse([]byte(valid + "  progress:\n    stall_after: soon\n")); err == nil {
 		t.Error("expected an error for a non-duration")
+	}
+}
+
+func TestLoadResolvesPathsAgainstTheConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("fallbacks.yaml", `version: 1
+candidates:
+  - id: custom
+    adapter: process
+    provider: example-cli
+    process: {status_command: [./st.sh], resume_command: [re]}
+    probe: {kind: command, command: [./probe.sh], cli: ./bin/claude}
+`)
+	write("keepgoing.yaml", `version: 1
+loop:
+  name: example-loop
+  state_dir: state
+  adapter: process
+  process: {status_command: [./status.sh, --json], resume_command: [resume-on-path]}
+  prompt: go
+  fallbacks: fallbacks.yaml
+  yield: {busy_command: [../busy.sh]}
+`)
+	// Load through a relative path, as `keepgoing tick` does by default.
+	wd, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(wd) })
+	os.Chdir(dir)
+	cfg, err := Load("keepgoing.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, _ := filepath.EvalSymlinks(dir)
+	same := func(got, want string) bool {
+		g, _ := filepath.EvalSymlinks(filepath.Dir(got))
+		return filepath.Join(g, filepath.Base(got)) == want
+	}
+	l := cfg.Loop
+	if !filepath.IsAbs(l.StateDir) || !same(l.StateDir, filepath.Join(real, "state")) {
+		t.Errorf("state_dir = %q", l.StateDir)
+	}
+	if !same(l.Process.StatusCommand[0], filepath.Join(real, "status.sh")) || l.Process.StatusCommand[1] != "--json" {
+		t.Errorf("status_command = %q", l.Process.StatusCommand)
+	}
+	if l.Process.ResumeCommand[0] != "resume-on-path" {
+		t.Errorf("bare names must stay for PATH lookup: %q", l.Process.ResumeCommand[0])
+	}
+	if !filepath.IsAbs(l.Yield.BusyCommand[0]) {
+		t.Errorf("busy_command = %q", l.Yield.BusyCommand[0])
+	}
+	c, _ := cfg.FallbackSet.Find("custom")
+	if !filepath.IsAbs(c.Probe.Command[0]) || !filepath.IsAbs(c.Probe.CLI) || !filepath.IsAbs(c.Process.StatusCommand[0]) {
+		t.Errorf("candidate paths = %q %q %q", c.Probe.Command[0], c.Probe.CLI, c.Process.StatusCommand[0])
+	}
+}
+
+func TestWindowStartEqualsEndIsRejected(t *testing.T) {
+	if _, err := Parse([]byte(valid + "  window:\n    tz: UTC\n    days: {Mon: [\"08:00\", \"08:00\"]}\n")); err == nil {
+		t.Error("equal start and end should be rejected")
 	}
 }
