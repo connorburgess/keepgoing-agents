@@ -46,6 +46,8 @@ type Result struct {
 	ErrorClass          string     `json:"errorClass,omitempty"`
 	Detail              string     `json:"detail,omitempty"` // a short code, never model output
 	CredentialExpiresAt *time.Time `json:"credentialExpiresAt,omitempty"`
+	// ResetsAt is when a reported usage limit lifts, when the provider says.
+	ResetsAt *time.Time `json:"resetsAt,omitempty"`
 	// Raw is the probe's stdout, capped. It is never part of health.json and
 	// never read for a decision; KeepFailure saves it so unrecognised error
 	// shapes can be mapped later.
@@ -115,6 +117,18 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		judgeClaude(&res, stdout, code)
 	case "codex":
 		judgeCodex(&res, stdout, code)
+		// Codex reports a usage limit only as prose in its event stream, so
+		// ask its app-server for the structured rate-limit snapshot.
+		if !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
+			if l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI()); err == nil && l.Blocked {
+				res.ErrorClass = string(decide.ErrRateLimit)
+				res.Detail = "account/rateLimits/read: " + l.ReachedType
+				if !l.ResetsAt.IsZero() {
+					t := l.ResetsAt
+					res.ResetsAt = &t
+				}
+			}
+		}
 	case "command":
 		judgeCommand(&res, stdout, code, c.Probe.ExitCodes)
 	}
