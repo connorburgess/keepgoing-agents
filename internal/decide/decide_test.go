@@ -39,6 +39,8 @@ func TestDecide(t *testing.T) {
 		{"active and progressing", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 5 * m }, None},
 		{"active stalled", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 31 * m }, Nudge},
 		{"active stalled but woken recently", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = 31 * m; i.SinceWake = 20 * m }, None},
+		{"stalled with nudges left", func(i *Input) { i.Obs.State, i.UnchangedFor, i.Nudges, i.MaxNudges = Active, 31*m, 2, 3 }, Nudge},
+		{"stalled after the last nudge asks a person", func(i *Input) { i.Obs.State, i.UnchangedFor, i.Nudges, i.MaxNudges = Active, 31*m, 3, 3 }, AwaitUser},
 		{"stopping", func(i *Input) { i.Obs.State = Stopping }, None},
 		{"pending", func(i *Input) { i.Obs.State = Pending }, None},
 		{"unknown status never acts", func(i *Input) { i.Obs.State = Unknown }, None},

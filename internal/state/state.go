@@ -29,6 +29,7 @@ type File struct {
 	CheckedAt         time.Time `json:"checkedAt,omitempty"`
 	LastState         string    `json:"lastState,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
+	Nudges            int       `json:"nudges,omitempty"` // since progress was last seen
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
 

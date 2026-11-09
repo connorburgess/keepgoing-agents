@@ -70,6 +70,9 @@ type Input struct {
 
 	Failover Failover
 
+	Nudges    int // nudges sent since progress was last seen
+	MaxNudges int
+
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
 	SinceLastReprompt time.Duration
@@ -157,6 +160,9 @@ func Decide(in Input) Decision {
 		return Decision{Wake, "idle"}
 	case Active:
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
+				return Decision{AwaitUser, "no progress after " + itoa(in.Nudges) + " nudges"}
+			}
 			return Decision{Nudge, "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
 		}
 		return none("active")
@@ -197,6 +203,17 @@ func decideError(in Input) Decision {
 		return none("backing off after error")
 	}
 	return Decision{Reprompt, "error: " + string(classOrUnknown(o.ErrorClass))}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for ; n > 0; n /= 10 {
+		s = string(rune('0'+n%10)) + s
+	}
+	return s
 }
 
 func classOrUnknown(c ErrorClass) ErrorClass {
