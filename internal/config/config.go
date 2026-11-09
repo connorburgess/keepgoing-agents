@@ -1,7 +1,8 @@
-// Package config loads and validates keepgoing.yaml.
+// Package config loads and validates keepgoing.yaml and fallbacks.yaml.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -37,36 +38,28 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 type Config struct {
 	Version int  `yaml:"version"`
 	Loop    Loop `yaml:"loop"`
+
+	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
+	FallbackSet *Fallbacks `yaml:"-"`
 }
 
 // Loop describes one supervised agent loop.
 type Loop struct {
-	Name       string     `yaml:"name"`
-	StateDir   string     `yaml:"state_dir"`
-	Adapter    string     `yaml:"adapter"`
-	BB         *BB        `yaml:"bb,omitempty"`
-	Process    *Process   `yaml:"process,omitempty"`
-	Prompt     string     `yaml:"prompt,omitempty"`
-	PromptFile string     `yaml:"prompt_file,omitempty"`
-	Progress   Progress   `yaml:"progress"`
-	Window     *Window    `yaml:"window,omitempty"`
-	Errors     ErrorRules `yaml:"errors"`
-}
+	Name     string `yaml:"name"`
+	StateDir string `yaml:"state_dir"`
+	Agent    `yaml:",inline"`
 
-// BB configures the BB thread adapter.
-type BB struct {
-	Thread string `yaml:"thread"`
-	CLI    string `yaml:"cli,omitempty"`
-}
+	Prompt      string `yaml:"prompt,omitempty"`
+	PromptFile  string `yaml:"prompt_file,omitempty"`
+	HandoffFile string `yaml:"handoff_file,omitempty"`
 
-// Process configures the generic process adapter. Each command is argv.
-type Process struct {
-	StatusCommand []string          `yaml:"status_command"`
-	ResumeCommand []string          `yaml:"resume_command"`
-	StopCommand   []string          `yaml:"stop_command,omitempty"`
-	ExitCodes     map[int]string    `yaml:"exit_codes,omitempty"`
-	Env           map[string]string `yaml:"env,omitempty"`
-	Timeout       Duration          `yaml:"timeout,omitempty"`
+	Progress  Progress   `yaml:"progress"`
+	Window    *Window    `yaml:"window,omitempty"`
+	Errors    ErrorRules `yaml:"errors"`
+	Fallbacks string     `yaml:"fallbacks,omitempty"`
+	Report    *Report    `yaml:"report,omitempty"`
+	Yield     *Yield     `yaml:"yield,omitempty"`
+	Daemon    Daemon     `yaml:"daemon"`
 }
 
 // Progress controls stall detection.
@@ -86,19 +79,58 @@ type Window struct {
 
 // ErrorRules bound how the supervisor reacts to a session in error.
 type ErrorRules struct {
-	MaxReprompts int      `yaml:"max_reprompts,omitempty"`
-	Backoff      Duration `yaml:"backoff,omitempty"`
+	MaxReprompts      int      `yaml:"max_reprompts,omitempty"`
+	Backoff           Duration `yaml:"backoff,omitempty"`
+	FailoverOn        []string `yaml:"failover_on,omitempty"`
+	WaitIfResetWithin Duration `yaml:"wait_if_reset_within,omitempty"`
+}
+
+// Report configures signed webhook reports.
+type Report struct {
+	URLEnv     string   `yaml:"url_env,omitempty"`
+	SecretEnv  string   `yaml:"secret_env,omitempty"`
+	SecretFile string   `yaml:"secret_file,omitempty"`
+	Source     string   `yaml:"source,omitempty"`
+	Scheme     string   `yaml:"scheme,omitempty"` // standard-webhooks or bearer
+	Format     string   `yaml:"format,omitempty"` // standard or text
+	Events     []string `yaml:"events,omitempty"`
+	Timeout    Duration `yaml:"timeout,omitempty"`
+}
+
+// Yield lets a tick step aside for other work. When BusyCommand exits 0 the
+// tick does nothing and exits 75.
+type Yield struct {
+	BusyCommand []string `yaml:"busy_command"`
+	Timeout     Duration `yaml:"timeout,omitempty"`
+}
+
+// Daemon configures `keepgoing daemon`.
+type Daemon struct {
+	Interval     Duration `yaml:"interval,omitempty"`
+	ControlPoll  Duration `yaml:"control_poll,omitempty"`
+	ProbeOnStart bool     `yaml:"probe_on_start,omitempty"`
 }
 
 // Defaults applied when a field is omitted.
 const (
-	DefaultStallAfter      = 30 * time.Minute
-	DefaultMinWakeInterval = 60 * time.Minute
-	DefaultMaxReprompts    = 3
-	DefaultBackoff         = 10 * time.Minute
-	DefaultProcessTimeout  = 20 * time.Second
-	DefaultBBCLI           = "bb"
+	DefaultStallAfter        = 30 * time.Minute
+	DefaultMinWakeInterval   = 60 * time.Minute
+	DefaultMaxReprompts      = 3
+	DefaultBackoff           = 10 * time.Minute
+	DefaultWaitIfResetWithin = 30 * time.Minute
+	DefaultProcessTimeout    = 20 * time.Second
+	DefaultBBCLI             = "bb"
+	DefaultDaemonInterval    = 5 * time.Minute
+	DefaultControlPoll       = 2 * time.Second
+	DefaultReportTimeout     = 20 * time.Second
+	DefaultYieldTimeout      = 10 * time.Second
 )
+
+// ReportEvents lists the events a report may subscribe to.
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed"}
+
+// DefaultReportEvents are sent when report.events is empty.
+var DefaultReportEvents = []string{"handoff", "degraded", "recovered", "await_user", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -106,8 +138,8 @@ var (
 	days   = map[string]bool{"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true}
 )
 
-// Load reads, defaults, and validates a config file. Relative paths inside
-// the file resolve against the file's directory.
+// Load reads, defaults, and validates a config file and its fallbacks file.
+// Relative paths inside a file resolve against that file's directory.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -118,12 +150,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	base := filepath.Dir(path)
-	cfg.Loop.StateDir = resolve(base, cfg.Loop.StateDir)
-	if cfg.Loop.PromptFile != "" {
-		cfg.Loop.PromptFile = resolve(base, cfg.Loop.PromptFile)
+	l := &cfg.Loop
+	l.StateDir = resolve(base, l.StateDir)
+	for _, p := range []*string{&l.PromptFile, &l.HandoffFile, &l.Fallbacks} {
+		if *p != "" {
+			*p = resolve(base, *p)
+		}
 	}
-	for i, r := range cfg.Loop.Progress.Repositories {
-		cfg.Loop.Progress.Repositories[i] = resolve(base, r)
+	if l.Report != nil && l.Report.SecretFile != "" {
+		l.Report.SecretFile = resolve(base, l.Report.SecretFile)
+	}
+	for i, r := range l.Progress.Repositories {
+		l.Progress.Repositories[i] = resolve(base, r)
+	}
+	l.Agent.resolvePaths(base)
+	if l.Fallbacks != "" {
+		fb, err := LoadFallbacks(l.Fallbacks)
+		if err != nil {
+			return nil, err
+		}
+		cfg.FallbackSet = fb
 	}
 	return cfg, nil
 }
@@ -131,7 +177,7 @@ func Load(path string) (*Config, error) {
 // Parse decodes and validates YAML bytes without touching the filesystem.
 func Parse(raw []byte) (*Config, error) {
 	var cfg Config
-	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
@@ -145,23 +191,51 @@ func Parse(raw []byte) (*Config, error) {
 
 func (c *Config) applyDefaults() {
 	l := &c.Loop
-	if l.Progress.StallAfter.Duration == 0 {
-		l.Progress.StallAfter.Duration = DefaultStallAfter
+	l.Agent.applyDefaults()
+	if l.Group == "" {
+		l.Group = "primary"
 	}
-	if l.Progress.MinWakeInterval.Duration == 0 {
-		l.Progress.MinWakeInterval.Duration = DefaultMinWakeInterval
-	}
+	setDur(&l.Progress.StallAfter, DefaultStallAfter)
+	setDur(&l.Progress.MinWakeInterval, DefaultMinWakeInterval)
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
-	if l.Errors.Backoff.Duration == 0 {
-		l.Errors.Backoff.Duration = DefaultBackoff
+	setDur(&l.Errors.Backoff, DefaultBackoff)
+	setDur(&l.Errors.WaitIfResetWithin, DefaultWaitIfResetWithin)
+	if l.Errors.FailoverOn == nil {
+		l.Errors.FailoverOn = []string{"rate_limit"}
 	}
-	if l.BB != nil && l.BB.CLI == "" {
-		l.BB.CLI = DefaultBBCLI
+	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
+	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
+	if r := l.Report; r != nil {
+		if r.URLEnv == "" {
+			r.URLEnv = "KEEPGOING_WEBHOOK_URL"
+		}
+		if r.SecretEnv == "" {
+			r.SecretEnv = "KEEPGOING_WEBHOOK_SECRET"
+		}
+		if r.Source == "" {
+			r.Source = l.Name
+		}
+		if r.Scheme == "" {
+			r.Scheme = "standard-webhooks"
+		}
+		if r.Format == "" {
+			r.Format = "standard"
+		}
+		if len(r.Events) == 0 {
+			r.Events = DefaultReportEvents
+		}
+		setDur(&r.Timeout, DefaultReportTimeout)
 	}
-	if l.Process != nil && l.Process.Timeout.Duration == 0 {
-		l.Process.Timeout.Duration = DefaultProcessTimeout
+	if y := l.Yield; y != nil {
+		setDur(&y.Timeout, DefaultYieldTimeout)
+	}
+}
+
+func setDur(d *Duration, v time.Duration) {
+	if d.Duration == 0 {
+		d.Duration = v
 	}
 }
 
@@ -179,36 +253,7 @@ func (c *Config) Validate() error {
 	if l.StateDir == "" {
 		add("loop.state_dir is required")
 	}
-	switch l.Adapter {
-	case "bb":
-		if l.BB == nil || l.BB.Thread == "" {
-			add("loop.bb.thread is required for the bb adapter")
-		}
-		if l.Process != nil {
-			add("loop.process is set but the adapter is bb")
-		}
-	case "process":
-		if l.Process == nil {
-			add("loop.process is required for the process adapter")
-		} else {
-			if len(l.Process.StatusCommand) == 0 {
-				add("loop.process.status_command is required")
-			}
-			if len(l.Process.ResumeCommand) == 0 {
-				add("loop.process.resume_command is required")
-			}
-			for code, class := range l.Process.ExitCodes {
-				if !ValidErrorClass(class) {
-					add("loop.process.exit_codes[%d]: unknown error class %q", code, class)
-				}
-			}
-		}
-		if l.BB != nil {
-			add("loop.bb is set but the adapter is process")
-		}
-	default:
-		add("loop.adapter must be bb or process")
-	}
+	errs = append(errs, l.Agent.validate("loop.")...)
 	if l.Prompt == "" && l.PromptFile == "" {
 		add("one of loop.prompt or loop.prompt_file is required")
 	}
@@ -223,6 +268,17 @@ func (c *Config) Validate() error {
 	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
+	}
+	for _, class := range l.Errors.FailoverOn {
+		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
+			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
+		}
+	}
+	if l.Daemon.Interval.Duration < 10*time.Second {
+		add("loop.daemon.interval must be at least 10s")
+	}
+	if l.Daemon.ControlPoll.Duration < 100*time.Millisecond {
+		add("loop.daemon.control_poll must be at least 100ms")
 	}
 	if w := l.Window; w != nil {
 		if _, err := time.LoadLocation(w.TZ); err != nil {
@@ -240,6 +296,22 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if r := l.Report; r != nil {
+		if r.Scheme != "standard-webhooks" && r.Scheme != "bearer" {
+			add("loop.report.scheme must be standard-webhooks or bearer")
+		}
+		if r.Format != "standard" && r.Format != "text" {
+			add("loop.report.format must be standard or text")
+		}
+		for _, e := range r.Events {
+			if e != "all" && !contains(ReportEvents, e) {
+				add("loop.report.events: unknown event %q", e)
+			}
+		}
+	}
+	if y := l.Yield; y != nil && len(y.BusyCommand) == 0 {
+		add("loop.yield.busy_command is required when yield is set")
+	}
 	return errors.Join(errs...)
 }
 
@@ -247,8 +319,10 @@ func (c *Config) Validate() error {
 var ErrorClasses = []string{"none", "rate_limit", "auth", "overloaded", "network", "unknown"}
 
 // ValidErrorClass reports whether s is a known error class.
-func ValidErrorClass(s string) bool {
-	for _, c := range ErrorClasses {
+func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }
+
+func contains(list []string, s string) bool {
+	for _, c := range list {
 		if c == s {
 			return true
 		}
@@ -261,13 +335,37 @@ func (l Loop) PromptText() (string, error) {
 	if l.PromptFile == "" {
 		return l.Prompt, nil
 	}
-	b, err := os.ReadFile(l.PromptFile)
+	return readNonEmpty(l.PromptFile)
+}
+
+// HandoffText returns the handoff file's contents, or "" when no handoff
+// file is configured or it does not exist.
+func (l Loop) HandoffText() (string, error) {
+	if l.HandoffFile == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(l.HandoffFile); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	return readNonEmpty(l.HandoffFile)
+}
+
+// ReportsEvent reports whether the report subscribes to event.
+func (r *Report) ReportsEvent(event string) bool {
+	if r == nil {
+		return false
+	}
+	return contains(r.Events, "all") || contains(r.Events, event)
+}
+
+func readNonEmpty(path string) (string, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 	s := strings.TrimSpace(string(b))
 	if s == "" {
-		return "", fmt.Errorf("%s is empty", l.PromptFile)
+		return "", fmt.Errorf("%s is empty", path)
 	}
 	return s, nil
 }

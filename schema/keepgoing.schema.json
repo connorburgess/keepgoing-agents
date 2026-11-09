@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/keepgoing.schema.json",
+  "title": "keepgoing.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "loop"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "state_dir",
+        "adapter"
+      ],
+      "properties": {
+        "adapter": {
+          "enum": [
+            "bb",
+            "process",
+            "claude",
+            "codex"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "description": "claude-code, codex, or any label; redundancy counts by it"
+        },
+        "group": {
+          "type": "string",
+          "description": "account or quota pool; defaults to provider"
+        },
+        "bb": {
+          "$ref": "#/$defs/bb"
+        },
+        "process": {
+          "$ref": "#/$defs/process"
+        },
+        "claude": {
+          "$ref": "#/$defs/claude"
+        },
+        "codex": {
+          "$ref": "#/$defs/codex"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "state_dir": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "prompt_file": {
+          "type": "string"
+        },
+        "handoff_file": {
+          "type": "string"
+        },
+        "progress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repositories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "stall_after": {
+              "$ref": "#/$defs/duration"
+            },
+            "min_wake_interval": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tz",
+            "days"
+          ],
+          "properties": {
+            "tz": {
+              "type": "string"
+            },
+            "days": {
+              "type": "object",
+              "additionalProperties": false,
+              "patternProperties": {
+                "^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          }
+        },
+        "errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_reprompts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "backoff": {
+              "$ref": "#/$defs/duration"
+            },
+            "failover_on": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "rate_limit",
+                  "auth",
+                  "overloaded",
+                  "network"
+                ]
+              }
+            },
+            "wait_if_reset_within": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "fallbacks": {
+          "type": "string",
+          "description": "path to fallbacks.yaml"
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url_env": {
+              "type": "string",
+              "default": "KEEPGOING_WEBHOOK_URL"
+            },
+            "secret_env": {
+              "type": "string",
+              "default": "KEEPGOING_WEBHOOK_SECRET"
+            },
+            "secret_file": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "scheme": {
+              "enum": [
+                "standard-webhooks",
+                "bearer"
+              ]
+            },
+            "format": {
+              "enum": [
+                "standard",
+                "text"
+              ]
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "all",
+                  "wake",
+                  "nudge",
+                  "reprompt",
+                  "handoff",
+                  "degraded",
+                  "recovered",
+                  "await_user",
+                  "stop",
+                  "error",
+                  "probe_failed"
+                ]
+              }
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "yield": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "busy_command"
+          ],
+          "properties": {
+            "busy_command": {
+              "$ref": "#/$defs/argv"
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "daemon": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval": {
+              "$ref": "#/$defs/duration"
+            },
+            "control_poll": {
+              "$ref": "#/$defs/duration"
+            },
+            "probe_on_start": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration such as 30s, 10m, 4h"
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "bb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thread"
+      ],
+      "properties": {
+        "thread": {
+          "type": "string",
+          "description": "BB thread id"
+        },
+        "cli": {
+          "type": "string",
+          "default": "bb"
+        },
+        "model": {
+          "type": "string",
+          "description": "applied with bb thread update before the first message after a handoff"
+        },
+        "reasoning": {
+          "type": "string"
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status_command",
+        "resume_command"
+      ],
+      "properties": {
+        "status_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "resume_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "stop_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "exit_codes": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "enum": [
+                "none",
+                "rate_limit",
+                "auth",
+                "overloaded",
+                "network",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "$ref": "#/$defs/duration"
+        }
+      }
+    },
+    "claude": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "claude"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "permission_mode": {
+          "type": "string"
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "codex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "codex"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string"
+        },
+        "skip_git_repo_check": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

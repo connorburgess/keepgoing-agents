@@ -28,6 +28,12 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if cfg.Loop.Progress.StallAfter.Duration != 30*time.Minute {
 		t.Errorf("stall_after default = %v", cfg.Loop.Progress.StallAfter)
 	}
+	if len(cfg.Loop.Errors.FailoverOn) != 1 || cfg.Loop.Errors.FailoverOn[0] != "rate_limit" {
+		t.Errorf("failover_on default = %v", cfg.Loop.Errors.FailoverOn)
+	}
+	if cfg.Loop.Group != "primary" {
+		t.Errorf("group default = %q", cfg.Loop.Group)
+	}
 	if cfg.Loop.Errors.MaxReprompts != 3 {
 		t.Errorf("max_reprompts default = %d", cfg.Loop.Errors.MaxReprompts)
 	}
@@ -35,14 +41,18 @@ func TestParseAppliesDefaults(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
-		"wrong version":    strings.Replace(valid, "version: 1", "version: 2", 1),
-		"bad name":         strings.Replace(valid, "example-loop", "Example Loop", 1),
-		"no prompt":        strings.Replace(valid, "  prompt: Continue the loop.\n", "", 1),
-		"unknown field":    valid + "  surprise: true\n",
-		"bad adapter":      strings.Replace(valid, "adapter: bb", "adapter: magic", 1),
-		"process w/o cmds": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1), "  bb:\n    thread: thr_example123\n", "  process: {}\n", 1),
-		"bad window day":   valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
-		"bad window time":  valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
+		"wrong version":       strings.Replace(valid, "version: 1", "version: 2", 1),
+		"bad name":            strings.Replace(valid, "example-loop", "Example Loop", 1),
+		"no prompt":           strings.Replace(valid, "  prompt: Continue the loop.\n", "", 1),
+		"unknown field":       valid + "  surprise: true\n",
+		"bad adapter":         strings.Replace(valid, "adapter: bb", "adapter: magic", 1),
+		"process w/o cmds":    strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1), "  bb:\n    thread: thr_example123\n", "  process: {}\n", 1),
+		"claude w/o workdir":  strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: claude", 1), "  bb:\n    thread: thr_example123\n", "  claude: {model: sonnet}\n", 1),
+		"failover on unknown": valid + "  errors:\n    failover_on: [unknown]\n",
+		"bad report event":    valid + "  report:\n    events: [everything]\n",
+		"yield w/o command":   valid + "  yield: {}\n",
+		"bad window day":      valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
+		"bad window time":     valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
 		"bad exit class": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
 			"  bb:\n    thread: thr_example123\n",
 			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {3: nonsense}\n", 1),

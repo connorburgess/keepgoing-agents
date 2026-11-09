@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/fallbacks.schema.json",
+  "title": "fallbacks.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "candidates"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "redundancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_healthy": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "span": {
+          "enum": [
+            "provider",
+            "group",
+            "none"
+          ]
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "every": {
+          "$ref": "#/$defs/duration"
+        },
+        "ttl": {
+          "$ref": "#/$defs/duration"
+        },
+        "daily_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeout": {
+          "$ref": "#/$defs/duration"
+        },
+        "scheduled_disabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "adapter",
+          "provider"
+        ],
+        "properties": {
+          "adapter": {
+            "enum": [
+              "bb",
+              "process",
+              "claude",
+              "codex"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "description": "claude-code, codex, or any label; redundancy counts by it"
+          },
+          "group": {
+            "type": "string",
+            "description": "account or quota pool; defaults to provider"
+          },
+          "bb": {
+            "$ref": "#/$defs/bb"
+          },
+          "process": {
+            "$ref": "#/$defs/process"
+          },
+          "claude": {
+            "$ref": "#/$defs/claude"
+          },
+          "codex": {
+            "$ref": "#/$defs/codex"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+            "not": {
+              "const": "primary"
+            }
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "claude",
+                  "codex",
+                  "command"
+                ]
+              },
+              "model": {
+                "type": "string",
+                "description": "cheap model for scheduled probes"
+              },
+              "command": {
+                "$ref": "#/$defs/argv"
+              },
+              "exit_codes": {
+                "type": "object",
+                "patternProperties": {
+                  "^[0-9]+$": {
+                    "enum": [
+                      "none",
+                      "rate_limit",
+                      "auth",
+                      "overloaded",
+                      "network",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "cli": {
+                "type": "string"
+              },
+              "workdir": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration such as 30s, 10m, 4h"
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "bb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thread"
+      ],
+      "properties": {
+        "thread": {
+          "type": "string",
+          "description": "BB thread id"
+        },
+        "cli": {
+          "type": "string",
+          "default": "bb"
+        },
+        "model": {
+          "type": "string",
+          "description": "applied with bb thread update before the first message after a handoff"
+        },
+        "reasoning": {
+          "type": "string"
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status_command",
+        "resume_command"
+      ],
+      "properties": {
+        "status_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "resume_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "stop_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "exit_codes": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "enum": [
+                "none",
+                "rate_limit",
+                "auth",
+                "overloaded",
+                "network",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "$ref": "#/$defs/duration"
+        }
+      }
+    },
+    "claude": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "claude"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "permission_mode": {
+          "type": "string"
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "codex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "codex"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string"
+        },
+        "skip_git_repo_check": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

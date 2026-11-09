@@ -43,8 +43,8 @@ func setup(t *testing.T, enabled bool) (*config.Config, string) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &config.Config{Version: 1, Loop: config.Loop{
-		Name: "example-loop", StateDir: dir, Adapter: "process", Prompt: "keep going",
-		Process:  &config.Process{StatusCommand: []string{"x"}, ResumeCommand: []string{"y"}},
+		Name: "example-loop", StateDir: dir, Prompt: "keep going",
+		Agent:    config.Agent{Adapter: "process", Process: &config.Process{StatusCommand: []string{"x"}, ResumeCommand: []string{"y"}}},
 		Progress: config.Progress{StallAfter: config.Duration{Duration: 30 * time.Minute}, MinWakeInterval: config.Duration{Duration: time.Hour}},
 		Errors:   config.ErrorRules{MaxReprompts: 2, Backoff: config.Duration{Duration: 10 * time.Minute}},
 	}}
