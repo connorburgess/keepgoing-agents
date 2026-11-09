@@ -1,0 +1,181 @@
+// Package health keeps the evidence that each fallback works and answers
+// whether the loop has enough confirmed fallbacks to hand off safely.
+package health
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
+)
+
+// FileName of the registry inside the state directory.
+const FileName = "health.json"
+
+const historyLen = 5
+
+// Entry is one candidate's record.
+type Entry struct {
+	Last        *probe.Result  `json:"last,omitempty"`
+	LastSched   time.Time      `json:"lastScheduledAt,omitempty"`
+	ProbeDay    string         `json:"probeDay,omitempty"` // UTC date of ProbesToday
+	ProbesToday int            `json:"probesToday,omitempty"`
+	History     []probe.Result `json:"history,omitempty"`
+}
+
+// Registry is health.json.
+type Registry struct {
+	Candidates map[string]*Entry `json:"candidates"`
+}
+
+// Load reads the registry; a missing file is empty.
+func Load(stateDir string) (*Registry, error) {
+	r := &Registry{Candidates: map[string]*Entry{}}
+	b, err := os.ReadFile(filepath.Join(stateDir, FileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return r, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, r); err != nil {
+		return nil, fmt.Errorf("%s: %w", FileName, err)
+	}
+	if r.Candidates == nil {
+		r.Candidates = map[string]*Entry{}
+	}
+	return r, nil
+}
+
+// Save writes the registry atomically.
+func (r *Registry) Save(stateDir string) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(stateDir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Chmod(0o600)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, filepath.Join(stateDir, FileName))
+}
+
+func (r *Registry) entry(id string) *Entry {
+	e, ok := r.Candidates[id]
+	if !ok {
+		e = &Entry{}
+		r.Candidates[id] = e
+	}
+	return e
+}
+
+// Record stores a probe result.
+func (r *Registry) Record(id string, res probe.Result) {
+	e := r.entry(id)
+	rc := res
+	e.Last = &rc
+	e.History = append([]probe.Result{res}, e.History...)
+	if len(e.History) > historyLen {
+		e.History = e.History[:historyLen]
+	}
+	if res.Tier == probe.Scheduled {
+		day := res.At.UTC().Format("2006-01-02")
+		if e.ProbeDay != day {
+			e.ProbeDay, e.ProbesToday = day, 0
+		}
+		e.ProbesToday++
+		e.LastSched = res.At
+	}
+}
+
+// Healthy reports whether the candidate's last probe passed within ttl.
+func (r *Registry) Healthy(id string, now time.Time, ttl time.Duration) bool {
+	e, ok := r.Candidates[id]
+	return ok && e.Last != nil && e.Last.OK && now.Sub(e.Last.At) <= ttl
+}
+
+// Due reports whether a scheduled probe should run for the candidate now.
+func (r *Registry) Due(c config.Candidate, p config.ProbePolicy, now time.Time) (bool, string) {
+	if c.Disabled {
+		return false, "disabled"
+	}
+	if p.Disabled {
+		return false, "scheduled probes are off"
+	}
+	e := r.Candidates[c.ID]
+	if e != nil && e.ProbeDay == now.UTC().Format("2006-01-02") && e.ProbesToday >= p.DailyCap {
+		return false, "daily cap reached"
+	}
+	if e != nil && e.Last != nil && now.Sub(e.Last.At) < p.Every.Duration {
+		return false, "probed recently"
+	}
+	return true, "due"
+}
+
+// Summary is the redundancy picture relative to the active target.
+type Summary struct {
+	Healthy  []string `json:"healthy"`
+	Eligible []string `json:"eligible"`
+	Distinct int      `json:"distinct"`
+	Min      int      `json:"min"`
+	Span     string   `json:"span"`
+	Meets    bool     `json:"meets"`
+}
+
+// Evaluate lists healthy candidates in file order among those eligible to
+// take over from the active target: not disabled, not the active target,
+// and not sharing its group (the exhausted account or quota pool).
+func Evaluate(fb *config.Fallbacks, r *Registry, now time.Time, activeID, activeGroup string) Summary {
+	s := Summary{Healthy: []string{}, Eligible: []string{}, Min: fb.Redundancy.MinHealthy, Span: fb.Redundancy.Span}
+	keys := map[string]bool{}
+	for _, c := range fb.Candidates {
+		if c.Disabled || c.ID == activeID || (activeGroup != "" && c.Group == activeGroup) {
+			continue
+		}
+		s.Eligible = append(s.Eligible, c.ID)
+		if !r.Healthy(c.ID, now, fb.Probe.TTL.Duration) {
+			continue
+		}
+		s.Healthy = append(s.Healthy, c.ID)
+		switch fb.Redundancy.Span {
+		case "provider":
+			keys[c.Provider] = true
+		case "group":
+			keys[c.Group] = true
+		default:
+			keys[c.ID] = true
+		}
+	}
+	s.Distinct = len(keys)
+	s.Meets = s.Distinct >= s.Min && len(s.Healthy) > 0
+	return s
+}
+
+// IDs returns the registry's candidate ids, sorted.
+func (r *Registry) IDs() []string {
+	var ids []string
+	for id := range r.Candidates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
