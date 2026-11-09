@@ -18,6 +18,9 @@ const FileName = "state.json"
 // LogName of the event log.
 const LogName = "runs.jsonl"
 
+// Primary is the active-target id of the loop's own agent.
+const Primary = "primary"
+
 // File is what one tick leaves for the next.
 type File struct {
 	Fingerprint       string    `json:"fingerprint,omitempty"`
@@ -28,6 +31,19 @@ type File struct {
 	Reprompts         int       `json:"reprompts,omitempty"`
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
+
+	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
+	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
+	Handoffs      int       `json:"handoffs,omitempty"`
+	Degraded      bool      `json:"degraded,omitempty"`
+}
+
+// Target returns the active target id, defaulting to primary.
+func (f File) Target() string {
+	if f.ActiveTarget == "" {
+		return Primary
+	}
+	return f.ActiveTarget
 }
 
 // Load reads state.json; a missing file is an empty record.
@@ -84,6 +100,7 @@ type Event struct {
 	Action string         `json:"action,omitempty"`
 	Reason string         `json:"reason,omitempty"`
 	State  string         `json:"state,omitempty"`
+	Target string         `json:"target,omitempty"`
 	Error  string         `json:"error,omitempty"`
 	Extra  map[string]any `json:"extra,omitempty"`
 }

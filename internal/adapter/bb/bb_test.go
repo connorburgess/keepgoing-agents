@@ -3,100 +3,180 @@ package bb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
-func fake(responses map[string]string, fail map[string]bool) func(context.Context, string, ...string) ([]byte, error) {
-	return func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		key := strings.Join(args[:2], " ")
-		if fail[key] {
-			return []byte(responses[key]), errors.New("exit 1")
+var now = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+
+type call struct {
+	stdin string
+	args  []string
+}
+
+func newFake(show, log string, fail bool) (*Adapter, *[]call) {
+	a := New(config.BB{Thread: "thr_example123"})
+	a.now = func() time.Time { return now }
+	var calls []call
+	a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+		calls = append(calls, call{stdin, args})
+		switch args[1] {
+		case "show":
+			if fail {
+				return []byte(show), errors.New("exit 1")
+			}
+			return []byte(show), nil
+		case "log":
+			return []byte(log), nil
 		}
-		return []byte(responses[key]), nil
+		return []byte(`{"ok":true}`), nil
 	}
+	return a, &calls
 }
 
 func TestObserveIdle(t *testing.T) {
-	a := New("bb", "thr_example123")
-	a.run = fake(map[string]string{
-		"thread show": `{"thread":{"status":"idle","queuedMessageCount":1,"activeBackgroundAgentCount":0,"archivedAt":null,"deletedAt":null}}`,
-	}, nil)
+	a, _ := newFake(`{"thread":{"status":"idle","queuedMessageCount":1,"archivedAt":null,"deletedAt":null}}`, `[]`, false)
 	obs, err := a.Observe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if obs.State != decide.Idle || obs.Queued != 1 || obs.Gone {
-		t.Errorf("obs = %+v", obs)
+	if err != nil || obs.State != decide.Idle || obs.Queued != 1 || obs.Gone {
+		t.Errorf("%+v %v", obs, err)
 	}
 }
 
-func TestObserveErrorClassifiesCodeNotProse(t *testing.T) {
-	a := New("bb", "thr_example123")
-	a.run = fake(map[string]string{
-		"thread show": `{"thread":{"status":"error"}}`,
-		"thread log":  `[{"type":"message","data":{"text":"usage limit reached"}},{"type":"turn_failed","data":{"error":{"code":"rate_limit","message":"Usage limit reached"}}}]`,
-	}, nil)
-	obs, _ := a.Observe(context.Background())
-	if obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit {
-		t.Errorf("obs = %+v", obs)
+// Fixtures below are synthetic and follow the field shapes of real bb events.
+const turnStarted = `{"type":"turn/started","data":{"providerThreadId":"p1"}}`
+
+func providerError(category string, status any, code string, willRetry any) string {
+	return fmt.Sprintf(`{"type":"provider/error","data":{"message":"Usage limit reached, see you later","detail":"x","willRetry":%v,"errorInfo":{"category":%q,"httpStatusCode":%v,"providerCode":%q}}}`,
+		jsonv(willRetry), category, jsonv(status), code)
+}
+
+func jsonv(v any) string {
+	if v == nil {
+		return "null"
 	}
-	// Same words in prose only, no code: must be unknown.
-	a.run = fake(map[string]string{
-		"thread show": `{"thread":{"status":"error"}}`,
-		"thread log":  `[{"type":"turn_failed","data":{"message":"usage limit reached, 429"}}]`,
-	}, nil)
-	obs, _ = a.Observe(context.Background())
+	return fmt.Sprint(v)
+}
+
+func TestObserveStructuredRateLimit(t *testing.T) {
+	log := "[" + turnStarted + "," + providerError("rate-limit", 429, "rate_limit_event", nil) + "]"
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	obs, _ := a.Observe(context.Background())
+	if obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit || obs.Retrying {
+		t.Errorf("%+v", obs)
+	}
+}
+
+func TestObserveStreamDisconnectIsNetworkAndRetrying(t *testing.T) {
+	log := "[" + turnStarted + "," + providerError("stream-disconnected", nil, "responseStreamDisconnected", true) + "]"
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrNetwork || !obs.Retrying {
+		t.Errorf("%+v", obs)
+	}
+}
+
+func TestObserveProseNeverClassifies(t *testing.T) {
+	// The message says "usage limit" but every structured field is unknown.
+	log := "[" + turnStarted + "," + providerError("unknown", nil, "unknown", true) + "]"
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	obs, _ := a.Observe(context.Background())
 	if obs.ErrorClass != decide.ErrUnknown {
 		t.Errorf("prose classified as %s", obs.ErrorClass)
 	}
+	log = `[` + turnStarted + `,{"type":"message","data":{"text":"we hit the usage limit, 429"}}]`
+	a, _ = newFake(`{"thread":{"status":"error"}}`, log, false)
+	obs, _ = a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrUnknown {
+		t.Errorf("message text classified as %s", obs.ErrorClass)
+	}
 }
 
-func TestObserveGoneAndArchived(t *testing.T) {
-	a := New("bb", "thr_example123")
-	a.run = fake(map[string]string{"thread show": `{"ok":false,"error":{"code":"thread_not_found","message":"no"}}`}, map[string]bool{"thread show": true})
-	obs, err := a.Observe(context.Background())
-	if err != nil || !obs.Gone {
+func TestObserveIgnoresErrorsFromEarlierTurns(t *testing.T) {
+	log := "[" + providerError("rate-limit", 429, "rate_limit_event", nil) + "," + turnStarted + `,{"type":"system/error","data":{"code":"thread_command_failed","message":"x"}}]`
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrUnknown {
+		t.Errorf("stale error leaked: %s", obs.ErrorClass)
+	}
+}
+
+func rateLimitsEvent(status string, resets time.Time) string {
+	return fmt.Sprintf(`{"type":"provider/rateLimits/updated","data":{"providerThreadId":"p1","rateLimits":{"kind":"subscription-window","providerId":"claude-code","status":%q,"windows":[{"label":"Weekly","providerKey":"seven_day","status":%q,"resetsAtMs":%d}]}}}`,
+		status, status, resets.UnixMilli())
+}
+
+func TestObserveBlockedWindowOnIdleThread(t *testing.T) {
+	reset := now.Add(3 * time.Hour)
+	a, _ := newFake(`{"thread":{"status":"idle"}}`, "["+turnStarted+","+rateLimitsEvent("blocked", reset)+"]", false)
+	obs, _ := a.Observe(context.Background())
+	if obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit || !obs.ResetsAt.Equal(reset) {
+		t.Errorf("%+v", obs)
+	}
+	// A blocked window that has already reset means nothing.
+	a, _ = newFake(`{"thread":{"status":"idle"}}`, "["+rateLimitsEvent("blocked", now.Add(-time.Hour))+"]", false)
+	obs, _ = a.Observe(context.Background())
+	if obs.State != decide.Idle {
+		t.Errorf("expired block: %+v", obs)
+	}
+	// An allowed window is not a limit.
+	a, _ = newFake(`{"thread":{"status":"idle"}}`, "["+rateLimitsEvent("allowed", reset)+"]", false)
+	obs, _ = a.Observe(context.Background())
+	if obs.State != decide.Idle {
+		t.Errorf("allowed window: %+v", obs)
+	}
+}
+
+func TestObserveGoneArchivedAndFailures(t *testing.T) {
+	a, _ := newFake(`{"ok":false,"error":{"code":"thread_not_found","message":"no"}}`, "", true)
+	if obs, err := a.Observe(context.Background()); err != nil || !obs.Gone {
 		t.Errorf("not found: %+v %v", obs, err)
 	}
-	a.run = fake(map[string]string{"thread show": `{"thread":{"status":"idle","archivedAt":1794000000000}}`}, nil)
-	obs, _ = a.Observe(context.Background())
-	if !obs.Gone {
+	a, _ = newFake(`{"thread":{"status":"idle","archivedAt":1794000000000}}`, "", false)
+	if obs, _ := a.Observe(context.Background()); !obs.Gone {
 		t.Error("archived thread should be gone")
 	}
-}
-
-func TestObserveCLIFailureIsUnknown(t *testing.T) {
-	a := New("bb", "thr_example123")
-	a.run = fake(map[string]string{"thread show": ``}, map[string]bool{"thread show": true})
-	obs, err := a.Observe(context.Background())
-	if err == nil || obs.State != decide.Unknown {
+	a, _ = newFake(``, "", true)
+	if obs, err := a.Observe(context.Background()); err == nil || obs.State != decide.Unknown {
 		t.Errorf("cli failure: %+v %v", obs, err)
 	}
 }
 
-func TestSendUsesStdinAndMode(t *testing.T) {
-	a := New("bb", "thr_example123")
-	var gotStdin string
-	var gotArgs []string
-	a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
-		gotStdin, gotArgs = stdin, args
-		return []byte(`{"ok":true}`), nil
-	}
-	if err := a.Send(context.Background(), "keep going", adapter.ModeQueue); err != nil {
+func TestSendStopActivate(t *testing.T) {
+	a, calls := newFake(``, ``, false)
+	a.cfg.Model, a.cfg.Reasoning = "claude-fable-5-1", "medium"
+	ctx := context.Background()
+	if err := a.Send(ctx, "keep going", adapter.ModeQueue); err != nil {
 		t.Fatal(err)
 	}
-	want := "thread tell thr_example123 --message-file - --mode queue --json"
-	if gotStdin != "keep going" || strings.Join(gotArgs, " ") != want {
-		t.Errorf("stdin=%q args=%q", gotStdin, gotArgs)
+	if err := a.Stop(ctx); err != nil {
+		t.Fatal(err)
 	}
-	a.run = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return []byte(`{"ok":false,"error":{"code":"thread_not_found","message":"x"}}`), errors.New("exit 1")
+	if err := a.Activate(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if err := a.Send(context.Background(), "x", adapter.ModeAuto); err == nil || !strings.Contains(err.Error(), "thread_not_found") {
+	want := []string{
+		"thread tell thr_example123 --message-file - --mode queue --json",
+		"thread stop thr_example123 --json",
+		"thread update thr_example123 --json --model claude-fable-5-1 --reasoning-level medium",
+	}
+	for i, w := range want {
+		if got := strings.Join((*calls)[i].args, " "); got != w {
+			t.Errorf("call %d = %q want %q", i, got, w)
+		}
+	}
+	if (*calls)[0].stdin != "keep going" {
+		t.Errorf("stdin = %q", (*calls)[0].stdin)
+	}
+	a.run = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"ok":false,"error":{"code":"thread_not_found"}}`), errors.New("exit 1")
+	}
+	if err := a.Send(ctx, "x", adapter.ModeAuto); err == nil || !strings.Contains(err.Error(), "thread_not_found") {
 		t.Errorf("err = %v", err)
 	}
 }

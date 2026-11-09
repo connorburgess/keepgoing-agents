@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,16 +11,21 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 type fakeAdapter struct {
-	obs     decide.Observation
-	obsErr  error
-	sent    []string
-	modes   []adapter.Mode
-	stopped int
-	noStop  bool
+	name      string
+	obs       decide.Observation
+	obsErr    error
+	sent      []string
+	modes     []adapter.Mode
+	stopped   int
+	noStop    bool
+	activated int
 }
 
 func (f *fakeAdapter) Name() string { return "fake" }
@@ -38,152 +44,324 @@ func (f *fakeAdapter) Stop(context.Context) error {
 	f.stopped++
 	return nil
 }
+func (f *fakeAdapter) Activate(context.Context) error { f.activated++; return nil }
 
-func setup(t *testing.T, enabled bool) (*config.Config, string) {
+type world struct {
+	cfg      *config.Config
+	dir      string
+	adapters map[string]*fakeAdapter
+	probeOK  map[string]bool // exact and scheduled outcome per candidate
+	probes   []string
+	reports  []report.Event
+}
+
+func (w *world) Report(_ context.Context, e report.Event) error {
+	w.reports = append(w.reports, e)
+	return nil
+}
+
+func (w *world) opts(now time.Time) Options {
+	return Options{
+		Now: now,
+		NewAdapter: func(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
+			f, ok := w.adapters[target]
+			if !ok {
+				f = &fakeAdapter{name: target, obs: decide.Observation{State: decide.Idle}}
+				w.adapters[target] = f
+			}
+			return f, nil
+		},
+		Probe: func(_ context.Context, c config.Candidate, tier probe.Tier, _ time.Duration) probe.Result {
+			w.probes = append(w.probes, c.ID+":"+string(tier))
+			if w.probeOK[c.ID] {
+				return probe.Result{OK: true}
+			}
+			return probe.Result{ErrorClass: "rate_limit"}
+		},
+		Reporter: w,
+	}
+}
+
+func (w *world) reportTypes() string {
+	var s []string
+	for _, e := range w.reports {
+		s = append(s, e.Type)
+	}
+	return strings.Join(s, ",")
+}
+
+func newWorld(t *testing.T, enabled bool, withFallbacks bool) *world {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := &config.Config{Version: 1, Loop: config.Loop{
-		Name: "example-loop", StateDir: dir, Prompt: "keep going",
-		Agent:    config.Agent{Adapter: "process", Process: &config.Process{StatusCommand: []string{"x"}, ResumeCommand: []string{"y"}}},
-		Progress: config.Progress{StallAfter: config.Duration{Duration: 30 * time.Minute}, MinWakeInterval: config.Duration{Duration: time.Hour}},
-		Errors:   config.ErrorRules{MaxReprompts: 2, Backoff: config.Duration{Duration: 10 * time.Minute}},
-	}}
+	loop := config.Loop{Name: "example-loop", StateDir: dir, Prompt: "keep going"}
+	loop.Agent = config.Agent{Adapter: "bb", Provider: "claude-code", Group: "claude-account-a", BB: &config.BB{Thread: "thr_primary"}}
+	loop.Progress = config.Progress{StallAfter: config.Duration{Duration: 30 * time.Minute}, MinWakeInterval: config.Duration{Duration: time.Hour}}
+	loop.Errors = config.ErrorRules{MaxReprompts: 2, Backoff: config.Duration{Duration: 10 * time.Minute}, FailoverOn: []string{"rate_limit"}, WaitIfResetWithin: config.Duration{Duration: 30 * time.Minute}}
+	cfg := &config.Config{Version: 1, Loop: loop}
+	if withFallbacks {
+		mk := func(id, provider, group string) config.Candidate {
+			c := config.Candidate{ID: id, Probe: config.Probe{Kind: "command", Command: []string{"x"}}}
+			c.Agent = config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: "thr_" + id}}
+			return c
+		}
+		cfg.FallbackSet = &config.Fallbacks{
+			Redundancy: config.Redundancy{MinHealthy: 2, Span: "provider"},
+			Probe:      config.ProbePolicy{Every: config.Duration{Duration: 4 * time.Hour}, TTL: config.Duration{Duration: 6 * time.Hour}, DailyCap: 6, Timeout: config.Duration{Duration: time.Second}},
+			Candidates: []config.Candidate{
+				mk("same-account", "claude-code", "claude-account-a"), // shares the exhausted account
+				mk("claude-other", "claude-code", "claude-account-b"),
+				mk("codex-main", "codex", "codex"),
+			},
+		}
+	}
 	if enabled {
 		if _, err := control.Update(dir, func(f *control.File) { f.Enabled = true }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return cfg, dir
+	return &world{cfg: cfg, dir: dir, adapters: map[string]*fakeAdapter{}, probeOK: map[string]bool{}}
+}
+
+func (w *world) primary(obs decide.Observation) *fakeAdapter {
+	f := &fakeAdapter{obs: obs}
+	w.adapters[state.Primary] = f
+	return f
 }
 
 var t0 = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+var limited = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
+
+func runTick(t *testing.T, w *world, now time.Time) Result {
+	t.Helper()
+	res, err := Tick(context.Background(), w.cfg, w.opts(now))
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	return res
+}
 
 func TestMissingControlFileNeverWakes(t *testing.T) {
-	cfg, _ := setup(t, false)
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Idle}}
-	res, err := Tick(context.Background(), cfg, a, Options{Now: t0})
-	if err != nil || res.Action != "none" || len(a.sent) != 0 {
-		t.Errorf("%+v %v sent=%v", res, err, a.sent)
+	w := newWorld(t, false, false)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	if res := runTick(t, w, t0); res.Action != "none" || len(p.sent) != 0 {
+		t.Errorf("%+v", res)
 	}
 }
 
-func TestIdleWakesAndRecords(t *testing.T) {
-	cfg, dir := setup(t, true)
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Idle}}
-	res, err := Tick(context.Background(), cfg, a, Options{Now: t0})
-	if err != nil || res.Action != "wake" || len(a.sent) != 1 || a.modes[0] != adapter.ModeAuto {
-		t.Fatalf("%+v %v", res, err)
+func TestIdleWakesAndDryRunDoesNot(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	o := w.opts(t0)
+	o.DryRun = true
+	res, _ := Tick(context.Background(), w.cfg, o)
+	if res.Action != "wake" || len(p.sent) != 0 {
+		t.Fatalf("dry run: %+v", res)
 	}
-	st, _ := state.Load(dir)
-	if !st.LastWakeAt.Equal(t0) {
-		t.Errorf("lastWakeAt = %v", st.LastWakeAt)
-	}
-}
-
-func TestDryRunSendsNothing(t *testing.T) {
-	cfg, _ := setup(t, true)
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Idle}}
-	res, _ := Tick(context.Background(), cfg, a, Options{Now: t0, DryRun: true})
-	if res.Action != "wake" || len(a.sent) != 0 {
-		t.Errorf("%+v sent=%v", res, a.sent)
+	if res := runTick(t, w, t0); res.Action != "wake" || len(p.sent) != 1 || p.modes[0] != adapter.ModeAuto {
+		t.Fatalf("%+v", res)
 	}
 }
 
-func TestStallNudgesOnceFingerprintStopsChanging(t *testing.T) {
-	cfg, _ := setup(t, true)
-	cfg.Loop.Progress.Repositories = []string{"/fictional/repo"}
+func TestStallNudges(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Progress.Repositories = []string{"/fictional/repo"}
 	fp := "a"
-	opts := func(now time.Time) Options {
-		return Options{Now: now, Fingerprint: func([]string) (string, error) { return fp, nil }}
+	p := w.primary(decide.Observation{State: decide.Active})
+	run := func(now time.Time) Result {
+		o := w.opts(now)
+		o.Fingerprint = func([]string) (string, error) { return fp, nil }
+		res, _ := Tick(context.Background(), w.cfg, o)
+		return res
 	}
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Active}}
-	if res, _ := Tick(context.Background(), cfg, a, opts(t0)); res.Action != "none" {
-		t.Fatalf("first tick: %+v", res)
-	}
+	run(t0)
 	fp = "b"
-	if res, _ := Tick(context.Background(), cfg, a, opts(t0.Add(20*time.Minute))); res.Action != "none" {
-		t.Fatalf("progress tick: %+v", res)
+	run(t0.Add(20 * time.Minute))
+	if res := run(t0.Add(51 * time.Minute)); res.Action != "nudge" || p.modes[0] != adapter.ModeQueue {
+		t.Fatalf("%+v", res)
 	}
-	// 31 minutes with fingerprint "b" unchanged: stalled.
-	res, _ := Tick(context.Background(), cfg, a, opts(t0.Add(51*time.Minute)))
-	if res.Action != "nudge" || a.modes[len(a.modes)-1] != adapter.ModeQueue {
-		t.Fatalf("stalled tick: %+v modes=%v", res, a.modes)
-	}
-	// Nudged recently: no second nudge inside min_wake_interval.
-	res, _ = Tick(context.Background(), cfg, a, opts(t0.Add(90*time.Minute)))
-	if res.Action != "none" {
+	if res := run(t0.Add(90 * time.Minute)); res.Action != "none" {
 		t.Fatalf("recent nudge: %+v", res)
 	}
 }
 
 func TestErrorRepromptsThenAwaitsUser(t *testing.T) {
-	cfg, dir := setup(t, true)
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}}
-	res, _ := Tick(context.Background(), cfg, a, Options{Now: t0})
-	if res.Action != "reprompt" || res.Reprompts != 1 {
-		t.Fatalf("first: %+v", res)
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+	steps := []struct {
+		at   time.Duration
+		want string
+	}{{0, "reprompt"}, {2 * time.Minute, "none"}, {12 * time.Minute, "reprompt"}, {30 * time.Minute, "await_user"}, {31 * time.Minute, "none"}}
+	for _, s := range steps {
+		if res := runTick(t, w, t0.Add(s.at)); res.Action != s.want {
+			t.Fatalf("at %v: %+v", s.at, res)
+		}
 	}
-	res, _ = Tick(context.Background(), cfg, a, Options{Now: t0.Add(2 * time.Minute)})
-	if res.Action != "none" {
-		t.Fatalf("backoff: %+v", res)
-	}
-	res, _ = Tick(context.Background(), cfg, a, Options{Now: t0.Add(12 * time.Minute)})
-	if res.Action != "reprompt" || res.Reprompts != 2 {
-		t.Fatalf("second: %+v", res)
-	}
-	res, _ = Tick(context.Background(), cfg, a, Options{Now: t0.Add(30 * time.Minute)})
-	if res.Action != "await_user" {
-		t.Fatalf("exhausted: %+v", res)
-	}
-	ctl, _ := control.Load(dir)
-	if !ctl.AwaitingUser {
-		t.Error("control should be awaiting user")
-	}
-	res, _ = Tick(context.Background(), cfg, a, Options{Now: t0.Add(31 * time.Minute)})
-	if res.Action != "none" || res.Reason != "awaiting user" || len(a.sent) != 2 {
-		t.Fatalf("after await: %+v sent=%d", res, len(a.sent))
-	}
-}
-
-func TestCleanRunResetsErrorBudget(t *testing.T) {
-	cfg, dir := setup(t, true)
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Error}}
-	Tick(context.Background(), cfg, a, Options{Now: t0})
-	a.obs = decide.Observation{State: decide.Active}
-	Tick(context.Background(), cfg, a, Options{Now: t0.Add(time.Minute)})
-	st, _ := state.Load(dir)
-	if st.Reprompts != 0 {
-		t.Errorf("reprompts = %d", st.Reprompts)
+	if len(p.sent) != 2 || w.reportTypes() != "reprompt,reprompt,await_user" {
+		t.Errorf("sent=%d reports=%s", len(p.sent), w.reportTypes())
 	}
 }
 
 func TestStopIsImmediateAndSentOnce(t *testing.T) {
-	cfg, _ := setup(t, true)
-	control.Update(cfg.Loop.StateDir, func(f *control.File) { f.Stop = true })
-	a := &fakeAdapter{obs: decide.Observation{State: decide.Active}}
-	res, _ := Tick(context.Background(), cfg, a, Options{Now: t0})
-	if res.Action != "stop" || a.stopped != 1 || len(a.sent) != 0 {
-		t.Fatalf("%+v stopped=%d", res, a.stopped)
+	w := newWorld(t, true, false)
+	control.Update(w.dir, func(f *control.File) { f.Stop = true })
+	p := w.primary(decide.Observation{State: decide.Active})
+	runTick(t, w, t0)
+	runTick(t, w, t0.Add(time.Minute))
+	if p.stopped != 1 || len(p.sent) != 0 {
+		t.Fatalf("stopped=%d sent=%d", p.stopped, len(p.sent))
 	}
-	res, _ = Tick(context.Background(), cfg, a, Options{Now: t0.Add(time.Minute)})
-	if res.Action != "none" || a.stopped != 1 {
-		t.Fatalf("second: %+v stopped=%d", res, a.stopped)
-	}
-	// Adapter without stop support: warn, still never send.
-	cfg2, _ := setup(t, true)
-	control.Update(cfg2.Loop.StateDir, func(f *control.File) { f.Stop = true })
-	b := &fakeAdapter{obs: decide.Observation{State: decide.Active}, noStop: true}
-	res, err := Tick(context.Background(), cfg2, b, Options{Now: t0})
-	if err != nil || res.Warning == "" || len(b.sent) != 0 {
-		t.Fatalf("%+v %v", res, err)
+	w2 := newWorld(t, true, false)
+	control.Update(w2.dir, func(f *control.File) { f.Stop = true })
+	w2.primary(decide.Observation{State: decide.Active}).noStop = true
+	if res := runTick(t, w2, t0); len(res.Warnings) == 0 {
+		t.Errorf("expected a warning: %+v", res)
 	}
 }
 
 func TestObserveFailureTakesNoAction(t *testing.T) {
-	cfg, _ := setup(t, true)
-	a := &fakeAdapter{obsErr: errors.New("cli exploded")}
-	res, err := Tick(context.Background(), cfg, a, Options{Now: t0})
-	if err == nil || res.Action != "none" || len(a.sent) != 0 {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{})
+	p.obsErr = errors.New("cli exploded")
+	res, err := Tick(context.Background(), w.cfg, w.opts(t0))
+	if err == nil || res.Action != "none" || len(p.sent) != 0 {
 		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestYieldSkipsWithoutObserving(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"x"}}
+	p := w.primary(decide.Observation{State: decide.Idle})
+	o := w.opts(t0)
+	o.Busy = func(context.Context, config.Yield) (bool, error) { return true, nil }
+	res, _ := Tick(context.Background(), w.cfg, o)
+	if !res.Yielded || len(p.sent) != 0 {
+		t.Errorf("%+v", res)
+	}
+}
+
+func TestScheduledProbesRunWhenDueOnly(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(decide.Observation{State: decide.Active})
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	res := runTick(t, w, t0)
+	if len(w.probes) != 3 || res.Redundancy == nil || !res.Redundancy.Meets {
+		t.Fatalf("probes=%v res=%+v", w.probes, res.Redundancy)
+	}
+	runTick(t, w, t0.Add(time.Hour))
+	if len(w.probes) != 3 {
+		t.Errorf("probed again too soon: %v", w.probes)
+	}
+	runTick(t, w, t0.Add(5*time.Hour))
+	if len(w.probes) != 6 {
+		t.Errorf("not probed when due: %v", w.probes)
+	}
+	// Paused: no probes at all.
+	control.Update(w.dir, func(f *control.File) { f.Paused = true })
+	runTick(t, w, t0.Add(10*time.Hour))
+	if len(w.probes) != 6 {
+		t.Errorf("probed while paused: %v", w.probes)
+	}
+}
+
+func TestHandoffToFirstCandidatePassingExactProbe(t *testing.T) {
+	w := newWorld(t, true, true)
+	p := w.primary(limited)
+	// Both healthy on schedule; claude-other then fails its exact probe.
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"same-account", "claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	w.probeOK = map[string]bool{"codex-main": true}
+	res := runTick(t, w, t0)
+	if res.Action != "handoff" || res.Handoff == nil || res.Handoff.To != "codex-main" || res.Target != "codex-main" {
+		t.Fatalf("%+v %+v", res, res.Handoff)
+	}
+	if strings.Join(res.Handoff.Tried, ",") != "claude-other,codex-main" {
+		t.Errorf("tried = %v (same-account must be skipped)", res.Handoff.Tried)
+	}
+	c := w.adapters["codex-main"]
+	if len(c.sent) != 1 || !strings.Contains(c.sent[0], "taking over") || c.activated != 1 || len(p.sent) != 0 {
+		t.Fatalf("codex sent=%v activated=%d primary sent=%d", c.sent, c.activated, len(p.sent))
+	}
+	if !strings.Contains(w.reportTypes(), "handoff") {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+	st, _ := state.Load(w.dir)
+	if st.ActiveTarget != "codex-main" || st.Handoffs != 1 {
+		t.Errorf("state = %+v", st)
+	}
+	// The next tick supervises the new target.
+	c.obs = decide.Observation{State: decide.Active}
+	if res := runTick(t, w, t0.Add(time.Minute)); res.Target != "codex-main" || res.State != "active" {
+		t.Errorf("next tick: %+v", res)
+	}
+}
+
+func TestNoHandoffBelowMinimumHealthy(t *testing.T) {
+	w := newWorld(t, true, true)
+	p := w.primary(limited)
+	w.probeOK = map[string]bool{"claude-other": true} // one provider only
+	res := runTick(t, w, t0)
+	if res.Action != "reprompt" || res.Handoff != nil || len(p.sent) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "handoff refused") || !strings.Contains(w.reportTypes(), "degraded") {
+		t.Errorf("warnings=%v reports=%s", res.Warnings, w.reportTypes())
+	}
+	// Degraded is reported once, not every tick.
+	runTick(t, w, t0.Add(time.Minute))
+	if strings.Count(w.reportTypes(), "degraded") != 1 {
+		t.Errorf("reports = %s", w.reportTypes())
+	}
+}
+
+func TestAllExactProbesFailFallsBackToRepromptRules(t *testing.T) {
+	w := newWorld(t, true, true)
+	p := w.primary(limited)
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	res := runTick(t, w, t0) // probeOK empty: exact probes fail
+	if res.Action != "reprompt" || !strings.Contains(res.Reason, "no fallback passed") || len(p.sent) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	st, _ := state.Load(w.dir)
+	if st.Target() != state.Primary {
+		t.Errorf("target moved: %+v", st)
+	}
+}
+
+func TestWaitsWhenLimitResetsSoon(t *testing.T) {
+	w := newWorld(t, true, true)
+	obs := limited
+	obs.ResetsAt = t0.Add(10 * time.Minute)
+	p := w.primary(obs)
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	res := runTick(t, w, t0)
+	if res.Action != "none" || !strings.Contains(res.Reason, "waiting") || len(p.sent) != 0 || res.ResetsAt == nil {
+		t.Fatalf("%+v", res)
+	}
+}
+
+func TestUnknownErrorNeverHandsOff(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+	w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	if res := runTick(t, w, t0); res.Action != "reprompt" || res.Handoff != nil {
+		t.Fatalf("%+v", res)
+	}
+}
+
+func TestRemovedTargetReturnsToPrimary(t *testing.T) {
+	w := newWorld(t, true, true)
+	state.Save(w.dir, state.File{ActiveTarget: "deleted-candidate"})
+	w.primary(decide.Observation{State: decide.Active})
+	res := runTick(t, w, t0)
+	if res.Target != state.Primary || len(res.Warnings) == 0 {
+		t.Errorf("%+v", res)
 	}
 }

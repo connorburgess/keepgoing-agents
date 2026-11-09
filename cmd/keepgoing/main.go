@@ -1,236 +1,184 @@
-// Command keepgoing supervises a long-running coding-agent loop.
+// Command keepgoing keeps long-running coding-agent loops going.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/process"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
-	"github.com/connorburgess/keepgoing-agents/internal/supervise"
-	"github.com/connorburgess/keepgoing-agents/internal/window"
+	"github.com/connorburgess/keepgoing-agents/internal/report"
 )
 
 // version is set at release time with -ldflags "-X main.version=...".
 var version = "dev"
 
-// Exit codes. 75 matches the convention that a skipped run is not a failure.
+// Exit codes. 75 means "skipped, try later", matching EX_TEMPFAIL.
 const (
-	exitOK     = 0
-	exitFailed = 1
-	exitUsage  = 2
-	exitLocked = 75
+	exitOK      = 0
+	exitFailed  = 1
+	exitUsage   = 2
+	exitSkipped = 75
 )
 
 const usage = `keepgoing keeps a coding-agent loop going.
 
 Usage:
-  keepgoing <command> [-c keepgoing.yaml] [flags]
+  keepgoing <command> [flags]
 
-Commands:
-  tick        Run one supervision pass and exit (for cron, launchd, CI, BB automations)
-  status      Show control state, last observation, and window
-  validate    Check the config file and exit
-  enable      Enable supervision (creates control.json)
-  disable     Disable supervision; nothing is sent until enabled again
-  pause       Pause; honored on the next tick
-  resume      Clear pause, stop, and awaiting-user
-  stop        Stop the running session on the next tick and send nothing more
-  await-user  Mark the loop as waiting for a person
-  version     Print the version
+Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
+  tick                     Run one pass and exit (cron, launchd, CI, BB automations)
+  daemon                   Run passes on an interval; control changes act within seconds
+  status                   Show control, active target, window, and fallback health
+  validate                 Check keepgoing.yaml and its fallbacks file
 
-Exit codes: 0 ok, 1 failed, 2 usage or config error, 75 another tick holds the lock.
+Control:
+  enable | disable         Turn supervision on or off (nothing is sent while off)
+  pause | resume           Pause; resume also clears stop and awaiting-user
+  stop                     Stop the running session on the next pass, then send nothing
+  await-user               Mark the loop as waiting for a person
+  retarget <id|primary>    Point the loop at a fallback or back at the primary
+
+Fallbacks:
+  fallbacks check          Probe candidates now (--id ID, --exact for the target model)
+  fallbacks list           Show recorded health and the redundancy picture
+
+Reporting:
+  report test              Send a test webhook (--dry-run prints it instead)
+
+Tools (no config needed):
+  ci-wait                  Wait for every CI workflow on a PR head or exact commit
+  net-retry -- cmd...      Rerun a network command only while the network is down
+  version                  Print the version
+
+Exit codes: 0 ok, 1 failed, 2 usage or config error, 75 skipped (lock held or yielded).
 `
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	cancel()
+	os.Exit(code)
 }
 
-func run(args []string) int {
+type env struct {
+	ctx    context.Context
+	stdout io.Writer
+	stderr io.Writer
+}
+
+func (e env) errf(format string, a ...any) { fmt.Fprintf(e.stderr, format+"\n", a...) }
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	e := env{ctx: ctx, stdout: stdout, stderr: stderr}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(stderr, usage)
 		return exitUsage
 	}
 	cmd, rest := args[0], args[1:]
-	if cmd == "version" {
-		fmt.Println(version)
+	switch cmd {
+	case "version":
+		fmt.Fprintln(stdout, version)
 		return exitOK
+	case "ci-wait":
+		return ciWait(e, rest)
+	case "net-retry":
+		return netRetry(e, rest)
+	case "fallbacks", "report":
+		if len(rest) == 0 {
+			e.errf("%s needs a subcommand; see keepgoing help", cmd)
+			return exitUsage
+		}
+		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
+	positional, rest := splitPositional(rest)
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	cfgPath := fs.String("c", "keepgoing.yaml", "path to the config file")
-	asJSON := fs.Bool("json", false, "print machine-readable JSON")
-	dryRun := fs.Bool("dry-run", false, "tick: decide and record but send nothing")
-	nowFlag := fs.String("now", "", "tick/status: RFC 3339 time to use instead of the clock")
-	note := fs.String("note", "", "control commands: a short note stored in control.json")
+	fs.SetOutput(stderr)
+	f := cliFlags{
+		cfgPath: fs.String("c", "keepgoing.yaml", "path to the config file"),
+		asJSON:  fs.Bool("json", false, "print machine-readable JSON"),
+		dryRun:  fs.Bool("dry-run", false, "decide and record, send nothing, run no probes"),
+		now:     fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		note:    fs.String("note", "", "a short note stored in control.json"),
+		id:      fs.String("id", "", "fallbacks check: only this candidate"),
+		exact:   fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
 	}
-	cfg, err := config.Load(*cfgPath)
+	positional = append(positional, fs.Args()...)
+	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "config:", err)
+		e.errf("config: %v", err)
 		return exitUsage
 	}
 	now := time.Now()
-	if *nowFlag != "" {
-		if now, err = time.Parse(time.RFC3339, *nowFlag); err != nil {
-			fmt.Fprintln(os.Stderr, "-now:", err)
+	if *f.now != "" {
+		if now, err = time.Parse(time.RFC3339, *f.now); err != nil {
+			e.errf("-now: %v", err)
 			return exitUsage
 		}
 	}
 	switch cmd {
 	case "validate":
-		fmt.Printf("ok: %s (loop %s, adapter %s)\n", *cfgPath, cfg.Loop.Name, cfg.Loop.Adapter)
-		return exitOK
+		return validate(e, cfg, *f.cfgPath)
 	case "tick":
-		return tick(cfg, now, *dryRun)
+		return tickOnce(e, cfg, now, *f.dryRun, *f.now != "")
+	case "daemon":
+		return daemon(e, cfg, *f.cfgPath)
 	case "status":
-		return status(cfg, now, *asJSON)
-	case "enable":
-		return update(cfg, *note, func(f *control.File) { f.Enabled = true })
-	case "disable":
-		return update(cfg, *note, func(f *control.File) { f.Enabled = false })
-	case "pause":
-		return update(cfg, *note, func(f *control.File) { f.Paused = true })
-	case "resume":
-		return update(cfg, *note, func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser = false, false, false })
-	case "stop":
-		return update(cfg, *note, func(f *control.File) { f.Stop = true })
-	case "await-user":
-		return update(cfg, *note, func(f *control.File) { f.AwaitingUser = true })
+		return status(e, cfg, now, *f.asJSON)
+	case "enable", "disable", "pause", "resume", "stop", "await-user":
+		return controlCmd(e, cfg, cmd, *f.note)
+	case "retarget":
+		if len(positional) != 1 {
+			e.errf("usage: keepgoing retarget <candidate-id|primary> [-c keepgoing.yaml]")
+			return exitUsage
+		}
+		return retarget(e, cfg, positional[0], *f.note)
+	case "fallbacks check":
+		return fallbacksCheck(e, cfg, now, *f.id, *f.exact, *f.asJSON)
+	case "fallbacks list":
+		return fallbacksList(e, cfg, now, *f.asJSON)
+	case "report test":
+		return reportTest(e, cfg, *f.dryRun)
 	}
-	fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
+	e.errf("unknown command %q\n\n%s", cmd, usage)
 	return exitUsage
 }
 
-func newAdapter(cfg *config.Config) (adapter.Adapter, error) {
-	switch cfg.Loop.Adapter {
-	case "bb":
-		return bb.New(cfg.Loop.BB.CLI, cfg.Loop.BB.Thread), nil
-	case "process":
-		return process.New(*cfg.Loop.Process), nil
-	}
-	return nil, fmt.Errorf("unknown adapter %q", cfg.Loop.Adapter)
+type cliFlags struct {
+	cfgPath, now, note, id *string
+	asJSON, dryRun, exact  *bool
 }
 
-func tick(cfg *config.Config, now time.Time, dryRun bool) int {
-	l, err := lock.Acquire(cfg.Loop.StateDir)
-	if errors.Is(err, lock.ErrHeld) {
-		fmt.Fprintln(os.Stderr, "another tick holds the lock; skipping")
-		return exitLocked
+// splitPositional lets a positional argument come before the flags, as in
+// `keepgoing retarget codex-main -c loop.yaml`.
+func splitPositional(args []string) ([]string, []string) {
+	var pos []string
+	for len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		pos = append(pos, args[0])
+		args = args[1:]
 	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "lock:", err)
-		return exitFailed
-	}
-	defer l.Release()
-	a, err := newAdapter(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitUsage
-	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	res, err := supervise.Tick(ctx, cfg, a, supervise.Options{Now: now, DryRun: dryRun})
-	out, _ := json.Marshal(res)
-	fmt.Println(string(out))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "tick:", err)
-		return exitFailed
-	}
-	return exitOK
+	return pos, args
 }
 
-type statusOut struct {
-	Loop         string         `json:"loop"`
-	Adapter      string         `json:"adapter"`
-	Control      control.File   `json:"control"`
-	ControlState string         `json:"controlState"`
-	Window       string         `json:"window"`
-	InWindow     bool           `json:"inWindow"`
-	State        state.File     `json:"state"`
-	StateDir     string         `json:"stateDir"`
-	Version      string         `json:"version"`
-	Extra        map[string]any `json:"extra,omitempty"`
-}
-
-func status(cfg *config.Config, now time.Time, asJSON bool) int {
-	ctl, err := control.Load(cfg.Loop.StateDir)
+// reporter builds the configured webhook reporter. A misconfigured report
+// is a warning, never a reason to skip supervision.
+func reporter(e env, cfg *config.Config) report.Reporter {
+	if cfg.Loop.Report == nil {
+		return report.Nop{}
+	}
+	w, err := report.New(*cfg.Loop.Report)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFailed
+		e.errf("warning: reports disabled: %v", err)
+		return report.Nop{}
 	}
-	st, err := state.Load(cfg.Loop.StateDir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFailed
-	}
-	in, why, err := window.Inside(cfg.Loop.Window, now)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFailed
-	}
-	out := statusOut{Loop: cfg.Loop.Name, Adapter: cfg.Loop.Adapter, Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: cfg.Loop.StateDir, Version: version}
-	if asJSON {
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-		return exitOK
-	}
-	fmt.Printf("loop:      %s (%s adapter)\n", out.Loop, out.Adapter)
-	fmt.Printf("control:   %s", out.ControlState)
-	if ctl.Note != "" {
-		fmt.Printf(" (%s)", ctl.Note)
-	}
-	fmt.Println()
-	fmt.Printf("window:    %s\n", out.Window)
-	fmt.Printf("last seen: %s\n", orNever(st.CheckedAt, st.LastState))
-	fmt.Printf("progress:  %s\n", orNever(st.LastProgressAt, ""))
-	fmt.Printf("last sent: %s\n", orNever(st.LastWakeAt, ""))
-	if st.Reprompts > 0 {
-		fmt.Printf("reprompts: %d (last %s)\n", st.Reprompts, orNever(st.LastRepromptAt, ""))
-	}
-	fmt.Printf("state dir: %s\n", out.StateDir)
-	return exitOK
-}
-
-func orNever(t time.Time, label string) string {
-	if t.IsZero() {
-		return "never"
-	}
-	s := t.UTC().Format(time.RFC3339)
-	if label != "" {
-		s += " (" + label + ")"
-	}
-	return s
-}
-
-func update(cfg *config.Config, note string, fn func(*control.File)) int {
-	f, err := control.Update(cfg.Loop.StateDir, func(f *control.File) {
-		fn(f)
-		if note != "" {
-			f.Note = note
-		}
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFailed
-	}
-	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Reason: f.Summary()}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFailed
-	}
-	fmt.Printf("%s: %s\n", cfg.Loop.Name, f.Summary())
-	return exitOK
+	return w
 }

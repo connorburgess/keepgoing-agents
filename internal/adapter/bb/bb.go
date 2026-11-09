@@ -12,22 +12,26 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
 // Adapter drives one BB thread.
 type Adapter struct {
-	CLI     string
-	Thread  string
+	cfg     config.BB
 	Timeout time.Duration
-	// run is swapped in tests.
+	// run and now are swapped in tests.
 	run func(ctx context.Context, stdin string, args ...string) ([]byte, error)
+	now func() time.Time
 }
 
 // New returns an adapter for the thread.
-func New(cli, thread string) *Adapter {
-	a := &Adapter{CLI: cli, Thread: thread, Timeout: 30 * time.Second}
-	a.run = a.runInput
+func New(cfg config.BB) *Adapter {
+	if cfg.CLI == "" {
+		cfg.CLI = config.DefaultBBCLI
+	}
+	a := &Adapter{cfg: cfg, Timeout: 30 * time.Second, now: time.Now}
+	a.run = a.exec
 	return a
 }
 
@@ -37,130 +41,212 @@ func (a *Adapter) Name() string { return "bb" }
 type envelope struct {
 	OK    *bool `json:"ok"`
 	Error *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code string `json:"code"`
 	} `json:"error"`
 }
 
 type showResponse struct {
 	Thread *struct {
-		Status                   string `json:"status"`
-		ProviderID               string `json:"providerId"`
-		QueuedMessageCount       int    `json:"queuedMessageCount"`
-		ActiveBackgroundAgentCnt int    `json:"activeBackgroundAgentCount"`
-		ArchivedAt               any    `json:"archivedAt"`
-		DeletedAt                any    `json:"deletedAt"`
+		Status         string `json:"status"`
+		Queued         int    `json:"queuedMessageCount"`
+		BackgroundJobs int    `json:"activeBackgroundAgentCount"`
+		ArchivedAt     any    `json:"archivedAt"`
+		DeletedAt      any    `json:"deletedAt"`
 	} `json:"thread"`
 }
 
-// Observe reads `bb thread show --json`. When the thread is in error it also
-// reads the newest log events and classifies a structured code if one is
-// present. Message text is never consulted.
+// Observe reads `bb thread show --json`, then the newest log events for
+// structured error and rate-limit information. Message text is never read.
 func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
-	out, err := a.run(ctx, "", "thread", "show", a.Thread, "--json")
-	if err != nil {
-		if code, ok := envelopeError(out); ok {
-			if code == "thread_not_found" {
-				return decide.Observation{State: decide.Unknown, Gone: true}, nil
-			}
-			return decide.Observation{State: decide.Unknown}, fmt.Errorf("bb thread show: %s", code)
-		}
-		return decide.Observation{State: decide.Unknown}, fmt.Errorf("bb thread show: %w", err)
-	}
+	unknown := decide.Observation{State: decide.Unknown}
+	out, err := a.run(ctx, "", "thread", "show", a.cfg.Thread, "--json")
 	if code, ok := envelopeError(out); ok {
 		if code == "thread_not_found" {
 			return decide.Observation{State: decide.Unknown, Gone: true}, nil
 		}
-		return decide.Observation{State: decide.Unknown}, fmt.Errorf("bb thread show: %s", code)
+		return unknown, fmt.Errorf("bb thread show: %s", code)
+	}
+	if err != nil {
+		return unknown, fmt.Errorf("bb thread show: %w", err)
 	}
 	var resp showResponse
 	if err := json.Unmarshal(out, &resp); err != nil || resp.Thread == nil {
-		return decide.Observation{State: decide.Unknown}, errors.New("bb thread show: unexpected JSON")
+		return unknown, errors.New("bb thread show: unexpected JSON")
 	}
 	t := resp.Thread
 	obs := decide.Observation{
 		State:      adapter.ParseState(t.Status),
 		ErrorClass: decide.ErrNone,
-		Queued:     t.QueuedMessageCount,
-		Background: t.ActiveBackgroundAgentCnt,
+		Queued:     t.Queued,
+		Background: t.BackgroundJobs,
 		Gone:       t.ArchivedAt != nil || t.DeletedAt != nil,
 	}
+	if obs.Gone || (obs.State != decide.Error && obs.State != decide.Idle) {
+		return obs, nil
+	}
+	sig := a.signals(ctx)
 	if obs.State == decide.Error {
-		obs.ErrorClass = a.errorClass(ctx)
+		obs.ErrorClass = sig.class
+		obs.Retrying = sig.willRetry
+	}
+	// A blocked subscription window on an idle thread means the next turn
+	// would fail; treat it as a rate-limit error so it is handled the same way.
+	if sig.blocked && sig.resetsAt.After(a.now()) {
+		if obs.State == decide.Idle {
+			obs.State = decide.Error
+		}
+		if obs.ErrorClass == decide.ErrUnknown || obs.ErrorClass == decide.ErrNone || obs.ErrorClass == decide.ErrNetwork {
+			obs.ErrorClass = decide.ErrRateLimit
+		}
+	}
+	if obs.ErrorClass == decide.ErrRateLimit && sig.resetsAt.After(a.now()) {
+		obs.ResetsAt = sig.resetsAt
 	}
 	return obs, nil
 }
 
-// errorClass looks for a structured code on the most recent error-like log
-// events. Any failure to find one is "unknown", which the engine treats
-// conservatively.
-func (a *Adapter) errorClass(ctx context.Context) decide.ErrorClass {
-	out, err := a.run(ctx, "", "thread", "log", a.Thread, "--json", "--limit", "10")
+type event struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+type signals struct {
+	class     decide.ErrorClass
+	willRetry bool
+	blocked   bool
+	resetsAt  time.Time
+}
+
+// signals scans the newest events. Errors count only after the latest turn
+// started, so a stale error from an earlier turn is ignored.
+func (a *Adapter) signals(ctx context.Context) signals {
+	s := signals{class: decide.ErrUnknown}
+	out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--limit", "60")
 	if err != nil {
-		return decide.ErrUnknown
+		return s
 	}
-	var events []struct {
-		Type string         `json:"type"`
-		Data map[string]any `json:"data"`
+	var events []event
+	if json.Unmarshal(out, &events) != nil {
+		return s
 	}
-	if err := json.Unmarshal(out, &events); err != nil {
-		return decide.ErrUnknown
+	start := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "turn/started" || events[i].Type == "client/turn/requested" {
+			start = i
+			break
+		}
 	}
+	gotError := false
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
-		typ := strings.ToLower(e.Type)
-		if !strings.Contains(typ, "error") && !strings.Contains(typ, "fail") {
-			continue
+		switch {
+		case e.Type == "provider/rateLimits/updated" && !s.blocked && s.resetsAt.IsZero():
+			s.blocked, s.resetsAt = rateLimits(e.Data)
+		case i >= start && !gotError && e.Type == "provider/error":
+			var d struct {
+				WillRetry *bool `json:"willRetry"`
+				Info      struct {
+					Category     string `json:"category"`
+					HTTPStatus   *int   `json:"httpStatusCode"`
+					ProviderCode string `json:"providerCode"`
+				} `json:"errorInfo"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				gotError = true
+				s.willRetry = d.WillRetry != nil && *d.WillRetry
+				s.class = firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode)
+			}
+		case i >= start && !gotError && (e.Type == "system/error" || strings.HasSuffix(e.Type, "/failed")):
+			var d struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(e.Data, &d) == nil {
+				gotError = true
+				s.class = adapter.ClassifyCode(d.Code)
+			}
 		}
-		if code, ok := structuredCode(e.Data); ok {
-			return adapter.ClassifyCode(code)
+	}
+	return s
+}
+
+func rateLimits(raw json.RawMessage) (bool, time.Time) {
+	var d struct {
+		RateLimits struct {
+			Status  string `json:"status"`
+			Windows []struct {
+				Status     string `json:"status"`
+				ResetsAtMs int64  `json:"resetsAtMs"`
+			} `json:"windows"`
+		} `json:"rateLimits"`
+	}
+	if json.Unmarshal(raw, &d) != nil || d.RateLimits.Status != "blocked" {
+		return false, time.Time{}
+	}
+	var latest time.Time
+	for _, w := range d.RateLimits.Windows {
+		if w.Status == "blocked" && w.ResetsAtMs > 0 {
+			if t := time.UnixMilli(w.ResetsAtMs); t.After(latest) {
+				latest = t
+			}
 		}
-		return decide.ErrUnknown
+	}
+	return true, latest
+}
+
+func httpCode(p *int) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprint(*p)
+}
+
+// firstKnown classifies the first code that maps to a known class.
+func firstKnown(codes ...string) decide.ErrorClass {
+	for _, c := range codes {
+		if cl := adapter.ClassifyCode(c); cl != decide.ErrUnknown {
+			return cl
+		}
 	}
 	return decide.ErrUnknown
 }
 
-// structuredCode pulls a code-like field out of an event payload, looking
-// one level into a nested "error" object. It never returns message text.
-func structuredCode(data map[string]any) (string, bool) {
-	if data == nil {
-		return "", false
-	}
-	for _, key := range []string{"code", "errorCode", "error_code", "status", "httpStatus", "statusCode", "type"} {
-		if v, ok := data[key]; ok {
-			switch x := v.(type) {
-			case string:
-				if x != "" && !strings.ContainsAny(x, " \n") {
-					return x, true
-				}
-			case float64:
-				return fmt.Sprintf("%d", int(x)), true
-			}
-		}
-	}
-	if inner, ok := data["error"].(map[string]any); ok {
-		return structuredCode(inner)
-	}
-	return "", false
-}
-
 // Send implements adapter.Adapter via `bb thread tell`.
 func (a *Adapter) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	out, err := a.run(ctx, prompt, "thread", "tell", a.Thread, "--message-file", "-", "--mode", string(mode), "--json")
-	if err != nil {
-		if code, ok := envelopeError(out); ok {
-			return fmt.Errorf("bb thread tell: %s", code)
-		}
-		return fmt.Errorf("bb thread tell: %w", err)
+	return a.call(ctx, prompt, "thread", "tell", a.cfg.Thread, "--message-file", "-", "--mode", string(mode), "--json")
+}
+
+// Stop implements adapter.Adapter via `bb thread stop`.
+func (a *Adapter) Stop(ctx context.Context) error {
+	return a.call(ctx, "", "thread", "stop", a.cfg.Thread, "--json")
+}
+
+// Activate applies the configured model and reasoning level before the
+// first message after a handoff.
+func (a *Adapter) Activate(ctx context.Context) error {
+	if a.cfg.Model == "" && a.cfg.Reasoning == "" {
+		return nil
 	}
+	args := []string{"thread", "update", a.cfg.Thread, "--json"}
+	if a.cfg.Model != "" {
+		args = append(args, "--model", a.cfg.Model)
+	}
+	if a.cfg.Reasoning != "" {
+		args = append(args, "--reasoning-level", a.cfg.Reasoning)
+	}
+	return a.call(ctx, "", args...)
+}
+
+func (a *Adapter) call(ctx context.Context, stdin string, args ...string) error {
+	out, err := a.run(ctx, stdin, args...)
+	what := "bb " + strings.Join(args[:2], " ")
 	if code, ok := envelopeError(out); ok {
-		return fmt.Errorf("bb thread tell: %s", code)
+		return fmt.Errorf("%s: %s", what, code)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	return nil
 }
-
-// Stop is not available through the bb CLI yet.
-func (a *Adapter) Stop(ctx context.Context) error { return adapter.ErrUnsupported{Op: "stop"} }
 
 func envelopeError(out []byte) (string, bool) {
 	var env envelope
@@ -170,20 +256,16 @@ func envelopeError(out []byte) (string, bool) {
 	return env.Error.Code, true
 }
 
-func (a *Adapter) runInput(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, a.CLI, args...)
+	cmd := exec.CommandContext(ctx, a.cfg.CLI, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
-	if err != nil {
-		// Only the JSON envelope on stdout is trusted; stderr may hold prose.
-		return stdout.Bytes(), err
-	}
-	return stdout.Bytes(), nil
+	return stdout.Bytes(), err
 }
