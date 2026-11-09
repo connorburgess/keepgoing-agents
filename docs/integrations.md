@@ -10,9 +10,9 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 
 | Integration | Used for | Status | Next check |
 | --- | --- | --- | --- |
-| BB threads (`bb` CLI) | primary loops and fallbacks | **Live** for reading status and log events, with a dry-run tick against a real thread. **Fakes** for tell, stop, and model update. Event shapes come from real `provider/error`, `provider/rateLimits/updated`, and `system/error` events. | Send, stop, and a model switch against a scratch thread. Capture a real blocked rate-limit window. |
+| BB threads (`bb` CLI) | primary loops and fallbacks | **Live** for reading status, log events, and the interaction list, with dry-run ticks against a real chat of about 4,100 events: the first tick paged through it in about 2 seconds, and later ticks read only new events. **Live** for waking a scratch thread, switching its model through retarget and back, and stopping a running turn. Interaction lifecycle shapes come from real `system/interaction/lifecycle` events. Event shapes come from real `provider/error`, `provider/rateLimits/updated`, and `system/error` events. | Capture a real blocked rate-limit window. |
 | Claude Code headless (`claude -p`) | headless loops and probes | **Live** for the probe: one real request returned a healthy result. **Fakes** for multi-turn runs, resume, and error results. | One real two-turn run in a scratch directory. Capture a real usage-limit result. |
-| Codex headless (`codex exec --json`) | headless loops and probes | **Fakes** only. A live probe could not run in the development sandbox. | One real probe. Capture a real usage-limit event and map its structured fields. |
+| Codex headless (`codex exec --json`) | headless loops and probes | **Live** for the probe: a real `codex exec --json --ephemeral` run completed. It used about 21,000 input tokens, most of them cached, because Codex sends its own system prompt. Its event stream included an `error` item from a local hook warning before the turn, which correctly does not fail the probe. **Fakes** for multi-turn runs and resume. | Capture a real usage-limit event and map its structured fields. |
 | Generic process adapter | any other agent | **Fakes**, including batch files on Windows | none needed beyond fakes |
 
 Other coding agents can be supervised today through the process adapter, given a status command and a resume command. Candidates for first-class adapters, once their headless status output has been checked:
@@ -21,6 +21,12 @@ Other coding agents can be supervised today through the process adapter, given a
 - Gemini CLI
 - OpenCode
 - Aider
+
+## Agent chats
+
+| Integration | Status | Next check |
+| --- | --- | --- |
+| Supervising a live BB chat thread | **Live** dry-run ticks against a real chat. **Fakes** for waking, pending interactions, `await-user` reports, and resume. | Supervise a real working chat with `keepgoing daemon` and a webhook. See [agent-chats.md](agent-chats.md). |
 
 ## Schedulers and hosts
 

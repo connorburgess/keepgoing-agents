@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Verify that every commit in BASE..HEAD carries a Signed-off-by line matching
 # its author and that neither commits nor PR_TEXT carry a tool attribution.
+# Merge commits are exempt: GitHub generates them when a pull request is
+# merged and never adds a sign-off. The commits they merge are still checked.
 set -euo pipefail
 base=${1:?base sha}; head=${2:?head sha}
 credit='^[[:space:]*_>-]*(co-authored-by:[[:space:]]*(codex|claude|chatgpt|cursor|copilot|github copilot)|(generated|written|created|powered)[[:space:]]+(with|by)[[:space:]]+(codex|claude|chatgpt|cursor|copilot|github copilot|anthropic|openai))'
 fail=0
-for c in $(git rev-list "$base..$head"); do
+for c in $(git rev-list --no-merges "$base..$head"); do
   author=$(git show -s --format='%an <%ae>' "$c")
   msg=$(git show -s --format='%B' "$c")
   if ! grep -qiF "Signed-off-by: $author" <<<"$msg"; then

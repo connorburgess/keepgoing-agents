@@ -18,8 +18,10 @@ import (
 
 // Adapter drives one BB thread.
 type Adapter struct {
-	cfg     config.BB
-	Timeout time.Duration
+	cfg      config.BB
+	stateDir string  // where bb-cursor.json lives; empty keeps it in memory
+	mem      *Cursor // last cursor, for adapters without a state dir
+	Timeout  time.Duration
 	// run and now are swapped in tests.
 	run func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 	now func() time.Time
@@ -32,6 +34,12 @@ func New(cfg config.BB) *Adapter {
 	}
 	a := &Adapter{cfg: cfg, Timeout: 30 * time.Second, now: time.Now}
 	a.run = a.exec
+	return a
+}
+
+// WithStateDir keeps the log cursor in dir so later ticks read only new events.
+func (a *Adapter) WithStateDir(dir string) *Adapter {
+	a.stateDir = dir
 	return a
 }
 
@@ -81,10 +89,18 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		Background: t.BackgroundJobs,
 		Gone:       t.ArchivedAt != nil || t.DeletedAt != nil,
 	}
-	if obs.Gone || (obs.State != decide.Error && obs.State != decide.Idle) {
+	if obs.Gone {
 		return obs, nil
 	}
 	sig := a.signals(ctx)
+	// A pending permission prompt, question, or form means the thread is
+	// waiting on a person, whatever its status says.
+	if obs.State != decide.Stopping {
+		obs.AwaitingInput = a.pendingInteraction(ctx, sig)
+	}
+	if obs.State != decide.Error && obs.State != decide.Idle {
+		return obs, nil
+	}
 	if obs.State == decide.Error {
 		obs.ErrorClass = sig.class
 		obs.Retrying = sig.willRetry
@@ -105,66 +121,23 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	return obs, nil
 }
 
-type event struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data"`
-}
-
 type signals struct {
 	class     decide.ErrorClass
 	willRetry bool
 	blocked   bool
 	resetsAt  time.Time
+	pending   bool
+	ok        bool
 }
 
-// signals scans the newest events. Errors count only after the latest turn
-// started, so a stale error from an earlier turn is ignored.
+// signals reads the thread's new log events and returns the current error,
+// rate-limit, and interaction picture. Only errors since the latest turn
+// started count, so a stale error from an earlier turn is ignored.
 func (a *Adapter) signals(ctx context.Context) signals {
-	s := signals{class: decide.ErrUnknown}
-	out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--limit", "60")
-	if err != nil {
-		return s
-	}
-	var events []event
-	if json.Unmarshal(out, &events) != nil {
-		return s
-	}
-	start := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == "turn/started" || events[i].Type == "client/turn/requested" {
-			start = i
-			break
-		}
-	}
-	gotError := false
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		switch {
-		case e.Type == "provider/rateLimits/updated" && !s.blocked && s.resetsAt.IsZero():
-			s.blocked, s.resetsAt = rateLimits(e.Data)
-		case i >= start && !gotError && e.Type == "provider/error":
-			var d struct {
-				WillRetry *bool `json:"willRetry"`
-				Info      struct {
-					Category     string `json:"category"`
-					HTTPStatus   *int   `json:"httpStatusCode"`
-					ProviderCode string `json:"providerCode"`
-				} `json:"errorInfo"`
-			}
-			if json.Unmarshal(e.Data, &d) == nil {
-				gotError = true
-				s.willRetry = d.WillRetry != nil && *d.WillRetry
-				s.class = firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode)
-			}
-		case i >= start && !gotError && (e.Type == "system/error" || strings.HasSuffix(e.Type, "/failed")):
-			var d struct {
-				Code string `json:"code"`
-			}
-			if json.Unmarshal(e.Data, &d) == nil {
-				gotError = true
-				s.class = adapter.ClassifyCode(d.Code)
-			}
-		}
+	c, ok := a.scan(ctx)
+	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0}
+	if c.Error != nil {
+		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
 	}
 	return s
 }
@@ -208,6 +181,27 @@ func firstKnown(codes ...string) decide.ErrorClass {
 		}
 	}
 	return decide.ErrUnknown
+}
+
+// pendingInteraction reports whether the thread has an unresolved
+// interaction. It reads `bb thread interactions list --json`; if that fails
+// it uses the interaction lifecycle events summarised by the log cursor.
+// Only the structured status field is read, never the interaction's text.
+func (a *Adapter) pendingInteraction(ctx context.Context, sig signals) bool {
+	if out, err := a.run(ctx, "", "thread", "interactions", "list", a.cfg.Thread, "--json"); err == nil {
+		var items []struct {
+			Status *string `json:"status"`
+		}
+		if json.Unmarshal(out, &items) == nil {
+			for _, it := range items {
+				if it.Status == nil || *it.Status == "pending" {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return sig.pending
 }
 
 // Send implements adapter.Adapter via `bb thread tell`.

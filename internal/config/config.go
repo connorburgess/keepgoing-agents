@@ -67,6 +67,9 @@ type Progress struct {
 	Repositories    []string `yaml:"repositories,omitempty"`
 	StallAfter      Duration `yaml:"stall_after,omitempty"`
 	MinWakeInterval Duration `yaml:"min_wake_interval,omitempty"`
+	// MaxNudges is how many nudges a stalled session gets before the loop
+	// asks a person. Progress resets the count.
+	MaxNudges int `yaml:"max_nudges,omitempty"`
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -115,6 +118,7 @@ const (
 	DefaultStallAfter        = 30 * time.Minute
 	DefaultMinWakeInterval   = 60 * time.Minute
 	DefaultMaxReprompts      = 3
+	DefaultMaxNudges         = 3
 	DefaultBackoff           = 10 * time.Minute
 	DefaultWaitIfResetWithin = 30 * time.Minute
 	DefaultProcessTimeout    = 20 * time.Second
@@ -202,6 +206,9 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.Progress.StallAfter, DefaultStallAfter)
 	setDur(&l.Progress.MinWakeInterval, DefaultMinWakeInterval)
+	if l.Progress.MaxNudges == 0 {
+		l.Progress.MaxNudges = DefaultMaxNudges
+	}
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
@@ -270,6 +277,9 @@ func (c *Config) Validate() error {
 	}
 	if l.Progress.MinWakeInterval.Duration < time.Minute {
 		add("loop.progress.min_wake_interval must be at least 1m")
+	}
+	if l.Progress.MaxNudges < 1 {
+		add("loop.progress.max_nudges must be at least 1")
 	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")

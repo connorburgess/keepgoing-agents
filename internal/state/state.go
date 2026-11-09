@@ -29,6 +29,7 @@ type File struct {
 	CheckedAt         time.Time `json:"checkedAt,omitempty"`
 	LastState         string    `json:"lastState,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
+	Nudges            int       `json:"nudges,omitempty"` // since progress was last seen
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
 
@@ -36,6 +37,9 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// AwaitingReported is set once a pending interaction has been reported,
+	// so the person is told once, not on every tick.
+	AwaitingReported bool `json:"awaitingReported,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.
