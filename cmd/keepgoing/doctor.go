@@ -92,6 +92,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		r.add("task", "ok", "Task is configured inline; its text is not displayed.", "")
 	}
 	doctorFile(&r, "state.directory", cfg.Loop.StateDir, true)
+	doctorStateAccess(&r, cfg.Loop.StateDir, doctorOSAccess)
 	for _, name := range []string{control.FileName, state.FileName, "health.json", state.LogName, daemoninfo.FileName} {
 		p := filepath.Join(cfg.Loop.StateDir, name)
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
@@ -294,7 +295,7 @@ func doctorFile(r *doctorReport, id, path string, directory bool) {
 	} else if info.Mode().Perm()&0o077 != 0 {
 		r.add(id, "warning", "Configured path grants group or other access.", "Review permissions; keep task, account references, and runtime records private. Doctor never changes permissions.")
 	} else {
-		r.add(id, "ok", "Configured path is readable and has owner-only Unix mode bits; write access and extended ACLs were not checked.", "")
+		r.add(id, "ok", "Configured path is readable and has owner-only Unix mode bits. This mode-bit check does not establish write access or ACL privacy.", "")
 	}
 }
 

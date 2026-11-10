@@ -12,7 +12,7 @@ The ordinary command resolves configured executable paths and runs supported age
 
 ## What it checks
 
-- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. It does not print task text or control notes, check effective write access or extended ACLs, or change permissions. Windows ACL checks are unavailable.
+- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS and Linux, as described below. Doctor does not print task text or control notes or change permissions. ACL privacy audits and Windows ACL checks are unavailable.
 - Executable availability and recognized version output for the primary and enabled fallback agents. It displays only a narrowly recognized numeric version, never arbitrary stdout or stderr. A recognized version does not establish compatibility with every required provider feature.
 - BB thread identity from structured JSON, including explicit not-found, archived, and deleted results. A missing ID, mismatched ID, malformed JSON, or failed query is unverified. The configured primary differing from the caller's `BB_THREAD_ID` produces a warning; doctor never transfers the loop.
 - Explicit headless account-directory overrides for existence and absolute paths. Account directory values and all other environment values are withheld. Directory existence does not verify credentials, subscription identity, or independent quota. Inherited account selection is reported as unverified.
@@ -30,6 +30,18 @@ Checks have stable IDs and one of four statuses:
 Exit status is **1** if any check is `error`, **0** otherwise, and **2** for invalid flags. Exit 0 may include warnings and unavailable checks; scripts must inspect the report for their own readiness requirements. Invalid configuration also produces a JSON report when `--json` is requested. Parser errors and raw command output are withheld because they can contain private values.
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
+
+## Runtime path access
+
+`state.write_access` checks write and search permission on the runtime directory using the OS access API on macOS and Linux. If the directory does not exist, it checks the nearest existing ancestor and labels that result explicitly. It never creates directories or temporary files. An inaccessible path, read-only filesystem, non-directory ancestor, or dangling directory symlink is reported without exposing the path or raw filesystem error.
+
+Existing regular `runs.jsonl`, `tick.lock`, and `daemon.lock` files get separate `state.<filename>.write_access` checks: history needs write access, while locks need read/write access. Append/lock symlinks and other special files are skipped with an unavailable result. Atomic JSON records are replaced through their directory; doctor does not incorrectly require direct write permission on their existing files. Their readability checks still apply.
+
+These checks run offline too and never open files for writing, take a lock, change permissions, or alter control holds. They use the caller's current host context, which may differ from the scheduler's. The OS access API evaluates real credentials, so doctor supports only ordinary non-root callers with matching real/effective user and group IDs. Privileged or mismatched identities and other platforms, including Windows, are explicitly unavailable.
+
+An `ok` result means the OS allowed the requested access at check time. It does not guarantee a future write, sufficient disk space, lock acquisition, file replacement, or access to every nested target directory. ACLs may affect the OS decision, but this is **not an ACL privacy audit**: owner-only mode bits alone do not prove that nobody else has access. No ACL entries or account identifiers are printed. Permission denials are errors; unclassified filesystem failures remain unavailable.
+
+Offline fixtures cover denied/read-only/unknown results, missing ancestors, dangling links, append/lock selection, unchanged held state, and redaction. Native macOS/Linux tests exercise read-only directory and lock permissions under an ordinary user. Windows is cross-compiled; native Windows ACL inspection remains planned.
 
 ## Saved headless sessions
 
