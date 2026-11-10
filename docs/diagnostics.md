@@ -8,7 +8,7 @@ keepgoing doctor -c /private/example-loop/keepgoing.yaml --json
 keepgoing doctor -c /private/example-loop/keepgoing.yaml --offline
 ```
 
-The ordinary command resolves configured executable paths and runs only supported agents' `--version` commands and BB's `thread show <id> --json`. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
+The ordinary command resolves configured executable paths and runs supported agents' `--version` commands, BB's `thread show <id> --json`, and headless providers' login-status commands described below. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
 
 ## What it checks
 
@@ -31,6 +31,17 @@ Exit status is **1** if any check is `error`, **0** otherwise, and **2** for inv
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
 
+## Headless login status
+
+For primary and enabled fallback headless agents, doctor runs the provider's status command with the target's environment overrides and working directory:
+
+- Claude Code: `claude auth status --json`. A boolean `loggedIn: true` with exit 0 is `ok`; `loggedIn: false` with exit 0 or 1 is a `warning`. Missing/malformed JSON, contradictory success with a failed command, and other failures are `unavailable`. The command and its exit codes are described in the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference).
+- Codex: `codex login status`. Exit 0 is `ok`, meaning credentials are present according to the [Codex CLI reference](https://developers.openai.com/codex/cli/reference/). Any failure is `unavailable`: doctor cannot distinguish missing credentials from an unsupported command or operational error using a nonzero exit alone. It never parses the prose output.
+
+These checks report local provider status, not server validation, subscription identity, available quota, or model access. They do not sign in, sign out, or make model requests. Account identifiers, emails, auth methods, paths returned by providers, and raw output are withheld. Doctor does not open credential files itself. The provider may perform its own ordinary CLI housekeeping.
+
+`--offline` skips these commands. BB-managed provider authentication remains unavailable. A headless target with `extra_args` also has an unavailable login check: arbitrary turn arguments can override authentication settings, and doctor does not replay them. Disabled fallback agents are not queried. The doctor's inherited environment may differ from an external scheduler's; run diagnostics in that scheduler's context when checking its account selection.
+
 ## Recent history is not scheduler health
 
 A last check older than `--stale-after` produces a warning. The default is 30 minutes; set it above your external scheduler's interval:
@@ -43,8 +54,8 @@ No history means no completed tick is recorded; enabling alone does not run a su
 
 Scheduler installation/liveness and its next scheduled check are **unavailable**. New ticks record their build label: doctor compares that historical label with its own and warns if they differ. Empty or `dev` labels cannot identify a build. A match does not prove which binary is currently running; a mismatch does not establish which is newer. Legacy tick records without a build label remain unavailable. The daemon interval in YAML does not describe an external scheduler and is not used to invent a next-run time. Inspect the daemon or scheduler directly until dedicated scheduler diagnostics are implemented.
 
-Structured provider login checks and live headless session identity are also **not implemented**. Doctor does not invoke login commands or start an app-server to infer them. Paid probe cost previews are planned; `fallbacks check` remains a separate explicit operation that makes model calls outside the scheduled daily cap. Doctor never runs it automatically.
+Live headless session identity is **not implemented**. Doctor does not start an app-server or resume a session to infer it. Paid probe cost previews are planned; `fallbacks check` remains a separate explicit operation that makes model calls outside the scheduled daily cap. Doctor never runs it automatically.
 
 ## Verification
 
-Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. These checks do not establish live account authentication, paid handoff, scheduler health, or Windows ACL support.
+Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, scheduler health, or Windows ACL support.

@@ -28,7 +28,7 @@ keepgoing already runs the loop: it sends the configured task prompt when the ag
 
 `keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it.
 
-`keepgoing doctor` checks setup, BB target identity, CLI versions, private-file access, and recent tick history without model calls; [its report](docs/diagnostics.md) marks unsupported login and scheduler checks explicitly.
+`keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status, private-file access, and recent tick history without model calls; [its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
 
 `keepgoing status` now distinguishes current holds from [recorded decisions and outcomes](docs/operations.md#understanding-recorded-status), including failures, dry runs, stale history, and build-label differences. Live scheduler and headless-session diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
 
