@@ -118,3 +118,9 @@ keepgoing net-retry --max-wait 2h --attempts 6 -- git push origin cb/example
 ```
 
 This reruns the command only when it failed while the network was down. When `--attempts` runs out while still offline, it returns the command's own exit code. A failure while the network is reachable is returned at once, so a rejected push or merge is never repeated blindly. Connectivity is an HTTP GET to `KEEPGOING_NET_PROBE_URL`, which defaults to `https://api.github.com/zen`. Set `KEEPGOING_NET_PROBE` to a shell command to check connectivity your own way.
+
+### Saved headless resume IDs
+
+For a configured Claude Code or Codex target, `status --json` includes `targetSession` with the saved `id` when recognized, its `state` (`saved`, `missing`, or `unavailable`), `source: "runner_session_file"`, `liveVerified: false`, and an explanatory `message`. Text status shows the same identity as saved history. After retargeting, status reads the selected target's record; missing or disabled targets do not fall back to another target's ID. BB and custom process targets omit `targetSession`.
+
+The record is read without executing a provider or inspecting turn output. Missing metadata does not mean no turn is running, and saved metadata does not verify live identity or resumability. Unrecognized/non-UUID, oversized, or inaccessible records are withheld without modifying the runner's existing resume behavior. See [saved session diagnostics](diagnostics.md#saved-headless-sessions).

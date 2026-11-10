@@ -33,18 +33,19 @@ type doctorCheck struct {
 }
 
 type doctorReport struct {
-	SchemaVersion int           `json:"schemaVersion"`
-	Version       string        `json:"version"`
-	Loop          string        `json:"loop,omitempty"`
-	Target        string        `json:"target,omitempty"`
-	TargetAgent   *agentRef     `json:"targetAgent,omitempty"`
-	QuotaGroup    string        `json:"quotaGroup,omitempty"`
-	ControlState  string        `json:"controlState,omitempty"`
-	CheckedAt     time.Time     `json:"checkedAt"`
-	LastCheckAt   *time.Time    `json:"lastCheckAt,omitempty"`
-	StaleAfter    string        `json:"staleAfter"`
-	NextCheck     string        `json:"nextCheck"`
-	Checks        []doctorCheck `json:"checks"`
+	SchemaVersion int                       `json:"schemaVersion"`
+	Version       string                    `json:"version"`
+	Loop          string                    `json:"loop,omitempty"`
+	Target        string                    `json:"target,omitempty"`
+	TargetAgent   *agentRef                 `json:"targetAgent,omitempty"`
+	QuotaGroup    string                    `json:"quotaGroup,omitempty"`
+	ControlState  string                    `json:"controlState,omitempty"`
+	CheckedAt     time.Time                 `json:"checkedAt"`
+	LastCheckAt   *time.Time                `json:"lastCheckAt,omitempty"`
+	StaleAfter    string                    `json:"staleAfter"`
+	NextCheck     string                    `json:"nextCheck"`
+	Checks        []doctorCheck             `json:"checks"`
+	Sessions      map[string]*sessionStatus `json:"sessions,omitempty"`
 }
 
 func (r *doctorReport) add(id, status, message, fix string) {
@@ -136,6 +137,19 @@ func doctor(e env, args []string, run doctorRun) int {
 		r.add("target.current_thread", "warning", "The configured primary is a different BB conversation from this caller.", "Review the configured thread ID; this command does not transfer supervision.")
 	}
 	checkAgent := func(id string, a config.Agent) {
+		if s := savedSession(cfg.Loop.StateDir, id, a.Adapter); s != nil {
+			if r.Sessions == nil {
+				r.Sessions = make(map[string]*sessionStatus)
+			}
+			r.Sessions[id] = s
+			status := "unavailable"
+			if s.State == "saved" {
+				status = "ok"
+			} else if s.State == "unavailable" {
+				status = "warning"
+			}
+			r.add("agent."+id+".session", status, s.Message, "")
+		}
 		doctorAgent(e.ctx, &r, id, a, *offline, *timeout, run)
 	}
 	checkAgent("primary", cfg.Loop.Agent)
@@ -200,6 +214,16 @@ func printDoctor(e env, r doctorReport, asJSON bool) int {
 		fmt.Fprintf(e.stdout, "[%s] %s: %s\n", c.Status, c.ID, c.Message)
 		if c.Fix != "" {
 			fmt.Fprintf(e.stdout, "  %s\n", c.Fix)
+		}
+	}
+	ids := make([]string, 0, len(r.Sessions))
+	for id := range r.Sessions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if s := r.Sessions[id]; s.ID != "" {
+			fmt.Fprintf(e.stdout, "saved session (%s): %s (live identity unverified)\n", id, s.ID)
 		}
 	}
 	return code

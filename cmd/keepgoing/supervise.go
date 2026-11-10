@@ -143,12 +143,13 @@ type statusOut struct {
 	Version      string          `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
-	PrimaryAgent     agentRef      `json:"primaryAgent"`
-	TargetAgent      agentRef      `json:"targetAgent"`
-	TargetConfigured bool          `json:"targetConfigured"`
-	TaskSource       string        `json:"taskSource"`
-	TaskFile         string        `json:"taskFile,omitempty"`
-	Runtime          runtimeStatus `json:"runtime"`
+	PrimaryAgent     agentRef       `json:"primaryAgent"`
+	TargetAgent      agentRef       `json:"targetAgent"`
+	TargetConfigured bool           `json:"targetConfigured"`
+	TaskSource       string         `json:"taskSource"`
+	TaskFile         string         `json:"taskFile,omitempty"`
+	Runtime          runtimeStatus  `json:"runtime"`
+	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 }
 
 // agentRef identifies the session an agent definition points at.
@@ -204,6 +205,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		out.TaskSource, out.TaskFile = "file", l.PromptFile
 	}
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	if out.TargetConfigured {
+		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
 		if err == nil {
@@ -233,6 +237,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
 	}
 	fmt.Fprintln(w)
+	if s := out.TargetSession; s != nil {
+		fmt.Fprintf(w, "session:   %s", s.State)
+		if s.ID != "" {
+			fmt.Fprintf(w, " (%s)", s.ID)
+		}
+		fmt.Fprintf(w, "; %s\n", s.Message)
+	}
 	if out.TargetConfigured {
 		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
 		if out.TargetAgent.BBThread != "" {

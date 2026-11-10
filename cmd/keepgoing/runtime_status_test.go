@@ -104,7 +104,7 @@ func TestStatusOldStateMissingTargetAndNoWrites(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &s); err != nil {
 		t.Fatal(err)
 	}
-	if s.TargetConfigured || s.TargetAgent.Adapter != "" || s.Runtime.State != "unknown" || s.TaskSource != "inline" {
+	if s.TargetConfigured || s.TargetSession != nil || s.TargetAgent.Adapter != "" || s.Runtime.State != "unknown" || s.TaskSource != "inline" {
 		t.Fatalf("%+v", s)
 	}
 	after, _ := os.ReadFile(filepath.Join(f.state, state.FileName))
