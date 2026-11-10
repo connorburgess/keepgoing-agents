@@ -69,7 +69,11 @@ func TestServiceHealthStatusIsReadOnly(t *testing.T) {
 					for _, f := range r.Health.Findings {
 						codes = append(codes, f.Code)
 					}
-					if strings.Join(codes, ",") != "daemon_build_differs,daemon_dry_run,daemon_check_overdue" {
+					want := "daemon_build_differs,daemon_dry_run,daemon_check_overdue"
+					if backend == "systemd" {
+						want = "service_binding_unavailable," + want
+					}
+					if strings.Join(codes, ",") != want {
 						t.Fatalf("findings %v", codes)
 					}
 				} else if !strings.Contains(o, "service health: warning") || !strings.Contains(o, "daemon_build_differs") || !strings.Contains(o, "Next:") {
@@ -124,7 +128,7 @@ func TestServiceHealthReportsFailedSystemdUnit(t *testing.T) {
 	for _, f := range r.Health.Findings {
 		codes = append(codes, f.Code)
 	}
-	if strings.Join(codes, ",") != "unit_failed,unit_disabled,daemon_unverified" {
+	if strings.Join(codes, ",") != "unit_failed,unit_disabled,service_binding_unavailable,daemon_unverified" {
 		t.Fatalf("findings %v", codes)
 	}
 	for _, args := range m.calls[n:] {

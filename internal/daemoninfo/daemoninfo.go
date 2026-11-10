@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,13 +33,15 @@ type endpoint struct {
 
 // Snapshot is a response from a running daemon, not a persisted heartbeat.
 type Snapshot struct {
-	StateID     string     `json:"stateID"` // binds the response to its state directory without exposing the path
-	Version     string     `json:"version"`
-	StartedAt   time.Time  `json:"startedAt"`
-	ObservedAt  time.Time  `json:"observedAt"`
-	Phase       string     `json:"phase"`
-	NextCheckAt *time.Time `json:"nextCheckAt,omitempty"`
-	DryRun      bool       `json:"dryRun"`
+	ProcessID    int        `json:"processID,omitempty"`
+	InvocationID string     `json:"invocationID,omitempty"`
+	StateID      string     `json:"stateID"` // binds the response to its state directory without exposing the path
+	Version      string     `json:"version"`
+	StartedAt    time.Time  `json:"startedAt"`
+	ObservedAt   time.Time  `json:"observedAt"`
+	Phase        string     `json:"phase"`
+	NextCheckAt  *time.Time `json:"nextCheckAt,omitempty"`
+	DryRun       bool       `json:"dryRun"`
 }
 
 type response struct {
@@ -70,7 +73,7 @@ func Start(stateDir, version string, dryRun bool) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{listener: l, path: filepath.Join(stateDir, FileName), endpoint: endpoint{l.Addr().String(), hex.EncodeToString(key)}, done: make(chan struct{}), snapshot: Snapshot{StateID: identity, Version: version, StartedAt: time.Now().UTC(), Phase: "checking", DryRun: dryRun}}
+	s := &Server{listener: l, path: filepath.Join(stateDir, FileName), endpoint: endpoint{l.Addr().String(), hex.EncodeToString(key)}, done: make(chan struct{}), snapshot: Snapshot{ProcessID: os.Getpid(), InvocationID: localInvocationID(), StateID: identity, Version: version, StartedAt: time.Now().UTC(), Phase: "checking", DryRun: dryRun}}
 	b, _ := json.Marshal(s.endpoint)
 	f, err := os.CreateTemp(stateDir, ".daemon-endpoint-*")
 	if err != nil {
@@ -141,6 +144,28 @@ func (s *Server) serve() {
 		}
 		_ = c.Close()
 	}
+}
+
+// ValidInvocationID accepts the canonical nonzero systemd runtime-cycle ID.
+func ValidInvocationID(s string) bool {
+	if len(s) != 32 || s == strings.Repeat("0", 32) {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func localInvocationID() string {
+	if runtime.GOOS == "linux" {
+		if id := os.Getenv("INVOCATION_ID"); ValidInvocationID(id) {
+			return id
+		}
+	}
+	return ""
 }
 
 func validKey(s string) bool { b, err := hex.DecodeString(s); return err == nil && len(b) == 32 }
@@ -231,6 +256,14 @@ func Query(ctx context.Context, stateDir string) (Snapshot, error) {
 	}
 	if json.Unmarshal(reply.Snapshot, &snap) != nil || snap.StartedAt.IsZero() || snap.ObservedAt.IsZero() || (snap.Phase != "checking" && snap.Phase != "waiting") {
 		return Snapshot{}, errors.New("invalid daemon snapshot")
+	}
+	// Older daemons omit identity. Invalid optional metadata must not create a
+	// service binding, but need not discard otherwise valid responsiveness.
+	if snap.ProcessID < 1 || snap.ProcessID > 2147483647 {
+		snap.ProcessID = 0
+	}
+	if !ValidInvocationID(snap.InvocationID) {
+		snap.InvocationID = ""
 	}
 	identity, err := stateIdentity(stateDir)
 	if err != nil || snap.StateID != identity {

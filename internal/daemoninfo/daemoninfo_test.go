@@ -162,3 +162,50 @@ func TestServerBoundsIdleConnections(t *testing.T) {
 		t.Fatal("idle connection delayed shutdown")
 	}
 }
+
+func TestOptionalProcessIdentityIsAuthenticatedAndRedacted(t *testing.T) {
+	id := "1234567890abcdef1234567890abcdef"
+	t.Setenv("INVOCATION_ID", id)
+	dir := t.TempDir()
+	s, err := Start(dir, "fixture", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := Query(context.Background(), dir)
+	if err != nil || got.ProcessID != os.Getpid() {
+		t.Fatalf("process metadata unavailable: %v", err)
+	}
+	want := ""
+	if runtime.GOOS == "linux" {
+		want = id
+	}
+	if got.InvocationID != want {
+		t.Fatal("unexpected invocation metadata")
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Contains(string(b), id) || strings.Contains(string(b), "processID") {
+		t.Fatal("identity persisted in endpoint")
+	}
+	// A newer client still accepts responsiveness from an older responder, and
+	// invalid optional values cannot verify a service identity.
+	for _, bad := range []string{"", "PRIVATE", strings.Repeat("0", 32)} {
+		s.mu.Lock()
+		s.snapshot.ProcessID = 0
+		s.snapshot.InvocationID = bad
+		s.mu.Unlock()
+		got, err = Query(context.Background(), dir)
+		if err != nil || got.ProcessID != 0 || got.InvocationID != "" {
+			t.Fatalf("optional metadata not cleared: %v", err)
+		}
+	}
+	for _, bad := range []string{"PRIVATE", strings.ToUpper(id), strings.Repeat("0", 32), id + "0"} {
+		if ValidInvocationID(bad) {
+			t.Fatal("invalid invocation accepted")
+		}
+		t.Setenv("INVOCATION_ID", bad)
+		if localInvocationID() != "" {
+			t.Fatal("raw environment retained")
+		}
+	}
+}
