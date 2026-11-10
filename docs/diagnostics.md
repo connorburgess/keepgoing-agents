@@ -149,3 +149,11 @@ Live headless session identity is **not implemented**. Doctor does not start an 
 ## Verification
 
 Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, external scheduler health, or full ACL/effective-access evaluation. Local daemon fixtures cover fresh challenges, wrong/copied/stale endpoints, deadlines, live build redaction, control changes, and state-directory reload rejection.
+
+## Incident investigation: current coverage and priority gaps
+
+Today keepgoing owns `control.json`, the last recorded check in `state.json`, and the decision history in `runs.jsonl`. These can distinguish an explicit hold from a supervisor that has stopped checking. Tick output can include report-delivery warnings; a scheduler wrapper may save that output separately or discard it, so an automation's successful/silent-skip status alone does not prove delivery. Inspect the configured wrapper's output destination when investigating existing installations. Do not assume a background daemon preserves raw stdout/stderr.
+
+Detailed provider connection/retry events are not yet preserved in a common keepgoing incident history. An investigation can therefore require the adapter host's logs, such as BB's structured provider events. Headless process/session artifacts also do not constitute a unified diagnostic timeline. `status` and `doctor` do not currently produce the proposed incident bundle or a durable report-delivery ledger.
+
+The [priority reliability checkpoints](roadmap.md#priority-reliability-checkpoints) cover active retry classification, keepgoing-owned structured evidence across adapters, failed-alert visibility, a read-only timeline and recovery verification. These are planned changes. Records must exclude task/transcript text and secrets; unsupported provider details remain unavailable. Connectivity recovery alone must never resume an explicit hold.
