@@ -2,6 +2,14 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## v0.1.2 maintenance release evidence
+
+[v0.1.2](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.2) tags commit `966620873af35bacef648d5dd57e31150e78f424`. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/42790570495) passed its Build and publish job on that commit: Go tests, six-platform archive build, all checksum comparisons, and the unpacked Linux amd64 smoke check. All six published assets were subsequently downloaded and matched the published checksums; the downloaded macOS arm64 archive passed the same provider-free smoke check locally. No real agent was invoked.
+
+[Homebrew PR #1](https://github.com/connorburgess/homebrew-tap/pull/1) updated all four formula URLs/checksums and merged as `90ffac5ace1414f70689ed4fccec4af23dcceeda`. Its [Fresh macOS install job](https://github.com/connorburgess/homebrew-tap/actions/runs/42791240831) passed on head `7dad7d90d561d86aa7a402ec63e9f64bdf47a7ba` against base `dbb5dcb258ad66c3f37d9652ecb879c7f8d97fc6`. The macOS 15 arm64 runner installed from the checked-out formula, verified its download, ran the version and `init --help` formula tests, and reported `v0.1.2`. This did not exercise a provider, service or existing supervisor.
+
+This verifies release/package parity on those paths. Native Homebrew installation on Linux/Intel macOS, native Windows release installation, live provider sessions, service lifecycle and the full five-minute onboarding acceptance remain outstanding. Building the Windows archives is not a Windows installation test. The BB plugin is distributed separately. This release does not implement loop-wide work budgets, portable goals, or menu-bar visibility.
+
 ## Check an actual binary without provider calls
 
 On macOS/Linux with Git and Python 3, run this from a checkout containing the smoke script, passing an absolute path to a native binary built from the same revision:
