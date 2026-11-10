@@ -21,6 +21,10 @@ Other coding agents can be supervised today through the process adapter, given a
 
 `keepgoing init` is implemented on `main` for BB, Claude Code, and Codex. **Fakes** cover CLI discovery, ordered account configuration, task instructions, disabled state, and completion across repeated checks using the generated config. Temporary real Git repositories exercise progress validation. Setup checks executable availability and directory existence only; it does not invoke providers or verify login, subscription identity, BB target identity, or live task completion. See the [setup guide](setup.md).
 
+## Diagnostics
+
+`keepgoing doctor` is implemented on `main`. **Fakes** cover version queries, BB target identity, privacy, account-environment propagation, recent-check classification, and read-only behavior. Unix subprocess fixtures cover time/output limits. Login verification, live headless session identity, scheduler inspection, running-binary comparison, and Windows ACL checks are explicitly unavailable. See [diagnostics](diagnostics.md).
+
 ## Agent chats
 
 | Integration | Status | Next check |
