@@ -164,10 +164,10 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "stop", "error", "probe_failed", "switch_back", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "test"}
 
 // DefaultReportEvents are sent when report.events is empty.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)

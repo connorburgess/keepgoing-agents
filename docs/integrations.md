@@ -26,6 +26,8 @@ A macOS Apple silicon native-binary smoke check also passed against an unpacked 
 
 ## Diagnostics
 
+Completion declaration reports (`complete`) are implemented on `main`, after v0.1.2. **Fakes** verify persisted-flag deduplication across commands/restarts/enable, explicit resume, concurrent completion and stop during delivery, subscription filtering, legacy records, control/log failures, redacted payloads and a single transport attempt for network/HTTP failures or redirects in both webhook formats. No live completion declaration or webhook was sent for this feature test. The event does not independently verify success; crash/uncertain-delivery loss remains possible. See [completion reporting](operations.md#completing-a-task).
+
 Optional `no_progress_timeout` is implemented on `main`, after v0.1.2. **Fakes** cover repeated turns, recovery/handoffs, restart with missing diagnostic history, unknown evidence, clock rollback, dry runs, polling, hold/report precedence and resume. CLI fixtures use a temporary Git repository and fake providers to verify setup, historical status, expiry and explicit duration increase/resume. No live model or service was exercised. This bounds time without observable Git changes, not useful work or spend. See [no-progress timeout](operations.md#no-progress-timeout).
 
 Optional total send allowances (`max_sends`) are implemented on `main`, after v0.1.2. **Fakes** verify all send paths, failed/uncertain delivery, multiple recovery attempts per tick, pre-delivery reservation, simulated process exit, restart/resume, dry runs, control precedence and unavailable accounting. No live provider was used. Live BB pilot gates remain outstanding. See [send allowance behavior](operations.md#total-send-allowance).

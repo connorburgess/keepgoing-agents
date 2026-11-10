@@ -144,7 +144,9 @@ func Sign(secret, id string, ts time.Time, body []byte) (map[string]string, erro
 	}, nil
 }
 
-// Report implements Reporter. It retries once on a network error or 5xx.
+// Report implements Reporter. Most events retry once on a network error or 5xx.
+// Completion declarations make one attempt without redirects: an uncertain
+// delivery must not cause a duplicate notification at a non-idempotent receiver.
 func (w *Webhook) Report(ctx context.Context, e Event) error {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
@@ -167,8 +169,16 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 			headers[k] = v
 		}
 	}
+	attempts := 2
+	client := w.client
+	if e.Type == "complete" {
+		attempts = 1
+		copy := *w.client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
 	var last error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(body))
 		if err != nil {
 			return err
@@ -176,7 +186,7 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
-		resp, err := w.client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			last = errors.New("report: request failed") // the error may embed the URL; keep it out
 			continue
