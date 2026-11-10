@@ -61,6 +61,22 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 	default:
 		add("registration_unknown", "unavailable", "Service registration could not be verified; unknown is not absence.", "Check manager access, service identity, and overrides. Raw manager output is withheld; no recovery action was taken.")
 	}
+	if b := r.Executable; b != nil {
+		switch b.State {
+		case "missing", "non_regular", "no_execute_bits":
+			add("executable_"+b.State, "warning", b.Message, "Inspect the recorded executable and restore the intended installation before explicitly starting the service. No files or holds were changed.")
+		case "available":
+			switch b.Comparison {
+			case "different":
+				add("executable_differs", "warning", "The recorded executable's contents differ from the invoking CLI's file on disk.", "Check the intended installation paths before explicitly reinstalling or restarting. This does not establish which build is newer or which file the running daemon loaded.")
+			case "match":
+			default:
+				add("executable_comparison_unknown", "unavailable", "The recorded executable is readable but comparison with the invoking CLI's file is unavailable.", "Check the invoking CLI's installation. A readable file alone does not establish a valid or runnable binary.")
+			}
+		default:
+			add("executable_unavailable", "unavailable", b.Message, "Inspect access and file size at the recorded path, or retry after an installation finishes. No executable was run for this check.")
+		}
+	}
 	// Execution history remains independent of live loop observations.
 	if x := r.Execution; x != nil {
 		if x.State != "available" {

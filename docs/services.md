@@ -17,9 +17,9 @@ Findings distinguish missing recovery files/registration, unknown manager respon
 
 For a responding loop daemon, findings also flag a different/unknown build label, dry-run mode, and a waiting-phase normal check more than one minute overdue. The overdue comparison uses the daemon's own observation and next-check timestamps, with a fixed one-minute grace. It does not time out an in-progress check or declare the process stalled. Sleep, scheduling delays, and clock changes can explain an overdue timestamp. Historical heartbeat freshness remains separate in `status` and `doctor`, using their `--stale-after` setting.
 
-Build comparison concerns the responding loop daemon and the invoking CLI. It does not inspect the recorded service executable on disk, prove that the responder belongs to the service, or say which build is newer. Empty/development labels remain unavailable. A healthy agent cannot be inferred from these checks.
+Daemon build-label comparison concerns the responding loop daemon and the invoking CLI. It does not prove that the responder belongs to the service or say which build is newer. The separate executable-file inspection below compares on-disk contents without interpreting build labels. Empty/development labels remain unavailable. A healthy agent cannot be inferred from these checks.
 
-The assessment uses structured manager and daemon observations without writes, provider probes, restarts, or control changes. Recorded, loaded Linux units receive one additional bounded execution-details query. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
+The assessment uses structured manager and daemon observations without writes, provider probes, restarts, or control changes. Recorded, loaded Linux units receive one additional bounded execution-details query. Recorded services also receive the read-only executable-file inspection below. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
 
 Pure table tests and fake-manager/local-diagnostic fixtures cover combined failures, grace boundaries, redaction, human/JSON output, and unchanged controls/provider-call counts. These tests do not establish live service startup, logout/reboot, or soak behavior.
 
@@ -35,7 +35,27 @@ The text report and JSON `execution` object expose:
 
 These properties can describe a previous run. They are not evidence that the current process failed or that it belongs to the loop's diagnostic responder. A `success` result alone does not prove startup or healthy operation. Exit code 203 is shown numerically rather than attributed conclusively to an executable failure: a program can return that code itself. No journal, transcript, service-supplied status text, command arguments, or raw error output is read into the report. Manager results never become provider-limit or failover signals, and no restart or hold-clearing action follows.
 
-The field meanings follow the [systemd service interface](https://github.com/systemd/systemd/blob/v255/man/org.freedesktop.systemd1.xml) and [result enumeration](https://github.com/systemd/systemd/blob/v255/src/core/service.c). Offline fixtures cover reported failures and exits, redaction, identity changes, unknown schemas, and unchanged controls/files/provider-call counts. Live installed-service failure and recovery checks remain unverified. macOS launch failure details, executable inspection, and service-to-daemon identity remain planned.
+The field meanings follow the [systemd service interface](https://github.com/systemd/systemd/blob/v255/man/org.freedesktop.systemd1.xml) and [result enumeration](https://github.com/systemd/systemd/blob/v255/src/core/service.c). Offline fixtures cover reported failures and exits, redaction, identity changes, unknown schemas, and unchanged controls/files/provider-call counts. Live installed-service failure and recovery checks remain unverified. macOS launch failure details and service-to-daemon identity remain planned. Executable-file inspection is described below.
+
+## Recorded executable inspection
+
+For recorded macOS and Linux services, `service status` inspects the executable named in the private recovery record, even if registration is absent or unavailable. It never runs that path, including for a version query. JSON adds `executable` with `state`, `comparison`, and `message`; text shows the same observations. An unrecorded service has no executable assessment, and install/remove decisions do not use it.
+
+| State | Meaning |
+| --- | --- |
+| `available` | A stable regular file was readable within the size bound and had at least one Unix execute bit. This does not establish effective execute access or a valid binary format. |
+| `missing` | The recorded path, including any symlink target, was absent at inspection. |
+| `non_regular` | The path resolved to a directory, FIFO, or another non-regular file. |
+| `no_execute_bits` | The regular file had no Unix execute bits. |
+| `unavailable` | Inspection failed, was cancelled, detected a file change, or exceeded the 128 MiB per-file size bound. Raw errors are withheld. |
+
+For an available recorded file, `comparison` is `match` or `different` when its SHA-256 content digest can be compared with the invoking CLI's file on disk; otherwise it is `unknown`. The `executable` object never exposes digests, file contents, paths, build settings, or raw errors. It does not use a version subprocess, provider call, or model request. This is an on-disk content comparison, not proof of authenticity, build age, loaded process image, or service-to-daemon identity. In particular, replacing a file after the CLI started can make its current on-disk contents differ from the running image, and matching files do not establish a valid executable format.
+
+Missing/non-regular/non-executable files and differing contents add warnings with codes `executable_missing`, `executable_non_regular`, `executable_no_execute_bits`, and `executable_differs`. Unavailable inspection or comparison adds `executable_unavailable` or `executable_comparison_unknown`. No repair, reinstall, restart, or control change follows; warnings retain the existing status exit-code behavior.
+
+Inspection follows installation symlinks, opens nonblocking to avoid waiting on a concurrently substituted FIFO, checks descriptor and resolved-path identity/size/mode/modification time before and after bounded reads, and checks cancellation between chunks. These are best-effort observations for cooperative local installations, not an atomic filesystem snapshot or a security boundary. Filesystem calls themselves may wait on storage; the size bound is not a wall-clock timeout. Effective ACL execution permission, executable format/platform, code signing, build labels, and the binary actually loaded by a service are not verified.
+
+Temporary-file fixtures cover matching copies, changed contents, symlinks and broken targets, missing files, permissions, FIFOs, size bounds, cancellation, identity/metadata changes, redaction, unchanged controls/files, and removal with a missing executable. Native macOS/Linux tests read the test executable without executing it. Fake-manager status tests cover both backends; no live service failure, restart, or recovery is part of this evidence.
 
 ## Linux systemd user services
 
