@@ -1,6 +1,6 @@
 # Guided setup
 
-`keepgoing init` builds a disabled loop without editing YAML or installing a loop skill. This command is implemented on `main`; the v0.1.1 release does not include it. Follow the [development build instructions](../README.md#development-build-for-the-current-quick-start) before using this guide, and substitute that binary's absolute path for `keepgoing`.
+`keepgoing init` builds a disabled loop without editing YAML or installing a loop skill. This command requires v0.1.2 or newer; the v0.1.1 release does not include it. Follow the [installation instructions](../README.md#install), then check `keepgoing version` before using this guide. If using a separate development binary, substitute its absolute path for `keepgoing`.
 
 ## First loop
 

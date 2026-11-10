@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-These changes are on `main`, not in the v0.1.1 release or Homebrew package. See [release verification](docs/release-verification.md) for artifact checks and outstanding live walkthroughs. Unless explicitly recorded in [integrations](docs/integrations.md), provider and service behavior is fixture-tested rather than live-verified.
+No changes yet.
+
+## 0.1.2 (2026-11-10)
+
+Maintenance release collecting the changes since v0.1.1. See [release verification](docs/release-verification.md) for artifact checks and outstanding live walkthroughs. Unless explicitly recorded in [integrations](docs/integrations.md), provider and service behavior is fixture-tested rather than live-verified.
 
 ### Added
 
@@ -24,12 +28,13 @@ These changes are on `main`, not in the v0.1.1 release or Homebrew package. See 
 - `switch_back`, off by default, returns the loop to its primary between the fallback's turns. It waits until the primary's reported reset time, or `min_after` when none was reported, and until the primary passes an exact probe. It sends a `switch_back` report. `loop.probe` sets how the primary is probed.
 - A failed probe saves its raw output to `probe-failures/<candidate>/` in the state directory, keeping the newest five, so unrecognised error shapes such as a provider's usage-limit event can be mapped later. It is never read for a decision.
 - A native-binary smoke check for macOS/Linux verifies guided setup, offline diagnostics, persisted holds/completion and owner conflicts using fictional loops with provider invocation traps. The release guide separates this evidence from real two-turn/resume, account handoff and installed-service acceptance.
+- Publication verifies all archive checksums and runs that smoke check against the unpacked Linux amd64 archive before uploading release assets.
 
 ### Fixed
 
 - Loaded configuration and fallback sources are checked under the tick lock before provider work. Stale, missing or unreadable snapshots withhold ticks, probes, retargeting and provider stop execution until reload/repair; diagnostic status remains available. External writers that ignore the lock and changes to referenced files are outside this guard.
 - Child-input precedence fixtures no longer require a real subprocess inspection chain to finish within a 500 ms poll under race instrumentation. Separate timing and cancellation tests retain coverage without changing production deadlines or at-most-once event consumption.
-- Installation instructions now distinguish v0.1.1 artifacts and matching examples from the unreleased quick start, with an explicit revision-labeled development build path.
+- Installation instructions now distinguish v0.1.1 artifacts and matching examples from the v0.1.2 quick start, with an explicit revision-labeled development build path.
 
 ## 0.1.1 (2026-11-10)
 

@@ -21,6 +21,12 @@ jobs:
           go-version-file: go.mod
       - run: go test ./...
       - run: scripts/build-release.sh "$GITHUB_REF_NAME"
+      - name: Verify archives and smoke-check the native package
+        run: |
+          (cd dist && shasum -a 256 -c checksums.txt)
+          package="keepgoing_${GITHUB_REF_NAME#v}_linux_amd64"
+          tar -xzf "dist/$package.tar.gz" -C "$RUNNER_TEMP"
+          python3 scripts/smoke-release.py "$RUNNER_TEMP/$package/keepgoing"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
