@@ -30,6 +30,10 @@ func TestDoctorACLReportsPresenceWithoutClaimingPrivacy(t *testing.T) {
 		{"macos_not_reported", aclMetadata{true, aclNotReported, "", aclMacOS}, true, "unavailable"},
 		{"macos_unknown", aclMetadata{true, aclUnavailable, "", aclMacOS}, true, "unavailable"},
 		{"unknown_format", aclMetadata{true, aclPresent, "", doctorPrivate}, true, "unavailable"},
+		{"windows_present", aclMetadata{true, aclPresent, "", aclWindows}, true, "warning"},
+		{"windows_empty", aclMetadata{true, aclEmpty, "", aclWindows}, true, "warning"},
+		{"windows_unrestricted", aclMetadata{true, aclUnrestricted, "", aclWindows}, true, "error"},
+		{"windows_unknown", aclMetadata{true, doctorPrivate, "", aclWindows}, true, "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var r doctorReport
@@ -49,6 +53,9 @@ func TestDoctorACLReportsPresenceWithoutClaimingPrivacy(t *testing.T) {
 			}
 			if tc.metadata.Format == aclMacOS && (strings.Contains(c.Message, "Linux") || strings.Contains(c.Message, "Default/inherited")) {
 				t.Fatal("macOS reported Linux ACL semantics")
+			}
+			if tc.metadata.Format == aclWindows && (strings.Contains(c.Message, "Linux") || strings.Contains(c.Message, "Unix mode") || strings.Contains(c.Message, "Default/inherited")) {
+				t.Fatal("Windows reported Unix ACL semantics")
 			}
 		})
 	}

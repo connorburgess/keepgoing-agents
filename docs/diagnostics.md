@@ -12,7 +12,7 @@ The ordinary command resolves configured executable paths and runs supported age
 
 ## What it checks
 
-- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS and Linux, and report Linux POSIX/macOS extended ACL metadata presence as described below. Doctor does not print task text or control notes or change permissions. Full ACL permission evaluation and Windows ACL inspection are unavailable.
+- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS/Linux and ACL metadata on Linux/macOS/Windows as described below. Doctor does not print task text or control notes or change permissions. Full ACL permission evaluation and Windows effective write-access checks are unavailable.
 - Executable availability and recognized version output for the primary and enabled fallback agents. It displays only a narrowly recognized numeric version, never arbitrary stdout or stderr. A recognized version does not establish compatibility with every required provider feature.
 - BB thread identity from structured JSON, including explicit not-found, archived, and deleted results. A missing ID, mismatched ID, malformed JSON, or failed query is unverified. The configured primary differing from the caller's `BB_THREAD_ID` produces a warning; doctor never transfers the loop.
 - Explicit headless account-directory overrides for existence and absolute paths. Account directory values and all other environment values are withheld. Directory existence does not verify credentials, subscription identity, or independent quota. Inherited account selection is reported as unverified.
@@ -41,7 +41,7 @@ These checks run offline too and never open files for writing, take a lock, chan
 
 An `ok` result means the OS allowed the requested access at check time. It does not guarantee a future write, sufficient disk space, lock acquisition, file replacement, or access to every nested target directory. ACLs may affect the OS decision, but this is **not an ACL privacy audit**: owner-only mode bits alone do not prove that nobody else has access. No ACL entries or account identifiers are printed. Permission denials are errors; unclassified filesystem failures remain unavailable.
 
-Offline fixtures cover denied/read-only/unknown results, missing ancestors, dangling links, append/lock selection, unchanged held state, and redaction. Native macOS/Linux tests exercise read-only directory and lock permissions under an ordinary user. Windows is cross-compiled; native Windows ACL inspection remains planned.
+Offline fixtures cover denied/read-only/unknown results, missing ancestors, dangling links, append/lock selection, unchanged held state, and redaction. Native macOS/Linux tests exercise read-only directory and lock permissions under an ordinary user. Windows runtime write-access checks remain unavailable; its DACL metadata inspection is separate below.
 
 ## Linux ACL metadata
 
@@ -51,7 +51,7 @@ Present metadata produces a warning to review ACL rules alongside mode bits. A d
 
 `ENODATA` is reported as **not reported (absent or hidden)**, because [the Linux API documents both possibilities](https://man7.org/linux/man-pages/man2/getxattr.2.html). Unsupported filesystems, permission errors, unexpected results, and other platforms are unavailable. No detected metadata is never treated as a privacy all-clear. If either query detects metadata, the check warns even when the other query is unavailable, with both results shown.
 
-This Linux check inspects the configured path's target, following symlinks like the existing readability check. It does not inspect ancestor ACLs, missing paths, every nested runtime file, or non-POSIX ACL formats. macOS metadata has a separate implementation below; Windows ACLs remain unavailable. Results are observations at query time, not a guarantee against subsequent filesystem changes. Mode-bit and runtime-access checks remain separate.
+This Linux check inspects the configured path's target, following symlinks like the existing readability check. It does not inspect ancestor ACLs, missing paths, every nested runtime file, or non-POSIX ACL formats. macOS and Windows metadata have separate implementations below. Results are observations at query time, not a guarantee against subsequent filesystem changes. Mode-bit and runtime-access checks remain separate.
 
 Fixtures cover present/default/unknown/hidden metadata, error redaction, and offline held loops without provider calls. A native Linux fixture creates a default ACL in a temporary directory, verifies detection despite `0700` mode bits, and confirms the query leaves ACL bytes and files unchanged. The native fixture skips filesystems without POSIX ACL support; CI logs that case separately so its execution can be verified.
 
@@ -59,9 +59,26 @@ Fixtures cover present/default/unknown/hidden metadata, error redaction, and off
 
 The same `<check-id>.acl` entries inspect macOS extended ACL metadata through `getattrlist`, requesting only `ATTR_CMN_EXTENDED_SECURITY`. A fixed 12-byte buffer receives the length and attribute reference. `FSOPT_REPORT_FULLSIZE` supplies the full required size while leaving the variable security payload outside that buffer. Doctor validates the header layout and length arithmetic, then reports metadata presence without loading ACL entries, owner/group identifiers, or principal UUIDs. The interface is described by [Apple's metadata API](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getattrlist.2.html) and the current [SDK definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/attr.h).
 
-Present metadata warns even when Unix mode bits are owner-only. A zero-length payload is **not reported (absent or unsupported)**; failed queries and malformed headers are unavailable. None is a privacy all-clear. An empty ACL structure can still count as present metadata: doctor does not inspect entry counts, allow/deny rules, or inheritance flags, and does not apply Linux default-ACL semantics to macOS. Windows ACL inspection remains unavailable.
+Present metadata warns even when Unix mode bits are owner-only. A zero-length payload is **not reported (absent or unsupported)**; failed queries and malformed headers are unavailable. None is a privacy all-clear. An empty ACL structure can still count as present metadata: doctor does not inspect entry counts, allow/deny rules, or inheritance flags, and does not apply Linux default-ACL semantics to macOS.
 
 The query follows the configured symlink target and runs offline without commands, writes, or locks. It checks the same successfully opened paths as the other file diagnostics, not ancestors or every nested runtime file. Native temporary-file and directory tests add an ACL while retaining `0600`/`0700` mode bits, verify the warning, exercise symlink targets and removal, and check that inspection leaves file contents, modes, modification times, and ACL presence unchanged. Separate fixtures cover malformed/truncated headers, offset and length overflow, failed queries, private output, and held state. No real account changes or provider calls are used.
+
+## Windows DACL metadata
+
+Windows uses the same `<check-id>.acl` entries. Doctor resolves the configured symlink path and calls [GetNamedSecurityInfoW](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getnamedsecurityinfow) for DACL information only. Windows allocates a security descriptor; doctor asks native APIs for DACL presence and entry count, then frees that allocation. Unlike the Unix size-only queries, this API obtains the descriptor in native memory, but doctor never parses ACEs, resolves SIDs, requests owner/group/SACL information, or prints descriptor contents.
+
+The result distinguishes four cases:
+
+| DACL metadata | Status | Meaning |
+| --- | --- | --- |
+| Null or absent | `error` | The DACL allows unrestricted access; other security mechanisms are not evaluated. |
+| Empty | `warning` | No access is granted through DACL entries. Review whether the supervisor can operate. |
+| Contains entries | `warning` | Rules exist, but their effective grants, denies, and inheritance were not evaluated. |
+| Query failed or unavailable | `unavailable` | No conclusion; raw errors and descriptor contents are withheld. |
+
+[Microsoft distinguishes null and empty DACLs](https://learn.microsoft.com/en-us/windows/win32/secauthz/null-dacls-and-empty-dacls). A populated or empty DACL is not reported as a privacy all-clear. These checks do not evaluate the caller's token, privileges, integrity level, share permissions, effective write access, ancestor ACLs, or every nested runtime file. They inspect only paths that passed the existing readability/type checks, and cannot guarantee that permissions remain unchanged after the query.
+
+Inspection works offline without commands, permission changes, temporary writes, or locks. Dedicated Windows CI runs native in-memory null/absent/empty/populated descriptor fixtures and temporary-file/directory queries, plus shared redaction and held-loop fixtures. No descriptor is installed onto a real file by these tests. They verify local native APIs, not every filesystem, remote share, reparse-point type, or Windows architecture.
 
 ## Saved headless sessions
 
@@ -110,4 +127,4 @@ Live headless session identity is **not implemented**. Doctor does not start an 
 
 ## Verification
 
-Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, external scheduler health, or Windows ACL support. Local daemon fixtures cover fresh challenges, wrong/copied/stale endpoints, deadlines, live build redaction, control changes, and state-directory reload rejection.
+Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, external scheduler health, or full ACL/effective-access evaluation. Local daemon fixtures cover fresh challenges, wrong/copied/stale endpoints, deadlines, live build redaction, control changes, and state-directory reload rejection.
