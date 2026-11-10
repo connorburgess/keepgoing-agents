@@ -2,14 +2,34 @@
 
 ## Unreleased
 
+These changes are on `main`, not in the v0.1.1 release or Homebrew package. See [release verification](docs/release-verification.md) for artifact checks and outstanding live walkthroughs. Unless explicitly recorded in [integrations](docs/integrations.md), provider and service behavior is fixture-tested rather than live-verified.
+
 ### Added
 
+- Guided `init` creates a private disabled loop outside Git checkouts, with single-agent defaults, existing headless account directories, ordered fallbacks, operating limits and generated control instructions. Noninteractive flags, versioned JSON preview/create output and bounded stdin task input support integrations without placing task text in arguments.
+- `complete --note` persists an explicit completion hold across restarts. Enable does not clear it; explicit resume reopens the task. Completion is a declaration, never inferred from transcripts, and does not yet send a completion report event.
+- `doctor` provides read-only text/JSON diagnostics for setup, executable discovery, structured BB identity, headless login status, saved resume metadata, runtime access and ACL metadata on macOS/Linux/Windows. Unsupported checks stay unavailable; ordinary checks make no model calls and `--offline` skips external CLI queries. Full ACL privacy evaluation and live headless session identity remain unverified.
+- Status includes configured target/account-group metadata, control holds, recorded decisions/outcomes and history freshness. Built-in daemon diagnostics use a private local challenge for responsiveness, current phase, next normal check and build-label comparison. Explicit BB automation diagnostics show structured registration and run metadata without changing timers; they do not prove scheduler liveness or script-to-loop binding.
+- BB child awareness suppresses wakes, recovery and target moves while a verified direct child is active, and waits conservatively when discovery cannot be verified. The daemon checks structured child outcome notices ahead of its normal interval with persisted deduplication. Verified pending child input creates an awaiting-user hold and identifies the child in a report without prompting the parent or answering the child.
+- Persistent BB ownership records and explicit `--take-over` fence conflicting owners and stale daemons. Claims remain reserved when an owner's status is unknown or idle. Identity-free schedulers preserve ownership; restrictive controls remain available. Ownership takeover does not transfer a supervised thread or create threads.
+- `start` validates local setup and launches foreground or acknowledged detached supervision, preserving existing holds and refusing duplicate daemons. It does not install a service or detect/replace external timers.
+- `service install|status|remove` manages macOS LaunchAgents and Linux systemd user units with private recovery records, exact-definition checks, ownership protections and unchanged loop controls. Status reports registration, health and on-disk executable comparisons; Linux adds structured execution details and daemon binding. macOS identity/startup/exit diagnostics are explicitly unsupported. Live installed-service lifecycle verification and Windows service implementation remain outstanding.
+- The BB plugin's `Supervise this thread` flow separates preview, disabled creation, diagnostics and explicit background start, using the shared CLI setup contract. Covered by SDK/controller/DOM fixtures; the plugin is built and installed separately from the core binary and its live setup walkthrough remains outstanding.
+- Headless `claude.env` and `codex.env` select existing account environments consistently for fresh/resumed turns, probes and Codex limit snapshots. The three-subscription example uses separate quota groups; real multi-account handoff remains unverified.
+- Manual probe previews (`fallbacks check --dry-run`) describe candidates, models, timeouts and invocation counts without calling providers or changing runtime state. Expected dollar cost remains unknown; manual checks are outside the scheduled daily cap.
 - Codex usage limits are classified as `rate_limit` with a reset time. `codex exec --json` reports a limit only as prose, so when a Codex probe or headless turn fails without a recognized code, keepgoing reads the Codex app-server's structured `account/rateLimits/read` snapshot.
 
 - Headless Claude Code and Codex runners on Windows. Each turn runs through a detached copy of the keepgoing binary acting as the wrapper. Stop ends the turn's process tree with `taskkill`.
 
 - `switch_back`, off by default, returns the loop to its primary between the fallback's turns. It waits until the primary's reported reset time, or `min_after` when none was reported, and until the primary passes an exact probe. It sends a `switch_back` report. `loop.probe` sets how the primary is probed.
 - A failed probe saves its raw output to `probe-failures/<candidate>/` in the state directory, keeping the newest five, so unrecognised error shapes such as a provider's usage-limit event can be mapped later. It is never read for a decision.
+- A native-binary smoke check for macOS/Linux verifies guided setup, offline diagnostics, persisted holds/completion and owner conflicts using fictional loops with provider invocation traps. The release guide separates this evidence from real two-turn/resume, account handoff and installed-service acceptance.
+
+### Fixed
+
+- Loaded configuration and fallback sources are checked under the tick lock before provider work. Stale, missing or unreadable snapshots withhold ticks, probes, retargeting and provider stop execution until reload/repair; diagnostic status remains available. External writers that ignore the lock and changes to referenced files are outside this guard.
+- Child-input precedence fixtures no longer require a real subprocess inspection chain to finish within a 500 ms poll under race instrumentation. Separate timing and cancellation tests retain coverage without changing production deadlines or at-most-once event consumption.
+- Installation instructions now distinguish v0.1.1 artifacts and matching examples from the unreleased quick start, with an explicit revision-labeled development build path.
 
 ## 0.1.1 (2026-11-10)
 

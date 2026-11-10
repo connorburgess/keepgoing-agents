@@ -1,5 +1,7 @@
 # Testing
 
+For a built or unpacked executable, [release verification](release-verification.md) provides a provider-free smoke check and a separate live walkthrough. The smoke check is also run in macOS/Linux CI; it does not certify real provider sessions.
+
 ## On a machine with Go
 
 ```sh

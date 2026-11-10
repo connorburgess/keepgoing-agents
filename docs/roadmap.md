@@ -173,6 +173,7 @@ Use the delivery gates and provider-specific plan in [integrations.md](integrati
 
 ### 7. Release and recovery verification
 
+- [x] Reconcile development setup instructions with the v0.1.1 release/Homebrew gap, expand the Unreleased changelog, and add a reproducible native-binary smoke check and [live walkthrough checklist](release-verification.md). The smoke check uses fictional BB/Claude/Codex loops and provider traps to verify persisted controls and ownership without model calls; it runs in macOS/Linux CI. Publication, Homebrew upgrades and live provider/service walkthroughs remain separate unchecked work below.
 - [x] Investigate the intermittent race-suite timeout in `TestChildInputTakesPrecedenceOverEarlyCompletionWake`: its precedence assertion depended on a real subprocess inspection chain fitting inside a 500 ms poll budget. Test precedence directly through the supervisor with a normal test deadline, retaining separate command-level timer/deadline checks. A deterministic cancellation-after-consumption fixture verifies no replay or mutation and ordinary-tick escalation. Production timeouts, pending-input precedence, and notification semantics are unchanged; verification uses offline fixtures.
 - [ ] Publish the accumulated changes since v0.1.1 as a focused maintenance release, with matching Homebrew updates and accurate versioned documentation. This can ship before the new usability features.
 - [ ] Run real two-turn/resume tests for Claude Code and Codex, and handoff/switch-back across separately authenticated accounts in scratch projects.
