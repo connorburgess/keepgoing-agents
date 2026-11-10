@@ -9,6 +9,8 @@ go test -race ./...
 
 The end-to-end tests in `cmd/keepgoing` drive the real CLI against fake `bb`, `claude`, `codex`, and `gh` executables and a local webhook receiver. They need a POSIX shell, so they run on macOS and Linux only.
 
+Guided-setup tests use temporary Git repositories and fake CLI discovery. They cover wizard/flag equivalence, private disabled output, task-file handling, ordered account routing, operating limits, cancellation, existing-file preservation, and checkout/symlink rejection. They make no model calls and do not establish live account or IDE compatibility.
+
 ## On a machine or VM without Go
 
 Build a bundle on a machine that has Go, copy it over, and run it there:

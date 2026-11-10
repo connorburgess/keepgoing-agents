@@ -55,6 +55,7 @@ Reporting:
   report test              Send a test webhook (--dry-run prints it instead)
 
 Tools (no config needed):
+  init                     Guide setup of a disabled loop outside the checkout
   ci-wait                  Wait for every CI workflow on a PR head or exact commit
   net-retry -- cmd...      Rerun a network command only while the network is down
   version                  Print the version
@@ -88,6 +89,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "init":
+		return initLoop(e, rest)
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return exitOK

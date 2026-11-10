@@ -17,6 +17,10 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 
 Other coding agents can be supervised today through the process adapter, given a status command and a resume command. Cursor and Antigravity are the next planned first-class integrations; neither has an adapter yet. See [Planned integrations](#planned-integrations). Gemini CLI, OpenCode, and Aider remain discovery backlog items, with no compatibility claim or delivery commitment.
 
+## Guided setup
+
+`keepgoing init` is implemented on `main` for BB, Claude Code, and Codex. **Fakes** cover CLI discovery, ordered account configuration, task instructions, disabled state, and completion across repeated checks using the generated config. Temporary real Git repositories exercise progress validation. Setup checks executable availability and directory existence only; it does not invoke providers or verify login, subscription identity, BB target identity, or live task completion. See the [setup guide](setup.md).
+
 ## Agent chats
 
 | Integration | Status | Next check |

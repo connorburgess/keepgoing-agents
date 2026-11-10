@@ -1,5 +1,7 @@
 # Configuration
 
+Use [`keepgoing init`](setup.md) to generate a disabled configuration outside the checkout, or maintain the YAML directly as described below.
+
 `keepgoing.yaml` describes one loop. Relative paths resolve against the directory holding the file, and a leading `~/` expands to the home directory. This includes `state_dir`, prompt and handoff files, repositories, working directories, and commands written as a path such as `./status.sh`. A bare command name such as `bb` is looked up on `PATH`. Unknown fields are errors. Editors that support JSON Schema can use [schema/keepgoing.schema.json](../schema/keepgoing.schema.json). Fallbacks have their own file, described in [fallbacks.md](fallbacks.md).
 
 ```yaml

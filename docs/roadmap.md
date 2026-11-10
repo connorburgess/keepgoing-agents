@@ -49,10 +49,12 @@ Unchecked items below are planned, not shipped commands. Implement one focused P
 ### 1. Task lifecycle and guided setup
 
 - [x] Add explicit task completion with `keepgoing complete --note`, persisted in control state and shown in status. It holds wakes and probes across restarts; `resume` explicitly reopens the task with the current target/session and any revised prompt. Completion is never inferred from transcript prose. See [operations](operations.md#completing-a-task).
-- [ ] Add guided `keepgoing init`: collect the task or task file, project, agent/session, optional accounts, fallback order, and operating limits. Detect installed supported CLIs and offer a single-agent default.
-- [ ] Generate the loop prompt and control instructions, including how the agent marks completion or requests human input. The agent evaluates task progress; keepgoing consumes explicit control and structured provider status.
-- [ ] Store configuration and runtime state outside the checkout. Show the resolved target and planned actions before enabling. Preserve existing configuration, account logins, and restrictive permission settings.
-- [ ] Provide equivalent noninteractive flags so scripts and IDE integrations use the same setup path.
+- [x] Add guided `keepgoing init`: collect the task or task file, project, agent/session, optional accounts, fallback order, and operating limits. Detect installed supported CLIs and offer a single-agent default.
+- [x] Generate the loop prompt and control instructions, including how the agent marks completion or requests human input. The agent evaluates task progress; keepgoing consumes explicit control and structured provider status.
+- [x] Store configuration and runtime state outside the checkout. Show the resolved target and planned actions before enabling. Preserve existing configuration, account logins, and restrictive permission settings.
+- [x] Provide equivalent noninteractive flags so scripts and IDE integrations use the same setup path.
+
+Implemented on `main`: the [setup guide](setup.md) covers BB targets, new headless sessions, existing account directories, ordered fallbacks, limits, and dry-run previews. Tests use temporary Git projects and fake CLI discovery; they do not log in or spend model quota. Existing headless/IDE session attachment is not supported. A real fresh-install walkthrough remains part of release verification below.
 
 Acceptance: a fresh user configures one task without editing YAML or installing a skill; the task completes, supervision becomes inactive, and restarting the supervisor does not repeat completed work. Pause, stop, and awaiting-input still take precedence over wakes and recovery.
 
