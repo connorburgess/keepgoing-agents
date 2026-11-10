@@ -61,6 +61,14 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 	default:
 		add("registration_unknown", "unavailable", "Service registration could not be verified; unknown is not absence.", "Check manager access, service identity, and overrides. Raw manager output is withheld; no recovery action was taken.")
 	}
+	// Execution history remains independent of live loop observations.
+	if x := r.Execution; x != nil {
+		if x.State != "available" {
+			add("unit_result_unavailable", "unavailable", "The manager's structured execution details are unavailable.", "Inspect the exact user unit or retry status after any transition. Unknown details do not establish a successful run.")
+		} else if x.Result != "success" {
+			add("unit_result", "warning", x.Message, "Inspect the reported manager result and main exit status before explicitly restarting. These are service observations, not provider limits; holds remain unchanged.")
+		}
+	}
 	// An unrelated manual daemon may respond even for a missing or failed service.
 	// Keep these findings explicitly scoped to the loop, never to the service PID.
 	if r.Recorded {

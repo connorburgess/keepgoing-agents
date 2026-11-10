@@ -20,19 +20,20 @@ import (
 const serviceRecordName = "service-launchd.json"
 
 type serviceReport struct {
-	Backend           string         `json:"backend"`
-	Operation         string         `json:"operation"`
-	DryRun            bool           `json:"dryRun"`
-	Recorded          bool           `json:"recorded"`
-	DefinitionPresent bool           `json:"definitionPresent"`
-	Label             string         `json:"label"`
-	Definition        string         `json:"definition"`
-	Registration      string         `json:"registration"`
-	Message           string         `json:"message"`
-	ActiveState       string         `json:"activeState,omitempty"`
-	UnitFileState     string         `json:"unitFileState,omitempty"`
-	Health            *serviceHealth `json:"health,omitempty"`
-	Daemon            *daemonStatus  `json:"daemon,omitempty"`
+	Backend           string            `json:"backend"`
+	Operation         string            `json:"operation"`
+	DryRun            bool              `json:"dryRun"`
+	Recorded          bool              `json:"recorded"`
+	DefinitionPresent bool              `json:"definitionPresent"`
+	Label             string            `json:"label"`
+	Definition        string            `json:"definition"`
+	Registration      string            `json:"registration"`
+	Message           string            `json:"message"`
+	ActiveState       string            `json:"activeState,omitempty"`
+	UnitFileState     string            `json:"unitFileState,omitempty"`
+	Execution         *serviceExecution `json:"execution,omitempty"`
+	Health            *serviceHealth    `json:"health,omitempty"`
+	Daemon            *daemonStatus     `json:"daemon,omitempty"`
 }
 
 func serviceCommand(e env, args []string, h serviceHost) int {
@@ -162,6 +163,10 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		if p.Backend == "systemd" {
 			ss := inspectSystemd(e.ctx, h, p)
 			r.Registration, r.ActiveState, r.UnitFileState = ss.registration, ss.active, ss.unitFile
+			if exists && ss.registration == "loaded" {
+				x := inspectSystemdExecution(e.ctx, h, p, ss.active)
+				r.Execution = &x
+			}
 		} else {
 			r.Registration = serviceRegistration(e.ctx, h, p)
 		}
@@ -334,6 +339,17 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 			fmt.Fprintf(e.stdout, "service health: %s\n", r.Health.Status)
 			for _, f := range r.Health.Findings {
 				fmt.Fprintf(e.stdout, "%s [%s]: %s\n  Next: %s\n", f.Status, f.Code, f.Message, f.Fix)
+			}
+		}
+		if r.Execution != nil {
+			x := r.Execution
+			fmt.Fprintf(e.stdout, "service execution: %s; %s\n", x.State, x.Message)
+			if x.State == "available" {
+				fmt.Fprintf(e.stdout, "manager result: %s; main exit: %s", x.Result, x.MainExit)
+				if x.MainStatus != nil {
+					fmt.Fprintf(e.stdout, "; status: %d", *x.MainStatus)
+				}
+				fmt.Fprintln(e.stdout)
 			}
 		}
 		if r.Daemon != nil {
