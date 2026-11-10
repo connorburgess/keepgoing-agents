@@ -74,7 +74,7 @@ The query is capped at one second (a shorter doctor `--timeout` applies). Endpoi
 
 Older daemons and external schedulers, including BB automations, launchd, systemd, cron, and Task Scheduler, are **not inspected** by this interface. No endpoint does not mean no supervisor. Service installation is also unverified. The configured daemon interval is never used to invent an external scheduler's next-run time.
 
-Live headless session identity is **not implemented**. Doctor does not start an app-server or resume a session to infer it. Paid probe cost previews are planned; `fallbacks check` remains a separate explicit operation that makes model calls outside the scheduled daily cap. Doctor never runs it automatically.
+Live headless session identity is **not implemented**. Doctor does not start an app-server or resume a session to infer it. Use [`fallbacks check --dry-run`](fallbacks.md#preview-manual-probes) to preview selected models, timeouts, and the scheduled cap without model calls or state changes. Dollar cost is explicitly unknown; monetary estimation and spending limits are not implemented. Removing `--dry-run` makes this a separate explicit operation outside the scheduled daily cap. Doctor never runs it automatically.
 
 ## Verification
 

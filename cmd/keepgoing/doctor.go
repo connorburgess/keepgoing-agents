@@ -179,7 +179,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	r.add("scheduler", schedulerStatus, d.Message, "Service installation and external schedulers are not verified; a responding daemon can still be waiting on a stuck check.")
 	r.add("supervisor.live_version", buildStatus, "Live daemon build comparison: "+d.BinaryComparison+".", "A different build label does not establish which is newer; empty and dev labels cannot identify a build.")
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
-	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Use fallbacks check explicitly only when you intend model calls; its manual probes are outside the scheduled daily cap.")
+	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
 }
 
