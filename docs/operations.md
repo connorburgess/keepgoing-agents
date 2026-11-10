@@ -1,86 +1,169 @@
-# Architecture
+# Operations
 
-`keepgoing` is a supervisor, not an agent. It sits beside a running agent session and answers one question on every tick: should anything be sent, stopped, escalated, or moved right now?
+## Running it
 
-## Rules that do not bend
+There are two ways to run keepgoing. Pick one per loop.
 
-- **Never edit repositories.** The tool reads Git metadata to detect progress. It never writes to a checkout, commits, pushes, or merges.
-- **Structured signals only.** Session state and error class come from exit codes, JSON fields, HTTP status, or provider events. Transcript and message text is never read for a decision. Stderr from agent commands is never parsed.
-- **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
-- **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
-- **Stop and pause win.** A stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
-- **Missing control means disabled.** A tick must never wake an agent nobody asked for.
-- **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
+- **`keepgoing tick` from a scheduler.** Each run makes one pass and exits. Ticks never overlap, because a tick that finds the lock held exits 75. See [examples/schedulers](../examples/schedulers) for launchd, cron, a BB automation script, and a GitHub Actions job.
+- **`keepgoing daemon`.** This runs a pass every `daemon.interval`. Between passes it checks `control.json` every `daemon.control_poll`, so changes such as `keepgoing stop`, `pause`, or `complete` are acted on within seconds. The daemon reloads `keepgoing.yaml` and `fallbacks.yaml` before each pass and keeps the last good config when an edit is broken. Changing `state_dir` requires a restart: a running daemon retains the previous configuration so its lock and diagnostic endpoint continue to describe the state it supervises. SIGINT or SIGTERM ends it at once and cancels any command in flight. A control change written while a pass is running starts the next pass immediately after it. Only one daemon runs per state directory, and a second one exits 75. `--dry-run` applies to every pass. See the systemd unit in the examples.
 
-## Packages
+Ending the daemon does not stop the agent. To stop the agent, run `keepgoing stop`.
 
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | ok |
+| 1 | failed: the target could not be observed, an action failed, or `fallbacks check` found redundancy unmet |
+| 2 | usage or config error |
+| 3 | `ci-wait`: no run appeared for the commit |
+| 75 | skipped: the lock is held, a yield check reported other work, or `net-retry` waited longer than `--max-wait` for the network |
+| 124 | `ci-wait`: timed out |
+
+## Status for other tools
+
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show keepgoing's state beside the right thread.
+
+## Understanding recorded status
+
+`keepgoing status` is read-only and makes no provider calls. It shows the task source (inline or a file, without task text), configured target/thread and quota group, current control holds, and the latest recorded decision. `status --json` keeps its existing fields and adds `taskSource`, optional `taskFile`, `targetConfigured`, and `runtime`; agent identities now include `group`. A missing or disabled fallback no longer appears to be the primary: `targetConfigured` is false and `targetAgent` is empty. Use `doctor` to check live BB target identity separately.
+
+New ticks persist `state.lastCheck` with:
+
+- `at`, the caller's `version`, and the final action `target`;
+- `observedTarget`, `observedState`, and the structured `awaitingInput` flag, kept separate from the destination of a handoff;
+- the selected `action` and supervisor-generated `reason`;
+- `outcome` (`succeeded`, `failed`, or `dry_run`) and a `dryRun` flag.
+
+These describe a supervisor decision and its outcome. `succeeded` means the supervisor operation returned successfully, not that the agent turn or task finished. A failed send is not a successful action; a dry-run wake is a plan that was not executed. An action of `none` with outcome `succeeded` means a no-action check completed successfully. Raw provider errors and prompts are not copied into this record. Failures before a record can be saved leave the previous history intact. Older state files still load, with detailed history unavailable until a new tick records it.
+
+`runtime.state`, `runtime.reason`, and `runtime.source` distinguish current control/configuration from history. Stop takes precedence, followed by disabled, paused, awaiting-user, and completed holds. Without a hold, an invalid configured target or closed operating window is shown before interpreting history. Historical states use names such as `recorded_active` and `recorded_idle`; they do not claim the agent is currently running. A structured pending interaction is `recorded_awaiting_input`, not inferred from a reason string. A failed check is `check_failed`; a dry run is `dry_run`. A target change or an unobserved target after handoff is not attributed the previous target's state.
+
+`runtime.freshness` is `never`, `recent`, `stale`, or `future`. The default stale threshold is 30 minutes; use `--stale-after` above your scheduler's interval. Stale, future-dated, or incomplete history cannot establish current activity. Current control holds remain visible even with stale history. For a responding built-in daemon, `runtime.nextCheck` reports the next normal check time or an in-progress check; otherwise it remains unknown. A configured daemon interval does not establish an external scheduler's schedule.
+
+`runtime.binaryComparison` compares the last recorded tick's build label with this status process: `match`, `different`, or `unknown`. Empty and `dev` labels are unknown. A different label can indicate a stale scheduler binary, but does not prove which build is newer or currently running. Doctor also flags a different recorded build. Manual and dry-run ticks can replace the latest history, so this is not a running-process inventory.
+
+Existing `control.note` output is retained for compatibility; status is a private operational report. Doctor continues to withhold control notes, task text, environment values, and raw errors. This feature is implemented on `main`, not in v0.1.1, and is covered by offline fixtures for control precedence, failures, dry runs, handoffs, version comparisons, and legacy state.
+
+## Completing a task
+
+When the authorized work is finished and verified, the agent or operator runs:
+
+```sh
+keepgoing complete -c keepgoing.yaml --note "Example task verified"
 ```
-cmd/keepgoing               CLI: tick, daemon, status, control, fallbacks, report, ci-wait, net-retry
-internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
-internal/decide             the pure decision engine
-internal/supervise          one tick: observe, probe, decide, act, record
-internal/adapter            the Adapter interface and the code-to-class mapping
-internal/adapter/bb         BB threads over the bb CLI's JSON
-internal/adapter/process    any session described by three commands
-internal/adapter/runner     headless Claude Code and Codex turns, run detached
-internal/adapter/factory    builds the adapter for an agent definition
-internal/probe              one tiny real request to confirm a candidate works
-internal/health             probe evidence and the redundancy rule
-internal/handoff            the brief a fallback receives
-internal/report             signed webhook reports
-internal/control            control.json: holds, persistent BB ownership, serialized updates
-internal/state              state.json, runs.jsonl, and the progress fingerprint
-internal/window             weekly time windows
-internal/lock               named advisory locks for ticks and the daemon
-internal/daemoninfo         private loopback diagnostics for a running daemon
-internal/netretry           retry only while the network is down
-internal/ciwait             wait for CI on an exact commit
+
+This sets `control.completed` in `control.json` and records a control event in `runs.jsonl`. Status shows `completed` unless a higher-priority disabled, stop, pause, or awaiting-user hold is also set; JSON always exposes the completion flag. No model output or transcript text is inspected to decide completion. There is no completion webhook event yet.
+
+On the next check, a completed loop skips observation, yield checks, progress reads, scheduled probes, wakes, retries, handoffs, and switch-back. The hold survives process restarts. A pass already in flight can finish before noticing the change. Completion does not terminate the current agent turn or cancel messages already queued by another caller; use `stop` when the running turn must end. Stop still wins even when completion is set.
+
+To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
+
+Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
+
+## Yielding to other work
+
+```yaml
+yield:
+  busy_command: ["./busy-check.sh"]
 ```
 
-## A tick, end to end
+When the command exits 0, the tick does nothing and exits 75. Any other exit means the loop may run. A command that cannot run is a warning, and the tick goes ahead. This lets heavy scheduled jobs on the same machine take priority.
 
-1. Take the tick lock. If another tick holds it, exit 75. The command layer verifies the calling BB owner or the running daemon's bound ownership generation before provider work.
-2. Load control, state, and the active target. The target is `primary` or a fallback id.
-3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
-4. If disabled, paused, completed, or awaiting a person, record and stop here.
-5. If a yield command reports other work, record and exit 75.
-6. Observe the active target through its adapter. If it cannot be observed, record and take no action. Verified pending child input is decided and escalated here, before probes or fingerprinting; it persists an awaiting-user hold and reports child IDs without touching the parent.
-7. Inside the time window, run any scheduled probes that are due, within the daily cap. The active target and candidates in its quota group are skipped, so probes never spend the pool the loop is using.
-8. Evaluate redundancy among eligible fallbacks. Eligible means enabled, not the active target, and not in the active target's quota group. Report a change into or out of the degraded state.
-9. Update the progress fingerprint, then run the decision engine.
-10. Act. A wake or re-prompt starts or steers a turn. A nudge is queued behind the live turn. Awaiting-user flips the control file. A handoff tries healthy candidates in order. For each one it writes the brief, runs an exact probe, runs the adapter's activate step, and sends the brief. A brief that cannot be written ends the handoff before any candidate is touched. The first success becomes the active target. If no candidate can take over, the ordinary error rules apply to the current target.
-11. Save state and health, append an event to `runs.jsonl`, send any subscribed reports, and print the result.
+## Webhook reports
 
-## Adapters
+```yaml
+report:
+  secret_file: ~/.config/keepgoing/example.env
+  events: [handoff, degraded, recovered, await_user, stop, error]
+```
 
-An adapter implements `Name`, `Observe`, `Send`, and `Stop`. It may implement `WakePoller` to consume structured lifecycle notices between daemon ticks under the same tick lock. The supervisor honors control holds and checks the resulting observation with the pure decision engine before requesting an early tick; polling itself never sends or probes. It may also implement `Activate`, which runs before the first message after a handoff. The BB adapter uses it to switch the thread's model.
+The URL and secret come from `KEEPGOING_WEBHOOK_URL` and `KEEPGOING_WEBHOOK_SECRET`. Rename them with `url_env` and `secret_env`. Values are read from the environment first, then from `secret_file`, a `KEY=value` file. Secrets never appear in logs, errors, or reports. The URL must use https. Plain http is allowed only for localhost.
 
-- **bb** reads `bb thread show --json`, discovers direct children with a parent-filtered listing including hidden threads, verifies each child with `thread show`, checks its structured interaction status, and reads the parent's new log events when no confirmed child input already requires a hold. Verified pending child input requires an awaiting-user hold. Verified active children and incomplete child discovery or interaction queries suppress parent prompts and target moves in the pure decision engine; stop and control holds retain precedence. No child is spawned or managed. bb returns events oldest first, so the adapter keeps a cursor in `targets/<id>/bb-cursor.json`. On the first tick it pages through the whole log once. After that it reads only events newer than the last one it saw, folding them into a running summary: the latest turn start, the latest error since then, the latest rate-limit window, pending interactions, and the latest structured child outcome notice. The daemon uses new child outcomes for early idle checks, with the persisted sequence preventing replay. It classifies errors from `provider/error` events, using their category, HTTP status, and provider code, and from `system/error` codes. Only errors after the latest turn started count. A `willRetry` flag means BB is already retrying, so keepgoing waits. A blocked `provider/rateLimits/updated` window with a future reset marks the thread rate limited and supplies the reset time.
-- **process** runs a status command that prints a small JSON object. A non-zero exit maps through `exit_codes`.
-- **claude** and **codex** start one headless turn per send as a detached process. The process writes its stdout and exit code into the target's directory, so a short-lived tick never waits for a turn. The next tick reads the result: the `is_error`, `subtype`, and `api_error_status` fields for Claude Code, and the event types for Codex. Each new turn resumes the saved session. On macOS and Linux a small shell wrapper runs the turn. On Windows, where there is no POSIX shell, keepgoing starts a detached copy of its own binary as the wrapper, and stop ends the turn's process tree with `taskkill`.
+- **`scheme: standard-webhooks`** is the default. It signs each body with HMAC-SHA256 and sends `webhook-id`, `webhook-timestamp`, and `webhook-signature`. The secret is base64, optionally prefixed `whsec_`.
+- **`scheme: bearer`** sends the secret as a bearer token instead.
+- **`format: standard`** is the default. It sends `{"type": "keepgoing.<event>", "timestamp": ..., "data": {...}}`.
+- **`format: text`** sends `{"source", "sent_at", "text"}` for receivers that expect a plain message.
 
-## State directory
+A failed delivery is retried once on a network error or a 5xx response. A report that cannot be delivered is a warning on the tick, never a failure. Check delivery with:
 
-Everything the tool writes lives in `state_dir`, outside any repository:
+```sh
+keepgoing report test --dry-run   # print the body
+keepgoing report test             # deliver it
+```
 
-| File | Owner | Purpose |
-| --- | --- | --- |
-| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership |
-| `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, last check decision/outcome and build label |
-| `health.json` | the tool | probe evidence per candidate |
-| `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
-| `runs.jsonl` | the tool | append-only events |
-| `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
-| `tick.lock`, `daemon.lock`, `control.lock` | the tool | advisory locks, released by the OS on exit |
-| `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `stop`, `error`, `probe_failed`, `test`, or `all`. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
-## Ownership and control writes
+## Situations that need a person
 
-`enable` records `BB_THREAD_ID` when present. Ownership is persistent metadata; idle, missing, archived, or unavailable thread activity does not expire it. A different BB caller needs an explicit takeover. Calls without a BB identity use the existing claim without replacing it. This is a cooperative guard for local operators and schedulers, not authentication against a caller that can edit runtime files or environment variables.
+- **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.
+- **The session stays stalled.** After `progress.max_nudges` nudges without visible progress, the loop is marked awaiting user and reports `await_user`.
+- **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
+- **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
+- **Only `resume` clears a stop.** `enable` does not.
 
-Claims and takeover hold the tick lock, then the control lock. Every runtime control read-modify-write uses the short control lock; pause and stop do not wait for the tick lock. Control contention returns exit 75 for retry. No provider query occurs under the control lock. An update callback can reject a claim without writing control. Low-level `control.Save` is for initialization/fixtures, not concurrent runtime updates.
+## ci-wait
 
-A daemon binds to the current owner ID and generation (including no owner). It checks the binding under the tick lock before ticks and early polls, and exits when it changes. Takeover cannot overlap an in-flight tick; it must retry after that tick releases the lock. Generations prevent a transfer back to a previous thread from reviving its old daemon. No BB thread is stopped, spawned, or re-parented by ownership handling.
+```sh
+keepgoing ci-wait --repo example-org/example-app --pr 42
+keepgoing ci-wait --repo example-org/example-app --sha <40-char sha> --branch cb/example --json
+```
+
+This waits until the newest run of every workflow on the exact commit has finished. It looks at the 50 most recent runs on the branch, and it pins the pull request's head commit when it starts. A failed run makes it exit 1. When a run is replaced, for example cancelled by a pull request edit, the newer run of the same workflow is followed. Then it prints each run's jobs. It uses the `gh` CLI, so authentication stays with `gh`. Every `gh` call goes through the network retry below.
+
+## net-retry
+
+```sh
+keepgoing net-retry --max-wait 2h --attempts 6 -- git push origin cb/example
+```
+
+This reruns the command only when it failed while the network was down. When `--attempts` runs out while still offline, it returns the command's own exit code. A failure while the network is reachable is returned at once, so a rejected push or merge is never repeated blindly. Connectivity is an HTTP GET to `KEEPGOING_NET_PROBE_URL`, which defaults to `https://api.github.com/zen`. Set `KEEPGOING_NET_PROBE` to a shell command to check connectivity your own way.
+
+### Saved headless resume IDs
+
+For a configured Claude Code or Codex target, `status --json` includes `targetSession` with the saved `id` when recognized, its `state` (`saved`, `missing`, or `unavailable`), `source: "runner_session_file"`, `liveVerified: false`, and an explanatory `message`. Text status shows the same identity as saved history. After retargeting, status reads the selected target's record; missing or disabled targets do not fall back to another target's ID. BB and custom process targets omit `targetSession`.
+
+The record is read without executing a provider or inspecting turn output. Missing metadata does not mean no turn is running, and saved metadata does not verify live identity or resumability. Unrecognized/non-UUID, oversized, or inaccessible records are withheld without modifying the runner's existing resume behavior. See [saved session diagnostics](diagnostics.md#saved-headless-sessions).
+
+### Inspecting a running daemon
+
+`status` and `doctor` query the built-in daemon's private local endpoint for this state directory. The `daemon` object identifies a responsive instance, its phase, next normal check time while waiting, dry-run mode, and build comparison against the inspecting CLI. This is separate from historical `runtime` fields. Agent activity and successful future checks are not established by an endpoint response. `doctor --offline` skips the query.
+
+The endpoint starts with the daemon and is removed on clean exit; stale or unavailable endpoints remain unverified. Endpoint records are private state and must not be shared. A missing endpoint does not rule out an older daemon or external scheduler. See [live daemon diagnostics](diagnostics.md#live-daemon-diagnostics) for fields and limits.
+
+## BB child awareness
+
+For a BB target, each observation discovers existing direct children with `bb thread list --parent-thread <id> --include-hidden --json`. It then verifies each child's ID, `parentThreadId`, and status using `bb thread show <child-id> --json`. A matching child with status `active` prevents parent wakes, stall nudges, error re-prompts, handoffs, and switch-back. The recorded reason is `child work running`; the parent's own status is preserved. This does not start, stop, message, or re-parent any child.
+
+A child that has finished and is now idle no longer blocks its parent. An idle parent is eligible for its ordinary wake on the next supervisor check, subject to controls and pending interactions. Waiting for children does not spend the nudge or error re-prompt budget. An explicit stop still applies to the supervised parent, not its children; pause, completion, disabled, and awaiting-user holds remain authoritative.
+
+Discovery requires a complete parent-filtered inventory, including hidden children. The inspected BB 0.48.1 CLI/server implementation passes the parent filter to the database and does not apply a default pagination limit. This complete-list contract is required; versions that silently truncate this query are not supported or verified. CLIs with unsupported flags, incompatible response shapes, failed queries, missing relationship fields, or unknown child states produce `child status unverified` and no parent prompt or target move. A scan has one adapter timeout budget and accepts at most 200 listed children; larger inventories remain unverified. Duplicate IDs are inspected once. Confirmed missing, archived, deleted, or re-parented children do not count as active. This is a snapshot; a child starting after observation is seen on a subsequent check.
+
+Offline fixtures verify discovery, identity matching, hidden children, conservative failures, controls, and repeated checks across the nudge limit, followed by an immediate next-check wake once the child finishes. No live child turn or model request was started for these tests. Child permission/question escalation is described below; ownership enforcement remains planned. Direct children only are inspected; idle children with active grandchildren do not establish direct active child work.
+
+### Early checks after child outcomes
+
+The built-in daemon also polls the active BB target's new log events at `daemon.control_poll`. A structured `client/turn/requested` system notice with `child-completed`, `child-failed`, `child-interrupted`, or `child-outcome-batch` metadata can bring the next check forward. The notice must contain matching, valid child IDs and terminal statuses in `systemMessageSubject.outcomes`; message text and child output are ignored. This schema was inspected in BB 0.48.1 and exercised with offline fixtures. Older schemas or absent notifications cannot trigger early checks. keepgoing does not change BB's child notification settings.
+
+The parent is observed again before scheduling an early wake check. It must be idle, with no queued messages, background workers, pending parent interaction, active direct children, or incomplete child discovery. BB may already have activated the parent while delivering the notice; that needs no additional wake. A later parent turn start supersedes an earlier notice, and retry requests do not count as new outcomes. Normal tick rules, including controls, windows, yield checks, and current target state, still apply before any prompt is sent.
+
+The existing per-target log cursor consumes each event sequence once, including across restarts, and must save successfully before an early check is authorized. Ordinary observations consume the same events. A crash or failed observation after consumption can lose that early opportunity; it is not retried from the notification. The normal interval remains the backstop. Restarting the daemon still performs its ordinary initial tick; notification deduplication does not disable ordinary idle wakes. Removing runtime state removes the cursor too.
+
+Each notification poll shares the tick lock with normal ticks and retargets and has a total timeout of one `control_poll`. Held loops and loops outside their window do not query providers; lock contention, failed queries, and timeouts do not authorize an early check. With an available CLI and lock, a new eligible notice advances the next check within a control cycle plus query time. Host downtime and slow/unavailable commands have no delivery guarantee. Status continues to show the next **normal** check time; an eligible notice may bring it forward.
+
+This acceleration applies to `keepgoing daemon` only. Cron, BB automations, and other external schedulers invoke `tick` on their own cadence; their timers are not changed. Fixtures cover completed/failed/interrupted notices, batching, deduplication, saved-cursor restart, control holds, other active children, pending parent interactions, lock contention, and bounded slow queries. No live child turns or paid calls were started for this verification. Confirmed pending child input discovered during an early completion check advances an escalation tick instead of a wake; the same hold rules apply.
+
+### Child permission prompts and questions
+
+After verifying each direct child's identity and parent relationship, keepgoing runs `bb thread interactions list <child-id> --json`. An interaction with that child's `threadId` and `status: pending` means human input is needed. Permission prompts, questions, and other pending interaction forms all count; their text, commands, answers, and payloads are never used or included in reports. Only verified child IDs are retained in the reason and report metadata.
+
+Confirmed child input takes precedence over idle wakes, active siblings, stall handling, recovery, and switch-back. The next tick records `await_user`, persists the hold, and emits the configured `await_user` report with `children` and `pendingInteraction` metadata. It does this before scheduled probes, health checks, or repository fingerprinting. Stop and existing control holds still win. No message is sent to the parent or child, no interaction is answered, and no child is stopped or re-parented. An explicit stop continues to apply to the supervised parent only.
+
+The hold survives supervisor restarts and remains after the child interaction is answered elsewhere. Inspect the named child, resolve its interaction, then explicitly `keepgoing resume -c /path/to/keepgoing.yaml`. Resuming while input is still pending creates the hold again on the next tick. Dry runs show the proposed escalation without changing control or sending reports. A failed webhook delivery does not remove the persisted hold; the reason remains available locally.
+
+Child interaction queries share the existing child-discovery timeout and accept at most 500 records per child. Failed queries, missing/mismatched identities, missing or unknown statuses, and incompatible JSON make child status unverified and suppress parent wakes. `resolving` also suppresses wakes while a response is in flight, without asking the person to answer again. `resolved` and `interrupted` are terminal. If one verified child is pending while another child's status is unknown, the confirmed pending child still triggers a hold. Archived, deleted, missing, or re-parented children are excluded. Discovery is a snapshot of direct children, not their descendants.
+
+Offline fixtures cover permissions/questions, identity verification, stale relationships, terminal/resolving/unknown states, cancellation, control precedence, one report per hold, restart persistence, explicit resume, privacy, and a pending interaction concurrent with a completion wake signal. The field/status contract was inspected in BB 0.48.1; live child permission and question flows remain unverified. Pending child input is checked on ordinary ticks and during completion-driven early observations, not by a separate continuous interaction watcher.
 
 ## One owner per loop
 
