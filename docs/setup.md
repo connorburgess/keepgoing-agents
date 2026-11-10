@@ -1,6 +1,6 @@
 # Guided setup
 
-`keepgoing init` builds a disabled loop without editing YAML or installing a loop skill. This command is implemented on `main`; the v0.1.1 release does not include it. Install a build containing this change before following these instructions.
+`keepgoing init` builds a disabled loop without editing YAML or installing a loop skill. This command is implemented on `main`; the v0.1.1 release does not include it. Follow the [development build instructions](../README.md#development-build-for-the-current-quick-start) before using this guide, and substitute that binary's absolute path for `keepgoing`.
 
 ## First loop
 
@@ -51,7 +51,7 @@ keepgoing init --non-interactive \
   --project /projects/example-app --task-file /private/example-task.md
 ```
 
-This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Target diagnostics and BB transfer are separate roadmap work.
+This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. BB transfer remains separate roadmap work.
 
 ## Structured setup for integrations
 

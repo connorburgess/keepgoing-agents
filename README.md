@@ -36,6 +36,8 @@ Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallback
 
 ## Install
 
+The latest published release and Homebrew formula are **v0.1.1**. The commands documented on `main`, including `init`, `doctor`, `complete`, `start`, and `service`, are newer than that release. Use the development build below for this quick start. For v0.1.1, use its [versioned README and examples](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1), not the examples from `main`.
+
 With Homebrew on macOS or Linux:
 
 ```sh
@@ -50,6 +52,22 @@ go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 
 Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on the [releases page](https://github.com/connorburgess/keepgoing-agents/releases).
 
+### Development build for the current quick start
+
+With Git and Go 1.24 or newer, build from a checkout and keep the binary separate from an installed release. On macOS/Linux:
+
+```sh
+git clone https://github.com/connorburgess/keepgoing-agents.git
+cd keepgoing-agents
+revision=$(git rev-parse HEAD)
+mkdir -p "$HOME/.local/bin"
+go build -trimpath -ldflags "-X main.version=dev-$revision" \
+  -o "$HOME/.local/bin/keepgoing-dev" ./cmd/keepgoing
+"$HOME/.local/bin/keepgoing-dev" version
+```
+
+Use this absolute binary path wherever the following instructions say `keepgoing`; setup prints commands using the executable that ran it. Record the revision with any results. This is an unreleased build, not a published version, and building it does not upgrade a running supervisor or change its timer. See [release verification](docs/release-verification.md) for a provider-free binary smoke check and the separate live walkthrough.
+
 ## Quick start
 
 With a build containing guided setup, run this from an existing Git project with at least one commit:
@@ -60,7 +78,7 @@ keepgoing init
 
 Choose a task and agent, review the resolved plan, then run the `start --foreground` command printed with your config path. Choose `--background` to detach the daemon and keep it running after the terminal closes. Existing pause, stop, awaiting-user, and completion holds remain; `resume` clears them explicitly. The default is a single agent with no fallbacks. Setup does not run agents or probes, change logins, or install a scheduler. See [guided and scripted setup](docs/setup.md) for accounts, operating limits, and noninteractive flags.
 
-For v0.1.1 or advanced configuration, copy the appropriate [example](examples/) to a private directory outside the checkout and edit its paths. Run commands with `-c /path/to/keepgoing.yaml`. Nothing is sent until you enable the loop and run ticks or a daemon; a missing control file means disabled.
+For advanced configuration on this build, copy the appropriate [example](examples/) to a private directory outside the checkout and edit its paths. Run commands with `-c /path/to/keepgoing.yaml`. Nothing is sent until you enable the loop and run ticks or a daemon; a missing control file means disabled. Release users should select examples from their matching tag, as described above.
 
 Control the loop at any time (add `-c` with your generated config path to each command):
 
@@ -85,6 +103,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - [docs/services.md](docs/services.md): macOS LaunchAgent and Linux systemd user-service install/status/remove, recovery, and verification limits.
 - [docs/windows-services.md](docs/windows-services.md): Task Scheduler investigation and delivery gates; Windows service management is not implemented.
 - [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
+- [docs/release-verification.md](docs/release-verification.md): artifact smoke checks, release parity, and live walkthrough evidence.
 - [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
 - [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.
 - [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
