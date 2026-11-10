@@ -67,6 +67,9 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race ./...
+      - name: Verify native Linux ACL metadata fixture
+        if: runner.os == 'Linux'
+        run: go test -v ./cmd/keepgoing -run '^TestLinuxACLMetadataDetectsDefaultACLHiddenByModeBits$' -count=1
       - name: Cross-compile for Windows
         if: runner.os == 'Linux'
         run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/keepgoing
