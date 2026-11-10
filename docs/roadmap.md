@@ -81,12 +81,14 @@ Acceptance: users can distinguish an agent working, awaiting input, completed wo
 
 ### 3. BB child awareness and loop ownership
 
-These four additions are planned, not implemented or verified. Work them in the order below after diagnostics, with one focused PR per item and offline fixtures. They do not authorize additional live model spend. keepgoing remains a supervisor: it observes existing relationships and lifecycle signals, and must never spawn or re-parent threads. Only structured BB fields and events inform decisions; transcript text is never a signal. Stop, pause, completion, and awaiting-user holds retain precedence.
+The diagnostics baseline is implemented above, with remaining diagnostic gaps still tracked. Deliver these owner-approved additions in the order below, with one focused PR per item and offline fixtures; implementation and verification status is recorded per item. They do not authorize additional live model spend. keepgoing remains a supervisor: it observes existing relationships and lifecycle signals, and must never spawn or re-parent threads. Only structured BB fields and events inform decisions; transcript text is never a signal. Stop, pause, completion, and awaiting-user holds retain precedence.
 
 #### 3.1. Child-aware idle and stall classification
 
-- [ ] Discover existing children from structured BB thread data (`bb thread show --json`): a child's `parentThreadId` matches the supervised thread and its status is `active`.
-- [ ] Treat a parent with any active child as busy, suppressing idle wakes, stall nudges, and error re-prompts while the child runs. Observe children without starting or managing their work.
+- [x] Discover existing children from a parent-filtered list including hidden threads, then verify structured BB thread data (`bb thread show --json`): a child's `parentThreadId` matches the supervised thread and its status is `active`.
+- [x] Treat a parent with any active child as busy, suppressing idle wakes, stall nudges, and error re-prompts while the child runs. Observe children without starting or managing their work.
+
+Implemented on `main` with offline adapter, decision-table, and repeated-tick fixtures. Active children and unverified discovery also prevent handoffs/switch-back; stop and other control holds retain precedence. Fixtures verify hidden children, identity/relationship changes, failed and oversized discovery, timeouts, unchanged budgets, and the next-check wake. No live child turn or paid call was started. The full-inventory contract was inspected in BB 0.48.1. Unsupported commands fail conservatively; versions that silently truncate listings are not verified or supported. See [BB child awareness](operations.md#bb-child-awareness). Lifecycle-driven early checks and child permission escalation remain planned below.
 
 Acceptance: a fixture parent with one active child receives no prompt across `max_nudges` intervals and does not exhaust its nudge budget. Once that child finishes, the idle parent is re-prompted on the next check, subject to control holds and pending interactions.
 
