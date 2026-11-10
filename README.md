@@ -26,7 +26,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Enabling from a BB thread records a persistent [loop owner](docs/operations.md#one-owner-per-loop); another thread needs an explicit takeover. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
 
-`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. Integrations can use `init --non-interactive --json` for structured preview/create results and `--task-file -` for private task entry through stdin. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it.
+`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. Integrations can use `init --non-interactive --json` for structured preview/create results and `--task-file -` for private task entry through stdin. See the [setup guide](docs/setup.md). These setup commands require v0.1.2 or newer; v0.1.1 does not include them.
 
 `keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status and saved resume IDs, private-file access, and recent tick history without model calls. It also checks runtime path access on macOS, Linux, and Windows without writing data and inspects ACL metadata on those platforms. Windows null/absent DACLs are errors; populated or empty DACLs need review. Full ACL privacy evaluation remains unavailable; Windows runtime checks open and close existing handles without creating files or taking locks. For an explicitly selected BB script automation, it can also report registration, next-run time, and last-run metadata without changing the timer. [Its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
 
@@ -36,12 +36,14 @@ Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallback
 
 ## Install
 
-The latest published release and Homebrew formula are **v0.1.1**. The commands documented on `main`, including `init`, `doctor`, `complete`, `start`, and `service`, are newer than that release. Use the development build below for this quick start. For v0.1.1, use its [versioned README and examples](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1), not the examples from `main`.
+This quick start requires **v0.1.2 or newer**, including `init`, `doctor`, `complete`, `start`, and `service`. Check `keepgoing version` after installation. For v0.1.1, use its [versioned README and examples](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1), not the examples from `main`. A release includes implemented features; it does not certify the outstanding [live verification](docs/release-verification.md) checks.
 
 With Homebrew on macOS or Linux:
 
 ```sh
 brew install connorburgess/tap/keepgoing
+# If already installed:
+# brew update && brew upgrade keepgoing
 ```
 
 With Go 1.24 or newer:
@@ -50,9 +52,11 @@ With Go 1.24 or newer:
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 ```
 
+`go install` builds currently report `dev` from `keepgoing version` because they do not receive the release build label. Use `go version -m /path/to/keepgoing` on the installed executable to check its module version (v0.1.2 or newer), or choose a prebuilt release for an embedded version label.
+
 Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on the [releases page](https://github.com/connorburgess/keepgoing-agents/releases).
 
-### Development build for the current quick start
+### Development build
 
 With Git and Go 1.24 or newer, build from a checkout and keep the binary separate from an installed release. On macOS/Linux:
 
@@ -66,11 +70,11 @@ go build -trimpath -ldflags "-X main.version=dev-$revision" \
 "$HOME/.local/bin/keepgoing-dev" version
 ```
 
-Use this absolute binary path wherever the following instructions say `keepgoing`; setup prints commands using the executable that ran it. Record the revision with any results. This is an unreleased build, not a published version, and building it does not upgrade a running supervisor or change its timer. See [release verification](docs/release-verification.md) for a provider-free binary smoke check and the separate live walkthrough.
+Use this absolute binary path wherever the following instructions say `keepgoing`; setup prints commands using the executable that ran it. Record the revision with any results. This is a source build labeled with its revision; it may include changes newer than the latest release. Building it does not upgrade a running supervisor or change its timer. See [release verification](docs/release-verification.md) for a provider-free binary smoke check and the separate live walkthrough.
 
 ## Quick start
 
-With a build containing guided setup, run this from an existing Git project with at least one commit:
+With v0.1.2 or newer, run this from an existing Git project with at least one commit:
 
 ```sh
 keepgoing init
