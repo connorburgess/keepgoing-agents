@@ -4,6 +4,8 @@
 
 ### Added
 
+- `goal create|revise|show` records private goal identity and specification revisions independently of loop controls. Expected ID/revision checks prevent stale edits; ordinary status withholds titles/references, with explicit `show --private` for full history. Offline fixtures cover ownership, locks, holds, corruption, limits and privacy. Goal acceptance, verification and review-stage bindings remain unimplemented.
+
 - Subscribed `complete` reports now describe a new explicit completion declaration without private notes or claims of independently verified success. The persisted completion flag deduplicates commands and restarts; explicit resume permits a later declaration. Completion delivery uses one attempt without retries/redirects, with notification-loss limitations documented. Covered by offline fixtures only.
 
 - Optional `loop.limits.no_progress_timeout` / `init --no-progress-timeout` holds future automatic work when verified Git metadata stays unchanged for the configured elapsed time. A separate persisted baseline survives turns, recovery, handoffs and restart; resume does not reset it. Setup/status expose the limit and historical evidence. Covered by offline fixtures; this does not measure useful work or spend.

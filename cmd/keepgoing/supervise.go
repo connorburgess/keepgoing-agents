@@ -197,6 +197,8 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
+	Goal              *control.GoalSummary     `json:"goal,omitempty"`
+	GoalError         string                   `json:"goalError,omitempty"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
 	Loop              string                   `json:"loop"`
@@ -284,6 +286,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	if g, err := control.LoadGoal(l.StateDir); err != nil {
+		out.GoalError = err.Error()
+	} else if g != nil {
+		summary := g.Summary()
+		out.Goal = &summary
+	}
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -352,6 +360,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	if out.Goal != nil {
+		printGoal(e, *out.Goal, false)
+	}
+	if out.GoalError != "" {
+		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
+	}
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
 		fmt.Fprintf(w, " (%s)", out.TaskFile)

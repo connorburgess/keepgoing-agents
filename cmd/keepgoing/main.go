@@ -42,6 +42,9 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
 
+Goal metadata:
+  goal create|revise|show   Record private, revisioned goal metadata
+
 Control:
   enable | disable         Turn supervision on or off (nothing is sent while off)
   pause | resume           Pause; resume also clears stop, awaiting-user, and completion
@@ -92,6 +95,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "goal":
+		return goalCommand(e, rest)
 	case "service":
 		return serviceCommand(e, rest, localServiceHost())
 	case "__service-daemon":

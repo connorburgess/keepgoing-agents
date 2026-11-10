@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, goal, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -28,7 +28,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports
-internal/control            control.json: holds, persistent BB ownership, serialized updates
+internal/control            control.json and goal.json: holds, BB ownership, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
@@ -66,6 +66,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | File | Owner | Purpose |
 | --- | --- | --- |
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership |
+| `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, last check decision/outcome and build label |
@@ -118,3 +119,7 @@ Creating a configuration, saving its reference, and starting a daemon are separa
 ## Completion declarations
 
 The command layer detects a new completion episode inside the serialized control update, saves `completed` before any delivery, then appends the control log and submits the subscribed `complete` report outside the lock. The saved flag is the deduplication marker; ticks never emit completion reports. Resume explicitly reopens the episode. Payloads describe an unverified declaration without private notes. The report transport uses one attempt without redirects for this event; other events retain their existing retry behavior. This favors avoiding duplicate notifications over guaranteed delivery after crashes, log/config failures or uncertain HTTP results. No independent acceptance verifier or goal revision binding is implemented yet.
+
+## Private goal records
+
+The control package also owns a separate, versioned `goal.json`. Goal edits acquire tick then control locks, verify the loaded config sources and current owner, and replace the private history atomically without rewriting controls. Revisions require the expected ID and current revision. Status exposes only generated identity, revision and the fixed `recorded` metadata state. References and next actions are opaque descriptions, never executable input or authorization/acceptance evidence. The decision engine and adapters do not consume this record. Goal-bound completion and stage results remain future work; see [private goals](goals.md).
