@@ -198,6 +198,10 @@ func (t *tick) run() error {
 		}
 		return t.record(actErr)
 	}
+	if err := t.sendAllowance(); err != nil {
+		res.State, res.Window = "not observed", "not checked"
+		return t.record(t.sendAllowanceFailure(err))
+	}
 	if y := loop.Yield; y != nil {
 		busy, err := t.opts.Busy(t.ctx, *y)
 		if err != nil {
@@ -358,6 +362,9 @@ func (t *tick) run() error {
 	} else if !t.opts.DryRun {
 		actErr = t.act(a, d)
 	}
+	if errors.Is(actErr, state.ErrSendLimit) || errors.Is(actErr, state.ErrSendLedger) {
+		actErr = t.sendAllowanceFailure(actErr)
+	}
 	if t.reg != nil && !t.opts.DryRun {
 		if err := t.reg.Save(loop.StateDir); err != nil && actErr == nil {
 			actErr = err
@@ -434,6 +441,9 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		return true, nil
 	}
 	for _, id := range summary.Healthy {
+		if err := t.sendAllowance(); err != nil {
+			return false, err
+		}
 		c, _ := t.fb.Find(id)
 		brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
 		if err != nil {
@@ -458,6 +468,9 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 				t.warn("handoff to %s: activate: %v", id, err)
 				continue
 			}
+		}
+		if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+			return false, err
 		}
 		if err := ta.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
 			t.warn("handoff to %s: send: %v", id, err)
@@ -527,6 +540,9 @@ func (t *tick) switchBack(from string) (bool, error) {
 			return false, nil
 		}
 	}
+	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+		return false, err
+	}
 	if err := pa.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
 		t.warn("switch-back: send to primary: %v", err)
 		return false, nil
@@ -559,6 +575,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		mode := adapter.ModeAuto
 		if d.Action == decide.Nudge {
 			mode = adapter.ModeQueue
+		}
+		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
+			return err
 		}
 		if err := a.Send(t.ctx, prompt, mode); err != nil {
 			var unsupported adapter.ErrUnsupported
@@ -670,4 +689,33 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// sendAllowance is checked before automatic provider work and each candidate.
+// Reservations also re-read under the caller's tick lock immediately before Send.
+func (t *tick) sendAllowance() error {
+	if t.loop.Limits.MaxSends == 0 {
+		return nil
+	}
+	used, err := state.LoadSends(t.loop.StateDir)
+	if err != nil {
+		return err
+	}
+	if used >= t.loop.Limits.MaxSends {
+		return state.ErrSendLimit
+	}
+	return nil
+}
+
+func (t *tick) sendAllowanceFailure(err error) error {
+	if !errors.Is(err, state.ErrSendLimit) {
+		t.res.Action, t.res.Reason = string(decide.None), "send allowance unavailable; no further automatic work"
+		return err
+	}
+	d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, SendLimitReached: true})
+	t.res.Action, t.res.Reason = string(d.Action), d.Reason
+	if t.opts.DryRun {
+		return nil
+	}
+	return t.act(nil, d)
 }

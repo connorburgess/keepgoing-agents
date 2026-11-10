@@ -4,6 +4,8 @@
 
 ### Added
 
+- Optional `loop.limits.max_sends` / `init --max-sends` caps automatic send attempts across wakes, recovery and target changes. Reservations persist before delivery, including failed/uncertain sends; exhaustion holds future automatic work. Status exposes the allowance, and explicit resume does not reset it. Covered by offline fixtures only; no-progress and monetary bounds remain unimplemented.
+
 - Optional `loop.limits.deadline` and `init --deadline` hold future automatic supervision at the next check at/after an RFC3339 cutoff. The awaiting-user hold persists across restarts and is visible in status; stop and existing holds retain precedence. Child-outcome polls skip providers after the cutoff. This does not cancel running turns, cap spend, or restrict explicit manual operations. Covered by offline fixtures, not live providers.
 
 ### Fixed

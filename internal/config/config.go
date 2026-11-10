@@ -73,6 +73,7 @@ type Loop struct {
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
 	Deadline string `yaml:"deadline,omitempty"`
+	MaxSends int64  `yaml:"max_sends,omitempty"`
 }
 
 // DeadlineReached uses the host clock. Configuration validation rejects invalid
@@ -312,6 +313,9 @@ func (c *Config) Validate() error {
 	}
 	if l.StateDir == "" {
 		add("loop.state_dir is required")
+	}
+	if l.Limits.MaxSends < 0 {
+		add("loop.limits.max_sends must be nonnegative")
 	}
 	if l.Limits.Deadline != "" {
 		if _, err := time.Parse(time.RFC3339, l.Limits.Deadline); err != nil {

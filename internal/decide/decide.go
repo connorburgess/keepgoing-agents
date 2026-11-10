@@ -70,10 +70,11 @@ type Control struct {
 
 // Input is everything Decide needs.
 type Input struct {
-	Obs             Observation
-	Control         Control
-	InWindow        bool
-	DeadlineReached bool // evaluated at the beginning of this check
+	Obs              Observation
+	Control          Control
+	InWindow         bool
+	SendLimitReached bool // total reserved send attempts reached the configured cap
+	DeadlineReached  bool // evaluated at the beginning of this check
 
 	UnchangedFor    time.Duration // since the progress fingerprint last changed
 	SinceWake       time.Duration // since we last sent anything
@@ -157,6 +158,9 @@ func Decide(in Input) Decision {
 	}
 	if in.DeadlineReached {
 		return Decision{AwaitUser, "loop deadline reached; revise loop.limits.deadline before resuming"}
+	}
+	if in.SendLimitReached {
+		return Decision{AwaitUser, "loop send limit reached; increase loop.limits.max_sends before resuming"}
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}

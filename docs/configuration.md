@@ -117,9 +117,10 @@ loop:
   # Other loop fields omitted.
   limits:
     deadline: "2030-01-01T18:00:00Z"
+    max_sends: 20
 ```
 
-At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is implemented on `main`, not in v0.1.2. Total send-count, no-progress and monetary limits are not implemented.
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is implemented on `main`, not in v0.1.2. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Both limits are unreleased. No-progress and monetary limits are not implemented.
 
 ## window
 

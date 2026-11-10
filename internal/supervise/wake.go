@@ -27,6 +27,12 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 	if cfg.Loop.Limits.DeadlineReached(time.Now()) {
 		return false
 	}
+	if max := cfg.Loop.Limits.MaxSends; max > 0 {
+		used, err := state.LoadSends(cfg.Loop.StateDir)
+		if err != nil || used >= max {
+			return false
+		}
+	}
 	inWindow, _, err := window.Inside(cfg.Loop.Window, time.Now())
 	if err != nil || !inWindow {
 		return false

@@ -79,6 +79,7 @@ type initFallbackRef struct {
 	Target initTarget `json:"target"`
 }
 type initLimits struct {
+	MaxSends     int64    `json:"maxSends,omitempty"`
 	WakeEvery    string   `json:"wakeEvery"`
 	StallAfter   string   `json:"stallAfter"`
 	Interval     string   `json:"interval"`
@@ -116,7 +117,7 @@ func printInitJSON(e env, o initOptions, cfg *config.Config) int {
 		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,
 		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline",
 		Primary: initTargetOf(cfg.Loop.Agent), Fallbacks: []initFallbackRef{},
-		Limits: initLimits{o.wake.String(), o.stall.String(), o.interval.String(), o.backoff.String(), o.nudges, o.reprompts, []string{}, o.deadline},
+		Limits: initLimits{MaxSends: o.maxSends, WakeEvery: o.wake.String(), StallAfter: o.stall.String(), Interval: o.interval.String(), Backoff: o.backoff.String(), MaxNudges: o.nudges, MaxReprompts: o.reprompts, FailoverOn: []string{}, Deadline: o.deadline},
 		Next: initNextCommands{
 			Doctor:          []string{keepgoingExecutable(), "doctor", "--json", "-c", cfgPath},
 			StartForeground: []string{keepgoingExecutable(), "start", "--foreground", "-c", cfgPath},
