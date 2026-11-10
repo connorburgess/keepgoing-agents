@@ -23,7 +23,7 @@ Other coding agents can be supervised today through the process adapter, given a
 
 ## Diagnostics
 
-`keepgoing doctor` is implemented on `main`. **Fakes** cover version queries, BB target identity, privacy, account-environment propagation, recent-check classification, and read-only behavior. Unix subprocess fixtures cover time/output limits. Login verification, live headless session identity, scheduler inspection, running-binary comparison, and Windows ACL checks are explicitly unavailable. See [diagnostics](diagnostics.md).
+`keepgoing doctor` is implemented on `main`. **Fakes** cover version queries, BB target identity, privacy, account-environment propagation, recent-check classification, and read-only behavior. Unix subprocess fixtures cover time/output limits. Login verification, live headless session identity, scheduler inspection, live running-binary inspection, and Windows ACL checks are explicitly unavailable. Status and doctor compare the last recorded tick's build label with the current CLI; offline fixtures cover these historical comparisons, control holds, failed checks, dry runs, and handoff observation attribution. This does not verify a live scheduler. See [diagnostics](diagnostics.md).
 
 ## Agent chats
 

@@ -60,7 +60,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	asJSON := fs.Bool("json", false, "print the versioned diagnostic report")
 	offline := fs.Bool("offline", false, "inspect local files only; do not execute CLIs")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout per read-only CLI command")
-	stale := fs.Duration("stale-after", 30*time.Minute, "warn when the last check is older; set above your scheduler interval")
+	stale := fs.Duration("stale-after", defaultStaleAfter, "warn when the last check is older; set above your scheduler interval")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -71,7 +71,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		e.errf("doctor: no positional arguments; timeout and stale-after must be positive")
 		return exitUsage
 	}
-	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: "unknown: scheduler installation and next run are not recorded", Checks: []doctorCheck{}}
+	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: unknownNextCheck, Checks: []doctorCheck{}}
 	cfg, err := config.Load(*path)
 	if err != nil {
 		r.add("config", "error", "Configuration or fallbacks could not be read or validated.", "Check the selected config path and YAML against the configuration guide. Raw parser errors are withheld to protect values.")
@@ -148,9 +148,24 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	r.add("scheduler", "unavailable", "Scheduler installation, liveness, and next scheduled check are not verified by this command.", "Inspect your daemon or external scheduler. A recent tick alone does not prove it is still running.")
-	r.add("supervisor.version", "unavailable", "The running scheduler's binary version is not recorded; the report version identifies this doctor process only.", "Compare the scheduler's executable and version with the installed binary.")
+	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Authentication and quota health are not established by setup checks.", "Use fallbacks check explicitly only when you intend model calls; its manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
+}
+
+func doctorCheckVersion(r *doctorReport, check *state.Check, stateReadable bool) {
+	comparison := "unknown"
+	if stateReadable {
+		comparison = compareCheckVersion(check, r.Version)
+	}
+	switch comparison {
+	case "match":
+		r.add("supervisor.version", "ok", "The last recorded tick used this build label. This does not verify the currently running scheduler's binary.", "")
+	case "different":
+		r.add("supervisor.version", "warning", "The last recorded tick used a different build label; the scheduler may still use another binary.", "Compare the scheduler's executable with this installation; inspect a new tick before deciding whether the mismatch persists.")
+	default:
+		r.add("supervisor.version", "unavailable", "Comparable tick build history is unavailable; an empty or dev label cannot identify a build.", "Record a tick from a versioned binary, then compare it with the scheduler's executable.")
+	}
 }
 
 func printDoctor(e env, r doctorReport, asJSON bool) int {

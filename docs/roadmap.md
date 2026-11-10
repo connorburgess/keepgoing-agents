@@ -61,11 +61,12 @@ Acceptance: a fresh user configures one task without editing YAML or installing 
 ### 2. Diagnostics and understandable status
 
 - [x] Add read-only `keepgoing doctor` for configuration, available CLI versions, structured BB target identity, explicit account-directory checks, Unix mode checks, and recent tick history, with text and versioned JSON reports. Unsupported or skipped checks are explicitly unavailable. See [diagnostics](diagnostics.md).
-- [ ] Extend diagnostics with structured provider login and live headless session checks, effective permissions/Windows ACL checks, scheduler installation/liveness, and the running supervisor binary version. Current doctor does not claim to verify these.
+- [ ] Extend diagnostics with structured provider login and live headless session checks, effective permissions/Windows ACL checks, scheduler installation/liveness, and the running supervisor binary version. Current doctor does not claim to verify these. Last-tick build-label comparison is now implemented, but it is historical evidence rather than live process inspection.
 - [x] Keep ordinary diagnostics free of model calls; `--offline` also skips version and BB target commands. Privacy and command bounds are tested with offline fixtures.
 - [ ] Offer explicit paid probes with their expected cost and configured cap visible before execution; doctor does not invoke existing manual probes.
-- [ ] Show which task and session are supervised, the selected account label, last check, last action, reason for waiting, completion state, and next scheduled check or why its time is unknown. Flag a stale binary, missing target, or missing scheduler.
-- [x] Provide stable doctor JSON output and actionable fixes without printing credentials, environment values, task text, control notes, or raw CLI output. Richer ordinary status output remains pending above.
+- [x] Expand status with task source, configured BB thread and quota group, current control holds, last decision/reason/outcome, observation target, history freshness, and an explicit unknown next-check time. Persist tick build labels and flag differences in status/doctor; preserve legacy state. Covered by offline fixtures, including dry runs, failed checks, and handoffs. See [recorded status](operations.md#understanding-recorded-status).
+- [ ] Add saved/live headless session identity and verified scheduler liveness/next-run information. Historical build-label comparisons can flag a potentially stale binary but do not identify the currently running process. Missing configured targets are flagged; live BB lookup is available in doctor.
+- [x] Provide stable doctor JSON output and actionable fixes without printing credentials, environment values, task text, control notes, or raw CLI output. Status now has historical runtime fields; live session and scheduler checks remain pending above.
 
 Acceptance: users can distinguish an agent working, awaiting input, completed work, a paused loop, and a supervisor that is not running. A loop attached to an older conversation is visible as such.
 

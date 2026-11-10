@@ -27,6 +27,7 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
+	Version     string // build label of the caller, for historical diagnostics
 	Now         time.Time
 	DryRun      bool // decide and record; send nothing and run no probes
 	Fingerprint func([]string) (string, error)
@@ -77,15 +78,17 @@ type Result struct {
 }
 
 type tick struct {
-	ctx  context.Context
-	cfg  *config.Config
-	loop config.Loop
-	fb   *config.Fallbacks
-	opts Options
-	now  time.Time
-	res  *Result
-	st   state.File
-	reg  *health.Registry
+	observedTarget string
+	awaitingInput  bool
+	ctx            context.Context
+	cfg            *config.Config
+	loop           config.Loop
+	fb             *config.Fallbacks
+	opts           Options
+	now            time.Time
+	res            *Result
+	st             state.File
+	reg            *health.Registry
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -198,7 +201,9 @@ func (t *tick) run() error {
 	if err != nil {
 		return err
 	}
+	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason, res.Window = string(decide.Unknown), "could not verify state; no action taken", "not checked"
 		t.report("error", fmt.Sprintf("%s: could not observe %s", loop.Name, target), map[string]any{"target": target})
@@ -349,7 +354,9 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if err != nil {
 		return err
 	}
+	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
 		return t.record(err)
@@ -569,6 +576,16 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 
 func (t *tick) record(actErr error) error {
 	t.st.CheckedAt = t.now
+	outcome := "succeeded"
+	if t.opts.DryRun {
+		outcome = "dry_run"
+	}
+	if actErr != nil {
+		outcome = "failed"
+	}
+	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
+		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput,
+		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err
 	}

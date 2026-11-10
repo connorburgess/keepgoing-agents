@@ -28,6 +28,7 @@ type File struct {
 	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
 	CheckedAt         time.Time `json:"checkedAt,omitempty"`
 	LastState         string    `json:"lastState,omitempty"`
+	LastCheck         *Check    `json:"lastCheck,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
 	Nudges            int       `json:"nudges,omitempty"` // since progress was last seen
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
@@ -44,6 +45,21 @@ type File struct {
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
+}
+
+// Check records a completed tick's decision and outcome, not a live session
+// status. It contains no prompts, provider output, or raw error text.
+type Check struct {
+	At             time.Time `json:"at"`
+	Version        string    `json:"version,omitempty"`
+	Target         string    `json:"target"`
+	ObservedTarget string    `json:"observedTarget,omitempty"`
+	ObservedState  string    `json:"observedState"`
+	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
+	Action         string    `json:"action"`
+	Reason         string    `json:"reason"`
+	Outcome        string    `json:"outcome"` // succeeded, failed, or dry_run
+	DryRun         bool      `json:"dryRun,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.
