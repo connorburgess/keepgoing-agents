@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"sort"
 )
 
 var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
@@ -11,12 +12,12 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // childWork observes direct children only. Listing discovers IDs; show verifies
 // the current relationship and status. No child is sent a message, stopped,
 // spawned, or re-parented. Incomplete discovery must not authorize a wake.
-func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool) {
+func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting []string) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
 	if err != nil || ctx.Err() != nil {
-		return 0, true
+		return 0, true, nil
 	}
 	var children []struct {
 		ID string `json:"id"`
@@ -24,7 +25,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool) {
 	// A bare array is required: null, envelopes, and missing data are not an
 	// empty inventory. Bound the number of show calls in addition to time.
 	if json.Unmarshal(out, &children) != nil || children == nil || len(children) > 200 {
-		return 0, true
+		return 0, true, nil
 	}
 	seen := make(map[string]bool)
 	for _, child := range children {
@@ -37,11 +38,11 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool) {
 		}
 		seen[child.ID] = true
 		if ctx.Err() != nil {
-			return active, true
+			return active, true, awaiting
 		}
 		out, err := a.run(ctx, "", "thread", "show", child.ID, "--json")
 		if ctx.Err() != nil {
-			return active, true
+			return active, true, awaiting
 		}
 		if code, ok := envelopeError(out); ok && code == "thread_not_found" {
 			continue // Child disappeared after discovery.
@@ -82,11 +83,47 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool) {
 		case "active":
 			active++
 		case "idle", "error", "pending", "starting", "stopping":
-			// Known non-active state. Pending child interactions are a
-			// separate roadmap item.
+			// Known non-active state; it may still be waiting on a person.
+		default:
+			unverified = true
+		}
+		pending, unknown := a.childPending(ctx, child.ID)
+		unverified = unverified || unknown
+		if pending {
+			awaiting = append(awaiting, child.ID)
+		}
+	}
+	sort.Strings(awaiting)
+	return active, unverified, awaiting
+}
+
+// childPending inspects only identity and status, never interaction contents.
+// Resolving means a response is in flight: withhold a wake without asking the
+// person to answer it again. Unknown data cannot establish an input-free child.
+func (a *Adapter) childPending(ctx context.Context, id string) (pending, unverified bool) {
+	out, err := a.run(ctx, "", "thread", "interactions", "list", id, "--json")
+	if err != nil || ctx.Err() != nil {
+		return false, true
+	}
+	var items []struct {
+		Thread string `json:"threadId"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(out, &items) != nil || items == nil || len(items) > 500 {
+		return false, true
+	}
+	for _, item := range items {
+		if item.Thread != id {
+			unverified = true
+			continue
+		}
+		switch item.Status {
+		case "pending":
+			pending = true
+		case "resolved", "interrupted":
 		default:
 			unverified = true
 		}
 	}
-	return active, unverified
+	return pending, unverified
 }

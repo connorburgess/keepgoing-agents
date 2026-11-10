@@ -58,6 +58,9 @@ func TestChildWorkVerifiesIdentityAndRelationship(t *testing.T) {
 				if reflect.DeepEqual(args, []string{"thread", "list", "--parent-thread", "thr_example123", "--include-hidden", "--json"}) {
 					return []byte(tc.list), nil
 				}
+				if reflect.DeepEqual(args, []string{"thread", "interactions", "list", "thr_child", "--json"}) {
+					return []byte(`[]`), nil
+				}
 				if !reflect.DeepEqual(args, []string{"thread", "show", "thr_child", "--json"}) {
 					t.Fatalf("unexpected command: %v", args)
 				}
@@ -67,7 +70,7 @@ func TestChildWorkVerifiesIdentityAndRelationship(t *testing.T) {
 				}
 				return []byte(tc.show), nil
 			}
-			active, unknown := a.childWork(context.Background())
+			active, unknown, _ := a.childWork(context.Background())
 			if active != tc.active || unknown != tc.unknown || shows > 1 {
 				t.Fatalf("active=%d unknown=%v shows=%d", active, unknown, shows)
 			}
@@ -87,7 +90,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 			}
 			return []byte(list), nil
 		}
-		if n, u := a.childWork(context.Background()); n != 0 || !u {
+		if n, u, _ := a.childWork(context.Background()); n != 0 || !u {
 			t.Fatal("incomplete inventory permitted a wake")
 		}
 	}
@@ -97,7 +100,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 		<-ctx.Done()
 		return []byte(`[]`), nil
 	}
-	if n, u := a.childWork(context.Background()); n != 0 || !u {
+	if n, u, _ := a.childWork(context.Background()); n != 0 || !u {
 		t.Fatal("expired query permitted a wake")
 	}
 }

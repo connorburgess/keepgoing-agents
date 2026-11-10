@@ -53,5 +53,8 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 	if err != nil || ctx.Err() != nil {
 		return false
 	}
-	return decide.Decide(decide.Input{Control: ctl.Gate(), Obs: obs, InWindow: inWindow}).Action == decide.Wake
+	d := decide.Decide(decide.Input{Control: ctl.Gate(), Obs: obs, InWindow: inWindow})
+	// Child input wins over a completion wake; let the next tick persist and
+	// report the hold rather than waiting for the normal interval.
+	return d.Action == decide.Wake || (d.Action == decide.AwaitUser && len(obs.AwaitingChildren) > 0)
 }

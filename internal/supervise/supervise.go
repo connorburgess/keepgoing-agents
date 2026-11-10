@@ -78,17 +78,18 @@ type Result struct {
 }
 
 type tick struct {
-	observedTarget string
-	awaitingInput  bool
-	ctx            context.Context
-	cfg            *config.Config
-	loop           config.Loop
-	fb             *config.Fallbacks
-	opts           Options
-	now            time.Time
-	res            *Result
-	st             state.File
-	reg            *health.Registry
+	observedTarget   string
+	awaitingInput    bool
+	awaitingChildren []string
+	ctx              context.Context
+	cfg              *config.Config
+	loop             config.Loop
+	fb               *config.Fallbacks
+	opts             Options
+	now              time.Time
+	res              *Result
+	st               state.File
+	reg              *health.Registry
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -212,6 +213,19 @@ func (t *tick) run() error {
 	res.State = string(obs.State)
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
+	}
+	if len(obs.AwaitingChildren) > 0 {
+		// Escalate before probes, fingerprints, and recovery. Child input must
+		// not depend on those succeeding, and never prompts the parent.
+		t.awaitingChildren = obs.AwaitingChildren
+		d := decide.Decide(decide.Input{Control: gate, Obs: obs})
+		res.Action, res.Reason, res.Window = string(d.Action), d.Reason, "not checked"
+		res.Reprompts, t.st.LastState = t.st.Reprompts, string(obs.State)
+		var actErr error
+		if !t.opts.DryRun {
+			actErr = t.act(a, d)
+		}
+		return t.record(actErr)
 	}
 	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun {
 		t.st.AwaitingReported = true
@@ -557,7 +571,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if _, err := control.Update(loop.StateDir, func(f *control.File) { f.AwaitingUser, f.Note = true, d.Reason }); err != nil {
 			return err
 		}
-		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), map[string]any{"target": t.res.Target})
+		data := map[string]any{"target": t.res.Target}
+		if len(t.awaitingChildren) > 0 {
+			data["children"] = t.awaitingChildren
+			data["pendingInteraction"] = true
+		}
+		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), data)
 	case decide.Stop:
 		err := a.Stop(t.ctx)
 		var unsupported adapter.ErrUnsupported

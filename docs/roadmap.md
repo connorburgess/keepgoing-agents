@@ -88,7 +88,7 @@ The diagnostics baseline is implemented above, with remaining diagnostic gaps st
 - [x] Discover existing children from a parent-filtered list including hidden threads, then verify structured BB thread data (`bb thread show --json`): a child's `parentThreadId` matches the supervised thread and its status is `active`.
 - [x] Treat a parent with any active child as busy, suppressing idle wakes, stall nudges, and error re-prompts while the child runs. Observe children without starting or managing their work.
 
-Implemented on `main` with offline adapter, decision-table, and repeated-tick fixtures. Active children and unverified discovery also prevent handoffs/switch-back; stop and other control holds retain precedence. Fixtures verify hidden children, identity/relationship changes, failed and oversized discovery, timeouts, unchanged budgets, and the next-check wake. No live child turn or paid call was started. The full-inventory contract was inspected in BB 0.48.1. Unsupported commands fail conservatively; versions that silently truncate listings are not verified or supported. See [BB child awareness](operations.md#bb-child-awareness). Lifecycle-driven early checks are described below; child permission escalation remains planned.
+Implemented on `main` with offline adapter, decision-table, and repeated-tick fixtures. Active children and unverified discovery also prevent handoffs/switch-back; stop and other control holds retain precedence. Fixtures verify hidden children, identity/relationship changes, failed and oversized discovery, timeouts, unchanged budgets, and the next-check wake. No live child turn or paid call was started. The full-inventory contract was inspected in BB 0.48.1. Unsupported commands fail conservatively; versions that silently truncate listings are not verified or supported. See [BB child awareness](operations.md#bb-child-awareness). Lifecycle-driven early checks and child permission escalation are described below.
 
 Acceptance: a fixture parent with one active child receives no prompt across `max_nudges` intervals and does not exhaust its nudge budget. Once that child finishes, the idle parent is re-prompted on the next check, subject to control holds and pending interactions.
 
@@ -103,7 +103,9 @@ Acceptance: with an idle parent, a child completion causes the next parent promp
 
 #### 3.3. Escalate child permission prompts and questions
 
-- [ ] A child waiting on a structured permission prompt or question puts the loop into `await_user`, with a report identifying the child. Send nothing to the parent and do not answer the child's interaction.
+- [x] A child waiting on a structured permission prompt or question puts the loop into `await_user`, with a report identifying the child. Send nothing to the parent and do not answer the child's interaction.
+
+Implemented with offline adapter, decision-table, supervisor, and CLI/webhook fixtures. After verifying the child's identity and current parent relationship, the adapter queries structured interaction status. Confirmed pending input persists an `await_user` hold and reports child IDs before probes or recovery; no parent or child is prompted, stopped, or answered. Unknown, failed, oversized, and resolving interaction queries withhold wakes without asserting that a person still needs to answer. Control holds retain precedence, and explicit resume is required after the interaction clears. Completion-driven early checks escalate pending child input instead of waking the parent. No live child interaction or paid call was started; BB 0.48.1 field/status shapes were inspected locally. See [child input escalation](operations.md#child-permission-prompts-and-questions).
 
 Acceptance: a fixture child with a pending interaction produces an `await_user` report naming that child, while the parent remains untouched. Pending interactions take precedence over child-completion wake signals.
 
