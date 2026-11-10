@@ -22,13 +22,14 @@ const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
 type Cursor struct {
-	Thread   string            `json:"thread"`
-	LastSeq  int64             `json:"lastSeq"`
-	TurnSeq  int64             `json:"turnSeq,omitempty"` // latest turn start
-	Error    *errorSignal      `json:"error,omitempty"`   // latest error since that turn started
-	Blocked  bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
-	ResetsAt time.Time         `json:"resetsAt,omitempty"`
-	Pending  map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
+	ChildOutcomeSeq int64             `json:"childOutcomeSeq,omitempty"`
+	Thread          string            `json:"thread"`
+	LastSeq         int64             `json:"lastSeq"`
+	TurnSeq         int64             `json:"turnSeq,omitempty"` // latest turn start
+	Error           *errorSignal      `json:"error,omitempty"`   // latest error since that turn started
+	Blocked         bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
+	ResetsAt        time.Time         `json:"resetsAt,omitempty"`
+	Pending         map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
 }
 
 type errorSignal struct {
@@ -46,6 +47,9 @@ type event struct {
 // apply folds one event into the summary.
 func (c *Cursor) apply(e event) {
 	c.LastSeq = e.Seq
+	if childOutcome(e, c.Thread) {
+		c.ChildOutcomeSeq = e.Seq
+	}
 	switch {
 	case e.Type == "turn/started" || e.Type == "client/turn/requested":
 		// A new turn makes earlier errors stale.
@@ -111,20 +115,25 @@ func (a *Adapter) loadCursor() Cursor {
 	return Cursor{Thread: a.cfg.Thread}
 }
 
-func (a *Adapter) saveCursor(c Cursor) {
-	a.mem = &c
+func (a *Adapter) saveCursor(c Cursor) bool {
 	p := a.cursorPath()
 	if p == "" {
-		return
+		a.mem = &c
+		return true
 	}
 	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
-		return
+		return false
 	}
 	b, _ := json.Marshal(c)
 	tmp := p + ".tmp"
-	if os.WriteFile(tmp, append(b, '\n'), 0o600) == nil {
-		os.Rename(tmp, p)
+	if os.WriteFile(tmp, append(b, '\n'), 0o600) != nil {
+		return false
 	}
+	if os.Rename(tmp, p) != nil {
+		return false
+	}
+	a.mem = &c
+	return true
 }
 
 // scan reads every event after the cursor and returns the updated summary.
@@ -133,7 +142,7 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 	c := a.loadCursor()
 	for pages := 0; pages < 10000; pages++ {
 		out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--after-seq", strconv.FormatInt(c.LastSeq, 10), "--limit", strconv.Itoa(pageSize))
-		if err != nil {
+		if err != nil || ctx.Err() != nil {
 			return c, false
 		}
 		var events []event
@@ -148,9 +157,8 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 			}
 		}
 		if len(events) < pageSize || !progressed {
-			break
+			return c, a.saveCursor(c)
 		}
 	}
-	a.saveCursor(c)
-	return c, true
+	return c, false // An incomplete scan must not authorize an early check.
 }

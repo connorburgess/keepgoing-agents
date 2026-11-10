@@ -33,6 +33,13 @@ type Adapter interface {
 	Stop(ctx context.Context) error
 }
 
+// WakePoller consumes structured notifications that can justify an early idle
+// check. It never sends a prompt. The caller holds the tick lock, honors control
+// holds, and re-observes the target before using the signal.
+type WakePoller interface {
+	PollWake(ctx context.Context) bool
+}
+
 // Activator is implemented by adapters that must prepare the session before
 // the first message after a handoff, for example switching its model.
 type Activator interface {
