@@ -93,6 +93,9 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	if !strings.Contains(out, "supervision disabled") || strings.Contains(out, "Complete and verify the fictional example task.") {
 		t.Fatal("preview must show disabled state without echoing task")
 	}
+	if !strings.Contains(out, "start --foreground -c "+commandQuote(filepath.Join(f.destination, "keepgoing.yaml"))) || !strings.Contains(out, "--background") {
+		t.Fatal("setup must print a start command and background choice")
+	}
 	for _, name := range []string{"", "keepgoing.yaml", "prompt.md"} {
 		info, err := os.Stat(filepath.Join(f.destination, name))
 		if err != nil {

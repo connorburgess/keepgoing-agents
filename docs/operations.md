@@ -9,6 +9,25 @@ There are two ways to run keepgoing. Pick one per loop.
 
 Ending the daemon does not stop the agent. To stop the agent, run `keepgoing stop`.
 
+## Starting supervision
+
+After reviewing a configured task, choose one:
+
+```sh
+keepgoing start --foreground -c /path/to/keepgoing.yaml
+keepgoing start --background -c /path/to/keepgoing.yaml
+```
+
+`start` defaults to foreground. It validates configuration and fallbacks, readable task-file type/access, recorded state/health and active target, configured agent executables, and headless working/account directories. Custom process command executables are checked without executing them. These are local setup checks; they do not verify authentication, provider access, model quotas, or the live target. No login command or probe runs during startup validation. Once started, ordinary ticks can send prompts and run configured probes. Use `doctor --offline` for a read-only inspection instead of starting supervision. `start` does not accept `--dry-run` or `--take-over`; transfer ownership explicitly first if needed.
+
+Start acquires `daemon.lock` before changing controls, then the tick lock and short control lock. Another daemon returns exit 75 with no control changes. A scheduler tick in progress also returns 75; retry later. Start records a BB owner just like `enable`, refuses a conflicting owner, and sets `enabled` while preserving pause, stop, awaiting-user, completion, and the note. It never resumes a held task, retargets a session, or changes an external schedule. An existing stop is still processed by the ordinary tick, even while paused. External schedulers do not continuously hold the daemon lock: start cannot detect every installed timer. Choose one scheduling method per loop and remove your old schedule explicitly before switching.
+
+Foreground startup prints the control state, then tick results; Ctrl-C ends the daemon. Background startup launches a detached copy of this executable with the inherited environment and working directory, and waits up to ten seconds for that specific child's acknowledgement. Success means the child owns the daemon lock, has opened live diagnostics, and has enabled the loop; it does not promise the first tick or a provider action has succeeded. Validation or diagnostic startup failures leave controls unchanged. A timeout or interrupted acknowledgement terminates the child; if it had already enabled the loop, that flag remains. Inspect `status` before retrying; crashes cannot make a multi-process start transaction atomic.
+
+The background daemon disconnects from terminal input/output. Tick decisions and outcomes remain in private `state.json` and `runs.jsonl`; raw daemon stdout/stderr is discarded. Use `status`, `doctor`, and, when troubleshooting raw command errors, foreground mode. `pause`, `complete`, `await-user`, and `disable` hold future work while the daemon stays alive. `stop` stops the agent on a check and holds future prompts; it does not exit the daemon. To end the daemon itself, terminate the printed PID (SIGTERM on Unix, `Stop-Process -Id <PID>` in PowerShell). Ending it does not stop the agent.
+
+Background mode survives the launching terminal closing. It does not install a user service, restart after crashes or reboots, or guarantee survival across OS logout/session cleanup. It cannot execute while the host sleeps or is off. After wake, the next available check applies current controls; there is no catch-up queue of missed ticks. Network errors retain the normal structured-error policy. User-service installation and lifecycle soak testing remain separate roadmap work. Offline fixtures exercise detached startup, parent exit, duplicate refusal, status, holds, and stop with a local process adapter; no live model call or multi-account handoff is part of these checks.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -169,7 +188,7 @@ Offline fixtures cover permissions/questions, identity verification, stale relat
 
 When `keepgoing enable` runs inside BB, it records `BB_THREAD_ID` in `control.ownership`, with a generation number. The owner is the thread operating the loop; it is separate from the configured agent target. Claiming or transferring ownership never retargets the loop or changes a BB parent/child relationship. `status` shows the owner and latest handoff, and `status --json` includes the ownership metadata.
 
-A different BB thread is refused by `validate`, `enable`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
+A different BB thread is refused by `validate`, `enable`, `start`, and `daemon`, as well as direct ticks, resume, retarget, and executing manual probes. Read-only status/doctor and probe previews remain available. Disable, pause, stop, complete, and await-user remain available from any thread. Missing `BB_THREAD_ID` identifies an external scheduler or ordinary terminal: commands use the existing claim without changing it. Legacy loops without ownership metadata continue working; their first enable from a BB thread records the claim. This relies on cooperative callers and private runtime files, not an authentication boundary.
 
 From the BB thread that should become the new owner:
 

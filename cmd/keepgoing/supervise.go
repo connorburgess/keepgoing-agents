@@ -101,6 +101,11 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 	} else {
 		defer monitor.Close()
 	}
+	return daemonLoop(e, cfg, cfgPath, dryRun, lease, monitor)
+}
+
+// The caller owns daemon.lock and the diagnostic endpoint for this entire loop.
+func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *ownerLease, monitor *daemoninfo.Server) int {
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "started"})
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
 	for {
