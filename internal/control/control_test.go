@@ -32,3 +32,22 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("gate = %+v", g)
 	}
 }
+
+func TestCompletionPersistsAndPreservesHigherPriorityHolds(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Update(dir, func(f *File) { f.Enabled, f.Completed = true, true; f.Note = "Example task finished" }); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Load(dir)
+	if err != nil || !f.Completed || !f.Gate().Completed || f.Summary() != "completed" {
+		t.Fatalf("completion not persisted: %+v %v", f, err)
+	}
+	f.Paused = true
+	if f.Summary() != "paused" {
+		t.Fatal("completion hid pause")
+	}
+	f.Stop = true
+	if f.Summary() != "stop requested" {
+		t.Fatal("completion hid stop")
+	}
+}

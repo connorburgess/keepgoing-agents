@@ -254,8 +254,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string) int {
 		"enable":     func(f *control.File) { f.Enabled = true },
 		"disable":    func(f *control.File) { f.Enabled = false },
 		"pause":      func(f *control.File) { f.Paused = true },
-		"resume":     func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser = false, false, false },
+		"resume":     func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
 		"stop":       func(f *control.File) { f.Stop = true },
+		"complete":   func(f *control.File) { f.Completed = true },
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
 	f, err := control.Update(cfg.Loop.StateDir, func(f *control.File) {

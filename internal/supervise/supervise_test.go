@@ -419,6 +419,7 @@ func TestStopWinsOverPauseDisableAndBrokenState(t *testing.T) {
 	cases := map[string]func(w *world){
 		"paused":        func(w *world) { control.Update(w.dir, func(f *control.File) { f.Paused = true }) },
 		"disabled":      func(w *world) { control.Update(w.dir, func(f *control.File) { f.Enabled = false }) },
+		"completed":     func(w *world) { control.Update(w.dir, func(f *control.File) { f.Completed = true }) },
 		"awaiting user": func(w *world) { control.Update(w.dir, func(f *control.File) { f.AwaitingUser = true }) },
 		"broken fingerprint": func(w *world) {
 			w.cfg.Loop.Progress.Repositories = []string{"/fictional/missing"}
@@ -628,5 +629,35 @@ func TestSwitchBackOffByDefault(t *testing.T) {
 	w.probeOK["primary"] = true
 	if res := runTick(t, w, t0.Add(5*time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
 		t.Fatalf("%+v", res)
+	}
+}
+
+func TestCompletedSkipsProviderProbesYieldAndFingerprint(t *testing.T) {
+	w := newWorld(t, true, true)
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Completed = true }); err != nil {
+		t.Fatal(err)
+	}
+	w.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"example"}}
+	w.cfg.Loop.Progress.Repositories = []string{"/fictional/missing"}
+	o := w.opts(t0)
+	o.NewAdapter = func(config.Agent, string, string) (adapter.Adapter, error) {
+		t.Fatal("completed task queried the provider")
+		return nil, nil
+	}
+	o.Busy = func(context.Context, config.Yield) (bool, error) {
+		t.Fatal("completed task ran the busy check")
+		return false, nil
+	}
+	o.Fingerprint = func([]string) (string, error) { t.Fatal("completed task read the fingerprint"); return "", nil }
+	// Completion must not depend on readable fallback health.
+	if err := os.WriteFile(w.dir+"/health.json", []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		o.Now = t0.Add(time.Duration(i) * time.Hour)
+		res, err := Tick(context.Background(), w.cfg, o)
+		if err != nil || res.Action != "none" || res.Reason != "completed" || res.Control != "completed" || len(w.probes) != 0 || len(w.reports) != 0 {
+			t.Fatalf("completed tick: %+v %v", res, err)
+		}
 	}
 }

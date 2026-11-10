@@ -41,8 +41,9 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
 
 Control:
   enable | disable         Turn supervision on or off (nothing is sent while off)
-  pause | resume           Pause; resume also clears stop and awaiting-user
+  pause | resume           Pause; resume also clears stop, awaiting-user, and completion
   stop                     Stop the running session on the next pass, then send nothing
+  complete                 Mark the task finished; hold until resume
   await-user               Mark the loop as waiting for a person
   retarget <id|primary>    Point the loop at a fallback or back at the primary
 
@@ -138,7 +139,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return daemon(e, cfg, *f.cfgPath, *f.dryRun)
 	case "status":
 		return status(e, cfg, now, *f.asJSON)
-	case "enable", "disable", "pause", "resume", "stop", "await-user":
+	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note)
 	case "retarget":
 		if len(positional) != 1 {

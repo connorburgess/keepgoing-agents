@@ -8,7 +8,7 @@
 - **Structured signals only.** Session state and error class come from exit codes, JSON fields, HTTP status, or provider events. Transcript and message text is never read for a decision. Stderr from agent commands is never parsed.
 - **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
 - **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
-- **Stop and pause win.** A stop is handled before anything else on every tick, even while the loop is paused, disabled, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, or awaiting-user without a stop means the provider is not even queried and no probe runs.
+- **Stop and pause win.** A stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
@@ -28,7 +28,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports
-internal/control            control.json: enabled, paused, stop, awaitingUser
+internal/control            control.json: enabled, paused, stop, awaitingUser, completed
 internal/state              state.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks and the daemon
@@ -41,7 +41,7 @@ internal/ciwait             wait for CI on an exact commit
 1. Take the tick lock. If another tick holds it, exit 75.
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
 3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
-4. If disabled, paused, or awaiting a person, record and stop here.
+4. If disabled, paused, completed, or awaiting a person, record and stop here.
 5. If a yield command reports other work, record and exit 75.
 6. Observe the active target through its adapter. If it cannot be observed, record and take no action.
 7. Inside the time window, run any scheduled probes that are due, within the daily cap. The active target and candidates in its quota group are skipped, so probes never spend the pool the loop is using.
@@ -64,7 +64,7 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 
 | File | Owner | Purpose |
 | --- | --- | --- |
-| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, note |
+| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target |
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |

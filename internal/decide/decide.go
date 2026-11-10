@@ -55,6 +55,7 @@ type Control struct {
 	Paused       bool
 	Stop         bool
 	AwaitingUser bool
+	Completed    bool
 }
 
 // Input is everything Decide needs.
@@ -139,6 +140,9 @@ func Decide(in Input) Decision {
 	}
 	if c.AwaitingUser {
 		return none("awaiting user")
+	}
+	if c.Completed {
+		return none("completed")
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
