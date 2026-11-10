@@ -116,10 +116,8 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	}
 	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
 	fmt.Fprintln(e.stdout, "Created private setup. Review the task and configuration, then run:")
-	for _, cmd := range []string{"validate", "enable", "daemon"} {
-		fmt.Fprintf(e.stdout, "  %s %s -c %s\n", initCommandPrefix(), cmd, commandQuote(cfgPath))
-	}
-	fmt.Fprintln(e.stdout, "The daemon runs in this terminal; keep it running for supervision.")
+	fmt.Fprintf(e.stdout, "  %s start --foreground -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
+	fmt.Fprintln(e.stdout, "Or choose --background to keep the daemon running after this terminal closes. Start validates local setup and enables the loop; existing holds remain. No service is installed.")
 	return exitOK
 }
 

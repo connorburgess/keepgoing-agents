@@ -35,6 +35,7 @@ Usage:
 
 Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
+  start                    Validate, enable, and run (--foreground or --background)
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
@@ -90,6 +91,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "start":
+		return startCommand(e, rest, nil)
+	case "__start-background":
+		return startChild(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
