@@ -197,19 +197,20 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
-	Loop            string          `json:"loop"`
-	Primary         string          `json:"primary"`
-	Target          string          `json:"target"`
-	Control         control.File    `json:"control"`
-	ControlState    string          `json:"controlState"`
-	Deadline        string          `json:"deadline,omitempty"`
-	DeadlineReached bool            `json:"deadlineReached"`
-	Window          string          `json:"window"`
-	InWindow        bool            `json:"inWindow"`
-	State           state.File      `json:"state"`
-	Redundancy      *health.Summary `json:"redundancy,omitempty"`
-	StateDir        string          `json:"stateDir"`
-	Version         string          `json:"version"`
+	SendAllowance   *sendAllowanceStatus `json:"sendAllowance,omitempty"`
+	Loop            string               `json:"loop"`
+	Primary         string               `json:"primary"`
+	Target          string               `json:"target"`
+	Control         control.File         `json:"control"`
+	ControlState    string               `json:"controlState"`
+	Deadline        string               `json:"deadline,omitempty"`
+	DeadlineReached bool                 `json:"deadlineReached"`
+	Window          string               `json:"window"`
+	InWindow        bool                 `json:"inWindow"`
+	State           state.File           `json:"state"`
+	Redundancy      *health.Summary      `json:"redundancy,omitempty"`
+	StateDir        string               `json:"stateDir"`
+	Version         string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -220,6 +221,15 @@ type statusOut struct {
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+}
+
+// sendAllowanceStatus omits unknown counts when accounting cannot be read.
+type sendAllowanceStatus struct {
+	Max       int64  `json:"max"`
+	Used      *int64 `json:"used,omitempty"`
+	Remaining *int64 `json:"remaining,omitempty"`
+	Reached   bool   `json:"reached"`
+	Error     string `json:"error,omitempty"`
 }
 
 // agentRef identifies the session an agent definition points at.
@@ -263,6 +273,17 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	if l.Limits.MaxSends > 0 {
+		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
+		used, err := state.LoadSends(l.StateDir)
+		if err != nil {
+			out.SendAllowance.Error = err.Error()
+		} else {
+			remaining := max(int64(0), l.Limits.MaxSends-used)
+			out.SendAllowance.Used, out.SendAllowance.Remaining = &used, &remaining
+			out.SendAllowance.Reached = used >= l.Limits.MaxSends
+		}
+	}
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
@@ -341,6 +362,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	if a := out.SendAllowance; a != nil {
+		if a.Error != "" {
+			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
+		} else {
+			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
+		}
+	}
 	if out.Deadline != "" {
 		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
 	}

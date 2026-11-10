@@ -42,6 +42,8 @@ keepgoing init --non-interactive \
 
 Add `--dry-run` to preview without writing files. `keepgoing init --help` lists all flags. Input ending or cancellation while answering the wizard writes no setup. Existing setups are never overwritten; edit their private configuration or choose a new name/directory.
 
+On `main` (after v0.1.2), optional `--max-sends 20` caps automatic send attempts with a persistent counter; failed attempts count and resume does not reset it. Zero or omission leaves accounting disabled. See [send allowance](operations.md#total-send-allowance).
+
 On `main` (after v0.1.2), optional `--deadline "2030-01-01T18:00:00Z"` sets an absolute cutoff, shown in both text and JSON previews. It requires a timezone. The next ordinary check at or after the deadline holds future supervision; it does not stop a running agent. Changing the cutoff does not clear an existing hold. See [deadline behavior](operations.md#loop-deadline). `--wake-every` controls stall-nudge spacing; idle wakes follow the check interval and other gates. Neither it nor `--max-nudges` is a loop-wide turn budget.
 
 For an existing BB thread:
@@ -80,7 +82,7 @@ Schema version 1 has these fields:
 | `taskSource` | `inline`, `file`, or `stdin`; never the task text or source filename. |
 | `primary` | An `agent` reference (adapter, provider, group, and applicable thread/workdir/model fields) and `account` selection (`inherited` or `explicit_directory`). BB inherits the existing thread's login/model. |
 | `fallbacks` | Ordered array of `{id, target}`, each target with the same shape as `primary`; empty array for a single agent. |
-| `limits` | `wakeEvery`, `stallAfter`, `interval`, `backoff` as Go duration strings; `maxNudges`, `maxReprompts`, and `failoverOn` (empty or rate-limit-only). |
+| `limits` | `wakeEvery`, `stallAfter`, `interval`, `backoff` as Go duration strings; `maxNudges`, `maxReprompts`, and `failoverOn` (empty or rate-limit-only); unreleased optional `deadline` and `maxSends`. |
 | `probes` | Present only with fallbacks: `every`, `ttl`, `dailyCapPerCandidate`, `exactOutsideCap`, and `manualOutsideCap`. The cap does not include exact/manual calls. No probe runs during setup. |
 | `next` | `doctor`, `startForeground`, and `startBackground` argv arrays, including the executable and exact config path. Execute as argument arrays, never concatenate into a shell command. These are suggestions, not actions performed by init. |
 | `limitations` | Human-readable scope and review reminders; do not parse these strings to make decisions. |

@@ -88,6 +88,18 @@ To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `k
 
 Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
 
+## Total send allowance
+
+On `main` (after v0.1.2), set `loop.limits.max_sends: 20` or use `init --max-sends 20` to allow at most 20 automatic send attempts while accounting is enabled for that state directory. Zero or omission disables accounting; there is no default cap. Setup previews the limit. `status` exposes `sendAllowance` with `max`, `used`, `remaining`, and `reached`; an unreadable ledger instead has `error` and omits unknown counts. These are local accounting facts, not proof of delivery or agent completion.
+
+Wakes, stall nudges, error re-prompts, handoffs and switch-backs share the allowance. Each attempt is reserved in private `sends.json` before calling the adapter. Failed, unsupported or uncertain sends consume an attempt; a process exit after reservation can consume one without delivery. Multiple fallback attempts in one tick each count. Probes, activation, manual commands and prompts sent outside keepgoing are not sends under this limit. It is not a token, monetary or agent-turn budget, and it does not stop work already running or queued.
+
+The next ordinary tick after exhaustion persists/reports an awaiting-user hold before automatic provider queries, probes, yield or fingerprints. Exhaustion during failed recovery prevents further sends and holds in that tick. Stop and existing holds take precedence. Child polling does not query providers or consume notices when exhausted or accounting is unavailable. Dry runs reserve nothing and persist no hold. Repeated checks retain the hold without repeating its report.
+
+Restart, progress, turn completion, target changes, ownership takeover and resume do not reset the count. To continue, increase the total cap under the task's authorization and explicitly `resume`; changing configuration alone retains the hold. Disabling the cap permits uncounted sends after resume but preserves the previous count, which applies again if re-enabled. The allowance starts at zero when first enabled in an existing state directory; earlier activity cannot be reconstructed. A fresh state directory has a fresh allowance. Never delete or roll back the ledger to recover from exhaustion. There is no reset command in this version.
+
+Malformed, unreadable or unwritable accounting fails closed with a diagnostic error; no unverified allowance is assumed. Repair runtime access or restore the last trustworthy ledger before continuing. The tick lock serializes reservations, and synced temporary-file replacement preserves them across process restarts independently of `state.json`. This does not guarantee survival of power loss, storage corruption, manual deletion/rollback, external writers ignoring the lock, or an older binary that does not implement this limit. Verification uses offline CLI, decision and supervisor fixtures, including simulated exit before recording a check; no live provider was used. No-progress limits remain planned.
+
 ## Loop deadline
 
 Set `loop.limits.deadline` to a timestamp with a timezone, or pass `--deadline "2030-01-01T18:00:00Z"` to `init`. There is no default deadline. Setup previews it in text and JSON; `status` exposes `deadline` and `deadlineReached`. These status fields describe the configured cutoff and host-clock comparison, not proof that a supervisor has run or that an agent stopped. Status itself changes no controls.

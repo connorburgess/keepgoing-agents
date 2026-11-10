@@ -29,7 +29,7 @@ internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports
 internal/control            control.json: holds, persistent BB ownership, serialized updates
-internal/state              state.json, runs.jsonl, and the progress fingerprint
+internal/state              state.json, sends.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
 internal/daemoninfo         private loopback diagnostics for a running daemon
@@ -43,7 +43,7 @@ internal/ciwait             wait for CI on an exact commit
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
 3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
 4. If disabled, paused, completed, or awaiting a person, record and stop here.
-5. If the configured absolute deadline is reached at tick start, persist/report an awaiting-user hold before provider work. Existing controls and stop win; in-flight checks and running turns are not cancelled. Otherwise, if a yield command reports other work, record and exit 75.
+5. If the configured absolute deadline is reached at tick start, persist/report an awaiting-user hold before provider work. Existing controls and stop win; in-flight checks and running turns are not cancelled. Then check the configured send allowance before provider work; exhaustion holds, unavailable accounting fails closed. Otherwise, if a yield command reports other work, record and exit 75.
 6. Observe the active target through its adapter. If it cannot be observed, record and take no action. Verified pending child input is decided and escalated here, before probes or fingerprinting; it persists an awaiting-user hold and reports child IDs without touching the parent.
 7. Inside the time window, run any scheduled probes that are due, within the daily cap. The active target and candidates in its quota group are skipped, so probes never spend the pool the loop is using.
 8. Evaluate redundancy among eligible fallbacks. Eligible means enabled, not the active target, and not in the active target's quota group. Report a change into or out of the degraded state.
@@ -66,6 +66,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | File | Owner | Purpose |
 | --- | --- | --- |
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership |
+| `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, last check decision/outcome and build label |
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
