@@ -22,6 +22,12 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 - **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
 - **Includes two helpers.** `ci-wait` waits for every workflow on an exact commit and follows a replacement run after a cancellation. `net-retry` reruns a command only while the network is down.
 
+## Looping and setup
+
+keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
+
+Setup currently uses configuration files. Guided task setup, explicit task completion, diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Today, use `await-user`, pause, stop, or disable to hold a loop when its work is finished; there is no dedicated completion state yet. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
+
 ## Install
 
 With Homebrew on macOS or Linux:
