@@ -36,6 +36,7 @@ Usage:
 Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
   start                    Validate, enable, and run (--foreground or --background)
+  service install|remove|status  Manage a macOS user LaunchAgent
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
@@ -91,6 +92,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "service":
+		return serviceCommand(e, rest, localServiceHost())
+	case "__service-daemon":
+		return serviceDaemon(e, rest)
 	case "start":
 		return startCommand(e, rest, nil)
 	case "__start-background":

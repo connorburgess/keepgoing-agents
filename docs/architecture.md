@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, tick, daemon, status, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -31,7 +31,7 @@ internal/report             signed webhook reports
 internal/control            control.json: holds, persistent BB ownership, serialized updates
 internal/state              state.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
-internal/lock               named advisory locks for ticks and the daemon
+internal/lock               named advisory locks for ticks, daemon, controls, and services
 internal/daemoninfo         private loopback diagnostics for a running daemon
 internal/netretry           retry only while the network is down
 internal/ciwait             wait for CI on an exact commit
@@ -61,7 +61,7 @@ An adapter implements `Name`, `Observe`, `Send`, and `Stop`. It may implement `W
 
 ## State directory
 
-Everything the tool writes lives in `state_dir`, outside any repository:
+Runtime records live in `state_dir`, outside any repository. Managed LaunchAgent definitions additionally live in the user’s `~/Library/LaunchAgents` directory:
 
 | File | Owner | Purpose |
 | --- | --- | --- |
@@ -71,7 +71,8 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
-| `tick.lock`, `daemon.lock`, `control.lock` | the tool | advisory locks, released by the OS on exit |
+| `service-launchd.json` | service commands | private launchd plan/recovery record; no task text or credentials |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit |
 | `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |
 
 ## Ownership and control writes
@@ -87,3 +88,11 @@ A daemon binds to the current owner ID and generation (including no owner). It c
 The command layer implements `start`: hold the daemon lock, acquire the tick lock, validate local setup and ownership, open diagnostics, then claim/enable under the control lock without clearing holds. It releases the tick lock and enters the same daemon loop as `daemon`, retaining the daemon lock and owner generation for its lifetime. A competing start cannot enable or change an existing daemon's controls.
 
 Background start re-executes the binary with an absolute configuration path, a detached process session/group, and a one-shot stdout pipe. The child acknowledges only after setup succeeds; the parent bounds startup time and checks the returned PID against its own child. Raw daemon output is discarded after acknowledgement; structured tick history remains in the runtime directory. No shell, provider process, or BB thread is created by validation. The daemon's subsequent ticks use the existing adapters normally. This starts a supervisor process, not a service or an external schedule.
+
+## Managed LaunchAgents
+
+The command layer owns service installation and removal; the decision engine and adapters remain unchanged. A deterministic label binds a LaunchAgent to the canonical state directory. The generated private plist invokes a service entrypoint that checks the configured state directory against that binding before starting the ordinary daemon. A private JSON record retains the exact definition inputs for recovery and comparison, even when the config becomes unreadable. Only PATH is captured from the installer environment; BB caller identity is explicitly cleared for the scheduler.
+
+`service.lock` serializes install/remove. Install also acquires the daemon and tick locks for owner checks and preparation, then releases them before bootstrap so the launched daemon can acquire its locks. Controls and ownership are never rewritten by service management. A concurrent manual start can win the daemon lock after release; registration alone does not imply this service owns a healthy daemon.
+
+Removal verifies the recorded definition, disables the exact service target, boots it out, verifies absence and daemon-lock availability, and then removes its files. Unknown manager results and changed definitions retain recovery files and return failure. Numeric launchctl status is consumed; raw output, environment values, and prose are never parsed. Filesystem and scheduler changes are not one atomic transaction: partial installation/removal is explicit and recoverable. This guard coordinates cooperative local callers; it is not authentication against someone who can edit private files.

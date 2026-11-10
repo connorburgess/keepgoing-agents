@@ -11,6 +11,8 @@ The end-to-end tests in `cmd/keepgoing` drive the real CLI against fake `bb`, `c
 
 Guided-setup tests use temporary Git repositories and fake CLI discovery. They cover wizard/flag equivalence, private disabled output, task-file handling, ordered account routing, operating limits, cancellation, existing-file preservation, and checkout/symlink rejection. They make no model calls and do not establish live account or IDE compatibility.
 
+LaunchAgent tests use an injected fake launchctl and temporary private directories. They cover install/status/remove, unchanged holds and ownership, conflicting installers, duplicate refusal, failed bootstrap, interrupted removal, unknown registration, modified/symlinked files, checkout rejection, config-independent recovery, XML escaping, and state-directory binding. macOS also validates the generated plist with `/usr/bin/plutil -lint`. A read-only macOS 26.4 check confirmed exit 113 for a fictional missing service and exit 0 for its accessible GUI domain. These checks do not install a real service or establish login/logout/reboot behavior; live lifecycle and soak checks remain outstanding.
+
 ## On a machine or VM without Go
 
 Build a bundle on a machine that has Go, copy it over, and run it there:
