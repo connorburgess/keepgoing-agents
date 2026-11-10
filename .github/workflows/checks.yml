@@ -50,7 +50,7 @@ jobs:
       - run: npx tsc --noEmit
 
   windows-acl:
-    name: Windows ACL diagnostics
+    name: Windows access diagnostics
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -61,7 +61,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./cmd/keepgoing
-      - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL)' -count=1
+      - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
 
   go:
     name: Build and test
