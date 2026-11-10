@@ -154,7 +154,7 @@ Use the delivery gates and provider-specific plan in [integrations.md](integrati
 
 ### 7. Release and recovery verification
 
-- [ ] Investigate the intermittent race-suite timeout in `TestChildInputTakesPrecedenceOverEarlyCompletionWake` under local build load. Isolated reruns have passed; establish a reliable timing fixture without weakening pending-input precedence or bounded notification polling.
+- [x] Investigate the intermittent race-suite timeout in `TestChildInputTakesPrecedenceOverEarlyCompletionWake`: its precedence assertion depended on a real subprocess inspection chain fitting inside a 500 ms poll budget. Test precedence directly through the supervisor with a normal test deadline, retaining separate command-level timer/deadline checks. A deterministic cancellation-after-consumption fixture verifies no replay or mutation and ordinary-tick escalation. Production timeouts, pending-input precedence, and notification semantics are unchanged; verification uses offline fixtures.
 - [ ] Publish the accumulated changes since v0.1.1 as a focused maintenance release, with matching Homebrew updates and accurate versioned documentation. This can ship before the new usability features.
 - [ ] Run real two-turn/resume tests for Claude Code and Codex, and handoff/switch-back across separately authenticated accounts in scratch projects.
 - [ ] Exercise network loss/recovery, provider failure, supervisor restart, pending human input, task completion, and stop/pause during recovery. Record exact supported behavior and unresolved limitations.
