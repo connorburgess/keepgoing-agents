@@ -3,6 +3,7 @@ package state
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,9 +42,12 @@ func Fingerprint(repositories []string) (string, error) {
 					continue
 				}
 				info, err := os.Stat(filepath.Join(tree, name))
-				if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
 					fmt.Fprintf(h, "%s:missing\x00", name)
 					continue
+				}
+				if err != nil {
+					return "", fmt.Errorf("tracked file metadata unavailable: %w", err)
 				}
 				fmt.Fprintf(h, "%s:%d:%d\x00", name, info.Size(), info.ModTime().UnixNano())
 			}

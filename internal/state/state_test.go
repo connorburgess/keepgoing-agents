@@ -77,4 +77,17 @@ func TestFingerprintTracksOnlyMetadata(t *testing.T) {
 	if fp4 != fp3 {
 		t.Error("untracked files must not affect the fingerprint")
 	}
+	// An unreadable metadata target is unknown, not evidence of deletion.
+	// A symlink cycle exercises this deterministically without permission/root assumptions.
+	if runtime.GOOS != "windows" {
+		if err := os.Remove(filepath.Join(repo, "a.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("a.txt", filepath.Join(repo, "a.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Fingerprint([]string{repo}); err == nil {
+			t.Fatal("unavailable metadata accepted as progress")
+		}
+	}
 }
