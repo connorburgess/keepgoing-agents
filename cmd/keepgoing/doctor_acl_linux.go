@@ -28,7 +28,7 @@ func linuxACLMetadata(path string, directory bool, size func(string, string) (in
 			return aclPresent
 		}
 	}
-	a := aclMetadata{Supported: true, Access: query("system.posix_acl_access")}
+	a := aclMetadata{Supported: true, Format: aclLinuxPOSIX, Access: query("system.posix_acl_access")}
 	if directory {
 		a.Default = query("system.posix_acl_default")
 	}
