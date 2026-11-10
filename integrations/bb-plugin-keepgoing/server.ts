@@ -4,9 +4,11 @@
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { hostContract, recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { createSetupController } from "./setup-controller.ts";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
-const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), model: z.string().optional() });
+const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
 const statusSchema = z.object({
   loop: z.string(),
   target: z.string(),
@@ -29,6 +31,7 @@ const statusSchema = z.object({
 const loopSchema = z.object({
   loop: z.string(),
   configPath: z.string(),
+  managedId: z.string().optional(),
   controlState: z.string(),
   note: z.string().nullable(),
   target: z.string(),
@@ -44,12 +47,13 @@ export type LoopView = z.infer<typeof loopSchema>;
 const actionSchema = z.enum(["pause", "resume", "stop"]);
 
 export const rpcContract = defineRpcContract({
+  setup: { input: setupInput, output: setupResult },
   forThread: {
     input: z.object({ threadId: z.string().min(1).max(200) }),
     output: z.object({ loops: z.array(loopSchema), errors: z.array(z.string()) }),
   },
   control: {
-    input: z.object({ configPath: z.string().min(1).max(1000), action: actionSchema }),
+    input: z.object({ configPath: z.string().min(1).max(1000), action: actionSchema, managedId: z.string().optional() }),
     output: z.object({ ok: z.boolean(), message: z.string() }),
   },
 });
@@ -89,6 +93,21 @@ export default async function plugin(bb: BbPluginApi) {
       .map((line) => line.trim())
       .filter((line) => line !== "" && !line.startsWith("#"));
     return { bin: keepgoingPath.trim() || "keepgoing", paths };
+  };
+
+  const host = bb.hosts.experimental_client({ contract: hostContract });
+  const records = async () => z.array(recordSchema).max(32).parse(await bb.storage.kv.get("setups.v1") ?? []);
+  const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop") =>
+    host.call("command", { bin, record, operation }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
+  const resolveTarget = async (threadId: string) => {
+    const signal = AbortSignal.timeout(10_000);
+    const t = await bb.sdk.threads.get({ threadId, signal });
+    if (t.id !== threadId || t.archivedAt !== null || t.deletedAt !== null || !t.environmentId) throw new Error("Target unavailable");
+    const e = await bb.sdk.environments.get({ environmentId: t.environmentId, signal });
+    if (e.id !== t.environmentId || e.projectId !== t.projectId || e.status !== "ready" || e.lifecycle.phase !== "active" || e.hostLifecycle !== "active" || !e.isGitRepo || !e.path) throw new Error("Environment unavailable");
+    const h = await bb.sdk.hosts.get({ hostId: e.hostId, signal });
+    if (h.id !== e.hostId || h.status !== "connected" || h.lifecycle.phase !== "active") throw new Error("Host unavailable");
+    return targetSchema.parse({ threadId, environmentId: e.id, projectId: t.projectId, hostId: e.hostId, project: e.path, provider: t.providerId });
   };
 
   const status = async (bin: string, configPath: string) => {
@@ -135,13 +154,37 @@ export default async function plugin(bb: BbPluginApi) {
         errors.push(error instanceof Error ? error.message : String(error));
       }
     }
+    for (const record of await records()) {
+      if (threadId !== null && record.threadId !== threadId) continue;
+      try {
+        const result = await hostCommand(bin, record, "status");
+        if (result.code !== 0) throw new Error("status failed");
+        loops.push({ ...view(statusSchema.parse(result.data), record.configPath, threadId), managedId: record.id });
+      } catch { errors.push(`${record.loop}: host status unavailable`); }
+    }
     return { loops, errors };
   };
 
   // Control only loops listed in settings: the path comes from the browser,
   // so it must never choose an arbitrary config file.
-  const control = async (configPath: string, action: z.infer<typeof actionSchema>) => {
+  const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string) => {
     const { bin, paths } = await configured();
+    if (managedId) {
+      const record = (await records()).find(r => r.id === managedId && r.configPath === configPath);
+      if (!record) return { ok: false, message: "That setup is not registered with this plugin." };
+      try {
+        if (action === "resume") {
+          const current = await resolveTarget(record.threadId);
+          const { id, configPath: ignored, loop, ...saved } = record;
+          const status = await hostCommand(bin, record, "status");
+          const parsed = statusSchema.safeParse(status.data);
+          if (JSON.stringify(current) !== JSON.stringify(saved) || status.code !== 0 || !parsed.success || parsed.data.target !== "primary" || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
+        }
+        const result = await hostCommand(bin, record, action);
+        bb.realtime.publish(CHANGED, { at: Date.now() });
+        return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `keepgoing ${action} failed; inspect host status` };
+      } catch { return { ok: false, message: "Host control unavailable or target changed. No transfer was performed." }; }
+    }
     if (!paths.includes(configPath)) return { ok: false, message: "That loop is not in the plugin's configured list." };
     const result = await run(bin, [action, "-c", configPath]);
     bb.realtime.publish(CHANGED, { at: Date.now() });
@@ -150,9 +193,24 @@ export default async function plugin(bb: BbPluginApi) {
       : { ok: false, message: `keepgoing ${action} exited ${result.code}` };
   };
 
+  const setup = createSetupController({
+    target: resolveTarget,
+    binary: async () => (await configured()).bin,
+    records,
+    save: async value => { await bb.storage.kv.set("setups.v1", value); },
+    guard: async threadId => {
+      const result = await allLoops(threadId);
+      if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
+    },
+    init: (bin, target, name, task, dryRun) => host.call("init", { bin, target, name, task, dryRun }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    command: hostCommand,
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
+  bb.onDispose(() => setup.dispose());
   bb.rpc.register(rpcContract, {
+    setup: input => setup.call(input),
     forThread: ({ threadId }) => allLoops(threadId),
-    control: ({ configPath, action }) => control(configPath, action),
+    control: ({ configPath, action, managedId }) => control(configPath, action, managedId),
   });
 
   bb.cli.register({
@@ -174,9 +232,11 @@ export default async function plugin(bb: BbPluginApi) {
       const parsed = actionSchema.safeParse(command);
       if (!parsed.success || !name || rest.length > 0) return { exitCode: 2, stderr: "Usage: bb keepgoing status | pause <loop> | resume <loop> | stop <loop>" };
       const { loops } = await allLoops(null);
-      const loop = loops.find((l) => l.loop === name);
+      const matches = loops.filter((l) => l.loop === name);
+      if (matches.length > 1) return { exitCode: 1, stderr: "That loop name is ambiguous across hosts/configs; use the thread's controls or the CLI on its host." };
+      const loop = matches[0];
       if (!loop) return { exitCode: 1, stderr: `No configured loop named ${name}` };
-      const result = await control(loop.configPath, parsed.data);
+      const result = await control(loop.configPath, parsed.data, loop.managedId);
       return { exitCode: result.ok ? 0 : 1, stdout: `${result.message}\n` };
     },
   });

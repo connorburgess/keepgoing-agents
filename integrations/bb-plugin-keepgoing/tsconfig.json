@@ -13,10 +13,11 @@
       "node"
     ],
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
   },
   "include": [
-    "server.ts",
-    "app.tsx"
+    "*.ts",
+    "*.tsx"
   ]
 }
