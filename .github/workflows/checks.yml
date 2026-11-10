@@ -63,8 +63,8 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./cmd/keepgoing
       - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
-      - name: Verify send allowance persistence and replacement on Windows
-        run: go test -v ./internal/state -run '^TestSendLedger' -count=1
+      - name: Verify allowance persistence and replacement on Windows
+        run: go test -v ./internal/state -run '^Test(SendLedger|ProgressLedger)' -count=1
       - name: Verify detached background startup with a local process fixture
         run: go test -v ./cmd/keepgoing -run '^TestStartBackgroundProcess$' -count=1
 

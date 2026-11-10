@@ -21,6 +21,7 @@ import (
 )
 
 type initOptions struct {
+	noProgressTimeout                              time.Duration
 	maxSends                                       int64
 	name, project, directory, task, taskFile       string
 	deadline                                       string
@@ -50,6 +51,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.directory, "directory", "", "new private setup directory outside any checkout")
 	fs.StringVar(&o.task, "task", "", "task text (use --task-file to keep it out of shell history)")
 	fs.StringVar(&o.taskFile, "task-file", "", "read a task file; - reads up to 1 MiB from stdin with --non-interactive")
+	fs.DurationVar(&o.noProgressTimeout, "no-progress-timeout", 0, "hold after this time without verified Git changes; zero disables")
 	fs.Int64Var(&o.maxSends, "max-sends", 0, "total automatic send attempts while this limit is enabled; zero disables")
 	fs.StringVar(&o.deadline, "deadline", "", "RFC3339 cutoff for future supervision; does not cancel running turns")
 	fs.StringVar(&o.agent, "agent", "", "bb, claude, or codex; detects installed CLIs")
@@ -123,6 +125,9 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
 	printInitAccount(e.stdout, cfg.Loop.Agent)
 	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
+	if o.noProgressTimeout > 0 {
+		fmt.Fprintf(e.stdout, "No-progress timeout: %s without verified Git changes (includes downtime; resume does not reset)\n", o.noProgressTimeout)
+	}
 	if o.maxSends > 0 {
 		fmt.Fprintf(e.stdout, "Send limit: %d total attempts (failed attempts count; resume does not reset)\n", o.maxSends)
 	}
@@ -419,8 +424,8 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	loop := map[string]any{"name": o.name, "state_dir": filepath.Join(o.directory, "state"), "adapter": primary.Adapter, "provider": primary.Provider, "group": primary.Group, "prompt_file": "prompt.md",
 		"progress": config.Progress{Repositories: []string{o.project}, StallAfter: config.Duration{Duration: o.stall}, MinWakeInterval: config.Duration{Duration: o.wake}, MaxNudges: o.nudges},
 		"errors":   map[string]any{"max_reprompts": o.reprompts, "backoff": o.backoff.String(), "failover_on": []string{}}, "daemon": config.Daemon{Interval: config.Duration{Duration: o.interval}}}
-	if o.deadline != "" || o.maxSends != 0 {
-		loop["limits"] = config.Limits{Deadline: o.deadline, MaxSends: o.maxSends}
+	if o.deadline != "" || o.maxSends != 0 || o.noProgressTimeout != 0 {
+		loop["limits"] = config.Limits{Deadline: o.deadline, MaxSends: o.maxSends, NoProgressTimeout: config.Duration{Duration: o.noProgressTimeout}}
 	}
 	switch {
 	case primary.BB != nil:

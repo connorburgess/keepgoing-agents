@@ -79,15 +79,16 @@ type initFallbackRef struct {
 	Target initTarget `json:"target"`
 }
 type initLimits struct {
-	MaxSends     int64    `json:"maxSends,omitempty"`
-	WakeEvery    string   `json:"wakeEvery"`
-	StallAfter   string   `json:"stallAfter"`
-	Interval     string   `json:"interval"`
-	Backoff      string   `json:"backoff"`
-	MaxNudges    int      `json:"maxNudges"`
-	MaxReprompts int      `json:"maxReprompts"`
-	FailoverOn   []string `json:"failoverOn"`
-	Deadline     string   `json:"deadline,omitempty"`
+	NoProgressTimeout string   `json:"noProgressTimeout,omitempty"`
+	MaxSends          int64    `json:"maxSends,omitempty"`
+	WakeEvery         string   `json:"wakeEvery"`
+	StallAfter        string   `json:"stallAfter"`
+	Interval          string   `json:"interval"`
+	Backoff           string   `json:"backoff"`
+	MaxNudges         int      `json:"maxNudges"`
+	MaxReprompts      int      `json:"maxReprompts"`
+	FailoverOn        []string `json:"failoverOn"`
+	Deadline          string   `json:"deadline,omitempty"`
 }
 type initProbePolicy struct {
 	Every                string `json:"every"`
@@ -129,6 +130,9 @@ func printInitJSON(e env, o initOptions, cfg *config.Config) int {
 			"Existing provider permissions are inherited; setup does not change models or logins on BB threads.",
 			"Review the task, target, and configuration before explicitly starting supervision. Other timers are not detected or changed.",
 		},
+	}
+	if o.noProgressTimeout != 0 {
+		r.Limits.NoProgressTimeout = o.noProgressTimeout.String()
 	}
 	if o.dryRun {
 		r.Outcome = "preview"

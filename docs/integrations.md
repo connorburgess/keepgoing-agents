@@ -26,7 +26,9 @@ A macOS Apple silicon native-binary smoke check also passed against an unpacked 
 
 ## Diagnostics
 
-Optional total send allowances (`max_sends`) are implemented on `main`, after v0.1.2. **Fakes** verify all send paths, failed/uncertain delivery, multiple recovery attempts per tick, pre-delivery reservation, simulated process exit, restart/resume, dry runs, control precedence and unavailable accounting. No live provider was used. No-progress limits and live BB pilot gates remain outstanding. See [send allowance behavior](operations.md#total-send-allowance).
+Optional `no_progress_timeout` is implemented on `main`, after v0.1.2. **Fakes** cover repeated turns, recovery/handoffs, restart with missing diagnostic history, unknown evidence, clock rollback, dry runs, polling, hold/report precedence and resume. CLI fixtures use a temporary Git repository and fake providers to verify setup, historical status, expiry and explicit duration increase/resume. No live model or service was exercised. This bounds time without observable Git changes, not useful work or spend. See [no-progress timeout](operations.md#no-progress-timeout).
+
+Optional total send allowances (`max_sends`) are implemented on `main`, after v0.1.2. **Fakes** verify all send paths, failed/uncertain delivery, multiple recovery attempts per tick, pre-delivery reservation, simulated process exit, restart/resume, dry runs, control precedence and unavailable accounting. No live provider was used. Live BB pilot gates remain outstanding. See [send allowance behavior](operations.md#total-send-allowance).
 
 Optional absolute loop deadlines are implemented on `main`, after v0.1.2. **Fakes** verify setup preview/create, status, exact cutoff/offset comparisons, automatic-provider suppression, stop/control precedence, persisted holds, repeated checks, clock rollback, dry runs and explicit resume/config changes. A cutoff does not cancel a running turn or complete the broader work-budget/pilot-readiness gates. No live provider or installed-service deadline was exercised. See [deadline behavior](operations.md#loop-deadline).
 
