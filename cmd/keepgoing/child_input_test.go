@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 )
 
 func TestEndToEndChildInputHoldsAndReportsWithoutParentMutation(t *testing.T) {
@@ -71,12 +74,23 @@ func TestChildInputTakesPrecedenceOverEarlyCompletionWake(t *testing.T) {
 	write(t, filepath.Join(f.bbDir, "thr_child.interactions"), `[{"threadId":"thr_child","status":"pending"}]`, 0600)
 	write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"seq":1,"type":"client/turn/requested","data":{"initiator":"system","systemMessageKind":"child-completed","systemMessageSubject":{"kind":"thread","threadId":"thr_child","outcomes":[{"threadId":"thr_child","status":"completed"}]}}}]`, 0600)
 	cfg := loadFixture(t, f.cfg)
-	// Leave room for the real fake-CLI subprocesses under race-test load.
-	cfg.Loop.Daemon.ControlPoll.Duration = 500 * time.Millisecond
+	// Test precedence through the real fake-CLI adapter without requiring its
+	// subprocess chain to fit within a production control-poll budget. Command
+	// tests separately cover timer advancement and bounded/cancelled polling.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if !waitForNext(ctx, cfg, controlSignature(cfg.Loop.StateDir), nil) {
-		t.Fatal("completion did not advance escalation check")
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	early := supervise.PollWake(ctx, cfg, nil)
+	l.Release()
+	if !early {
+		t.Fatal("completion did not request an escalation check")
+	}
+	if f.read("thr_primary.told") != "" || f.read("thr_child.told") != "" || f.hooks.types() != "" {
+		t.Fatal("notification poll performed an action before the tick")
 	}
 	if r := f.tick(); r["action"] != "await_user" {
 		t.Fatalf("%v", r)

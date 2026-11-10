@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -113,5 +114,55 @@ func TestPollWakeUsesCurrentTargetAndHandlesFailures(t *testing.T) {
 				t.Fatal("removed target queried")
 			}
 		})
+	}
+}
+
+// Consume exactly one notification, then cancel inside observation. This models
+// a control-poll budget expiring after the cursor was committed without relying
+// on machine speed, sleeps, or subprocess scheduling.
+type interruptedWakeAdapter struct {
+	fakeAdapter
+	cancel       context.CancelFunc
+	pending      bool
+	observations int
+}
+
+func (a *interruptedWakeAdapter) PollWake(context.Context) bool {
+	pending := a.pending
+	a.pending = false
+	return pending
+}
+
+func (a *interruptedWakeAdapter) Observe(context.Context) (decide.Observation, error) {
+	a.observations++
+	a.cancel()
+	return a.obs, nil
+}
+
+func TestPollWakeCancellationAfterConsumptionDefersToOrdinaryTick(t *testing.T) {
+	w := newWorld(t, true, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &interruptedWakeAdapter{fakeAdapter: fakeAdapter{obs: decide.Observation{State: decide.Idle, AwaitingChildren: []string{"thr_child"}}}, cancel: cancel, pending: true}
+	makeAdapter := func(config.Agent, string, string) (adapter.Adapter, error) { return a, nil }
+	if PollWake(ctx, w.cfg, makeAdapter) || ctx.Err() == nil || a.observations != 1 || a.pending {
+		t.Fatal("interrupted poll must consume the notice without authorizing an early check")
+	}
+	if PollWake(context.Background(), w.cfg, makeAdapter) || a.observations != 1 {
+		t.Fatal("consumed notification replayed")
+	}
+	ctl, err := control.Load(w.dir)
+	if err != nil || !ctl.Enabled || ctl.AwaitingUser || len(a.sent) != 0 || a.stopped != 0 || a.activated != 0 {
+		t.Fatal("interrupted poll changed controls or provider")
+	}
+	// The ordinary tick still observes pending child input and persists its hold.
+	w.adapters[state.Primary] = &a.fakeAdapter
+	result, err := Tick(context.Background(), w.cfg, w.opts(time.Now()))
+	if err != nil || result.Action != "await_user" {
+		t.Fatalf("ordinary tick lost escalation: %+v", result)
+	}
+	ctl, err = control.Load(w.dir)
+	if err != nil || !ctl.AwaitingUser || len(a.sent) != 0 || a.stopped != 0 || a.activated != 0 || len(w.probes) != 0 {
+		t.Fatal("ordinary tick did not hold without sending or probing")
 	}
 }
