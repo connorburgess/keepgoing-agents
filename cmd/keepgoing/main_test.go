@@ -30,6 +30,7 @@ d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
 case "$1 $2" in
 "thread show") if [ -f "$d/$t.show" ]; then cat "$d/$t.show"; else echo '{"thread":{"status":"idle"}}'; fi ;;
+"thread list") t="$4"; if [ -f "$d/$t.children" ]; then cat "$d/$t.children"; else echo '[]'; fi ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
@@ -518,5 +519,24 @@ func TestDaemonNoticesCompletionAndKeepsItAfterRestart(t *testing.T) {
 		} else if f.read("calls") != "" {
 			t.Fatalf("restarted completed loop called provider: %s", f.read("calls"))
 		}
+	}
+}
+
+func TestEndToEndChildWorkBlocksParentUntilFinished(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	write(t, filepath.Join(f.bbDir, "thr_primary.children"), `[{"id":"thr_child","visibility":"hidden"}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"active"}}`, 0o600)
+	for i := 0; i < 6; i++ {
+		if v := f.tick(); v["action"] != "none" || v["reason"] != "child work running" || f.read("thr_primary.told") != "" {
+			t.Fatalf("parent disturbed: %v", v)
+		}
+	}
+	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"idle"}}`, 0o600)
+	if v := f.tick(); v["action"] != "wake" || f.read("thr_primary.told") == "" {
+		t.Fatalf("parent not woken after child finished: %v", v)
+	}
+	if f.read("thr_child.told") != "" || strings.Contains(f.read("calls"), "thread stop thr_child") || strings.Contains(f.read("calls"), "thread update thr_child") {
+		t.Fatal("child was managed")
 	}
 }

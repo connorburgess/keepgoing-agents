@@ -33,6 +33,8 @@ func newFakeWithInteractions(show, log, interactions string, fail bool) (*Adapte
 	a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
 		calls = append(calls, call{stdin, args})
 		switch args[1] {
+		case "list":
+			return []byte(`[]`), nil
 		case "show":
 			if fail {
 				return []byte(show), errors.New("exit 1")

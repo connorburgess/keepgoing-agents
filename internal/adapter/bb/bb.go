@@ -92,6 +92,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	if obs.Gone {
 		return obs, nil
 	}
+	obs.ActiveChildren, obs.ChildrenUnverified = a.childWork(ctx)
 	sig := a.signals(ctx)
 	// A pending permission prompt, question, or form means the thread is
 	// waiting on a person, whatever its status says.

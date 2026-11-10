@@ -47,6 +47,11 @@ type Observation struct {
 	// AwaitingInput means the session is blocked on a person: a pending
 	// permission prompt, question, or form, reported by the provider.
 	AwaitingInput bool
+	// ActiveChildren is verified direct child work. ChildrenUnverified means
+	// discovery could not establish the complete picture. Neither permits a
+	// parent prompt or target move; control holds and stop retain precedence.
+	ActiveChildren     int
+	ChildrenUnverified bool
 }
 
 // Control is the operator's gate.
@@ -149,6 +154,12 @@ func Decide(in Input) Decision {
 	}
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
+	}
+	if o.ActiveChildren > 0 {
+		return none("child work running")
+	}
+	if o.ChildrenUnverified {
+		return none("child status unverified")
 	}
 	if !in.InWindow {
 		return none("outside window")
