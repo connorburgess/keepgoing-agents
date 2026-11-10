@@ -17,8 +17,8 @@ const (
 	accessSearch uint32 = 1
 )
 
-// doctorStateAccess asks the OS about permissions without opening files for
-// writing, creating a directory, acquiring locks, or altering control holds.
+// doctorStateAccess asks the OS about permissions without writing data,
+// creating a directory, acquiring locks, or altering control holds.
 // Atomic records need directory access; only append/lock files need direct
 // file access. An access check is not a guarantee that a later write succeeds.
 func doctorStateAccess(r *doctorReport, dir string, check func(string, uint32) error) {
@@ -93,7 +93,7 @@ func doctorAccessResult(r *doctorReport, id string, err error, success string) {
 	case err == nil:
 		r.add(id, "ok", success, "Permission checks cannot guarantee future writes, available space, atomic replacement, or lock acquisition; a scheduler may use a different identity.")
 	case errors.Is(err, errAccessUnavailable):
-		r.add(id, "unavailable", "Read-only OS access checks are supported only for ordinary matching real/effective non-root identities on macOS and Linux.", "Run doctor as the same ordinary user as the supervisor. Windows effective write access and privileged-identity checks are not implemented; DACL metadata is inspected separately.")
+		r.add(id, "unavailable", "OS access checks are unavailable for this platform or caller identity.", "Run doctor in the supervisor's execution context. Unix checks require matching real/effective non-root identities; Windows directory checks exclude impersonation and enabled backup/restore privileges. ACL privacy is inspected separately.")
 	case errors.Is(err, os.ErrPermission), errors.Is(err, syscall.EROFS), errors.Is(err, syscall.ENOTDIR):
 		r.add(id, "error", "The OS denied required runtime path access, or the path is read-only or has a non-directory ancestor.", "Review runtime path permissions and mount settings for the supervisor's user. Doctor never changes them.")
 	default:
