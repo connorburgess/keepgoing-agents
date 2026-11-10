@@ -85,7 +85,7 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 		t.Fatal(err)
 	}
 	manager := &fakeLaunchd{}
-	host := serviceHost{"darwin", filepath.Join(f.dir, "fictional-home"), filepath.Join(f.dir, "bin", "keepgoing"), "/usr/bin:/bin", 501, manager.run}
+	host := serviceHost{platform: "darwin", home: filepath.Join(f.dir, "fictional-home"), executable: filepath.Join(f.dir, "bin", "keepgoing"), searchPath: "/usr/bin:/bin", uid: 501, run: manager.run}
 	write(t, host.executable, "#!/bin/sh\nexit 0\n", 0o700)
 	return &serviceFixture{f, cfg, host, manager}
 }

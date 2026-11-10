@@ -1,6 +1,39 @@
 # Managed user services
 
-`keepgoing service install|status|remove` manages one macOS GUI LaunchAgent per canonical loop state directory. This is implemented on `main`, after v0.1.1. Linux systemd management and Windows scheduling are not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available.
+`keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available.
+
+## Linux systemd user services
+
+Use a stable installed binary and private configuration outside the checkout. End any existing daemon and explicitly remove any external timer for the loop before switching scheduling methods. These commands do not discover or change BB automations, cron jobs, or other units:
+
+```sh
+keepgoing service install -c /private/example-loop/keepgoing.yaml --dry-run
+keepgoing service install -c /private/example-loop/keepgoing.yaml
+keepgoing service status -c /private/example-loop/keepgoing.yaml --json
+keepgoing service remove -c /private/example-loop/keepgoing.yaml
+```
+
+Installation requires Linux, `/usr/bin/systemctl`, and an already accessible user manager. systemd does not accept quote or backslash characters in the executable path; install the binary at a stable path without those characters. Argument paths are escaped separately. It writes a mode-0600 unit under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`) and a private `service-systemd.json` recovery record in the loop state directory. XDG_CONFIG_HOME must be absolute, and status/removal must use the same home/config directory as installation. Destinations inside Git checkouts, existing records, and unrecorded/changed unit files are refused. Preview runs only local setup checks and makes no manager calls or writes.
+
+After local validation, install reloads the user manager, checks the exact unit identity and fragment path, enables it for `default.target`, and starts it. A competing daemon or conflicting BB owner prevents installation. **Installation never enables or resumes the loop itself:** all control flags, notes, ownership, and targets stay unchanged. An enabled loop can perform its normal work as soon as the daemon starts. Validation runs no provider, login, or probe commands.
+
+The generated unit invokes the state-directory-bound keepgoing entrypoint without a shell. It quotes argument values, escapes percent specifiers, and disables dollar expansion in ExecStart. It captures PATH and clears BB_THREAD_ID, but does not copy other shell values into files. The user manager can supply its own inherited environment; this is not an isolated credential environment. Explicit account settings still belong in the existing agent/probe configuration. See systemd's [command-line rules](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Command%20Lines) and [execution environment](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment=).
+
+The unit uses `Type=exec`, `Restart=on-failure`, and a 30-second restart delay. Raw daemon stdout/stderr goes to the null device; structured loop history remains available through status and doctor. User-manager lifetime depends on host login policy and existing lingering settings. keepgoing does not enable lingering, create a login session, install a system service, or promise work during logout, sleep, or host shutdown. A hold keeps the daemon alive while suppressing work; no missed ticks are queued for replay.
+
+Status consumes only the bounded machine-readable properties of [`systemctl --user show`](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#show%20%5BPATTERN%E2%80%A6%7CJOB%E2%80%A6%5D). Reports distinguish loaded/absent/unknown registration, active state, and enablement. The exact ID, expected fragment path, empty drop-ins, and recognized property values must match. Aliased, masked, overridden, foreign, malformed, inaccessible, or unfamiliar units return unknown/failure without exposing raw manager output. Each manager command has a ten-second deadline and output bound. A separate daemon challenge verifies loop responsiveness, not that this unit owns that responder. Manager registration alone does not establish provider access or daemon health.
+
+Removal disables and stops the exact recorded unit, verifies inactive/disabled state and the loop's free daemon lock, deletes the matching unit file, reloads the manager, and verifies absence before deleting the recovery record. Modified or symlinked files and surviving enable links are refused. The record remains after a failed final reload, so removal can be retried even when the unit file is already gone. Unknown results never count as absence. A concurrent manual daemon is not killed; end it explicitly if its lock prevents cleanup. External edits are not serialized by keepgoing's service lock.
+
+The unit deliberately uses [`KillMode=process`](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html#KillMode=): removing the supervisor must not implicitly kill detached agent turns. systemd generally discourages this mode because descendants can remain after the service stops; those turns remain the agent adapter's responsibility. Use `keepgoing stop` and verify its result first if the agent should stop too. Survival across logout or user-manager shutdown is not guaranteed.
+
+An interrupted install/removal returns failure and retains its private record for inspection/retry. For a missing or damaged config, use `service status --state-dir /private/example-loop/state` or `service remove --state-dir /private/example-loop/state`. Restore the original XDG_CONFIG_HOME if it changed. Missing/corrupt recovery records, foreign definitions, and drop-ins require manual inspection; keepgoing does not guess which service to stop.
+
+Offline fixtures cover manager failures, recovery, identity checks, control preservation, and quoting; Linux tests validate the generated unit with systemd-analyze without starting it. **No live systemd user service has been installed or removed for this implementation.** Login/logout/reboot, manager environment, detached-turn survival, and prolonged service operation remain unverified.
+
+## macOS LaunchAgents
+
+The following sections describe the macOS backend.
 
 ## Install and inspect
 

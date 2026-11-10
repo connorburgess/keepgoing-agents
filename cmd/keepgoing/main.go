@@ -36,7 +36,7 @@ Usage:
 Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
   start                    Validate, enable, and run (--foreground or --background)
-  service install|remove|status  Manage a macOS user LaunchAgent
+  service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file

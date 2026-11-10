@@ -61,7 +61,7 @@ An adapter implements `Name`, `Observe`, `Send`, and `Stop`. It may implement `W
 
 ## State directory
 
-Runtime records live in `state_dir`, outside any repository. Managed LaunchAgent definitions additionally live in the user’s `~/Library/LaunchAgents` directory:
+Runtime records live in `state_dir`, outside any repository. Managed service definitions additionally live in `~/Library/LaunchAgents` on macOS or `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`) on Linux:
 
 | File | Owner | Purpose |
 | --- | --- | --- |
@@ -71,7 +71,7 @@ Runtime records live in `state_dir`, outside any repository. Managed LaunchAgent
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
-| `service-launchd.json` | service commands | private launchd plan/recovery record; no task text or credentials |
+| `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
 | `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit |
 | `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |
 
@@ -96,3 +96,11 @@ The command layer owns service installation and removal; the decision engine and
 `service.lock` serializes install/remove. Install also acquires the daemon and tick locks for owner checks and preparation, then releases them before bootstrap so the launched daemon can acquire its locks. Controls and ownership are never rewritten by service management. A concurrent manual start can win the daemon lock after release; registration alone does not imply this service owns a healthy daemon.
 
 Removal verifies the recorded definition, disables the exact service target, boots it out, verifies absence and daemon-lock availability, and then removes its files. Unknown manager results and changed definitions retain recovery files and return failure. Numeric launchctl status is consumed; raw output, environment values, and prose are never parsed. Filesystem and scheduler changes are not one atomic transaction: partial installation/removal is explicit and recoverable. This guard coordinates cooperative local callers; it is not authentication against someone who can edit private files.
+
+## Managed systemd user units
+
+Linux uses the same service command, locks, private plan format, state-bound daemon entrypoint, and control preservation. Unit generation uses systemd argument quoting, escapes percent specifiers, disables ExecStart environment expansion, and handles WorkingDirectory as a raw path. Only PATH is captured; BB_THREAD_ID is cleared. A user manager may supply other inherited environment values.
+
+The backend consumes bounded `systemctl --user show` properties for the exact unit ID, loaded fragment path, empty drop-ins, load/active states, and enablement. Unknown, masked, aliased, overridden, or foreign units cannot be managed. Install writes its record/unit, reloads the manager, checks identity before enable/start, and verifies active/enabled state. Removal disables/stops, checks the daemon lock, deletes the exact definition, reloads, verifies absence, and only then removes the record. Missing definitions remain recoverable after an interrupted final reload. Command failures retain recovery metadata. External manual changes are not serialized by service.lock; these are cooperative local guards.
+
+The unit uses KillMode=process to keep service removal from killing detached agent turns. It does not guarantee survival across user-manager shutdown. It never enables login lingering, changes another timer, or creates a login session.
