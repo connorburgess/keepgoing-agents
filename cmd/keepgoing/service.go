@@ -175,6 +175,10 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 			}
 		} else {
 			r.Registration = serviceRegistration(e.ctx, h, p)
+			if exists && r.Registration == "loaded" {
+				r.Binding = &serviceBinding{State: "unavailable", Message: "macOS service-to-daemon identity is not supported. Registration and a responding loop daemon do not establish that the LaunchAgent owns that process."}
+				r.Execution = &serviceExecution{State: "unavailable", Message: "macOS service startup and exit details are not supported. launchctl diagnostic text is not a stable API and is not parsed."}
+			}
 		}
 		queryDaemon := func() daemonStatus { return inspectDaemon(e.ctx, dir, version, false) }
 		var d daemonStatus

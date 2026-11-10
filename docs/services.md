@@ -13,7 +13,7 @@
 | `warning` | At least one observation needs attention; inspect all findings for details. |
 | `unavailable` | No warning was established, but some assessment data could not be verified. |
 
-Findings distinguish missing recovery files/registration, unknown manager responses, failed/inactive/transitioning or disabled systemd units, and an unverified loop daemon. A responding daemon does not cancel a missing-registration or unit-failure warning: it may have been started manually. macOS disabled overrides and detailed launch failures remain unavailable.
+Findings distinguish missing recovery files/registration, unknown manager responses, failed/inactive/transitioning or disabled systemd units, and an unverified loop daemon. A responding daemon does not cancel a missing-registration or unit-failure warning: it may have been started manually. macOS disabled overrides and detailed launch failures remain unavailable. Recorded, loaded macOS services now explicitly report the unsupported identity and execution checks described below.
 
 For a responding loop daemon, findings also flag a different/unknown build label, dry-run mode, and a waiting-phase normal check more than one minute overdue. The overdue comparison uses the daemon's own observation and next-check timestamps, with a fixed one-minute grace. It does not time out an in-progress check or declare the process stalled. Sleep, scheduling delays, and clock changes can explain an overdue timestamp. Historical heartbeat freshness remains separate in `status` and `doctor`, using their `--stale-after` setting.
 
@@ -22,6 +22,14 @@ Daemon build-label comparison concerns the responding loop daemon and the invoki
 The assessment uses structured manager and daemon observations without writes, provider probes, restarts, or control changes. Recorded, loaded Linux units receive one additional bounded execution-details query. Recorded services also receive the read-only executable-file inspection below. Recorded, loaded Linux services additionally check process/invocation identity around the daemon challenge as described below. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
 
 Pure table tests and fake-manager/local-diagnostic fixtures cover combined failures, grace boundaries, redaction, human/JSON output, and unchanged controls/provider-call counts. These tests do not establish live service startup, logout/reboot, or soak behavior.
+
+## macOS diagnostic gaps
+
+For a recorded, loaded LaunchAgent, status explicitly emits `binding.state: unavailable` and `execution.state: unavailable`. The execution object contains no invented result, exit code, or signal. Health includes `service_binding_unavailable` and `launchd_result_unavailable`; otherwise clear observations produce `health.status: unavailable`, while any warning still takes precedence. These capability declarations require no additional manager command. Absent or unknown registration keeps its existing findings instead of attaching execution/binding assessments.
+
+A responsive loop daemon may have been launched manually. Registration, matching executable files, and a matching daemon build label cannot prove that the LaunchAgent owns that responder. Restarting, upgrading a daemon's identity metadata, or clearing a hold does not resolve this unsupported macOS check. Inspect the exact LaunchAgent manually when diagnosing a failure; keepgoing does not turn diagnostic prose into a decision.
+
+The [macOS API investigation](macos-diagnostics.md) records why launchctl text and legacy job dictionaries are unsuitable for reliable automatic classification, and separates launch approval from process identity and exit history. The explicit unavailable reports are implemented and covered by fake-manager/local-responder fixtures. Startup/exit inspection, service-to-daemon binding, approval inspection, and live service recovery are not implemented or verified by this change.
 
 ## Systemd execution details
 

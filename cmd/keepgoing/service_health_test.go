@@ -21,7 +21,12 @@ func TestServiceHealthAssessments(t *testing.T) {
 		codes  []string
 	}{
 		{"observations clear", func(r *serviceReport) {}, "ok", nil},
-		{"launchd limited observations", func(r *serviceReport) { r.Backend = "launchd"; r.ActiveState = ""; r.UnitFileState = "" }, "ok", nil},
+		{"launchd unsupported observations", func(r *serviceReport) {
+			r.Backend = "launchd"
+			r.ActiveState, r.UnitFileState = "", ""
+			r.Binding = &serviceBinding{State: "unavailable", Message: "Unsupported macOS service binding."}
+			r.Execution = &serviceExecution{State: "unavailable"}
+		}, "unavailable", []string{"service_binding_unavailable", "launchd_result_unavailable"}},
 		{"not installed", func(r *serviceReport) {
 			r.Recorded = false
 			r.DefinitionPresent = false
