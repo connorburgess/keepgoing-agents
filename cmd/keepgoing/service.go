@@ -32,6 +32,7 @@ type serviceReport struct {
 	ActiveState       string            `json:"activeState,omitempty"`
 	UnitFileState     string            `json:"unitFileState,omitempty"`
 	Execution         *serviceExecution `json:"execution,omitempty"`
+	Executable        *serviceBinary    `json:"executable,omitempty"`
 	Health            *serviceHealth    `json:"health,omitempty"`
 	Daemon            *daemonStatus     `json:"daemon,omitempty"`
 }
@@ -160,6 +161,10 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		return exitFailed
 	}
 	if op == "status" {
+		if exists {
+			b := inspectServiceBinary(e.ctx, p.Executable, h.executable)
+			r.Executable = &b
+		}
 		if p.Backend == "systemd" {
 			ss := inspectSystemd(e.ctx, h, p)
 			r.Registration, r.ActiveState, r.UnitFileState = ss.registration, ss.active, ss.unitFile
@@ -340,6 +345,9 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 			for _, f := range r.Health.Findings {
 				fmt.Fprintf(e.stdout, "%s [%s]: %s\n  Next: %s\n", f.Status, f.Code, f.Message, f.Fix)
 			}
+		}
+		if r.Executable != nil {
+			fmt.Fprintf(e.stdout, "service executable: %s; on-disk CLI comparison: %s\n%s\n", r.Executable.State, r.Executable.Comparison, r.Executable.Message)
 		}
 		if r.Execution != nil {
 			x := r.Execution
