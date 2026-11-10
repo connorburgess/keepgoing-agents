@@ -28,7 +28,7 @@ keepgoing already runs the loop: it sends the configured task prompt when the ag
 
 `keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it.
 
-`keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status and saved resume IDs, private-file access, and recent tick history without model calls. It also checks runtime write/search permissions on macOS/Linux without writing files; Windows ACL inspection remains unavailable. [Its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
+`keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status and saved resume IDs, private-file access, and recent tick history without model calls. It also checks runtime write/search permissions on macOS/Linux without writing files and flags Linux POSIX ACL metadata for review. Full ACL evaluation and macOS/Windows ACL inspection remain unavailable. [Its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
 
 Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallbacks.md#preview-manual-probes). It shows the selected models, timeouts, and scheduled cap without executing probes or changing state. Dollar cost is unknown, and manual probes are outside the scheduled cap; remove `--dry-run` only when you intend to run them.
 

@@ -12,7 +12,7 @@ The ordinary command resolves configured executable paths and runs supported age
 
 ## What it checks
 
-- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS and Linux, as described below. Doctor does not print task text or control notes or change permissions. ACL privacy audits and Windows ACL checks are unavailable.
+- Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS and Linux, and report Linux POSIX ACL metadata presence as described below. Doctor does not print task text or control notes or change permissions. Full ACL permission evaluation and macOS/Windows ACL inspection are unavailable.
 - Executable availability and recognized version output for the primary and enabled fallback agents. It displays only a narrowly recognized numeric version, never arbitrary stdout or stderr. A recognized version does not establish compatibility with every required provider feature.
 - BB thread identity from structured JSON, including explicit not-found, archived, and deleted results. A missing ID, mismatched ID, malformed JSON, or failed query is unverified. The configured primary differing from the caller's `BB_THREAD_ID` produces a warning; doctor never transfers the loop.
 - Explicit headless account-directory overrides for existence and absolute paths. Account directory values and all other environment values are withheld. Directory existence does not verify credentials, subscription identity, or independent quota. Inherited account selection is reported as unverified.
@@ -42,6 +42,18 @@ These checks run offline too and never open files for writing, take a lock, chan
 An `ok` result means the OS allowed the requested access at check time. It does not guarantee a future write, sufficient disk space, lock acquisition, file replacement, or access to every nested target directory. ACLs may affect the OS decision, but this is **not an ACL privacy audit**: owner-only mode bits alone do not prove that nobody else has access. No ACL entries or account identifiers are printed. Permission denials are errors; unclassified filesystem failures remain unavailable.
 
 Offline fixtures cover denied/read-only/unknown results, missing ancestors, dangling links, append/lock selection, unchanged held state, and redaction. Native macOS/Linux tests exercise read-only directory and lock permissions under an ordinary user. Windows is cross-compiled; native Windows ACL inspection remains planned.
+
+## Linux ACL metadata
+
+Each successfully opened file or directory checked by doctor also gets a `<check-id>.acl` entry, such as `config.permissions.acl`, `task.acl`, or `state.directory.acl`. On Linux, doctor queries only the sizes of `system.posix_acl_access` and, for directories, `system.posix_acl_default`. It never loads ACL values or principal identifiers, executes an ACL command, or changes filesystem metadata. These checks work offline and preserve control holds.
+
+Present metadata produces a warning to review ACL rules alongside mode bits. A directory's default ACL governs inheritance for new objects and can exist while that directory still has owner-only mode bits; see [Linux ACL semantics](https://man7.org/linux/man-pages/man5/acl.5.html). Presence alone does not establish that another user can access private data: doctor does not evaluate ACL entries or effective permissions for other users.
+
+`ENODATA` is reported as **not reported (absent or hidden)**, because [the Linux API documents both possibilities](https://man7.org/linux/man-pages/man2/getxattr.2.html). Unsupported filesystems, permission errors, unexpected results, and other platforms are unavailable. No detected metadata is never treated as a privacy all-clear. If either query detects metadata, the check warns even when the other query is unavailable, with both results shown.
+
+This inspects the configured path's target, following symlinks like the existing readability check. It does not inspect ancestor ACLs, missing paths, every nested runtime file, non-POSIX ACL formats, or macOS/Windows ACLs. Results are observations at query time, not a guarantee against subsequent filesystem changes. Mode-bit and runtime-access checks remain separate.
+
+Fixtures cover present/default/unknown/hidden metadata, error redaction, and offline held loops without provider calls. A native Linux fixture creates a default ACL in a temporary directory, verifies detection despite `0700` mode bits, and confirms the query leaves ACL bytes and files unchanged. The native fixture skips filesystems without POSIX ACL support; CI logs that case separately so its execution can be verified. macOS and Windows report this check as unavailable.
 
 ## Saved headless sessions
 

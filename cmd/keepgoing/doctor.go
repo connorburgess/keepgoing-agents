@@ -290,6 +290,7 @@ func doctorFile(r *doctorReport, id, path string, directory bool) {
 		return
 	}
 	_ = f.Close()
+	doctorACL(r, id+".acl", path, directory, doctorACLMetadata)
 	if runtime.GOOS == "windows" {
 		r.add(id, "unavailable", "Configured path is readable; Windows ACL privacy and write access were not checked.", "Review access permissions for private configuration and state.")
 	} else if info.Mode().Perm()&0o077 != 0 {
