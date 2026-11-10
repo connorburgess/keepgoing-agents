@@ -257,7 +257,7 @@ func TestSystemdMalformedProperties(t *testing.T) {
 		}
 	}
 	m.raw = nil
-	// Structured absence alone is sufficient only with a successful/not-found
+	// Structured absence alone is sufficient only with a successful
 	// exit; a failed bus connection or other nonzero code remains unknown.
 	for _, code := range []int{0, 4, 1, 5} {
 		f.host.query = func(ctx context.Context, args ...string) ([]byte, int, error) {
@@ -265,7 +265,7 @@ func TestSystemdMalformedProperties(t *testing.T) {
 			return b, code, nil
 		}
 		want := "unknown"
-		if code == 0 || code == 4 {
+		if code == 0 {
 			want = "absent"
 		}
 		if got := inspectSystemd(context.Background(), f.host, m.p).registration; got != want {
@@ -347,7 +347,7 @@ func TestSystemdGuardsAndChangedFiles(t *testing.T) {
 func TestSystemdDefinitionNativeValidation(t *testing.T) {
 	f, _ := newSystemdFixture(t)
 	f.host.configHome = filepath.Join(f.f.dir, "custom config")
-	f.host.executable = filepath.Join(f.f.dir, `keepgoing %h $HOME ${NAME} "quote" \ ' ü`)
+	f.host.executable = filepath.Join(f.f.dir, `keepgoing %h $HOME ${NAME} ü`)
 	write(t, f.host.executable, "#!/bin/sh\nexit 0\n", 0700)
 	p, err := newServicePlan(f.host, f.cfg.Loop.StateDir, filepath.Join(f.f.dir, `dir %h $HOME ${NAME} "quote" \ backslash ' ü`, `task %h $HOME ${NAME} "quote" \ backslash ' ü.yaml`))
 	if err != nil {
@@ -374,5 +374,16 @@ func TestSystemdDefinitionNativeValidation(t *testing.T) {
 	cmd := exec.Command(path, "verify", "--generators=no", file)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("native unit validation: %v %s", err, out)
+	}
+}
+
+func TestSystemdRejectsUnsupportedExecutablePaths(t *testing.T) {
+	for _, char := range []string{"\"", "'", "\\"} {
+		f, m := newSystemdFixture(t)
+		f.host.executable = filepath.Join(f.f.dir, "keepgoing"+char)
+		write(t, f.host.executable, "#!/bin/sh\nexit 0\n", 0700)
+		if c, _, e := f.call(t, "install"); c != 1 || !strings.Contains(e, "executable path") || len(m.calls) != 0 {
+			t.Fatalf("invalid executable: %d %s", c, e)
+		}
 	}
 }

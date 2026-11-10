@@ -82,7 +82,7 @@ type systemdState struct{ registration, active, unitFile string }
 func inspectSystemd(ctx context.Context, h serviceHost, p servicePlan) systemdState {
 	unknown := systemdState{registration: "unknown"}
 	out, code, err := h.query(ctx, "show", "--all", "--property=Id,LoadState,ActiveState,UnitFileState,FragmentPath,DropInPaths", p.Label)
-	if err != nil || (code != 0 && code != 4) || len(out) > 65536 {
+	if err != nil || code != 0 || len(out) > 65536 {
 		return unknown
 	}
 	props := map[string]string{}

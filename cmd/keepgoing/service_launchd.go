@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -98,6 +99,11 @@ func validateServicePlan(h serviceHost, dir string, p servicePlan) error {
 		if !utf8.ValidString(s) || containsServiceControl(s) {
 			return errors.New("service paths and PATH must not contain control characters")
 		}
+	}
+	// systemd rejects these characters in the executable itself even when the
+	// unit text quotes them correctly. They remain valid in argument values.
+	if p.Backend == "systemd" && strings.ContainsAny(p.Executable, "\"'\\") {
+		return errors.New("systemd executable path must not contain quotes or backslashes; install the binary at a stable path")
 	}
 	return nil
 }
