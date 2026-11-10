@@ -83,6 +83,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
 - [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
 - [docs/services.md](docs/services.md): macOS LaunchAgent and Linux systemd user-service install/status/remove, recovery, and verification limits.
+- [docs/windows-services.md](docs/windows-services.md): Task Scheduler investigation and delivery gates; Windows service management is not implemented.
 - [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
 - [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
 - [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.

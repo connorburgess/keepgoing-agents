@@ -5,6 +5,7 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 - **Live**: exercised against the real tool or service.
 - **Fakes**: covered by tests against a stand-in that follows the real tool's documented or observed output.
 - **Untested**: written but not run.
+- **Research only**: investigated and planned; no implementation or compatibility verification.
 
 ## Agent providers
 
@@ -38,6 +39,9 @@ Other coding agents can be supervised today through the process adapter, given a
 | launchd (`examples/schedulers/launchd.plist`) | **Untested** example | load it on a test account and confirm one tick every interval |
 | cron (`examples/schedulers/crontab.txt`) | **Untested** example | run it on a Linux VM |
 | systemd user unit (`examples/schedulers/keepgoing@.service`) | **Untested** example | enable it on the Ubuntu VM and confirm `systemctl stop` ends the daemon at once |
+| Managed macOS LaunchAgent (`service` commands) | **Fakes** for lifecycle/recovery; native plist validation and read-only missing-service query | live install/removal, login/reboot, and soak |
+| Managed Linux systemd user unit (`service` commands) | **Fakes** for lifecycle/recovery; native unit-file validation without registration | live user-manager install/removal, login/reboot, and soak |
+| Windows Task Scheduler | **Research only**: [current-user backend proposal and delivery gates](windows-services.md); no scheduler adapter or fixtures | supervisor-only shutdown/identity fixture, then scheduler implementation and native lifecycle verification |
 | BB automation (`examples/schedulers/bb-automation.sh`) | **Live**: a 10-minute BB script automation runs `keepgoing tick` for a real chat. It woke the chat when it went idle and stayed quiet while the chat was busy or awaiting its owner. | none |
 | GitHub Actions (`examples/schedulers/github-actions.yml`) | **Untested** example | run it in a scratch repository with fake candidates |
 | `keepgoing daemon` | **Live** against a scratch BB chat: it woke the idle chat every interval, held off while the loop was awaiting its owner, ran a pass as soon as the control file changed, and exited cleanly on SIGTERM. | a long-running soak on a VM |

@@ -1,6 +1,6 @@
 # Managed user services
 
-`keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available.
+`keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available. The [Windows investigation](windows-services.md) describes the proposed Task Scheduler backend and the gates that must pass before Windows service commands can ship.
 
 ## Linux systemd user services
 
