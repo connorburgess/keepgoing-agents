@@ -44,7 +44,23 @@ See [integrations.md](integrations.md) for what is verified live.
 
 keepgoing is the loop runner. A user supplies a task, chooses an agent, and starts the loop; a separate loop skill is not required. The current prompt and idle-wake mechanism already repeats work. This milestone makes task setup, completion, recovery, and operation one understandable experience. An optional agent skill may explain the CLI, but cannot be a prerequisite for ordinary use.
 
-Unchecked items below are planned, not shipped commands. Implement one focused PR at a time. Work in the order below, with provider discovery able to proceed independently of setup. A live check needing an account or host blocks only that check. Record evidence and limitations in [integrations.md](integrations.md).
+Unchecked items below are planned, not shipped commands. Implement one focused PR at a time. The sections group capabilities; the delivery priorities below supersede their numerical order. A live check needing an account, host, or explicit authorization blocks only that check. Move to independent authorized work, without creating accounts, changing logins, manufacturing quota limits, or replacing an existing timer. Record evidence and limitations in [integrations.md](integrations.md).
+
+### Delivery priorities after roadmap reassessment
+
+The project retains **Apache-2.0**. Optional paid products or support are business hypotheses, not prerequisites for the local supervisor or a license change.
+
+1. **Prove and package the core journey.** Reconcile release/Homebrew instructions and changelog with actual artifacts; prepare a reproducible install-to-completion walkthrough covering a BB target and a headless runner. Verify holds, restart/resume, ownership, and truthful completion. Perform live checks only within their authorized account/host/spend scope. Keep release preparation moving when a particular live check is blocked.
+2. **Bound repeated work.** Audit idle wakes and no-progress behavior across completed turns; implement explicit loop-wide limits and completion reporting with offline tables before claiming termination guarantees. Do not treat a nudge cap as a total-work budget.
+3. **Add minimal portable goal state.** Establish identity, a display title, revisions, evidence references and explicit state before a UI promises to display goals. Keep execution planning outside the supervisor.
+4. **Finish safe BB transfer.** Preserve holds and goal identity, fence stale owners, and reset thread-specific observations. The source-snapshot guard is a prerequisite, not completed transfer.
+5. **Add optional menu-bar visibility.** Start with local loops, goals and explicit freshness through a versioned read/control contract. Configured stages can be shown when supplied; a stage engine is not required for the initial client.
+6. **Pilot bounded independent review.** Use an external workflow with pinned inputs, preserved dissent, explicit incomplete results and budget limits. Evaluate value against a single-review baseline before adding more orchestration.
+7. **Expand integrations.** Capability discovery may proceed independently; defer broad adapter implementation and lower-priority diagnostic expansion until the core experience has evidence.
+
+These priorities are planning decisions, not new verification claims. Maintain separate evidence for **implemented**, **released**, **fixture-tested**, and **live-verified**; a checked implementation item does not certify the other three. External research that could not inspect the repository is architecture input, not a source-code audit. Verify suspected defects locally before treating them as findings.
+
+Existing user authorization and repository merge policy remain in effect. Review workflows may require stronger gates for explicitly designated sensitive work, but a model recommendation or a timeout never grants new authority. This reassessment does not add a blanket human-approval requirement to already authorized routine work.
 
 ### 1. Task lifecycle and guided setup
 
@@ -165,3 +181,33 @@ Use the delivery gates and provider-specific plan in [integrations.md](integrati
 - [ ] Release the usability milestone after its acceptance checks pass, with an install-to-completion walkthrough for each supported provider.
 
 Acceptance: a new installation can complete the documented walkthrough on supported platforms, and published claims distinguish live checks from fake-based tests. Never manufacture a real limit by deliberately exhausting an account; use controlled fixtures for rare failures and record naturally observed structured events when available.
+
+
+### 8. Bounded work and portable goals (planned)
+
+- [ ] Audit idle wake frequency and no-progress accounting across turns. Add explicit configured work/deadline/no-progress limits with durable counters and an understandable hold on exhaustion; cover restart, duplicate events, recovery and resume in table/fixture tests. Treat unavailable spend measurements as unknown rather than inventing monetary enforcement.
+- [ ] Add an explicit completion report event with deduplication and a clear distinction between a completion declaration and independently verified success.
+- [ ] Add a minimal private goal record: stable ID, human-readable title, revision, objective/acceptance references, scope/authorization references, state, owning loop, next-action metadata and evidence references. Do not expose private task text through ordinary status.
+- [ ] Bind completion/evidence and external stage results to the goal revision. Preserve agent-declared, verifier-observed and policy-required human acceptance separately. Human acceptance is required where the configured policy calls for it, not on every ordinary task.
+- [ ] Preserve goal identity through restart and authorized target changes. Changes to scope, acceptance or review policy invalidate stale approvals/results. Record revisions explicitly; do not infer progress or completion from transcript prose.
+
+The runner continues to own process/session mechanics. The supervisor stores explicit goal/control state and enforces structured bounds. An executor or external coordinator supplies next actions and review artifacts; keepgoing does not autonomously choose roadmap work or spawn reviewers. This is a proposed data/control extension, not a shipped goal command.
+
+### 9. Independent review and configured stages (planned)
+
+- [ ] Define a versioned external stage/result contract tied to goal revision, repository revision, policy version and evidence. Support user-selected stages rather than imposing one universal sequence.
+- [ ] Pilot two blind independent reviews of the same pinned inputs, followed by a synthesis of findings, disagreements and missing evidence. Resolve material disagreements with bounded tests or targeted review; preserve dissent and distinguish incomplete review from approval.
+- [ ] Define explicit event keys, stale-result rejection, ownership fencing, concurrency limits, retry/review budgets and crash recovery. A result may satisfy only a pre-authorized gate; it cannot widen scope, clear human holds, or authorize itself.
+- [ ] Compare single review, independent samples, independent review plus synthesis, and bounded debate at comparable cost. Measure evidence quality, missed defects, false acceptance, retained dissent, latency and human review time. Agreement alone is not correctness.
+
+Reviewer execution and interpretation belong in a BB workflow or other external coordinator. keepgoing never spawns/re-parents threads, interprets review prose, or treats arbitrary model-produced JSON as provider status. Explicit control commands need validated provenance/authorization and revision checks; a JSON shape alone is insufficient. No general planner, recursive review system or second scheduler is part of this plan.
+
+### 10. Optional macOS menu-bar companion (planned)
+
+- [ ] Define private local loop discovery/registration and a versioned status/control surface shared with clients. Keep the CLI usable without the GUI; avoid requiring a BB installation for headless loops.
+- [ ] Show what is being supervised: loop/goal title, current task metadata, configured stage when present, target/thread, hold state, last-confirmed timestamp and next known check. Distinguish enabled configuration, responsive supervisor, observed agent activity and historical evidence. Unknown remains visible; do not fabricate percentages or activity.
+- [ ] Build a minimal local menu-bar client under `integrations/macos/`, initially using native platform controls. Offer pause/resume/stop and open-thread where supported through existing authorized controls. No scheduling, provider calls, automatic hold clearing, or UI-owned goal state.
+- [ ] Offer the companion as an entirely optional setup choice. Installation and login startup are separate explicit choices; opening the UI never starts another supervisor and quitting it leaves supervision running.
+- [ ] Verify accessibility, private metadata handling, version mismatch, unreachable/stale status, restart, signing/notarization and distribution. Defer multi-host aggregation and rich dashboards.
+
+Keep the first client in this repository with an independent build/release path so macOS packaging does not gate core Go releases. Reconsider a separate repository if maintainers, release cadence or supported backends diverge. Goal-aware display depends on section 8; stage display consumes explicit optional metadata and does not imply section 9 is implemented.

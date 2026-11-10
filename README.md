@@ -106,4 +106,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Use fictional data everywhere.
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE). The project retains this license. The [roadmap delivery priorities](docs/roadmap.md#delivery-priorities-after-roadmap-reassessment) put core verification and release consistency ahead of planned goals, review workflows, and optional menu-bar visibility.
