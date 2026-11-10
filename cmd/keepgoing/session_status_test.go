@@ -19,7 +19,15 @@ const savedExampleID = "00000000-0000-4000-8000-000000000001"
 func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		for _, content := range []string{"missing", savedExampleID, doctorPrivate} {
-			t.Run(provider+"/"+content, func(t *testing.T) {
+			// TempDir includes the test name on some platforms. Keep the
+			// privacy marker out of paths that status intentionally displays.
+			name := "missing"
+			if content == savedExampleID {
+				name = "saved"
+			} else if content == doctorPrivate {
+				name = "unrecognized"
+			}
+			t.Run(provider+"/"+name, func(t *testing.T) {
 				f := newDoctorFixture(t)
 				delete(f.loop, "bb")
 				f.loop["adapter"] = provider
