@@ -31,6 +31,25 @@ Exit status is **1** if any check is `error`, **0** otherwise, and **2** for inv
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
 
+## BB automation diagnostics
+
+Select an existing script automation explicitly:
+
+```sh
+keepgoing doctor -c /private/example-loop/keepgoing.yaml \
+  --bb-automation auto_example --bb-project proj_example --json
+```
+
+The two selection flags are required together. `--bb-cli /path/to/bb` optionally selects the BB executable for this query, independently of the loop's provider CLI. The selection is used only for this diagnostic invocation and is not written into configuration. No automation is discovered by matching prompt or script text.
+
+Doctor calls only `bb automation show <id> --project <id> --json`, under the ordinary command timeout and output limit. It verifies both returned IDs, requires a script automation and an explicit enabled field, and parses timestamps as Unix milliseconds. `scheduler.bb` reports disabled automation, missing or overdue next-run metadata, and a reported failed last run as warnings. Missing CLIs, query errors, unexpected shapes or timestamps, and agent-mode automations remain unavailable. Unknown last-run outcomes are shown as `unknown`, never raw text.
+
+The optional `bbAutomation` JSON object contains `state` (`registered`, `unavailable`, or `offline`), the selected `id` and `projectId`, `enabled`, UTC `nextRunAt`/`lastRunAt` when present, a recognized `lastRunStatus`, `loopVerified: false`, and an explanatory message. No automation name, script, prompt, environment, script path, error text, or run output is displayed or used for a decision. `--offline` skips the query even if the selected CLI is missing.
+
+This is registration and historical run metadata, **not verified loop scheduling**. An enabled record does not prove that the scheduler process is alive, its binary is current, or its script invokes this loop. A skipped run may be a normal silent tick; a successful script does not establish task progress. The selected automation's next-run time stays separate from the report's `nextCheck`, which still requires a responding built-in daemon. Doctor never runs, pauses, resumes, edits, or creates an automation, and never changes loop control holds.
+
+Offline fixtures cover the read-only command and deadline, identity mismatches, unsupported modes, redaction, stale/disabled/failed metadata, invalid selection, and unchanged held state. A read-only macOS smoke check against an existing BB script automation verifies the live response shape; it does not run the script or verify its loop binding. launchd, systemd, cron, and Windows Task Scheduler inspection remain planned.
+
 ## Runtime path access
 
 `state.write_access` checks write and search permission on the runtime directory using the OS access API on macOS and Linux. If the directory does not exist, it checks the nearest existing ancestor and labels that result explicitly. It never creates directories or temporary files. An inaccessible path, read-only filesystem, non-directory ancestor, or dangling directory symlink is reported without exposing the path or raw filesystem error.
