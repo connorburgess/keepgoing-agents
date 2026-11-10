@@ -2,6 +2,27 @@
 
 `keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available. The [Windows investigation](windows-services.md) describes the proposed Task Scheduler backend and the gates that must pass before Windows service commands can ship.
 
+## Health findings in service status
+
+`service status` now adds a read-only assessment in both text and JSON. The JSON `health` object contains `status` and a `findings` array; each finding has a stable `code`, a `status` (`warning` or `unavailable`), a message, and a suggested next step. Install/remove previews do not claim a health assessment.
+
+| Health status | Meaning |
+| --- | --- |
+| `not_installed` | No recovery record or definition exists and the manager confirms absence. A manual daemon or external timer may still run. |
+| `ok` | No warnings in the available observations. This is not proof of service-to-daemon identity, provider health, or future execution. |
+| `warning` | At least one observation needs attention; inspect all findings for details. |
+| `unavailable` | No warning was established, but some assessment data could not be verified. |
+
+Findings distinguish missing recovery files/registration, unknown manager responses, failed/inactive/transitioning or disabled systemd units, and an unverified loop daemon. A responding daemon does not cancel a missing-registration or unit-failure warning: it may have been started manually. macOS disabled overrides and detailed launch failures remain unavailable.
+
+For a responding loop daemon, findings also flag a different/unknown build label, dry-run mode, and a waiting-phase normal check more than one minute overdue. The overdue comparison uses the daemon's own observation and next-check timestamps, with a fixed one-minute grace. It does not time out an in-progress check or declare the process stalled. Sleep, scheduling delays, and clock changes can explain an overdue timestamp. Historical heartbeat freshness remains separate in `status` and `doctor`, using their `--stale-after` setting.
+
+Build comparison concerns the responding loop daemon and the invoking CLI. It does not inspect the recorded service executable on disk, prove that the responder belongs to the service, or say which build is newer. Empty/development labels remain unavailable. A healthy agent cannot be inferred from these checks.
+
+The assessment uses the existing manager and daemon observations without extra queries, writes, probes, restarts, or control changes. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
+
+Pure table tests and fake-manager/local-diagnostic fixtures cover combined failures, grace boundaries, redaction, human/JSON output, and unchanged controls/provider-call counts. These tests do not establish live service startup, logout/reboot, or soak behavior.
+
 ## Linux systemd user services
 
 Use a stable installed binary and private configuration outside the checkout. End any existing daemon and explicitly remove any external timer for the loop before switching scheduling methods. These commands do not discover or change BB automations, cron jobs, or other units:

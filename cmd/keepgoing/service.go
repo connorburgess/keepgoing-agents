@@ -20,18 +20,19 @@ import (
 const serviceRecordName = "service-launchd.json"
 
 type serviceReport struct {
-	Backend           string        `json:"backend"`
-	Operation         string        `json:"operation"`
-	DryRun            bool          `json:"dryRun"`
-	Recorded          bool          `json:"recorded"`
-	DefinitionPresent bool          `json:"definitionPresent"`
-	Label             string        `json:"label"`
-	Definition        string        `json:"definition"`
-	Registration      string        `json:"registration"`
-	Message           string        `json:"message"`
-	ActiveState       string        `json:"activeState,omitempty"`
-	UnitFileState     string        `json:"unitFileState,omitempty"`
-	Daemon            *daemonStatus `json:"daemon,omitempty"`
+	Backend           string         `json:"backend"`
+	Operation         string         `json:"operation"`
+	DryRun            bool           `json:"dryRun"`
+	Recorded          bool           `json:"recorded"`
+	DefinitionPresent bool           `json:"definitionPresent"`
+	Label             string         `json:"label"`
+	Definition        string         `json:"definition"`
+	Registration      string         `json:"registration"`
+	Message           string         `json:"message"`
+	ActiveState       string         `json:"activeState,omitempty"`
+	UnitFileState     string         `json:"unitFileState,omitempty"`
+	Health            *serviceHealth `json:"health,omitempty"`
+	Daemon            *daemonStatus  `json:"daemon,omitempty"`
 }
 
 func serviceCommand(e env, args []string, h serviceHost) int {
@@ -170,6 +171,8 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		if p.Backend == "systemd" {
 			r.Message = "Unit properties are separate from loop daemon liveness; a responding daemon is not proven to belong to this service. Unknown identity, overrides, or manager responses require inspection. Other timers are not inspected."
 		}
+		health := assessServiceHealth(r)
+		r.Health = &health
 		code := exitOK
 		if r.Registration == "unknown" || (r.Registration == "loaded" && !exists) {
 			code = exitFailed
@@ -326,6 +329,12 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 		fmt.Fprintf(e.stdout, "service: %s; recorded %t; definition present %t; registration %s\n%s\n%s\n", r.Label, r.Recorded, r.DefinitionPresent, r.Registration, r.Definition, r.Message)
 		if r.ActiveState != "" {
 			fmt.Fprintf(e.stdout, "unit: active %s; enablement %s\n", r.ActiveState, r.UnitFileState)
+		}
+		if r.Health != nil {
+			fmt.Fprintf(e.stdout, "service health: %s\n", r.Health.Status)
+			for _, f := range r.Health.Findings {
+				fmt.Fprintf(e.stdout, "%s [%s]: %s\n  Next: %s\n", f.Status, f.Code, f.Message, f.Fix)
+			}
 		}
 		if r.Daemon != nil {
 			fmt.Fprintf(e.stdout, "loop daemon: %s; %s\n", r.Daemon.State, r.Daemon.NextCheck)
