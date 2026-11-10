@@ -153,7 +153,8 @@ func TestInitWizardAndFlagsProduceSameConfiguration(t *testing.T) {
 	}
 	got.Loop.StateDir = want.Loop.StateDir
 	got.Loop.PromptFile = want.Loop.PromptFile
-	if !reflect.DeepEqual(want, got) {
+	// Compare generated settings, not private source snapshots from different files.
+	if want.Version != got.Version || !reflect.DeepEqual(want.Loop, got.Loop) || want.FallbackSet != nil || got.FallbackSet != nil {
 		t.Fatalf("wizard and flags disagree:\n%+v\n%+v", want.Loop, got.Loop)
 	}
 }

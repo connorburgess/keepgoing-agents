@@ -76,6 +76,10 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
 	}
+	if err := cfg.CheckSources(); err != nil {
+		e.errf("%v; no probes performed; reload and retry", err)
+		return exitSkipped
+	}
 	reg, err := health.Load(cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("%v", err)
