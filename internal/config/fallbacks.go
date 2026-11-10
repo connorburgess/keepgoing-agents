@@ -18,6 +18,7 @@ type Fallbacks struct {
 	Redundancy Redundancy  `yaml:"redundancy"`
 	Probe      ProbePolicy `yaml:"probe"`
 	Candidates []Candidate `yaml:"candidates"`
+	source     sourceSnapshot
 }
 
 // Redundancy says how many confirmed fallbacks must exist before a handoff
@@ -77,6 +78,7 @@ func LoadFallbacks(path string) (*Fallbacks, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	fb.source = snapshot(path, raw)
 	base := filepath.Dir(path)
 	for i := range fb.Candidates {
 		c := &fb.Candidates[i]

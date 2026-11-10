@@ -18,7 +18,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 - **Supports multiple accounts in headless runners.** Set `claude.env` or `codex.env` per account, with separate quota groups. Turns, probes, and Codex limit checks use that account's environment. See the [three-subscription setup](docs/fallbacks.md#multiple-subscriptions).
 - **Waits out a limit that lifts soon.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off.
 - **Knows when a person is needed.** A pending permission prompt or question, or a loop marked with `keepgoing await-user`, means nothing is sent. The person gets an `await_user` report instead of the loop sitting idle. See [docs/agent-chats.md](docs/agent-chats.md).
-- **Honors stop and pause at once.** The daemon watches the control file and acts on a change within seconds.
+- **Honors stop and pause.** The daemon watches the control file and requests a check within seconds. Provider work, including stop execution, requires a [verified loaded configuration](docs/operations.md#loaded-configuration-checks); stale or unreadable sources withhold it until reload/repair.
 - **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
 - **Includes two helpers.** `ci-wait` waits for every workflow on an exact commit and follows a replacement run after a cancellation. `net-retry` reruns a command only while the network is down.
 
@@ -72,7 +72,7 @@ keepgoing stop                 # stop the running turn, then send nothing more
 keepgoing retarget primary     # move back from a fallback by hand
 ```
 
-Every completed `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it. A tick skipped because the lock was held, or stopped by a config error, prints only to stderr.
+Every completed `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it. A tick skipped because the lock was held or loaded config sources changed returns exit 75 and prints only to stderr. Other configuration errors also print only to stderr.
 
 ## Documentation
 

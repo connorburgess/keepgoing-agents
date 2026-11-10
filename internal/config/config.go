@@ -41,6 +41,7 @@ type Config struct {
 
 	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
 	FallbackSet *Fallbacks `yaml:"-"`
+	source      sourceSnapshot
 }
 
 // Loop describes one supervised agent loop.
@@ -173,6 +174,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	cfg.source = snapshot(path, raw)
 	base := filepath.Dir(path)
 	l := &cfg.Loop
 	l.StateDir = resolve(base, l.StateDir)

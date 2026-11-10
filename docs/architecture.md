@@ -8,7 +8,7 @@
 - **Structured signals only.** Session state and error class come from exit codes, JSON fields, HTTP status, or provider events. Transcript and message text is never read for a decision. Stderr from agent commands is never parsed.
 - **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
 - **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
-- **Stop and pause win.** A stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
+- **Stop and pause win.** Once the loaded configuration is verified, a stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
@@ -39,7 +39,7 @@ internal/ciwait             wait for CI on an exact commit
 
 ## A tick, end to end
 
-1. Take the tick lock. If another tick holds it, exit 75. The command layer verifies the calling BB owner or the running daemon's bound ownership generation before provider work.
+1. Take the tick lock. If another tick holds it, exit 75. The command layer verifies the calling BB owner or the running daemon's bound ownership generation, then compares the loaded config/fallback source bytes with their private in-memory SHA256 snapshots before provider work. A mismatch or unverifiable source skips the operation, including stop execution, without changing runtime records. Early polls, retargets, and manual probe execution share this guard. Reload and retry; see [loaded configuration checks](operations.md#loaded-configuration-checks). This serializes only with writers sharing the tick lock, not arbitrary external edits.
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
 3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
 4. If disabled, paused, completed, or awaiting a person, record and stop here.

@@ -56,6 +56,10 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
+	if err := cfg.CheckSources(); err != nil {
+		e.errf("%v; no tick performed; reload and retry", err)
+		return exitSkipped
+	}
 	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg)}
 	if fixedNow {
 		opts.Now = now
@@ -77,9 +81,10 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 }
 
 // daemon ticks on an interval. Between ticks it watches control.json, so a
-// stop or pause is acted on within one control_poll rather than waiting for
-// the next interval. SIGINT or SIGTERM ends the daemon at once; a tick in
-// flight is cancelled and its child commands are killed.
+// stop or pause requests a check within one control_poll rather than waiting
+// for the next interval. Provider work requires a verified config snapshot.
+// SIGINT or SIGTERM ends the daemon at once; a tick in flight is cancelled
+// and its child commands are killed.
 func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...bool) int {
 	l, err := lock.AcquireNamed(cfg.Loop.StateDir, lock.Daemon)
 	if errors.Is(err, lock.ErrHeld) {
@@ -110,11 +115,12 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
 	for {
 		// Reload so edits to keepgoing.yaml or fallbacks.yaml apply without
-		// a restart. A broken edit keeps the last good config.
+		// a restart. A broken edit retains the timing/diagnostic context,
+		// but the source guard suppresses provider work until it is repaired.
 		if fresh, err := config.Load(cfgPath); err != nil {
-			e.errf("config reload failed; keeping the previous config: %v", err)
+			e.errf("config reload failed; retaining timing and diagnostics, provider work requires verified sources: %v", err)
 		} else if fresh.Loop.StateDir != cfg.Loop.StateDir {
-			e.errf("config reload changes state_dir; restart the daemon to apply it, keeping the previous config")
+			e.errf("config reload changes state_dir; restart the daemon to apply it; retaining timing and diagnostics, skipping provider work")
 		} else {
 			cfg = fresh
 		}
@@ -174,6 +180,9 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return len(leases) > 0
 	} // Return to the daemon's exit check.
+	if cfg.CheckSources() != nil {
+		return false // Wait for the next ordinary reload; never poll the stale target.
+	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Loop.Daemon.ControlPoll.Duration)
 	defer cancel()
 	return supervise.PollWake(ctx, cfg, nil)
@@ -464,6 +473,10 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	defer l.Release()
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
+	}
+	if err := cfg.CheckSources(); err != nil {
+		e.errf("%v; no retarget performed; reload and retry", err)
+		return exitSkipped
 	}
 	st, err := state.Load(cfg.Loop.StateDir)
 	if err != nil {
