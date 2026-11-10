@@ -67,7 +67,38 @@ Acceptance: a fresh user configures one task without editing YAML or installing 
 
 Acceptance: users can distinguish an agent working, awaiting input, completed work, a paused loop, and a supervisor that is not running. A loop attached to an older conversation is visible as such.
 
-### 3. Start and run in the background
+### 3. BB child awareness and loop ownership
+
+These four additions are planned, not implemented or verified. Work them in the order below after diagnostics, with one focused PR per item and offline fixtures. They do not authorize additional live model spend. keepgoing remains a supervisor: it observes existing relationships and lifecycle signals, and must never spawn or re-parent threads. Only structured BB fields and events inform decisions; transcript text is never a signal. Stop, pause, completion, and awaiting-user holds retain precedence.
+
+#### 3.1. Child-aware idle and stall classification
+
+- [ ] Discover existing children from structured BB thread data (`bb thread show --json`): a child's `parentThreadId` matches the supervised thread and its status is `active`.
+- [ ] Treat a parent with any active child as busy, suppressing idle wakes, stall nudges, and error re-prompts while the child runs. Observe children without starting or managing their work.
+
+Acceptance: a fixture parent with one active child receives no prompt across `max_nudges` intervals and does not exhaust its nudge budget. Once that child finishes, the idle parent is re-prompted on the next check, subject to control holds and pending interactions.
+
+#### 3.2. Wake on child completion
+
+- [ ] Treat a child's structured completed, failed, or interrupted lifecycle notification as a wake signal for an idle parent, checked ahead of the normal polling/wake interval. Do not infer completion from message text.
+- [ ] Consume each notification once so repeated checks or restarts do not send duplicate prompts. Other active children and pending interactions still prevent a wake.
+
+Acceptance: with an idle parent, a child completion causes the next parent prompt within one check cycle instead of waiting for the ordinary interval. Fixture checks also cover failed/interrupted notifications, repeated events, and held loops. This does not promise delivery while the host or supervisor is unavailable.
+
+#### 3.3. Escalate child permission prompts and questions
+
+- [ ] A child waiting on a structured permission prompt or question puts the loop into `await_user`, with a report identifying the child. Send nothing to the parent and do not answer the child's interaction.
+
+Acceptance: a fixture child with a pending interaction produces an `await_user` report naming that child, while the parent remains untouched. Pending interactions take precedence over child-completion wake signals.
+
+#### 3.4. Single owner per loop
+
+- [ ] Record the owning BB thread ID in the control file on enable. `validate`, `enable`, and `daemon` refuse a conflicting owner when another active BB thread already targets the same configuration or control file, with an actionable message unless `--take-over` is explicit.
+- [ ] Serialize ownership checks and takeover against competing writers, including different config paths sharing one control file. An explicit takeover records the previous owner as handed off in loop ownership metadata; it does not spawn, re-parent, or alter BB thread relationships. Preserve existing control holds.
+
+Acceptance: enabling from a second fictional thread ID fails without changing ownership; `--take-over` succeeds and records the previous owner as handed off. Offline fixtures also cover conflicting `validate`/`daemon` calls and shared control-file paths. Define scheduler calls without a BB identity and stale ownership explicitly; an unavailable owner-status check must not silently authorize a takeover.
+
+### 4. Start and run in the background
 
 - [ ] Add a single start operation that validates setup, enables the loop, and starts supervision with a clear foreground/background choice. Detect an existing supervisor instead of starting a duplicate.
 - [ ] Add user-service installation, removal, and status for launchd and systemd first; investigate Windows Task Scheduler or a user-service equivalent with the same controls. Preserve the daemon and external-scheduler options.
@@ -75,7 +106,7 @@ Acceptance: users can distinguish an agent working, awaiting input, completed wo
 
 Acceptance: a user starts a configured loop with one command, closes the terminal in background mode, and can still inspect, pause, and stop it. Service removal leaves no scheduled wakes.
 
-### 4. BB conversation setup and transfer
+### 5. BB conversation setup and transfer
 
 - [ ] Add "Supervise this thread" using the shared setup and diagnostics flow, including task entry and the target identity.
 - [ ] Add "Move supervision here" for an existing loop. Show the old and new targets, preserve paused/stopped/awaiting-user intent, and serialize the move against ticks so the old target receives no further wakes after transfer.
@@ -84,7 +115,7 @@ Acceptance: a user starts a configured loop with one command, closes the termina
 
 Acceptance: transfer a loop between fictional scratch threads while its scheduler runs, verify only the new target can receive subsequent wakes, and verify all control holds remain honored.
 
-### 5. Cursor and Antigravity integrations
+### 6. Cursor and Antigravity integrations
 
 - [ ] Complete capability discovery for both CLIs, including structured lifecycle/error events, stable session identity, resume, permission waits, cancellation, account selection, and supported versions/platforms.
 - [ ] Implement and verify a Cursor CLI adapter, then expose it in guided setup.
@@ -93,7 +124,7 @@ Acceptance: transfer a loop between fictional scratch threads while its schedule
 
 Use the delivery gates and provider-specific plan in [integrations.md](integrations.md#planned-integrations). Thin IDE controls can call the same CLI once a supported session-control interface is established.
 
-### 6. Release and recovery verification
+### 7. Release and recovery verification
 
 - [ ] Publish the accumulated changes since v0.1.1 as a focused maintenance release, with matching Homebrew updates and accurate versioned documentation. This can ship before the new usability features.
 - [ ] Run real two-turn/resume tests for Claude Code and Codex, and handoff/switch-back across separately authenticated accounts in scratch projects.
