@@ -28,7 +28,7 @@ The generated prompt tells the agent to honor newer user instructions, finish an
 
 ## Scripted setup
 
-Every wizard choice has a flag. `--non-interactive` never reads input; it requires a name, agent, and task or task file. Project defaults to the current directory. Prefer `--task-file` to avoid putting private task text in shell history or process arguments.
+Every wizard choice has a flag. `--non-interactive` never asks questions; it requires a name, agent, and task or task file. It reads stdin only when `--task-file -` is explicit. Project defaults to the current directory. Prefer `--task-file` to avoid putting private task text in shell history or process arguments.
 
 ```sh
 keepgoing init --non-interactive \
@@ -52,6 +52,42 @@ keepgoing init --non-interactive \
 ```
 
 This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Target diagnostics and BB transfer are separate roadmap work.
+
+## Structured setup for integrations
+
+`init --non-interactive --json` prints one versioned JSON result on success. Add `--dry-run` for a preview; omit it to create the private setup. Both use the same validation and configuration generation as the wizard. The ordinary text output remains the default. JSON requires noninteractive mode so wizard questions cannot corrupt stdout.
+
+For task entry from an integration, pass `--task-file -`, write UTF-8 task text to the child's stdin, and close the pipe. This keeps task text out of command arguments and avoids a temporary task file. Input is limited to 1 MiB before whitespace trimming; empty, oversized, invalid UTF-8, and failed reads are rejected before any setup files are written. Signal cancellation interrupts a blocked stdin read. `--task-file -` also works with ordinary text output, but always requires `--non-interactive`. Use `./-` to read a file literally named `-`.
+
+For example, in a POSIX shell:
+
+```sh
+keepgoing init --non-interactive --json --dry-run \
+  --name example-chat --agent bb \
+  --thread thr_example --provider codex \
+  --project /projects/example-app --task-file - < /private/example-task.md
+```
+
+Schema version 1 has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
+| `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
+| `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
+| `taskSource` | `inline`, `file`, or `stdin`; never the task text or source filename. |
+| `primary` | An `agent` reference (adapter, provider, group, and applicable thread/workdir/model fields) and `account` selection (`inherited` or `explicit_directory`). BB inherits the existing thread's login/model. |
+| `fallbacks` | Ordered array of `{id, target}`, each target with the same shape as `primary`; empty array for a single agent. |
+| `limits` | `wakeEvery`, `stallAfter`, `interval`, `backoff` as Go duration strings; `maxNudges`, `maxReprompts`, and `failoverOn` (empty or rate-limit-only). |
+| `probes` | Present only with fallbacks: `every`, `ttl`, `dailyCapPerCandidate`, `exactOutsideCap`, and `manualOutsideCap`. The cap does not include exact/manual calls. No probe runs during setup. |
+| `next` | `doctor`, `startForeground`, and `startBackground` argv arrays, including the executable and exact config path. Execute as argument arrays, never concatenate into a shell command. These are suggestions, not actions performed by init. |
+| `limitations` | Human-readable scope and review reminders; do not parse these strings to make decisions. |
+
+The result omits task/prompt text, raw YAML, environment maps, and account-directory values. It does not verify the supplied BB identity, provider/model availability, authenticated subscription, independent quota, or scheduler state. After creation, an integration can use the existing `doctor --json` flow to display diagnostics, then offer an explicit start choice. Review the resolved target and limits before starting; do not automatically run `next` commands when parsing a result. Preview paths do not yet exist, and a preview does not reserve them or guarantee later creation will succeed.
+
+Validation, input, and setup-write failures exit nonzero with stderr diagnostics and no success JSON. A stdout failure may occur after successful file creation and may leave partial JSON: require both exit 0 and a complete supported result, inspect the destination before retrying, and never overwrite it automatically. Help retains the normal CLI help behavior.
+
+Offline fixtures cover preview/create consistency, BB identity fields, ordered account selections, omitted private input, bounded/cancelled stdin, failed writes, and unchanged existing setups. This is the shared CLI contract for the planned BB setup UI; it does not add a plugin setup button or attach/transfer a thread.
 
 ## Existing accounts and ordered fallbacks
 
