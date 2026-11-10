@@ -196,7 +196,7 @@ func TestCompletionTextPayloadOmitsPrivateNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(t, f.cfg, strings.Replace(string(b), "report: {events:", "report: {format: text, scheme: bearer, events:", 1), 0600)
+	write(t, f.cfg, strings.Replace(string(b), "report: {events:", "report: {format: text, events:", 1), 0600)
 	if code, _, errs := f.run("complete", "--note", "fictional private acceptance evidence"); code != 0 {
 		t.Fatal(errs)
 	}
