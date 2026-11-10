@@ -41,3 +41,5 @@ These results come from runs of the full bundle. A VM result covers that configu
 | Windows 11 Arm (build 26300) | test bundle in a Parallels VM | all 18 test packages pass, including the Windows lock and the headless runner's lifecycle, error, and stop tests | the end-to-end CLI tests (POSIX only), x64 |
 
 CI runs the suite on Ubuntu x86-64 and macOS and cross-compiles for Windows. Check the Actions tab for the latest run.
+
+Systemd user-service tests use a fake manager with structured show properties and temporary private unit files. They cover lifecycle and unchanged controls/ownership, duplicate/competing installs, dry runs, interrupted install/removal (including failure after deleting the unit), broken-config recovery, unknown/malformed/oversized replies, foreign fragments/drop-ins, XDG paths, changed files, and escaping. A native Linux fixture runs `systemd-analyze verify --generators=no` on a generated unit without installing or starting it. No live user bus, lingering change, login/logout/reboot check, agent call, or soak is part of this evidence.

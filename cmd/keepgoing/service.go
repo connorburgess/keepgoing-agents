@@ -29,6 +29,8 @@ type serviceReport struct {
 	Definition        string        `json:"definition"`
 	Registration      string        `json:"registration"`
 	Message           string        `json:"message"`
+	ActiveState       string        `json:"activeState,omitempty"`
+	UnitFileState     string        `json:"unitFileState,omitempty"`
 	Daemon            *daemonStatus `json:"daemon,omitempty"`
 }
 
@@ -46,7 +48,7 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 	fs.SetOutput(e.stderr)
 	cfgPath := fs.String("c", "keepgoing.yaml", "path to config")
 	statePath := fs.String("state-dir", "", "remove/status: locate the recorded service even when config is broken")
-	dry := fs.Bool("dry-run", false, "preview local changes without contacting launchd or writing files")
+	dry := fs.Bool("dry-run", false, "preview local changes without contacting the service manager or writing files")
 	asJSON := fs.Bool("json", false, "print structured service status")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -64,8 +66,8 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		e.errf("service: --state-dir is for remove/status instead of -c; --dry-run is for install/remove; no positional arguments")
 		return exitUsage
 	}
-	if h.platform != "darwin" || h.uid < 0 || h.home == "" {
-		e.errf("service: user-service management currently supports macOS GUI LaunchAgents only; use start or an external scheduler on this platform")
+	if (h.platform != "darwin" && h.platform != "linux") || h.uid < 0 || h.home == "" {
+		e.errf("service: user-service management currently supports macOS GUI LaunchAgents and Linux systemd user services; use start or an external scheduler on this platform")
 		return exitFailed
 	}
 	var cfg *config.Config
@@ -101,7 +103,7 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		}
 	}
 	// Keep files outside checkouts, including existing ancestor symlinks.
-	for _, p := range []string{dir, filepath.Join(h.home, "Library", "LaunchAgents")} {
+	for _, p := range []string{dir, h.definitionDir()} {
 		if err := serviceOutsideCheckout(p); err != nil {
 			e.errf("service: %v", err)
 			return exitFailed
@@ -139,8 +141,8 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 			return exitFailed
 		}
 	}
-	r := serviceReport{Backend: "launchd", Operation: op, DryRun: *dry, Recorded: exists, Label: p.Label, Definition: p.Definition, Registration: "not_checked"}
-	definition, err := launchdDefinition(p)
+	r := serviceReport{Backend: p.Backend, Operation: op, DryRun: *dry, Recorded: exists, Label: p.Label, Definition: p.Definition, Registration: "not_checked"}
+	definition, err := serviceDefinition(p)
 	if err != nil {
 		e.errf("service: cannot render definition")
 		return exitFailed
@@ -156,10 +158,18 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		return exitFailed
 	}
 	if op == "status" {
-		r.Registration = serviceRegistration(e.ctx, h, p)
+		if p.Backend == "systemd" {
+			ss := inspectSystemd(e.ctx, h, p)
+			r.Registration, r.ActiveState, r.UnitFileState = ss.registration, ss.active, ss.unitFile
+		} else {
+			r.Registration = serviceRegistration(e.ctx, h, p)
+		}
 		d := inspectDaemon(e.ctx, dir, version, false)
 		r.Daemon = &d
 		r.Message = "Registration is separate from daemon liveness; a responding daemon is not proven to belong to this service. Disabled overrides and other timers are not inspected."
+		if p.Backend == "systemd" {
+			r.Message = "Unit properties are separate from loop daemon liveness; a responding daemon is not proven to belong to this service. Unknown identity, overrides, or manager responses require inspection. Other timers are not inspected."
+		}
 		code := exitOK
 		if r.Registration == "unknown" || (r.Registration == "loaded" && !exists) {
 			code = exitFailed
@@ -185,10 +195,16 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		if op == "remove" {
 			r.Message = "Would disable/bootout the recorded LaunchAgent, verify absence, and remove its files. No launchctl calls or file changes were made; loop controls and ownership remain unchanged."
 		}
+		if p.Backend == "systemd" {
+			r.Message = "Would install/reload/enable/start the recorded user unit; remove would disable/stop it, remove its definition, reload, and verify absence. No manager calls or file changes were made; controls and ownership remain unchanged."
+		}
 		return printService(e, r, *asJSON, exitOK)
 	}
 	if op == "install" {
 		return installService(e, h, cfg, p, exists, definition, r, *asJSON)
+	}
+	if p.Backend == "systemd" {
+		return removeSystemdService(e, h, p, definition, r, *asJSON)
 	}
 	// Disable first: a partial removal must not reload on next login. Only this
 	// exact, locally recorded definition can be removed; no wildcard bootout.
@@ -271,7 +287,7 @@ func installService(e env, h serviceHost, cfg *config.Config, p servicePlan, exi
 		e.errf("service: generated service files exceed 64 KiB; nothing installed")
 		return exitFailed
 	}
-	if err := writeServiceFile(filepath.Join(p.StateDir, serviceRecordName), record); err != nil {
+	if err := writeServiceFile(filepath.Join(p.StateDir, h.recordName()), record); err != nil {
 		e.errf("service: cannot create private service record")
 		return exitFailed
 	}
@@ -283,6 +299,9 @@ func installService(e env, h serviceHost, cfg *config.Config, p servicePlan, exi
 	// installers/removers; daemon.lock prevents duplicate supervision processes.
 	_ = tick.Release()
 	_ = daemonLock.Release()
+	if p.Backend == "systemd" {
+		return activateSystemdService(e, h, p, r, asJSON)
+	}
 	for _, args := range [][]string{{"enable", p.target()}, {"bootstrap", p.domain(), p.Definition}} {
 		if err := serviceManager(e.ctx, h, args...); err != nil {
 			e.errf("service: %v; installation incomplete, files retained; use service status/remove", err)
@@ -305,6 +324,9 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 		fmt.Fprintln(e.stdout, string(b))
 	} else {
 		fmt.Fprintf(e.stdout, "service: %s; recorded %t; definition present %t; registration %s\n%s\n%s\n", r.Label, r.Recorded, r.DefinitionPresent, r.Registration, r.Definition, r.Message)
+		if r.ActiveState != "" {
+			fmt.Fprintf(e.stdout, "unit: active %s; enablement %s\n", r.ActiveState, r.UnitFileState)
+		}
 		if r.Daemon != nil {
 			fmt.Fprintf(e.stdout, "loop daemon: %s; %s\n", r.Daemon.State, r.Daemon.NextCheck)
 		}
@@ -314,7 +336,7 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 
 func readServicePlan(h serviceHost, dir string) (servicePlan, bool, error) {
 	var p servicePlan
-	b, exists, err := readServiceFile(filepath.Join(dir, serviceRecordName))
+	b, exists, err := readServiceFile(filepath.Join(dir, h.recordName()))
 	if err != nil || !exists {
 		return p, exists, err
 	}
@@ -389,7 +411,7 @@ func removeServiceFiles(h serviceHost, dir string, p servicePlan, definition []b
 			return errors.New("cannot remove service definition")
 		}
 	}
-	if err := os.Remove(filepath.Join(dir, serviceRecordName)); err != nil {
+	if err := os.Remove(filepath.Join(dir, h.recordName())); err != nil {
 		return errors.New("cannot remove service record")
 	}
 	return nil

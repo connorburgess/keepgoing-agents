@@ -16,20 +16,28 @@ import (
 	"unicode/utf8"
 )
 
-// Only numeric exit status is consumed. launchctl's human-readable output may
-// contain environment values and has no stable machine-readable schema.
 type serviceHost struct {
 	platform, home, executable, searchPath string
 	uid                                    int
+	configHome                             string
+	query                                  func(context.Context, ...string) ([]byte, int, error)
 	run                                    func(context.Context, ...string) (int, error)
 }
 
 func localServiceHost() serviceHost {
 	home, _ := os.UserHomeDir()
 	exe, _ := os.Executable()
-	return serviceHost{runtime.GOOS, home, exe, os.Getenv("PATH"), os.Getuid(), launchctlRun}
+	h := serviceHost{platform: runtime.GOOS, home: home, executable: exe, searchPath: os.Getenv("PATH"), uid: os.Getuid(), run: launchctlRun, configHome: os.Getenv("XDG_CONFIG_HOME"), query: systemctlQuery}
+	if h.platform == "linux" {
+		h.run = func(ctx context.Context, args ...string) (int, error) {
+			_, code, err := systemctlQuery(ctx, args...)
+			return code, err
+		}
+	}
+	return h
 }
 
+// Only numeric exit status is consumed; launchctl output may contain private values.
 func launchctlRun(ctx context.Context, args ...string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -65,16 +73,23 @@ func serviceIdentity(dir string) string {
 }
 
 func newServicePlan(h serviceHost, dir, cfg string) (servicePlan, error) {
-	p := servicePlan{SchemaVersion: 1, Backend: "launchd", UID: h.uid, Label: serviceIdentity(dir), StateDir: dir, Config: cfg, Executable: h.executable, SearchPath: h.searchPath}
-	p.Definition = filepath.Join(h.home, "Library", "LaunchAgents", p.Label+".plist")
+	p := servicePlan{SchemaVersion: 1, Backend: h.backend(), UID: h.uid, Label: serviceIdentity(dir), StateDir: dir, Config: cfg, Executable: h.executable, SearchPath: h.searchPath}
+	if h.platform == "linux" {
+		p.Label += ".service"
+	}
+	p.Definition = filepath.Join(h.definitionDir(), p.Label+h.definitionSuffix())
 	return p, validateServicePlan(h, dir, p)
 }
 
 func validateServicePlan(h serviceHost, dir string, p servicePlan) error {
-	if p.SchemaVersion != 1 || p.Backend != "launchd" || p.UID != h.uid || p.StateDir != dir || p.Label != serviceIdentity(dir) || p.Definition != filepath.Join(h.home, "Library", "LaunchAgents", p.Label+".plist") {
+	label := serviceIdentity(dir)
+	if h.platform == "linux" {
+		label += ".service"
+	}
+	if p.SchemaVersion != 1 || p.Backend != h.backend() || p.UID != h.uid || p.StateDir != dir || p.Label != label || p.Definition != filepath.Join(h.definitionDir(), label+h.definitionSuffix()) {
 		return errors.New("service record does not match this user and state directory")
 	}
-	for _, s := range []string{h.home, p.Config, p.Executable, p.StateDir, p.Definition} {
+	for _, s := range []string{h.home, h.definitionDir(), p.Config, p.Executable, p.StateDir, p.Definition} {
 		if !filepath.IsAbs(s) || filepath.Clean(s) != s {
 			return errors.New("service paths must be clean absolute paths")
 		}
@@ -118,6 +133,9 @@ func (p servicePlan) domain() string { return fmt.Sprintf("gui/%d", p.UID) }
 func (p servicePlan) target() string { return p.domain() + "/" + p.Label }
 
 func serviceRegistration(ctx context.Context, h serviceHost, p servicePlan) string {
+	if p.Backend == "systemd" {
+		return inspectSystemd(ctx, h, p).registration
+	}
 	code, err := h.run(ctx, "print", p.target())
 	if err == nil && code == 0 {
 		return "loaded"
@@ -136,10 +154,10 @@ func serviceRegistration(ctx context.Context, h serviceHost, p servicePlan) stri
 func serviceManager(ctx context.Context, h serviceHost, args ...string) error {
 	code, err := h.run(ctx, args...)
 	if err != nil {
-		return fmt.Errorf("launchctl %s unavailable or timed out", args[0])
+		return fmt.Errorf("%s %s unavailable or timed out", h.backend(), args[0])
 	}
 	if code != 0 {
-		return fmt.Errorf("launchctl %s failed (exit %d)", args[0], code)
+		return fmt.Errorf("%s %s failed (exit %d)", h.backend(), args[0], code)
 	}
 	return nil
 }
