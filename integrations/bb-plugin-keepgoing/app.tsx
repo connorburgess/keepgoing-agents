@@ -11,6 +11,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LoopView, rpcContract } from "./server";
+import { SetupPanel } from "./setup-panel";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
@@ -52,7 +53,7 @@ function useLoop(threadId: string): { loop: LoopView | undefined; refresh: () =>
 }
 
 function label(loop: LoopView): string {
-  if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: running" : `keepgoing: watching (${loop.target})`;
+  if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: enabled" : `keepgoing: watching (${loop.target})`;
   return `keepgoing: ${loop.controlState}`;
 }
 
@@ -82,57 +83,70 @@ const buttonStyle = {
 function ToggleButton({ loop, onDone }: { loop: LoopView; onDone: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const paused = loop.controlState !== "enabled";
+  if (loop.managedId && loop.controlState === "disabled") return null;
   const act = () => {
     setBusy(true);
+    setError("");
     rpc
-      .call("control", { configPath: loop.configPath, action: paused ? "resume" : "pause" })
+      .call("control", { configPath: loop.configPath, action: paused ? "resume" : "pause", managedId: loop.managedId })
+      .then(result => { if (!result.ok) setError(result.message); })
+      .catch(() => setError("Control could not be confirmed. Refresh status before retrying."))
       .finally(() => {
         setBusy(false);
         onDone();
       });
   };
-  return (
+  return <>
     <button type="button" disabled={busy} onClick={act} style={buttonStyle}>
       {paused ? "Resume" : "Pause"}
     </button>
-  );
+    {error && <span role="alert">{error}</span>}
+  </>;
+}
+
+function ThreadSetup({ threadId, onChanged }: { threadId: string; onChanged(): void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const call = useCallback((input: Parameters<typeof rpc.call<"setup">>[1]) => rpc.call("setup", input), [rpc]);
+  return <SetupPanel key={threadId} threadId={threadId} call={call} onChanged={onChanged} />;
 }
 
 function CardRow({ threadId }: { threadId: string }) {
   const { loop, refresh } = useLoop(threadId);
-  if (!loop) return null;
-  return (
-    <ContextRow
+  const [open, setOpen] = useState(false);
+  return <div>
+    {!loop ? <ContextRow icon="Repeat" label="keepgoing" action={<button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
       icon="Repeat"
       label={label(loop)}
       title={describe(loop).join("\n")}
       trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
-      action={<ToggleButton loop={loop} onDone={refresh} />}
-    />
-  );
+      action={<><ToggleButton loop={loop} onDone={refresh} />{loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
+    />}
+    {open && <ThreadSetup threadId={threadId} onChanged={refresh} />}
+  </div>;
 }
 
 function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; isExpanded: boolean; onToggle(): void }) {
   const { loop } = useLoop(threadId);
-  if (!loop) return null;
   return (
-    <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={describe(loop).join("\n")}
+    <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
       style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {label(loop)}
+      {loop ? label(loop) : "Supervise this thread"}
     </button>
   );
 }
 
 function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded: boolean }) {
   const { loop, refresh } = useLoop(threadId);
-  if (!loop || !isExpanded) return null;
-  return (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
+  if (!isExpanded) return null;
+  return <>
+    {loop && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
       <span>{describe(loop).join(" · ")}</span>
       <ToggleButton loop={loop} onDone={refresh} />
-    </div>
-  );
+    </div>}
+    {(!loop || loop.managedId) && <ThreadSetup threadId={threadId} onChanged={refresh} />}
+  </>;
 }
 
 export default definePluginApp((app) => {
@@ -148,12 +162,10 @@ export default definePluginApp((app) => {
     group: "6_keepgoing",
     summary: BannerSummary,
     details: BannerDetails,
-    // Show in the banner only when bb is not showing the card, and only for
-    // threads a configured loop supervises.
-    useVisible: ({ threadId }) => {
+    // Offer setup on unsupervised threads using whichever context UI is active.
+    useVisible: () => {
       const kind = useContextKind();
-      const { loop } = useLoop(threadId);
-      return kind === "banner" && loop !== undefined;
+      return kind === "banner";
     },
   });
 });
