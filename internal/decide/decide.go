@@ -3,7 +3,10 @@
 // It performs no I/O so every rule can be table-tested.
 package decide
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // State is the supervised session's coarse status.
 type State string
@@ -52,6 +55,8 @@ type Observation struct {
 	// parent prompt or target move; control holds and stop retain precedence.
 	ActiveChildren     int
 	ChildrenUnverified bool
+	// AwaitingChildren contains verified child IDs with pending human input.
+	AwaitingChildren []string
 }
 
 // Control is the operator's gate.
@@ -151,6 +156,9 @@ func Decide(in Input) Decision {
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
+	}
+	if len(o.AwaitingChildren) > 0 {
+		return Decision{AwaitUser, "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
 	}
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")

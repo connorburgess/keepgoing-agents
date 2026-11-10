@@ -37,6 +37,7 @@ func TestPollWakeGatesAndEligibility(t *testing.T) {
 		{"error", control.File{Enabled: true}, decide.Observation{State: decide.Error}, false},
 		{"unknown", control.File{Enabled: true}, decide.Observation{State: decide.Unknown}, false},
 		{"gone", control.File{Enabled: true}, decide.Observation{State: decide.Idle, Gone: true}, false},
+		{"child_input", control.File{Enabled: true}, decide.Observation{State: decide.Idle, AwaitingChildren: []string{"thr_child"}}, true},
 		{"pending_input", control.File{Enabled: true}, decide.Observation{State: decide.Idle, AwaitingInput: true}, false},
 		{"queued", control.File{Enabled: true}, decide.Observation{State: decide.Idle, Queued: 1}, false},
 		{"background", control.File{Enabled: true}, decide.Observation{State: decide.Idle, Background: 1}, false},

@@ -28,6 +28,7 @@ func TestDaemonChecksChildCompletionBeforeInterval(t *testing.T) {
 			write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"idle"}}`, 0600)
 			write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"seq":1,"type":"client/turn/requested","data":{"initiator":"system","systemMessageKind":"child-%s","systemMessageSubject":{"kind":"thread","threadId":"thr_child","outcomes":[{"threadId":"thr_child","status":%q}]}}}]`, status, status), 0600)
 			cfg := loadFixture(t, f.cfg)
+			cfg.Loop.Daemon.ControlPoll.Duration = 500 * time.Millisecond
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			start := time.Now()
@@ -45,7 +46,7 @@ func TestDaemonChecksChildCompletionBeforeInterval(t *testing.T) {
 			}
 			// A fresh waiter and fresh adapters use the persisted cursor, even with the
 			// fixture parent left idle. No extra check is caused by the same event.
-			again, cancelAgain := context.WithTimeout(context.Background(), 400*time.Millisecond)
+			again, cancelAgain := context.WithTimeout(context.Background(), 1100*time.Millisecond)
 			defer cancelAgain()
 			if waitForNext(again, cfg, controlSignature(cfg.Loop.StateDir), nil) {
 				t.Fatal("notification replayed")

@@ -46,3 +46,43 @@ func TestChildrenDoNotOverrideControlsOrPermitRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestChildInputEscalationPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*Input)
+		want Action
+	}{
+		{"idle", func(*Input) {}, AwaitUser},
+		{"active_child", func(i *Input) { i.Obs.ActiveChildren = 1 }, AwaitUser},
+		{"unverified_sibling", func(i *Input) { i.Obs.ChildrenUnverified = true }, AwaitUser},
+		{"parent_input", func(i *Input) { i.Obs.AwaitingInput = true }, AwaitUser},
+		{"stalled", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = time.Hour }, AwaitUser},
+		{"handoff", func(i *Input) {
+			i.Obs.State = Error
+			i.Obs.ErrorClass = ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, AwaitUser},
+		{"switchback", func(i *Input) { i.SwitchBackReady = true }, AwaitUser},
+		{"outside_window", func(i *Input) { i.InWindow = false }, AwaitUser},
+		{"stop_active", func(i *Input) { i.Control.Stop = true; i.Obs.State = Active }, Stop},
+		{"stop_idle", func(i *Input) { i.Control.Stop = true }, None},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None},
+		{"disabled", func(i *Input) { i.Control.Enabled = false }, None},
+		{"completed", func(i *Input) { i.Control.Completed = true }, None},
+		{"await_user", func(i *Input) { i.Control.AwaitingUser = true }, None},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs.AwaitingChildren = []string{"thr_child"}
+			tc.mut(&in)
+			d := Decide(in)
+			if d.Action != tc.want {
+				t.Fatalf("%+v", d)
+			}
+			if tc.want == AwaitUser && d.Reason != "children waiting on a person (pending interaction): thr_child" {
+				t.Fatalf("missing child: %+v", d)
+			}
+		})
+	}
+}
