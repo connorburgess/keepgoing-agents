@@ -19,6 +19,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -46,6 +47,7 @@ type doctorReport struct {
 	NextCheck     string                    `json:"nextCheck"`
 	Checks        []doctorCheck             `json:"checks"`
 	Sessions      map[string]*sessionStatus `json:"sessions,omitempty"`
+	Daemon        *daemonStatus             `json:"daemon,omitempty"`
 }
 
 func (r *doctorReport) add(id, status, message, fix string) {
@@ -90,7 +92,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		r.add("task", "ok", "Task is configured inline; its text is not displayed.", "")
 	}
 	doctorFile(&r, "state.directory", cfg.Loop.StateDir, true)
-	for _, name := range []string{control.FileName, state.FileName, "health.json", state.LogName} {
+	for _, name := range []string{control.FileName, state.FileName, "health.json", state.LogName, daemoninfo.FileName} {
 		p := filepath.Join(cfg.Loop.StateDir, name)
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			doctorFile(&r, "state."+name, p, false)
@@ -161,7 +163,21 @@ func doctor(e env, args []string, run doctorRun) int {
 			checkAgent(c.ID, c.Agent)
 		}
 	}
-	r.add("scheduler", "unavailable", "Scheduler installation, liveness, and next scheduled check are not verified by this command.", "Inspect your daemon or external scheduler. A recent tick alone does not prove it is still running.")
+	queryCtx, cancel := context.WithTimeout(e.ctx, *timeout)
+	d := inspectDaemon(queryCtx, cfg.Loop.StateDir, version, *offline)
+	cancel()
+	r.Daemon, r.NextCheck = &d, d.NextCheck
+	schedulerStatus, buildStatus := "unavailable", "unavailable"
+	if d.State == "responsive" {
+		schedulerStatus = "ok"
+	}
+	if d.BinaryComparison == "match" {
+		buildStatus = "ok"
+	} else if d.BinaryComparison == "different" {
+		buildStatus = "warning"
+	}
+	r.add("scheduler", schedulerStatus, d.Message, "Service installation and external schedulers are not verified; a responding daemon can still be waiting on a stuck check.")
+	r.add("supervisor.live_version", buildStatus, "Live daemon build comparison: "+d.BinaryComparison+".", "A different build label does not establish which is newer; empty and dev labels cannot identify a build.")
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Use fallbacks check explicitly only when you intend model calls; its manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
@@ -210,6 +226,9 @@ func printDoctor(e env, r doctorReport, asJSON bool) int {
 		fmt.Fprintf(e.stdout, "last check: %s\n", when(*r.LastCheckAt))
 	}
 	fmt.Fprintf(e.stdout, "next check: %s\n", r.NextCheck)
+	if r.Daemon != nil && r.Daemon.State == "responsive" {
+		fmt.Fprintf(e.stdout, "daemon: %s; dry run %t; live build %s\n", r.Daemon.Phase, r.Daemon.DryRun, r.Daemon.BinaryComparison)
+	}
 	for _, c := range r.Checks {
 		fmt.Fprintf(e.stdout, "[%s] %s: %s\n", c.Status, c.ID, c.Message)
 		if c.Fix != "" {

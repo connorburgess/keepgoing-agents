@@ -396,7 +396,7 @@ func TestDaemonWakesForControlChangeDuringAPass(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	f.run("stop") // written "during the pass", after the signature was taken
 	start := time.Now()
-	if !waitForNext(context.Background(), cfgLoaded, sig) {
+	if !waitForNext(context.Background(), cfgLoaded, sig, nil) {
 		t.Fatal("waitForNext asked the daemon to exit")
 	}
 	if d := time.Since(start); d > time.Second {
