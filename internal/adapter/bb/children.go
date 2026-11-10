@@ -82,8 +82,8 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool) {
 		case "active":
 			active++
 		case "idle", "error", "pending", "starting", "stopping":
-			// Known non-active state. Lifecycle wakes and pending child
-			// interactions are separate roadmap items.
+			// Known non-active state. Pending child interactions are a
+			// separate roadmap item.
 		default:
 			unverified = true
 		}

@@ -128,8 +128,25 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
 			}
+			if pollWake(ctx, cfg) || controlSignature(cfg.Loop.StateDir) != sig {
+				return ctx.Err() == nil
+			}
 		}
 	}
+}
+
+// Share the tick lock with manual ticks and retargets, and bound the whole
+// notification poll to one control cycle so a slow CLI cannot delay controls
+// by the ordinary adapter timeout. Lock contention waits for a later cycle.
+func pollWake(ctx context.Context, cfg *config.Config) bool {
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		return false
+	}
+	defer l.Release()
+	ctx, cancel := context.WithTimeout(ctx, cfg.Loop.Daemon.ControlPoll.Duration)
+	defer cancel()
+	return supervise.PollWake(ctx, cfg, nil)
 }
 
 func controlSignature(stateDir string) string {
