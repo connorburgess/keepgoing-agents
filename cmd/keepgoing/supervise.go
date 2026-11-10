@@ -197,17 +197,19 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
-	Loop         string          `json:"loop"`
-	Primary      string          `json:"primary"`
-	Target       string          `json:"target"`
-	Control      control.File    `json:"control"`
-	ControlState string          `json:"controlState"`
-	Window       string          `json:"window"`
-	InWindow     bool            `json:"inWindow"`
-	State        state.File      `json:"state"`
-	Redundancy   *health.Summary `json:"redundancy,omitempty"`
-	StateDir     string          `json:"stateDir"`
-	Version      string          `json:"version"`
+	Loop            string          `json:"loop"`
+	Primary         string          `json:"primary"`
+	Target          string          `json:"target"`
+	Control         control.File    `json:"control"`
+	ControlState    string          `json:"controlState"`
+	Deadline        string          `json:"deadline,omitempty"`
+	DeadlineReached bool            `json:"deadlineReached"`
+	Window          string          `json:"window"`
+	InWindow        bool            `json:"inWindow"`
+	State           state.File      `json:"state"`
+	Redundancy      *health.Summary `json:"redundancy,omitempty"`
+	StateDir        string          `json:"stateDir"`
+	Version         string          `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -261,6 +263,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
@@ -338,6 +341,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	if out.Deadline != "" {
+		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
+	}
 	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
 	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
 	if c := st.LastCheck; c != nil {

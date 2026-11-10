@@ -22,6 +22,7 @@ import (
 
 type initOptions struct {
 	name, project, directory, task, taskFile       string
+	deadline                                       string
 	agent, thread, provider, account, group, model string
 	fallbacks                                      []initFallback
 	stall, wake, backoff, interval                 time.Duration
@@ -48,6 +49,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.directory, "directory", "", "new private setup directory outside any checkout")
 	fs.StringVar(&o.task, "task", "", "task text (use --task-file to keep it out of shell history)")
 	fs.StringVar(&o.taskFile, "task-file", "", "read a task file; - reads up to 1 MiB from stdin with --non-interactive")
+	fs.StringVar(&o.deadline, "deadline", "", "RFC3339 cutoff for future supervision; does not cancel running turns")
 	fs.StringVar(&o.agent, "agent", "", "bb, claude, or codex; detects installed CLIs")
 	fs.StringVar(&o.thread, "thread", "", "existing BB thread ID; required for bb")
 	fs.StringVar(&o.provider, "provider", "", "existing BB thread provider label; required for bb")
@@ -61,7 +63,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		return nil
 	})
 	fs.DurationVar(&o.stall, "stall-after", config.DefaultStallAfter, "time without Git progress before nudging")
-	fs.DurationVar(&o.wake, "wake-every", config.DefaultMinWakeInterval, "minimum time between wakes")
+	fs.DurationVar(&o.wake, "wake-every", config.DefaultMinWakeInterval, "minimum time since last send before a stall nudge; idle wakes follow check interval")
 	fs.DurationVar(&o.backoff, "backoff", config.DefaultBackoff, "delay between error re-prompts")
 	fs.DurationVar(&o.interval, "interval", config.DefaultDaemonInterval, "daemon tick interval")
 	fs.IntVar(&o.nudges, "max-nudges", config.DefaultMaxNudges, "stall nudges before awaiting a person")
@@ -118,7 +120,10 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	}
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
 	printInitAccount(e.stdout, cfg.Loop.Agent)
-	fmt.Fprintf(e.stdout, "Limits: wake >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
+	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
+	if o.deadline != "" {
+		fmt.Fprintf(e.stdout, "Deadline: %s (next check holds supervision; running turns are not cancelled)\n", o.deadline)
+	}
 	if cfg.FallbackSet == nil {
 		fmt.Fprintln(e.stdout, "Fallbacks: none; automatic handoffs disabled.")
 	} else {
@@ -268,7 +273,7 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 		flag, label string
 		value       *time.Duration
 	}{
-		{"wake-every", "Minimum time between wakes", &o.wake}, {"stall-after", "Stall time before nudging", &o.stall}, {"backoff", "Error re-prompt delay", &o.backoff}, {"interval", "Check interval", &o.interval},
+		{"wake-every", "Minimum time since last send before a stall nudge", &o.wake}, {"stall-after", "Stall time before nudging", &o.stall}, {"backoff", "Error re-prompt delay", &o.backoff}, {"interval", "Check interval", &o.interval},
 	} {
 		if visited[q.flag] {
 			continue
@@ -409,6 +414,9 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	loop := map[string]any{"name": o.name, "state_dir": filepath.Join(o.directory, "state"), "adapter": primary.Adapter, "provider": primary.Provider, "group": primary.Group, "prompt_file": "prompt.md",
 		"progress": config.Progress{Repositories: []string{o.project}, StallAfter: config.Duration{Duration: o.stall}, MinWakeInterval: config.Duration{Duration: o.wake}, MaxNudges: o.nudges},
 		"errors":   map[string]any{"max_reprompts": o.reprompts, "backoff": o.backoff.String(), "failover_on": []string{}}, "daemon": config.Daemon{Interval: config.Duration{Duration: o.interval}}}
+	if o.deadline != "" {
+		loop["limits"] = config.Limits{Deadline: o.deadline}
+	}
 	switch {
 	case primary.BB != nil:
 		loop["bb"] = primary.BB

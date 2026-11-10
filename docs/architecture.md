@@ -43,7 +43,7 @@ internal/ciwait             wait for CI on an exact commit
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
 3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
 4. If disabled, paused, completed, or awaiting a person, record and stop here.
-5. If a yield command reports other work, record and exit 75.
+5. If the configured absolute deadline is reached at tick start, persist/report an awaiting-user hold before provider work. Existing controls and stop win; in-flight checks and running turns are not cancelled. Otherwise, if a yield command reports other work, record and exit 75.
 6. Observe the active target through its adapter. If it cannot be observed, record and take no action. Verified pending child input is decided and escalated here, before probes or fingerprinting; it persists an awaiting-user hold and reports child IDs without touching the parent.
 7. Inside the time window, run any scheduled probes that are due, within the daily cap. The active target and candidates in its quota group are skipped, so probes never spend the pool the loop is using.
 8. Evaluate redundancy among eligible fallbacks. Eligible means enabled, not the active target, and not in the active target's quota group. Report a change into or out of the degraded state.

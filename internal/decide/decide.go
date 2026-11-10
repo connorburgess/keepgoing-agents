@@ -70,9 +70,10 @@ type Control struct {
 
 // Input is everything Decide needs.
 type Input struct {
-	Obs      Observation
-	Control  Control
-	InWindow bool
+	Obs             Observation
+	Control         Control
+	InWindow        bool
+	DeadlineReached bool // evaluated at the beginning of this check
 
 	UnchangedFor    time.Duration // since the progress fingerprint last changed
 	SinceWake       time.Duration // since we last sent anything
@@ -86,7 +87,7 @@ type Input struct {
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
 
-	Nudges    int // nudges sent since progress was last seen
+	Nudges    int // nudges since progress or the most recent turn end
 	MaxNudges int
 
 	Reprompts         int // re-prompts sent since the session last ran cleanly
@@ -153,6 +154,9 @@ func Decide(in Input) Decision {
 	}
 	if c.Completed {
 		return none("completed")
+	}
+	if in.DeadlineReached {
+		return Decision{AwaitUser, "loop deadline reached; revise loop.limits.deadline before resuming"}
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}

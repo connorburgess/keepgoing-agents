@@ -61,12 +61,25 @@ type Loop struct {
 	Report    *Report    `yaml:"report,omitempty"`
 	Yield     *Yield     `yaml:"yield,omitempty"`
 	Daemon    Daemon     `yaml:"daemon"`
+	Limits    Limits     `yaml:"limits,omitempty"`
 
 	// SwitchBack returns the loop to its primary after a handoff, once the
 	// primary's limit has reset and an exact probe of it passes. Off by default.
 	SwitchBack SwitchBack `yaml:"switch_back"`
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
+}
+
+// Limits bound future supervisor work, not the lifetime of an agent turn.
+type Limits struct {
+	Deadline string `yaml:"deadline,omitempty"`
+}
+
+// DeadlineReached uses the host clock. Configuration validation rejects invalid
+// timestamps; an absent deadline preserves existing behavior.
+func (l Limits) DeadlineReached(now time.Time) bool {
+	deadline, err := time.Parse(time.RFC3339, l.Deadline)
+	return err == nil && !now.Before(deadline)
 }
 
 // SwitchBack controls the automatic return to the primary.
@@ -85,7 +98,7 @@ type Progress struct {
 	StallAfter      Duration `yaml:"stall_after,omitempty"`
 	MinWakeInterval Duration `yaml:"min_wake_interval,omitempty"`
 	// MaxNudges is how many nudges a stalled session gets before the loop
-	// asks a person. Progress resets the count.
+	// asks a person. Progress or ending the turn resets the count.
 	MaxNudges int `yaml:"max_nudges,omitempty"`
 }
 
@@ -299,6 +312,11 @@ func (c *Config) Validate() error {
 	}
 	if l.StateDir == "" {
 		add("loop.state_dir is required")
+	}
+	if l.Limits.Deadline != "" {
+		if _, err := time.Parse(time.RFC3339, l.Limits.Deadline); err != nil {
+			add("loop.limits.deadline must be an RFC3339 timestamp with a timezone")
+		}
 	}
 	errs = append(errs, l.Agent.validate("loop.")...)
 	if l.Prompt == "" && l.PromptFile == "" {

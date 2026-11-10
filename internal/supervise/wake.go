@@ -22,6 +22,11 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 	if err != nil || !ctl.Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
 		return false
 	}
+	// Leave the deadline hold to the next ordinary tick without consuming child
+	// notices or querying a provider. Do not spin early ticks in dry-run mode.
+	if cfg.Loop.Limits.DeadlineReached(time.Now()) {
+		return false
+	}
 	inWindow, _, err := window.Inside(cfg.Loop.Window, time.Now())
 	if err != nil || !inWindow {
 		return false

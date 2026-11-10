@@ -30,7 +30,7 @@ type File struct {
 	LastState         string    `json:"lastState,omitempty"`
 	LastCheck         *Check    `json:"lastCheck,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
-	Nudges            int       `json:"nudges,omitempty"` // since progress was last seen
+	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
 
