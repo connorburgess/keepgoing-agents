@@ -41,7 +41,7 @@ keepgoing doctor -c /private/example-loop/keepgoing.yaml --stale-after 2h
 
 No history means no completed tick is recorded; enabling alone does not run a supervisor. A future timestamp warns about clock differences or a test using `--now`. A recent tick, including a dry-run tick, is historical evidence only: it does not prove the daemon or scheduler is still alive.
 
-Scheduler installation/liveness, the running scheduler's binary version, and its next scheduled check are **unavailable**. The daemon interval in YAML does not describe an external scheduler and is not used to invent a next-run time. Inspect the daemon or scheduler directly until dedicated scheduler diagnostics are implemented.
+Scheduler installation/liveness and its next scheduled check are **unavailable**. New ticks record their build label: doctor compares that historical label with its own and warns if they differ. Empty or `dev` labels cannot identify a build. A match does not prove which binary is currently running; a mismatch does not establish which is newer. Legacy tick records without a build label remain unavailable. The daemon interval in YAML does not describe an external scheduler and is not used to invent a next-run time. Inspect the daemon or scheduler directly until dedicated scheduler diagnostics are implemented.
 
 Structured provider login checks and live headless session identity are also **not implemented**. Doctor does not invoke login commands or start an app-server to infer them. Paid probe cost previews are planned; `fallbacks check` remains a separate explicit operation that makes model calls outside the scheduled daily cap. Doctor never runs it automatically.
 

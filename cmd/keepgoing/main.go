@@ -112,13 +112,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath: fs.String("c", "keepgoing.yaml", "path to the config file"),
-		asJSON:  fs.Bool("json", false, "print machine-readable JSON"),
-		dryRun:  fs.Bool("dry-run", false, "decide and record, send nothing, run no probes"),
-		now:     fs.String("now", "", "RFC 3339 time to use instead of the clock"),
-		note:    fs.String("note", "", "a short note stored in control.json"),
-		id:      fs.String("id", "", "fallbacks check: only this candidate"),
-		exact:   fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		cfgPath:    fs.String("c", "keepgoing.yaml", "path to the config file"),
+		asJSON:     fs.Bool("json", false, "print machine-readable JSON"),
+		dryRun:     fs.Bool("dry-run", false, "decide and record, send nothing, run no probes"),
+		now:        fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		note:       fs.String("note", "", "a short note stored in control.json"),
+		id:         fs.String("id", "", "fallbacks check: only this candidate"),
+		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -144,7 +145,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "daemon":
 		return daemon(e, cfg, *f.cfgPath, *f.dryRun)
 	case "status":
-		return status(e, cfg, now, *f.asJSON)
+		if *f.staleAfter <= 0 {
+			e.errf("status: stale-after must be positive")
+			return exitUsage
+		}
+		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
 	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note)
 	case "retarget":
@@ -165,6 +170,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 type cliFlags struct {
+	staleAfter             *time.Duration
 	cfgPath, now, note, id *string
 	asJSON, dryRun, exact  *bool
 }

@@ -46,7 +46,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) i
 		return exitFailed
 	}
 	defer l.Release()
-	opts := supervise.Options{DryRun: dryRun, Reporter: reporter(e, cfg)}
+	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg)}
 	if fixedNow {
 		opts.Now = now
 	}
@@ -143,12 +143,17 @@ type statusOut struct {
 	Version      string          `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
-	PrimaryAgent agentRef `json:"primaryAgent"`
-	TargetAgent  agentRef `json:"targetAgent"`
+	PrimaryAgent     agentRef      `json:"primaryAgent"`
+	TargetAgent      agentRef      `json:"targetAgent"`
+	TargetConfigured bool          `json:"targetConfigured"`
+	TaskSource       string        `json:"taskSource"`
+	TaskFile         string        `json:"taskFile,omitempty"`
+	Runtime          runtimeStatus `json:"runtime"`
 }
 
 // agentRef identifies the session an agent definition points at.
 type agentRef struct {
+	Group    string `json:"group,omitempty"`
 	Adapter  string `json:"adapter"`
 	Provider string `json:"provider,omitempty"`
 	BBThread string `json:"bbThread,omitempty"`
@@ -157,7 +162,7 @@ type agentRef struct {
 }
 
 func refOf(a config.Agent) agentRef {
-	r := agentRef{Adapter: a.Adapter, Provider: a.Provider, Model: a.Model()}
+	r := agentRef{Adapter: a.Adapter, Provider: a.Provider, Group: a.Group, Model: a.Model()}
 	switch {
 	case a.BB != nil:
 		r.BBThread = a.BB.Thread
@@ -169,7 +174,7 @@ func refOf(a config.Agent) agentRef {
 	return r
 }
 
-func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
+func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
 	l := cfg.Loop
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
@@ -187,10 +192,18 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 		return exitFailed
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
-	out.PrimaryAgent, out.TargetAgent = refOf(l.Agent), refOf(l.Agent)
-	if c, ok := cfg.FallbackSet.Find(st.Target()); ok {
+	out.PrimaryAgent = refOf(l.Agent)
+	if st.Target() == state.Primary {
+		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
+	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
 		out.TargetAgent = refOf(c.Agent)
+		out.TargetConfigured = true
 	}
+	out.TaskSource = "inline"
+	if l.PromptFile != "" {
+		out.TaskSource, out.TaskFile = "file", l.PromptFile
+	}
+	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
 		if err == nil {
@@ -209,23 +222,46 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	fmt.Fprintf(w, "task:      %s", out.TaskSource)
+	if out.TaskFile != "" {
+		fmt.Fprintf(w, " (%s)", out.TaskFile)
+	}
+	fmt.Fprintln(w, "; task text withheld")
 	fmt.Fprintf(w, "primary:   %s\n", out.Primary)
 	fmt.Fprintf(w, "target:    %s", out.Target)
 	if st.Handoffs > 0 {
 		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
 	}
 	fmt.Fprintln(w)
+	if out.TargetConfigured {
+		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
+		if out.TargetAgent.BBThread != "" {
+			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
+		}
+	} else {
+		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
+	}
 	fmt.Fprintf(w, "control:   %s", out.ControlState)
 	if ctl.Note != "" {
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
-	fmt.Fprintf(w, "last seen: %s", when(st.CheckedAt))
-	if st.LastState != "" {
-		fmt.Fprintf(w, " (%s)", st.LastState)
+	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
+	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
+	if c := st.LastCheck; c != nil {
+		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
+		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
+		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.DryRun {
+			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
+		}
+	} else {
+		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
 	}
-	fmt.Fprintln(w)
+	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
+	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
+	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
 	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
 	if st.Reprompts > 0 {

@@ -22,6 +22,7 @@ type fakeAdapter struct {
 	name        string
 	obs         decide.Observation
 	obsErr      error
+	sendErr     error
 	sent        []string
 	modes       []adapter.Mode
 	stopped     int
@@ -37,7 +38,7 @@ func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {
 	f.sent = append(f.sent, p)
 	f.modes = append(f.modes, m)
-	return nil
+	return f.sendErr
 }
 func (f *fakeAdapter) Stop(context.Context) error {
 	if f.noStop {
@@ -332,6 +333,9 @@ func TestHandoffToFirstCandidatePassingExactProbe(t *testing.T) {
 		t.Errorf("reports = %s", w.reportTypes())
 	}
 	st, _ := state.Load(w.dir)
+	if st.LastCheck == nil || st.LastCheck.ObservedTarget != "primary" || st.LastCheck.Target != "codex-main" {
+		t.Fatalf("handoff observation attributed to wrong target: %+v", st.LastCheck)
+	}
 	if st.ActiveTarget != "codex-main" || st.Handoffs != 1 {
 		t.Errorf("state = %+v", st)
 	}
