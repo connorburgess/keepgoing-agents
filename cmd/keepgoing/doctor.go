@@ -51,7 +51,7 @@ func (r *doctorReport) add(id, status, message, fix string) {
 	r.Checks = append(r.Checks, doctorCheck{id, status, message, fix})
 }
 
-type doctorRun func(context.Context, string, []string, map[string]string) ([]byte, error)
+type doctorRun func(context.Context, string, []string, map[string]string, string) ([]byte, error)
 
 func doctor(e env, args []string, run doctorRun) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -149,7 +149,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.add("scheduler", "unavailable", "Scheduler installation, liveness, and next scheduled check are not verified by this command.", "Inspect your daemon or external scheduler. A recent tick alone does not prove it is still running.")
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
-	r.add("probes", "unavailable", "No model requests or paid probes were made. Authentication and quota health are not established by setup checks.", "Use fallbacks check explicitly only when you intend model calls; its manual probes are outside the scheduled daily cap.")
+	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Use fallbacks check explicitly only when you intend model calls; its manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
 }
 
@@ -257,15 +257,18 @@ func doctorFile(r *doctorReport, id, path string, directory bool) {
 
 func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent, offline bool, timeout time.Duration, run doctorRun) {
 	prefix := "agent." + id
-	var cli, accountKey string
+	var cli, accountKey, workdir string
+	var extraArgs []string
 	var env map[string]string
 	switch {
 	case a.BB != nil:
 		cli = a.BB.CLI
 	case a.Claude != nil:
 		cli, accountKey, env = a.Claude.CLI, "CLAUDE_CONFIG_DIR", a.Claude.Env
+		workdir, extraArgs = a.Claude.Workdir, a.Claude.ExtraArgs
 	case a.Codex != nil:
 		cli, accountKey, env = a.Codex.CLI, "CODEX_HOME", a.Codex.Env
+		workdir, extraArgs = a.Codex.Workdir, a.Codex.ExtraArgs
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return
@@ -288,14 +291,22 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 			r.add(prefix+".account", "unavailable", "Account selection inherits the launching environment and provider defaults.", "Check the scheduler's environment; doctor does not infer a subscription from directory names.")
 		}
 	}
-	r.add(prefix+".login", "unavailable", "Structured login verification is not implemented; no login or model command is run.", "Verify the selected account through the provider's own account controls.")
 	resolved, err := exec.LookPath(cli)
 	if err != nil {
 		r.add(prefix+".cli", "error", "Configured CLI is missing or not executable.", "Install the supported CLI or correct its configured path and the scheduler PATH.")
+		r.add(prefix+".login", "unavailable", "Login status cannot be queried without the configured CLI.", "")
+		return
+	}
+	// Keep relative executable paths tied to the caller before setting cmd.Dir.
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		r.add(prefix+".cli", "error", "Configured CLI path could not be resolved.", "Check the launching directory and configured executable.")
+		r.add(prefix+".login", "unavailable", "Login status cannot be queried without the configured CLI.", "")
 		return
 	}
 	r.add(prefix+".cli", "ok", "Configured CLI resolves to an executable.", "")
 	if offline {
+		r.add(prefix+".login", "unavailable", "Login status query skipped in offline mode.", "")
 		r.add(prefix+".version", "unavailable", "CLI version query skipped in offline mode.", "")
 		if a.BB != nil {
 			r.add(prefix+".target", "unavailable", "BB target query skipped in offline mode.", "")
@@ -305,7 +316,7 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	call := func(args ...string) ([]byte, error) {
 		cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return run(cmdCtx, resolved, args, env)
+		return run(cmdCtx, resolved, args, env, workdir)
 	}
 	out, err := call("--version")
 	if err != nil {
@@ -316,8 +327,17 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		r.add(prefix+".version", "unavailable", "CLI returned an unrecognized version format; raw output is withheld.", "Check the installed CLI version manually.")
 	}
 	if a.BB != nil {
+		r.add(prefix+".login", "unavailable", "BB-managed provider authentication is not queried by doctor.", "Verify the selected account through BB's provider controls.")
 		out, err := call("thread", "show", a.BB.Thread, "--json")
 		doctorBB(r, prefix+".target", a.BB.Thread, out, err)
+	} else if len(extraArgs) > 0 {
+		r.add(prefix+".login", "unavailable", "Login status skipped because extra_args may change the turn's authentication configuration.", "Verify the effective account with the provider's controls; doctor does not replay arbitrary turn arguments.")
+	} else if a.Claude != nil {
+		out, err := call("auth", "status", "--json")
+		doctorClaudeLogin(r, prefix+".login", out, err)
+	} else if a.Codex != nil {
+		_, err := call("login", "status")
+		doctorCodexLogin(r, prefix+".login", err)
 	}
 }
 
@@ -362,10 +382,11 @@ func doctorBB(r *doctorReport, id, expected string, raw []byte, cmdErr error) {
 }
 
 // Bound both runtime and stdout. Stderr is discarded, never parsed or reported.
-// These are version/show calls only; custom process commands and probes are
+// These are version/show/auth-status calls only; custom commands and probes are
 // deliberately outside this function's callers.
-func doctorExec(ctx context.Context, cli string, args []string, overrides map[string]string) ([]byte, error) {
+func doctorExec(ctx context.Context, cli string, args []string, overrides map[string]string, workdir string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Dir = workdir
 	cmd.WaitDelay = time.Second
 	cmd.Env = os.Environ()
 	keys := make([]string, 0, len(overrides))
@@ -380,6 +401,9 @@ func doctorExec(ctx context.Context, cli string, args []string, overrides map[st
 	cmd.Stdout = buf
 	cmd.Stderr = io.Discard
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if buf.exceeded {
 		return nil, errors.New("diagnostic output limit exceeded")
 	}

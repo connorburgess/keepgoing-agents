@@ -62,7 +62,7 @@ func (f *doctorFixture) run(t *testing.T, invoke doctorRun, extra ...string) (in
 	}
 	return code, r, out.String()
 }
-func successfulDoctorRun(_ context.Context, _ string, args []string, _ map[string]string) ([]byte, error) {
+func successfulDoctorRun(_ context.Context, _ string, args []string, _ map[string]string, _ string) ([]byte, error) {
 	if reflect.DeepEqual(args, []string{"--version"}) {
 		return []byte("codex-cli 1.2.3\n"), nil
 	}
@@ -82,7 +82,7 @@ func doctorCheckByID(t *testing.T, r doctorReport, id string) doctorCheck {
 func TestDoctorReadOnlyAndStructuredOutput(t *testing.T) {
 	f := newDoctorFixture(t)
 	var calls [][]string
-	code, r, _ := f.run(t, func(ctx context.Context, cli string, args []string, env map[string]string) ([]byte, error) {
+	code, r, _ := f.run(t, func(ctx context.Context, cli string, args []string, env map[string]string, workdir string) ([]byte, error) {
 		if cli != f.executable {
 			t.Fatalf("wrong executable %q", cli)
 		}
@@ -90,7 +90,7 @@ func TestDoctorReadOnlyAndStructuredOutput(t *testing.T) {
 			t.Fatal("command has no timeout")
 		}
 		calls = append(calls, args)
-		return successfulDoctorRun(ctx, cli, args, env)
+		return successfulDoctorRun(ctx, cli, args, env, workdir)
 	})
 	if code != 0 || r.SchemaVersion != 1 || r.ControlState != "disabled" || r.TargetAgent.BBThread != "thr_example" {
 		t.Fatalf("bad report: %d %+v", code, r)
@@ -122,7 +122,7 @@ func TestDoctorOfflineNeverExecutesOrChangesControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, r, _ := f.run(t, func(context.Context, string, []string, map[string]string) ([]byte, error) {
+	code, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
 		t.Fatal("offline executed a command")
 		return nil, nil
 	}, "--offline")
@@ -148,8 +148,8 @@ func TestDoctorRedactsErrorsAndAccountValues(t *testing.T) {
 	f.loop["adapter"] = "codex"
 	f.loop["codex"] = map[string]any{"cli": f.executable, "workdir": f.root, "env": map[string]string{"CODEX_HOME": account, "EXAMPLE_SECRET": doctorPrivate}}
 	f.save(t)
-	code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, env map[string]string) ([]byte, error) {
-		if !reflect.DeepEqual(args, []string{"--version"}) || env["CODEX_HOME"] != account {
+	code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, env map[string]string, workdir string) ([]byte, error) {
+		if (!reflect.DeepEqual(args, []string{"--version"}) && !reflect.DeepEqual(args, []string{"login", "status"})) || env["CODEX_HOME"] != account || workdir != f.root {
 			t.Fatal("wrong account or command")
 		}
 		return []byte(doctorPrivate), errors.New(doctorPrivate)
@@ -260,7 +260,7 @@ func TestDoctorSkipsCustomCommands(t *testing.T) {
 	f.loop["adapter"] = "process"
 	f.loop["process"] = map[string]any{"status_command": []string{f.executable, "status"}, "resume_command": []string{f.executable, "send"}}
 	f.save(t)
-	code, r, _ := f.run(t, func(context.Context, string, []string, map[string]string) ([]byte, error) {
+	code, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
 		t.Fatal("custom process executed")
 		return nil, nil
 	})
