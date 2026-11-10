@@ -1,17 +1,20 @@
 # Supervising an agent chat
 
-A chat thread in an agent workspace such as BB is a loop that a person also talks to. keepgoing can supervise one. It has to tell three situations apart, and it does so from structured status only:
+A chat thread in an agent workspace such as BB is a loop that a person also talks to. keepgoing can supervise one. It has to tell these situations apart, and it does so from structured status only:
 
 | The thread is | keepgoing |
 | --- | --- |
 | working: status active and progress is visible | leaves it alone |
 | stopped with nothing pending: status idle, no pending interaction, loop not marked awaiting user | wakes it with the loop prompt |
+| task explicitly marked complete | sends nothing until `resume` reopens it |
 | waiting on a person: a pending permission prompt, question, or form, or the loop marked awaiting user | sends nothing, and reports `await_user` once |
 
 The second row is the common failure. An agent ends its turn asking the person to run a command, and the thread sits idle until the person comes back. keepgoing turns that into one of two outcomes:
 
 - **The agent keeps going with other work.** A loop almost always has a roadmap. The wake prompt points the agent at it, so a task needing the person blocks only itself while the agent moves to the next item.
 - **The person is pinged.** When nothing else can move, the agent runs `keepgoing await-user --note "..."`. That stops the wakes and sends an `await_user` report with the note, so the person hears about it right away instead of finding out later.
+
+When all authorized work is finished, the agent runs `keepgoing complete --note "Task verified"`. This holds the loop across restarts until explicit `resume`. It does not stop the current turn, so the agent can finish its final report. See [task completion](operations.md#completing-a-task).
 
 ## Example
 

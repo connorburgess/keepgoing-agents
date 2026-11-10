@@ -22,6 +22,7 @@ type File struct {
 	Paused       bool      `json:"paused"`
 	Stop         bool      `json:"stop"`
 	AwaitingUser bool      `json:"awaitingUser"`
+	Completed    bool      `json:"completed,omitempty"`
 	Note         string    `json:"note,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
@@ -58,7 +59,7 @@ func Save(stateDir string, f File) error {
 
 // Gate converts the file into the decision engine's view of it.
 func (f File) Gate() decide.Control {
-	return decide.Control{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser}
+	return decide.Control{Enabled: f.Enabled, Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed}
 }
 
 // Summary is a one-line human description.
@@ -72,6 +73,8 @@ func (f File) Summary() string {
 		return "paused"
 	case f.AwaitingUser:
 		return "awaiting user"
+	case f.Completed:
+		return "completed"
 	default:
 		return "enabled"
 	}

@@ -26,7 +26,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
 
-Setup currently uses configuration files. Guided task setup, explicit task completion, diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Today, use `await-user`, pause, stop, or disable to hold a loop when its work is finished; there is no dedicated completion state yet. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
+Setup currently uses configuration files. Guided task setup, diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
 
 ## Install
 
@@ -61,6 +61,7 @@ Nothing is sent until you run `enable`. A missing control file means disabled.
 Control the loop at any time:
 
 ```sh
+keepgoing complete --note "Task verified"  # finish the task; hold future wakes
 keepgoing pause --note "reviewing by hand"
 keepgoing resume
 keepgoing stop                 # stop the running turn, then send nothing more

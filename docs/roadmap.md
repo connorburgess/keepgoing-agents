@@ -44,11 +44,11 @@ See [integrations.md](integrations.md) for what is verified live.
 
 keepgoing is the loop runner. A user supplies a task, chooses an agent, and starts the loop; a separate loop skill is not required. The current prompt and idle-wake mechanism already repeats work. This milestone makes task setup, completion, recovery, and operation one understandable experience. An optional agent skill may explain the CLI, but cannot be a prerequisite for ordinary use.
 
-The items below are planned, not shipped commands. Implement one focused PR at a time. Work in the order below, with provider discovery able to proceed independently of setup. A live check needing an account or host blocks only that check. Record evidence and limitations in [integrations.md](integrations.md).
+Unchecked items below are planned, not shipped commands. Implement one focused PR at a time. Work in the order below, with provider discovery able to proceed independently of setup. A live check needing an account or host blocks only that check. Record evidence and limitations in [integrations.md](integrations.md).
 
 ### 1. Task lifecycle and guided setup
 
-- [ ] Define an explicit task-completion signal and CLI control, separate from pause, stop, and awaiting a person. Completion must survive supervisor restarts, prevent further wakes, appear in status, and leave a clear way to start a new task. Never infer completion by reading transcript prose.
+- [x] Add explicit task completion with `keepgoing complete --note`, persisted in control state and shown in status. It holds wakes and probes across restarts; `resume` explicitly reopens the task with the current target/session and any revised prompt. Completion is never inferred from transcript prose. See [operations](operations.md#completing-a-task).
 - [ ] Add guided `keepgoing init`: collect the task or task file, project, agent/session, optional accounts, fallback order, and operating limits. Detect installed supported CLIs and offer a single-agent default.
 - [ ] Generate the loop prompt and control instructions, including how the agent marks completion or requests human input. The agent evaluates task progress; keepgoing consumes explicit control and structured provider status.
 - [ ] Store configuration and runtime state outside the checkout. Show the resolved target and planned actions before enabling. Preserve existing configuration, account logins, and restrictive permission settings.

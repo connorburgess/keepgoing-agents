@@ -63,7 +63,7 @@ See [testing.md](testing.md) for the per-platform results. The suite passes on m
 
 ## Planned integrations
 
-This section describes future work, not additional supported adapters. keepgoing owns the repeated task prompt, supervision, recovery, and control state. Users should not need a separate loop skill. Task completion will be an explicit control signal, not a phrase extracted from a transcript; see the [usability milestone](roadmap.md#next-first-supervised-loop-in-five-minutes).
+This section describes future work, not additional supported adapters. keepgoing owns the repeated task prompt, supervision, recovery, and control state. Users should not need a separate loop skill. Task completion is an explicit control signal, not a phrase extracted from a transcript; see the [usability milestone](roadmap.md#next-first-supervised-loop-in-five-minutes).
 
 There are two distinct integration targets: running an agent CLI against a project opened in any editor, and controlling an existing conversation inside an IDE. The first does not imply the second. A custom process wrapper is possible today only when it supplies the required structured status and control commands; the example scripts are placeholders, not working Cursor or Antigravity integrations.
 

@@ -438,3 +438,85 @@ func TestRetargetPrimaryAppliesItsModel(t *testing.T) {
 		t.Errorf("calls = %s", f.read("calls"))
 	}
 }
+
+func TestEndToEndTaskCompletion(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	if code, out, errs := f.run("complete", "--note", "Example task verified"); code != 0 || !strings.Contains(out, "completed") {
+		t.Fatalf("complete: %d %s %s", code, out, errs)
+	}
+	// Fresh command invocations reload the durable hold. Enabling an already
+	// completed loop must not reopen it, even after disable/enable.
+	for _, cmd := range []string{"status", "disable", "enable", "complete"} {
+		if code, _, errs := f.run(cmd); code != 0 {
+			t.Fatal(errs)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if v := f.tick(); v["action"] != "none" || v["reason"] != "completed" || v["control"] != "completed" {
+			t.Fatalf("completed loop acted: %v", v)
+		}
+	}
+	if f.read("calls") != "" || f.read("probes") != "" {
+		t.Fatal("completed loop queried provider or probed")
+	}
+	code, out, errs := f.run("status", "--json")
+	var st struct {
+		ControlState string
+		Control      struct {
+			Completed bool
+			Note      string
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &st); code != 0 || err != nil || st.ControlState != "completed" || !st.Control.Completed || st.Control.Note != "Example task verified" {
+		t.Fatalf("status: %s %s %v", out, errs, err)
+	}
+	// An explicit resume reopens the task. It remains disabled if the user
+	// disabled supervision; enable is still a separate gate.
+	f.run("disable")
+	f.run("resume")
+	if v := f.tick(); v["reason"] != "disabled" {
+		t.Fatalf("resume enabled a disabled loop: %v", v)
+	}
+	f.run("enable")
+	if v := f.tick(); v["action"] != "wake" {
+		t.Fatalf("resumed task did not wake: %v", v)
+	}
+}
+
+func TestDaemonNoticesCompletionAndKeepsItAfterRestart(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+	for restart := 0; restart < 2; restart++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		var out, errb safeBuffer
+		done := make(chan int, 1)
+		go func() { done <- run(ctx, []string{"daemon", "-c", f.cfg}, &out, &errb) }()
+		waitFor(t, func() bool { return strings.Contains(out.String(), "\n") }, "first daemon tick")
+		if restart == 0 {
+			if code, _, errs := f.run("complete"); code != 0 {
+				cancel()
+				t.Fatal(errs)
+			}
+		}
+		waitFor(t, func() bool { return strings.Contains(out.String(), `"reason":"completed"`) }, "completed task hold")
+		cancel()
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Fatalf("daemon exit %d: %s", code, errb.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon did not exit")
+		}
+		if restart == 0 {
+			// A restarted daemon must not query or stop the agent.
+			write(t, filepath.Join(f.bbDir, "calls"), "", 0o600)
+		} else if f.read("calls") != "" {
+			t.Fatalf("restarted completed loop called provider: %s", f.read("calls"))
+		}
+	}
+}

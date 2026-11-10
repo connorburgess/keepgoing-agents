@@ -170,14 +170,16 @@ func (t *tick) run() error {
 	if gate.Stop {
 		return t.stop(target, agent, gate)
 	}
-	if !gate.Enabled || gate.Paused || gate.AwaitingUser {
+	if !gate.Enabled || gate.Paused || gate.AwaitingUser || gate.Completed {
 		switch {
 		case !gate.Enabled:
 			res.Reason = "disabled"
 		case gate.Paused:
 			res.Reason = "paused"
-		default:
+		case gate.AwaitingUser:
 			res.Reason = "awaiting user"
+		default:
+			res.Reason = "completed"
 		}
 		res.State, res.Window = "not observed", "not checked"
 		return t.record(nil)

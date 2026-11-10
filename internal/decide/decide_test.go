@@ -31,6 +31,16 @@ func TestDecide(t *testing.T) {
 		{"stop wins over pause", func(i *Input) { i.Control.Stop = true; i.Control.Paused = true; i.Obs.State = Active }, Stop},
 		{"disabled", func(i *Input) { i.Control.Enabled = false }, None},
 		{"paused", func(i *Input) { i.Control.Paused = true }, None},
+		{"completed blocks idle wake", func(i *Input) { i.Control.Completed = true }, None},
+		{"completed blocks switch-back", func(i *Input) { i.Control.Completed, i.SwitchBackReady = true, true }, None},
+		{"completed blocks handoff", func(i *Input) {
+			i.Control.Completed = true
+			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
+			i.Failover = Failover{Eligible: true, Available: true}
+		}, None},
+		{"completed blocks reprompt", func(i *Input) { i.Control.Completed = true; i.Obs.State = Error }, None},
+		{"completed blocks nudge", func(i *Input) { i.Control.Completed = true; i.Obs.State, i.UnchangedFor = Active, time.Hour }, None},
+		{"stop wins over completion", func(i *Input) { i.Control.Stop, i.Control.Completed = true, true; i.Obs.State = Active }, Stop},
 		{"awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None},
 		{"target gone needs a person", func(i *Input) { i.Obs.Gone = true }, AwaitUser},
 		{"outside window", func(i *Input) { i.InWindow = false }, None},
