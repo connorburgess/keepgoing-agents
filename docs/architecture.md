@@ -32,6 +32,7 @@ internal/control            control.json: enabled, paused, stop, awaitingUser, c
 internal/state              state.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks and the daemon
+internal/daemoninfo         private loopback diagnostics for a running daemon
 internal/netretry           retry only while the network is down
 internal/ciwait             wait for CI on an exact commit
 ```
@@ -69,5 +70,6 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
+| `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `tick.lock`, `daemon.lock` | the tool | advisory locks, released by the OS on exit |
 | `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |

@@ -1,0 +1,240 @@
+// Package daemoninfo exposes bounded, loopback-only diagnostics for a daemon.
+// The private endpoint record contains a random key, not process identity.
+// A fresh challenge proves that a responder owns that key; stale records alone
+// never establish liveness. No task, account, or provider data is exchanged.
+package daemoninfo
+
+import (
+	"bufio"
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const FileName = "daemon-endpoint.json"
+
+type endpoint struct {
+	Address string `json:"address"`
+	Key     string `json:"key"`
+}
+
+// Snapshot is a response from a running daemon, not a persisted heartbeat.
+type Snapshot struct {
+	StateID     string     `json:"stateID"` // binds the response to its state directory without exposing the path
+	Version     string     `json:"version"`
+	StartedAt   time.Time  `json:"startedAt"`
+	ObservedAt  time.Time  `json:"observedAt"`
+	Phase       string     `json:"phase"`
+	NextCheckAt *time.Time `json:"nextCheckAt,omitempty"`
+	DryRun      bool       `json:"dryRun"`
+}
+
+type response struct {
+	Snapshot json.RawMessage `json:"snapshot"`
+	MAC      string          `json:"mac"`
+}
+
+// Server must be started while the caller holds the daemon lock and closed
+// before that lock is released. Diagnostics do not acquire the daemon lock.
+type Server struct {
+	listener net.Listener
+	path     string
+	endpoint endpoint
+	done     chan struct{}
+	mu       sync.Mutex
+	snapshot Snapshot
+}
+
+func Start(stateDir, version string, dryRun bool) (*Server, error) {
+	identity, err := stateIdentity(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{listener: l, path: filepath.Join(stateDir, FileName), endpoint: endpoint{l.Addr().String(), hex.EncodeToString(key)}, done: make(chan struct{}), snapshot: Snapshot{StateID: identity, Version: version, StartedAt: time.Now().UTC(), Phase: "checking", DryRun: dryRun}}
+	b, _ := json.Marshal(s.endpoint)
+	f, err := os.CreateTemp(stateDir, ".daemon-endpoint-*")
+	if err != nil {
+		l.Close()
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(b); err == nil {
+		err = f.Chmod(0o600)
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), s.path)
+	}
+	if err != nil {
+		l.Close()
+		return nil, err
+	}
+	go s.serve()
+	return s, nil
+}
+
+func (s *Server) Update(phase string, next *time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot.Phase, s.snapshot.NextCheckAt = phase, nil
+	if next != nil {
+		v := next.UTC()
+		s.snapshot.NextCheckAt = &v
+	}
+}
+
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.listener.Close()
+	<-s.done
+	// Preserve a record replaced by another writer instead of deleting it.
+	if ep, err := readEndpoint(s.path); err == nil && ep == s.endpoint {
+		_ = os.Remove(s.path)
+	}
+}
+
+func (s *Server) serve() {
+	defer close(s.done)
+	for {
+		c, err := s.listener.Accept()
+		if err != nil {
+			return
+		}
+		// Serial and bounded: a local caller cannot create unbounded goroutines.
+		_ = c.SetDeadline(time.Now().Add(200 * time.Millisecond))
+		nonce, err := bufio.NewReader(io.LimitReader(c, 65)).ReadString('\n')
+		if err == nil && validKey(strings.TrimSuffix(nonce, "\n")) {
+			s.mu.Lock()
+			snap := s.snapshot
+			snap.ObservedAt = time.Now().UTC()
+			s.mu.Unlock()
+			b, _ := json.Marshal(snap)
+			_ = json.NewEncoder(c).Encode(response{b, sign(s.endpoint.Key, nonce, b)})
+		}
+		_ = c.Close()
+	}
+}
+
+func validKey(s string) bool { b, err := hex.DecodeString(s); return err == nil && len(b) == 32 }
+
+func stateIdentity(dir string) (string, error) {
+	p, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	p, err = filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256([]byte(p))
+	return hex.EncodeToString(h[:]), nil
+}
+
+func sign(key, nonce string, b []byte) string {
+	k, _ := hex.DecodeString(key)
+	m := hmac.New(sha256.New, k)
+	m.Write([]byte(nonce))
+	m.Write(b)
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func readEndpoint(path string) (endpoint, error) {
+	var ep endpoint
+	info, err := os.Lstat(path)
+	if err != nil {
+		return ep, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1024 {
+		return ep, errors.New("invalid endpoint record")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ep, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 1025))
+	if err != nil || len(b) > 1024 {
+		return ep, errors.New("unreadable endpoint record")
+	}
+	if json.Unmarshal(b, &ep) != nil || !validKey(ep.Key) {
+		return ep, errors.New("invalid endpoint record")
+	}
+	host, port, err := net.SplitHostPort(ep.Address)
+	n, numErr := strconv.Atoi(port)
+	if err != nil || host != "127.0.0.1" || numErr != nil || n < 1 || n > 65535 {
+		return endpoint{}, errors.New("invalid loopback endpoint")
+	}
+	return ep, nil
+}
+
+// Query never creates state. The caller supplies a deadline; all failures stay
+// unverified. The key is not sent over the socket or exposed in errors.
+func Query(ctx context.Context, stateDir string) (Snapshot, error) {
+	var snap Snapshot
+	ep, err := readEndpoint(filepath.Join(stateDir, FileName))
+	if err != nil {
+		return snap, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	c, err := (&net.Dialer{}).DialContext(ctx, "tcp4", ep.Address)
+	if err != nil {
+		return snap, errors.New("daemon endpoint did not respond")
+	}
+	defer c.Close()
+	deadline, _ := ctx.Deadline()
+	_ = c.SetDeadline(deadline)
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return snap, err
+	}
+	challenge := hex.EncodeToString(nonce) + "\n"
+	if _, err := io.WriteString(c, challenge); err != nil {
+		return snap, errors.New("daemon challenge failed")
+	}
+	var reply response
+	if json.NewDecoder(io.LimitReader(c, 8192)).Decode(&reply) != nil {
+		return snap, errors.New("invalid daemon response")
+	}
+	if !hmac.Equal([]byte(reply.MAC), []byte(sign(ep.Key, challenge, reply.Snapshot))) {
+		return snap, errors.New("daemon response could not be verified")
+	}
+	if json.Unmarshal(reply.Snapshot, &snap) != nil || snap.StartedAt.IsZero() || snap.ObservedAt.IsZero() || (snap.Phase != "checking" && snap.Phase != "waiting") {
+		return Snapshot{}, errors.New("invalid daemon snapshot")
+	}
+	identity, err := stateIdentity(stateDir)
+	if err != nil || snap.StateID != identity {
+		return Snapshot{}, errors.New("daemon response belongs to another state directory")
+	}
+	return snap, nil
+}

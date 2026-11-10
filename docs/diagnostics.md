@@ -8,7 +8,7 @@ keepgoing doctor -c /private/example-loop/keepgoing.yaml --json
 keepgoing doctor -c /private/example-loop/keepgoing.yaml --offline
 ```
 
-The ordinary command resolves configured executable paths and runs supported agents' `--version` commands, BB's `thread show <id> --json`, and headless providers' login-status commands described below. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
+The ordinary command resolves configured executable paths and runs supported agents' `--version` commands, BB's `thread show <id> --json`, and headless providers' login-status commands described below. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution and local daemon queries while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
 
 ## What it checks
 
@@ -60,10 +60,22 @@ keepgoing doctor -c /private/example-loop/keepgoing.yaml --stale-after 2h
 
 No history means no completed tick is recorded; enabling alone does not run a supervisor. A future timestamp warns about clock differences or a test using `--now`. A recent tick, including a dry-run tick, is historical evidence only: it does not prove the daemon or scheduler is still alive.
 
-Scheduler installation/liveness and its next scheduled check are **unavailable**. New ticks record their build label: doctor compares that historical label with its own and warns if they differ. Empty or `dev` labels cannot identify a build. A match does not prove which binary is currently running; a mismatch does not establish which is newer. Legacy tick records without a build label remain unavailable. The daemon interval in YAML does not describe an external scheduler and is not used to invent a next-run time. Inspect the daemon or scheduler directly until dedicated scheduler diagnostics are implemented.
+New ticks record their build label: doctor compares that historical label with its own and warns if they differ. Empty or `dev` labels cannot identify a build. A historical match does not prove which binary is currently running; a mismatch does not establish which is newer. Legacy tick records without a build label remain unavailable.
+
+## Live daemon diagnostics
+
+New `keepgoing daemon` instances provide a loopback-only diagnostic endpoint. Status and doctor send a fresh challenge and verify the reply against the private endpoint record and the state directory identity. A stale file, copied endpoint from another loop, or reused listening port cannot by itself establish liveness. Queries never acquire the daemon lock, start an agent, or alter control state. If diagnostics cannot start, the daemon warns and continues supervising.
+
+JSON includes `daemon` with `state` (`responsive`, `not_recorded`, `unavailable`, or `skipped`), an explanatory `message`, `binaryComparison`, `dryRun`, and `nextCheck`. A verified response also supplies `phase` (`checking` or `waiting`), `startedAt`, `observedAt`, and `nextCheckAt` while waiting. `scheduler` is `ok` only for a verified response; `supervisor.live_version` compares that daemon's build label, independently of the historical `supervisor.version` check. Raw build labels, the verification key, and endpoint address are withheld.
+
+A responding daemon is not necessarily making progress: it can be stuck in a check while its diagnostic endpoint still responds. The next normal check is due after the current pass plus the configured interval, subject to control-poll timing. Control changes can trigger an earlier pass. These times are not a promise of execution through sleep, shutdown, or a stuck pass. Dry-run daemons report their mode explicitly.
+
+The query is capped at one second (a shorter doctor `--timeout` applies). Endpoint records and responses have size limits; the endpoint binds only to `127.0.0.1`. The record is private runtime state and contains a random verification key, which is neither sent in requests nor printed in reports. Clean daemon shutdown removes its record. Failures remain unavailable, and `--offline` skips the query entirely.
+
+Older daemons and external schedulers, including BB automations, launchd, systemd, cron, and Task Scheduler, are **not inspected** by this interface. No endpoint does not mean no supervisor. Service installation is also unverified. The configured daemon interval is never used to invent an external scheduler's next-run time.
 
 Live headless session identity is **not implemented**. Doctor does not start an app-server or resume a session to infer it. Paid probe cost previews are planned; `fallbacks check` remains a separate explicit operation that makes model calls outside the scheduled daily cap. Doctor never runs it automatically.
 
 ## Verification
 
-Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, scheduler health, or Windows ACL support.
+Offline tests cover structured target results, account environment propagation, privacy, missing executables, corrupt records, stale/future timestamps, disabled or missing active fallbacks, and unchanged control state. Unix subprocess fixtures cover time and output limits and stderr suppression. Login fixtures cover logged-in/out signals, command failures, deadlines, working directories, separate account overrides, disabled fallbacks, extra-argument skips, and redaction. These checks do not establish server-side credential validity, paid handoff, external scheduler health, or Windows ACL support. Local daemon fixtures cover fresh challenges, wrong/copied/stale endpoints, deadlines, live build redaction, control changes, and state-directory reload rejection.

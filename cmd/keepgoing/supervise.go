@@ -14,6 +14,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
@@ -78,6 +79,12 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 		return exitFailed
 	}
 	defer l.Release()
+	monitor, monitorErr := daemoninfo.Start(cfg.Loop.StateDir, version, dryRun)
+	if monitorErr != nil {
+		e.errf("warning: live daemon diagnostics unavailable; supervision will continue")
+	} else {
+		defer monitor.Close()
+	}
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "started"})
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
 	for {
@@ -85,6 +92,8 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 		// a restart. A broken edit keeps the last good config.
 		if fresh, err := config.Load(cfgPath); err != nil {
 			e.errf("config reload failed; keeping the previous config: %v", err)
+		} else if fresh.Loop.StateDir != cfg.Loop.StateDir {
+			e.errf("config reload changes state_dir; restart the daemon to apply it, keeping the previous config")
 		} else {
 			cfg = fresh
 		}
@@ -94,19 +103,21 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 		// Take the control signature before the pass, so a stop or pause
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
+		monitor.Update("checking", nil)
 		tickOnce(e, cfg, time.Time{}, dryRun, false)
-		if !waitForNext(e.ctx, cfg, sig) {
+		if !waitForNext(e.ctx, cfg, sig, monitor) {
 			return exitOK
 		}
 	}
 }
 
 // waitForNext returns false when the daemon should exit.
-func waitForNext(ctx context.Context, cfg *config.Config, sig string) bool {
+func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server) bool {
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
 	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
+	monitor.Update("waiting", &deadline)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -150,6 +161,7 @@ type statusOut struct {
 	TaskFile         string         `json:"taskFile,omitempty"`
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
+	Daemon           daemonStatus   `json:"daemon"`
 }
 
 // agentRef identifies the session an agent definition points at.
@@ -205,6 +217,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		out.TaskSource, out.TaskFile = "file", l.PromptFile
 	}
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
+	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
+	cancel()
+	if out.Daemon.State == "responsive" {
+		out.Runtime.NextCheck = out.Daemon.NextCheck
+	}
 	if out.TargetConfigured {
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
@@ -271,6 +289,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
 	}
 	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
+	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
+	if out.Daemon.State == "responsive" {
+		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
+	}
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
 	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
