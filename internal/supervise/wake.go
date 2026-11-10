@@ -33,6 +33,13 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 			return false
 		}
 	}
+	if timeout := cfg.Loop.Limits.NoProgressTimeout.Duration; timeout > 0 {
+		p, err := state.LoadProgress(cfg.Loop.StateDir)
+		now := time.Now()
+		if err != nil || p == nil || now.Before(p.ObservedAt) || p.Reached(now, timeout) || p.Sources != state.ProgressSources(cfg.Loop.Progress.Repositories) {
+			return false
+		}
+	}
 	inWindow, _, err := window.Inside(cfg.Loop.Window, time.Now())
 	if err != nil || !inWindow {
 		return false

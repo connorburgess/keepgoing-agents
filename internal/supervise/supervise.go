@@ -78,6 +78,7 @@ type Result struct {
 }
 
 type tick struct {
+	progress         *state.Progress
 	observedTarget   string
 	awaitingInput    bool
 	awaitingChildren []string
@@ -202,6 +203,24 @@ func (t *tick) run() error {
 		res.State, res.Window = "not observed", "not checked"
 		return t.record(t.sendAllowanceFailure(err))
 	}
+	if timeout := loop.Limits.NoProgressTimeout.Duration; timeout > 0 {
+		p, err := t.observeProgress()
+		if err != nil {
+			res.State, res.Window, res.Reason = "not observed", "not checked", "progress allowance unavailable; no automatic provider work"
+			return t.record(err)
+		}
+		t.progress = &p
+		if p.Reached(t.now, timeout) {
+			d := decide.Decide(decide.Input{Control: gate, NoProgressReached: true})
+			res.Action, res.Reason = string(d.Action), d.Reason
+			res.State, res.Window = "not observed", "not checked"
+			var actErr error
+			if !t.opts.DryRun {
+				actErr = t.act(nil, d)
+			}
+			return t.record(actErr)
+		}
+	}
 	if y := loop.Yield; y != nil {
 		busy, err := t.opts.Busy(t.ctx, *y)
 		if err != nil {
@@ -280,7 +299,13 @@ func (t *tick) run() error {
 
 	unchangedFor := time.Duration(0)
 	if len(loop.Progress.Repositories) > 0 {
-		f, err := t.opts.Fingerprint(loop.Progress.Repositories)
+		var f string
+		var err error
+		if t.progress != nil {
+			f = t.progress.Fingerprint
+		} else {
+			f, err = t.opts.Fingerprint(loop.Progress.Repositories)
+		}
 		if err != nil {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
@@ -288,6 +313,9 @@ func (t *tick) run() error {
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
 			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
 			t.st.Nudges = 0
+		}
+		if t.progress != nil {
+			t.st.LastProgressAt = t.progress.ChangedAt
 		}
 		unchangedFor = t.now.Sub(t.st.LastProgressAt)
 		res.UnchangedFor = unchangedFor.Truncate(time.Second).String()
@@ -718,4 +746,20 @@ func (t *tick) sendAllowanceFailure(err error) error {
 		return nil
 	}
 	return t.act(nil, d)
+}
+
+func (t *tick) observeProgress() (state.Progress, error) {
+	previous, err := state.LoadProgress(t.loop.StateDir)
+	if err != nil {
+		return state.Progress{}, err
+	}
+	if previous != nil && t.now.Before(previous.ObservedAt) {
+		return state.Progress{}, state.ErrProgressLedger
+	}
+	repositories := state.ProgressRepositories(t.loop.Progress.Repositories)
+	fingerprint, err := t.opts.Fingerprint(repositories)
+	if err != nil {
+		return state.Progress{}, fmt.Errorf("could not verify Git progress; no automatic provider work")
+	}
+	return state.ObserveProgress(t.loop.StateDir, previous, state.ProgressSources(repositories), fingerprint, t.now, t.opts.DryRun)
 }

@@ -72,8 +72,9 @@ type Loop struct {
 
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
-	Deadline string `yaml:"deadline,omitempty"`
-	MaxSends int64  `yaml:"max_sends,omitempty"`
+	NoProgressTimeout Duration `yaml:"no_progress_timeout,omitempty"`
+	Deadline          string   `yaml:"deadline,omitempty"`
+	MaxSends          int64    `yaml:"max_sends,omitempty"`
 }
 
 // DeadlineReached uses the host clock. Configuration validation rejects invalid
@@ -313,6 +314,14 @@ func (c *Config) Validate() error {
 	}
 	if l.StateDir == "" {
 		add("loop.state_dir is required")
+	}
+	if d := l.Limits.NoProgressTimeout.Duration; d != 0 {
+		if d < time.Minute {
+			add("loop.limits.no_progress_timeout must be zero or at least 1m")
+		}
+		if len(l.Progress.Repositories) == 0 {
+			add("loop.limits.no_progress_timeout requires progress.repositories")
+		}
 	}
 	if l.Limits.MaxSends < 0 {
 		add("loop.limits.max_sends must be nonnegative")

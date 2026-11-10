@@ -197,20 +197,21 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
-	SendAllowance   *sendAllowanceStatus `json:"sendAllowance,omitempty"`
-	Loop            string               `json:"loop"`
-	Primary         string               `json:"primary"`
-	Target          string               `json:"target"`
-	Control         control.File         `json:"control"`
-	ControlState    string               `json:"controlState"`
-	Deadline        string               `json:"deadline,omitempty"`
-	DeadlineReached bool                 `json:"deadlineReached"`
-	Window          string               `json:"window"`
-	InWindow        bool                 `json:"inWindow"`
-	State           state.File           `json:"state"`
-	Redundancy      *health.Summary      `json:"redundancy,omitempty"`
-	StateDir        string               `json:"stateDir"`
-	Version         string               `json:"version"`
+	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
+	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
+	Loop              string                   `json:"loop"`
+	Primary           string                   `json:"primary"`
+	Target            string                   `json:"target"`
+	Control           control.File             `json:"control"`
+	ControlState      string                   `json:"controlState"`
+	Deadline          string                   `json:"deadline,omitempty"`
+	DeadlineReached   bool                     `json:"deadlineReached"`
+	Window            string                   `json:"window"`
+	InWindow          bool                     `json:"inWindow"`
+	State             state.File               `json:"state"`
+	Redundancy        *health.Summary          `json:"redundancy,omitempty"`
+	StateDir          string                   `json:"stateDir"`
+	Version           string                   `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -221,6 +222,16 @@ type statusOut struct {
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+}
+
+// progressAllowanceStatus reports historical evidence without querying Git.
+type progressAllowanceStatus struct {
+	Timeout         string     `json:"timeout"`
+	ChangedAt       *time.Time `json:"changedAt,omitempty"`
+	ObservedAt      *time.Time `json:"observedAt,omitempty"`
+	Due             bool       `json:"due"`
+	Error           string     `json:"error,omitempty"`
+	BaselinePending bool       `json:"baselinePending,omitempty"`
 }
 
 // sendAllowanceStatus omits unknown counts when accounting cannot be read.
@@ -282,6 +293,23 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			remaining := max(int64(0), l.Limits.MaxSends-used)
 			out.SendAllowance.Used, out.SendAllowance.Remaining = &used, &remaining
 			out.SendAllowance.Reached = used >= l.Limits.MaxSends
+		}
+	}
+	if timeout := l.Limits.NoProgressTimeout.Duration; timeout > 0 {
+		a := &progressAllowanceStatus{Timeout: timeout.String()}
+		out.ProgressAllowance = a
+		p, err := state.LoadProgress(l.StateDir)
+		switch {
+		case err != nil:
+			a.Error = err.Error()
+		case p == nil:
+			a.BaselinePending = true
+		case now.Before(p.ObservedAt):
+			a.Error = "host clock precedes the last verified progress observation"
+		case p.Sources != state.ProgressSources(l.Progress.Repositories):
+			a.Error = "repository list changed; next tick must rebase without replenishing time"
+		default:
+			a.ChangedAt, a.ObservedAt, a.Due = &p.ChangedAt, &p.ObservedAt, p.Reached(now, timeout)
 		}
 	}
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
@@ -367,6 +395,16 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
 		} else {
 			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
+		}
+	}
+	if a := out.ProgressAllowance; a != nil {
+		switch {
+		case a.Error != "":
+			fmt.Fprintf(w, "progress:  unavailable (%s)\n", a.Error)
+		case a.BaselinePending:
+			fmt.Fprintf(w, "progress:  %s timeout; awaiting first verified baseline\n", a.Timeout)
+		default:
+			fmt.Fprintf(w, "progress:  %s timeout; last verified change %s (due: %t; next tick rechecks Git)\n", a.Timeout, a.ChangedAt.Format(time.RFC3339), a.Due)
 		}
 	}
 	if out.Deadline != "" {

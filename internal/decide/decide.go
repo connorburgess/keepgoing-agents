@@ -70,11 +70,12 @@ type Control struct {
 
 // Input is everything Decide needs.
 type Input struct {
-	Obs              Observation
-	Control          Control
-	InWindow         bool
-	SendLimitReached bool // total reserved send attempts reached the configured cap
-	DeadlineReached  bool // evaluated at the beginning of this check
+	Obs               Observation
+	Control           Control
+	InWindow          bool
+	NoProgressReached bool // verified Git metadata unchanged for the configured duration
+	SendLimitReached  bool // total reserved send attempts reached the configured cap
+	DeadlineReached   bool // evaluated at the beginning of this check
 
 	UnchangedFor    time.Duration // since the progress fingerprint last changed
 	SinceWake       time.Duration // since we last sent anything
@@ -161,6 +162,9 @@ func Decide(in Input) Decision {
 	}
 	if in.SendLimitReached {
 		return Decision{AwaitUser, "loop send limit reached; increase loop.limits.max_sends before resuming"}
+	}
+	if in.NoProgressReached {
+		return Decision{AwaitUser, "no Git progress within loop.limits.no_progress_timeout; inspect work and progress tracking before resuming"}
 	}
 	if o.Gone {
 		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}

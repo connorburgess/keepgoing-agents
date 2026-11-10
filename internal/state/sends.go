@@ -47,27 +47,39 @@ func ReserveSend(dir string, max int64) error {
 	if used >= max {
 		return ErrSendLimit
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return ErrSendLedger
-	}
-	f, err := os.CreateTemp(dir, ".sends-*")
-	if err != nil {
-		return ErrSendLedger
-	}
-	defer os.Remove(f.Name())
 	b, _ := json.Marshal(struct {
 		Version int   `json:"version"`
 		Used    int64 `json:"used"`
 	}{1, used + 1})
+	if err := saveAllowance(dir, SendsName, b); err != nil {
+		return ErrSendLedger
+	}
+	return nil
+}
+
+// saveAllowance syncs the replacement before publishing it. Callers hold tick.lock.
+// As with other runtime records, this is not a power-loss/storage guarantee.
+func saveAllowance(dir, name string, b []byte) error {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".allowance-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
 	if _, err = f.Write(append(b, '\n')); err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
-	if err != nil || closeErr != nil {
-		return ErrSendLedger
+	if err != nil {
+		return err
 	}
-	if err := os.Rename(f.Name(), filepath.Join(dir, SendsName)); err != nil {
-		return ErrSendLedger
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
+		return err
 	}
 	return nil
 }
