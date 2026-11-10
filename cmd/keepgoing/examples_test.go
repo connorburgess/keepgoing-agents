@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"io"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"path/filepath"
 	"testing"
 )
@@ -14,9 +12,8 @@ func TestExamplesValidate(t *testing.T) {
 		t.Fatalf("expected example configs, found %v", files)
 	}
 	for _, f := range files {
-		var out bytes.Buffer
-		if code := run(context.Background(), []string{"validate", "-c", f}, &out, io.Discard); code != 0 {
-			t.Errorf("%s does not validate", f)
+		if _, err := config.Load(f); err != nil {
+			t.Errorf("%s does not validate: %v", f, err)
 		}
 	}
 }

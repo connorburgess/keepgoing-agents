@@ -73,6 +73,9 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		return exitFailed
 	}
 	defer l.Release()
+	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
+		return ownershipError(e, err)
+	}
 	reg, err := health.Load(cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("%v", err)

@@ -28,7 +28,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports
-internal/control            control.json: enabled, paused, stop, awaitingUser, completed
+internal/control            control.json: holds, persistent BB ownership, serialized updates
 internal/state              state.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks and the daemon
@@ -39,7 +39,7 @@ internal/ciwait             wait for CI on an exact commit
 
 ## A tick, end to end
 
-1. Take the tick lock. If another tick holds it, exit 75.
+1. Take the tick lock. If another tick holds it, exit 75. The command layer verifies the calling BB owner or the running daemon's bound ownership generation before provider work.
 2. Load control, state, and the active target. The target is `primary` or a fallback id.
 3. If a stop is requested, observe the active target and stop it once if it is running. Record and end the tick.
 4. If disabled, paused, completed, or awaiting a person, record and stop here.
@@ -65,11 +65,19 @@ Everything the tool writes lives in `state_dir`, outside any repository:
 
 | File | Owner | Purpose |
 | --- | --- | --- |
-| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note |
+| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, last check decision/outcome and build label |
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
-| `tick.lock`, `daemon.lock` | the tool | advisory locks, released by the OS on exit |
+| `tick.lock`, `daemon.lock`, `control.lock` | the tool | advisory locks, released by the OS on exit |
 | `targets/<id>/` | the tool | headless turn files (`run.json`, prompt, stdout, stderr, exit code, session id) and the BB log cursor (`bb-cursor.json`) |
+
+## Ownership and control writes
+
+`enable` records `BB_THREAD_ID` when present. Ownership is persistent metadata; idle, missing, archived, or unavailable thread activity does not expire it. A different BB caller needs an explicit takeover. Calls without a BB identity use the existing claim without replacing it. This is a cooperative guard for local operators and schedulers, not authentication against a caller that can edit runtime files or environment variables.
+
+Claims and takeover hold the tick lock, then the control lock. Every runtime control read-modify-write uses the short control lock; pause and stop do not wait for the tick lock. Control contention returns exit 75 for retry. No provider query occurs under the control lock. An update callback can reject a claim without writing control. Low-level `control.Save` is for initialization/fixtures, not concurrent runtime updates.
+
+A daemon binds to the current owner ID and generation (including no owner). It checks the binding under the tick lock before ticks and early polls, and exits when it changes. Takeover cannot overlap an in-flight tick; it must retry after that tick releases the lock. Generations prevent a transfer back to a previous thread from reviving its old daemon. No BB thread is stopped, spawned, or re-parented by ownership handling.

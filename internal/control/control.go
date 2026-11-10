@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
 // FileName of the control file inside the state directory.
@@ -18,13 +19,14 @@ const FileName = "control.json"
 
 // File is the on-disk control record.
 type File struct {
-	Enabled      bool      `json:"enabled"`
-	Paused       bool      `json:"paused"`
-	Stop         bool      `json:"stop"`
-	AwaitingUser bool      `json:"awaitingUser"`
-	Completed    bool      `json:"completed,omitempty"`
-	Note         string    `json:"note,omitempty"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	Ownership    *Ownership `json:"ownership,omitempty"`
+	Enabled      bool       `json:"enabled"`
+	Paused       bool       `json:"paused"`
+	Stop         bool       `json:"stop"`
+	AwaitingUser bool       `json:"awaitingUser"`
+	Completed    bool       `json:"completed,omitempty"`
+	Note         string     `json:"note,omitempty"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
 }
 
 // Load reads the control file. A missing file yields a disabled record and
@@ -80,14 +82,47 @@ func (f File) Summary() string {
 	}
 }
 
-// Update applies fn to the current file and saves it.
+// Update serializes a read-modify-write with other control writers. Callers
+// that also need the tick lock acquire it first; stop/pause need only this short
+// control lock and can interrupt a long-running tick.
 func Update(stateDir string, fn func(*File)) (File, error) {
+	return UpdateChecked(stateDir, func(f *File) error { fn(f); return nil })
+}
+
+// UpdateChecked leaves control unchanged if the callback rejects the update.
+func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
+	l, err := lock.AcquireNamed(stateDir, lock.Control)
+	if err != nil {
+		return File{}, err
+	}
+	defer l.Release()
+	if err := CheckControlPath(stateDir); err != nil {
+		return File{}, err
+	}
 	f, err := Load(stateDir)
 	if err != nil {
 		return f, err
 	}
-	fn(&f)
+	if err := fn(&f); err != nil {
+		return f, err
+	}
 	return f, Save(stateDir, f)
+}
+
+// CheckControlPath refuses file aliases whose lock would belong to a different
+// state directory. A symlink to the state directory itself shares its locks.
+func CheckControlPath(stateDir string) error {
+	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("control.json must not be a symlink; use the original state directory")
+	}
+	return nil
 }
 
 func writeAtomic(path string, data []byte, mode os.FileMode) error {

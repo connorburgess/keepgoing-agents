@@ -24,7 +24,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 ## Looping and setup
 
-keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
+keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Enabling from a BB thread records a persistent [loop owner](docs/operations.md#one-owner-per-loop); another thread needs an explicit takeover. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
 
 `keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it.
 

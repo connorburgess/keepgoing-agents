@@ -81,6 +81,7 @@ func write(t *testing.T, path, body string, mode os.FileMode) {
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Setenv("BB_THREAD_ID", "")
 	dir := t.TempDir()
 	bbDir := filepath.Join(dir, "bb")
 	os.Mkdir(bbDir, 0o700)

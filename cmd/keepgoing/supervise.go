@@ -23,8 +23,14 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/window"
 )
 
-func validate(e env, cfg *config.Config, path string) int {
+func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
+	if err := validateOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0]); err != nil {
+		return ownershipError(e, err)
+	}
 	l := cfg.Loop
+	if len(takeOver) > 0 && takeOver[0] {
+		fmt.Fprintln(e.stdout, "ownership: validation only; use enable --take-over to transfer the claim")
+	}
 	fmt.Fprintf(e.stdout, "ok: %s (loop %s, %s)\n", path, l.Name, l.Describe())
 	if fb := cfg.FallbackSet; fb != nil {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
@@ -36,7 +42,7 @@ func validate(e env, cfg *config.Config, path string) int {
 }
 
 // tickOnce runs one pass under the tick lock.
-func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) int {
+func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another tick holds the lock; skipping")
@@ -47,6 +53,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) i
 		return exitFailed
 	}
 	defer l.Release()
+	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
+		return ownershipError(e, err)
+	}
 	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg)}
 	if fixedNow {
 		opts.Now = now
@@ -56,6 +65,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) i
 	fmt.Fprintln(e.stdout, string(out))
 	if err != nil {
 		e.errf("tick: %v", err)
+		if errors.Is(err, lock.ErrHeld) {
+			return exitSkipped
+		}
 		return exitFailed
 	}
 	if res.Yielded {
@@ -68,7 +80,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool) i
 // stop or pause is acted on within one control_poll rather than waiting for
 // the next interval. SIGINT or SIGTERM ends the daemon at once; a tick in
 // flight is cancelled and its child commands are killed.
-func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
+func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...bool) int {
 	l, err := lock.AcquireNamed(cfg.Loop.StateDir, lock.Daemon)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another daemon is running for %s", cfg.Loop.Name)
@@ -79,6 +91,10 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 		return exitFailed
 	}
 	defer l.Release()
+	lease, err := bindDaemonOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0])
+	if err != nil {
+		return ownershipError(e, err)
+	}
 	monitor, monitorErr := daemoninfo.Start(cfg.Loop.StateDir, version, dryRun)
 	if monitorErr != nil {
 		e.errf("warning: live daemon diagnostics unavailable; supervision will continue")
@@ -100,19 +116,25 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool) int {
 		if e.ctx.Err() != nil {
 			return exitOK
 		}
+		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
+			return ownershipError(e, err)
+		}
 		// Take the control signature before the pass, so a stop or pause
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		tickOnce(e, cfg, time.Time{}, dryRun, false)
-		if !waitForNext(e.ctx, cfg, sig, monitor) {
+		tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
+			return ownershipError(e, err)
+		}
+		if !waitForNext(e.ctx, cfg, sig, monitor, lease) {
 			return exitOK
 		}
 	}
 }
 
 // waitForNext returns false when the daemon should exit.
-func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server) bool {
+func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server, leases ...*ownerLease) bool {
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
@@ -128,7 +150,7 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
 			}
-			if pollWake(ctx, cfg) || controlSignature(cfg.Loop.StateDir) != sig {
+			if pollWake(ctx, cfg, leases...) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
@@ -138,12 +160,15 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 // Share the tick lock with manual ticks and retargets, and bound the whole
 // notification poll to one control cycle so a slow CLI cannot delay controls
 // by the ordinary adapter timeout. Lock contention waits for a later cycle.
-func pollWake(ctx context.Context, cfg *config.Config) bool {
+func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bool {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if err != nil {
 		return false
 	}
 	defer l.Release()
+	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
+		return len(leases) > 0
+	} // Return to the daemon's exit check.
 	ctx, cancel := context.WithTimeout(ctx, cfg.Loop.Daemon.ControlPoll.Duration)
 	defer cancel()
 	return supervise.PollWake(ctx, cfg, nil)
@@ -287,6 +312,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	} else {
 		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
 	}
+	if ctl.Ownership != nil {
+		fmt.Fprintf(w, "owner:     %s (generation %d)\n", ctl.Ownership.ThreadID, ctl.Ownership.Generation)
+		if p := ctl.Ownership.Previous; p != nil {
+			fmt.Fprintf(w, "previous owner: %s (%s)\n", p.ThreadID, p.Status)
+		}
+	}
 	fmt.Fprintf(w, "control:   %s", out.ControlState)
 	if ctl.Note != "" {
 		fmt.Fprintf(w, " (%s)", ctl.Note)
@@ -335,7 +366,14 @@ func when(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func controlCmd(e env, cfg *config.Config, cmd, note string) int {
+func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
+	if cmd == "enable" || cmd == "resume" {
+		l, err := lock.Acquire(cfg.Loop.StateDir)
+		if err != nil {
+			return ownershipError(e, err)
+		}
+		defer l.Release()
+	}
 	fn := map[string]func(*control.File){
 		"enable":     func(f *control.File) { f.Enabled = true },
 		"disable":    func(f *control.File) { f.Enabled = false },
@@ -345,16 +383,34 @@ func controlCmd(e env, cfg *config.Config, cmd, note string) int {
 		"complete":   func(f *control.File) { f.Completed = true },
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	f, err := control.Update(cfg.Loop.StateDir, func(f *control.File) {
-		fn(f)
+	f, err := control.UpdateChecked(cfg.Loop.StateDir, func(f *control.File) error {
+		caller := os.Getenv("BB_THREAD_ID")
+		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
+		if cmd == "enable" {
+			if err := control.ClaimOwner(f, os.Getenv("BB_THREAD_ID"), len(takeOver) > 0 && takeOver[0]); err != nil {
+				return err
+			}
+		}
+		if cmd == "resume" {
+			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
+				return err
+			}
+		}
+		if !transfer {
+			fn(f)
+		} // Transferring ownership preserves disabled too.
 		if note != "" {
 			f.Note = note
 		} else if cmd == "resume" {
 			f.Note = ""
 		}
+		return nil
 	})
 	if err != nil {
 		e.errf("%v", err)
+		if errors.Is(err, lock.ErrHeld) {
+			return exitSkipped
+		}
 		return exitFailed
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
@@ -371,6 +427,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string) int {
 		}
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
+	if cmd == "enable" && f.Ownership != nil {
+		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
+	}
 	return exitOK
 }
 
@@ -398,6 +457,9 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 		return exitFailed
 	}
 	defer l.Release()
+	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
+		return ownershipError(e, err)
+	}
 	st, err := state.Load(cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("%v", err)

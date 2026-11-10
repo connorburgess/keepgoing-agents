@@ -69,7 +69,7 @@ func doctorStateAccess(r *doctorReport, dir string, check func(string, uint32) e
 	for _, file := range []struct {
 		name string
 		mode uint32
-	}{{state.LogName, accessWrite}, {"tick.lock", accessRead | accessWrite}, {"daemon.lock", accessRead | accessWrite}} {
+	}{{state.LogName, accessWrite}, {"tick.lock", accessRead | accessWrite}, {"daemon.lock", accessRead | accessWrite}, {"control.lock", accessRead | accessWrite}} {
 		path := filepath.Join(p, file.name)
 		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {

@@ -61,7 +61,7 @@ func TestDoctorAccessMissingStateChecksNearestAncestorWithoutCreating(t *testing
 
 func TestDoctorAccessMatchesAppendLockAndAtomicWriteRequirements(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"control.json", "state.json", "health.json", "runs.jsonl", "tick.lock", "daemon.lock"} {
+	for _, name := range []string{"control.json", "state.json", "health.json", "runs.jsonl", "tick.lock", "daemon.lock", "control.lock"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(doctorPrivate), 0o400); err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +72,7 @@ func TestDoctorAccessMatchesAppendLockAndAtomicWriteRequirements(t *testing.T) {
 		got[p] = mode
 		return nil
 	})
-	want := map[string]uint32{dir: accessWrite | accessSearch, filepath.Join(dir, "runs.jsonl"): accessWrite, filepath.Join(dir, "tick.lock"): accessRead | accessWrite, filepath.Join(dir, "daemon.lock"): accessRead | accessWrite}
+	want := map[string]uint32{dir: accessWrite | accessSearch, filepath.Join(dir, "runs.jsonl"): accessWrite, filepath.Join(dir, "tick.lock"): accessRead | accessWrite, filepath.Join(dir, "daemon.lock"): accessRead | accessWrite, filepath.Join(dir, "control.lock"): accessRead | accessWrite}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("access checks: %v", got)
 	}

@@ -119,12 +119,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		note:       fs.String("note", "", "a short note stored in control.json"),
 		id:         fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
 	}
 	positional = append(positional, fs.Args()...)
+	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
+		e.errf("--take-over is only supported by enable, daemon, and validate")
+		return exitUsage
+	}
+	if *f.takeOver && *f.dryRun && cmd == "daemon" {
+		e.errf("daemon --take-over cannot be combined with --dry-run; use validate --take-over to preview")
+		return exitUsage
+	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {
 		e.errf("config: %v", err)
@@ -139,11 +148,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch cmd {
 	case "validate":
-		return validate(e, cfg, *f.cfgPath)
+		return validate(e, cfg, *f.cfgPath, *f.takeOver)
 	case "tick":
 		return tickOnce(e, cfg, now, *f.dryRun, *f.now != "")
 	case "daemon":
-		return daemon(e, cfg, *f.cfgPath, *f.dryRun)
+		return daemon(e, cfg, *f.cfgPath, *f.dryRun, *f.takeOver)
 	case "status":
 		if *f.staleAfter <= 0 {
 			e.errf("status: stale-after must be positive")
@@ -151,7 +160,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
 	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
-		return controlCmd(e, cfg, cmd, *f.note)
+		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [-c keepgoing.yaml]")
@@ -174,9 +183,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 type cliFlags struct {
-	staleAfter             *time.Duration
-	cfgPath, now, note, id *string
-	asJSON, dryRun, exact  *bool
+	staleAfter                      *time.Duration
+	cfgPath, now, note, id          *string
+	asJSON, dryRun, exact, takeOver *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in
