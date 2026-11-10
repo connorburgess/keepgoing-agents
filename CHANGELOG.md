@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Optional `loop.limits.deadline` and `init --deadline` hold future automatic supervision at the next check at/after an RFC3339 cutoff. The awaiting-user hold persists across restarts and is visible in status; stop and existing holds retain precedence. Child-outcome polls skip providers after the cutoff. This does not cancel running turns, cap spend, or restrict explicit manual operations. Covered by offline fixtures, not live providers.
+
+### Fixed
+
+- Setup now describes `--wake-every` as stall-nudge spacing; idle wakes follow the check cadence. No idle scheduling behavior changed, and per-turn nudge counts remain distinct from loop-wide work limits.
 
 ## 0.1.2 (2026-11-10)
 

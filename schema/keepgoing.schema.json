@@ -56,6 +56,17 @@
         "state_dir": {
           "type": "string"
         },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "deadline": {
+              "type": "string",
+              "anyOf": [{"format": "date-time"}, {"const": ""}],
+              "description": "RFC3339 cutoff; the next check persists an awaiting-user hold. Does not cancel running turns."
+            }
+          }
+        },
         "prompt": {
           "type": "string"
         },

@@ -106,6 +106,21 @@ A running headless turn cannot be steered or queued into. A nudge to a stalled h
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
 
+Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
+
+## limits
+
+Optional `loop.limits.deadline` is an absolute RFC3339 timestamp including a timezone, for example:
+
+```yaml
+loop:
+  # Other loop fields omitted.
+  limits:
+    deadline: "2030-01-01T18:00:00Z"
+```
+
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is implemented on `main`, not in v0.1.2. Total send-count, no-progress and monetary limits are not implemented.
+
 ## window
 
 This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.

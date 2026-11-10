@@ -188,6 +188,16 @@ func (t *tick) run() error {
 		res.State, res.Window = "not observed", "not checked"
 		return t.record(nil)
 	}
+	if loop.Limits.DeadlineReached(t.now) {
+		d := decide.Decide(decide.Input{Control: gate, DeadlineReached: true})
+		res.Action, res.Reason = string(d.Action), d.Reason
+		res.State, res.Window = "not observed", "not checked"
+		var actErr error
+		if !t.opts.DryRun {
+			actErr = t.act(nil, d)
+		}
+		return t.record(actErr)
+	}
 	if y := loop.Yield; y != nil {
 		busy, err := t.opts.Busy(t.ctx, *y)
 		if err != nil {

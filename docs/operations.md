@@ -88,6 +88,18 @@ To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `k
 
 Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
 
+## Loop deadline
+
+Set `loop.limits.deadline` to a timestamp with a timezone, or pass `--deadline "2030-01-01T18:00:00Z"` to `init`. There is no default deadline. Setup previews it in text and JSON; `status` exposes `deadline` and `deadlineReached`. These status fields describe the configured cutoff and host-clock comparison, not proof that a supervisor has run or that an agent stopped. Status itself changes no controls.
+
+Each ordinary tick compares its start time with the deadline. At equality or later, it records `await_user`, persists the reason in the existing control hold, and sends the subscribed awaiting-user report. This happens before automatic provider queries, yield, fingerprinting and all automatic probes/recovery. Repeated checks or supervisor restarts retain the hold and do not repeat that report. Child-outcome polling also skips providers after the cutoff and leaves hold persistence to the next ordinary tick. External schedulers retain their own cadence. Dry runs preview the decision and record diagnostic history without setting a hold, sending reports or calling providers.
+
+An in-flight check may finish past the deadline, and an already-running or queued agent turn is not cancelled. This is a cutoff for future supervision checks, not a real-time execution timeout, total-turn cap or monetary budget. It relies on the host clock; clock changes can move an unreached cutoff. After a hold is persisted, a clock rollback or deadline edit does not clear it. Stop retains precedence and can still cancel a running turn through its adapter.
+
+To continue, revise or remove the deadline under the task's existing authorization and explicitly `resume`. Resume alone with an expired deadline causes another hold on the next check. Enable, restart, retarget and ownership takeover do not extend the configured deadline. Existing disabled/pause/stop/completion/awaiting-user holds retain precedence. Manual operations, including `fallbacks check`, `retarget` activation and read-only `doctor` queries, remain explicit operations outside this automatic cutoff. Existing config-snapshot and ownership checks still apply.
+
+Implemented on `main`, not in v0.1.2. Verification uses decision tables, CLI and supervisor fixtures; no live provider or service deadline was exercised.
+
 ## Yielding to other work
 
 ```yaml
