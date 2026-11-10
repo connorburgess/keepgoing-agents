@@ -460,13 +460,19 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 		defer l.Release()
 	}
+	var completionDeclaredAt time.Time
 	fn := map[string]func(*control.File){
-		"enable":     func(f *control.File) { f.Enabled = true },
-		"disable":    func(f *control.File) { f.Enabled = false },
-		"pause":      func(f *control.File) { f.Paused = true },
-		"resume":     func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
-		"stop":       func(f *control.File) { f.Stop = true },
-		"complete":   func(f *control.File) { f.Completed = true },
+		"enable":  func(f *control.File) { f.Enabled = true },
+		"disable": func(f *control.File) { f.Enabled = false },
+		"pause":   func(f *control.File) { f.Paused = true },
+		"resume":  func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
+		"stop":    func(f *control.File) { f.Stop = true },
+		"complete": func(f *control.File) {
+			if !f.Completed {
+				completionDeclaredAt = time.Now().UTC()
+			}
+			f.Completed = true
+		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
 	f, err := control.UpdateChecked(cfg.Loop.StateDir, func(f *control.File) error {
@@ -502,6 +508,16 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
 		return exitFailed
+	}
+	if !completionDeclaredAt.IsZero() && cfg.Loop.Report != nil && cfg.Loop.Report.ReportsEvent("complete") {
+		// Completed was persisted under the control lock before any delivery.
+		// Repeated commands (including after an uncertain delivery) cannot replay it.
+		event := report.Event{Type: "complete", Loop: cfg.Loop.Name, At: completionDeclaredAt,
+			Text: cfg.Loop.Name + ": completion declared; keepgoing has not independently verified success.",
+			Data: map[string]any{"basis": "explicit_declaration", "verification": "not_recorded"}}
+		if err := reporter(e, cfg).Report(e.ctx, event); err != nil {
+			e.errf("warning: completion hold saved; report delivery unconfirmed (no automatic retry): %v", err)
+		}
 	}
 	if cmd == "await-user" {
 		text := cfg.Loop.Name + ": needs a person"

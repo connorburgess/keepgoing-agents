@@ -80,7 +80,13 @@ When the authorized work is finished and verified, the agent or operator runs:
 keepgoing complete -c keepgoing.yaml --note "Example task verified"
 ```
 
-This sets `control.completed` in `control.json` and records a control event in `runs.jsonl`. Status shows `completed` unless a higher-priority disabled, stop, pause, or awaiting-user hold is also set; JSON always exposes the completion flag. No model output or transcript text is inspected to decide completion. There is no completion webhook event yet.
+This sets `control.completed` in `control.json` and records a control event in `runs.jsonl`. Status shows `completed` unless a higher-priority disabled, stop, pause, or awaiting-user hold is also set; JSON always exposes the completion flag. No model output or transcript text is inspected to decide completion. On `main` (after v0.1.2), a new completion declaration also attempts a subscribed `complete` webhook event after saving control and appending the control log.
+
+The standard-format event is `keepgoing.complete`, with `basis: explicit_declaration` and `verification: not_recorded`. Both standard and text formats say that completion was declared and keepgoing has not independently verified success. This does not contradict verification performed by the operator or agent; keepgoing has no independent acceptance evidence in this version. The private control note, task/prompt text and evidence descriptions are omitted from this notification.
+
+Deduplication uses the persisted `completed` flag under the control lock. Only a false-to-true transition submits a report. Repeated `complete` commands, changed notes, enable, other holds, ticks and restarts do not replay it. An explicit `resume` clears completion, permitting a later declaration to submit a new report. Legacy completed records and declarations made without a subscription are not backfilled when reporting is enabled. A report describes the declaration at its recorded time; concurrent resume/stop or network delays may mean it no longer describes current controls.
+
+Completion delivery makes one HTTP attempt without automatic retries or redirects, including network errors and 5xx responses. HTTP acceptance is not proof of human receipt. Control is saved before delivery, and delivery does not retain the control lock: stop and pause remain available while the webhook waits. Report failures warn without undoing completion. A crash, log-append failure or reporter configuration failure after control is saved can lose the notification; repeated commands intentionally do not replay uncertain delivery. There is no delivery receipt ledger or retry command in this version. Do not resume/re-complete solely to retry a notification: resume reopens work. This is an at-most-once submission policy, not an exactly-once delivery guarantee; external writers, storage loss, deletion/rollback of private control state and older binaries are outside deduplication guarantees. Verification uses local webhook and command fixtures, not a live completion event from this project loop.
 
 On the next check, a completed loop skips observation, yield checks, progress reads, scheduled probes, wakes, retries, handoffs, and switch-back. The hold survives process restarts. A pass already in flight can finish before noticing the change. Completion does not terminate the current agent turn or cancel messages already queued by another caller; use `stop` when the running turn must end. Stop still wins even when completion is set.
 
@@ -157,7 +163,7 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `stop`, `error`, `probe_failed`, `test`, or `all`. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `complete` (unreleased), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete` is included in the default event list on `main`; an explicit event list must include it or `all`. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 

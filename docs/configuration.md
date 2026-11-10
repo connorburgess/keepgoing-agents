@@ -156,7 +156,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, stop, error` |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, complete, stop, error` (the `complete` event is unreleased, after v0.1.2) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |

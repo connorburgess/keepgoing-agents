@@ -203,6 +203,7 @@
                   "degraded",
                   "recovered",
                   "await_user",
+                  "complete",
                   "stop",
                   "error",
                   "probe_failed",
