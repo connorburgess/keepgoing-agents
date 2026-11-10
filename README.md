@@ -26,7 +26,7 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
 
-Setup currently uses configuration files. Guided task setup, diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
+`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it. Diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
 
 ## Install
 
@@ -46,19 +46,17 @@ Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on 
 
 ## Quick start
 
+With a build containing guided setup, run this from an existing Git project with at least one commit:
+
 ```sh
-cp examples/keepgoing.bb.yaml keepgoing.yaml        # edit the thread id and paths
-cp examples/fallbacks.yaml fallbacks.yaml           # list your real fallbacks
-keepgoing validate
-keepgoing fallbacks check                           # probe every candidate once
-keepgoing enable
-keepgoing tick                                      # or: keepgoing daemon
-keepgoing status
+keepgoing init
 ```
 
-Nothing is sent until you run `enable`. A missing control file means disabled.
+Choose a task and agent, review the resolved plan, then run the `validate`, `enable`, and `daemon` commands printed with your config path. The default is a single agent with no fallbacks. Setup does not run agents or probes, change logins, or install a scheduler. See [guided and scripted setup](docs/setup.md) for accounts, operating limits, and noninteractive flags.
 
-Control the loop at any time:
+For v0.1.1 or advanced configuration, copy the appropriate [example](examples/) to a private directory outside the checkout and edit its paths. Run commands with `-c /path/to/keepgoing.yaml`. Nothing is sent until you enable the loop and run ticks or a daemon; a missing control file means disabled.
+
+Control the loop at any time (add `-c` with your generated config path to each command):
 
 ```sh
 keepgoing complete --note "Task verified"  # finish the task; hold future wakes
@@ -72,6 +70,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 
 ## Documentation
 
+- [docs/setup.md](docs/setup.md): guided setup, scripted flags, existing accounts, and first-run limits.
 - [docs/architecture.md](docs/architecture.md): packages, boundaries, and the rules that do not bend.
 - [docs/configuration.md](docs/configuration.md): every field in `keepgoing.yaml`.
 - [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
