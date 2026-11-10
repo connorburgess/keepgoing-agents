@@ -48,6 +48,7 @@ type doctorReport struct {
 	Checks        []doctorCheck             `json:"checks"`
 	Sessions      map[string]*sessionStatus `json:"sessions,omitempty"`
 	Daemon        *daemonStatus             `json:"daemon,omitempty"`
+	BBAutomation  *bbAutomationStatus       `json:"bbAutomation,omitempty"`
 }
 
 func (r *doctorReport) add(id, status, message, fix string) {
@@ -64,6 +65,9 @@ func doctor(e env, args []string, run doctorRun) int {
 	offline := fs.Bool("offline", false, "inspect local files only; do not execute CLIs")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout per read-only CLI command")
 	stale := fs.Duration("stale-after", defaultStaleAfter, "warn when the last check is older; set above your scheduler interval")
+	bbAutomation := fs.String("bb-automation", "", "inspect an existing BB script automation ID (requires --bb-project)")
+	bbProject := fs.String("bb-project", "", "project owning the selected BB automation")
+	bbCLI := fs.String("bb-cli", "bb", "BB executable for the selected automation query")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -72,6 +76,10 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	if fs.NArg() != 0 || *timeout <= 0 || *stale <= 0 {
 		e.errf("doctor: no positional arguments; timeout and stale-after must be positive")
+		return exitUsage
+	}
+	if !validAutomationSelection(*bbAutomation, *bbProject) || (*bbAutomation == "" && *bbCLI != "bb") {
+		e.errf("doctor: --bb-automation and --bb-project require valid BB IDs together; --bb-cli requires that selection")
 		return exitUsage
 	}
 	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: unknownNextCheck, Checks: []doctorCheck{}}
@@ -179,6 +187,11 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.add("scheduler", schedulerStatus, d.Message, "Service installation and external schedulers are not verified; a responding daemon can still be waiting on a stuck check.")
 	r.add("supervisor.live_version", buildStatus, "Live daemon build comparison: "+d.BinaryComparison+".", "A different build label does not establish which is newer; empty and dev labels cannot identify a build.")
+	if *bbAutomation != "" {
+		s := inspectBBAutomation(e.ctx, *bbCLI, *bbAutomation, *bbProject, *offline, *timeout, run)
+		r.BBAutomation = &s
+		doctorAutomationResult(&r, s)
+	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
