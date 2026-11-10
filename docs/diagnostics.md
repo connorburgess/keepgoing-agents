@@ -31,6 +31,14 @@ Exit status is **1** if any check is `error`, **0** otherwise, and **2** for inv
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
 
+## Saved headless sessions
+
+For each configured primary or enabled fallback using the Claude Code or Codex headless adapter, doctor inspects `targets/<target>/session` under the loop's state directory. The `agent.<target>.session` check and the JSON `sessions` map identify the saved resume ID. Text output labels it as saved and unverified live. BB and custom process targets do not have these fields.
+
+Each map entry has `state` (`saved`, `missing`, or `unavailable`), an optional `id`, `source: "runner_session_file"`, `liveVerified: false`, and an explanatory `message`. Missing records are normal before a resume ID is saved. An unreadable or unrecognized record produces a warning without displaying its content. Only UUID-shaped IDs from regular files of at most 128 bytes are displayed; symlink records are not followed. Other ID formats still work as before in the runner, but diagnostics withhold them.
+
+This inspection works in offline mode, does not modify holds or session files, and never reads prompt, stdout, stderr, or transcript files. A saved ID may belong to a previous turn; it does not prove that a process is running, that provider history still exists, or that a session can resume under the current account/settings. A first turn can be active before any ID has been saved. Live identity checks remain planned.
+
 ## Headless login status
 
 For primary and enabled fallback headless agents, doctor runs the provider's status command with the target's environment overrides and working directory:
