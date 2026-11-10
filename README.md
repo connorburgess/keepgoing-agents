@@ -30,6 +30,8 @@ keepgoing already runs the loop: it sends the configured task prompt when the ag
 
 `keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status and saved resume IDs, private-file access, and recent tick history without model calls; [its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
 
+Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallbacks.md#preview-manual-probes). It shows the selected models, timeouts, and scheduled cap without executing probes or changing state. Dollar cost is unknown, and manual probes are outside the scheduled cap; remove `--dry-run` only when you intend to run them.
+
 `keepgoing status` now distinguishes current holds from [recorded decisions and outcomes](docs/operations.md#understanding-recorded-status), including failures, dry runs, stale history, and build-label differences. It also queries a running daemon for its current phase, next normal check time, and build comparison. External scheduler and live headless-session diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
 
 ## Install

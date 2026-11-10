@@ -49,7 +49,7 @@ Control:
   retarget <id|primary>    Point the loop at a fallback or back at the primary
 
 Fallbacks:
-  fallbacks check          Probe candidates now (--id ID, --exact for the target model)
+  fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
 
 Reporting:
@@ -114,7 +114,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	f := cliFlags{
 		cfgPath:    fs.String("c", "keepgoing.yaml", "path to the config file"),
 		asJSON:     fs.Bool("json", false, "print machine-readable JSON"),
-		dryRun:     fs.Bool("dry-run", false, "decide and record, send nothing, run no probes"),
+		dryRun:     fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:        fs.String("now", "", "RFC 3339 time to use instead of the clock"),
 		note:       fs.String("note", "", "a short note stored in control.json"),
 		id:         fs.String("id", "", "fallbacks check: only this candidate"),
@@ -159,7 +159,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return retarget(e, cfg, positional[0], *f.note)
 	case "fallbacks check":
-		return fallbacksCheck(e, cfg, now, *f.id, *f.exact, *f.asJSON)
+		if len(positional) != 0 {
+			e.errf("fallbacks check: use --id to select a candidate; positional arguments are not accepted")
+			return exitUsage
+		}
+		return fallbacksCheck(e, cfg, now, *f.id, *f.exact, *f.asJSON, *f.dryRun)
 	case "fallbacks list":
 		return fallbacksList(e, cfg, now, *f.asJSON)
 	case "report test":

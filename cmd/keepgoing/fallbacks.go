@@ -42,11 +42,27 @@ func needFallbacks(e env, cfg *config.Config) bool {
 // fallbacksCheck probes candidates now. Manual probes do not count toward
 // the scheduled daily cap. Exit 1 when the redundancy rule is not met, so a
 // scheduler or CI job can alert on it.
-func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact, asJSON bool) int {
+func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact, asJSON, dryRun bool) int {
 	if !needFallbacks(e, cfg) {
 		return exitUsage
 	}
 	fb := cfg.FallbackSet
+	plan, selected, err := planProbes(fb, only, exact)
+	if err != nil {
+		e.errf("%v", err)
+		return exitUsage
+	}
+	w := e.stderr
+	if dryRun {
+		w = e.stdout
+	}
+	if err := printProbePlan(w, plan, asJSON); err != nil {
+		e.errf("could not write probe plan; no probes run")
+		return exitFailed
+	}
+	if dryRun {
+		return exitOK
+	}
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("a tick is running; try again in a moment")
@@ -62,27 +78,14 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		e.errf("%v", err)
 		return exitFailed
 	}
-	tier := probe.Manual
-	if exact {
-		tier = probe.Exact
-	}
-	ran := 0
-	for _, c := range fb.Candidates {
-		if (only != "" && c.ID != only) || (only == "" && c.Disabled) {
-			continue
-		}
+	for _, c := range selected {
 		ctx, cancel := context.WithCancel(e.ctx)
-		r := probe.Run(ctx, c, tier, fb.Probe.Timeout.Duration)
+		r := probe.Run(ctx, c, plan.Tier, fb.Probe.Timeout.Duration)
 		cancel()
 		reg.Record(c.ID, r)
 		if err := probe.KeepFailure(cfg.Loop.StateDir, c.ID, r); err != nil {
 			e.errf("warning: could not keep failed probe output for %s: %v", c.ID, err)
 		}
-		ran++
-	}
-	if only != "" && ran == 0 {
-		e.errf("no fallback candidate %q", only)
-		return exitUsage
 	}
 	if err := reg.Save(cfg.Loop.StateDir); err != nil {
 		e.errf("%v", err)

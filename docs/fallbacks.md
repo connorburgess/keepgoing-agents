@@ -45,22 +45,36 @@ Other probe settings:
 
 A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
-Probe cost depends on the CLI:
+Probe cost depends on the CLI, account billing, model, context overhead, caching, and provider retries. keepgoing does not estimate a dollar amount or enforce a spending limit. A small prompt does not establish a small bill: one historical Codex probe used about 21,000 input tokens, most cached. That observation is not an estimate for future runs.
 
-- A Claude Code probe on a small model costs a fraction of a cent.
-- A Codex probe sends Codex's own system prompt. One real run used about 21,000 input tokens, most of them cached.
-
-Set `probe.every` and `probe.daily_cap` with that in mind.
+Set `probe.every` and `probe.daily_cap` with that in mind. The daily cap limits scheduled probe invocations per candidate, not dollars or all provider requests.
 
 There are three tiers:
 
-- **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. A passing probe of any tier also resets the interval. A failed manual or exact probe does not, so the scheduled re-check still runs. A failed scheduled probe sends a `probe_failed` report. They use `probe.model` when set, so a cheap model can confirm the path for almost nothing. `scheduled_disabled: true` turns them off.
+- **Scheduled probes** run during ticks inside the time window, at most every `probe.every` per candidate and at most `probe.daily_cap` times per UTC day. A passing probe of any tier also resets the interval. A failed manual or exact probe does not, so the scheduled re-check still runs. A failed scheduled probe sends a `probe_failed` report. They use `probe.model` when set, allowing a different model for the check. `scheduled_disabled: true` turns them off.
 - **Exact probes** run right before a handoff, against the candidate's real target model. A candidate that fails is skipped and the next one is tried.
 - **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it. It holds the tick lock while it runs, and it ignores pause and the time window. Naming a disabled candidate with `--id` probes it anyway.
 
 Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there.
 
 A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+
+## Preview manual probes
+
+Implemented on `main`; v0.1.1 does not include the preview. Inspect the plan before choosing to run paid probes:
+
+```sh
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --dry-run
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id candidate-a --exact --dry-run --json
+```
+
+Dry runs read configuration only: no provider command, lock, health update, or runtime-state write occurs. They work with paused, stopped, or completed loops and do not change those holds. Exit 0 means a plan was printed, not that any account or model is healthy. Unknown candidate IDs and positional arguments fail before any probe runs; use `--id` to select one candidate. Without `--id`, disabled candidates are omitted; an explicit ID includes a disabled candidate.
+
+The plan shows the selected candidates, providers, quota groups, probe kinds, effective models, timeouts, invocation count, and configured scheduled daily cap. The cap is explicitly **not applicable** to manual checks, including `--exact`. An empty model means the provider default is unresolved. Monetary cost and provider request count are unknown; custom commands may also have arbitrary side effects. Commands, environment values, task text, executable paths, and BB thread IDs are withheld.
+
+With `--json`, stdout contains a versioned `probe_plan` object with `schemaVersion: 1`. `estimatedCostUSD` is `null` and `costStatus` is `unknown`, except when no candidates are selected (`0` and `no_probes`). `scheduledCapApplies` is always false for this command. `invocationCount` counts selected probe invocations, not provider requests, tokens, or successful checks.
+
+Remove `--dry-run` to execute. The command prints the plan to stderr before probing, while stdout retains its existing health-result format. `--json` also formats that stderr plan as JSON. Execution proceeds without an interactive confirmation; failure to write the plan aborts it. The plan is not a reservation or a health check. Doctor never invokes these probes automatically. Offline fixtures verify selection, privacy, unchanged holds, and plan-before-execution ordering using a fake command; no paid model calls were used to test this feature.
 
 ## Defaults
 
