@@ -41,7 +41,11 @@ func TestRuntimeSummarySeparatesControlsAndHistory(t *testing.T) {
 		{"failed send", control.File{Enabled: true}, func(s *state.File) { s.LastCheck.Outcome = "failed" }, true, true, "check_failed", "last_check"},
 		{"after retarget", control.File{Enabled: true}, func(s *state.File) { s.ActiveTarget = "fallback-a" }, true, true, "unknown", "unavailable"},
 		{"after handoff", control.File{Enabled: true}, func(s *state.File) { s.ActiveTarget = "fallback-a"; s.LastCheck.Target = "fallback-a" }, true, true, "not_observed", "last_check"},
-		{"resume after hold", control.File{Enabled: true}, func(s *state.File) { s.LastCheck.ObservedTarget = ""; s.LastCheck.ObservedState = "not observed" }, true, true, "not_observed", "last_check"},
+		{"resume after hold", control.File{Enabled: true}, func(s *state.File) {
+			s.LastCheck.ObservedTarget = ""
+			s.LastCheck.ObservedState = "not observed"
+			s.LastCheck.Reason = "completed"
+		}, true, true, "not_observed", "last_check"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := state.File{CheckedAt: now, LastState: "active", LastCheck: &state.Check{At: now, Version: "v1.2.3", Target: "primary", ObservedTarget: "primary", ObservedState: "active", Action: "none", Reason: "active", Outcome: "succeeded"}}
@@ -51,6 +55,9 @@ func TestRuntimeSummarySeparatesControlsAndHistory(t *testing.T) {
 			got := describeRuntime(tc.ctl, st, tc.inWindow, tc.configured, now, 30*time.Minute, "v1.2.3")
 			if got.State != tc.want || got.Source != tc.source || !strings.HasPrefix(got.NextCheck, "unknown:") {
 				t.Fatalf("%+v", got)
+			}
+			if tc.name == "resume after hold" && got.Reason == "completed" {
+				t.Fatal("cleared completion hold presented as the current reason")
 			}
 		})
 	}

@@ -88,7 +88,7 @@ func describeRuntime(ctl control.File, st state.File, inWindow, targetConfigured
 		case c.Outcome != "succeeded":
 			r.State, r.Reason = "unknown", "recorded check outcome is unrecognized"
 		case c.ObservedTarget != st.Target():
-			r.State = "not_observed"
+			r.State, r.Reason = "not_observed", "the current target was not observed by the recorded check"
 		case c.AwaitingInput:
 			r.State = "recorded_awaiting_input"
 		default:
