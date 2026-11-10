@@ -32,6 +32,7 @@ type serviceReport struct {
 	ActiveState       string            `json:"activeState,omitempty"`
 	UnitFileState     string            `json:"unitFileState,omitempty"`
 	Execution         *serviceExecution `json:"execution,omitempty"`
+	Binding           *serviceBinding   `json:"binding,omitempty"`
 	Executable        *serviceBinary    `json:"executable,omitempty"`
 	Health            *serviceHealth    `json:"health,omitempty"`
 	Daemon            *daemonStatus     `json:"daemon,omitempty"`
@@ -175,11 +176,19 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 		} else {
 			r.Registration = serviceRegistration(e.ctx, h, p)
 		}
-		d := inspectDaemon(e.ctx, dir, version, false)
+		queryDaemon := func() daemonStatus { return inspectDaemon(e.ctx, dir, version, false) }
+		var d daemonStatus
+		if exists && p.Backend == "systemd" && r.Registration == "loaded" {
+			var binding serviceBinding
+			d, binding = inspectSystemdBinding(e.ctx, h, p, queryDaemon)
+			r.Binding = &binding
+		} else {
+			d = queryDaemon()
+		}
 		r.Daemon = &d
 		r.Message = "Registration is separate from daemon liveness; a responding daemon is not proven to belong to this service. Disabled overrides and other timers are not inspected."
 		if p.Backend == "systemd" {
-			r.Message = "Unit properties are separate from loop daemon liveness; a responding daemon is not proven to belong to this service. Unknown identity, overrides, or manager responses require inspection. Other timers are not inspected."
+			r.Message = "Unit properties and loop daemon responsiveness are separate observations; see binding for any verified relationship. Unknown identity, overrides, or manager responses require inspection. Other timers are not inspected."
 		}
 		health := assessServiceHealth(r)
 		r.Health = &health
@@ -345,6 +354,9 @@ func printService(e env, r serviceReport, asJSON bool, code int) int {
 			for _, f := range r.Health.Findings {
 				fmt.Fprintf(e.stdout, "%s [%s]: %s\n  Next: %s\n", f.Status, f.Code, f.Message, f.Fix)
 			}
+		}
+		if r.Binding != nil {
+			fmt.Fprintf(e.stdout, "service binding: %s; %s\n", r.Binding.State, r.Binding.Message)
 		}
 		if r.Executable != nil {
 			fmt.Fprintf(e.stdout, "service executable: %s; on-disk CLI comparison: %s\n%s\n", r.Executable.State, r.Executable.Comparison, r.Executable.Message)

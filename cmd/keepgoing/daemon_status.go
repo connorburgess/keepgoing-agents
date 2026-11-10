@@ -11,6 +11,8 @@ import (
 )
 
 type daemonStatus struct {
+	processID        int
+	invocationID     string
 	State            string     `json:"state"` // responsive, not_recorded, unavailable, skipped
 	Message          string     `json:"message"`
 	Phase            string     `json:"phase,omitempty"`
@@ -36,6 +38,7 @@ func inspectDaemon(ctx context.Context, dir, current string, offline bool) daemo
 	if err != nil {
 		return d
 	}
+	d.processID, d.invocationID = s.ProcessID, s.InvocationID
 	d.State, d.Message = "responsive", "A keepgoing daemon answered a fresh local challenge. This does not establish agent health or future execution."
 	d.Phase, d.StartedAt, d.ObservedAt, d.NextCheckAt, d.DryRun = s.Phase, &s.StartedAt, &s.ObservedAt, s.NextCheckAt, s.DryRun
 	d.BinaryComparison = compareCheckVersion(&state.Check{Version: s.Version}, current)

@@ -61,6 +61,15 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 	default:
 		add("registration_unknown", "unavailable", "Service registration could not be verified; unknown is not absence.", "Check manager access, service identity, and overrides. Raw manager output is withheld; no recovery action was taken.")
 	}
+	if b := r.Binding; b != nil {
+		switch b.State {
+		case "verified":
+		case "different":
+			add("service_daemon_differs", "warning", b.Message, "Inspect the manual daemon and recorded unit before any explicit recovery. Do not infer service ownership from the loop endpoint alone.")
+		default:
+			add("service_binding_unavailable", "unavailable", b.Message, "Check that the intended service is active and uses a daemon with identity metadata, then retry. No control changes were made.")
+		}
+	}
 	if b := r.Executable; b != nil {
 		switch b.State {
 		case "missing", "non_regular", "no_execute_bits":
@@ -94,13 +103,13 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 		} else {
 			switch d.BinaryComparison {
 			case "different":
-				add("daemon_build_differs", "warning", "The responding loop daemon's build label differs from this CLI. It is not proven to belong to this service.", "Check the intended binary and service paths before explicitly restarting. Different labels do not establish which build is newer.")
+				add("daemon_build_differs", "warning", "The responding loop daemon's build label differs from this CLI. Service binding is reported separately.", "Check the intended binary and service paths before explicitly restarting. Different labels do not establish which build is newer.")
 			case "match":
 			default:
 				add("daemon_build_unknown", "unavailable", "The responding loop daemon's build label cannot be compared with this CLI.", "Use builds with identifiable version labels; this check does not inspect the service executable on disk.")
 			}
 			if d.DryRun {
-				add("daemon_dry_run", "warning", "The responding loop daemon is in dry-run mode; it does not perform normal sends or probes.", "Confirm whether the dry-run daemon was intentional. It is not proven to be the service's process.")
+				add("daemon_dry_run", "warning", "The responding loop daemon is in dry-run mode; it does not perform normal sends or probes.", "Confirm whether the dry-run daemon was intentional. Service binding is reported separately.")
 			}
 			if d.Phase == "waiting" && d.NextCheckAt != nil && d.ObservedAt != nil && d.ObservedAt.Sub(*d.NextCheckAt) > serviceOverdueGrace {
 				add("daemon_check_overdue", "warning", "The responding loop daemon reports a normal check more than one minute overdue.", "Inspect status and doctor. Sleep, scheduling delays, or clock changes may explain this; responsiveness does not prove loop progress.")

@@ -48,7 +48,7 @@ The optional `bbAutomation` JSON object contains `state` (`registered`, `unavail
 
 This is registration and historical run metadata, **not verified loop scheduling**. An enabled record does not prove that the scheduler process is alive, its binary is current, or its script invokes this loop. A skipped run may be a normal silent tick; a successful script does not establish task progress. The selected automation's next-run time stays separate from the report's `nextCheck`, which still requires a responding built-in daemon. Doctor never runs, pauses, resumes, edits, or creates an automation, and never changes loop control holds.
 
-Offline fixtures cover the read-only command and deadline, identity mismatches, unsupported modes, redaction, stale/disabled/failed metadata, invalid selection, and unchanged held state. A read-only macOS smoke check against an existing BB script automation verifies the live response shape; it does not run the script or verify its loop binding. launchd, systemd, cron, and Windows Task Scheduler inspection remain planned.
+Offline fixtures cover the read-only command and deadline, identity mismatches, unsupported modes, redaction, stale/disabled/failed metadata, invalid selection, and unchanged held state. A read-only macOS smoke check against an existing BB script automation verifies the live response shape; it does not run the script or verify its loop binding. These automation checks do not inspect launchd, systemd, cron, or Windows Task Scheduler. Managed launchd/systemd diagnostics are available separately through [service status](services.md).
 
 ## Runtime path access
 
@@ -134,7 +134,7 @@ New ticks record their build label: doctor compares that historical label with i
 
 ## Live daemon diagnostics
 
-New `keepgoing daemon` instances provide a loopback-only diagnostic endpoint. Status and doctor send a fresh challenge and verify the reply against the private endpoint record and the state directory identity. A stale file, copied endpoint from another loop, or reused listening port cannot by itself establish liveness. Queries never acquire the daemon lock, start an agent, or alter control state. If diagnostics cannot start, the daemon warns and continues supervising.
+New `keepgoing daemon` instances provide a loopback-only diagnostic endpoint. Status and doctor send a fresh challenge and verify the reply against the private endpoint record and the state directory identity. A stale file, copied endpoint from another loop, or reused listening port cannot by itself establish liveness. Queries never acquire the daemon lock, start an agent, or alter control state. New snapshots also carry optional process/invocation metadata for Linux [service binding](services.md#linux-service-to-daemon-binding); public status and doctor reports omit the IDs, and responsiveness alone does not verify a service relationship. If diagnostics cannot start, the daemon warns and continues supervising.
 
 JSON includes `daemon` with `state` (`responsive`, `not_recorded`, `unavailable`, or `skipped`), an explanatory `message`, `binaryComparison`, `dryRun`, and `nextCheck`. A verified response also supplies `phase` (`checking` or `waiting`), `startedAt`, `observedAt`, and `nextCheckAt` while waiting. `scheduler` is `ok` only for a verified response; `supervisor.live_version` compares that daemon's build label, independently of the historical `supervisor.version` check. Raw build labels, the verification key, and endpoint address are withheld.
 

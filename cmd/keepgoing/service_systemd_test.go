@@ -47,7 +47,8 @@ func (f *fakeSystemd) query(ctx context.Context, args ...string) ([]byte, int, e
 	switch args[0] {
 	case "show":
 		execution := reflect.DeepEqual(args, []string{"show", "--all", "--property=" + systemdExecutionProperties, f.p.Label})
-		if !execution && !reflect.DeepEqual(args, []string{"show", "--all", "--property=Id,LoadState,ActiveState,UnitFileState,FragmentPath,DropInPaths", f.p.Label}) {
+		binding := reflect.DeepEqual(args, []string{"show", "--all", "--property=" + systemdBindingProperties, f.p.Label})
+		if !binding && !execution && !reflect.DeepEqual(args, []string{"show", "--all", "--property=Id,LoadState,ActiveState,UnitFileState,FragmentPath,DropInPaths", f.p.Label}) {
 			return nil, 1, errors.New("unexpected query")
 		}
 		if f.raw != nil {
@@ -56,6 +57,7 @@ func (f *fakeSystemd) query(ctx context.Context, args ...string) ([]byte, int, e
 		// A show by exact name may load a definition even before daemon-reload.
 		f.loaded = f.loaded || present
 		props := map[string]string{"Id": f.p.Label, "LoadState": "not-found", "ActiveState": "inactive", "UnitFileState": "", "FragmentPath": "", "DropInPaths": ""}
+		props["MainPID"], props["InvocationID"] = "0", ""
 		props["Result"], props["ExecMainCode"], props["ExecMainStatus"] = "success", "0", "0"
 		if f.loaded {
 			props["LoadState"], props["FragmentPath"] = "loaded", f.p.Definition
@@ -74,6 +76,9 @@ func (f *fakeSystemd) query(ctx context.Context, args ...string) ([]byte, int, e
 		}
 		var out strings.Builder
 		keys := []string{"Id", "LoadState", "ActiveState", "UnitFileState", "FragmentPath", "DropInPaths"}
+		if binding {
+			keys = strings.Split(systemdBindingProperties, ",")
+		}
 		if execution {
 			keys = strings.Split(systemdExecutionProperties, ",")
 		}
