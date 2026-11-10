@@ -137,6 +137,7 @@ Acceptance: a user starts a configured loop with one command, closes the termina
 
 ### 5. BB conversation setup and transfer
 
+- [x] Add the shared setup integration contract: `init --non-interactive --json` for structured preview/create results and `--task-file -` for bounded, cancellable stdin task entry without task text in argv. Offline fixtures cover consistency, privacy, failure handling, and disabled output. This prerequisite does not implement the plugin setup UI or verify a live BB target. See [integration setup](setup.md#structured-setup-for-integrations).
 - [ ] Add "Supervise this thread" using the shared setup and diagnostics flow, including task entry and the target identity.
 - [ ] Add "Move supervision here" for an existing loop. Show the old and new targets, preserve paused/stopped/awaiting-user intent, and serialize the move against ticks so the old target receives no further wakes after transfer.
 - [ ] Validate provider/model/account labels and refresh thread-specific state when moving; do not carry an old session cursor or limit observation into the new thread. Offer resume explicitly after a held loop is transferred.

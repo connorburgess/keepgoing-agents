@@ -40,13 +40,14 @@ func initLoop(e env, args []string) int {
 // setupLoop discovers executables, but never invokes an agent or reads its login.
 func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (string, error)) int {
 	var o initOptions
+	var asJSON bool
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
 	fs.StringVar(&o.name, "name", "", "loop name: lowercase letters, digits, hyphens")
 	fs.StringVar(&o.project, "project", "", "existing Git project with a commit (default: current directory)")
 	fs.StringVar(&o.directory, "directory", "", "new private setup directory outside any checkout")
 	fs.StringVar(&o.task, "task", "", "task text (use --task-file to keep it out of shell history)")
-	fs.StringVar(&o.taskFile, "task-file", "", "read the task from an existing text file")
+	fs.StringVar(&o.taskFile, "task-file", "", "read a task file; - reads up to 1 MiB from stdin with --non-interactive")
 	fs.StringVar(&o.agent, "agent", "", "bb, claude, or codex; detects installed CLIs")
 	fs.StringVar(&o.thread, "thread", "", "existing BB thread ID; required for bb")
 	fs.StringVar(&o.provider, "provider", "", "existing BB thread provider label; required for bb")
@@ -68,6 +69,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.IntVar(&o.probeCap, "probe-daily-cap", 2, "scheduled probes per fallback per UTC day; exact/manual probes are additional")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "require missing inputs as flags; do not prompt")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "preview the resolved setup without writing files")
+	fs.BoolVar(&asJSON, "json", false, "print a versioned setup result; requires --non-interactive")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -78,16 +80,41 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: unexpected positional arguments")
 		return exitUsage
 	}
+	if (asJSON || o.taskFile == "-") && !o.nonInteractive {
+		e.errf("init: --json and stdin task input require --non-interactive")
+		return exitUsage
+	}
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 	if err := collectInit(e, &o, input, lookPath, visited); err != nil {
 		e.errf("init: %v", err)
 		return exitUsage
 	}
+	if o.taskFile == "-" {
+		task, err := readInitTask(e.ctx, input)
+		if err != nil {
+			e.errf("init: %v", err)
+			return exitUsage
+		}
+		o.task = task
+	}
 	files, cfg, err := planInit(&o, lookPath)
 	if err != nil {
 		e.errf("init: %v", err)
 		return exitUsage
+	}
+	if asJSON {
+		if err := e.ctx.Err(); err != nil {
+			e.errf("init: %v", err)
+			return exitFailed
+		}
+		if !o.dryRun {
+			if err := writeInit(o.directory, files); err != nil {
+				e.errf("init: %v", err)
+				return exitFailed
+			}
+		}
+		return printInitJSON(e, o, cfg)
 	}
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
 	printInitAccount(e.stdout, cfg.Loop.Agent)
@@ -294,7 +321,7 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	if _, err := state.Fingerprint([]string{o.project}); err != nil {
 		return fail(fmt.Errorf("project needs readable Git worktree metadata and an initial commit: %w", err))
 	}
-	if o.taskFile != "" {
+	if o.taskFile != "" && o.taskFile != "-" {
 		b, err := os.ReadFile(o.taskFile)
 		if err != nil {
 			return fail(err)
