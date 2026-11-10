@@ -72,6 +72,8 @@ func TestServiceHealthStatusIsReadOnly(t *testing.T) {
 					want := "daemon_build_differs,daemon_dry_run,daemon_check_overdue"
 					if backend == "systemd" {
 						want = "service_binding_unavailable," + want
+					} else {
+						want = "service_binding_unavailable,launchd_result_unavailable," + want
 					}
 					if strings.Join(codes, ",") != want {
 						t.Fatalf("findings %v", codes)
@@ -134,6 +136,56 @@ func TestServiceHealthReportsFailedSystemdUnit(t *testing.T) {
 	for _, args := range m.calls[n:] {
 		if args[0] != "show" {
 			t.Fatal("manager changed", args)
+		}
+	}
+}
+
+// A registered service and a healthy independent responder must not produce an
+// all-clear for checks macOS cannot perform. Absence/unknown stay separate.
+func TestLaunchdStatusReportsUnsupportedChecks(t *testing.T) {
+	f := newServiceFixture(t)
+	f.installed(t)
+	server, err := daemoninfo.Start(f.cfg.Loop.StateDir, "fixture-build", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	oldVersion := version
+	version = "fixture-build"
+	defer func() { version = oldVersion }()
+	for _, registration := range []string{"loaded", "absent", "unknown"} {
+		f.manager.loaded = registration == "loaded"
+		f.manager.unknown = registration == "unknown"
+		n := len(f.manager.calls)
+		c, o, e := f.call(t, "status", "--json")
+		wantCode := 0
+		if registration == "unknown" {
+			wantCode = 1
+		}
+		var r serviceReport
+		if c != wantCode || json.Unmarshal([]byte(o), &r) != nil || r.Registration != registration {
+			t.Fatalf("%d %s %s", c, o, e)
+		}
+		if registration == "loaded" {
+			if r.Binding == nil || r.Binding.State != "unavailable" || r.Execution == nil || r.Execution.State != "unavailable" || r.Health == nil || r.Health.Status != "unavailable" {
+				t.Fatalf("unsupported checks missing: %s", o)
+			}
+			if r.Execution.Result != "" || r.Execution.MainExit != "" || r.Execution.MainStatus != nil {
+				t.Fatal("invented an execution result")
+			}
+			if len(f.manager.calls[n:]) != 1 {
+				t.Fatal("unsupported checks queried manager")
+			}
+			for _, finding := range r.Health.Findings {
+				if strings.Contains(finding.Fix, "then retry") || strings.Contains(finding.Fix, "identity metadata") {
+					t.Fatal("unsupported check recommends transient repair", finding)
+				}
+			}
+			if c, o, e := f.call(t, "status"); c != 0 || !strings.Contains(o, "service binding: unavailable") || !strings.Contains(o, "launchd_result_unavailable") || !strings.Contains(o, "service health: unavailable") {
+				t.Fatalf("human report: %d %s %s", c, o, e)
+			}
+		} else if r.Binding != nil || r.Execution != nil {
+			t.Fatal("execution/binding assessment for an unverified registration")
 		}
 	}
 }

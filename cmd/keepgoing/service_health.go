@@ -2,8 +2,8 @@ package main
 
 import "time"
 
-// Assess only existing structured observations. The loop's diagnostic responder
-// is not bound to the OS service, and no result authorizes a restart or resume.
+// Assess existing structured observations and explicit capability gaps. Service
+// binding is a separate observation; no result authorizes a restart or resume.
 type serviceHealth struct {
 	Status   string           `json:"status"` // ok, warning, unavailable, not_installed
 	Findings []serviceFinding `json:"findings"`
@@ -67,7 +67,11 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 		case "different":
 			add("service_daemon_differs", "warning", b.Message, "Inspect the manual daemon and recorded unit before any explicit recovery. Do not infer service ownership from the loop endpoint alone.")
 		default:
-			add("service_binding_unavailable", "unavailable", b.Message, "Check that the intended service is active and uses a daemon with identity metadata, then retry. No control changes were made.")
+			fix := "Check that the intended service is active and uses a daemon with identity metadata, then retry. No control changes were made."
+			if r.Backend == "launchd" {
+				fix = "Treat registration and loop responsiveness separately. This check is unsupported on macOS; restarting or resuming the loop cannot verify service ownership."
+			}
+			add("service_binding_unavailable", "unavailable", b.Message, fix)
 		}
 	}
 	if b := r.Executable; b != nil {
@@ -89,7 +93,11 @@ func assessServiceHealth(r serviceReport) serviceHealth {
 	// Execution history remains independent of live loop observations.
 	if x := r.Execution; x != nil {
 		if x.State != "available" {
-			add("unit_result_unavailable", "unavailable", "The manager's structured execution details are unavailable.", "Inspect the exact user unit or retry status after any transition. Unknown details do not establish a successful run.")
+			if r.Backend == "launchd" {
+				add("launchd_result_unavailable", "unavailable", "macOS startup and exit diagnostics are not supported.", "Inspect the exact LaunchAgent manually if needed. An unavailable result does not establish success or failure; do not clear loop holds as a repair.")
+			} else {
+				add("unit_result_unavailable", "unavailable", "The manager's structured execution details are unavailable.", "Inspect the exact user unit or retry status after any transition. Unknown details do not establish a successful run.")
+			}
 		} else if x.Result != "success" {
 			add("unit_result", "warning", x.Message, "Inspect the reported manager result and main exit status before explicitly restarting. These are service observations, not provider limits; holds remain unchanged.")
 		}
