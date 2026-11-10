@@ -4,28 +4,38 @@ type aclMetadata struct {
 	Supported bool
 	Access    string
 	Default   string
+	Format    string
 }
 
 const (
 	aclPresent     = "present"
 	aclNotReported = "not_reported"
 	aclUnavailable = "unavailable"
+	aclLinuxPOSIX  = "linux_posix"
+	aclMacOS       = "macos_extended"
 )
 
 // doctorACL reports metadata presence, not effective permissions. It never
 // displays ACL contents, named principals, attribute values, or raw errors.
 func doctorACL(r *doctorReport, id, path string, directory bool, inspect func(string, bool) aclMetadata) {
 	a := inspect(path, directory)
-	if !a.Supported {
-		r.add(id, "unavailable", "ACL metadata inspection is implemented only for Linux POSIX ACLs; this platform's ACL privacy was not checked.", "Review ACLs using the platform's native tools; doctor never changes them.")
+	if !a.Supported || (a.Format != aclLinuxPOSIX && a.Format != aclMacOS) {
+		r.add(id, "unavailable", "ACL metadata inspection is implemented only for Linux POSIX and macOS extended ACLs; this platform's ACL privacy was not checked.", "Review ACLs using the platform's native tools; doctor never changes them.")
 		return
 	}
 	status := "unavailable"
 	message := "Linux POSIX access ACL: " + aclPresenceLabel(a.Access) + "."
-	if directory {
+	if a.Format == aclMacOS {
+		message = "macOS extended ACL: " + aclPresenceLabel(a.Access) + "."
+		if a.Access == aclNotReported {
+			message = "macOS extended ACL: not reported (absent or unsupported)."
+		}
+	}
+	defaultACL := directory && a.Format == aclLinuxPOSIX
+	if defaultACL {
 		message += " Default/inherited ACL: " + aclPresenceLabel(a.Default) + "."
 	}
-	if a.Access == aclPresent || (directory && a.Default == aclPresent) {
+	if a.Access == aclPresent || (defaultACL && a.Default == aclPresent) {
 		status = "warning"
 		message += " ACL metadata is present; review it alongside Unix mode bits. Presence alone does not prove that another user has access."
 	} else {

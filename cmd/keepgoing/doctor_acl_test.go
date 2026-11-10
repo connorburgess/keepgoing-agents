@@ -19,13 +19,17 @@ func TestDoctorACLReportsPresenceWithoutClaimingPrivacy(t *testing.T) {
 		want      string
 	}{
 		{"unsupported", aclMetadata{}, true, "unavailable"},
-		{"not_reported", aclMetadata{true, aclNotReported, aclNotReported}, true, "unavailable"},
-		{"unknown", aclMetadata{true, aclUnavailable, aclUnavailable}, true, "unavailable"},
-		{"access", aclMetadata{true, aclPresent, aclNotReported}, true, "warning"},
-		{"default", aclMetadata{true, aclNotReported, aclPresent}, true, "warning"},
-		{"partial", aclMetadata{true, aclPresent, aclUnavailable}, true, "warning"},
-		{"file", aclMetadata{true, aclPresent, ""}, false, "warning"},
-		{"private_error", aclMetadata{true, doctorPrivate, doctorPrivate}, true, "unavailable"},
+		{"not_reported", aclMetadata{true, aclNotReported, aclNotReported, aclLinuxPOSIX}, true, "unavailable"},
+		{"unknown", aclMetadata{true, aclUnavailable, aclUnavailable, aclLinuxPOSIX}, true, "unavailable"},
+		{"access", aclMetadata{true, aclPresent, aclNotReported, aclLinuxPOSIX}, true, "warning"},
+		{"default", aclMetadata{true, aclNotReported, aclPresent, aclLinuxPOSIX}, true, "warning"},
+		{"partial", aclMetadata{true, aclPresent, aclUnavailable, aclLinuxPOSIX}, true, "warning"},
+		{"file", aclMetadata{true, aclPresent, "", aclLinuxPOSIX}, false, "warning"},
+		{"private_error", aclMetadata{true, doctorPrivate, doctorPrivate, aclLinuxPOSIX}, true, "unavailable"},
+		{"macos_present", aclMetadata{true, aclPresent, "", aclMacOS}, true, "warning"},
+		{"macos_not_reported", aclMetadata{true, aclNotReported, "", aclMacOS}, true, "unavailable"},
+		{"macos_unknown", aclMetadata{true, aclUnavailable, "", aclMacOS}, true, "unavailable"},
+		{"unknown_format", aclMetadata{true, aclPresent, "", doctorPrivate}, true, "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var r doctorReport
@@ -42,6 +46,9 @@ func TestDoctorACLReportsPresenceWithoutClaimingPrivacy(t *testing.T) {
 			}
 			if !tc.directory && strings.Contains(c.Message, "Default/inherited") {
 				t.Fatal("file reported directory inheritance")
+			}
+			if tc.metadata.Format == aclMacOS && (strings.Contains(c.Message, "Linux") || strings.Contains(c.Message, "Default/inherited")) {
+				t.Fatal("macOS reported Linux ACL semantics")
 			}
 		})
 	}
