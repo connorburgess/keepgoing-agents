@@ -15,8 +15,9 @@ var ErrHeld = errors.New("lock held by another process")
 
 // Names of the locks keepgoing uses.
 const (
-	Tick   = "tick"
-	Daemon = "daemon"
+	Tick    = "tick"
+	Daemon  = "daemon"
+	Control = "control"
 )
 
 // Lock is a held lock.
