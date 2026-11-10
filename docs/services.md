@@ -19,9 +19,23 @@ For a responding loop daemon, findings also flag a different/unknown build label
 
 Build comparison concerns the responding loop daemon and the invoking CLI. It does not inspect the recorded service executable on disk, prove that the responder belongs to the service, or say which build is newer. Empty/development labels remain unavailable. A healthy agent cannot be inferred from these checks.
 
-The assessment uses the existing manager and daemon observations without extra queries, writes, probes, restarts, or control changes. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
+The assessment uses structured manager and daemon observations without writes, provider probes, restarts, or control changes. Recorded, loaded Linux units receive one additional bounded execution-details query. Holds are never cleared as a repair. Existing exit-code behavior is preserved: warnings can accompany exit 0; unknown registration, a loaded unrecorded service, and existing file/config validation errors still fail. Scripts should inspect `health.status` and `health.findings`, not treat exit 0 as a health certificate. Modified/unreadable definitions still fail validation before a health report can be produced.
 
 Pure table tests and fake-manager/local-diagnostic fixtures cover combined failures, grace boundaries, redaction, human/JSON output, and unchanged controls/provider-call counts. These tests do not establish live service startup, logout/reboot, or soak behavior.
+
+## Systemd execution details
+
+For a recorded, loaded Linux service, `service status` makes a second read-only `systemctl show` query for `Result`, `ExecMainCode`, and `ExecMainStatus`. It rechecks the exact unit ID, loaded state, canonical fragment path, absence of drop-ins, and the previously observed active state. A changed identity/state, failed query, unexpected field, unknown value, malformed reply, or oversized output makes execution details `unavailable`. This query does not participate in install/remove decisions.
+
+The text report and JSON `execution` object expose:
+
+- `state`: `available` or `unavailable`.
+- `result`: an allowlisted manager result such as `success`, `exit-code`, `timeout`, `resources`, `start-limit-hit`, or `oom-kill`, with a fixed explanation in `message`. A non-success result adds a `unit_result` warning, including the `exec-condition` skipped-service result. Unknown details add `unit_result_unavailable`.
+- `mainExit`: `not_reported`, `exited`, `killed`, or `dumped`. `mainStatus` is present only for a reported exit: a numeric exit code or signal number. Zero with `exited` means a clean exit; `not_reported` does not distinguish a running process from one that has never run. Unrecognized signal numbers remain unavailable.
+
+These properties can describe a previous run. They are not evidence that the current process failed or that it belongs to the loop's diagnostic responder. A `success` result alone does not prove startup or healthy operation. Exit code 203 is shown numerically rather than attributed conclusively to an executable failure: a program can return that code itself. No journal, transcript, service-supplied status text, command arguments, or raw error output is read into the report. Manager results never become provider-limit or failover signals, and no restart or hold-clearing action follows.
+
+The field meanings follow the [systemd service interface](https://github.com/systemd/systemd/blob/v255/man/org.freedesktop.systemd1.xml) and [result enumeration](https://github.com/systemd/systemd/blob/v255/src/core/service.c). Offline fixtures cover reported failures and exits, redaction, identity changes, unknown schemas, and unchanged controls/files/provider-call counts. Live installed-service failure and recovery checks remain unverified. macOS launch failure details, executable inspection, and service-to-daemon identity remain planned.
 
 ## Linux systemd user services
 
