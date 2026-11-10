@@ -1,3 +1,5 @@
+![Keepgoing Agents - supervision for long-running coding agents](docs/assets/keepgoing-banner.jpg)
+
 # keepgoing-agents
 
 `keepgoing` keeps long-running coding-agent loops going. It watches an agent session, re-prompts it when it goes idle or stalls, and hands the loop to a confirmed fallback when the session hits a usage limit. A person's stop or pause always wins. It is a single static binary with no runtime, built to be called from cron, launchd, systemd, CI, or an agent IDE's automations. It is not tied to any IDE or provider.
