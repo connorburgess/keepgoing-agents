@@ -26,7 +26,11 @@ Unattended agent loops die for boring reasons. A session finishes a turn and nob
 
 keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
 
-`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it. Diagnostics, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
+`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. See the [setup guide](docs/setup.md). This is implemented on `main`; v0.1.1 does not include it.
+
+`keepgoing doctor` checks setup, BB target identity, CLI versions, private-file access, and recent tick history without model calls; [its report](docs/diagnostics.md) marks unsupported login and scheduler checks explicitly.
+
+Richer status, simpler background operation, BB thread transfer, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
 
 ## Install
 
@@ -70,6 +74,7 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 
 ## Documentation
 
+- [docs/diagnostics.md](docs/diagnostics.md): read-only setup checks, JSON reports, and unavailable checks.
 - [docs/setup.md](docs/setup.md): guided setup, scripted flags, existing accounts, and first-run limits.
 - [docs/architecture.md](docs/architecture.md): packages, boundaries, and the rules that do not bend.
 - [docs/configuration.md](docs/configuration.md): every field in `keepgoing.yaml`.

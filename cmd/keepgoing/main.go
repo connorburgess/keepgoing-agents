@@ -38,6 +38,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
+  doctor                   Diagnose setup and recent checks without model calls
 
 Control:
   enable | disable         Turn supervision on or off (nothing is sent while off)
@@ -89,6 +90,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "doctor":
+		return doctor(e, rest, doctorExec)
 	case "init":
 		return initLoop(e, rest)
 	case "version":

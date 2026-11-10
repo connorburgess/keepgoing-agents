@@ -60,10 +60,12 @@ Acceptance: a fresh user configures one task without editing YAML or installing 
 
 ### 2. Diagnostics and understandable status
 
-- [ ] Add `keepgoing doctor` for configuration, CLI versions, target identity, account configuration paths, state permissions, and scheduler health. Check login through structured provider interfaces where available; report unavailable checks explicitly.
-- [ ] Keep ordinary diagnostics free of model calls. Offer explicit paid probes with their expected cost and configured cap visible before execution.
+- [x] Add read-only `keepgoing doctor` for configuration, available CLI versions, structured BB target identity, explicit account-directory checks, Unix mode checks, and recent tick history, with text and versioned JSON reports. Unsupported or skipped checks are explicitly unavailable. See [diagnostics](diagnostics.md).
+- [ ] Extend diagnostics with structured provider login and live headless session checks, effective permissions/Windows ACL checks, scheduler installation/liveness, and the running supervisor binary version. Current doctor does not claim to verify these.
+- [x] Keep ordinary diagnostics free of model calls; `--offline` also skips version and BB target commands. Privacy and command bounds are tested with offline fixtures.
+- [ ] Offer explicit paid probes with their expected cost and configured cap visible before execution; doctor does not invoke existing manual probes.
 - [ ] Show which task and session are supervised, the selected account label, last check, last action, reason for waiting, completion state, and next scheduled check or why its time is unknown. Flag a stale binary, missing target, or missing scheduler.
-- [ ] Provide stable JSON output and actionable fixes without printing credentials or environment values.
+- [x] Provide stable doctor JSON output and actionable fixes without printing credentials, environment values, task text, control notes, or raw CLI output. Richer ordinary status output remains pending above.
 
 Acceptance: users can distinguish an agent working, awaiting input, completed work, a paused loop, and a supervisor that is not running. A loop attached to an older conversation is visible as such.
 
