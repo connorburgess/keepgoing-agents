@@ -18,6 +18,7 @@ const (
 	Tick    = "tick"
 	Daemon  = "daemon"
 	Control = "control"
+	Service = "service"
 )
 
 // Lock is a held lock.
