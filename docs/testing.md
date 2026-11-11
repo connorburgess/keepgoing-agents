@@ -2,6 +2,20 @@
 
 For a built or unpacked executable, [release verification](release-verification.md) provides a provider-free setup smoke check, a [local recovery smoke check](release-verification.md#check-recovery-with-local-stand-ins), and a separate live walkthrough. Both scripts run in macOS/Linux CI. Recovery uses stand-in providers, a loopback webhook and actual temporary daemon processes; neither script certifies real provider sessions.
 
+## Lifecycle and platform review
+
+Apply these checks when changing runners, stop commands, service integrations, installers or platform UI. They are review requirements, not claims that current implementations satisfy every case.
+
+- **Prove process identity before stopping it.** A PID file and a successful liveness check establish neither ownership nor creation identity. Persisted wall-clock timestamps and command basenames alone are insufficient. Use native process identity/creation evidence or an authenticated owned control channel, and account for the race between validation and signalling. Unknown or mismatched identity must refuse destructive control. Test stale records left by abrupt termination, a live unrelated process at the recorded PID, legacy records lacking identity, and identity changes during inspection. Tests must use owned disposable processes or injected identities; never signal arbitrary host PIDs.
+- **Consume machine interfaces.** Prefer native APIs or documented structured command fields to human-oriented output. Do not infer state from translated status words or decode a displayed path as if it were lossless. Where command output carries paths, round-trip a temporary path containing Latin accents, CJK characters and spaces. Include malformed/partial responses and the real encoding/localization failure shapes in fixtures.
+- **Make regression fixtures fail before the fix.** Record which assertion reproduces the old behavior and run it against the pre-fix implementation when feasible. A fake that only returns idealized JSON/English/safe ASCII can miss the defect. Keep realistic failures synthetic and free of real transcripts, hostnames, account paths and secrets; label unobserved assumptions explicitly.
+- **Distinguish compilation from execution.** Identify the CI job that compiles platform-specific code and the tests it actually executes. Cross-compilation, native test execution, installer testing and live VM acceptance are separate evidence. State architecture, OS, source commit and what was not run. Use existing CI or disposable test hosts; do not infer Windows execution from a generic green PR check.
+- **Verify user-visible behavior at its boundary.** Add a DOM/browser or native assertion for a changed UI action where supported. Request owner-only VM/desktop checks only when required evidence cannot be obtained independently, and leave them marked not run. If screenshots are needed, capture the relevant window and sanitize hostnames and other private metadata before sharing; do not commit raw desktop captures.
+- **Exercise the deployment environment.** If PowerShell is part of the supported path, test the supported language mode and prefer cmdlets for operations that must work under constrained language. Do not assume arbitrary .NET method calls are available. An installation that requests elevation must show an accessible approval prompt in a visible user-initiated flow; a hidden background process is not an acceptable interactive installer test.
+- **Describe dependency limits honestly.** A dependent change must say what users can do before its prerequisite is available. Keep implemented, tested, released, installed and live-verified claims separate. Recheck the current head against current main after integration; a passing earlier base does not close the review.
+
+The runner's saved-PID stop path still needs the identity work tracked under [reliability checkpoints](roadmap.md#priority-reliability-checkpoints). Existing lifecycle tests and held-daemon SIGKILL smoke checks do not establish PID-reuse safety.
+
 ## On a machine with Go
 
 ```sh
@@ -38,11 +52,11 @@ These results come from runs of the full bundle. A VM result covers that configu
 
 | Platform | How | Result | Not covered |
 | --- | --- | --- | --- |
-| macOS 26, Apple silicon | `go test -race ./...` | all packages pass | none |
+| macOS 26, Apple silicon | `go test -race ./...` | all packages pass | live provider/service/UI acceptance |
 | Ubuntu 26.04 LTS ARM64 | test bundle in a Parallels VM, run as an ordinary user | all 18 test packages pass, including end-to-end, headless runner, and lock tests | x86-64 |
 | Windows 11 Arm (build 26300) | test bundle in a Parallels VM | all 18 test packages pass, including the Windows lock and the headless runner's lifecycle, error, and stop tests | the end-to-end CLI tests (POSIX only), x64 |
 
-CI runs the suite on Ubuntu x86-64 and macOS and cross-compiles for Windows. Check the Actions tab for the latest run.
+CI runs the full Go suite on Ubuntu x86-64 and macOS, cross-compiles for Windows, and separately runs selected diagnostics, control/storage, transfer and startup tests on Windows. The Windows job is not the full POSIX CLI suite. Cite the specific Actions run and jobs when reporting results.
 
 Systemd user-service tests use a fake manager with structured show properties and temporary private unit files. They cover lifecycle and unchanged controls/ownership, duplicate/competing installs, dry runs, interrupted install/removal (including failure after deleting the unit), broken-config recovery, unknown/malformed/oversized replies, foreign fragments/drop-ins, XDG paths, changed files, and escaping. A native Linux fixture runs `systemd-analyze verify --generators=no` on a generated unit without installing or starting it. No live user bus, lingering change, login/logout/reboot check, agent call, or soak is part of this evidence.
 
