@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-No additional changes recorded.
+- Goal subcommand help (`create|revise|show --help` or `-h`) now exits successfully without loading configuration or changing state. Invalid arguments still return usage errors. v0.1.4 returns exit code 2 for this help; the correction is not yet released.
 
 ## 0.1.4 (2026-11-12)
 
