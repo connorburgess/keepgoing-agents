@@ -19,7 +19,8 @@ for t in $targets; do
   if [ "$os" = windows ]; then
     (cd "$dist" && zip -qr "$name.zip" "$name")
   else
-    tar -C "$dist" -czf "$dist/$name.tar.gz" "$name"
+    # macOS tar otherwise adds AppleDouble files containing local metadata.
+    COPYFILE_DISABLE=1 tar -C "$dist" -czf "$dist/$name.tar.gz" "$name"
   fi
   rm -rf "$work"
 done

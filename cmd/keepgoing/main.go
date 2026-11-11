@@ -41,6 +41,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
+  timeline                 Explain retained incident history offline (text or --json)
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
@@ -105,6 +106,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return startCommand(e, rest, nil)
 	case "__start-background":
 		return startChild(e, rest)
+	case "timeline":
+		return timelineCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
@@ -220,10 +223,9 @@ func reporter(e env, cfg *config.Config) report.Reporter {
 	if cfg.Loop.Report == nil {
 		return report.Nop{}
 	}
-	w, err := report.New(*cfg.Loop.Report)
+	w, err := report.NewRecorded(*cfg.Loop.Report, cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("warning: reports disabled: %v", err)
-		return report.Nop{}
 	}
 	return w
 }

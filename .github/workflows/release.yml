@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Require version-specific release notes
+        run: test -s "docs/releases/${GITHUB_REF_NAME}.md"
       - run: go test ./...
       - run: scripts/build-release.sh "$GITHUB_REF_NAME"
       - name: Verify archives and smoke-check the native package
@@ -27,7 +29,8 @@ jobs:
           package="keepgoing_${GITHUB_REF_NAME#v}_linux_amd64"
           tar -xzf "dist/$package.tar.gz" -C "$RUNNER_TEMP"
           python3 scripts/smoke-release.py "$RUNNER_TEMP/$package/keepgoing"
+          python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/$package/keepgoing"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/checksums.txt --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/checksums.txt --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file "docs/releases/${GITHUB_REF_NAME}.md" --verify-tag

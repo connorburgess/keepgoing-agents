@@ -148,11 +148,26 @@ func Sign(secret, id string, ts time.Time, body []byte) (map[string]string, erro
 // Completion declarations make one attempt without redirects: an uncertain
 // delivery must not cause a duplicate notification at a non-idempotent receiver.
 func (w *Webhook) Report(ctx context.Context, e Event) error {
+	return w.report(ctx, e, nil)
+}
+
+// observe receives only typed transport evidence, never the payload or errors.
+// It must not change sending, retry, redirect or completion semantics.
+func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) error {
 	if !w.cfg.ReportsEvent(e.Type) {
 		return nil
 	}
+	d := Delivery{Event: eventName(e.Type), StartedAt: w.now().UTC(), Receipt: "unverified", Attempts: []Attempt{}}
+	snapshot := func(outcome string) {
+		d.Outcome, d.UpdatedAt = outcome, w.now().UTC()
+		if observe != nil {
+			observe(d)
+		}
+	}
+	snapshot("prepared")
 	body, err := w.Body(e)
 	if err != nil {
+		snapshot("body_failed")
 		return err
 	}
 	headers := map[string]string{"content-type": "application/json"}
@@ -163,6 +178,7 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 		rand.Read(id)
 		sig, err := Sign(w.secret, "msg_"+hex.EncodeToString(id), w.now(), body)
 		if err != nil {
+			snapshot("sign_failed")
 			return err
 		}
 		for k, v := range sig {
@@ -181,20 +197,32 @@ func (w *Webhook) Report(ctx context.Context, e Event) error {
 	for attempt := 0; attempt < attempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(body))
 		if err != nil {
+			snapshot("request_failed")
 			return err
 		}
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
+		d.Attempts = append(d.Attempts, Attempt{StartedAt: w.now().UTC(), Outcome: "unconfirmed"})
+		snapshot("attempt_started")
 		resp, err := client.Do(req)
+		a := &d.Attempts[len(d.Attempts)-1]
+		a.FinishedAt = w.now().UTC()
 		if err != nil {
+			a.Outcome = "transport_failed"
+			snapshot("transport_failed")
 			last = errors.New("report: request failed") // the error may embed the URL; keep it out
 			continue
 		}
 		resp.Body.Close()
+		a.HTTPStatus = resp.StatusCode
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			a.Outcome = "http_accepted"
+			snapshot("http_accepted")
 			return nil
 		}
+		a.Outcome = "http_rejected"
+		snapshot("http_rejected")
 		last = fmt.Errorf("report: endpoint returned %d", resp.StatusCode)
 		if resp.StatusCode < 500 {
 			return last

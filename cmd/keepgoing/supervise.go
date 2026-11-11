@@ -199,6 +199,7 @@ func controlSignature(stateDir string) string {
 type statusOut struct {
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
 	GoalError         string                   `json:"goalError,omitempty"`
+	Notifications     report.DeliveryStatus    `json:"notifications"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
 	Loop              string                   `json:"loop"`
@@ -332,6 +333,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if l.PromptFile != "" {
 		out.TaskSource, out.TaskFile = "file", l.PromptFile
 	}
+	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
 	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
 	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
@@ -403,6 +405,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
 	if a := out.SendAllowance; a != nil {
 		if a.Error != "" {
@@ -489,7 +492,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	f, err := control.UpdateChecked(cfg.Loop.StateDir, func(f *control.File) error {
+	f, err := updateControlWithHistory(cfg.Loop.StateDir, cmd, func(f *control.File) error {
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -512,7 +515,11 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 		return nil
 	})
-	if err != nil {
+	historyFailed := errors.Is(err, errControlHistory)
+	if historyFailed {
+		e.errf("warning: %v", err)
+	}
+	if err != nil && !historyFailed {
 		e.errf("%v", err)
 		if errors.Is(err, lock.ErrHeld) {
 			return exitSkipped
@@ -545,6 +552,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
 	if cmd == "enable" && f.Ownership != nil {
 		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
+	}
+	if historyFailed {
+		return exitFailed
 	}
 	return exitOK
 }

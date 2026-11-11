@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/handoff"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -78,19 +79,25 @@ type Result struct {
 }
 
 type tick struct {
-	progress         *state.Progress
-	observedTarget   string
-	awaitingInput    bool
-	awaitingChildren []string
-	ctx              context.Context
-	cfg              *config.Config
-	loop             config.Loop
-	fb               *config.Fallbacks
-	opts             Options
-	now              time.Time
-	res              *Result
-	st               state.File
-	reg              *health.Registry
+	incidentDecisions   incident.Decisions
+	incidentStateLoaded bool
+	incidentAdapter     string
+	incidentTarget      string
+	incidentObservation incident.Observation
+	incidentControl     *incident.Controls
+	progress            *state.Progress
+	observedTarget      string
+	awaitingInput       bool
+	awaitingChildren    []string
+	ctx                 context.Context
+	cfg                 *config.Config
+	loop                config.Loop
+	fb                  *config.Fallbacks
+	opts                Options
+	now                 time.Time
+	res                 *Result
+	st                  state.File
+	reg                 *health.Registry
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -130,6 +137,10 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
 	err := t.run()
+	if journalErr := t.recordIncident(err != nil); journalErr != nil {
+		t.warn("incident history write failed; diagnostic evidence is incomplete")
+		err = errors.Join(err, journalErr)
+	}
 	return res, err
 }
 
@@ -159,9 +170,11 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
+	t.incidentStateLoaded = true
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -170,6 +183,8 @@ func (t *tick) run() error {
 		t.st.ActiveTarget = target
 	}
 	res.Target = target
+	t.incidentTarget = target
+	t.incidentAdapter = agent.Adapter
 
 	gate := ctl.Gate()
 	if gate.Stop {
@@ -190,7 +205,7 @@ func (t *tick) run() error {
 		return t.record(nil)
 	}
 	if loop.Limits.DeadlineReached(t.now) {
-		d := decide.Decide(decide.Input{Control: gate, DeadlineReached: true})
+		d := t.decide("deadline", decide.Input{Control: gate, DeadlineReached: true})
 		res.Action, res.Reason = string(d.Action), d.Reason
 		res.State, res.Window = "not observed", "not checked"
 		var actErr error
@@ -211,7 +226,7 @@ func (t *tick) run() error {
 		}
 		t.progress = &p
 		if p.Reached(t.now, timeout) {
-			d := decide.Decide(decide.Input{Control: gate, NoProgressReached: true})
+			d := t.decide("progress_limit", decide.Input{Control: gate, NoProgressReached: true})
 			res.Action, res.Reason = string(d.Action), d.Reason
 			res.State, res.Window = "not observed", "not checked"
 			var actErr error
@@ -237,6 +252,7 @@ func (t *tick) run() error {
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason, res.Window = string(decide.Unknown), "could not verify state; no action taken", "not checked"
@@ -251,7 +267,7 @@ func (t *tick) run() error {
 		// Escalate before probes, fingerprints, and recovery. Child input must
 		// not depend on those succeeding, and never prompts the parent.
 		t.awaitingChildren = obs.AwaitingChildren
-		d := decide.Decide(decide.Input{Control: gate, Obs: obs})
+		d := t.decide("child_input", decide.Input{Control: gate, Obs: obs})
 		res.Action, res.Reason, res.Window = string(d.Action), d.Reason, "not checked"
 		res.Reprompts, t.st.LastState = t.st.Reprompts, string(obs.State)
 		var actErr error
@@ -320,6 +336,7 @@ func (t *tick) run() error {
 		unchangedFor = t.now.Sub(t.st.LastProgressAt)
 		res.UnchangedFor = unchangedFor.Truncate(time.Second).String()
 	}
+	unchangedFor = t.stallAfterRetry(obs, target, unchangedFor)
 	sinceWake := 100 * 365 * 24 * time.Hour
 	if !t.st.LastWakeAt.IsZero() {
 		sinceWake = t.now.Sub(t.st.LastWakeAt)
@@ -356,7 +373,7 @@ func (t *tick) run() error {
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
-	d := decide.Decide(in)
+	d := t.decide("normal", in)
 	res.Action, res.Reason = string(d.Action), d.Reason
 
 	var actErr error
@@ -368,7 +385,7 @@ func (t *tick) run() error {
 		} else if !moved {
 			// The primary is not ready yet: keep the fallback working.
 			in.SwitchBackReady = false
-			d = decide.Decide(in)
+			d = t.decide("switch_back_failed", in)
 			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
 			actErr = t.act(a, d)
 		}
@@ -383,7 +400,7 @@ func (t *tick) run() error {
 			// Every candidate failed its exact probe: fall back to the
 			// ordinary error rules for the current target.
 			in.Failover.Available = false
-			d = decide.Decide(in)
+			d = t.decide("handoff_failed", in)
 			res.Action, res.Reason = string(d.Action), d.Reason+" (no fallback could take over; see probes and warnings)"
 			actErr = t.act(a, d)
 		}
@@ -415,13 +432,14 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
 		return t.record(err)
 	}
 	res.State = string(obs.State)
-	d := decide.Decide(decide.Input{Obs: obs, Control: gate})
+	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
 		d = decide.Decision{Action: decide.None, Reason: "stop already requested"}
 	}
@@ -740,7 +758,7 @@ func (t *tick) sendAllowanceFailure(err error) error {
 		t.res.Action, t.res.Reason = string(decide.None), "send allowance unavailable; no further automatic work"
 		return err
 	}
-	d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, SendLimitReached: true})
+	d := t.decide("send_limit", decide.Input{Control: decide.Control{Enabled: true}, SendLimitReached: true})
 	t.res.Action, t.res.Reason = string(d.Action), d.Reason
 	if t.opts.DryRun {
 		return nil

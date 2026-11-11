@@ -10,6 +10,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // Claude runs Claude Code headless, one turn per Send, resuming the same
@@ -70,11 +71,16 @@ func (r ClaudeResult) Class() decide.ErrorClass {
 }
 
 // Observe implements adapter.Adapter.
-func (c *Claude) Observe(ctx context.Context) (decide.Observation, error) {
+func (c *Claude) Observe(ctx context.Context) (obs decide.Observation, err error) {
 	st, err := c.dir.Status()
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
+	defer func() {
+		if obs.Evidence.Source == "" {
+			obs.Evidence = runnerEvidence(st)
+		}
+	}()
 	switch st.Phase {
 	case NeverRun:
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
@@ -88,13 +94,17 @@ func (c *Claude) Observe(ctx context.Context) (decide.Observation, error) {
 		c.dir.SaveSession(r.SessionID)
 	}
 	if ok && !r.IsError && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
+		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: r.evidence(st)}, nil
 	}
 	class := decide.ErrUnknown
 	if ok {
 		class = r.Class()
 	}
-	return decide.Observation{State: decide.Error, ErrorClass: class}, nil
+	obs = decide.Observation{State: decide.Error, ErrorClass: class}
+	if ok {
+		obs.Evidence = r.evidence(st)
+	}
+	return obs, nil
 }
 
 // Args builds the claude argv for one turn.
@@ -137,3 +147,26 @@ func (c *Claude) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 
 // Stop implements adapter.Adapter.
 func (c *Claude) Stop(ctx context.Context) error { return c.dir.Stop() }
+
+func (r ClaudeResult) evidence(st Status) evidence.Detail {
+	d := runnerEvidence(st)
+	d.Source = "claude_result"
+	d.Category = r.Subtype
+	d.Code = r.TerminalReason
+	if evidence.Code(d.Code) == "unavailable" {
+		d.Code = r.Subtype
+	}
+	switch v := r.APIErrorStatus.(type) {
+	case float64:
+		if v >= 100 && v <= 599 && v == float64(int(v)) {
+			d.HTTPStatus = evidence.Number(int(v))
+		}
+	case string:
+		if n, err := strconv.Atoi(v); err == nil {
+			d.HTTPStatus = evidence.Number(n)
+		} else if evidence.Code(v) != "unavailable" {
+			d.Code = v
+		}
+	}
+	return evidence.Clean(d)
+}

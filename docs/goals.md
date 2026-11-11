@@ -1,6 +1,6 @@
 # Private goal metadata
 
-On `main` after v0.1.2, `keepgoing goal create|revise|show` records what a loop is working toward. The record has a generated stable ID, an owning loop name and an ordered revision history. Its only state is `recorded`: this means a specification was saved, not that work is running, accepted or complete. Loop controls remain the authority for supervision.
+On `main` after v0.1.3, `keepgoing goal create|revise|show` records what a loop is working toward. The record has a generated stable ID, an owning loop name and an ordered revision history. Its only state is `recorded`: this means a specification was saved, not that work is running, accepted or complete. Loop controls remain the authority for supervision.
 
 This is a metadata feature. It does not generate a plan, modify the loop's prompt, start a turn, execute a next action, validate a reference or run a reviewer. Completion declarations, verification results and review stages are not yet bound to goal revisions. `complete` and `resume` keep their existing behavior and do not change the goal record. Do not treat an old completion hold as acceptance of a newly revised goal.
 

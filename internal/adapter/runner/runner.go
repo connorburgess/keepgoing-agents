@@ -34,10 +34,11 @@ type Record struct {
 
 // Status is the latest turn's outcome.
 type Status struct {
-	Phase    Phase
-	ExitCode int
-	Stdout   []byte
-	Record   Record
+	ExitCodeKnown bool
+	Phase         Phase
+	ExitCode      int
+	Stdout        []byte
+	Record        Record
 }
 
 // Dir is one target's runner directory.
@@ -61,7 +62,9 @@ func (d Dir) Status() (Status, error) {
 	}
 	if code, err := os.ReadFile(d.path("exit")); err == nil {
 		st.Phase = Finished
-		st.ExitCode, _ = strconv.Atoi(strings.TrimSpace(string(code)))
+		var parseErr error
+		st.ExitCode, parseErr = strconv.Atoi(strings.TrimSpace(string(code)))
+		st.ExitCodeKnown = parseErr == nil && st.ExitCode >= 0
 		st.Stdout, _ = os.ReadFile(d.path("stdout"))
 		return st, nil
 	}

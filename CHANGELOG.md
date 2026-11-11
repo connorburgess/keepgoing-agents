@@ -2,9 +2,31 @@
 
 ## Unreleased
 
-### Added
-
 - `goal create|revise|show` records private goal identity and specification revisions independently of loop controls. Expected ID/revision checks prevent stale edits; ordinary status withholds titles/references, with explicit `show --private` for full history. Offline fixtures cover ownership, locks, holds, corruption, limits and privacy. Goal acceptance, verification and review-stage bindings remain unimplemented.
+
+## 0.1.3 (2026-11-11)
+
+Reliability release collecting the changes after v0.1.2. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md#v013-reliability-release-evidence). See the [release notes](docs/releases/v0.1.3.md) for the user-facing changes and upgrade limits.
+
+- Native macOS/Linux CI and the unpacked Linux release gate now run a recovery smoke check with stand-in BB/process/Claude/Codex providers, rejected local notifications, held daemon restarts, explicit recovery and completion without replay. This adds offline artifact evidence, not live provider or deployment certification.
+
+- Added `timeline`, an offline text/JSON view combining bounded incident/delivery records with redacted current control flags. It exposes local timestamp/source evidence, historical hold and activity summaries, failed alerts, retention and evidence gaps without provider/scheduler/daemon/CI calls or writes. Missing/corrupt sources remain explicit; `--state-dir` supports broken configs and copied records. Acceptance is fixture-only; publication does not install the code or establish live verification.
+
+- Notification delivery evidence now persists in a bounded private ledger. Status and doctor show historical failed/unconfirmed reports across held checks, with attempt intent, numeric HTTP outcomes and explicitly unverified receipt. Diagnostic failures preserve holds and original transport behavior; completion remains single-attempt without redirects or replay. Local webhook/transport fixtures only; not installed or live-verified.
+
+- Combined incident-history acceptance now passes through CLI fixtures for BB, process, Claude and Codex: failure, bounded recovery attempts, hold, explicit resume and recovered observations are reconstructed from an isolated journal alone. Headless stand-ins run as real local processes; no live provider or installed loop was used. Unsupported source timing/retry evidence stays unavailable.
+
+- Incident schema 4 records saved control changes from standalone commands, startup and daemon takeover, with locked before/after gate snapshots and no private notes or owner IDs. History failure preserves the save and existing report processing while returning an explicit error; startup stops before running a daemon if its control history fails. Legacy records upgrade as ticks without fabricated transitions. Offline fixtures only.
+
+- Incident journal schema 3 preserves ordered decision-engine inputs and proposed actions, including early bounds and re-evaluation after failed fallback probes. Captured empty histories distinguish skipped engine calls from unavailable legacy evidence. Snapshots exclude private child IDs and prose, preserve signed timing values, and upgrade versions 1/2 on append. Offline fixtures only.
+
+- Incident journal schema 2 adds diagnostic source labels, recognized provider error/category tokens and available numeric HTTP/exit statuses across BB, process and headless adapters. Version-1 history upgrades without backfilling evidence. Unknown strings are discarded, source event time remains unavailable, and diagnostic metadata never changes decision policy. Offline fixtures only.
+
+- Ticks now write a separate bounded, versioned private incident history with normalized observations, retry availability, decision causes, hold snapshots and build metadata. Retention is capped at 256 records/512 KiB. Journal failure surfaces an error after actions without undoing controls. Verification is offline only; delivery receipt and live recovery certification remain unavailable.
+
+- BB active provider retries now suppress stall nudges and false nudge-cap holds. Queued input does not imply recovery; matching structured provider activity does. An observed retry followed by active recovery gets one ordinary stall interval without resetting spent nudges, Git evidence, holds or loop-wide limits. Incomplete retry scans suppress prompts and target moves. Offline fixtures cover recovery, restart and legacy cursor migration; live deployment is not yet verified.
+
+### Added
 
 - Subscribed `complete` reports now describe a new explicit completion declaration without private notes or claims of independently verified success. The persisted completion flag deduplicates commands and restarts; explicit resume permits a later declaration. Completion delivery uses one attempt without retries/redirects, with notification-loss limitations documented. Covered by offline fixtures only.
 
@@ -15,6 +37,8 @@
 - Optional `loop.limits.deadline` and `init --deadline` hold future automatic supervision at the next check at/after an RFC3339 cutoff. The awaiting-user hold persists across restarts and is visible in status; stop and existing holds retain precedence. Child-outcome polls skip providers after the cutoff. This does not cancel running turns, cap spend, or restrict explicit manual operations. Covered by offline fixtures, not live providers.
 
 ### Fixed
+
+- macOS archive builds omit AppleDouble metadata files so local filesystem attributes are not packaged alongside the executable and documentation.
 
 - Git progress fingerprinting now treats inaccessible tracked-file metadata as unknown rather than a deletion. A deterministic symlink-cycle fixture verifies that metadata errors cannot replenish the no-progress timer.
 

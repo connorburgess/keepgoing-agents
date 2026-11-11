@@ -2,6 +2,28 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## v0.1.3 reliability release evidence
+
+[v0.1.3](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.3) tags commit `935c0540bcb05fb786be5e3636a22eacbd045e8b`. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/42952101326) passed its Build and publish job on that commit: Go tests, all six archive builds, checksum verification, and both setup/recovery smoke scripts against the unpacked Linux amd64 executable. Publication used the reviewed [version-specific release notes](releases/v0.1.3.md).
+
+All six published assets were downloaded afterward and matched the published SHA-256 values. Exact archive file contents and ZIP integrity also passed; archives contain only the executable, README and license, with no AppleDouble metadata. The downloaded macOS arm64 executable reported `v0.1.3` and passed both setup and recovery smoke scripts. Its binary SHA-256 was `7c961f218d4e738e55c46498ec7ae8ca4c6aaf44f92b5cd21a45568c26cecd02`. Recovery used fictional BB/process/Claude/Codex providers, a rejected loopback alert, held daemon restarts, explicit recovery and completion without replay. No real provider was invoked.
+
+[Homebrew PR #2](https://github.com/connorburgess/homebrew-tap/pull/2) updated all four formula URLs/checksums and merged as `24f2e233debf1cee62afb9c00113b6eef6120997`. Its [Fresh macOS install job](https://github.com/connorburgess/homebrew-tap/actions/runs/42952492310) passed on head `8ce2ceff9a5189ae0a7af13a5d46a985fb22e292` against base `90ffac5ace1414f70689ed4fccec4af23dcceeda`. The macOS 15 arm64 runner installed from the checked-out formula, verified the asset checksum, passed version/setup/send-limit/timeline-help tests, and reported `v0.1.3`. It did not invoke a provider or replace an existing supervisor.
+
+Publication and package installation do not upgrade an existing supervisor. The [existing-loop deployment check](#existing-loop-deployment-check) below covers one scheduler-invoked executable replacement. The live setup/two-turn/hold/restart/completion walkthrough remains a separate, unverified step. Native Windows release installation, Linux/Intel macOS Homebrew installation, live headless compatibility and installed-service lifecycle remain outstanding. Packaging does not satisfy the BB-pilot-readiness gate.
+
+The tag workflow requires a nonempty `docs/releases/<tag>.md` before building and uses it instead of the entire historical changelog. Future tags must prepare their own notes through review. Candidate preparation evidence is recorded in [PR #73](https://github.com/connorburgess/keepgoing-agents/pull/73); it is separate from the published-asset checks above.
+
+## Existing-loop deployment check
+
+A native macOS BB loop was upgraded from an earlier development executable to the verified v0.1.3 archive binary. The existing scheduler invokes one short-lived `tick` process per check; no daemon held its runtime lock. The stored wrapper and the configured target/owner were checked before replacement. Private backups retained the prior executable, configuration and runtime state.
+
+Replacement used a staged executable and atomic rename while holding the existing daemon, tick and control locks. Hash comparisons verified that configuration, task/fallback files, saved controls, ownership and runtime files were unchanged by replacement. The installed binary matched the downloaded release hash and reported `v0.1.3`. The existing schedule and stored wrapper were unchanged; no timer, target, login, handoff or limit setting was edited.
+
+Offline doctor validated the existing configuration without provider calls; unavailable checks remained explicit. A dry-run tick read the live BB structured status and recorded a `v0.1.3` incident with `dryRun: true` and no proposed action. It sent no prompt and ran no probes. The offline timeline read this new evidence and preserved current control flags. The next ordinary scheduled check then recorded `build: v0.1.3`, `dryRun: false`, `outcome: succeeded`, an active BB observation and `action: none`. The scheduler labeled its silent result skipped, while keepgoing’s journal proved that the check ran successfully. Offline doctor subsequently matched the latest recorded build; the timeline distinguished the preview from the ordinary check. Configuration, control flags, ownership and the scheduler definition remained unchanged; scheduler run metadata advanced normally.
+
+This verifies an executable replacement, diagnostic preview and ordinary scheduled active-session check for one existing loop. It does not establish live retry/failure recovery, fresh onboarding, two supervised turns, cancellation, completion/restart, account handoff, daemon/service upgrades or migration readiness. Those walkthroughs remain open under R5. Private operational details and backups remain outside the repository.
+
 ## v0.1.2 maintenance release evidence
 
 [v0.1.2](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.2) tags commit `966620873af35bacef648d5dd57e31150e78f424`. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/42790570495) passed its Build and publish job on that commit: Go tests, six-platform archive build, all checksum comparisons, and the unpacked Linux amd64 smoke check. All six published assets were subsequently downloaded and matched the published checksums; the downloaded macOS arm64 archive passed the same provider-free smoke check locally. No real agent was invoked.
@@ -24,6 +46,20 @@ The script creates and removes a private temporary Git project and three private
 
 CI runs the smoke script against a native built binary on macOS and Linux. Windows native tests remain in the regular suite; this POSIX smoke script is not Windows evidence. See [testing](testing.md) for daemon, recovery, stop precedence and other fixture coverage.
 
+## Check recovery with local stand-ins
+
+On macOS/Linux with Python 3, pass a native binary from the same revision as this script:
+
+```sh
+python3 -u scripts/smoke-recovery.py /path/to/keepgoing
+```
+
+This companion to the setup smoke check requires v0.1.3 or newer; v0.1.2 is expected to fail it. It prints the executable SHA-256, version and platform. CI runs it on native macOS/Linux builds; release publication also gates on the unpacked Linux archive passing. Record the revision alongside that output. A local source build is not evidence that an installed supervisor was upgraded.
+
+Four private temporary loops use synthetic BB events, a local process adapter, and real local Claude/Codex stand-in processes. The check covers active BB retry suppression beyond the nudge allowance, classified connection failure, bounded recovery attempts, a persistent awaiting-user hold, and a loopback webhook rejecting the alert. It restarts actual daemon processes while held, checks that the offline timeline retains the failure and alert warning without side effects, repairs only the stand-in, and requires explicit resume. Headless fixtures explicitly increase their synthetic retry allowance before resume, then reuse their saved fictional session across successful turns; resume itself does not refund spent attempts. Completion is sent once despite rejection and remains held across two daemon restarts. Send allowance and owner identity must survive; a conflicting owner is rejected. The BB held case also spans two ordinary check intervals.
+
+The script supplies a minimal environment and explicit stand-in commands, without inheriting credentials or provider configuration. It creates no service or scheduler and removes its temporary state after stopping its supervisors. Allow about a minute for local processes and real daemon intervals. Tick timestamps are synthetic; daemon intervals use wall time. This is orderly restart evidence, not a process-crash, real network outage, provider cancellation, installed-service lifecycle or live session compatibility check. Windows remains outside this script's coverage. Existing Go fixtures separately cover stop/pause precedence and failure cases.
+
 ## Live install-to-completion walkthrough
 
 Run each row separately with an explicitly selected build, scratch project, existing login and authorized spend. A blocked provider or platform leaves that row unverified. Never deliberately exhaust quota, create accounts, change logins or repoint an existing loop to make a check pass.
@@ -33,7 +69,7 @@ Run each row separately with an explicitly selected build, scratch project, exis
 3. Start in the foreground using the printed command. Have the first turn perform only the first part of the task and leave the second part pending. Observe a second supervised turn. For headless runners confirm the saved session ID is reused, and independently inspect the scratch result; a saved ID alone does not prove resume.
 4. Pause between turns, check status, and verify no new wake across an ordinary interval. Exercise `await-user` separately, verify its hold and report, then explicitly resume. Record any permission interaction and verify that it is surfaced to the person without an automatic answer.
 5. Stop the supervisor process cleanly, then restart the same loop and verify its hold/session metadata persists. Separately request `stop` while an authorized scratch turn is active, and observe cancellation and no subsequent wake. Record platform/provider cancellation limits.
-6. Finish the task, independently check its acceptance criteria, and issue `complete --note` with an evidence reference. Confirm the completion hold across two check intervals and a supervisor restart. Status records a declaration; it is not independent proof of task success. No completion webhook event is implemented yet.
+6. Finish the task, independently check its acceptance criteria, and issue `complete --note` with an evidence reference. Confirm the completion hold across two check intervals and a supervisor restart. Status records a declaration; it is not independent proof of task success. On builds with completion reports (v0.1.3 or newer), verify the subscribed event and record HTTP acceptance separately from receiver receipt. Completion delivery is single-attempt and is not replayed after restart.
 7. End the scratch supervisor, retain private evidence, and record total setup time, manual corrections and failures. Remove only the scratch resources created for this run. Do not leave another scheduler or unattended loop running.
 
 | Target | Required evidence | Current status |
@@ -48,7 +84,7 @@ Ownership conflicts and takeover are covered by the binary smoke check using fic
 
 ## Publish a matching release
 
-Before tagging, review the complete Unreleased changelog and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
+Before tagging, review the selected version’s changelog, `docs/releases/<tag>.md` notes and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
 
 Publish the accumulated maintenance release separately from claims that the usability milestone is live-verified. Update the Homebrew formula's version, platform URLs and checksums to the actual published assets, then verify a fresh install and its `version` output. Update the README/setup version guidance in step with publication; `go install ...@latest` selects a tagged release, not `main`. Keep archived documentation and examples attached to their matching tag. The BB plugin has its own build/install path and is not installed by the core archive or Homebrew formula.
 

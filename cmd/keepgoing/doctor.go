@@ -21,6 +21,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -34,6 +35,7 @@ type doctorCheck struct {
 }
 
 type doctorReport struct {
+	Notifications *report.DeliveryStatus    `json:"notifications,omitempty"`
 	SchemaVersion int                       `json:"schemaVersion"`
 	Version       string                    `json:"version"`
 	Loop          string                    `json:"loop,omitempty"`
@@ -101,12 +103,15 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorFile(&r, "state.directory", cfg.Loop.StateDir, true)
 	doctorStateAccess(&r, cfg.Loop.StateDir, doctorOSAccess)
-	for _, name := range []string{control.FileName, state.FileName, "health.json", state.LogName, daemoninfo.FileName} {
+	for _, name := range []string{control.FileName, state.FileName, "health.json", state.LogName, daemoninfo.FileName, report.DeliveryFile, "delivery.lock"} {
 		p := filepath.Join(cfg.Loop.StateDir, name)
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			doctorFile(&r, "state."+name, p, false)
 		}
 	}
+	notifications := report.InspectDeliveries(cfg.Loop.StateDir)
+	r.Notifications = &notifications
+	doctorDeliveries(&r, notifications)
 	ctl, ctlErr := control.Load(cfg.Loop.StateDir)
 	if ctlErr != nil {
 		r.add("control", "error", "Control state could not be read.", "Repair control.json before enabling supervision; do not discard an existing stop or pause.")
