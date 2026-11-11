@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +195,47 @@ func TestSchemaOneUpgradePreservesHistoryAndUnavailableEvidence(t *testing.T) {
 	}
 	if loaded.Records[0].Observation.ProviderCode != "unavailable" {
 		t.Fatal("invented legacy evidence")
+	}
+}
+
+func TestJournalBuildLabelsSurviveRestartWithoutPrivateSuffixes(t *testing.T) {
+	accepted := []string{"dev", "v1.2.3", "1.2.3", "abcdef1", "smoke-abcdef1-dirty", "v1.2.3-dev.abcdef1", "1.2.3-dev." + strings.Repeat("a", 40), "v1.2.3-rc.1", "1.2.3-rc.12"}
+	rejected := []string{"", "unavailable", "v1.2.3-dev.short", "v1.2.3-dev." + strings.Repeat("a", 41), "v1.2.3-dev.private-task", "v1.2.3-rc.private-task", "v1.2.3-rc.1+private-task", "v1.2.3-dev.abcdef1/private-task", "v1.2.3-beta.1", "v1.2.3-rc.1\nprivate-task"}
+	for _, kind := range []string{"tick", "control"} {
+		for _, label := range append(append([]string{}, accepted...), rejected...) {
+			t.Run(kind+"/"+label, func(t *testing.T) {
+				dir := t.TempDir()
+				r := sample()
+				r.Kind, r.Build = kind, label
+				if kind == "control" {
+					r.ControlChange = &ControlChange{Operation: "pause", SaveObservedAt: r.CheckStartedAt}
+					r.ControlBefore, r.ControlAfter = &Controls{}, &Controls{Paused: true}
+				}
+				if err := Append(dir, r); err != nil {
+					t.Fatal(err)
+				}
+				want := "unavailable"
+				if slices.Contains(accepted, label) {
+					want = label
+				}
+				j, err := Load(dir)
+				if err != nil || len(j.Records) != 1 || j.Records[0].Build != want {
+					t.Fatalf("build lost or unsafe suffix retained: %+v %v", j, err)
+				}
+				// A later process append cleans older records again. Neither
+				// recognized labels nor earlier redactions may change on rewrite.
+				if err := Append(dir, sample()); err != nil {
+					t.Fatal(err)
+				}
+				j, err = Load(dir)
+				if err != nil || j.Records[0].Build != want {
+					t.Fatal("rewrite changed recorded build", err)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, FileName))
+				if err != nil || strings.Contains(string(data), "private-task") {
+					t.Fatal("private build suffix entered storage", err)
+				}
+			})
+		}
 	}
 }
