@@ -31,7 +31,7 @@ func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Journal{SchemaVersion: 3, NextSequence: 1, Records: []Record{}}, nil
+		return Journal{SchemaVersion: 4, NextSequence: 1, Records: []Record{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
@@ -48,7 +48,7 @@ func Load(dir string) (Journal, error) {
 	var j Journal
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion != 1 && j.SchemaVersion != 2 && j.SchemaVersion != 3) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
+	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion < 1 || j.SchemaVersion > 4) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
 		return Journal{}, ErrUnavailable
 	}
 	if j.Dropped > j.NextSequence-1 || j.NextSequence-1-j.Dropped != uint64(len(j.Records)) {
@@ -68,6 +68,12 @@ func Load(dir string) (Journal, error) {
 		if j.SchemaVersion < 3 {
 			r.Decisions = Decisions{}
 		}
+		if j.SchemaVersion < 4 {
+			r.Kind, r.ControlChange = "tick", nil
+		}
+		if !validRecord(r) {
+			return Journal{}, ErrUnavailable
+		}
 		j.Records[i] = clean(r)
 	}
 	return j, nil
@@ -85,10 +91,10 @@ func Append(dir string, r Record) error {
 	if err != nil {
 		return err
 	}
-	if r.CheckStartedAt.IsZero() || j.NextSequence == ^uint64(0) {
+	if !validRecord(r) || j.NextSequence == ^uint64(0) {
 		return ErrUnavailable
 	}
-	j.SchemaVersion = 3
+	j.SchemaVersion = 4
 	r = clean(r)
 	r.Sequence = j.NextSequence
 	j.NextSequence++
@@ -133,4 +139,11 @@ func Append(dir string, r Record) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func validRecord(r Record) bool {
+	if r.CheckStartedAt.IsZero() {
+		return false
+	}
+	return r.Kind != "control" || (r.ControlChange != nil && !r.ControlChange.SaveObservedAt.IsZero() && r.ControlBefore != nil && r.ControlAfter != nil)
 }

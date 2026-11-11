@@ -39,6 +39,11 @@ func TestStartPreservesHoldsAndClaimsOwner(t *testing.T) {
 			ready := false
 			code := startCommand(env{ctx, io.Discard, &errs}, []string{"--foreground", "-c", f.cfg}, func(got control.File) error {
 				ready = true
+				j := controlHistory(t, f)
+				if len(j.Records) != 1 || j.Records[0].Kind != "control" || j.Records[0].ControlChange.Operation != "start" || j.Records[0].ControlBefore.Enabled || !j.Records[0].ControlAfter.Enabled {
+					t.Fatal(j)
+				}
+
 				if !got.Enabled || got.Ownership == nil || got.Ownership.ThreadID != "thr_start_owner" || got.Ownership.Generation != 1 {
 					t.Fatalf("not enabled/claimed: %+v", got)
 				}
