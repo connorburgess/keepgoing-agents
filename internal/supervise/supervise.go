@@ -320,6 +320,7 @@ func (t *tick) run() error {
 		unchangedFor = t.now.Sub(t.st.LastProgressAt)
 		res.UnchangedFor = unchangedFor.Truncate(time.Second).String()
 	}
+	unchangedFor = t.stallAfterRetry(obs, target, unchangedFor)
 	sinceWake := 100 * 365 * 24 * time.Hour
 	if !t.st.LastWakeAt.IsZero() {
 		sinceWake = t.now.Sub(t.st.LastWakeAt)
