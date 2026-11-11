@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added read-only `transfer preview` for a single BB primary: versioned JSON/text compare thread/provider/environment metadata, display redacted holds/ownership/goal identity and flag unavailable or incompatible inputs. Offline mode skips BB queries. Fixture-tested only; model/account identity, transfer application and plugin move UI remain unfinished.
+
 - `goal create|revise|show` records private goal identity and specification revisions independently of loop controls. Expected ID/revision checks prevent stale edits; ordinary status withholds titles/references, with explicit `show --private` for full history. Offline fixtures cover ownership, locks, holds, corruption, limits and privacy. Goal acceptance, verification and review-stage bindings remain unimplemented.
 
 ## 0.1.3 (2026-11-11)

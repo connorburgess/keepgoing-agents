@@ -43,6 +43,9 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   doctor                   Diagnose setup and recent checks without model calls
   timeline                 Explain retained incident history offline (text or --json)
 
+Transfer planning:
+  transfer preview         Inspect a proposed BB move without changing it
+
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
 
@@ -96,6 +99,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "transfer":
+		return transferCommand(e, rest, doctorExec)
 	case "goal":
 		return goalCommand(e, rest)
 	case "service":
