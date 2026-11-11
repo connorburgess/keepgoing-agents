@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -43,5 +45,18 @@ func TestPromptSendReloadAndMalformedEvidence(t *testing.T) {
 	st, err := Load(dir)
 	if err != nil || st.LastPromptSend != nil || st.Reprompts != 3 {
 		t.Fatalf("legacy state: %+v %v", st, err)
+	}
+}
+
+func TestMalformedPromptTypesDoNotBlockPolicyState(t *testing.T) {
+	dir := t.TempDir()
+	for _, raw := range []string{`"private-text"`, `[]`, `{"version":"private-text"}`, `{"version":1,"checkAt":"invalid-time"}`, `{"goalRevision":-1}`} {
+		if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"reprompts":3,"lastPromptSend":`+raw+`}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		st, err := Load(dir)
+		if err != nil || st.Reprompts != 3 || st.LastPromptSend != nil {
+			t.Fatalf("diagnostic field blocked state: %+v %v", st, err)
+		}
 	}
 }

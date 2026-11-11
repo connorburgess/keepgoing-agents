@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"regexp"
 	"time"
 )
@@ -20,6 +21,19 @@ type PromptSend struct {
 }
 
 var promptGoalID = regexp.MustCompile(`^goal_[0-9a-f]{32}$`)
+
+// UnmarshalJSON keeps malformed diagnostic metadata from preventing ordinary
+// control/decision state from loading. Load withholds this zero/invalid record.
+func (p *PromptSend) UnmarshalJSON(b []byte) error {
+	type plain PromptSend
+	var candidate plain
+	if json.Unmarshal(b, &candidate) != nil || !PromptSend(candidate).Valid() {
+		*p = PromptSend{}
+		return nil
+	}
+	*p = PromptSend(candidate)
+	return nil
+}
 
 // Valid withholds unsupported/malformed evidence without changing loop policy.
 func (p PromptSend) Valid() bool {
