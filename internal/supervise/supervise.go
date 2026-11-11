@@ -18,6 +18,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -614,7 +615,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
-		prompt, err := loop.PromptText()
+		text, err := prompt.Wake(loop)
 		if err != nil {
 			return err
 		}
@@ -625,7 +626,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
 			return err
 		}
-		if err := a.Send(t.ctx, prompt, mode); err != nil {
+		if err := a.Send(t.ctx, text, mode); err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
 				t.warn("%s adapter: %v", a.Name(), err)

@@ -24,7 +24,8 @@ var ErrGoal = errors.New("goal record unavailable or invalid; restore a valid go
 var goalID = regexp.MustCompile(`^goal_[0-9a-f]{32}$`)
 
 // GoalSpec is descriptive private metadata. References are opaque: never read,
-// executed, sent to providers, or treated as evidence of authorization/success.
+// executed, or treated as evidence of authorization/success. Explicit prompt_goal
+// configuration permits transporting the current specification to an agent.
 type GoalSpec struct {
 	Title             string          `json:"title"`
 	ObjectiveRefs     []string        `json:"objectiveRefs"`
