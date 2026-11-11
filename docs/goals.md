@@ -79,3 +79,18 @@ The renderer reloads the latest saved revision when composing each message. Coop
 Missing, corrupt or wrong-loop goal records refuse the send before reserving its send allowance; no stale cached goal is substituted. Normal status observations or probes may already have occurred. A dry-run previews decisions without validating/composing the goal message. Stop, pause, disabled, awaiting-user and completed controls keep their existing precedence. This does not update already-running turns or queued messages, fence external writers that ignore locks, detect semantic drift in a roadmap, or bind completion to the goal revision.
 
 Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption and automatic setup wiring remain unverified/planned.
+
+
+## Recorded send provenance
+
+Implemented after v0.1.4, not yet released. Ordinary `keepgoing status` and `status --json` show the latest **recorded automatic send call** independently of the current goal record. `promptSend.last` includes the goal ID/revision composed into that message, the target alias, action (`wake`, `nudge`, `reprompt`, `handoff` or `switch_back`), requested delivery mode, and the tick's check timestamp. The timestamp is not an exact send or provider-receipt time. A message sent without `prompt_goal` has no goal ID/revision, even if a goal record exists.
+
+- `adapter_returned`: the adapter returned without error. A queued message may still be waiting; a process adapter may only have started a command. This does not establish receipt, agent adoption, execution or acceptance.
+- `adapter_error`: the adapter returned an error, including an unsupported operation. Delivery remains uncertain; a failure does not prove that no side effect occurred. Raw error text is excluded from this record.
+- `availability: unavailable`: no supported valid record was retained. This includes older binaries and states without a captured send; it does not prove that nothing was sent.
+
+`currentGoalComparison` compares only the saved ID/revision to the current goal metadata: `same_revision`, `different_revision`, `different_goal`, `not_included` or `unavailable`. It is not a semantic drift detector. Revising a goal does not rewrite already queued prompts or their evidence. Current goal and state are independent reads without a lock; the comparison is advisory, not an authorization to resume or replay anything.
+
+The bounded latest-call record lives in `state.json`, saved after the tick's action path. A crash or failed state write can lose newer attempt evidence and leave an older record. Only the last returned call survives when one tick tries multiple candidates; earlier attempts are not a complete history. Dry runs, failed composition/reservation and checks without sends do not invent or refresh a record. Holds preserve it across later checks and restarts. Primary transfer clears it along with old thread observations; other target aliases refer to the configuration at that historical check, not verified current session identity. No prompt text, source path, reference contents or raw adapter error is added to this metadata.
+
+Offline fixtures cover goal changes across fresh ticks, failed and unsupported sends, queued revision history, handoff/switch-back composition, transfer reset, legacy/malformed state, status comparison and privacy. This does not add source-file revision tracking, durable pre-send intents, a full attempt ledger, confirmed delivery, incident-timeline or registered-client projection, or live provider verification. These remain separate F2 acceptance work.

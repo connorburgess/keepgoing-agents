@@ -306,6 +306,7 @@ func resetTransferState(dir string) error {
 	st.StallRetry = nil
 	st.LastState = ""
 	st.LastCheck = nil
+	st.LastPromptSend = nil
 	st.CheckedAt = time.Time{}
 	st.StopRequestedSent = false
 	st.AwaitingReported = false

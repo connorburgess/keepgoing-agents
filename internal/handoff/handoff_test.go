@@ -58,7 +58,11 @@ func TestCurrentGoalIncludedInGeneratedAndCustomBrief(t *testing.T) {
 			}
 		}
 		for _, back := range []bool{false, true} {
-			text, err := Brief(loop, Facts{SwitchBack: back})
+			message, err := ComposeBrief(loop, Facts{SwitchBack: back})
+			text := message.Text
+			if message.GoalID == "" || message.GoalRevision != 1 {
+				t.Fatalf("missing goal provenance: %+v", message)
+			}
 			if err != nil || strings.Count(text, `"revision": 1`) != 1 || !strings.Contains(text, spec.Title) {
 				t.Fatalf("custom=%v switchBack=%v: %q %v", custom, back, text, err)
 			}

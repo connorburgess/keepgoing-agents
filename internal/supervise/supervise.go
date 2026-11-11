@@ -492,7 +492,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			return false, err
 		}
 		c, _ := t.fb.Find(id)
-		brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
+		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}
@@ -519,7 +519,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
 			return false, err
 		}
-		if err := ta.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
+		if err := t.send(ta, brief, adapter.ModeAuto, id, "handoff"); err != nil {
 			t.warn("handoff to %s: send: %v", id, err)
 			continue
 		}
@@ -573,7 +573,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
 		return false, nil
 	}
-	brief, err := handoff.Brief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
+	brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
 	if err != nil {
 		return false, fmt.Errorf("switch-back brief: %w", err)
 	}
@@ -590,7 +590,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
 		return false, err
 	}
-	if err := pa.Send(t.ctx, brief, adapter.ModeAuto); err != nil {
+	if err := t.send(pa, brief, adapter.ModeAuto, state.Primary, "switch_back"); err != nil {
 		t.warn("switch-back: send to primary: %v", err)
 		return false, nil
 	}
@@ -615,7 +615,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
-		text, err := prompt.Wake(loop)
+		text, err := prompt.ComposeWake(loop)
 		if err != nil {
 			return err
 		}
@@ -626,7 +626,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
 			return err
 		}
-		if err := a.Send(t.ctx, text, mode); err != nil {
+		if err := t.send(a, text, mode, t.res.Target, string(d.Action)); err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
 				t.warn("%s adapter: %v", a.Name(), err)
@@ -667,6 +667,21 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
 	}
 	return nil
+}
+
+// send records only a returned adapter call. It is persisted with the completed
+// tick, not a durable pre-send intent or an acknowledgement of agent execution.
+func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	err := a.Send(t.ctx, message.Text, mode)
+	outcome := "adapter_returned"
+	if err != nil {
+		outcome = "adapter_error"
+	}
+	t.st.LastPromptSend = &state.PromptSend{
+		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
+		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
+	}
+	return err
 }
 
 func (t *tick) record(actErr error) error {
