@@ -17,6 +17,8 @@ Go 1.24 or newer. No other toolchain is needed.
 
 Open a branch and a pull request against `main`. Keep each PR to one outcome. Explain the problem, the resulting behavior, and how you verified it. A local pass is not a claim about CI.
 
+Use the [review and execution evidence checks](docs/testing.md#review-and-execution-evidence), plus the platform checks on that page when applicable. Keep the PR description aligned with its current implementation and list checks not run explicitly. Cite CI with the specific run, jobs and source commit; a green check that skipped the affected platform is not execution evidence for that platform.
+
 ## Commit and PR titles
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
