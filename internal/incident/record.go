@@ -16,6 +16,7 @@ import (
 // Record describes one attempted tick. Timestamps describe supervisor checks,
 // not provider event time. Unsupported source details are explicitly unavailable.
 type Record struct {
+	Decisions            Decisions   `json:"decisions"`
 	CountersAvailable    bool        `json:"countersAvailable"`
 	Cause                string      `json:"cause"`
 	Sequence             uint64      `json:"sequence"`
@@ -122,8 +123,9 @@ func clean(r Record) Record {
 	if !keyPattern.MatchString(r.TargetKey) {
 		r.TargetKey = "unavailable"
 	}
-	r.Cause = oneOf(r.Cause, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "other")
-	r.Action = oneOf(r.Action, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")
+	r.Cause = cleanCause(r.Cause)
+	r.Action = cleanAction(r.Action)
+	r.Decisions = cleanDecisions(r.Decisions)
 	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run")
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
@@ -178,4 +180,11 @@ func Cause(reason string) string {
 		}
 	}
 	return "other"
+}
+
+func cleanCause(value string) string {
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "other")
+}
+func cleanAction(value string) string {
+	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")
 }

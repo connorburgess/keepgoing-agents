@@ -373,6 +373,12 @@ func TestAllExactProbesFailFallsBackToRepromptRules(t *testing.T) {
 	}
 	reg.Save(w.dir)
 	res := runTick(t, w, t0) // probeOK empty: exact probes fail
+	r := lastIncident(t, w)
+	e := r.Decisions.Evaluations
+	if len(e) != 2 || e[0].Action != "handoff" || !e[0].Input.FailoverAvailable || e[1].Stage != "handoff_failed" || e[1].Input.FailoverAvailable || e[1].Action != "reprompt" || e[1].Input.Reprompts != 0 || r.Reprompts != 1 {
+		t.Fatal(r)
+	}
+
 	if res.Action != "reprompt" || !strings.Contains(res.Reason, "no fallback could take over") || len(p.sent) != 1 {
 		t.Fatalf("%+v", res)
 	}

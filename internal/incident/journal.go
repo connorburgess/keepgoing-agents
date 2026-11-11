@@ -31,7 +31,7 @@ func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Journal{SchemaVersion: 2, NextSequence: 1, Records: []Record{}}, nil
+		return Journal{SchemaVersion: 3, NextSequence: 1, Records: []Record{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
@@ -48,7 +48,7 @@ func Load(dir string) (Journal, error) {
 	var j Journal
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion != 1 && j.SchemaVersion != 2) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
+	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion != 1 && j.SchemaVersion != 2 && j.SchemaVersion != 3) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
 		return Journal{}, ErrUnavailable
 	}
 	if j.Dropped > j.NextSequence-1 || j.NextSequence-1-j.Dropped != uint64(len(j.Records)) {
@@ -64,6 +64,9 @@ func Load(dir string) (Journal, error) {
 			r.Observation.ProviderCode = "unavailable"
 			r.Observation.HTTPStatus = nil
 			r.Observation.ExitCode = nil
+		}
+		if j.SchemaVersion < 3 {
+			r.Decisions = Decisions{}
 		}
 		j.Records[i] = clean(r)
 	}
@@ -85,7 +88,7 @@ func Append(dir string, r Record) error {
 	if r.CheckStartedAt.IsZero() || j.NextSequence == ^uint64(0) {
 		return ErrUnavailable
 	}
-	j.SchemaVersion = 2
+	j.SchemaVersion = 3
 	r = clean(r)
 	r.Sequence = j.NextSequence
 	j.NextSequence++
