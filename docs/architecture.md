@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -184,3 +184,7 @@ This is a cooperative, process-crash protocol, not a multi-file atomic commit or
 ## Local client registry
 
 `internal/registry` owns a bounded schema-1 registry of explicit config/runtime references and a separate short advisory lock. The command layer canonicalizes registry/runtime paths while retaining config-relative path semantics, refuses checkout/project destinations, loads and validates configs for add, and checks their source snapshots before registering. Reads never query registered configs or create files. Add/remove never acquire loop locks or change controls. IDs are discovery references, not authorization or durable filesystem identities; future status/control requests must revalidate their bindings. Atomic replacement preserves a previous record on failed writes, without promising power-loss durability or coordination with external writers. See [local clients](local-clients.md) for privacy, compatibility and planned control requirements.
+
+## Registered client status
+
+The command layer composes registry/config binding checks, bounded local control/state reads, validated goal metadata and the existing runtime/daemon diagnostics into a separate schema-1 projection. It does not serialize ordinary status wholesale: notes, paths, owner/account identities, goal references and free-text check reasons are withheld. Explicit private display contains only the current goal title and next-action summary. Binding/source checks run again after the bounded local daemon query; changed bindings discard the snapshot. Reads take no locks and form independent evidence, not an atomic snapshot or a control authorization. Providers, schedulers, transcripts and session artifacts are never queried. See [registered status](local-clients.md#registered-status-schema-1) for outcome and freshness semantics; guarded client controls remain future work.
