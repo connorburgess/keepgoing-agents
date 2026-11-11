@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-## 0.1.3 (prepared)
+## 0.1.3 (2026-11-11)
 
-Reliability release prepared from the changes after v0.1.2. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md#v013-reliability-release-preparation). See the [release notes](docs/releases/v0.1.3.md) for the user-facing changes and upgrade limits.
+Reliability release collecting the changes after v0.1.2. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md#v013-reliability-release-evidence). See the [release notes](docs/releases/v0.1.3.md) for the user-facing changes and upgrade limits.
 
 - Native macOS/Linux CI and the unpacked Linux release gate now run a recovery smoke check with stand-in BB/process/Claude/Codex providers, rejected local notifications, held daemon restarts, explicit recovery and completion without replay. This adds offline artifact evidence, not live provider or deployment certification.
 
-- Added `timeline`, an offline text/JSON view combining bounded incident/delivery records with redacted current control flags. It exposes local timestamp/source evidence, historical hold and activity summaries, failed alerts, retention and evidence gaps without provider/scheduler/daemon/CI calls or writes. Missing/corrupt sources remain explicit; `--state-dir` supports broken configs and copied records. Acceptance is fixture-only; unreleased and not installed or live-verified.
+- Added `timeline`, an offline text/JSON view combining bounded incident/delivery records with redacted current control flags. It exposes local timestamp/source evidence, historical hold and activity summaries, failed alerts, retention and evidence gaps without provider/scheduler/daemon/CI calls or writes. Missing/corrupt sources remain explicit; `--state-dir` supports broken configs and copied records. Acceptance is fixture-only; publication does not install the code or establish live verification.
 
 - Notification delivery evidence now persists in a bounded private ledger. Status and doctor show historical failed/unconfirmed reports across held checks, with attempt intent, numeric HTTP outcomes and explicitly unverified receipt. Diagnostic failures preserve holds and original transport behavior; completion remains single-attempt without redirects or replay. Local webhook/transport fixtures only; not installed or live-verified.
 
