@@ -156,3 +156,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Use fictional data everywhere.
 ## License
 
 [Apache-2.0](LICENSE). The project retains this license. The [roadmap delivery priorities](docs/roadmap.md#delivery-priorities-after-roadmap-reassessment) put core verification and release consistency ahead of further goal acceptance controls, review workflows, and optional menu-bar visibility.
+
+See the [supervision feature analysis](docs/supervision-feature-analysis.md) for selected lessons from BB, Claude Code and Grok, and the [checkable roadmap](docs/roadmap.md#11-useful-supervision-features-from-product-analysis) for setup, prompt drift, model discovery and recovery improvements. These are planned acceptance targets, not a claim of product parity.
