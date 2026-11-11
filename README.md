@@ -94,6 +94,10 @@ go build -trimpath -ldflags "-X main.version=dev-$revision" \
 
 Use this absolute binary path wherever the following instructions say `keepgoing`; setup prints commands using the executable that ran it. Record the revision with any results. This is a source build labeled with its revision; it may include changes newer than the latest release. Building it does not upgrade a running supervisor or change its timer. See [release verification](docs/release-verification.md) for a provider-free binary smoke check and the separate live walkthrough.
 
+### Optional macOS menu preview
+
+The [native menu-bar preview](integrations/macos/README.md) shows explicitly registered local loops through the shared CLI. It reads on menu open or manual refresh, hides private goal text by default, and distinguishes controls, historical activity and daemon evidence. It is an unreleased, read-only developer build; controls, setup installation, signing and live UI verification remain planned. Opening it starts no supervisor or wake timer.
+
 ## Quick start
 
 With v0.1.2 or newer, run this from an existing Git project with at least one commit:
