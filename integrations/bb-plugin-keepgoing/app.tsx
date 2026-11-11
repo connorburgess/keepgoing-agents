@@ -11,6 +11,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LoopView, rpcContract } from "./server";
+import { diagnosticLines, dateLabel } from "./status-details";
 import { SetupPanel } from "./setup-panel";
 import { TransferPanel } from "./transfer-panel";
 
@@ -19,7 +20,7 @@ type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 // One cached lookup per thread, shared by the card row, the banner segment,
 // and its visibility check, so a thread is fetched once per refresh.
 const STALE_MS = 25_000;
-const cache = new Map<string, { loops: LoopView[]; at: number; inflight: boolean }>();
+const cache = new Map<string, { loops: LoopView[]; at: number; inflight: boolean; failed: boolean }>();
 const listeners = new Set<() => void>();
 const notify = () => {
   for (const l of listeners) l();
@@ -32,17 +33,17 @@ const subscribe = (l: () => void) => {
 function fetchLoops(rpc: Rpc, threadId: string, force = false) {
   const entry = cache.get(threadId);
   if (entry?.inflight || (!force && entry && Date.now() - entry.at < STALE_MS)) return;
-  cache.set(threadId, { loops: entry?.loops ?? [], at: entry?.at ?? 0, inflight: true });
+  cache.set(threadId, { loops: entry?.loops ?? [], at: entry?.at ?? 0, inflight: true, failed: entry?.failed ?? false });
   rpc
     .call("forThread", { threadId })
-    .then((result) => cache.set(threadId, { loops: result.loops, at: Date.now(), inflight: false }))
-    .catch(() => cache.set(threadId, { loops: [], at: Date.now(), inflight: false }))
+    .then((result) => cache.set(threadId, { loops: result.loops, at: Date.now(), inflight: false, failed: result.errors.length > 0 }))
+    .catch(() => cache.set(threadId, { loops: entry?.loops ?? [], at: Date.now(), inflight: false, failed: true }))
     .finally(notify);
 }
 
-function useLoop(threadId: string): { loop: LoopView | undefined; refresh: () => void } {
+function useLoop(threadId: string) {
   const rpc = useRpc<typeof rpcContract>();
-  const loops = useSyncExternalStore(subscribe, () => cache.get(threadId)?.loops);
+  const entry = useSyncExternalStore(subscribe, () => cache.get(threadId));
   const refresh = useCallback(() => fetchLoops(rpc, threadId, true), [rpc, threadId]);
   useEffect(() => {
     fetchLoops(rpc, threadId);
@@ -50,19 +51,20 @@ function useLoop(threadId: string): { loop: LoopView | undefined; refresh: () =>
     return () => clearInterval(timer);
   }, [rpc, threadId]);
   useRealtime("changed", refresh);
-  return { loop: loops?.[0], refresh };
+  return { loop: entry?.loops[0], refresh, failed: entry?.failed ?? false, loaded: !!entry?.at };
 }
 
 function label(loop: LoopView): string {
-  if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: enabled" : `keepgoing: watching (${loop.target})`;
+  if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: enabled" : `keepgoing: watching ${loop.details?.targetThread ?? loop.target}`;
   return `keepgoing: ${loop.controlState}`;
 }
 
 function describe(loop: LoopView): string[] {
   return [
     `Loop ${loop.loop}`,
+    ...diagnosticLines(loop.details, loop.target, loop.supervising),
     loop.note ? `Note: ${loop.note}` : null,
-    loop.lastWakeAt ? `Last sent ${new Date(loop.lastWakeAt).toLocaleString()}` : "Nothing sent yet",
+    dateLabel(loop.lastWakeAt) !== "unavailable" ? `Last sent ${dateLabel(loop.lastWakeAt)}` : "Last sent: unavailable",
     loop.handoffs > 0 ? `${loop.handoffs} handoffs` : null,
     loop.fallbacks ? `Fallbacks: ${loop.fallbacks}` : null,
   ].filter((line): line is string => line !== null);
@@ -120,40 +122,46 @@ function ThreadSetup({ threadId, onChanged }: { threadId: string; onChanged(): v
     <TransferPanel key={`move-${threadId}`} threadId={threadId} call={transfer} onChanged={onChanged} /></>;
 }
 
+function StatusWarning({ refresh }: { refresh(): void }) {
+  return <div role="alert">Status could not be verified for every registered loop. Controls and setup are hidden until refreshed. <button type="button" style={buttonStyle} onClick={refresh}>Refresh status</button></div>;
+}
+
 function CardRow({ threadId }: { threadId: string }) {
-  const { loop, refresh } = useLoop(threadId);
+  const { loop, refresh, failed, loaded } = useLoop(threadId);
   const [open, setOpen] = useState(false);
   return <div>
-    {!loop ? <ContextRow icon="Repeat" label="keepgoing" action={<button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
+    {failed && <StatusWarning refresh={refresh} />}
+    {!loaded ? <ContextRow icon="Repeat" label="keepgoing: checking status" /> : !loop ? <ContextRow icon="Repeat" label="keepgoing" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
       icon="Repeat"
-      label={label(loop)}
+      label={failed ? "keepgoing: status unavailable (previous snapshot)" : label(loop)}
       title={describe(loop).join("\n")}
       trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
-      action={<><ToggleButton loop={loop} threadId={threadId} onDone={refresh} />{loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
+      action={<>{!failed && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}{!failed && loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
     />}
-    {open && <ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} />}
+    {open && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} /></div>}
   </div>;
 }
 
 function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; isExpanded: boolean; onToggle(): void }) {
-  const { loop } = useLoop(threadId);
+  const { loop, failed, loaded } = useLoop(threadId);
   return (
-    <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
+    <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
       style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {loop ? label(loop) : "Supervise this thread"}
+      {failed ? "keepgoing: status unavailable" : !loaded ? "keepgoing: checking status" : loop ? label(loop) : "Supervise this thread"}
     </button>
   );
 }
 
 function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded: boolean }) {
-  const { loop, refresh } = useLoop(threadId);
+  const { loop, refresh, failed, loaded } = useLoop(threadId);
   if (!isExpanded) return null;
   return <>
+    {failed && <StatusWarning refresh={refresh} />}
     {loop && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
-      <span>{describe(loop).join(" · ")}</span>
-      <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />
+      <div>{failed && <div>Previous snapshot</div>}{describe(loop).map((line, i) => <div key={i}>{line}</div>)}</div>
+      {!failed && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}
     </div>}
-    {(!loop || loop.managedId) && <ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} />}
+    {loaded && (!loop || loop.managedId) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} /></div>}
   </>;
 }
 

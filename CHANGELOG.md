@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expanded the BB banner/card status with declared completion, actual target thread, timestamped daemon/check evidence, and historical action outcomes. Failed refreshes show a warning and hide controls/setup until refreshed. External schedulers remain uninspected. SDK/DOM fixtures, typechecking and bundle builds only; no live deployment.
+
 - Added the BB plugin’s "Move supervision here" flow for plugin-created loops in the same environment/provider: preview source/destination and holds, explicitly apply a held move, and reconcile or recover interrupted requests after reload. Registered-host routing and durable private references keep paths/commands out of browser control; resume/start remain separate. SDK/controller/DOM fixtures and bundle builds only; no live transfer or deployment.
 
 - Added explicit same-environment BB `transfer apply` and roll-forward `transfer recover`, with a durable pending fence, preserved holds/goals/allowances, target-specific observation reset, atomic config replacement and a permanent target binding against stale config copies. Moves stay awaiting-user and advance owner generation. Fixture-tested, including a real subprocess exit with fake BB; no live transfer or model/account verification is claimed.
