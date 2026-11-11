@@ -140,3 +140,25 @@ func TestGoalCLIInvalidInputIsRedacted(t *testing.T) {
 		t.Fatal("invalid goal called provider")
 	}
 }
+
+func TestGoalCLIConfigErrorsAreRedacted(t *testing.T) {
+	f := newFixture(t)
+	input := filepath.Join(t.TempDir(), "spec.json")
+	write(t, input, `{"title":"PRIVATE-TITLE","objectiveRefs":["private"],"acceptanceRefs":["private"]}`, 0600)
+	// YAML decoder errors can contain private configuration values.
+	write(t, f.cfg, "version: 1\nloop:\n  progress:\n    stall_after: PRIVATE-CONFIG-VALUE\n", 0600)
+	for _, args := range [][]string{
+		{"goal", "create", "--file", input},
+		{"goal", "revise", "--file", input, "--id", "goal_0123456789abcdef0123456789abcdef", "--revision", "1"},
+		{"goal", "show"},
+		{"goal", "show", "--private"},
+	} {
+		code, out, errs := f.run(args...)
+		if code != exitUsage || strings.Contains(out+errs, "PRIVATE-") || !strings.Contains(errs, "configuration unavailable or invalid") {
+			t.Fatalf("%v: %d %s %s", args, code, out, errs)
+		}
+	}
+	if f.read("calls") != "" || f.read("probes") != "" {
+		t.Fatal("invalid config called provider")
+	}
+}

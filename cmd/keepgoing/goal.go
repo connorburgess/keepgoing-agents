@@ -39,7 +39,7 @@ func goalCommand(e env, args []string) int {
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {
-		e.errf("config: %v", err)
+		e.errf("goal: configuration unavailable or invalid; check the configuration privately")
 		return exitUsage
 	}
 	if cmd == "show" {
