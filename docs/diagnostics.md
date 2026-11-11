@@ -158,6 +158,19 @@ The [bounded tick history](#bounded-tick-incident-history) preserves normalized 
 
 The [priority reliability checkpoints](roadmap.md#priority-reliability-checkpoints) cover active retry classification, keepgoing-owned structured evidence across adapters, failed-alert visibility, a read-only timeline and recovery verification. Active BB retry handling is available in v0.1.3 and fixture-tested; see [retry handling and recorded reasons](operations.md#bb-retry-and-stall-handling). Common evidence, decision inputs, control-save records and combined chronology acceptance are implemented below with offline fixtures; delivery diagnostics and the offline timeline are also implemented below with fixtures; existing-loop deployment and live recovery verification remain separate; see [release evidence](release-verification.md#v013-reliability-release-evidence). Records must exclude task/transcript text and secrets; unsupported provider details remain unavailable. Connectivity recovery alone must never resume an explicit hold.
 
+### Interrupted BB turns and host availability
+
+After v0.1.4, diagnostic records retain the finite code `thread_command_failed` from structured BB failures. The code remains an **unknown** decision error: it does not prove a host disconnect, network outage, quota limit or authentication problem. Error message/detail text is neither classified nor saved. Older redacted records cannot be recovered. This diagnostic correction is unreleased.
+
+`TestIncidentJourneyBBInterruptedCommandRecovery` verifies the following offline through fresh CLI harness invocations and fictional BB responses:
+
+- A failing status command or invalid JSON records unavailable observation, sends nothing and spends no recovery attempt.
+- A readable `error` status with an interrupted terminal event and generic failure code stays unknown. Queued work prevents another prompt. Once the queue is empty, the existing policy permits one continuation prompt in this fixture.
+- If the error persists after the configured attempt cap, supervision enters an awaiting-user hold. A new active turn cannot clear that hold; explicit resume permits observation again and clears stale error evidence on the new turn.
+- An isolated copy of keepgoing's journal reconstructs the sequence through `timeline`, including the generic code, unavailable observations and hold transitions, without provider logs or private error text.
+
+This tests existing bounded re-prompt behavior; it adds no recovery action. The adapter uses `bb thread tell`, not failed-turn retry by reference. It does not restart BB's host daemon or distinguish the host cause from a generic failure. Checks cannot run while their own host or scheduler is unavailable. A transient failure that starts and ends between checks may leave no failure snapshot. Live unattended recovery from a host disconnect and host-specific structured classification remain unverified.
+
 ## Bounded tick incident history
 
 Available in v0.1.3 or newer; **offline fixtures only**. Every invocation that reaches the supervisor tick attempts to write `incidents.json` in the configured private state directory, including held checks, failed observations and dry runs. Supported control commands also append records as described below. No new provider call is made for diagnostics. A hold records `not_observed`; a failed adapter call records `unavailable`. Successful adapter results retain their normalized state/error class and queue/child counts. BB retry intent is `retrying`, `not_retrying`, `unverified` or `unavailable`; headless/process retry intent is explicitly unavailable. These are check-time observations, not continuous event capture.

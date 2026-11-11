@@ -23,3 +23,16 @@ func TestDetailPrivacyAndNumericAvailability(t *testing.T) {
 		t.Fatal("zero exit became unavailable")
 	}
 }
+
+func TestGenericThreadFailureCode(t *testing.T) {
+	for _, raw := range []string{"thread_command_failed", "thread_command_failed PRIVATE_DETAIL"} {
+		d := Clean(Detail{Source: "bb_system_error", Code: raw})
+		want := "unavailable"
+		if raw == "thread_command_failed" {
+			want = raw
+		}
+		if d.Code != want || d.Category != "unavailable" || d.HTTPStatus != nil {
+			t.Fatal(d)
+		}
+	}
+}

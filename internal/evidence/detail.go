@@ -19,6 +19,7 @@ func Code(raw string) string {
 	case "rate_limit", "rate-limit", "rate_limited", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked",
 		"auth", "unauthorized", "unauthenticated", "authentication_error", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired",
 		"overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded",
+		"thread_command_failed",
 		"network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error", "stream-disconnected", "stream_disconnected", "responsestreamdisconnected":
 		return s
 	}

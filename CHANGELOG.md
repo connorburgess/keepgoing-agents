@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Diagnostic records retain BB's generic `thread_command_failed` code, while its decision classification stays `unknown`. Offline CLI fixtures cover unreadable status, interrupted turns, queued work, bounded re-prompts and preserved holds. This does not identify or restart a disconnected host; previously redacted records remain unavailable.
+
 - Goal subcommand help (`create|revise|show --help` or `-h`) now exits successfully without loading configuration or changing state. Invalid arguments still return usage errors. v0.1.4 returns exit code 2 for this help; the correction is not yet released.
 
 ## 0.1.4 (2026-11-12)
