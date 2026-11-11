@@ -14,6 +14,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // Adapter drives one BB thread.
@@ -83,6 +84,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	t := resp.Thread
 	obs := decide.Observation{
+		Evidence:   evidence.Clean(evidence.Detail{Source: "bb_status"}),
 		State:      adapter.ParseState(t.Status),
 		ErrorClass: decide.ErrNone,
 		Queued:     t.Queued,
@@ -100,6 +102,11 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		return obs, nil // Child input already requires a hold; no parent log needed.
 	}
 	sig := a.signals(ctx)
+	if sig.ok && sig.hasError {
+		obs.Evidence = sig.evidence
+	} else if !sig.ok {
+		obs.Evidence = evidence.Clean(evidence.Detail{})
+	}
 	// A pending permission prompt, question, or form means the thread is
 	// waiting on a person, whatever its status says.
 	if obs.State != decide.Stopping {
@@ -129,6 +136,9 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		}
 		if obs.ErrorClass == decide.ErrUnknown || obs.ErrorClass == decide.ErrNone || obs.ErrorClass == decide.ErrNetwork {
 			obs.ErrorClass = decide.ErrRateLimit
+			if sig.ok {
+				obs.Evidence = evidence.Clean(evidence.Detail{Source: "bb_rate_limits", Code: "subscription_window_blocked"})
+			}
 		}
 	}
 	if obs.ErrorClass == decide.ErrRateLimit && sig.resetsAt.After(a.now()) {
@@ -138,6 +148,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 }
 
 type signals struct {
+	evidence     evidence.Detail
 	hasError     bool
 	class        decide.ErrorClass
 	willRetry    bool
@@ -156,6 +167,10 @@ func (a *Adapter) signals(ctx context.Context) signals {
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0}
 	if c.Error != nil {
 		s.hasError = true
+		s.evidence = evidence.Clean(c.Error.Evidence)
+		if s.evidence.Source == "unavailable" {
+			s.evidence = evidence.Clean(evidence.Detail{Source: "bb_error_summary"})
+		}
 		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
 		s.retryUnknown = !c.Error.RetryKnown
 	}

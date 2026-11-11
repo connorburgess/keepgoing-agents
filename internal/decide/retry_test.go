@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 	"testing"
 	"time"
 )
@@ -46,5 +47,16 @@ func TestRetryPrecedence(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDiagnosticEvidenceCannotAuthorizeRecovery(t *testing.T) {
+	in := base()
+	in.Obs = Observation{State: Error, ErrorClass: ErrUnknown}
+	in.Failover = Failover{Eligible: true, Available: true}
+	want := Decide(in)
+	in.Obs.Evidence = evidence.Detail{Source: "bb_provider_error", Code: "rate_limit", HTTPStatus: evidence.Number(429)}
+	if got := Decide(in); got != want {
+		t.Fatalf("diagnostic metadata changed decision: %+v != %+v", got, want)
 	}
 }

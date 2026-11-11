@@ -11,6 +11,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // bb returns log events oldest first and pages forward with --after-seq, so
@@ -35,6 +36,7 @@ type Cursor struct {
 }
 
 type errorSignal struct {
+	Evidence   evidence.Detail   `json:"evidence"`
 	Seq        int64             `json:"seq"`
 	Class      decide.ErrorClass `json:"class"`
 	WillRetry  bool              `json:"willRetry,omitempty"`
@@ -82,7 +84,7 @@ func (c *Cursor) apply(e event) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = d.ProviderThread
 			}
-			c.Error = &errorSignal{Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil}
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. Tool output can continue independently of
@@ -118,7 +120,7 @@ func (c *Cursor) apply(e event) {
 			Code string `json:"code"`
 		}
 		if json.Unmarshal(e.Data, &d) == nil {
-			c.Error = &errorSignal{Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_system_error", Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)

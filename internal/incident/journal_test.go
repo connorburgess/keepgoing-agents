@@ -43,6 +43,8 @@ func TestJournalRetentionRestartAndPrivacy(t *testing.T) {
 	r.Observation.ErrorClass = "SECRET_PAYLOAD"
 	r.Observation.Retry = "SECRET_PAYLOAD"
 	r.Observation.SourceTime = "SECRET_PAYLOAD"
+	r.Observation.Source = "SECRET_PAYLOAD"
+	r.Observation.Category = "SECRET_PAYLOAD"
 	r.Observation.ProviderCode = "SECRET_PAYLOAD"
 	if err := Append(dir, r); err != nil {
 		t.Fatal(err)
@@ -69,7 +71,7 @@ func TestJournalRetentionRestartAndPrivacy(t *testing.T) {
 }
 
 func TestJournalRefusesInvalidHistoryWithoutReplacement(t *testing.T) {
-	for _, input := range []string{`{`, `{"schemaVersion":2}`, strings.Repeat("x", MaxBytes+1), `{"schemaVersion":1,"nextSequence":3,"dropped":0,"records":[]}`, `{"schemaVersion":1,"nextSequence":1,"dropped":0,"records":[],"secret":"hidden"}`} {
+	for _, input := range []string{`{`, `{"schemaVersion":3}`, strings.Repeat("x", MaxBytes+1), `{"schemaVersion":1,"nextSequence":3,"dropped":0,"records":[]}`, `{"schemaVersion":1,"nextSequence":1,"dropped":0,"records":[],"secret":"hidden"}`} {
 		t.Run(input[:min(len(input), 20)], func(t *testing.T) {
 			dir := t.TempDir()
 			p := filepath.Join(dir, FileName)
@@ -162,5 +164,35 @@ func TestMissingRetryIntentIsUnavailable(t *testing.T) {
 		if r.Observation.Retry != want {
 			t.Fatal(r)
 		}
+	}
+}
+
+func TestSchemaOneUpgradePreservesHistoryAndUnavailableEvidence(t *testing.T) {
+	dir := t.TempDir()
+	r := sample()
+	r.Sequence = 1
+	j := Journal{SchemaVersion: 1, NextSequence: 2, Records: []Record{r}}
+	b, _ := json.Marshal(j)
+	p := filepath.Join(dir, FileName)
+	if err := os.WriteFile(p, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil || loaded.SchemaVersion != 1 || loaded.Records[0].Observation.Source != "unavailable" {
+		t.Fatal(loaded, err)
+	}
+	before, _ := os.ReadFile(p)
+	if string(before) != string(b) {
+		t.Fatal("read upgraded on disk")
+	}
+	if err := Append(dir, sample()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load(dir)
+	if err != nil || loaded.SchemaVersion != 2 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
+		t.Fatal(loaded, err)
+	}
+	if loaded.Records[0].Observation.ProviderCode != "unavailable" {
+		t.Fatal("invented legacy evidence")
 	}
 }

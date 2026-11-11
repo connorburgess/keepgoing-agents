@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // Adapter runs the configured commands.
@@ -55,13 +56,14 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		if name, ok := a.cfg.ExitCodes[code]; ok {
 			class = decide.ErrorClass(name)
 		}
-		return decide.Observation{State: decide.Error, ErrorClass: class}, nil
+		return decide.Observation{State: decide.Error, ErrorClass: class, Evidence: evidence.Clean(evidence.Detail{Source: "process_exit", ExitCode: evidence.Number(code)})}, nil
 	}
 	var st Status
 	if err := json.Unmarshal(bytes.TrimSpace(out), &st); err != nil {
 		return decide.Observation{State: decide.Unknown}, errors.New("status command: stdout is not a JSON status object")
 	}
 	obs := decide.Observation{
+		Evidence:      evidence.Clean(evidence.Detail{Source: "process_json", Code: st.ErrorClass, ExitCode: evidence.Number(code)}),
 		State:         adapter.ParseState(st.State),
 		ErrorClass:    decide.ErrNone,
 		Queued:        st.Queued,
