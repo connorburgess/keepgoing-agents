@@ -1,6 +1,6 @@
 # Local client discovery
 
-The optional menu-bar companion needs an explicit list of loops to display. On `main` after v0.1.3, `keepgoing registry add|list|remove` provides that first prerequisite. It is unreleased and offline-tested. The read-only `client status` surface is also implemented below; the GUI, client control commands and automatic setup registration remain planned.
+The optional menu-bar companion needs an explicit list of loops to display. On `main` after v0.1.3, `keepgoing registry add|list|remove` provides that first prerequisite. It is unreleased and offline-tested. Read-only `client status` and explicit restrictive `client pause|stop` commands are implemented below. The GUI, guarded client resume and automatic setup registration remain planned.
 
 Registration stores a reference only. It never enables, resumes, stops or transfers supervision; queries a provider; creates a thread; changes a scheduler; or reads a task file. Headless and process configurations need no BB installation to register. The registry is separate from the BB plugin's private setup list; neither imports or replaces the other.
 
@@ -71,13 +71,34 @@ By default the command challenges the existing local daemon endpoint with a one-
 
 This surface is implemented after v0.1.3 and unreleased. Offline CLI/storage fixtures cover privacy, holds, missing/corrupt records, changed bindings, redacted unknown values and changes during a bounded query. A local authenticated daemon fixture verifies response versus offline behavior without a live provider. Portable client tests run in Windows CI. No installed loop, native client or live provider walkthrough was used.
 
-## Next client controls (planned, not callable)
+## Registered pause and stop
 
-The read-only status prerequisite above does not implement client controls. The next control surface must:
+```sh
+keepgoing client pause --id loop_0123456789abcdef0123456789abcdef --json
+keepgoing client stop --id loop_0123456789abcdef0123456789abcdef --json
+```
+
+These are explicit requests to add a hold to the registered loop, independent of whichever target it currently supervises. They do not resume, enable, take over ownership, clear any hold, stop a process directly or start a supervisor. `pause` sets only paused; `stop` sets only stop. Both preserve notes, disabled/completed/awaiting-user state, owner generation and pending transfer metadata. As with ordinary CLI pause/stop, a different BB caller can add these restrictive holds without taking over. They intentionally need no earlier status token, live target lookup or healthy daemon response. A stop is executed by a later authorized supervisor check; its save does not confirm provider termination.
+
+Use `--directory` for a non-default private registry. The command pins an existing registration under the short registry lock, loads the current config, then revalidates registration, loop name, canonical runtime binding and config/fallback source bytes inside the control update. Registry removal and other control writers cannot overlap those locks. Missing/broken/rebound configs or malformed/non-object/oversized control records are refused rather than repaired. Pending transfers remain held and may receive additional restrictive flags. The command takes no tick lock and performs no provider, BB, daemon, scheduler or notification calls. Lock acquisition is nonblocking; it never waits for a running tick.
+
+JSON responses have `schemaVersion: 1`, `registrationId`, `operation`, `controlSave`, `issues`, and `controls` only after a confirmed save. All issues are fixed codes; paths, notes, task text, owner identity and raw errors are withheld. Save evidence is explicit:
+
+- `confirmed`: the control save succeeded. Exit 0 means control and diagnostic writes succeeded; exit 1 with `incident_history_unavailable` or `run_history_unavailable` means the hold is saved but diagnostic history is incomplete. Neither means the provider acted.
+- `not_attempted`: a precondition, cancellation or busy lock prevented a save. Exit 75 with `busy` means contention; other refusals return exit 1. Other issue codes include `registry_unavailable`, `binding_unavailable`, `registration_changed`, `binding_changed`, `control_unavailable`, `cancelled` and `control_or_registration_unavailable`.
+- `unconfirmed`: the command reached the save but could not confirm its result (exit 1). Inspect status before another action. A missing or lost response is also uncertain, regardless of the subprocess exit status; clients must never infer failure-to-save from lost output or automatically replay mutations.
+
+Invalid arguments return exit 2 without a report. Invocation may create private runtime lock/control/diagnostic files for an existing registration, even when no supervisor has started; the loop stays disabled if it was disabled. Repeated explicit pause/stop calls can append diagnostic records. These are cooperative local locks and source checks, not durable file identities or protection from arbitrary external writers. Config/fallback contents changed before the invocation are loaded as current; these restrictive actions target the loop, not an earlier displayed task. If its config cannot be validated, use the existing CLI with a known correct config for recovery. Registered client resume remains unavailable.
+
+Implemented after v0.1.3, unreleased; portable offline fixtures only. Tests cover busy registry/control locks, operation during a held tick, pending transfers, changed bindings, corrupt records, privacy, disabled loops and confirmed saves despite history failures. No installed loop or live provider was changed.
+
+## Next client resume (planned, not callable)
+
+Registered pause/stop do not implement permissive controls. The next resume surface must:
 
 - Resolve a registration ID and revalidate config path, loop name and canonical runtime binding. Mark missing, changed or unverifiable bindings unavailable rather than follow a replacement silently. Registration is not authority to control a loop.
 - Project explicit holds, actual target, goal ID/revision and optional private display metadata, recorded action/outcome and freshness, and authenticated daemon evidence. Keep historical checks, responsive supervisors and observed agent activity distinct. Do not assume an external scheduler is installed or healthy. Stage metadata remains absent until an explicit stage contract exists.
-- Require explicit pause/resume/stop requests, preserving the existing CLI ownership, target, source-snapshot and hold rules. Permissive actions must be tied to the inspected target/owner/config identity to reject stale client clicks; restrictive pause/stop must remain independent of slow reads. Resume clears holds only when explicitly requested. No client may start a supervisor just by opening a window.
+- Require explicit resume requests, preserving the existing CLI ownership, target, source-snapshot and hold rules. Permissive actions must be tied to the inspected target/owner/config identity to reject stale client clicks; restrictive pause/stop must remain independent of slow reads. Resume clears holds only when explicitly requested. No client may start a supervisor just by opening a window.
 - Use the locally selected installed CLI through fixed arguments and structured output, without a shell, arbitrary commands from registry data, a network listener or another scheduler. Clients reject unsupported protocol versions and retain uncertainty after lost responses rather than replay mutations automatically.
 
-The native companion, optional init registration/installation choice, client controls, signing/distribution and live UI verification remain planned. Offline tests cover registry reload/idempotence, binding conflicts, concurrent writers, bounds, invalid records, aliases, path privacy and unchanged loop files. Windows exercises the portable registry commands in CI; Unix additionally checks modes and symlink handling. This is not end-to-end companion or migration-readiness evidence.
+The native companion, optional init registration/installation choice, guarded client resume, signing/distribution and live UI verification remain planned. Offline tests cover registry reload/idempotence, binding conflicts, concurrent writers, bounds, invalid records, aliases, path privacy and unchanged loop files. Windows exercises the portable registry commands in CI; Unix additionally checks modes and symlink handling. This is not end-to-end companion or migration-readiness evidence.

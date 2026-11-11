@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -187,4 +187,11 @@ This is a cooperative, process-crash protocol, not a multi-file atomic commit or
 
 ## Registered client status
 
-The command layer composes registry/config binding checks, bounded local control/state reads, validated goal metadata and the existing runtime/daemon diagnostics into a separate schema-1 projection. It does not serialize ordinary status wholesale: notes, paths, owner/account identities, goal references and free-text check reasons are withheld. Explicit private display contains only the current goal title and next-action summary. Binding/source checks run again after the bounded local daemon query; changed bindings discard the snapshot. Reads take no locks and form independent evidence, not an atomic snapshot or a control authorization. Providers, schedulers, transcripts and session artifacts are never queried. See [registered status](local-clients.md#registered-status-schema-1) for outcome and freshness semantics; guarded client controls remain future work.
+The command layer composes registry/config binding checks, bounded local control/state reads, validated goal metadata and the existing runtime/daemon diagnostics into a separate schema-1 projection. It does not serialize ordinary status wholesale: notes, paths, owner/account identities, goal references and free-text check reasons are withheld. Explicit private display contains only the current goal title and next-action summary. Binding/source checks run again after the bounded local daemon query; changed bindings discard the snapshot. Reads take no locks and form independent evidence, not an atomic snapshot or a control authorization. Providers, schedulers, transcripts and session artifacts are never queried. See [registered status](local-clients.md#registered-status-schema-1) for outcome and freshness semantics; guarded client resume remains future work.
+
+
+## Registered restrictive controls
+
+`client pause|stop` resolves an explicit registration and uses `registry.WithEntry` to fence cooperating add/remove writers through a short local operation. The command takes the registry lock before the control lock, both nonblocking; it never acquires the tick lock. Existing registry add/remove operations take no loop locks, and ordinary loop controls take no registry lock. The callback revalidates config/runtime/source bindings and bounded control evidence before adding one hold. The command preserves ownership, notes, other holds and pending transfer state, matching ordinary pause/stop semantics rather than claiming or transferring ownership.
+
+The existing control incident recorder and run history receive the operation. Confirmed control saves remain confirmed when diagnostic writes fail; rejected preconditions and uncertain saves have separate versioned output. No provider, daemon, scheduler, notification or thread command runs. The saved flag is not evidence that a provider has stopped. Cooperative locks cannot fence arbitrary external file replacements; a changed config that cannot be revalidated is refused, and callers can use the original CLI with a known configuration for recovery. Registered permissive controls require a separate stale-observation protocol and are not implemented.

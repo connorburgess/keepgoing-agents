@@ -175,3 +175,40 @@ func TestRegistryRejectsAmbiguousEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryPinnedEntry(t *testing.T) {
+	dir := privateDir(t)
+	entry := reference(t, dir, "example")
+	before, _ := os.ReadFile(filepath.Join(dir, FileName))
+	sentinel := errors.New("callback rejected")
+	err := WithEntry(dir, entry.ID, func(got Entry) error {
+		if got != entry {
+			t.Fatal(got)
+		}
+		if err := Remove(dir, entry.ID); !errors.Is(err, lock.ErrHeld) {
+			t.Fatal("removal was not fenced", err)
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if string(before) != string(after) {
+		t.Fatal("callback changed registry")
+	}
+	if err := Remove(dir, entry.ID); err != nil {
+		t.Fatal("lock not released", err)
+	}
+	called := false
+	if err := WithEntry(dir, entry.ID, func(Entry) error { called = true; return nil }); err == nil || called {
+		t.Fatal("removed reference used")
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := WithEntry(missing, entry.ID, func(Entry) error { called = true; return nil }); err == nil || called {
+		t.Fatal("missing registry used")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("missing registry created")
+	}
+}
