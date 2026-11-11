@@ -71,7 +71,7 @@ func TestJournalRetentionRestartAndPrivacy(t *testing.T) {
 }
 
 func TestJournalRefusesInvalidHistoryWithoutReplacement(t *testing.T) {
-	for _, input := range []string{`{`, `{"schemaVersion":3}`, strings.Repeat("x", MaxBytes+1), `{"schemaVersion":1,"nextSequence":3,"dropped":0,"records":[]}`, `{"schemaVersion":1,"nextSequence":1,"dropped":0,"records":[],"secret":"hidden"}`} {
+	for _, input := range []string{`{`, `{"schemaVersion":4}`, strings.Repeat("x", MaxBytes+1), `{"schemaVersion":1,"nextSequence":3,"dropped":0,"records":[]}`, `{"schemaVersion":1,"nextSequence":1,"dropped":0,"records":[],"secret":"hidden"}`} {
 		t.Run(input[:min(len(input), 20)], func(t *testing.T) {
 			dir := t.TempDir()
 			p := filepath.Join(dir, FileName)
@@ -189,7 +189,7 @@ func TestSchemaOneUpgradePreservesHistoryAndUnavailableEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = Load(dir)
-	if err != nil || loaded.SchemaVersion != 2 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
+	if err != nil || loaded.SchemaVersion != 3 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
 		t.Fatal(loaded, err)
 	}
 	if loaded.Records[0].Observation.ProviderCode != "unavailable" {

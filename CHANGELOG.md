@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Incident journal schema 3 preserves ordered decision-engine inputs and proposed actions, including early bounds and re-evaluation after failed fallback probes. Captured empty histories distinguish skipped engine calls from unavailable legacy evidence. Snapshots exclude private child IDs and prose, preserve signed timing values, and upgrade versions 1/2 on append. Offline fixtures only; standalone control transitions and the timeline remain unfinished.
+
 - Incident journal schema 2 adds diagnostic source labels, recognized provider error/category tokens and available numeric HTTP/exit statuses across BB, process and headless adapters. Version-1 history upgrades without backfilling evidence. Unknown strings are discarded, source event time remains unavailable, and diagnostic metadata never changes decision policy. Offline fixtures only.
 
 - Ticks now write a separate bounded, versioned private incident history with normalized observations, retry availability, decision causes, hold snapshots and build metadata. Retention is capped at 256 records/512 KiB. Journal failure surfaces an error after actions without undoing controls. Detailed provider codes, standalone control transitions, delivery receipts and a timeline command remain follow-up work; verification is offline only.
