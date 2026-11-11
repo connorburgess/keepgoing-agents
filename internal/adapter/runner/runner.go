@@ -27,6 +27,7 @@ const (
 
 // Record is run.json.
 type Record struct {
+	StopKey   string    `json:"stopKey,omitempty"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"startedAt"`
 	Argv0     string    `json:"argv0"`
@@ -103,28 +104,37 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
 		return err
 	}
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr"} {
+	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json"} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
 		return err
 	}
-	pid, err := spawn(argv, workdir, string(d), env)
+	key, err := randomStopID()
 	if err != nil {
 		return err
 	}
-	rec := Record{PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0])}
+	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key))
+	if err != nil {
+		return err
+	}
+	rec := Record{StopKey: key, PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0])}
 	b, _ := json.Marshal(rec)
-	return os.WriteFile(d.path("run.json"), append(b, '\n'), 0o600)
+	if err := os.WriteFile(d.path("run.json"), append(b, '\n'), 0o600); err != nil {
+		// The wrapper owns cancellation even when its record could not be saved.
+		_ = d.requestStop(key)
+		return err
+	}
+	return nil
 }
 
-// Stop terminates the running turn's process group.
+// Stop asks the live wrapper to stop its own turn. Saved PIDs never authorize signals.
 func (d Dir) Stop() error {
 	st, err := d.Status()
 	if err != nil || st.Phase != Running {
 		return err
 	}
-	return terminate(st.Record.PID)
+	return d.requestStop(st.Record.StopKey)
 }
 
 // envList supplies overrides to subprocesses without changing the supervisor's

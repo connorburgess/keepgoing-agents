@@ -2,10 +2,15 @@
 
 package runner
 
-import "errors"
+import (
+	"errors"
+	"os/exec"
+)
 
 var errUnsupported = errors.New("headless runners are not supported on this platform yet")
 
 func spawn(argv []string, workdir, dir string, env []string) (int, error) { return 0, errUnsupported }
 func alive(pid int) bool                                                  { return false }
-func terminate(pid int) error                                             { return errUnsupported }
+func ownedTerminator() (func() error, error)                              { return nil, errUnsupported }
+
+func configureWrapper(cmd *exec.Cmd) {}

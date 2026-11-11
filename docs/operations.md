@@ -269,3 +269,16 @@ Ownership and transfers use the runtime state directory, so multiple config path
 Claims and transfers serialize with ticks and early polls. If a tick is in flight, takeover exits 75 and must be retried; it never interrupts or rolls back that tick's work. Control updates have a separate short lock, preserving concurrent pause/stop requests without waiting for long provider calls. Control-lock contention also exits 75. No thread is created, stopped, re-parented, or messaged by ownership operations.
 
 Offline fixtures verify conflicting identities, preview and explicit takeover, shared-state config paths, simultaneous claiming processes, directory aliases, control-file symlink refusal, hold preservation, scheduler access, and old-daemon exit including a transfer back to its original owner. Live transfers between real threads remain unverified; the tests make no live model calls.
+
+
+## Owned headless cancellation
+
+New headless Claude Code and Codex turns run through a detached keepgoing wrapper on macOS, Linux and Windows. Each turn gets a random private `stopKey` in `run.json`; it is passed to the wrapper only and removed from the agent environment. The saved PID remains advisory liveness metadata and never authorizes a signal.
+
+A stop writes `stop-request.json` atomically with that key and a fresh request ID, then waits up to three seconds for matching `stop-ack.json`. The wrapper checks requests every 100 milliseconds and accepts only its own key. Old requests cannot cancel a new turn; old acknowledgements cannot confirm a new request. A timeout reports an unconfirmed stop and leaves the request pending. A matching receipt means the wrapper accepted cancellation, not proof that the operating system has completed termination. Later observations still determine liveness.
+
+The live Unix wrapper verifies that it leads its own process group, then signals that group itself. While it is alive, its own PID/group cannot be recycled. Windows uses an unnamed native job containing the wrapper and descendants, terminated through the wrapper's retained job handle; no `taskkill` PID lookup occurs. Job setup failure prevents the agent from starting. Windows job membership/termination follows the [native job-object contract](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+
+This is a cooperative channel in private runtime storage, not a security boundary against writers who can replace those files. Never share the stop key or raw runner records in diagnostics. A crashed wrapper cannot acknowledge a new request, even if its old PID belongs to another process. Descendants that outlive an abrupt wrapper death, or detach from a Unix process group, are not recovered or tracked by this change. Inspect them manually; do not signal PIDs merely because a stale record names them.
+
+Legacy turns without the key remain observable but automatic stop refuses them. Let an existing turn finish before upgrading, or inspect it manually using native process identity evidence. Do not use an older binary to stop new turns: old versions ignore the key and retain the unsafe saved-PID path. Supervisor restart does not change an existing wrapper/key. This implementation is covered by local subprocess and synthetic stale-record tests; it does not establish live provider resume/cancellation or installed-service acceptance.

@@ -3,21 +3,17 @@
 package runner
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
 )
 
-// The shell wrapper records the exit status atomically after the command
-// ends, so a reader never sees a half-written code.
-const wrapper = `"$@" < "$KG_DIR/prompt" > "$KG_DIR/stdout" 2> "$KG_DIR/stderr"; echo $? > "$KG_DIR/exit.tmp" && mv "$KG_DIR/exit.tmp" "$KG_DIR/exit"`
-
 func spawn(argv []string, workdir, dir string, env []string) (int, error) {
-	args := append([]string{"-c", wrapper, "keepgoing-turn"}, argv...)
-	cmd := exec.Command("/bin/sh", args...)
-	cmd.Dir = workdir
-	cmd.Env = append(append(os.Environ(), env...), "KG_DIR="+dir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd, err := wrapperCommand(argv, workdir, dir, env)
+	if err != nil {
+		return 0, err
+	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -37,13 +33,15 @@ func alive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-func terminate(pid int) error {
-	if pid <= 0 {
-		return nil
+// The caller is the live session leader itself, so its group ID cannot be
+// recycled between checking ownership and signalling. Never accept a saved PID.
+func ownedTerminator() (func() error, error) {
+	pid := os.Getpid()
+	group, err := syscall.Getpgid(0)
+	if err != nil || group != pid {
+		return nil, errors.New("runner: wrapper does not own its process group")
 	}
-	// Negative pid signals the whole session's process group.
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-		return err
-	}
-	return nil
+	return func() error { return syscall.Kill(-pid, syscall.SIGTERM) }, nil
 }
+
+func configureWrapper(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }

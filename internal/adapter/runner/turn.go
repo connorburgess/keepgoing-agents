@@ -8,15 +8,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
-// Platforms without a POSIX shell run each turn through a copy of the
-// current executable acting as the wrapper: it feeds the prompt to the
-// agent, captures its output, and records the exit code atomically, as the
-// shell wrapper does on Unix. The wrapper is selected by these variables.
+// Every turn runs through a detached copy of the executable. The live wrapper
+// owns its cancellation boundary; callers only submit a private per-turn request.
 const (
 	envTurnDir  = "KEEPGOING_RUN_TURN_DIR"
 	envTurnArgv = "KEEPGOING_RUN_TURN_ARGV"
+	envTurnKey  = "KEEPGOING_RUN_TURN_KEY"
 )
 
 // MaybeRunTurn runs the turn wrapper and exits when this process was started
@@ -31,7 +31,19 @@ func MaybeRunTurn() {
 	if err := json.Unmarshal([]byte(os.Getenv(envTurnArgv)), &argv); err != nil || len(argv) == 0 {
 		os.Exit(2)
 	}
-	os.Exit(runTurn(dir, argv))
+	key := os.Getenv(envTurnKey)
+	if !validStopID(key) {
+		os.Exit(2)
+	}
+	terminate, err := ownedTerminator()
+	if err != nil {
+		os.Exit(2)
+	}
+	done := make(chan struct{})
+	go watchStop(Dir(dir), key, terminate, done)
+	code := runTurn(dir, argv)
+	close(done)
+	os.Exit(code)
 }
 
 // runTurn executes argv with the prompt on stdin and records the exit code.
@@ -55,7 +67,8 @@ func runTurn(dir string, argv []string) int {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	// The wrapper must not pass its own selection variables to the agent.
 	for _, kv := range os.Environ() {
-		if !hasPrefix(kv, envTurnDir+"=") && !hasPrefix(kv, envTurnArgv+"=") {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}
@@ -76,8 +89,6 @@ func runTurn(dir string, argv []string) int {
 	return code
 }
 
-func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
-
 // wrapperCommand builds the command that re-runs this executable as the
 // turn wrapper for argv.
 func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd, error) {
@@ -90,6 +101,7 @@ func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd
 		return nil, err
 	}
 	cmd := exec.Command(self)
+	configureWrapper(cmd)
 	cmd.Dir = workdir
 	cmd.Env = append(append(os.Environ(), env...), envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
 	return cmd, nil
