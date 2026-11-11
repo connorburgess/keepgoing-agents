@@ -75,6 +75,10 @@
         "prompt_file": {
           "type": "string"
         },
+        "prompt_goal": {
+          "type": "boolean",
+          "description": "Explicitly include the latest private goal revision in automatic prompts and handoff briefs. Missing or invalid goals prevent sending."
+        },
         "handoff_file": {
           "type": "string"
         },
