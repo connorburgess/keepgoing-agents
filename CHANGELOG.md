@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+- Added the BB plugin’s "Move supervision here" flow for plugin-created loops in the same environment/provider: preview source/destination and holds, explicitly apply a held move, and reconcile or recover interrupted requests after reload. Registered-host routing and durable private references keep paths/commands out of browser control; resume/start remain separate. SDK/controller/DOM fixtures and bundle builds only; no live transfer or deployment.
+
 - Added explicit same-environment BB `transfer apply` and roll-forward `transfer recover`, with a durable pending fence, preserved holds/goals/allowances, target-specific observation reset, atomic config replacement and a permanent target binding against stale config copies. Moves stay awaiting-user and advance owner generation. Fixture-tested, including a real subprocess exit with fake BB; no live transfer or model/account verification is claimed.
 
-- Added read-only `transfer preview` for a single BB primary: versioned JSON/text compare thread/provider/environment metadata, display redacted holds/ownership/goal identity and flag unavailable or incompatible inputs. Offline mode skips BB queries. Fixture-tested only; model/account identity and plugin move UI remain unfinished.
+- Added read-only `transfer preview` for a single BB primary: versioned JSON/text compare thread/provider/environment metadata, display redacted holds/ownership/goal identity and flag unavailable or incompatible inputs. Offline mode skips BB queries. Fixture-tested only; model/account identity remains unverified; the plugin flow is described above.
 
 - `goal create|revise|show` records private goal identity and specification revisions independently of loop controls. Expected ID/revision checks prevent stale edits; ordinary status withholds titles/references, with explicit `show --private` for full history. Offline fixtures cover ownership, locks, holds, corruption, limits and privacy. Goal acceptance, verification and review-stage bindings remain unimplemented.
 

@@ -4,7 +4,10 @@
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { hostContract, recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { hostContract } from "./host-contract.ts";
+import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { createTransferController } from "./transfer-controller.ts";
+import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
 import { createSetupController } from "./setup-controller.ts";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
@@ -32,6 +35,7 @@ const loopSchema = z.object({
   loop: z.string(),
   configPath: z.string(),
   managedId: z.string().optional(),
+  managedThreadId: z.string().optional(),
   controlState: z.string(),
   note: z.string().nullable(),
   target: z.string(),
@@ -47,13 +51,14 @@ export type LoopView = z.infer<typeof loopSchema>;
 const actionSchema = z.enum(["pause", "resume", "stop"]);
 
 export const rpcContract = defineRpcContract({
+  transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
   forThread: {
     input: z.object({ threadId: z.string().min(1).max(200) }),
     output: z.object({ loops: z.array(loopSchema), errors: z.array(z.string()) }),
   },
   control: {
-    input: z.object({ configPath: z.string().min(1).max(1000), action: actionSchema, managedId: z.string().optional() }),
+    input: z.object({ configPath: z.string().min(1).max(1000), action: actionSchema, managedId: z.string().optional(), expectedThreadId: z.string().min(1).max(200).optional() }),
     output: z.object({ ok: z.boolean(), message: z.string() }),
   },
 });
@@ -95,6 +100,13 @@ export default async function plugin(bb: BbPluginApi) {
     return { bin: keepgoingPath.trim() || "keepgoing", paths };
   };
 
+  // Serialize setup, moves and resume across clients. Restrictive pause/stop
+  // remain independent so they can reach the CLI's short control lock.
+  let mutation: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = mutation.then(fn, fn); mutation = next.catch(() => {}); return next;
+  };
+  const intents = async () => z.array(moveIntentSchema).max(32).parse(await bb.storage.kv.get("moves.v1") ?? []);
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const records = async () => z.array(recordSchema).max(32).parse(await bb.storage.kv.get("setups.v1") ?? []);
   const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop") =>
@@ -154,12 +166,18 @@ export default async function plugin(bb: BbPluginApi) {
         errors.push(error instanceof Error ? error.message : String(error));
       }
     }
+    const moving = await intents();
     for (const record of await records()) {
-      if (threadId !== null && record.threadId !== threadId) continue;
+      const move = moving.find(i => i.record.id === record.id);
+      if (threadId !== null && record.threadId !== threadId && move?.destination.threadId !== threadId) continue;
       try {
         const result = await hostCommand(bin, record, "status");
         if (result.code !== 0) throw new Error("status failed");
-        loops.push({ ...view(statusSchema.parse(result.data), record.configPath, threadId), managedId: record.id });
+        const displayed = view(statusSchema.parse(result.data), record.configPath, threadId);
+        // A partial move is not a normal Resume action, even if the host has
+        // already committed but the plugin reference is not reconciled yet.
+        if (move) { displayed.controlState = "move requires inspection"; displayed.note = `Move requested to ${move.destination.threadId}; check move status there before resuming.`; }
+        loops.push({ ...displayed, managedId: record.id, managedThreadId: record.threadId });
       } catch { errors.push(`${record.loop}: host status unavailable`); }
     }
     return { loops, errors };
@@ -167,11 +185,13 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Control only loops listed in settings: the path comes from the browser,
   // so it must never choose an arbitrary config file.
-  const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string) => {
+  const control = async (configPath: string, action: z.infer<typeof actionSchema>, managedId?: string, expectedThreadId?: string) => {
     const { bin, paths } = await configured();
+    if (action === "resume" && (await intents()).some(i => i.record.id === managedId || i.record.configPath === configPath)) return { ok: false, message: "A move requires inspection. Check move status from its destination before resuming." };
     if (managedId) {
       const record = (await records()).find(r => r.id === managedId && r.configPath === configPath);
       if (!record) return { ok: false, message: "That setup is not registered with this plugin." };
+      if (action === "resume" && expectedThreadId !== record.threadId) return { ok: false, message: "This setup moved or the view is stale. Open its current thread and refresh before resuming." };
       try {
         if (action === "resume") {
           const current = await resolveTarget(record.threadId);
@@ -206,11 +226,32 @@ export default async function plugin(bb: BbPluginApi) {
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
-  bb.onDispose(() => setup.dispose());
+  const transfer = createTransferController({
+    target: resolveTarget,
+    binary: async () => (await configured()).bin,
+    records, intents,
+    save: async value => { await bb.storage.kv.set("setups.v1", value); },
+    saveIntents: async value => { await bb.storage.kv.set("moves.v1", value); },
+    guard: async (threadId, record) => {
+      const { paths } = await configured();
+      if (paths.includes(record.configPath)) throw new Error("Duplicate manual reference");
+      if ((await records()).some(r => r.id !== record.id && r.threadId === threadId) || (await intents()).some(i => i.record.id !== record.id && i.destination.threadId === threadId)) throw new Error("Destination reserved");
+      const result = await allLoops(threadId);
+      if (result.errors.length || result.loops.some(l => l.managedId !== record.id)) throw new Error("Existing or unverified supervision");
+    },
+    command: hostCommand,
+    transfer: (intent, operation, recoveryId) => host.call("transfer", { bin: intent.bin, record: intent.record, destination: intent.destination, operation, ...(recoveryId ? { recoveryId } : {}) }, { hostId: intent.record.hostId, signal: AbortSignal.timeout(30_000) }),
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
+  bb.onDispose(() => { setup.dispose(); transfer.dispose(); });
   bb.rpc.register(rpcContract, {
-    setup: input => setup.call(input),
+    transfer: input => serialize(() => transfer.call(input)),
+    setup: input => serialize(async () => {
+      if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
+      return setup.call(input);
+    }),
     forThread: ({ threadId }) => allLoops(threadId),
-    control: ({ configPath, action, managedId }) => control(configPath, action, managedId),
+    control: ({ configPath, action, managedId, expectedThreadId }) => action === "resume" ? serialize(() => control(configPath, action, managedId, expectedThreadId)) : control(configPath, action, managedId, expectedThreadId),
   });
 
   bb.cli.register({
@@ -236,7 +277,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (matches.length > 1) return { exitCode: 1, stderr: "That loop name is ambiguous across hosts/configs; use the thread's controls or the CLI on its host." };
       const loop = matches[0];
       if (!loop) return { exitCode: 1, stderr: `No configured loop named ${name}` };
-      const result = await control(loop.configPath, parsed.data, loop.managedId);
+      const result = await (parsed.data === "resume" ? serialize(() => control(loop.configPath, parsed.data, loop.managedId, loop.managedThreadId)) : control(loop.configPath, parsed.data, loop.managedId, loop.managedThreadId));
       return { exitCode: result.ok ? 0 : 1, stdout: `${result.message}\n` };
     },
   });

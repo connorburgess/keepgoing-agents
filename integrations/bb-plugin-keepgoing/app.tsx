@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LoopView, rpcContract } from "./server";
 import { SetupPanel } from "./setup-panel";
+import { TransferPanel } from "./transfer-panel";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
@@ -80,17 +81,17 @@ const buttonStyle = {
   cursor: "pointer",
 } as const;
 
-function ToggleButton({ loop, onDone }: { loop: LoopView; onDone: () => void }) {
+function ToggleButton({ loop, threadId, onDone }: { loop: LoopView; threadId: string; onDone: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const paused = loop.controlState !== "enabled";
-  if (loop.managedId && loop.controlState === "disabled") return null;
+  if (loop.managedId && ["disabled", "move requires inspection"].includes(loop.controlState)) return null;
   const act = () => {
     setBusy(true);
     setError("");
     rpc
-      .call("control", { configPath: loop.configPath, action: paused ? "resume" : "pause", managedId: loop.managedId })
+      .call("control", { configPath: loop.configPath, action: paused ? "resume" : "pause", managedId: loop.managedId, expectedThreadId: threadId })
       .then(result => { if (!result.ok) setError(result.message); })
       .catch(() => setError("Control could not be confirmed. Refresh status before retrying."))
       .finally(() => {
@@ -109,7 +110,14 @@ function ToggleButton({ loop, onDone }: { loop: LoopView; onDone: () => void }) 
 function ThreadSetup({ threadId, onChanged }: { threadId: string; onChanged(): void }) {
   const rpc = useRpc<typeof rpcContract>();
   const call = useCallback((input: Parameters<typeof rpc.call<"setup">>[1]) => rpc.call("setup", input), [rpc]);
-  return <SetupPanel key={threadId} threadId={threadId} call={call} onChanged={onChanged} />;
+  const [generation, setGeneration] = useState(0);
+  const transfer = useCallback(async (input: Parameters<typeof rpc.call<"transfer">>[1]) => {
+    const result = await rpc.call("transfer", input);
+    if (result.moved) setGeneration(n => n + 1);
+    return result;
+  }, [rpc]);
+  return <><SetupPanel key={`${threadId}-${generation}`} threadId={threadId} call={call} onChanged={onChanged} />
+    <TransferPanel key={`move-${threadId}`} threadId={threadId} call={transfer} onChanged={onChanged} /></>;
 }
 
 function CardRow({ threadId }: { threadId: string }) {
@@ -121,9 +129,9 @@ function CardRow({ threadId }: { threadId: string }) {
       label={label(loop)}
       title={describe(loop).join("\n")}
       trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
-      action={<><ToggleButton loop={loop} onDone={refresh} />{loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
+      action={<><ToggleButton loop={loop} threadId={threadId} onDone={refresh} />{loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
     />}
-    {open && <ThreadSetup threadId={threadId} onChanged={refresh} />}
+    {open && <ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} />}
   </div>;
 }
 
@@ -143,9 +151,9 @@ function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded:
   return <>
     {loop && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
       <span>{describe(loop).join(" · ")}</span>
-      <ToggleButton loop={loop} onDone={refresh} />
+      <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />
     </div>}
-    {(!loop || loop.managedId) && <ThreadSetup threadId={threadId} onChanged={refresh} />}
+    {(!loop || loop.managedId) && <ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} />}
   </>;
 }
 

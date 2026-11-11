@@ -1,6 +1,6 @@
 # keepgoing for BB
 
-A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls and a guided setup flow. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
+A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
 ## Install
 
@@ -35,10 +35,31 @@ Existing configured supervision or a failed status lookup blocks creating anothe
 - Failed/expired previews require a new preview. Changing task text or name clears the UI preview. Target/provider/environment changes require a new setup review; existing loops are never silently transferred.
 - Creation and saving the plugin reference are not atomic. If reference persistence fails, the UI retains the created config path for recovery. Inspect that disabled setup using the CLI on its host; do not create or start another automatically. A command timeout or lost response can also leave a disabled directory; existing destinations are never overwritten.
 - A failed start response can mean startup was not confirmed, not that nothing started. Refresh diagnostics before retrying. A responsive daemon prevents another start; the CLI's daemon/tick locks and ownership checks provide the final guard.
-- Thread/config checks are point-in-time observations. Manual edits and external scheduling changes are not serialized by the plugin. Keep configurations unchanged while creating/starting a loop. Full model/account validation and atomic thread transfer remain separate roadmap items.
-- The plugin retains at most 32 UI-created setup references. There is no UI deletion/import/transfer operation yet; CLI-created configurations use the existing server-local setting. Identical loop names on different hosts are ambiguous to `bb keepgoing <action> <name>` and are refused; use the thread's controls instead.
+- Thread/config checks are point-in-time observations. Manual edits and external scheduling changes are not serialized by the plugin. Keep configurations unchanged while creating/starting a loop. Full model/account validation remains unimplemented; explicit transfers use the recovery protocol below.
+- The plugin retains at most 32 UI-created setup references. There is no UI deletion/import operation yet; CLI-created configurations use the existing server-local setting. Identical loop names on different hosts are ambiguous to `bb keepgoing <action> <name>` and are refused; use the thread's controls instead.
 
 Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller tests, DOM interaction tests, typechecking, and plugin bundle builds. Tests cover host routing, preview changes/replay/concurrency, holds, failed diagnostics, reload, privacy, and the separate preview/create/start clicks. No live BB thread, remote host deployment, paid request, account handoff, or end-to-end install-to-completion walkthrough was exercised. The existing conversation timer was not changed.
+
+## Move supervision here
+
+Implemented on `main` after v0.1.3, unreleased and fixture-tested. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+
+1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
+2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
+3. Click **Move and keep held**. This explicitly authorizes destination ownership takeover. The CLI preserves existing holds, goals and work accounting, adds awaiting-user, resets thread observations and fences stale configs/daemons. It does not cancel the old thread’s running turn, send work, create/re-parent a thread or change a timer.
+4. Once status verifies the held destination, the plugin updates its saved reference. Review **Setup** diagnostics. **Resume** is a separate explicit action that clears holds; it does not start a missing daemon. A Resume click from a stale view of the source thread is refused. A disabled loop uses its separate start action after holds are resolved. Never resume a completed task or a task still waiting on a person.
+
+Only plugin-created setups appear. Manually listed configurations still use `keepgoing transfer preview|apply|recover` on their host; importing them into this UI remains planned. A duplicate manual reference to the selected setup blocks the UI move. Known destination supervision or unverified status blocks another loop; arbitrary external timers/configurations are not discovered.
+
+### Interrupted moves
+
+A private saved request is written before calling apply. It retains the original registration, destination metadata and binary selection, with no prompt, control note, credentials or raw command output. While it exists, the banner says **move requires inspection** and plugin start/resume are refused. Pause/stop remain available through the commands and are not queued behind a slow transfer.
+
+After a timeout, lost reply, plugin reload or persistence failure, open the destination, select the pending loop and choose **Check move status**. If the CLI already completed and still verifies the expected held destination/owner, this repairs the plugin reference without replaying apply. Otherwise **Recover move** is an explicit action: it resumes the observed CLI pending ID, or revalidates and retries the saved source/destination request if the CLI had not begun. It always leaves holds intact. There is no automatic retry or recovery timer.
+
+CLI mutation, plugin reference update and saved-request removal are separate writes. Failures retain a recovery path; a completed move can coexist with an old plugin reference until reconciled. Changed metadata/binary, conflicting registrations, an externally cleared hold, malformed records or an unrelated CLI move require private inspection on the host. Do not delete recovery records or replay moves blindly. There is no cancel/import UI in this first scope, and the plugin queue does not serialize external writers or other plugin instances. Point-in-time preview reads do not replace the CLI’s final checks.
+
+Verification uses SDK fake-host/host-entry tests, controller failure fixtures and DOM interactions, plus typechecking and bundle builds. A local check also exercised the actual built CLI through the plugin controller/host wrapper with fake BB metadata, verifying destination registration and preserved holds. The CLI’s own process-crash and new-target-only wake fixtures cover runtime transfer behavior. Live BB transfer, remote deployment, model/account identity and end-to-end migration readiness remain unverified. No existing timer, installed plugin or supervised thread was changed during these tests.
 
 ## What it shows
 

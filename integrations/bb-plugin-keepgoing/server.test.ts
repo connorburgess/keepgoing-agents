@@ -1,9 +1,10 @@
+import { hostContract } from "./host-contract.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createFakePluginHost, makeThreadResponse, makeHostResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
-import { hostContract, setupResult } from "./setup-contract.ts";
+import { setupResult } from "./setup-contract.ts";
 
 test("plugin uses public SDK surfaces only", () => {
   const scan = experimental_scanPublicSdkOnly(fileURLToPath(new URL(".", import.meta.url)), { allow: [/^react(?:-dom)?(?:\/.*)?$/, /^@testing-library\/react$/, /^jsdom$/] });
