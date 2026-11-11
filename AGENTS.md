@@ -46,3 +46,4 @@ Never add an AI trailer, footer, or credit to anything: commits, PR bodies, comm
 - Stop and pause win over every other rule on the next check.
 - The decision engine stays a pure function with table tests. Side effects live in adapters and the command layer.
 - Read [docs/architecture.md](docs/architecture.md) before changing package boundaries. Update README.md in the same change when behavior, setup, or limitations make it inaccurate.
+- For process lifecycle, OS integration or installer changes, apply the [lifecycle and platform review checks](docs/testing.md#lifecycle-and-platform-review). Distinguish platform compilation, native fixture execution and live acceptance; record unrun checks explicitly.
