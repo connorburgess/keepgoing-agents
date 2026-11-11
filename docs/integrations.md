@@ -9,6 +9,8 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 
 **Native recovery gate: Fakes, available in v0.1.3.** Built-binary CLI and daemon processes exercise failure, rejected loopback alerts, held restarts, explicit recovery, saved headless session reuse and completion without replay for all four adapters. macOS/Linux CI runs the script; Linux release archives must pass before publication. No installed runtime or live provider is changed. The post-v0.1.3 script additionally checks SIGKILL after a held check and restart against a stale endpoint for awaiting-user and completed holds. This does not test crashes during sends, writes or notification delivery. See [recovery verification](release-verification.md#check-recovery-with-local-stand-ins).
 
+**v0.1.4 packaging: verified, separate from provider acceptance.** The release job tested the tagged source and unpacked Linux amd64 package; all six downloaded archives passed checksum/content checks, and the downloaded macOS arm64 binary passed setup/recovery smoke checks with local stand-ins. The matching Homebrew formula passed a fresh macOS arm64 installation and command-help checks. Native macOS/Linux/Windows subprocess fixtures cover owned headless cancellation and stale-record refusal; live provider cancellation remains unverified. See [release and package evidence](release-verification.md#v014-release-and-package-evidence).
+
 ## Agent providers
 
 | Integration | Used for | Status | Next check |
@@ -38,7 +40,7 @@ A macOS Apple silicon native-binary smoke check also passed against an unpacked 
 
 ## Diagnostics
 
-Private `goal create|revise|show` metadata is implemented on `main`, after v0.1.3. **Fakes** cover storage reload/history, stale edits, concurrent revisions, locks, owner checks, preserved holds, bounded/corrupt records and private-output handling. CLI fixtures make no provider calls. No live loop has adopted a goal record in this verification; goal completion/acceptance and stage bindings remain planned. See [private goals](goals.md).
+Private `goal create|revise|show` metadata is available in v0.1.4. **Fakes** cover storage reload/history, stale edits, concurrent revisions, locks, owner checks, preserved holds, bounded/corrupt records and private-output handling. CLI fixtures make no provider calls. No live loop has adopted a goal record in this verification; goal completion/acceptance and stage bindings remain planned. See [private goals](goals.md).
 
 Completion declaration reports (`complete`) are available in v0.1.3 or newer. **Fakes** verify persisted-flag deduplication across commands/restarts/enable, explicit resume, concurrent completion and stop during delivery, subscription filtering, legacy records, control/log failures, redacted payloads and a single transport attempt for network/HTTP failures or redirects in both webhook formats. No live completion declaration or webhook was sent for this feature test. The event does not independently verify success; crash/uncertain-delivery loss remains possible. See [completion reporting](operations.md#completing-a-task).
 
@@ -52,7 +54,7 @@ Optional absolute loop deadlines are available in v0.1.3 or newer. **Fakes** ver
 
 ## Agent chats
 
-BB `transfer preview` is implemented on `main` after v0.1.3, with **Fakes** covering a single primary, same-environment metadata comparison, holds, private output, malformed/unavailable responses and unchanged runtime files. `--offline` makes no BB queries. `transfer apply|recover` adds explicit CLI application with a pending fence, preserved holds/goal/allowances, source-bound config replacement and a persistent target binding. **Fakes** cover interruption/recovery, including a Unix process exit followed by stop and new-target-only wake checks. The plugin adds "Move supervision here" for plugin-created loops in the same environment/provider, with explicit preview/apply, durable recovery references and separate resume. **Fakes** cover SDK host routing, interrupted replies/reload/storage failures, concurrency and DOM clicks; plugin bundles build. Model/account verification and importing manually configured loops into this UI remain unfinished. No live thread was moved or installed plugin changed. See [transfer preview](transfer.md).
+BB `transfer preview` is available in v0.1.4, with **Fakes** covering a single primary, same-environment metadata comparison, holds, private output, malformed/unavailable responses and unchanged runtime files. `--offline` makes no BB queries. `transfer apply|recover` adds explicit CLI application with a pending fence, preserved holds/goal/allowances, source-bound config replacement and a persistent target binding. **Fakes** cover interruption/recovery, including a Unix process exit followed by stop and new-target-only wake checks. The plugin adds "Move supervision here" for plugin-created loops in the same environment/provider, with explicit preview/apply, durable recovery references and separate resume. **Fakes** cover SDK host routing, interrupted replies/reload/storage failures, concurrency and DOM clicks; plugin bundles build. Model/account verification and importing manually configured loops into this UI remain unfinished. No live thread was moved or installed plugin changed. See [transfer preview](transfer.md).
 
 | Integration | Status | Next check |
 | --- | --- | --- |

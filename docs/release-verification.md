@@ -2,9 +2,23 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## v0.1.4 release and package evidence
+
+[v0.1.4](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.4) tags checked commit `952571eb34544efecb4d88ac7c26bf2f93fdf8b2`, whose tree matches notes merge `152b1e22c3ad802e1643cb1e1252ef9b2db517a8`. The [five-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43106725612) passed on that head against base `6b89a655f77b51cca1042b05674a0311d80d8659`: contribution metadata, BB plugin typecheck, Windows diagnostics including native runner cancellation fixtures, and Ubuntu/macOS build and tests. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43107250717) passed its Build and publish job on the tagged commit, including Go tests, six archive builds, checksum verification and both smoke scripts against the unpacked Linux amd64 package.
+
+All six published archives were downloaded and matched the published SHA-256 manifest. Exact inventories contained only the executable, README and license, with no extra files; both Windows ZIPs passed integrity checks. The downloaded macOS arm64 binary reported `v0.1.4` and had SHA-256 `7416fc492bb63797869a2af1b95a18f51e7a9a8e44e27f65d66d351a98db3ebe`. Both setup and recovery scripts passed against it using stand-in providers, local rejected notifications, held-daemon SIGKILL/restart, explicit recovery and completion. No real provider was called.
+
+[Homebrew PR #3](https://github.com/connorburgess/homebrew-tap/pull/3) updated all four platform URLs/checksums and merged as `5c9087df2238f4b7a0fe2067e89d4763507f7624`. Its [Fresh macOS install job](https://github.com/connorburgess/homebrew-tap/actions/runs/43107977742) passed on head `0aac334599ce09d73ed7004e596a5b86e87038f9` against base `24f2e233debf1cee62afb9c00113b6eef6120997`. The macOS 15 arm64 runner installed from the checked-out formula, verified the published checksum, and passed version/setup/send-limit/timeline/goal/client/transfer help checks. No provider or existing supervisor was used.
+
+The [first Homebrew run](https://github.com/connorburgess/homebrew-tap/actions/runs/43107756393) installed the package but failed its help assertion on head `f2aeba3f0ab71aa6b061d09559d89684aeb881ec`. It exposed a CLI help-status inconsistency: v0.1.4 prints `goal show --help` but returns code 2. The formula explicitly asserts that published exit status and help content; other command-help checks expect success. Normalizing goal help is a separate roadmap follow-up, not a fix included in v0.1.4.
+
+A pre-publication clean export of the same checked head also built all six final-version archives and passed inventory/checksum checks and both unpacked macOS smoke suites. Its macOS executable hash was `9b3d16bf0d32deb966e477259b0e1ea9f33fc77bc6a43693dcf1d115f30a2fb7`; this local export is separate evidence from the published VCS-stamped build. The downloaded artifact hash above is the installation reference.
+
+Publication does not upgrade existing loops. Live BB setup/two-turn/hold/restart/completion, live headless resume/cancellation, separate-account handoff, and installed-service lifecycle remain unverified. Native Windows runner fixtures are not a Windows release installation test; Linux/Intel macOS Homebrew installation also remains unverified. Plugin and menu-preview artifacts are separately distributed. This release does not establish readiness to migrate other BB threads.
+
 ## v0.1.4 candidate preparation
 
-This is preparation evidence, not publication or a package upgrade. The first candidate used baseline `91f42dd70835aa829dca083ea45af252b631f167`. A clean export of that revision was built with `scripts/build-release.sh v0.1.4-rc.1` on macOS arm64. No existing loop, timer, account or installed executable was changed.
+This is historical preparation evidence, separate from the final publication and package checks above. The first candidate used baseline `91f42dd70835aa829dca083ea45af252b631f167`. A clean export of that revision was built with `scripts/build-release.sh v0.1.4-rc.1` on macOS arm64. No existing loop, timer, account or installed executable was changed.
 
 All six candidate archives built successfully. Their SHA-256 values matched the generated checksum manifest; exact file inventories contained only the executable, README and license, with no AppleDouble files. Both Windows ZIPs passed integrity checks. The unpacked macOS arm64 binary reported `v0.1.4-rc.1`; its SHA-256 was `8cedaaec5119a01ecbd3d27e62235d9c16b028834729f1ccbcc32021ebb8e823`. The setup and recovery scripts from the same baseline passed against that unpacked binary using fictional local providers and a loopback receiver.
 
@@ -12,7 +26,7 @@ A refreshed `v0.1.4-rc.2` candidate was built from checked head `44c8ed9249bcd37
 
 These are locally generated artifacts, not downloaded published assets. The RC1 recovery script covered orderly restart only; RC2 adds the held-check crash boundary, not crashes during sends or writes. Native execution of the Linux, Windows and Intel macOS candidate archives, a clean Homebrew installation, the corrected cooldown on a new live limit, and full live-provider walkthroughs remain unverified. Plugin and menu-app artifacts are not included in these archives.
 
-Before publication, reconcile the notes and changelog against the selected final commit, including any newly merged work. Rebuild and verify final-version artifacts from that checked revision; an RC-labeled binary is not the final artifact. Require all repository checks on the exact PR head against its current base before merging. Tag publication and downloaded-asset verification, then matching Homebrew publication and fresh-install verification, are separate follow-ups. Until those pass, v0.1.3 remains the published package and this candidate does not establish migration readiness.
+Before publication, reconcile the notes and changelog against the selected final commit, including any newly merged work. Rebuild and verify final-version artifacts from that checked revision; an RC-labeled binary is not the final artifact. Require all repository checks on the exact PR head against its current base before merging. Tag publication and downloaded-asset verification, then matching Homebrew publication and fresh-install verification, are separate follow-ups. The final v0.1.4 publication evidence is recorded above. These earlier candidates do not include the owned-stop correction and do not establish migration readiness.
 
 ## v0.1.3 reliability release evidence
 
