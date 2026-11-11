@@ -2,7 +2,7 @@
 
 On `main` after v0.1.3, `keepgoing goal create|revise|show` records what a loop is working toward. The record has a generated stable ID, an owning loop name and an ordered revision history. Its only state is `recorded`: this means a specification was saved, not that work is running, accepted or complete. Loop controls remain the authority for supervision.
 
-This is a metadata feature. It does not generate a plan, modify the loop's prompt, start a turn, execute a next action, validate a reference or run a reviewer. Completion declarations, verification results and review stages are not yet bound to goal revisions. `complete` and `resume` keep their existing behavior and do not change the goal record. Do not treat an old completion hold as acceptance of a newly revised goal.
+This is a metadata feature. It does not generate a plan, modify the saved prompt, start a turn, execute a next action, validate a reference or run a reviewer. An explicit `loop.prompt_goal: true` setting can include the latest specification in automatic messages; see below. Completion declarations, verification results and review stages are not yet bound to goal revisions. `complete` and `resume` keep their existing behavior and do not change the goal record. Do not treat an old completion hold as acceptance of a newly revised goal.
 
 ## Create and inspect
 
@@ -55,8 +55,27 @@ All holds, owner claims, counters and active targets are preserved. A new goal n
 
 ## Storage and limits
 
-`state_dir/goal.json` is a separate private record (0600 on Unix, inside the private runtime directory), written by atomic replacement using the existing control writer. This does not promise power-loss durability or filesystem access isolation from an operator who can edit runtime files. Missing records are compatible with existing loops; corrupt, unsupported-version or non-regular records, including symlinks, refuse edits. Status reports a generic goal error without printing raw input. Goal metadata is not a supervision gate: missing or invalid goal metadata does not change tick/control behavior.
+`state_dir/goal.json` is a separate private record (0600 on Unix, inside the private runtime directory), written by atomic replacement using the existing control writer. This does not promise power-loss durability or filesystem access isolation from an operator who can edit runtime files. Missing records are compatible with existing loops; corrupt, unsupported-version or non-regular records, including symlinks, refuse edits. Status reports a generic goal error without printing raw input. With the default `prompt_goal: false`, missing or invalid goal metadata does not change tick/control behavior. Opted-in messages require a valid goal for this loop before sending; stop and existing holds still win.
 
 Input must be one JSON object, at most 32 KiB, with a nonblank title (up to 256 bytes) and nonempty `objectiveRefs` and `acceptanceRefs` arrays. Unknown fields and trailing JSON are rejected. Each reference array has at most 32 entries, each nonblank and at most 2,048 bytes. Optional `nextAction` needs a nonblank summary of at most 1,024 bytes. The stored history is capped at 128 revisions and 1 MiB. Reaching either cap refuses the edit without discarding history; archival/replacement workflows are not implemented.
 
 Offline storage and command fixtures cover reload, competing edits, ownership, holds, history limits, malformed records, private output, lock contention and zero provider calls. No live goal adoption or provider walkthrough has been performed.
+
+## Current goal context in wake messages
+
+After v0.1.3, unreleased: set `loop.prompt_goal: true` to explicitly share the current private goal specification with the agent on each wake, nudge, recovery re-prompt, handoff and switch-back. This sends the title, all current reference lists and next-action metadata, plus the goal ID/revision. Prior revision contents are excluded. The default is false, so existing loops never begin sharing private goals automatically. Goal create/revise/show still send nothing themselves.
+
+```yaml
+loop:
+  # Other required loop fields are omitted here.
+  prompt_file: wake-policy.md
+  prompt_goal: true
+```
+
+Keep `wake-policy.md` focused on stable operating instructions. For example: “Read the current authorized roadmap and evidence before selecting the highest-priority unfinished work. Honor newer user steering.” Store the task specification once in the goal record and revise it with the expected ID/revision. Avoid copying a temporary milestone or “start with X” into the scaffold. A saved next action can also become outdated: the agent must check the current sources. Referenced files are not embedded, read or verified by keepgoing; relative references have no automatic base resolution, so use unambiguous references the agent can access.
+
+The renderer reloads the latest saved revision when composing each message. Cooperative goal edits use the same tick lock as production sends. A custom handoff file replaces the ordinary scaffold but still receives the opted-in current goal context. This transports descriptive metadata, not authority to widen scope, proof of acceptance, a planner or automatic goal revision. No goal text is added to keepgoing's reports or incident history, but the receiving agent/provider may retain messages. Headless runner request artifacts may also contain the sent prompt under their existing private storage behavior.
+
+Missing, corrupt or wrong-loop goal records refuse the send before reserving its send allowance; no stale cached goal is substituted. Normal status observations or probes may already have occurred. A dry-run previews decisions without validating/composing the goal message. Stop, pause, disabled, awaiting-user and completed controls keep their existing precedence. This does not update already-running turns or queued messages, fence external writers that ignore locks, detect semantic drift in a roadmap, or bind completion to the goal revision.
+
+Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption and automatic setup wiring remain unverified/planned.

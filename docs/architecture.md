@@ -17,6 +17,7 @@
 ```
 cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
+internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
 internal/adapter            the Adapter interface and the code-to-class mapping
@@ -135,7 +136,7 @@ The command layer detects a new completion episode inside the serialized control
 
 ## Private goal records
 
-The control package also owns a separate, versioned `goal.json`. Goal edits acquire tick then control locks, verify the loaded config sources and current owner, and replace the private history atomically without rewriting controls. Revisions require the expected ID and current revision. Status exposes only generated identity, revision and the fixed `recorded` metadata state. References and next actions are opaque descriptions, never executable input or authorization/acceptance evidence. The decision engine and adapters do not consume this record. Goal-bound completion and stage results remain future work; see [private goals](goals.md).
+The control package also owns a separate, versioned `goal.json`. Goal edits acquire tick then control locks, verify the loaded config sources and current owner, and replace the private history atomically without rewriting controls. Revisions require the expected ID and current revision. Status exposes only generated identity, revision and the fixed `recorded` metadata state. References and next actions are opaque descriptions, never executable input or authorization/acceptance evidence. The decision engine does not consume this record. With explicit `prompt_goal`, the message renderer transports the latest specification to the adapter as prompt text; adapters do not read goal storage themselves. Goal-bound completion and stage results remain future work; see [private goals](goals.md).
 
 ## Tick incident snapshots
 
@@ -204,3 +205,7 @@ The command layer owns one bounded private `client-resume.json` ticket slot per 
 `resume` takes the same registry/tick locks and uses the existing checked control update/history recorder for the short control lock. It compares the ticket to fresh validated evidence and the callback's control record, persists consumption before mutating controls, then checks evidence again. Stale, expired, clock-reversed, consumed or superseded tickets are refused. A crash after consumption loses that ticket and may leave holds intact; only a new explicit preparation/action can proceed. Successful resume has ordinary CLI semantics without enabling, claiming, resetting allowances or starting work. Diagnostic failures cannot undo a saved control change. No provider, scheduler, transcript, task-file or live daemon lookup occurs under these locks.
 
 All saved state fields are bound, so an intervening ordinary tick may require another reviewed preparation. Files referenced by the config and external session/BB metadata are not bound. This is a cooperative local stale-action guard, not authentication, an approval ledger, or a power-loss transaction. See [registered resume](local-clients.md#registered-resume) for output, privacy and recovery limits.
+
+## Goal-aware prompt composition
+
+`internal/prompt` combines a configured scaffold with the latest `control.LoadGoal` specification only when `loop.prompt_goal` is true. `supervise` uses it for wake/nudge/re-prompt; `handoff` uses it for generated and custom briefs, including switch-back. Configuration parsing remains independent of goal storage. Production sends and cooperating goal edits share the tick lock; arbitrary external writers and already queued messages are outside that guarantee. Invalid/missing/wrong-loop goals return fixed errors before send reservation. No references are read or executed, no goal is revised, and no task text enters decision inputs or reports. Context transport is not approval, acceptance or semantic drift detection.

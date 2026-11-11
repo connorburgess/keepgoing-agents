@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 )
 
 // Facts describe the handoff.
@@ -43,10 +44,12 @@ Goal:
 // Brief returns the handoff file's text when one exists, otherwise a
 // generated brief.
 func Brief(loop config.Loop, f Facts) (string, error) {
-	if text, err := loop.HandoffText(); err != nil || text != "" {
-		return text, err
+	if text, err := loop.HandoffText(); err != nil {
+		return "", err
+	} else if text != "" {
+		return prompt.WithGoal(loop, text)
 	}
-	goal, err := loop.PromptText()
+	goal, err := prompt.Wake(loop)
 	if err != nil {
 		return "", err
 	}
