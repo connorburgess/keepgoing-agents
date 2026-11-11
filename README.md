@@ -44,6 +44,8 @@ Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallback
 
 ## Install
 
+The [v0.1.3 reliability release is being prepared](docs/release-verification.md#v013-reliability-release-preparation). Publication and matching Homebrew packaging remain pending; the last published release is v0.1.2. A development build is still required for the newer limits and incident diagnostics described above.
+
 This quick start requires **v0.1.2 or newer**, including `init`, `doctor`, `complete`, `start`, and `service`. Check `keepgoing version` after installation. For v0.1.1, use its [versioned README and examples](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1), not the examples from `main`. A release includes implemented features; it does not certify the outstanding [live verification](docs/release-verification.md) checks.
 
 With Homebrew on macOS or Linux:
