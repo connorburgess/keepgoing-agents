@@ -65,16 +65,22 @@ Verification uses SDK fake-host/host-entry tests, controller failure fixtures an
 
 BB shows thread context in one of two places. The plugin uses whichever one is showing:
 
-- **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop name, the last time something was sent, and a Pause or Resume button.
+- **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
 - **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The keepgoing row sits in the card's lower group.
 
 Both read:
 
 - `keepgoing: enabled`: the loop is enabled and this thread is its current target. This label alone does not prove a supervisor is running.
-- `keepgoing: watching (<target>)`: this is the loop's primary, but a fallback has taken over.
-- `keepgoing: paused`, `stop requested`, `awaiting user`, or `disabled`: the loop's control state.
+- `keepgoing: watching <thread or target>`: the current target is elsewhere.
+- `keepgoing: paused`, `stop requested`, `awaiting user`, `completed`, or `disabled`: the loop's control state.
 
-Hovering shows the loop's note, the last time something was sent, and the fallback health summary.
+The expanded banner and card hover show the actual target thread (or adapter for non-BB targets), whether this is that thread, declared completion even under another hold, runtime evidence source/freshness, last recorded action/outcome/target/time, and the existing note/send/fallback summary. A completion declaration is not independently verified task success. Failed and dry-run actions remain labeled; missing history and zero timestamps are unavailable, never proof that nothing was sent.
+
+A responsive daemon reports its challenge timestamp, phase, expected next check, dry-run flag and build comparison. These are snapshots at the displayed status-read time, refreshed roughly every 30 seconds while mounted and on plugin change events. Neither a response nor an enabled label proves current agent health or future execution. External schedulers are not inspected. No recorded/unavailable daemon endpoint does not prove there is no external scheduler or older daemon. Older CLI builds can still supply basic status; missing diagnostic fields are explicitly unavailable.
+
+RPC failures retain any previous snapshot with a warning; returned lookup errors also show the warning. Controls and setup are hidden until a successful refresh; **Refresh status** retries the read without applying controls. Open setup/move panels remain mounted while hidden so an in-flight result is not discarded. Command-line pause/stop remain available for private recovery. A failure for any registered loop makes the view incomplete, including errors in a manually listed loop that could not be matched to a thread.
+
+These richer diagnostics are implemented after v0.1.3 and require rebuilt plugin bundles. SDK status-projection and DOM fixtures cover target changes, completion under holds, failed/dry-run/stale/missing evidence, legacy builds, rejected refreshes and recovery. Typechecking and bundle builds pass. Live banner/card layout, installed-plugin refresh and remote deployment remain unverified.
 
 ## Commands
 

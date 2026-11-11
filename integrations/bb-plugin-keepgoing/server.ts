@@ -1,6 +1,7 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
+import { checkSchema, runtimeSchema, daemonSchema, detailsSchema } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -16,10 +17,11 @@ const statusSchema = z.object({
   loop: z.string(),
   target: z.string(),
   controlState: z.string(),
-  control: z.object({ note: z.string().optional() }).passthrough(),
+  control: z.object({ note: z.string().optional(), completed: z.boolean().optional() }).passthrough(),
   window: z.string(),
   state: z
     .object({
+      lastCheck: checkSchema.optional(),
       lastState: z.string().optional(),
       lastWakeAt: z.string().optional(),
       checkedAt: z.string().optional(),
@@ -27,11 +29,15 @@ const statusSchema = z.object({
     })
     .passthrough(),
   redundancy: z.object({ healthy: z.array(z.string()), distinct: z.number(), min: z.number(), meets: z.boolean() }).optional(),
+  runtime: runtimeSchema.optional(),
+  daemon: daemonSchema.optional(),
+  targetConfigured: z.boolean().optional(),
   primaryAgent: agentRef,
   targetAgent: agentRef,
 });
 
 const loopSchema = z.object({
+  details: detailsSchema.optional(),
   loop: z.string(),
   configPath: z.string(),
   managedId: z.string().optional(),
@@ -140,6 +146,12 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const view = (s: z.infer<typeof statusSchema>, configPath: string, threadId: string | null): LoopView => ({
+    details: {
+      readAt: new Date().toISOString(), completed: s.control.completed ?? false,
+      targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
+      targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
+      daemon: s.daemon ?? null, lastCheck: s.state.lastCheck ?? null,
+    },
     loop: s.loop,
     configPath,
     controlState: s.controlState,

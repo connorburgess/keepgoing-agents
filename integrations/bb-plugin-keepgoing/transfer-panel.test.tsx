@@ -63,7 +63,7 @@ test("context card keeps an in-flight move panel mounted while realtime adds the
   const gate = new Promise<void>(r => { release = r; }), ready = new Promise<void>(r => { entered = r; });
   const loop = { loop: "example-loop", configPath: "/private/example/keepgoing.yaml", managedId: "record", managedThreadId: "thr_source", controlState: "move requires inspection", note: null, target: "primary", supervising: false, lastState: null, lastWakeAt: null, checkedAt: null, handoffs: 0, fallbacks: null };
   const ui = renderSlot(app.threadContextCardRows[0]!, { threadId: "thr_destination", projectId: "proj_example", environment: null }, { rpc: {
-    forThread: () => ({ loops: phase === "none" ? [] : [loop], errors: [] }),
+    forThread: () => { if (phase === "lost-status") throw new Error("status unavailable"); return { loops: phase === "none" ? [] : [loop], errors: [] }; },
     setup: () => ({ ok: true, message: phase === "done" ? "Destination diagnostics refreshed" : "Setup idle" }),
     transfer: async (raw: unknown) => {
       const input = transferInput.parse(raw);
@@ -79,6 +79,8 @@ test("context card keeps an in-flight move panel mounted while realtime adds the
     fireEvent.change(ui.getByLabelText("Existing loop"), { target: { value: "record" } });
     fireEvent.click(ui.getByRole("button", { name: "Preview move" })); await ui.findByText("Preview ready");
     fireEvent.click(ui.getByRole("button", { name: "Move and keep held" })); await ready;
+    phase = "lost-status"; await ui.behavior.emitRealtime("changed", {});
+    await ui.findByRole("alert");
     phase = "pending"; await ui.behavior.emitRealtime("changed", {});
     await ui.findByText("keepgoing: move requires inspection");
     release();
