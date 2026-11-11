@@ -48,6 +48,7 @@ Transfer planning:
   transfer apply|recover   Move a BB primary with an explicit recovery hold
 
 Local client discovery:
+  client status            Read a registered loop snapshot without controlling it
   registry add|list|remove  Register private loop references; never start supervision
 
 Goal metadata:
@@ -103,6 +104,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "client":
+		return clientCommand(e, rest)
 	case "registry":
 		return registryCommand(e, rest)
 	case "transfer":

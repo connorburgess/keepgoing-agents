@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the shared client status/control interface and menu-bar app remain planned.
+- Added schema-1 read-only `client status` for registered loops: checked config/runtime bindings, explicit holds and declared completion, configured target, historical action/freshness, optional private goal display and bounded daemon evidence. Unknown/corrupt evidence and changed bindings remain explicit. Offline fixtures and a local authenticated daemon test only; client controls and the native companion remain planned.
+
+- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the client status interface is described above; client controls and the menu-bar app remain planned.
 
 - Expanded the BB banner/card status with declared completion, actual target thread, timestamped daemon/check evidence, and historical action outcomes. Failed refreshes show a warning and hide controls/setup until refreshed. External schedulers remain uninspected. SDK/DOM fixtures, typechecking and bundle builds only; no live deployment.
 
