@@ -12,9 +12,10 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 )
 
-func TestDaemonChecksChildCompletionBeforeInterval(t *testing.T) {
+func TestChildCompletionRequestsOneEarlyCheck(t *testing.T) {
 	for _, status := range []string{"completed", "failed", "interrupted"} {
 		t.Run(status, func(t *testing.T) {
 			f := newFixture(t)
@@ -28,15 +29,29 @@ func TestDaemonChecksChildCompletionBeforeInterval(t *testing.T) {
 			write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"idle"}}`, 0600)
 			write(t, filepath.Join(f.bbDir, "thr_primary.log"), fmt.Sprintf(`[{"seq":1,"type":"client/turn/requested","data":{"initiator":"system","systemMessageKind":"child-%s","systemMessageSubject":{"kind":"thread","threadId":"thr_child","outcomes":[{"threadId":"thr_child","status":%q}]}}}]`, status, status), 0600)
 			cfg := loadFixture(t, f.cfg)
-			cfg.Loop.Daemon.ControlPoll.Duration = 500 * time.Millisecond
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			start := time.Now()
-			if !waitForNext(ctx, cfg, controlSignature(cfg.Loop.StateDir), nil) {
-				t.Fatal("missed early check; ordinary interval is 30 seconds")
+			// Exercise the real adapter and its persisted cursor without imposing a
+			// subsecond deadline on its subprocess chain. Timer advancement and
+			// production poll cancellation have separate command-level tests.
+			poll := func() bool {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				l, err := lock.Acquire(cfg.Loop.StateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer l.Release()
+				early := supervise.PollWake(ctx, cfg, nil)
+				if ctx.Err() != nil {
+					t.Fatalf("notification inspection did not finish: %v", ctx.Err())
+				}
+				return early
 			}
-			if time.Since(start) > 2*time.Second {
-				t.Fatal("completion waited too long")
+			if !poll() {
+				t.Fatal("completion did not request an early check")
+			}
+			if strings.Contains(f.read("calls"), "thread tell ") {
+				t.Fatal("notification poll sent a prompt before the tick")
 			}
 			if r := f.tick(); r["action"] != "wake" {
 				t.Fatalf("%v", r)
@@ -44,11 +59,9 @@ func TestDaemonChecksChildCompletionBeforeInterval(t *testing.T) {
 			if got := strings.Count(f.read("calls"), "thread tell thr_primary "); got != 1 {
 				t.Fatalf("parent prompts=%d", got)
 			}
-			// A fresh waiter and fresh adapters use the persisted cursor, even with the
+			// A fresh poll and fresh adapters use the persisted cursor, even with the
 			// fixture parent left idle. No extra check is caused by the same event.
-			again, cancelAgain := context.WithTimeout(context.Background(), 1100*time.Millisecond)
-			defer cancelAgain()
-			if waitForNext(again, cfg, controlSignature(cfg.Loop.StateDir), nil) {
+			if poll() {
 				t.Fatal("notification replayed")
 			}
 			if got := strings.Count(f.read("calls"), "thread tell thr_primary "); got != 1 {

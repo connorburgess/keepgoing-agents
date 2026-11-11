@@ -206,6 +206,8 @@ Use the delivery gates and provider-specific plan in [integrations.md](integrati
 
 ### 7. Release and recovery verification
 
+- [x] Separate child-completion behavior from timer-budget tests after a native CI timeout: exercise completed/failed/interrupted notices and persisted no-replay behavior through the real fixture adapter with an ordinary test deadline, and verify early timer returns with an injected poll result. Slow-poll cancellation, runtime locks, holds and child-input precedence remain separately tested. Production intervals/timeouts and notification semantics are unchanged. Offline fixtures only; not a live latency guarantee.
+
 - [x] Make the detached-process control fixture exercise diagnostic lock contention deliberately: assert the saved-control warning and persisted pause/stop/owner state, then verify that the same daemon executes stop without a prompt. This replaces timing-dependent zero-exit assumptions exposed by native Windows CI. Offline local-process fixture only; no production behavior or timeouts changed.
 
 - [x] Reconcile development setup instructions with the v0.1.1 release/Homebrew gap, expand the Unreleased changelog, and add a reproducible native-binary smoke check and [live walkthrough checklist](release-verification.md). The smoke check uses fictional BB/Claude/Codex loops and provider traps to verify persisted controls and ownership without model calls; it runs in macOS/Linux CI. Publication, Homebrew upgrades and live provider/service walkthroughs remain separate unchecked work below.

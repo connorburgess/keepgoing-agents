@@ -152,6 +152,13 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 
 // waitForNext returns false when the daemon should exit.
 func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server, leases ...*ownerLease) bool {
+	return waitForNextWithPoll(ctx, cfg, sig, monitor, func(ctx context.Context) bool {
+		return pollWake(ctx, cfg, leases...)
+	})
+}
+
+// Keep timer/control behavior testable independently of subprocess latency.
+func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server, poll func(context.Context) bool) bool {
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
@@ -167,7 +174,7 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
 			}
-			if pollWake(ctx, cfg, leases...) || controlSignature(cfg.Loop.StateDir) != sig {
+			if poll(ctx) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
