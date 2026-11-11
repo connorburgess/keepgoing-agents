@@ -151,3 +151,16 @@ func TestChildEscalationDoesNotInventParentRetryEvidence(t *testing.T) {
 		t.Fatal(r)
 	}
 }
+
+func TestMissingRetryIntentIsUnavailable(t *testing.T) {
+	for _, known := range []bool{false, true} {
+		r := clean(Record{Observation: Observed(decide.Observation{State: decide.Error, ErrorClass: decide.ErrNetwork, RetryKnown: known}, "bb", false)})
+		want := "unavailable"
+		if known {
+			want = "not_retrying"
+		}
+		if r.Observation.Retry != want {
+			t.Fatal(r)
+		}
+	}
+}

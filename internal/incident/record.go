@@ -79,7 +79,7 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 			r.ErrorClass = "unavailable"
 		case o.Retrying:
 			r.Retry = "retrying"
-		case o.State == decide.Active || o.State == decide.Idle || o.State == decide.Error:
+		case o.RetryKnown:
 			r.Retry = "not_retrying"
 		}
 	}

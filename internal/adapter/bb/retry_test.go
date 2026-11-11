@@ -172,3 +172,13 @@ func TestRetryIncompleteScanDoesNotPersistRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestErroredRetryIntentAvailability(t *testing.T) {
+	for _, flag := range []any{nil, false, true} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, `[`+turnStarted+`,`+providerError("network", nil, "unknown", flag)+`]`, false)
+		o, err := a.Observe(context.Background())
+		if err != nil || o.RetryKnown != (flag != nil) {
+			t.Fatalf("flag=%v: %+v %v", flag, o, err)
+		}
+	}
+}

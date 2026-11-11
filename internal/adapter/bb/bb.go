@@ -107,6 +107,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Active || obs.State == decide.Error || obs.State == decide.Idle {
 		obs.RetryUnverified = !sig.ok || (obs.State == decide.Active && sig.retryUnknown)
+		obs.RetryKnown = sig.ok && (!sig.hasError || !sig.retryUnknown || obs.State == decide.Idle)
 	}
 	if obs.State == decide.Active || obs.State == decide.Error {
 		obs.Retrying = sig.ok && sig.willRetry
