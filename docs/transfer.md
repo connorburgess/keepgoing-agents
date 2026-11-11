@@ -1,6 +1,6 @@
 # Move BB supervision
 
-On `main` after v0.1.3, inspect a proposed move between existing BB threads:
+With v0.1.4, inspect a proposed move between existing BB threads:
 
 ```sh
 keepgoing transfer preview -c loop.yaml --thread thr_destination
