@@ -98,6 +98,8 @@ Acceptance: users can distinguish an agent working, awaiting input, completed wo
 
 #### Priority reliability checkpoints
 
+- [x] Preserve narrowly recognized development and release-candidate build labels in incident history. Offline tick/control storage fixtures verify reload/rewrite preservation and rejection of private suffixes. Existing redacted history remains unavailable; no installed binary or live incident record is rewritten.
+
 - [x] Fix known rate-limit cooldowns when failover is disabled: keep observing on ordinary checks without consuming recovery retries or creating a user hold before the structured reset. Offline decision/supervisor fixtures cover repeated checks, early recovery, reset expiry, explicit holds and hard bounds. Unreleased; existing holds still require explicit resume. This does not add an account polling API, a reset-time scheduler, or enable model switching.
 
 This is the next implementation priority. The existing tick/control history, status and doctor are available. The bounded incident record, decision-input capture and standalone control-save capture below are implemented with offline fixtures. Combined chronology acceptance now passes offline. Persistent delivery evidence and status/doctor warnings are also implemented with local webhook fixtures. The combined offline diagnostic timeline is also implemented with fixture acceptance; release/package evidence is tracked under R5; existing-loop deployment is recorded below; live recovery verification remains unfinished. A scheduler can remain healthy while its loop is held, and a provider can be reconnecting while its session still reports active. A failed escalation report must not make either situation invisible.
