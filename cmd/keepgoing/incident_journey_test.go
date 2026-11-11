@@ -167,6 +167,78 @@ func TestIncidentJourneyBBRetryHoldResumeRecovery(t *testing.T) {
 	}
 }
 
+func TestIncidentJourneyBBInterruptedCommandRecovery(t *testing.T) {
+	f := newFixture(t)
+	journeyConfig(t, f, fmt.Sprintf("  adapter: bb\n  bb: {thread: thr_primary, cli: %q}", filepath.Join(f.dir, "bin", "bb")), 1)
+	show := filepath.Join(f.bbDir, "thr_primary.show")
+	log := filepath.Join(f.bbDir, "thr_primary.log")
+	journeyCommand(t, f, "enable")
+	// A CLI transport failure and an invalid reply both leave state unknown.
+	cli := filepath.Join(f.dir, "bin", "bb")
+	write(t, cli, "#!/bin/sh\nexit 1\n", 0700)
+	if code, _, _ := f.run("tick", "--now", "2030-01-01T00:00:00Z"); code == 0 {
+		t.Fatal("failed observation reported success")
+	}
+	write(t, cli, fakeBB, 0700)
+	write(t, show, "invalid-json", 0600)
+	if code, _, _ := f.run("tick", "--now", "2030-01-01T00:01:00Z"); code == 0 {
+		t.Fatal("invalid observation reported success")
+	}
+	if f.read("thr_primary.told") != "" {
+		t.Fatal("unreadable status caused a prompt")
+	}
+	// This generic code does not prove a host outage, even when prose claims one.
+	events := `[{"seq":1,"type":"turn/started","data":{"providerThreadId":"provider_private"}},
+ {"seq":2,"type":"turn/completed","data":{"providerThreadId":"provider_private","status":"interrupted"}},
+ {"seq":3,"type":"system/error","data":{"code":"thread_command_failed","message":"PRIVATE_JOURNEY_CONTENT host disconnected; rate limit; authentication failed","detail":"PRIVATE_JOURNEY_CONTENT"}}`
+	write(t, log, events+`]`, 0600)
+	write(t, show, `{"thread":{"status":"error","queuedMessageCount":1}}`, 0600)
+	journeyTick(t, f, 2)
+	if f.read("thr_primary.told") != "" {
+		t.Fatal("queued work caused a duplicate prompt")
+	}
+	write(t, show, `{"thread":{"status":"error"}}`, 0600)
+	journeyTick(t, f, 3)
+	sent := f.read("thr_primary.told")
+	if sent != journeyPrivate+"\n" {
+		t.Fatalf("expected one continuation prompt, got %q", sent)
+	}
+	// The same recorded failure on a later check exhausts the configured cap.
+	journeyTick(t, f, 4)
+	events += `,{"seq":4,"type":"turn/started","data":{"providerThreadId":"provider_private"}}`
+	write(t, log, events+`]`, 0600)
+	write(t, show, `{"thread":{"status":"active"}}`, 0600)
+	calls := f.read("calls")
+	journeyTick(t, f, 5)
+	if f.read("calls") != calls || f.read("thr_primary.told") != sent {
+		t.Fatal("recovery bypassed the persisted hold")
+	}
+	journeyCommand(t, f, "resume")
+	journeyTick(t, f, 6)
+	r := isolatedJourney(t, f, "enable,none,none,none,reprompt,await_user,none,resume,none")
+	for _, failed := range r[1:3] {
+		if failed.Observation.Availability != "unavailable" || failed.Outcome != "failed" || failed.Reprompts != 0 || len(failed.Decisions.Evaluations) != 0 {
+			t.Fatal("unavailable observation invented a decision or spent a retry", failed)
+		}
+	}
+	for _, failed := range r[3:6] {
+		o := failed.Observation
+		if o.Source != "bb_system_error" || o.ProviderCode != "thread_command_failed" || o.ErrorClass != "unknown" || o.Category != "unavailable" || o.HTTPStatus != nil || o.SourceTime != "unavailable" {
+			t.Fatal("generic failure lost its code or acquired an invented cause", failed)
+		}
+	}
+	if r[3].Observation.Queued != 1 || r[3].Reprompts != 0 || r[4].Reprompts != 1 {
+		t.Fatal("queued work spent an attempt or the send was not counted")
+	}
+	assertJourneyHold(t, r[5], r[6], r[7])
+	if o := r[8].Observation; o.State != "active" || o.ErrorClass != "none" || o.ProviderCode != "unavailable" {
+		t.Fatal("new turn retained old failure", o)
+	}
+	if f.read("probes") != "" || strings.Contains(f.read("calls"), "thread retry") || f.read("thr_primary.told") != sent {
+		t.Fatal("recovery probed, retried a turn by reference, or sent extra prompts")
+	}
+}
+
 func TestIncidentJourneyProcessHoldResumeRecovery(t *testing.T) {
 	f := newFixture(t)
 	journeyConfig(t, f, `  adapter: process
