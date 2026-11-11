@@ -86,7 +86,7 @@ func bindDaemonOwner(stateDir string, takeOver bool) (*ownerLease, error) {
 	}
 	defer l.Release()
 	if takeOver {
-		f, err := control.UpdateChecked(stateDir, func(f *control.File) error { return control.ClaimOwner(f, os.Getenv("BB_THREAD_ID"), true) })
+		f, err := updateControlWithHistory(stateDir, "daemon_takeover", func(f *control.File) error { return control.ClaimOwner(f, os.Getenv("BB_THREAD_ID"), true) })
 		if err != nil {
 			return nil, err
 		}

@@ -89,7 +89,7 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady) i
 		return exitFailed
 	}
 	defer monitor.Close()
-	f, err := control.UpdateChecked(cfg.Loop.StateDir, func(f *control.File) error {
+	f, err := updateControlWithHistory(cfg.Loop.StateDir, "start", func(f *control.File) error {
 		if err := e.ctx.Err(); err != nil {
 			return err
 		}
@@ -100,6 +100,10 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady) i
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errControlHistory) {
+			e.errf("start: %v; daemon was not started", err)
+			return exitFailed
+		}
 		return ownershipError(e, err)
 	}
 	// Nothing can run a tick until setup and the owner claim are committed.

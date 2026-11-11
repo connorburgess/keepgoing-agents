@@ -13,26 +13,38 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
-// Record describes one attempted tick. Timestamps describe supervisor checks,
+// Record describes a tick or a saved control update. Timestamps describe local operations,
 // not provider event time. Unsupported source details are explicitly unavailable.
 type Record struct {
-	Decisions            Decisions   `json:"decisions"`
-	CountersAvailable    bool        `json:"countersAvailable"`
-	Cause                string      `json:"cause"`
-	Sequence             uint64      `json:"sequence"`
-	CheckStartedAt       time.Time   `json:"checkStartedAt"`
-	Build                string      `json:"build"`
-	Adapter              string      `json:"adapter"`
-	TargetKey            string      `json:"targetKey"`
-	Observation          Observation `json:"observation"`
-	ControlBefore        *Controls   `json:"controlBefore"`
-	ControlAfter         *Controls   `json:"controlAfter"`
-	Action               string      `json:"action"`
-	Outcome              string      `json:"outcome"`
-	DryRun               bool        `json:"dryRun"`
-	Nudges               int         `json:"nudges"`
-	Reprompts            int         `json:"reprompts"`
-	LastActiveRecoveryAt *time.Time  `json:"lastActiveRecoveryAt"`
+	Kind                 string         `json:"kind"`
+	ControlChange        *ControlChange `json:"controlChange"`
+	Decisions            Decisions      `json:"decisions"`
+	CountersAvailable    bool           `json:"countersAvailable"`
+	Cause                string         `json:"cause"`
+	Sequence             uint64         `json:"sequence"`
+	CheckStartedAt       time.Time      `json:"checkStartedAt"`
+	Build                string         `json:"build"`
+	Adapter              string         `json:"adapter"`
+	TargetKey            string         `json:"targetKey"`
+	Observation          Observation    `json:"observation"`
+	ControlBefore        *Controls      `json:"controlBefore"`
+	ControlAfter         *Controls      `json:"controlAfter"`
+	Action               string         `json:"action"`
+	Outcome              string         `json:"outcome"`
+	DryRun               bool           `json:"dryRun"`
+	Nudges               int            `json:"nudges"`
+	Reprompts            int            `json:"reprompts"`
+	LastActiveRecoveryAt *time.Time     `json:"lastActiveRecoveryAt"`
+}
+
+// ControlChange describes a successful save, not report delivery or an agent
+// stopping. Owner identities and private control notes are deliberately absent.
+type ControlChange struct {
+	Operation          string    `json:"operation"`
+	SaveObservedAt     time.Time `json:"saveObservedAt"`
+	OwnerPresentBefore bool      `json:"ownerPresentBefore"`
+	OwnerPresentAfter  bool      `json:"ownerPresentAfter"`
+	OwnershipChanged   bool      `json:"ownershipChanged"`
 }
 
 type Controls struct {
@@ -116,6 +128,22 @@ func oneOf(value, fallback string, allowed ...string) string {
 // clean is the storage boundary: no arbitrary strings or provider-supplied maps
 // cross it. Unknown fields are unavailable rather than truncated raw text.
 func clean(r Record) Record {
+	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control")
+	if r.Kind == "control" {
+		// Control updates do not observe an adapter or run a decision. Never attach
+		// a stale tick snapshot to a new control save.
+		r = Record{Kind: r.Kind, Sequence: r.Sequence, CheckStartedAt: r.CheckStartedAt, Build: r.Build,
+			ControlBefore: r.ControlBefore, ControlAfter: r.ControlAfter, ControlChange: r.ControlChange,
+			Action: "none", Cause: "other", Outcome: "control_saved"}
+		if r.ControlChange != nil {
+			c := *r.ControlChange
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover")
+			r.ControlChange = &c
+		}
+	} else {
+		r.ControlChange = nil
+	}
+
 	if !buildPattern.MatchString(r.Build) {
 		r.Build = "unavailable"
 	}
@@ -126,7 +154,7 @@ func clean(r Record) Record {
 	r.Cause = cleanCause(r.Cause)
 	r.Action = cleanAction(r.Action)
 	r.Decisions = cleanDecisions(r.Decisions)
-	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run")
+	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved")
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
 	if o.Availability != "observed" {

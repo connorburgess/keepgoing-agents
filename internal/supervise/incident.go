@@ -15,7 +15,7 @@ func (t *tick) recordIncident(failed bool) error {
 		outcome = "failed"
 	}
 	t.incidentDecisions.Availability = "captured"
-	r := incident.Record{Decisions: t.incidentDecisions, CheckStartedAt: t.now, Build: t.opts.Version, Adapter: t.incidentAdapter,
+	r := incident.Record{Kind: "tick", Decisions: t.incidentDecisions, CheckStartedAt: t.now, Build: t.opts.Version, Adapter: t.incidentAdapter,
 		TargetKey: incident.TargetKey(t.incidentTarget), Observation: t.incidentObservation,
 		ControlBefore: t.incidentControl, Cause: incident.Cause(t.res.Reason), Action: t.res.Action, Outcome: outcome, DryRun: t.opts.DryRun,
 		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts}
