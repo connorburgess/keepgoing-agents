@@ -27,7 +27,7 @@ internal/adapter/factory    builds the adapter for an agent definition
 internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
-internal/report             signed webhook reports
+internal/report             signed webhook reports and diagnostic delivery history
 internal/incident           bounded typed tick/control history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/control            control.json: holds, persistent BB ownership, serialized updates
@@ -75,6 +75,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `incidents.json`, `incident.lock` | tick diagnostic writer | versioned rolling snapshots, capped at 256 records/512 KiB; independent lock and atomic replacement; never a decision input |
+| `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
 | `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit |
@@ -137,3 +138,12 @@ Incident journal schema 3 also captures each tick's calls to the pure decision e
 The command layer wraps serialized control updates for standalone commands, start and daemon takeover. It captures gate flags and owner-presence/change booleans inside the update callback, then appends a schema-4 control record only after a successful save, outside the control lock. Notes, owner IDs/generations and arbitrary callback errors never enter the journal. Capture uses callback-start and post-save observation times, not an invented exact save timestamp. Journal ordering is append order; concurrent writers, crashes, external changes and retention prevent a complete audit. Legacy records remain ticks and are not backfilled.
 
 A distinct saved-control/history-failure error prevents callers from confusing a failed diagnostic append with an uncommitted mutation. Ordinary control commands preserve their existing log/report sequence and return failure after it; completion deduplication and delivery semantics stay intact. Startup and daemon takeover instead stop before running a daemon when their new control record cannot be written, explicitly preserving the already-saved enable/claim and all holds. Diagnostic code never acquires a control or tick lock. Automatic holds remain represented by their tick snapshots; initialization and low-level external writers are outside command capture.
+
+
+## Notification delivery evidence
+
+The command layer supplies `report.NewRecorded` to supervision and standalone report-producing controls. A failed setup still returns a reporter that records `setup_failed` only when a subscribed event is actually requested. Disabled, filtered and dry-run events create no delivery record. The explicit `report test` command records its forced test event. The webhook transport emits typed snapshots before request preparation, before each `client.Do`, and after each result. These snapshots contain fixed event/outcome labels, observation timestamps and numeric HTTP statuses, never payloads, endpoint identities, notes, secrets or raw errors.
+
+`internal/report` saves a bounded versioned ledger under its own short advisory lock. It releases that lock before HTTP and never acquires the control/tick locks. A local sequence ties updates to a retained record; concurrent declarations get separate records. Corruption, lock contention or eviction of an in-flight record returns an explicit diagnostic error, without suppressing the original send, adding a retry or rolling back a saved hold. A crash or failed final write can leave prepared/unconfirmed evidence; it cannot authorize replay. Missing evidence does not establish that a request never occurred. Retention and external state edits prevent a complete audit.
+
+Status and doctor read the ledger independently of the tick's last decision. Warnings describe retained historical failures or unconfirmed attempts, even if the loop is held or a later notification succeeded. HTTP acceptance does not prove application or human receipt. Ordinary retries/redirects and the completion flag's single-attempt policy remain unchanged. See [delivery evidence](diagnostics.md#notification-delivery-evidence) for gaps and read/write behavior.

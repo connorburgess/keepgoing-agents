@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Combined incident-history acceptance now passes through CLI fixtures for BB, process, Claude and Codex: failure, bounded recovery attempts, hold, explicit resume and recovered observations are reconstructed from an isolated journal alone. Headless stand-ins run as real local processes; no live provider or installed loop was used. Unsupported source timing/retry evidence stays unavailable; notification delivery and the timeline remain unfinished.
+- Notification delivery evidence now persists in a bounded private ledger. Status and doctor show historical failed/unconfirmed reports across held checks, with attempt intent, numeric HTTP outcomes and explicitly unverified receipt. Diagnostic failures preserve holds and original transport behavior; completion remains single-attempt without redirects or replay. Local webhook/transport fixtures only; not installed or live-verified.
+
+- Combined incident-history acceptance now passes through CLI fixtures for BB, process, Claude and Codex: failure, bounded recovery attempts, hold, explicit resume and recovered observations are reconstructed from an isolated journal alone. Headless stand-ins run as real local processes; no live provider or installed loop was used. Unsupported source timing/retry evidence stays unavailable; the combined timeline remains unfinished.
 
 - Incident schema 4 records saved control changes from standalone commands, startup and daemon takeover, with locked before/after gate snapshots and no private notes or owner IDs. History failure preserves the save and existing report processing while returning an explicit error; startup stops before running a daemon if its control history fails. Legacy records upgrade as ticks without fabricated transitions. Offline fixtures only; combined chronology acceptance and the timeline remain unfinished.
 

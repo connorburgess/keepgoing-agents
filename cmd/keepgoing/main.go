@@ -215,10 +215,9 @@ func reporter(e env, cfg *config.Config) report.Reporter {
 	if cfg.Loop.Report == nil {
 		return report.Nop{}
 	}
-	w, err := report.New(*cfg.Loop.Report)
+	w, err := report.NewRecorded(*cfg.Loop.Report, cfg.Loop.StateDir)
 	if err != nil {
 		e.errf("warning: reports disabled: %v", err)
-		return report.Nop{}
 	}
 	return w
 }
