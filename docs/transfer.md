@@ -7,7 +7,7 @@ keepgoing transfer preview -c loop.yaml --thread thr_destination
 keepgoing transfer preview -c loop.yaml --thread thr_destination --json
 ```
 
-The preview is read-only. The CLI also provides the explicit apply/recover commands below; the plugin's "Move supervision here" action remains unimplemented. The preview never starts, stops, sends to, changes the model of, creates or re-parents a thread. It does not change configuration, controls, ownership, goals, cursors, allowances, history or schedules, and does not acquire locks or create a runtime directory.
+The preview is read-only. The CLI also provides the explicit apply/recover commands below; the plugin also offers a [Move supervision here](../integrations/bb-plugin-keepgoing/README.md#move-supervision-here) flow for its registered setups. The preview never starts, stops, sends to, changes the model of, creates or re-parents a thread. It does not change configuration, controls, ownership, goals, cursors, allowances, history or schedules, and does not acquire locks or create a runtime directory.
 
 The current scope is one configured BB primary without a fallback configuration. The preview shows the source/destination thread IDs, validated provider and environment metadata, configured provider/model/reasoning/quota-group labels, all current control flags, recorded owner and goal ID/revision/state. Goal titles, task text, control notes, workspace paths, raw CLI output and parser errors are withheld. IDs and configured labels are operational metadata; avoid putting secrets in labels.
 
@@ -68,7 +68,7 @@ Recovery is explicit **roll-forward**, not automatic retry or rollback. It requi
 
 The final control commit removes the pending record and saves `bbTarget`, a persistent binding checked alongside config snapshots. Stale config copies using the same state directory are refused even when their own files have not changed. Future target changes must also use transfer; manually changing `bb.thread` will conflict with the binding. Diagnostic status omits the private config digests. Begin/finish control incident records are best-effort evidence: an incident write failure preserves the already-saved hold or completed move and returns failure. If output says `applied` with a history warning, inspect status; do not retry the old transfer as if no change occurred.
 
-This protocol covers cooperating processes and atomic file replacement, not power-loss durability or adversarial filesystem changes. All invokers must run a version supporting transfer fences; older binaries ignore the new fields, so mixed-version supervision/downgrades are unsupported after adopting transfer. Model/account verification, cross-environment/provider moves, fallback migration and the plugin action remain unfinished.
+This protocol covers cooperating processes and atomic file replacement, not power-loss durability or adversarial filesystem changes. All invokers must run a version supporting transfer fences; older binaries ignore the new fields, so mixed-version supervision/downgrades are unsupported after adopting transfer. Model/account verification, cross-environment/provider moves, fallback migration and plugin import of manually configured loops remain unfinished.
 
 ## Verification
 
