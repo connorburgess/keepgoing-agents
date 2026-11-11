@@ -2,6 +2,18 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## v0.1.4 candidate preparation
+
+This is preparation evidence, not publication or a package upgrade. The first candidate used baseline `91f42dd70835aa829dca083ea45af252b631f167`. A clean export of that revision was built with `scripts/build-release.sh v0.1.4-rc.1` on macOS arm64. No existing loop, timer, account or installed executable was changed.
+
+All six candidate archives built successfully. Their SHA-256 values matched the generated checksum manifest; exact file inventories contained only the executable, README and license, with no AppleDouble files. Both Windows ZIPs passed integrity checks. The unpacked macOS arm64 binary reported `v0.1.4-rc.1`; its SHA-256 was `8cedaaec5119a01ecbd3d27e62235d9c16b028834729f1ccbcc32021ebb8e823`. The setup and recovery scripts from the same baseline passed against that unpacked binary using fictional local providers and a loopback receiver.
+
+A refreshed `v0.1.4-rc.2` candidate was built from checked head `44c8ed9249bcd37bf46dfed271e4532d1cb6bb65`, whose tree matches merge `a684f68f95e3e0edc1de5ab6bd72ffbacb4f381e`. The [proposed notes](releases/v0.1.4.md) now include the landed current-goal transport, setup snapshot explanation, held-daemon crash checks and build-label fix. All six archives again passed checksum/content/integrity checks. The unpacked macOS arm64 binary reported the RC2 version and had SHA-256 `e2c8f0d87aac04ef0f5ecb5eed8a9b3c6e96080f99276b5062b29a95fcdd4bcf`; both matching smoke scripts passed, now including SIGKILL/restart. A separate local held-loop check confirmed that tick and control journals retain the candidate label with zero provider or report calls.
+
+These are locally generated artifacts, not downloaded published assets. The RC1 recovery script covered orderly restart only; RC2 adds the held-check crash boundary, not crashes during sends or writes. Native execution of the Linux, Windows and Intel macOS candidate archives, a clean Homebrew installation, the corrected cooldown on a new live limit, and full live-provider walkthroughs remain unverified. Plugin and menu-app artifacts are not included in these archives.
+
+Before publication, reconcile the notes and changelog against the selected final commit, including any newly merged work. Rebuild and verify final-version artifacts from that checked revision; an RC-labeled binary is not the final artifact. Require all repository checks on the exact PR head against its current base before merging. Tag publication and downloaded-asset verification, then matching Homebrew publication and fresh-install verification, are separate follow-ups. Until those pass, v0.1.3 remains the published package and this candidate does not establish migration readiness.
+
 ## v0.1.3 reliability release evidence
 
 [v0.1.3](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.3) tags commit `935c0540bcb05fb786be5e3636a22eacbd045e8b`. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/42952101326) passed its Build and publish job on that commit: Go tests, all six archive builds, checksum verification, and both setup/recovery smoke scripts against the unpacked Linux amd64 executable. Publication used the reviewed [version-specific release notes](releases/v0.1.3.md).

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Prepared [v0.1.4 notes](docs/releases/v0.1.4.md) describe the merged baseline and upgrade limits. The candidate is not published; release and Homebrew verification remain separate.
+
 - Incident history now retains numeric release versions with development commit-hash or numeric release-candidate suffixes. Arbitrary suffixes remain redacted; old unavailable build labels cannot be recovered. Offline fixtures only.
 
 - Added opt-in `loop.prompt_goal` to send the latest private goal revision with automatic prompts and handoff briefs, instead of requiring copied goal text in wake policies. Missing or invalid goals refuse sends; existing loops remain unchanged. Offline fixtures only; semantic drift detection and guided goal setup remain planned.
