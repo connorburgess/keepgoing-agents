@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -30,7 +30,7 @@ internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports and diagnostic delivery history
 internal/incident           bounded typed tick/control history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
-internal/control            control.json and goal.json: holds, BB ownership, private goal revisions, serialized updates
+internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
@@ -67,7 +67,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 
 | File | Owner | Purpose |
 | --- | --- | --- |
-| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership |
+| `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership, pendingTransfer, bbTarget |
 | `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |
@@ -162,4 +162,12 @@ The view retains normalized source/sequence references, local timestamp bases, h
 
 ## Transfer preview
 
-The command layer implements `transfer preview` as an advisory read-only view. It loads bounded control/state/goal records and optionally makes two bounded `bb thread show --json` queries through the diagnostic subprocess runner. Only validated identity/provider/status fields are projected; environment paths are compared internally and withheld. It rechecks configuration source snapshots at the end, but independent reads are not an atomic snapshot and no lock or durable ticket is acquired. It never invokes adapters, controls, model changes, scheduling or thread creation. `compatible_metadata` describes only the checked subset, while `applySupported` remains false. Model/account identity and transactional application are future work; see [transfer preview](transfer.md).
+The command layer implements `transfer preview` as an advisory read-only view. It loads bounded control/state/goal records and optionally makes two bounded `bb thread show --json` queries through the diagnostic subprocess runner. Only validated identity/provider/status fields are projected; environment paths are compared internally and withheld. It rechecks configuration source snapshots at the end, but independent reads are not an atomic snapshot and no lock or durable ticket is acquired. It never invokes adapters, controls, model changes, scheduling or thread creation. `compatible_metadata` describes only the checked subset, while `applySupported` identifies command availability rather than authorization. Model/account identity remains unavailable; see [transfer preview](transfer.md).
+
+## Applying a BB transfer
+
+The command layer serializes apply/recovery with ticks and performs bounded BB metadata checks before short control updates. `config.BBTransferEdit` retains private source/replacement bytes in memory, patches only a literal BB thread scalar, then checks and atomically replaces a regular private config. Checkout paths and YAML indirection are refused. `control.PendingBBTransfer` persists only identity, before/after digests and targets inside the first control save, alongside awaiting-user. A partial operation is held for explicit roll-forward recovery; no background retry or transaction coordinator is introduced.
+
+The command guards combine source snapshots with the pending or final target binding. Pending records suppress automatic work and permissive controls; stop may use only an exact before/after config. Restrictive controls retain their short independent lock. Recovery repeats the primary observation reset without changing goal or allowance files, commits the config if still at the before version, and finishes with a new owner generation and persistent `bbTarget`. This fences old daemons and copied configs even after the pending record is cleared. Begin/finish use existing saved-control incident capture; diagnostic failure never undoes a control save. Existing bindings are checked before tick/poll, manual probes/retarget, enable/resume, validate and startup.
+
+This is a cooperative, process-crash protocol, not a multi-file atomic commit or power-loss guarantee. Model/account identity, external BB metadata changes, old binaries and writers ignoring locks are outside its guarantees. See [transfer scope, recovery and preserved state](transfer.md).

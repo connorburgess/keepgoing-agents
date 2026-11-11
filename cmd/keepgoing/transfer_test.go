@@ -118,7 +118,7 @@ func TestTransferPreviewPreservesPrivateState(t *testing.T) {
 	calls := 0
 	runner := transferRunner(t, func(_ string, _ map[string]any) { calls++ })
 	code, r, _ := runTransfer(t, path, runner)
-	if code != exitOK || r.Compatibility != "compatible_metadata" || r.ApplySupported || r.SchemaVersion != 1 || r.Outcome != "preview" || calls != 2 {
+	if code != exitOK || r.Compatibility != "compatible_metadata" || !r.ApplySupported || r.SchemaVersion != 1 || r.Outcome != "preview" || calls != 2 {
 		t.Fatalf("%d %+v calls=%d", code, r, calls)
 	}
 	if r.Controls == nil || !r.Controls.Stop || !r.Controls.Paused || !r.Controls.Completed || !r.Controls.AwaitingUser || !r.Controls.Enabled || r.Owner != "thr_source" || r.Goal == nil || r.Goal.ID != g.ID {
@@ -127,7 +127,7 @@ func TestTransferPreviewPreservesPrivateState(t *testing.T) {
 	if r.From.Thread != "thr_source" || r.To.Thread != "thr_destination" || r.To.Provider != "codex" {
 		t.Fatal("wrong targets")
 	}
-	for _, id := range []string{"model_account", "apply"} {
+	for _, id := range []string{"model_account"} {
 		found := false
 		for _, c := range r.Checks {
 			if c.ID == id && c.Status == "unavailable" {
@@ -142,7 +142,7 @@ func TestTransferPreviewPreservesPrivateState(t *testing.T) {
 	if code := transferCommand(env{ctx: context.Background(), stdout: &out, stderr: &out}, []string{"preview", "-c", path, "--thread", "thr_destination"}, runner); code != exitOK {
 		t.Fatal(out.String())
 	}
-	if strings.Contains(out.String(), "PRIVATE-") || !strings.Contains(out.String(), "stop=true") || !strings.Contains(out.String(), "apply unavailable") {
+	if strings.Contains(out.String(), "PRIVATE-") || !strings.Contains(out.String(), "stop=true") || !strings.Contains(out.String(), "apply requires revalidation") {
 		t.Fatal("invalid text output")
 	}
 	if !reflect.DeepEqual(before, transferFiles(t, filepath.Dir(path))) {
@@ -156,13 +156,13 @@ func TestTransferPreviewMissingStateAndOffline(t *testing.T) {
 		t.Fatal("offline executed CLI")
 		return nil, nil
 	}, "--offline")
-	if code != exitFailed || r.Compatibility != "unavailable" || r.Controls == nil || r.Controls.Enabled || r.ApplySupported {
+	if code != exitFailed || r.Compatibility != "unavailable" || r.Controls == nil || r.Controls.Enabled || !r.ApplySupported {
 		t.Fatalf("%d %+v", code, r)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("preview created runtime directory or locks")
 	}
-	// The public command dispatcher also exposes only the preview subcommand.
+	// Apply requires explicit source and destination through the public dispatcher.
 	var out bytes.Buffer
 	if code := run(context.Background(), []string{"transfer", "apply", "-c", path}, &out, &out); code != exitUsage {
 		t.Fatal("apply accepted")
@@ -218,7 +218,7 @@ func TestTransferPreviewRejectsIncompatibleMetadata(t *testing.T) {
 				}
 			})
 			code, r, _ := runTransfer(t, path, runner)
-			if code != exitFailed || r.ApplySupported || r.Compatibility == "compatible_metadata" {
+			if code != exitFailed || !r.ApplySupported || r.Compatibility == "compatible_metadata" {
 				t.Fatalf("%d %+v", code, r)
 			}
 		})

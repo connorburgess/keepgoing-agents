@@ -116,6 +116,11 @@ func doctor(e env, args []string, run doctorRun) int {
 	if ctlErr != nil {
 		r.add("control", "error", "Control state could not be read.", "Repair control.json before enabling supervision; do not discard an existing stop or pause.")
 	} else {
+		if ctl.PendingTransfer != nil {
+			r.add("transfer", "error", "BB transfer is pending; automatic work and resume are held.", "Inspect status for the transfer ID, then use transfer recover. Do not discard the recovery record.")
+		} else if ctl.BBTarget != "" && (cfg.Loop.BB == nil || cfg.Loop.BB.Thread != ctl.BBTarget) {
+			r.add("transfer", "error", "Configuration does not match the transferred BB target.", "Select the current loop configuration.")
+		}
 		r.ControlState = ctl.Summary()
 		r.add("control", "ok", "Control state: "+r.ControlState+".", "")
 	}

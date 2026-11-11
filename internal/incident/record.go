@@ -137,7 +137,7 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover")
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish")
 			r.ControlChange = &c
 		}
 	} else {

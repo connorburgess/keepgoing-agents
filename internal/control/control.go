@@ -19,14 +19,16 @@ const FileName = "control.json"
 
 // File is the on-disk control record.
 type File struct {
-	Ownership    *Ownership `json:"ownership,omitempty"`
-	Enabled      bool       `json:"enabled"`
-	Paused       bool       `json:"paused"`
-	Stop         bool       `json:"stop"`
-	AwaitingUser bool       `json:"awaitingUser"`
-	Completed    bool       `json:"completed,omitempty"`
-	Note         string     `json:"note,omitempty"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	PendingTransfer *PendingBBTransfer `json:"pendingTransfer,omitempty"`
+	BBTarget        string             `json:"bbTarget,omitempty"`
+	Ownership       *Ownership         `json:"ownership,omitempty"`
+	Enabled         bool               `json:"enabled"`
+	Paused          bool               `json:"paused"`
+	Stop            bool               `json:"stop"`
+	AwaitingUser    bool               `json:"awaitingUser"`
+	Completed       bool               `json:"completed,omitempty"`
+	Note            string             `json:"note,omitempty"`
+	UpdatedAt       time.Time          `json:"updatedAt"`
 }
 
 // Load reads the control file. A missing file yields a disabled record and

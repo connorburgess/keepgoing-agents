@@ -24,6 +24,9 @@ import (
 )
 
 func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
+	if err := checkTransferSources(cfg, false); err != nil {
+		return ownershipError(e, err)
+	}
 	if err := validateOwner(cfg.Loop.StateDir, len(takeOver) > 0 && takeOver[0]); err != nil {
 		return ownershipError(e, err)
 	}
@@ -56,7 +59,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
-	if err := cfg.CheckSources(); err != nil {
+	if err := checkTransferSources(cfg, true); err != nil {
 		e.errf("%v; no tick performed; reload and retry", err)
 		return exitSkipped
 	}
@@ -86,6 +89,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 // SIGINT or SIGTERM ends the daemon at once; a tick in flight is cancelled
 // and its child commands are killed.
 func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...bool) int {
+	if err := checkTransferSources(cfg, false); err != nil {
+		return ownershipError(e, err)
+	}
 	l, err := lock.AcquireNamed(cfg.Loop.StateDir, lock.Daemon)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another daemon is running for %s", cfg.Loop.Name)
@@ -180,7 +186,7 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return len(leases) > 0
 	} // Return to the daemon's exit check.
-	if cfg.CheckSources() != nil {
+	if checkTransferSources(cfg, false) != nil {
 		return false // Wait for the next ordinary reload; never poll the stale target.
 	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Loop.Daemon.ControlPoll.Duration)
@@ -286,6 +292,17 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		e.errf("%v", err)
 		return exitFailed
 	}
+	if ctl.BBTarget != "" && !transferThreadID.MatchString(ctl.BBTarget) {
+		ctl.BBTarget = "unavailable"
+	}
+	if ctl.PendingTransfer != nil {
+		p := control.PendingBBTransfer{}
+		if ctl.PendingTransfer.Valid() {
+			p = *ctl.PendingTransfer
+		}
+		p.Before, p.After = "", ""
+		ctl.PendingTransfer = &p
+	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
@@ -362,6 +379,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	if ctl.PendingTransfer != nil {
+		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
+	}
+	if ctl.BBTarget != "" {
+		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
+	}
 	if out.Goal != nil {
 		printGoal(e, *out.Goal, false)
 	}
@@ -476,6 +499,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return ownershipError(e, err)
 		}
 		defer l.Release()
+		if err := checkTransferSources(cfg, false); err != nil {
+			return ownershipError(e, err)
+		}
 	}
 	var completionDeclaredAt time.Time
 	fn := map[string]func(*control.File){
@@ -586,7 +612,7 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
 		return ownershipError(e, err)
 	}
-	if err := cfg.CheckSources(); err != nil {
+	if err := checkTransferSources(cfg, false); err != nil {
 		e.errf("%v; no retarget performed; reload and retry", err)
 		return exitSkipped
 	}

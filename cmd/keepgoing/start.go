@@ -76,6 +76,9 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady) i
 		return ownershipError(e, err)
 	}
 	defer tick.Release()
+	if err := checkTransferSources(cfg, false); err != nil {
+		return ownershipError(e, err)
+	}
 	if err := validateOwner(cfg.Loop.StateDir, false); err != nil {
 		return ownershipError(e, err)
 	}

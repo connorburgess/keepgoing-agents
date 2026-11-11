@@ -50,7 +50,7 @@ Optional absolute loop deadlines are available in v0.1.3 or newer. **Fakes** ver
 
 ## Agent chats
 
-BB `transfer preview` is implemented on `main` after v0.1.3, with **Fakes** covering a single primary, same-environment metadata comparison, holds, private output, malformed/unavailable responses and unchanged runtime files. `--offline` makes no BB queries. Applying a transfer, model/account verification and the plugin move UI remain unimplemented. No live thread was moved. See [transfer preview](transfer.md).
+BB `transfer preview` is implemented on `main` after v0.1.3, with **Fakes** covering a single primary, same-environment metadata comparison, holds, private output, malformed/unavailable responses and unchanged runtime files. `--offline` makes no BB queries. `transfer apply|recover` adds explicit CLI application with a pending fence, preserved holds/goal/allowances, source-bound config replacement and a persistent target binding. **Fakes** cover interruption/recovery, including a Unix process exit followed by stop and new-target-only wake checks. Model/account verification and the plugin move UI remain unimplemented. No live thread was moved. See [transfer preview](transfer.md).
 
 | Integration | Status | Next check |
 | --- | --- | --- |
