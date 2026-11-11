@@ -106,8 +106,8 @@ func Load(dir string) (File, error) {
 	return result, nil
 }
 
-// Update serializes writers independently of all loop locks. No loop files are
-// changed. The directory must have been verified by the command layer.
+// update serializes registry writers. It never writes loop files itself. The
+// directory must have been verified by the command layer.
 func update(dir string, fn func(*File) (bool, error)) error {
 	if CheckDirectory(dir) != nil {
 		return ErrInvalid
@@ -211,5 +211,38 @@ func Remove(dir, id string) error {
 			}
 		}
 		return false, errors.New("registration ID not found; list the registry before retrying")
+	})
+}
+
+// WithEntry pins an existing registration against cooperating add/remove calls
+// during a short local operation. It never rewrites the registry. The callback
+// may take a nonblocking control lock, but must not wait for a tick, query a
+// provider or start a supervisor. External filesystem writers remain outside
+// this advisory lock. A missing registration creates no directory or lock.
+func WithEntry(dir, id string, fn func(Entry) error) error {
+	if !idPattern.MatchString(id) {
+		return ErrInvalid
+	}
+	find := func(f File) (Entry, bool) {
+		for _, e := range f.Entries {
+			if e.ID == id {
+				return e, true
+			}
+		}
+		return Entry{}, false
+	}
+	f, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	if _, ok := find(f); !ok {
+		return ErrInvalid
+	}
+	return update(dir, func(f *File) (bool, error) {
+		e, ok := find(*f)
+		if !ok {
+			return false, ErrInvalid
+		}
+		return false, fn(e)
 	})
 }

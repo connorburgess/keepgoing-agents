@@ -49,6 +49,7 @@ Transfer planning:
 
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it
+  client pause|stop        Save a restrictive hold for a registered loop
   registry add|list|remove  Register private loop references; never start supervision
 
 Goal metadata:
