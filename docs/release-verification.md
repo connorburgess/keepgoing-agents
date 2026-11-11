@@ -2,6 +2,14 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## v0.1.3 reliability release preparation
+
+The next release packages the [v0.1.3 reliability changes](releases/v0.1.3.md): persistent work limits, completion declarations, BB retry handling, incident/delivery evidence and the offline timeline. These changes are implemented and fixture-tested; **publication, matching Homebrew packaging and existing-loop deployment remain pending**. The last published version is v0.1.2. Preparing archives does not upgrade an installed supervisor or establish live compatibility.
+
+Release preparation builds all six archives with `scripts/build-release.sh v0.1.3`, verifies their checksums and contents, and runs both smoke scripts against the unpacked native macOS arm64 executable. These are candidate artifacts, not downloaded release assets. Required PR CI additionally checks native Linux/macOS builds. The tag-triggered workflow must independently build and verify the actual published assets; record that run and the final tag commit after publication.
+
+The publication job uses the exact tag's `docs/releases/<tag>.md` notes rather than the entire historical changelog. A missing or empty notes file fails before building. Future tags must prepare their own notes through review.
+
 ## v0.1.2 maintenance release evidence
 
 [v0.1.2](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.2) tags commit `966620873af35bacef648d5dd57e31150e78f424`. The [release run](https://github.com/connorburgess/keepgoing-agents/actions/runs/42790570495) passed its Build and publish job on that commit: Go tests, six-platform archive build, all checksum comparisons, and the unpacked Linux amd64 smoke check. All six published assets were subsequently downloaded and matched the published checksums; the downloaded macOS arm64 archive passed the same provider-free smoke check locally. No real agent was invoked.
@@ -62,7 +70,7 @@ Ownership conflicts and takeover are covered by the binary smoke check using fic
 
 ## Publish a matching release
 
-Before tagging, review the complete Unreleased changelog and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
+Before tagging, review the selected version’s changelog, `docs/releases/<tag>.md` notes and limitations, run required checks on the chosen commit, build archives with `scripts/build-release.sh <version>`, and smoke-check unpacked native artifacts. Preserve the exact tested commit and archive checksums in release evidence. Cross-compilation alone is not a native run.
 
 Publish the accumulated maintenance release separately from claims that the usability milestone is live-verified. Update the Homebrew formula's version, platform URLs and checksums to the actual published assets, then verify a fresh install and its `version` output. Update the README/setup version guidance in step with publication; `go install ...@latest` selects a tagged release, not `main`. Keep archived documentation and examples attached to their matching tag. The BB plugin has its own build/install path and is not installed by the core archive or Homebrew formula.
 

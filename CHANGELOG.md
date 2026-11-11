@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.3 (prepared)
+
+Reliability release prepared from the changes after v0.1.2. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md#v013-reliability-release-preparation). See the [release notes](docs/releases/v0.1.3.md) for the user-facing changes and upgrade limits.
+
 - Native macOS/Linux CI and the unpacked Linux release gate now run a recovery smoke check with stand-in BB/process/Claude/Codex providers, rejected local notifications, held daemon restarts, explicit recovery and completion without replay. This adds offline artifact evidence, not live provider or deployment certification.
 
 - Added `timeline`, an offline text/JSON view combining bounded incident/delivery records with redacted current control flags. It exposes local timestamp/source evidence, historical hold and activity summaries, failed alerts, retention and evidence gaps without provider/scheduler/daemon/CI calls or writes. Missing/corrupt sources remain explicit; `--state-dir` supports broken configs and copied records. Acceptance is fixture-only; unreleased and not installed or live-verified.
@@ -31,6 +35,8 @@
 - Optional `loop.limits.deadline` and `init --deadline` hold future automatic supervision at the next check at/after an RFC3339 cutoff. The awaiting-user hold persists across restarts and is visible in status; stop and existing holds retain precedence. Child-outcome polls skip providers after the cutoff. This does not cancel running turns, cap spend, or restrict explicit manual operations. Covered by offline fixtures, not live providers.
 
 ### Fixed
+
+- macOS archive builds omit AppleDouble metadata files so local filesystem attributes are not packaged alongside the executable and documentation.
 
 - Git progress fingerprinting now treats inaccessible tracked-file metadata as unknown rather than a deletion. A deterministic symlink-cycle fixture verifies that metadata errors cannot replenish the no-progress timer.
 
