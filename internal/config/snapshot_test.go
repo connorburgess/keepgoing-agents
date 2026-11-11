@@ -137,3 +137,43 @@ func TestSnapshotsArePrivateAndParseHasNoSources(t *testing.T) {
 		t.Fatal("snapshot captured a later read")
 	}
 }
+
+func TestSourcesDigestBindsFallbackBytesAndPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keepgoing.yaml")
+	fb := filepath.Join(dir, "fallbacks.yaml")
+	for p, b := range map[string]string{path: valid + "  fallbacks: fallbacks.yaml\n", fb: validFallbacks} {
+		if err := os.WriteFile(p, []byte(b), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := cfg.SourcesDigest()
+	if len(digest) != 64 {
+		t.Fatal("missing sources digest")
+	}
+	if err := os.WriteFile(fb, []byte(validFallbacks+"# changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.SourceDigest() != cfg.SourceDigest() || next.SourcesDigest() == digest || cfg.CheckSources() == nil {
+		t.Fatal("fallback bytes not bound")
+	}
+	alias := filepath.Join(dir, "copy.yaml")
+	b, _ := os.ReadFile(path)
+	os.WriteFile(alias, b, 0600)
+	copied, err := Load(alias)
+	if err != nil || copied.SourcesDigest() == next.SourcesDigest() {
+		t.Fatal("path not bound", err)
+	}
+	parsed, err := Parse([]byte(valid))
+	if err != nil || parsed.SourcesDigest() != "" {
+		t.Fatal("in-memory source invented", err)
+	}
+}

@@ -216,7 +216,7 @@ func Remove(dir, id string) error {
 
 // WithEntry pins an existing registration against cooperating add/remove calls
 // during a short local operation. It never rewrites the registry. The callback
-// may take a nonblocking control lock, but must not wait for a tick, query a
+// may take nonblocking tick/control locks, but must not wait for a tick, query a
 // provider or start a supervisor. External filesystem writers remain outside
 // this advisory lock. A missing registration creates no directory or lock.
 func WithEntry(dir, id string, fn func(Entry) error) error {
