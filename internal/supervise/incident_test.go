@@ -161,6 +161,16 @@ func TestIncidentRealAdapterFixtures(t *testing.T) {
 			if r.Adapter != kind || r.Observation.ErrorClass != "network" || r.Observation.Retry != "unavailable" || !r.DryRun {
 				t.Fatal(r)
 			}
+			wantSource, wantCode := "process_json", "network"
+			if kind == "claude" {
+				wantSource, wantCode = "claude_result", "connection_error"
+			}
+			if kind == "codex" {
+				wantSource, wantCode = "codex_events", "connection_error"
+			}
+			if r.Observation.Source != wantSource || r.Observation.ProviderCode != wantCode || r.Observation.ExitCode == nil {
+				t.Fatal("source evidence lost in journal", r)
+			}
 			b, _ := os.ReadFile(filepath.Join(w.dir, incident.FileName))
 			if strings.Contains(string(b), "SECRET_BODY") {
 				t.Fatal("provider body leaked")

@@ -87,7 +87,7 @@ func TestRetryScanFailureWithholdsStallAndRecovery(t *testing.T) {
 	}
 	o, err := a.Observe(context.Background())
 	d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: time.Hour, SinceWake: time.Hour, StallAfter: time.Minute})
-	if err != nil || d.Action != decide.None || d.Reason != "provider retry state unverified" {
+	if err != nil || o.Evidence.Source != "unavailable" || d.Action != decide.None || d.Reason != "provider retry state unverified" {
 		t.Fatalf("%+v %+v %v", o, d, err)
 	}
 }

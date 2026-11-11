@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // Record describes one attempted tick. Timestamps describe supervisor checks,
@@ -46,6 +47,10 @@ func Gate(c decide.Control) *Controls {
 }
 
 type Observation struct {
+	Source             string `json:"source"`
+	Category           string `json:"category"`
+	HTTPStatus         *int   `json:"httpStatus"`
+	ExitCode           *int   `json:"exitCode"`
 	Availability       string `json:"availability"`
 	State              string `json:"state"`
 	ErrorClass         string `json:"errorClass"`
@@ -66,7 +71,8 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 	if failed {
 		return Observation{Availability: "unavailable"}
 	}
-	r := Observation{Availability: "observed", State: string(o.State), ErrorClass: string(o.ErrorClass),
+	d := evidence.Clean(o.Evidence)
+	r := Observation{Source: d.Source, Category: d.Category, ProviderCode: d.Code, HTTPStatus: d.HTTPStatus, ExitCode: d.ExitCode, Availability: "observed", State: string(o.State), ErrorClass: string(o.ErrorClass),
 		Retry: "unavailable", Queued: o.Queued, Background: o.Background, AwaitingInput: o.AwaitingInput,
 		ActiveChildren: o.ActiveChildren, AwaitingChildren: len(o.AwaitingChildren), ChildrenUnverified: o.ChildrenUnverified, Gone: o.Gone}
 	if adapter == "bb" && len(o.AwaitingChildren) > 0 {
@@ -128,7 +134,8 @@ func clean(r Record) Record {
 	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
 	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified")
 	o.SourceTime = "unavailable"
-	o.ProviderCode = "unavailable"
+	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})
+	o.Source, o.Category, o.ProviderCode, o.HTTPStatus, o.ExitCode = d.Source, d.Category, d.Code, d.HTTPStatus, d.ExitCode
 	o.Queued = max(0, o.Queued)
 	o.Background = max(0, o.Background)
 	o.ActiveChildren = max(0, o.ActiveChildren)

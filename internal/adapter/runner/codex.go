@@ -10,6 +10,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // Codex runs `codex exec --json` headless, one turn per Send, resuming the
@@ -28,6 +29,7 @@ func (c *Codex) Name() string { return "codex" }
 
 // CodexOutcome summarises a `codex exec --json` event stream.
 type CodexOutcome struct {
+	Evidence  evidence.Detail
 	ThreadID  string
 	Completed bool
 	Failed    bool
@@ -58,18 +60,29 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 			out.ThreadID = e.ThreadID
 		case "turn.completed":
 			out.Completed, out.Failed = true, false
+			out.Evidence = evidence.Clean(evidence.Detail{Source: "codex_events"})
 		case "turn.failed", "error":
 			out.Failed = true
 			codes := []string{e.Code}
+			detail := evidence.Detail{Source: "codex_events", Code: e.Code}
 			if e.Error != nil {
+				detail.Category = e.Error.Type
+				detail.HTTPStatus = e.Error.Status
+				if evidence.Code(detail.Code) == "unavailable" {
+					detail.Code = e.Error.Code
+				}
 				codes = append(codes, e.Error.Code, e.Error.Type)
 				if e.Error.Status != nil {
 					codes = append(codes, fmt.Sprint(*e.Error.Status))
 				}
 			}
+			if out.Class == decide.ErrUnknown {
+				out.Evidence = evidence.Clean(detail)
+			}
 			for _, code := range codes {
 				if cl := adapter.ClassifyCode(code); cl != decide.ErrUnknown {
 					out.Class = cl
+					out.Evidence = evidence.Clean(detail)
 					break
 				}
 			}
@@ -79,11 +92,16 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 }
 
 // Observe implements adapter.Adapter.
-func (c *Codex) Observe(ctx context.Context) (decide.Observation, error) {
+func (c *Codex) Observe(ctx context.Context) (obs decide.Observation, err error) {
 	st, err := c.dir.Status()
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
+	defer func() {
+		if obs.Evidence.Source == "" {
+			obs.Evidence = runnerEvidence(st)
+		}
+	}()
 	switch st.Phase {
 	case NeverRun:
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
@@ -93,16 +111,20 @@ func (c *Codex) Observe(ctx context.Context) (decide.Observation, error) {
 		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
 	}
 	o := ParseCodexEvents(st.Stdout)
+	if o.Evidence.Source != "" {
+		o.Evidence.ExitCode = runnerEvidence(st).ExitCode
+	}
 	c.dir.SaveSession(o.ThreadID)
 	if o.Completed && !o.Failed && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
+		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: o.Evidence}, nil
 	}
-	obs := decide.Observation{State: decide.Error, ErrorClass: o.Class}
+	obs = decide.Observation{State: decide.Error, ErrorClass: o.Class, Evidence: o.Evidence}
 	// Codex's event stream reports a usage limit only as prose. Ask the
 	// app-server for the structured snapshot instead.
 	if obs.ErrorClass == decide.ErrUnknown {
 		if l, err := ReadCodexLimits(ctx, c.cfg.CLI, envList(c.cfg.Env)); err == nil && l.Blocked {
 			obs.ErrorClass, obs.ResetsAt = decide.ErrRateLimit, l.ResetsAt
+			obs.Evidence = evidence.Clean(evidence.Detail{Source: "codex_rate_limits", Code: "subscription_window_blocked", ExitCode: runnerEvidence(st).ExitCode})
 		}
 	}
 	return obs, nil

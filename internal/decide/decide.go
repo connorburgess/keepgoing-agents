@@ -4,6 +4,7 @@
 package decide
 
 import (
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 	"strings"
 	"time"
 )
@@ -37,6 +38,8 @@ const (
 
 // Observation is what an adapter saw.
 type Observation struct {
+	// Evidence is diagnostic metadata and never changes Decide policy.
+	Evidence   evidence.Detail
 	State      State
 	ErrorClass ErrorClass
 	Queued     int  // messages already waiting for the session

@@ -87,3 +87,16 @@ func TestStopUnsupported(t *testing.T) {
 		t.Error("expected ErrUnsupported")
 	}
 }
+
+func TestEvidenceDistinguishesExitAndJSON(t *testing.T) {
+	a := New(config.Process{StatusCommand: []string{script(t, "exit 9", "exit /b 9")}})
+	o, err := a.Observe(context.Background())
+	if err != nil || o.Evidence.Source != "process_exit" || o.Evidence.ExitCode == nil || *o.Evidence.ExitCode != 9 || o.ErrorClass != decide.ErrUnknown {
+		t.Fatal(o, err)
+	}
+	a = New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"error","errorClass":"connection_error","text":"SECRET_BODY"}'`, `echo {"state":"error","errorClass":"connection_error","text":"SECRET_BODY"}`)}})
+	o, err = a.Observe(context.Background())
+	if err != nil || o.Evidence.Source != "process_json" || o.Evidence.Code != "connection_error" || o.Evidence.ExitCode == nil || *o.Evidence.ExitCode != 0 {
+		t.Fatal(o, err)
+	}
+}
