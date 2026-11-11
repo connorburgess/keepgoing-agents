@@ -74,6 +74,9 @@ func validateOwner(stateDir string, takeOver bool) error {
 	if err != nil {
 		return err
 	}
+	if err := control.CheckTransferReady(f); err != nil {
+		return err
+	}
 	return control.CheckOwner(f, os.Getenv("BB_THREAD_ID"), takeOver)
 }
 

@@ -52,10 +52,14 @@ type transferPreview struct {
 }
 
 // A preview is advisory, not a prepared transaction or an authorization token.
-// No locks, provider commands, control writes or environment changes occur.
+// The preview branch takes no locks and performs no provider commands, control
+// writes or environment changes. Apply/recover have their own guarded path.
 func transferCommand(e env, args []string, run doctorRun) int {
+	if len(args) > 0 && (args[0] == "apply" || args[0] == "recover") {
+		return transferApply(e, args, run, nil)
+	}
 	if len(args) == 0 || args[0] != "preview" {
-		e.errf("usage: keepgoing transfer preview -c config --thread thr_destination [--json] [--offline]; applying a transfer is not implemented")
+		e.errf("usage: keepgoing transfer preview|apply|recover; see transfer preview --help, transfer apply --help or transfer recover --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
@@ -88,7 +92,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		e.errf("transfer: preview requires a BB primary with a valid thread ID")
 		return exitUsage
 	}
-	r := transferPreview{SchemaVersion: 1, Outcome: "preview", ReadAt: time.Now().UTC(), Compatibility: "compatible_metadata", From: transferTarget{Thread: a.BB.Thread}, To: transferTarget{Thread: *thread}, Checks: []doctorCheck{}}
+	r := transferPreview{SchemaVersion: 1, Outcome: "preview", ApplySupported: true, ReadAt: time.Now().UTC(), Compatibility: "compatible_metadata", From: transferTarget{Thread: a.BB.Thread}, To: transferTarget{Thread: *thread}, Checks: []doctorCheck{}}
 	add := func(id, status, message string) {
 		r.Checks = append(r.Checks, doctorCheck{ID: id, Status: status, Message: message})
 		if status == "error" {
@@ -119,6 +123,12 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			r.Owner = ctl.Ownership.ThreadID
 		}
 		add("control", "ok", "Current control flags read; notes are withheld. Missing controls mean disabled.")
+		if ctl.PendingTransfer != nil {
+			add("transfer", "error", "A transfer is pending; inspect status and recover it before planning another move.")
+		}
+		if ctl.BBTarget != "" && ctl.BBTarget != a.BB.Thread {
+			add("binding", "error", "Configuration does not match the transferred BB target.")
+		}
 	}
 	var st state.File
 	if err := readTransferRecord(cfg.Loop.StateDir, state.FileName, &st); err != nil {
@@ -161,10 +171,10 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	if cfg.CheckSources() != nil {
 		add("config", "unavailable", "Configuration changed during preview; discard this result and inspect again.")
 	}
-	// These limitations are always explicit and never become an apply capability.
+	// The preview never grants authority or reserves a future apply operation.
 	r.Checks = append(r.Checks,
 		doctorCheck{ID: "model_account", Status: "unavailable", Message: "Thread show does not verify model/reasoning selection, account identity, quota or model access. Configured labels are not verification."},
-		doctorCheck{ID: "apply", Status: "unavailable", Message: "Preview only. Applying a transfer and the plugin move UI are not implemented. Nothing was changed; no preview authorizes resume."},
+		doctorCheck{ID: "apply", Status: "warning", Message: "Preview only. Use explicit transfer apply with expected --from and --thread; it revalidates under the tick lock and leaves an awaiting-user hold. The plugin move UI is not implemented."},
 		doctorCheck{ID: "freshness", Status: "warning", Message: "Reads are independent, not an atomic snapshot. Holds, ownership and targets may change; a future apply operation must revalidate under locks."},
 	)
 	if *asJSON {
@@ -174,7 +184,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 			return exitFailed
 		}
 	} else {
-		fmt.Fprintf(e.stdout, "Transfer preview: %s -> %s (%s; apply unavailable)\n", r.From.Thread, r.To.Thread, r.Compatibility)
+		fmt.Fprintf(e.stdout, "Transfer preview: %s -> %s (%s; apply requires revalidation)\n", r.From.Thread, r.To.Thread, r.Compatibility)
 		for _, target := range []transferTarget{r.From, r.To} {
 			if target.Environment != "" {
 				fmt.Fprintf(e.stdout, "%s: provider=%s status=%s project=%s environment=%s host=%s\n", target.Thread, target.Provider, target.Status, target.Project, target.Environment, target.Host)

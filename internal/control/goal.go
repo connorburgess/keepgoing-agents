@@ -160,6 +160,9 @@ func WriteGoal(dir, loop, caller string, spec GoalSpec, expectedID string, expec
 	if err != nil {
 		return nil, errors.New("cannot verify goal ownership: control record unavailable")
 	}
+	if err := CheckTransferReady(ctl); err != nil {
+		return nil, err
+	}
 	if err := CheckOwner(ctl, caller, false); err != nil {
 		return nil, err
 	}

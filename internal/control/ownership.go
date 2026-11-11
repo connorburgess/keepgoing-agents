@@ -49,6 +49,9 @@ func CheckOwner(f File, caller string, takeOver bool) error {
 // ClaimOwner runs inside UpdateChecked and under the tick lock. It preserves
 // every control hold. Same-owner calls do not change the generation.
 func ClaimOwner(f *File, caller string, takeOver bool) error {
+	if err := CheckTransferReady(*f); err != nil {
+		return err
+	}
 	if err := CheckOwner(*f, caller, takeOver); err != nil {
 		return err
 	}

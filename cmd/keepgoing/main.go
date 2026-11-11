@@ -45,6 +45,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
+  transfer apply|recover   Move a BB primary with an explicit recovery hold
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
