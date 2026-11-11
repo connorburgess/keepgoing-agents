@@ -27,6 +27,7 @@ jobs:
           package="keepgoing_${GITHUB_REF_NAME#v}_linux_amd64"
           tar -xzf "dist/$package.tar.gz" -C "$RUNNER_TEMP"
           python3 scripts/smoke-release.py "$RUNNER_TEMP/$package/keepgoing"
+          python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/$package/keepgoing"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}

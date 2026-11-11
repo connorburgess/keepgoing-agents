@@ -86,10 +86,11 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race ./...
-      - name: Smoke check the built CLI without provider calls
+      - name: Smoke check setup and recovery with local fixtures
         run: |
           go build -trimpath -ldflags "-X main.version=smoke-${GITHUB_SHA}" -o "$RUNNER_TEMP/keepgoing-smoke" ./cmd/keepgoing
           python3 scripts/smoke-release.py "$RUNNER_TEMP/keepgoing-smoke"
+          python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/keepgoing-smoke"
       - name: Verify native Linux ACL metadata fixture
         if: runner.os == 'Linux'
         run: go test -v ./cmd/keepgoing -run '^TestLinuxACLMetadataDetectsDefaultACLHiddenByModeBits$' -count=1

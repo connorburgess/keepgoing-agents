@@ -1,6 +1,6 @@
 # Testing
 
-For a built or unpacked executable, [release verification](release-verification.md) provides a provider-free smoke check and a separate live walkthrough. The smoke check is also run in macOS/Linux CI; it does not certify real provider sessions.
+For a built or unpacked executable, [release verification](release-verification.md) provides a provider-free setup smoke check, a [local recovery smoke check](release-verification.md#check-recovery-with-local-stand-ins), and a separate live walkthrough. Both scripts run in macOS/Linux CI. Recovery uses stand-in providers, a loopback webhook and actual temporary daemon processes; neither script certifies real provider sessions.
 
 ## On a machine with Go
 
