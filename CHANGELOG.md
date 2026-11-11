@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `goal create|revise|show` records private goal identity and specification revisions independently of loop controls. Expected ID/revision checks prevent stale edits; ordinary status withholds titles/references, with explicit `show --private` for full history. Offline fixtures cover ownership, locks, holds, corruption, limits and privacy. Goal acceptance, verification and review-stage bindings remain unimplemented.
+
 ## 0.1.3 (2026-11-11)
 
 Reliability release collecting the changes after v0.1.2. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md#v013-reliability-release-evidence). See the [release notes](docs/releases/v0.1.3.md) for the user-facing changes and upgrade limits.
