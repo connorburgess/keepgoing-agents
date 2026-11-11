@@ -113,7 +113,7 @@ func TargetKey(alias string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(alias)))
 }
 
-var buildPattern = regexp.MustCompile(`^(dev|v?[0-9]+\.[0-9]+\.[0-9]+|(?:smoke-)?[a-f0-9]{7,40}(?:-dirty)?)$`)
+var buildPattern = regexp.MustCompile(`^(dev|v?[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[a-f0-9]{7,40}|-rc\.[0-9]+)?|(?:smoke-)?[a-f0-9]{7,40}(?:-dirty)?)$`)
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 func oneOf(value, fallback string, allowed ...string) string {
