@@ -50,6 +50,8 @@ Optional absolute loop deadlines are available in v0.1.3 or newer. **Fakes** ver
 
 ## Agent chats
 
+BB `transfer preview` is implemented on `main` after v0.1.3, with **Fakes** covering a single primary, same-environment metadata comparison, holds, private output, malformed/unavailable responses and unchanged runtime files. `--offline` makes no BB queries. Applying a transfer, model/account verification and the plugin move UI remain unimplemented. No live thread was moved. See [transfer preview](transfer.md).
+
 | Integration | Status | Next check |
 | --- | --- | --- |
 | Supervising a live BB chat thread | **Live**: keepgoing supervises a real working chat through a BB automation. It woke the chat when it went idle, the agent ran `keepgoing await-user` when blocked, and the owner got the report. **Fakes** for pending interactions. | Catch a real pending interaction. |
