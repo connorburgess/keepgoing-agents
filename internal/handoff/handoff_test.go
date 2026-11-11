@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 )
 
 func TestGeneratedBrief(t *testing.T) {
@@ -40,5 +41,33 @@ func TestSwitchBackBrief(t *testing.T) {
 	got, err := Brief(config.Loop{Name: "example-loop", Prompt: "Ship it."}, Facts{Loop: "example-loop", At: time.Date(2026, 11, 9, 3, 0, 0, 0, time.UTC), From: "codex-main", To: "primary", SwitchBack: true})
 	if err != nil || !strings.Contains(got, "limit has reset") || !strings.Contains(got, "from the fallback that covered for you (codex-main)") || strings.Contains(got, "error at") {
 		t.Errorf("%v\n%s", err, got)
+	}
+}
+
+func TestCurrentGoalIncludedInGeneratedAndCustomBrief(t *testing.T) {
+	loop := config.Loop{Name: "example-loop", StateDir: t.TempDir(), Prompt: "Read authorized sources", PromptGoal: true}
+	spec := control.GoalSpec{Title: "Fictional current goal", ObjectiveRefs: []string{"missing-objective"}, AcceptanceRefs: []string{"missing-acceptance"}}
+	if _, err := control.WriteGoal(loop.StateDir, loop.Name, "", spec, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, custom := range []bool{false, true} {
+		if custom {
+			loop.HandoffFile = filepath.Join(loop.StateDir, "handoff.md")
+			if err := os.WriteFile(loop.HandoffFile, []byte("Custom handoff scaffold"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, back := range []bool{false, true} {
+			text, err := Brief(loop, Facts{SwitchBack: back})
+			if err != nil || strings.Count(text, `"revision": 1`) != 1 || !strings.Contains(text, spec.Title) {
+				t.Fatalf("custom=%v switchBack=%v: %q %v", custom, back, text, err)
+			}
+		}
+	}
+	if err := os.Remove(filepath.Join(loop.StateDir, control.GoalName)); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := Brief(loop, Facts{}); err == nil || text != "" {
+		t.Fatalf("missing goal: %q %v", text, err)
 	}
 }
