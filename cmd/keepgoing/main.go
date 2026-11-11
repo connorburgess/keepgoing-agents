@@ -41,6 +41,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
+  timeline                 Explain retained incident history offline (text or --json)
 
 Control:
   enable | disable         Turn supervision on or off (nothing is sent while off)
@@ -100,6 +101,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return startCommand(e, rest, nil)
 	case "__start-background":
 		return startChild(e, rest)
+	case "timeline":
+		return timelineCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":

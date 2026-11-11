@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,6 +79,22 @@ func isolatedJourney(t *testing.T, f *fixture, want string) []incident.Record {
 	}
 	if strings.Join(got, ",") != want {
 		t.Fatalf("journey=%s want=%s", strings.Join(got, ","), want)
+	}
+	// The public offline command reconstructs the same retained evidence without
+	// adapter logs or configuration. Current control is explicitly not recorded.
+	code, output, errs := timelineCLI(t, dir, "--json", "--limit", "320")
+	if code != 0 {
+		t.Fatalf("timeline: %d %s", code, errs)
+	}
+	var view timelineReport
+	if err := json.Unmarshal([]byte(output), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Control.Availability != "not_recorded" || len(view.Events) != len(j.Records) || view.Summary.LatestCheck == nil || view.Summary.LastHoldEntry == nil || view.Summary.HeldChecks < 1 {
+		t.Fatal("timeline lost journey evidence", view.Summary)
+	}
+	if strings.Contains(output, journeyPrivate) || strings.Contains(output, f.dir) {
+		t.Fatal("timeline leaked private content")
 	}
 	after, _ := os.ReadFile(filepath.Join(dir, incident.FileName))
 	if string(after) != string(b) {

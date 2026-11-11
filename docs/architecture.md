@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -147,3 +147,10 @@ The command layer supplies `report.NewRecorded` to supervision and standalone re
 `internal/report` saves a bounded versioned ledger under its own short advisory lock. It releases that lock before HTTP and never acquires the control/tick locks. A local sequence ties updates to a retained record; concurrent declarations get separate records. Corruption, lock contention or eviction of an in-flight record returns an explicit diagnostic error, without suppressing the original send, adding a retry or rolling back a saved hold. A crash or failed final write can leave prepared/unconfirmed evidence; it cannot authorize replay. Missing evidence does not establish that a request never occurred. Retention and external state edits prevent a complete audit.
 
 Status and doctor read the ledger independently of the tick's last decision. Warnings describe retained historical failures or unconfirmed attempts, even if the loop is held or a later notification succeeded. HTTP acceptance does not prove application or human receipt. Ordinary retries/redirects and the completion flag's single-attempt policy remain unchanged. See [delivery evidence](diagnostics.md#notification-delivery-evidence) for gaps and read/write behavior.
+
+
+## Offline incident view
+
+`cmd/keepgoing` implements `timeline` as a read-only composition of `incident.Load`, `report.LoadDeliveries` and a bounded control-file projection. No new decision or storage package is introduced. The command reads these files independently, without locks or provider/daemon/scheduler/CI calls, and keeps current flags separate from historical hold entries. `--state-dir` bypasses normal config loading for copied records or broken configuration. It never consumes transcript text, raw logs or provider output.
+
+The view retains normalized source/sequence references, local timestamp bases, historical build labels, typed decision inputs and delivery attempts. Sorting by local timestamps is presentation only, not causal inference. Source-wide summaries remain independent of the bounded display limit. Missing, invalid, stale, future or unsupported evidence remains explicit; partial failures print usable sources before returning failure. No diagnostic conclusion authorizes sends, control changes or replay. See the [timeline contract](diagnostics.md#offline-incident-timeline).
