@@ -13,6 +13,8 @@ import (
 
 const initTaskLimit = 1 << 20
 
+const initTaskBindingNotice = "Task binding: snapshot imported into prompt.md at creation. Later edits to the original task source are not tracked; supervision rereads the saved prompt.md when preparing task prompts."
+
 // Do not expose reader errors: an integration's reader may include task text in
 // them. Cancellation can return while stdin is still blocked, as in the wizard;
 // the CLI owns its process lifetime, not the supplied reader.
@@ -61,7 +63,8 @@ type initReport struct {
 	ConfigPath    string            `json:"configPath"`
 	StateDir      string            `json:"stateDir"`
 	PromptPath    string            `json:"promptPath"`
-	TaskSource    string            `json:"taskSource"` // stdin, file, inline
+	TaskSource    string            `json:"taskSource"`  // stdin, file, inline
+	TaskBinding   string            `json:"taskBinding"` // snapshot
 	Primary       initTarget        `json:"primary"`
 	Fallbacks     []initFallbackRef `json:"fallbacks"`
 	Limits        initLimits        `json:"limits"`
@@ -116,7 +119,7 @@ func printInitJSON(e env, o initOptions, cfg *config.Config) int {
 	r := initReport{
 		SchemaVersion: 1, Version: version, Outcome: "created", Loop: o.name,
 		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,
-		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline",
+		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline", TaskBinding: "snapshot",
 		Primary: initTargetOf(cfg.Loop.Agent), Fallbacks: []initFallbackRef{},
 		Limits: initLimits{MaxSends: o.maxSends, WakeEvery: o.wake.String(), StallAfter: o.stall.String(), Interval: o.interval.String(), Backoff: o.backoff.String(), MaxNudges: o.nudges, MaxReprompts: o.reprompts, FailoverOn: []string{}, Deadline: o.deadline},
 		Next: initNextCommands{
@@ -125,6 +128,7 @@ func printInitJSON(e env, o initOptions, cfg *config.Config) int {
 			StartBackground: []string{keepgoingExecutable(), "start", "--background", "-c", cfgPath},
 		},
 		Limitations: []string{
+			initTaskBindingNotice,
 			"Setup leaves supervision disabled; no agents, probes, logins, or schedulers are started.",
 			"Target identity, account access, quota independence, and provider health have not been verified.",
 			"Existing provider permissions are inherited; setup does not change models or logins on BB threads.",

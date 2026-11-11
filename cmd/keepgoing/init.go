@@ -50,7 +50,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.project, "project", "", "existing Git project with a commit (default: current directory)")
 	fs.StringVar(&o.directory, "directory", "", "new private setup directory outside any checkout")
 	fs.StringVar(&o.task, "task", "", "task text (use --task-file to keep it out of shell history)")
-	fs.StringVar(&o.taskFile, "task-file", "", "read a task file; - reads up to 1 MiB from stdin with --non-interactive")
+	fs.StringVar(&o.taskFile, "task-file", "", "import task text once; - reads up to 1 MiB from stdin with --non-interactive")
 	fs.DurationVar(&o.noProgressTimeout, "no-progress-timeout", 0, "hold after this time without verified Git changes; zero disables")
 	fs.Int64Var(&o.maxSends, "max-sends", 0, "total automatic send attempts while this limit is enabled; zero disables")
 	fs.StringVar(&o.deadline, "deadline", "", "RFC3339 cutoff for future supervision; does not cancel running turns")
@@ -123,6 +123,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		return printInitJSON(e, o, cfg)
 	}
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
+	fmt.Fprintln(e.stdout, initTaskBindingNotice)
 	printInitAccount(e.stdout, cfg.Loop.Agent)
 	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
 	if o.noProgressTimeout > 0 {

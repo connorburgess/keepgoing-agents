@@ -70,6 +70,7 @@ Existing user authorization and repository merge policy remain in effect. Review
 - [x] Generate the loop prompt and control instructions, including how the agent marks completion or requests human input. The agent evaluates task progress; keepgoing consumes explicit control and structured provider status.
 - [x] Store configuration and runtime state outside the checkout. Show the resolved target and planned actions before enabling. Preserve existing configuration, account logins, and restrictive permission settings.
 - [x] Provide equivalent noninteractive flags so scripts and IDE integrations use the same setup path.
+- [x] Explain task snapshot binding in setup help, preview/create output, and additive `taskBinding` JSON metadata. Offline fixtures verify that changes to the imported source do not alter the saved prompt, while subsequent saved-prompt reads reflect its edits. Source tracking, revision provenance, and semantic drift detection remain unimplemented; this does not complete the broader drift work.
 
 Implemented on `main`: the [setup guide](setup.md) covers BB targets, new headless sessions, existing account directories, ordered fallbacks, limits, and dry-run previews. Tests use temporary Git projects and fake CLI discovery; they do not log in or spend model quota. Existing headless/IDE session attachment is not supported. A real fresh-install walkthrough remains part of release verification below.
 
