@@ -173,18 +173,22 @@ func TestTransferApplyRefusalsBeforeWrites(t *testing.T) {
 			if kind == "goal_corrupt" {
 				os.WriteFile(filepath.Join(dir, control.GoalName), []byte("PRIVATE-CORRUPT"), 0600)
 			}
+			// Windows byte-range locks also prohibit reads of the lock file.
+			// Snapshot outside the held interval; assert refusal while it is held.
+			before := transferFiles(t, dir)
+			var held *lock.Lock
 			if kind == "tick_lock" || kind == "control_lock" {
 				name := lock.Tick
 				if kind == "control_lock" {
 					name = lock.Control
 				}
-				held, err := lock.AcquireNamed(dir, name)
+				var err error
+				held, err = lock.AcquireNamed(dir, name)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer held.Release()
 			}
-			before := transferFiles(t, dir)
 			runner := transferRunner(t, func(_ string, v map[string]any) {
 				if kind == "mismatch" {
 					v["thread"].(map[string]any)["providerId"] = "claude-code"
@@ -196,6 +200,9 @@ func TestTransferApplyRefusalsBeforeWrites(t *testing.T) {
 			})
 			var out bytes.Buffer
 			code := transferApply(env{ctx: context.Background(), stdout: &out, stderr: &out}, args, runner, nil)
+			if err := held.Release(); err != nil {
+				t.Fatal(err)
+			}
 			if code == exitOK || strings.Contains(out.String(), "PRIVATE-") {
 				t.Fatal(code, out.String())
 			}
