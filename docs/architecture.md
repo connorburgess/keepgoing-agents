@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -187,11 +187,20 @@ This is a cooperative, process-crash protocol, not a multi-file atomic commit or
 
 ## Registered client status
 
-The command layer composes registry/config binding checks, bounded local control/state reads, validated goal metadata and the existing runtime/daemon diagnostics into a separate schema-1 projection. It does not serialize ordinary status wholesale: notes, paths, owner/account identities, goal references and free-text check reasons are withheld. Explicit private display contains only the current goal title and next-action summary. Binding/source checks run again after the bounded local daemon query; changed bindings discard the snapshot. Reads take no locks and form independent evidence, not an atomic snapshot or a control authorization. Providers, schedulers, transcripts and session artifacts are never queried. See [registered status](local-clients.md#registered-status-schema-1) for outcome and freshness semantics; guarded client resume remains future work.
+The command layer composes registry/config binding checks, bounded local control/state reads, validated goal metadata and the existing runtime/daemon diagnostics into a separate schema-1 projection. It does not serialize ordinary status wholesale: notes, paths, owner/account identities, goal references and free-text check reasons are withheld. Explicit private display contains only the current goal title and next-action summary. Binding/source checks run again after the bounded local daemon query; changed bindings discard the snapshot. Reads take no locks and form independent evidence, not an atomic snapshot or a control authorization. Providers, schedulers, transcripts and session artifacts are never queried. See [registered status](local-clients.md#registered-status-schema-1) for outcome and freshness semantics; prepared resume is a separate explicit operation below.
 
 
 ## Registered restrictive controls
 
 `client pause|stop` resolves an explicit registration and uses `registry.WithEntry` to fence cooperating add/remove writers through a short local operation. The command takes the registry lock before the control lock, both nonblocking; it never acquires the tick lock. Existing registry add/remove operations take no loop locks, and ordinary loop controls take no registry lock. The callback revalidates config/runtime/source bindings and bounded control evidence before adding one hold. The command preserves ownership, notes, other holds and pending transfer state, matching ordinary pause/stop semantics rather than claiming or transferring ownership.
 
-The existing control incident recorder and run history receive the operation. Confirmed control saves remain confirmed when diagnostic writes fail; rejected preconditions and uncertain saves have separate versioned output. No provider, daemon, scheduler, notification or thread command runs. The saved flag is not evidence that a provider has stopped. Cooperative locks cannot fence arbitrary external file replacements; a changed config that cannot be revalidated is refused, and callers can use the original CLI with a known configuration for recovery. Registered permissive controls require a separate stale-observation protocol and are not implemented.
+The existing control incident recorder and run history receive the operation. Confirmed control saves remain confirmed when diagnostic writes fail; rejected preconditions and uncertain saves have separate versioned output. No provider, daemon, scheduler, notification or thread command runs. The saved flag is not evidence that a provider has stopped. Cooperative locks cannot fence arbitrary external file replacements; a changed config that cannot be revalidated is refused, and callers can use the original CLI with a known configuration for recovery. Registered resume uses the separate observation protocol below.
+
+
+## Prepared registered resume
+
+The command layer owns one bounded private `client-resume.json` ticket slot per runtime directory. `prepare-resume` acquires registry, tick and control locks in that order without waiting, validates owner/transfer bindings and snapshots current sources/control/state/goal evidence. It brackets the offline status projection with matching evidence reads and atomically saves a five-minute random ticket. `config.SourcesDigest` identifies config and fallback snapshots, including their paths, only for private comparison. No source digest or owner identity is projected to clients. Status remains lock-free and read-only; preparing is explicitly a write.
+
+`resume` takes the same registry/tick locks and uses the existing checked control update/history recorder for the short control lock. It compares the ticket to fresh validated evidence and the callback's control record, persists consumption before mutating controls, then checks evidence again. Stale, expired, clock-reversed, consumed or superseded tickets are refused. A crash after consumption loses that ticket and may leave holds intact; only a new explicit preparation/action can proceed. Successful resume has ordinary CLI semantics without enabling, claiming, resetting allowances or starting work. Diagnostic failures cannot undo a saved control change. No provider, scheduler, transcript, task-file or live daemon lookup occurs under these locks.
+
+All saved state fields are bound, so an intervening ordinary tick may require another reviewed preparation. Files referenced by the config and external session/BB metadata are not bound. This is a cooperative local stale-action guard, not authentication, an approval ledger, or a power-loss transaction. See [registered resume](local-clients.md#registered-resume) for output, privacy and recovery limits.

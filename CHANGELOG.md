@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Added registered `client pause|stop` with binding/source checks, short registry/control locking, preserved holds/ownership and versioned save evidence. Diagnostic failures remain distinct from failed or unconfirmed saves. Offline fixtures only; guarded client resume and the native companion remain planned.
+- Added `client prepare-resume` and `client resume`: a five-minute, single-use private ticket binds reviewed config/fallback sources, registration, caller/owner, controls, state and goal evidence. Changed evidence rejects resume; consuming before save prevents automatic replay after a crash or lost response. Preparation never clears holds; resume preserves disabled state, ownership, goals and allowances. Offline fixtures only; native UI/live verification remain pending.
 
-- Added schema-1 read-only `client status` for registered loops: checked config/runtime bindings, explicit holds and declared completion, configured target, historical action/freshness, optional private goal display and bounded daemon evidence. Unknown/corrupt evidence and changed bindings remain explicit. Offline fixtures and a local authenticated daemon test only; guarded client resume and the native companion remain planned.
+- Added registered `client pause|stop` with binding/source checks, short registry/control locking, preserved holds/ownership and versioned save evidence. Diagnostic failures remain distinct from failed or unconfirmed saves. Offline fixtures only; the native companion remains planned.
 
-- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the client status interface is described above; guarded client resume and the menu-bar app remain planned.
+- Added schema-1 read-only `client status` for registered loops: checked config/runtime bindings, explicit holds and declared completion, configured target, historical action/freshness, optional private goal display and bounded daemon evidence. Unknown/corrupt evidence and changed bindings remain explicit. Offline fixtures and a local authenticated daemon test only; the native companion remains planned.
+
+- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the client status interface is described above; the menu-bar app remains planned.
 
 - Expanded the BB banner/card status with declared completion, actual target thread, timestamped daemon/check evidence, and historical action outcomes. Failed refreshes show a warning and hide controls/setup until refreshed. External schedulers remain uninspected. SDK/DOM fixtures, typechecking and bundle builds only; no live deployment.
 

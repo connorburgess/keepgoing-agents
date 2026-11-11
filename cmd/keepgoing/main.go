@@ -50,6 +50,8 @@ Transfer planning:
 Local client discovery:
   client status            Read a registered loop snapshot without controlling it
   client pause|stop        Save a restrictive hold for a registered loop
+  client prepare-resume    Prepare a short-lived snapshot/ticket for review
+  client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
 
 Goal metadata:

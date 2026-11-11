@@ -77,11 +77,14 @@ type clientGoalDisplay struct {
 type clientDaemonQuery func(context.Context, string, string, bool) daemonStatus
 
 func clientCommand(e env, args []string) int {
+	if len(args) > 0 && (args[0] == "prepare-resume" || args[0] == "resume") {
+		return clientResumeCommand(e, args)
+	}
 	if len(args) > 0 && (args[0] == "pause" || args[0] == "stop") {
 		return clientHoldCommand(e, args)
 	}
 	if len(args) == 0 || args[0] != "status" {
-		e.errf("usage: keepgoing client status|pause|stop --id ID [--directory private-registry] [--json]; see each command --help")
+		e.errf("usage: keepgoing client status|pause|stop|prepare-resume|resume --id ID [--directory private-registry] [--json]; see each command --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("client status", flag.ContinueOnError)

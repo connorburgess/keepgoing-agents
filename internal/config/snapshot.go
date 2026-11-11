@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -58,4 +59,25 @@ func (c *Config) CheckSources() error {
 		return errors.New("fallback configuration changed or is unreadable")
 	}
 	return nil
+}
+
+// SourcesDigest identifies the parsed config and fallback source snapshots,
+// including their paths. It is private control metadata, never diagnostic
+// output or an authorization token. CheckSources must still succeed at use.
+func (c *Config) SourcesDigest() string {
+	if c.source.path == "" {
+		return ""
+	}
+	h := sha256.New()
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c)} {
+		fmt.Fprintf(h, "%q:%d:%x;", s.path, s.size, s.sum)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func fallbackSource(c *Config) sourceSnapshot {
+	if c.FallbackSet == nil {
+		return sourceSnapshot{}
+	}
+	return c.FallbackSet.source
 }
