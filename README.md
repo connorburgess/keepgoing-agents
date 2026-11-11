@@ -137,7 +137,8 @@ Every completed `tick` prints one JSON line describing what it saw and did, so a
 - [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
 - [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.
 - [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
-- [docs/roadmap.md](docs/roadmap.md): what comes next.
+- [docs/roadmap.md](docs/roadmap.md): what comes next, including [checkable supervision improvements](docs/roadmap.md#11-useful-supervision-features-from-product-analysis).
+- [docs/supervision-feature-analysis.md](docs/supervision-feature-analysis.md): selected lessons from BB, Claude Code and Grok, with planned acceptance criteria rather than a parity claim.
 - [examples/](examples/): configurations and scheduler setups to copy.
 - [schema/](schema/): JSON Schemas for editor completion and validation.
 
