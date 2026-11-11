@@ -29,7 +29,7 @@ func TestActiveRetryAcrossIntervalsAndRestart(t *testing.T) {
 		o, err := a.Observe(context.Background())
 		in := decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: time.Duration(i+1) * time.Hour, SinceWake: time.Hour, StallAfter: time.Minute, MinWakeInterval: time.Minute, MaxNudges: 3, Nudges: 3}
 		d := decide.Decide(in)
-		if err != nil || !o.Retrying || d.Action != decide.None || d.Reason != "provider is retrying the turn" {
+		if err != nil || !o.Retrying || o.ErrorClass != decide.ErrNetwork || d.Action != decide.None || d.Reason != "provider is retrying the turn" {
 			t.Fatalf("interval %d: %+v %+v %v", i, o, d, err)
 		}
 	}
@@ -170,5 +170,15 @@ func TestRetryIncompleteScanDoesNotPersistRecovery(t *testing.T) {
 				t.Fatalf("partial scan mutated committed in-memory cursor: %+v", c)
 			}
 		})
+	}
+}
+
+func TestErroredRetryIntentAvailability(t *testing.T) {
+	for _, flag := range []any{nil, false, true} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, `[`+turnStarted+`,`+providerError("network", nil, "unknown", flag)+`]`, false)
+		o, err := a.Observe(context.Background())
+		if err != nil || o.RetryKnown != (flag != nil) {
+			t.Fatalf("flag=%v: %+v %v", flag, o, err)
+		}
 	}
 }

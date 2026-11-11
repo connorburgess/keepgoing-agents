@@ -45,6 +45,9 @@ type Observation struct {
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
+	// RetryKnown is diagnostic evidence availability; false does not assert that
+	// retries are absent. It does not change decision policy.
+	RetryKnown bool
 	// RetryUnverified means the adapter could not refresh retry/recovery evidence.
 	// It suppresses automatic prompts and moves without hiding an active stop target.
 	RetryUnverified bool
