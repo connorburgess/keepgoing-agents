@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Combined incident-history acceptance now passes through CLI fixtures for BB, process, Claude and Codex: failure, bounded recovery attempts, hold, explicit resume and recovered observations are reconstructed from an isolated journal alone. Headless stand-ins run as real local processes; no live provider or installed loop was used. Unsupported source timing/retry evidence stays unavailable; notification delivery and the timeline remain unfinished.
+
 - Incident schema 4 records saved control changes from standalone commands, startup and daemon takeover, with locked before/after gate snapshots and no private notes or owner IDs. History failure preserves the save and existing report processing while returning an explicit error; startup stops before running a daemon if its control history fails. Legacy records upgrade as ticks without fabricated transitions. Offline fixtures only; combined chronology acceptance and the timeline remain unfinished.
 
 - Incident journal schema 3 preserves ordered decision-engine inputs and proposed actions, including early bounds and re-evaluation after failed fallback probes. Captured empty histories distinguish skipped engine calls from unavailable legacy evidence. Snapshots exclude private child IDs and prose, preserve signed timing values, and upgrade versions 1/2 on append. Offline fixtures only; standalone control transitions and the timeline remain unfinished.
