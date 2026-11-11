@@ -175,11 +175,32 @@ loop:
 	}
 	// The launcher's process and pipes have exited; controls still reach the
 	// daemon, and stop overrides the preserved pause within a control cycle.
-	if code, out := invoke("pause"); code != 0 {
-		t.Fatalf("pause: %d %s", code, out)
-	}
-	if code, out := invoke("stop"); code != 0 {
-		t.Fatalf("stop: %d %s", code, out)
+	// A live daemon can contend for the diagnostic lock after a successful
+	// control save. Force that documented partial-success path instead of
+	// requiring a race-dependent zero exit. Never replay the control command.
+	for _, operation := range []string{"pause", "stop"} {
+		var diagnosticLock *lock.Lock
+		wait(func() bool {
+			var err error
+			diagnosticLock, err = lock.AcquireNamed(stateDir, "incident")
+			if errors.Is(err, lock.ErrHeld) {
+				return false
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return true
+		})
+		t.Cleanup(func() { diagnosticLock.Release() })
+		code, out := invoke(operation)
+		diagnosticLock.Release()
+		if code != exitFailed || !strings.Contains(out, errControlHistory.Error()) {
+			t.Fatalf("%s with diagnostic contention: %d %s", operation, code, out)
+		}
+		saved, err := control.Load(stateDir)
+		if err != nil || !saved.Enabled || !saved.Paused || (saved.Stop != (operation == "stop")) || saved.Ownership == nil || saved.Ownership.ThreadID != "thr_start_fixture" {
+			t.Fatalf("%s did not preserve the saved hold/owner: %+v %v", operation, saved, err)
+		}
 	}
 	wait(func() bool { _, err := os.Stat(filepath.Join(dir, "stop")); return err == nil })
 	wait(func() bool {
