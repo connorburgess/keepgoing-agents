@@ -202,7 +202,7 @@ class Loop:
         raise RuntimeError("Local headless fixture did not finish.")
 
     @contextmanager
-    def daemon(self):
+    def daemon(self, exit_signal=signal.SIGTERM):
         with (self.root / "daemon-output").open("wb") as output:
             child = subprocess.Popen([str(self.binary), "daemon", "-c", str(self.config)],
                                      cwd=self.root, env=self.environment, stdout=output,
@@ -210,25 +210,29 @@ class Loop:
             try:
                 yield child
             finally:
-                child.terminate()
+                child.send_signal(exit_signal)
                 try:
                     child.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait(timeout=5)
                     raise RuntimeError("Fixture supervisor did not exit cleanly.")
-                require(child.returncode == 0, "Fixture supervisor exited unsuccessfully.")
+                expected = -signal.SIGKILL if exit_signal == signal.SIGKILL else 0
+                require(child.returncode == expected, "Fixture supervisor did not exit as requested.")
 
     def restart_held(self, flag, ordinary_intervals=False):
         before, requests = self.calls(), self.receiver.count()
         control_before = load(self.state / "control.json")
         sends_before = load(self.state / "sends.json")
-        # Two distinct daemon processes both load the same held loop. Only the
-        # BB case waits for an additional ordinary interval in each process.
-        for _ in range(2):
+        # Crash the first held daemon after a recorded check, then start a new
+        # process against the same files and stale endpoint. Only the BB case
+        # waits for an additional ordinary interval in each process.
+        endpoint = self.state / "daemon-endpoint.json"
+        crashed_endpoint = None
+        for exit_signal in (signal.SIGKILL, signal.SIGTERM):
             sequence = load(self.state / "incidents.json")["nextSequence"]
             wanted = sequence + (2 if ordinary_intervals else 1)
-            with self.daemon() as child:
+            with self.daemon(exit_signal) as child:
                 until = time.monotonic() + 25
                 while time.monotonic() < until:
                     require(child.poll() is None, "Daemon exited before recording held checks.")
@@ -237,6 +241,14 @@ class Loop:
                     time.sleep(0.05)
                 else:
                     raise RuntimeError("Daemon did not record held checks before deadline.")
+                current_endpoint = endpoint.read_bytes()
+                if crashed_endpoint is not None:
+                    require(current_endpoint != crashed_endpoint, "Restart reused the crashed daemon endpoint.")
+            if exit_signal == signal.SIGKILL:
+                require(endpoint.read_bytes() == current_endpoint, "Crash fixture did not leave a stale endpoint.")
+                crashed_endpoint = current_endpoint
+            else:
+                require(not endpoint.exists(), "Orderly shutdown left its endpoint behind.")
             require(load(self.state / "control.json") == control_before, "Restart changed controls/owner.")
         require(control_before[flag], "Expected persistent hold is absent.")
         require(self.calls() == before and self.receiver.count() == requests,
@@ -332,7 +344,7 @@ def exercise(loop):
     require(loop.receiver.count() == requests + 1, "Completion was retried or repeated.")
     loop.restart_held("completed")
     require(loop.receiver.count() == requests + 1, "Completion replayed on restart.")
-    print(f"PASS {loop.kind}: failure, alert rejection, held daemon restart, explicit recovery, completion, allowance and owner preservation")
+    print(f"PASS {loop.kind}: failure, alert rejection, held daemon SIGKILL/restart, explicit recovery, completion, allowance and owner preservation")
 
 
 def main():

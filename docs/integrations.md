@@ -7,7 +7,7 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 - **Untested**: written but not run.
 - **Research only**: investigated and planned; no implementation or compatibility verification.
 
-**Native recovery gate: Fakes, available in v0.1.3.** Built-binary CLI and daemon processes exercise failure, rejected loopback alerts, held restarts, explicit recovery, saved headless session reuse and completion without replay for all four adapters. macOS/Linux CI runs the script; Linux release archives must pass before publication. No installed runtime or live provider is changed. See [recovery verification](release-verification.md#check-recovery-with-local-stand-ins).
+**Native recovery gate: Fakes, available in v0.1.3.** Built-binary CLI and daemon processes exercise failure, rejected loopback alerts, held restarts, explicit recovery, saved headless session reuse and completion without replay for all four adapters. macOS/Linux CI runs the script; Linux release archives must pass before publication. No installed runtime or live provider is changed. The post-v0.1.3 script additionally checks SIGKILL after a held check and restart against a stale endpoint for awaiting-user and completed holds. This does not test crashes during sends, writes or notification delivery. See [recovery verification](release-verification.md#check-recovery-with-local-stand-ins).
 
 ## Agent providers
 
