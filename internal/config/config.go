@@ -52,6 +52,7 @@ type Loop struct {
 
 	Prompt      string `yaml:"prompt,omitempty"`
 	PromptFile  string `yaml:"prompt_file,omitempty"`
+	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
 	HandoffFile string `yaml:"handoff_file,omitempty"`
 
 	Progress  Progress   `yaml:"progress"`

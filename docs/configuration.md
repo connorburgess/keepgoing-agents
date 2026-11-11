@@ -32,6 +32,7 @@ loop:
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
 | `adapter` | yes | `bb`, `process`, `claude`, or `codex`, with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
+| `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
