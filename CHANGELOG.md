@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the shared client status/control interface and menu-bar app remain planned.
+
 - Expanded the BB banner/card status with declared completion, actual target thread, timestamped daemon/check evidence, and historical action outcomes. Failed refreshes show a warning and hide controls/setup until refreshed. External schedulers remain uninspected. SDK/DOM fixtures, typechecking and bundle builds only; no live deployment.
 
 - Added the BB plugin’s "Move supervision here" flow for plugin-created loops in the same environment/provider: preview source/destination and holds, explicitly apply a held move, and reconcile or recover interrupted requests after reload. Registered-host routing and durable private references keep paths/commands out of browser control; resume/start remain separate. SDK/controller/DOM fixtures and bundle builds only; no live transfer or deployment.
