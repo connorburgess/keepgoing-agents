@@ -45,6 +45,9 @@ type Observation struct {
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
+	// RetryUnverified means the adapter could not refresh retry/recovery evidence.
+	// It suppresses automatic prompts and moves without hiding an active stop target.
+	RetryUnverified bool
 	// ResetsAt, when known, is when the current usage limit lifts.
 	ResetsAt time.Time
 	// AwaitingInput means the session is blocked on a person: a pending
@@ -184,6 +187,12 @@ func Decide(in Input) Decision {
 	if !in.InWindow {
 		return none("outside window")
 	}
+	if o.RetryUnverified {
+		return none("provider retry state unverified")
+	}
+	if o.Retrying {
+		return none("provider is retrying the turn")
+	}
 	switch o.State {
 	case Stopping, Pending:
 		return none("session " + string(o.State))
@@ -220,9 +229,6 @@ func Decide(in Input) Decision {
 // when a confirmed fallback is available. Unknown errors never hand off.
 func decideError(in Input) Decision {
 	o, f := in.Obs, in.Failover
-	if o.Retrying {
-		return none("provider is retrying the turn")
-	}
 	if o.Queued > 0 {
 		return none("messages already queued after error")
 	}

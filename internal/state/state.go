@@ -23,16 +23,17 @@ const Primary = "primary"
 
 // File is what one tick leaves for the next.
 type File struct {
-	Fingerprint       string    `json:"fingerprint,omitempty"`
-	LastProgressAt    time.Time `json:"lastProgressAt,omitempty"`
-	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
-	CheckedAt         time.Time `json:"checkedAt,omitempty"`
-	LastState         string    `json:"lastState,omitempty"`
-	LastCheck         *Check    `json:"lastCheck,omitempty"`
-	Reprompts         int       `json:"reprompts,omitempty"`
-	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent bool      `json:"stopSent,omitempty"`
+	StallRetry        *StallRetry `json:"stallRetry,omitempty"`
+	Fingerprint       string      `json:"fingerprint,omitempty"`
+	LastProgressAt    time.Time   `json:"lastProgressAt,omitempty"`
+	LastWakeAt        time.Time   `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time   `json:"checkedAt,omitempty"`
+	LastState         string      `json:"lastState,omitempty"`
+	LastCheck         *Check      `json:"lastCheck,omitempty"`
+	Reprompts         int         `json:"reprompts,omitempty"`
+	Nudges            int         `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time   `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool        `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -45,6 +46,14 @@ type File struct {
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
+}
+
+// StallRetry is a target-scoped grace period for ordinary stall nudges only.
+// It never replaces Git evidence or refunds loop-wide allowances.
+type StallRetry struct {
+	Target    string    `json:"target"`
+	Waiting   bool      `json:"waiting"`
+	ResumedAt time.Time `json:"resumedAt,omitempty"`
 }
 
 // Check records a completed tick's decision and outcome, not a live session

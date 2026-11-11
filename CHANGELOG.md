@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- BB active provider retries now suppress stall nudges and false nudge-cap holds. Queued input does not imply recovery; matching structured provider activity does. An observed retry followed by active recovery gets one ordinary stall interval without resetting spent nudges, Git evidence, holds or loop-wide limits. Incomplete retry scans suppress prompts and target moves. Offline fixtures cover recovery, restart and legacy cursor migration; live deployment is not yet verified.
+
 ### Added
 
 - Subscribed `complete` reports now describe a new explicit completion declaration without private notes or claims of independently verified success. The persisted completion flag deduplicates commands and restarts; explicit resume permits a later declaration. Completion delivery uses one attempt without retries/redirects, with notification-loss limitations documented. Covered by offline fixtures only.

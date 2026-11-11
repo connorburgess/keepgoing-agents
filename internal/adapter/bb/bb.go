@@ -105,12 +105,17 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	if obs.State != decide.Stopping {
 		obs.AwaitingInput = a.pendingInteraction(ctx, sig)
 	}
+	if obs.State == decide.Active || obs.State == decide.Error || obs.State == decide.Idle {
+		obs.RetryUnverified = !sig.ok || (obs.State == decide.Active && sig.retryUnknown)
+	}
+	if obs.State == decide.Active || obs.State == decide.Error {
+		obs.Retrying = sig.ok && sig.willRetry
+	}
 	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
 	}
 	if obs.State == decide.Error {
 		obs.ErrorClass = sig.class
-		obs.Retrying = sig.willRetry
 	}
 	// A blocked subscription window on an idle thread means the next turn
 	// would fail; treat it as a rate-limit error so it is handled the same way.
@@ -129,12 +134,13 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 }
 
 type signals struct {
-	class     decide.ErrorClass
-	willRetry bool
-	blocked   bool
-	resetsAt  time.Time
-	pending   bool
-	ok        bool
+	class        decide.ErrorClass
+	willRetry    bool
+	retryUnknown bool
+	blocked      bool
+	resetsAt     time.Time
+	pending      bool
+	ok           bool
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -145,6 +151,7 @@ func (a *Adapter) signals(ctx context.Context) signals {
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0}
 	if c.Error != nil {
 		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
+		s.retryUnknown = !c.Error.RetryKnown
 	}
 	return s
 }
