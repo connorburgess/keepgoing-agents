@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed known rate-limit cooldowns with `errors.failover_on: []`: ordinary checks continue without spending recovery retries or entering an automatic user hold before the reported reset. Earlier structured recovery is observed on the next check. Explicit holds and loop-wide bounds remain authoritative. Offline decision/supervisor fixtures only.
+
 - Added `client prepare-resume` and `client resume`: a five-minute, single-use private ticket binds reviewed config/fallback sources, registration, caller/owner, controls, state and goal evidence. Changed evidence rejects resume; consuming before save prevents automatic replay after a crash or lost response. Preparation never clears holds; resume preserves disabled state, ownership, goals and allowances. Offline fixtures only; native UI/live verification remain pending.
 
 - Added registered `client pause|stop` with binding/source checks, short registry/control locking, preserved holds/ownership and versioned save evidence. Diagnostic failures remain distinct from failed or unconfirmed saves. Offline fixtures only; the native companion remains planned.

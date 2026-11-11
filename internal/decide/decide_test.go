@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,5 +127,39 @@ func TestDecide(t *testing.T) {
 		if got.Reason == "" {
 			t.Errorf("%s: empty reason", tc.name)
 		}
+	}
+}
+
+func TestRateLimitWaitWithoutFailover(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Input)
+		action Action
+		reason string
+	}{
+		{"known reset", func(*Input) {}, None, "failover disabled; waiting"},
+		{"spent retries", func(i *Input) { i.Reprompts = i.MaxReprompts }, None, "failover disabled; waiting"},
+		{"fallback cannot bypass policy", func(i *Input) { i.Failover.Available = true }, None, "failover disabled; waiting"},
+		{"reset reached", func(i *Input) { i.Failover.ResetIn = 0 }, Reprompt, "error: rate_limit"},
+		{"unknown error", func(i *Input) { i.Obs.ErrorClass = ErrUnknown }, Reprompt, "error: unknown"},
+		{"auth error", func(i *Input) { i.Obs.ErrorClass = ErrAuth }, AwaitUser, "auth error"},
+		{"stop", func(i *Input) { i.Control.Stop = true }, None, "stop requested"},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None, "paused"},
+		{"explicit hold", func(i *Input) { i.Control.AwaitingUser = true }, None, "awaiting user"},
+		{"completion", func(i *Input) { i.Control.Completed = true }, None, "completed"},
+		{"deadline", func(i *Input) { i.DeadlineReached = true }, AwaitUser, "loop deadline reached"},
+		{"send cap", func(i *Input) { i.SendLimitReached = true }, AwaitUser, "loop send limit reached"},
+		{"progress bound", func(i *Input) { i.NoProgressReached = true }, AwaitUser, "no Git progress"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs.State, in.Obs.ErrorClass = Error, ErrRateLimit
+			in.Failover.ResetIn = 24 * time.Hour
+			tc.mutate(&in)
+			got := Decide(in)
+			if got.Action != tc.action || !strings.Contains(got.Reason, tc.reason) {
+				t.Fatalf("got %+v; want %s / %s", got, tc.action, tc.reason)
+			}
+		})
 	}
 }
