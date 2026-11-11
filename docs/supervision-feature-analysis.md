@@ -2,7 +2,7 @@
 
 Reviewed 2026-11-12 against keepgoing main at `91f42dd` and BB 0.48.1's locally installed guides. This is a documented-capability comparison, not a live comparative benchmark. Vendor behavior and availability can change; recheck the cited sources before implementing an integration. Local BB guide evidence can be reproduced with the commands listed below; no account, prompt, runtime-state or private path is needed.
 
-Current-goal prompt transport is being implemented separately in [PR #89](https://github.com/connorburgess/keepgoing-agents/pull/89); this analysis does not count it as released or live-verified.
+Current-goal prompt transport is scoped separately to [PR #89](https://github.com/connorburgess/keepgoing-agents/pull/89); its implementation does not count as release or live verification.
 
 The aim is useful, testable improvements, not blanket feature parity. Keepgoing owns whether an existing loop continues, waits, stops or uses an authorized fallback. The agent host owns tools, chat, editor and turn execution. A timer may invoke keepgoing without making supervision decisions. Provider-internal retries must be observed to avoid duplicate work. Keepgoing must not spawn/re-parent threads, interpret transcripts as status, or become a general planner.
 
