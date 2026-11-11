@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added an optional read-only native macOS menu preview for explicitly registered local loops, using the shared CLI contract. It shows holds, timestamped activity, configured targets, optional private goal text and daemon evidence, without starting supervision or a wake timer. Developer build only; controls, installation, signing and live UI verification remain planned.
+
 - Fixed known rate-limit cooldowns with `errors.failover_on: []`: ordinary checks continue without spending recovery retries or entering an automatic user hold before the reported reset. Earlier structured recovery is observed on the next check. Explicit holds and loop-wide bounds remain authoritative. Offline decision/supervisor fixtures only.
 
 - Added `client prepare-resume` and `client resume`: a five-minute, single-use private ticket binds reviewed config/fallback sources, registration, caller/owner, controls, state and goal evidence. Changed evidence rejects resume; consuming before save prevents automatic replay after a crash or lost response. Preparation never clears holds; resume preserves disabled state, ownership, goals and allowances. Offline fixtures only; native UI/live verification remain pending.
