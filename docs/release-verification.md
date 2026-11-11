@@ -24,6 +24,20 @@ The script creates and removes a private temporary Git project and three private
 
 CI runs the smoke script against a native built binary on macOS and Linux. Windows native tests remain in the regular suite; this POSIX smoke script is not Windows evidence. See [testing](testing.md) for daemon, recovery, stop precedence and other fixture coverage.
 
+## Check recovery with local stand-ins
+
+On macOS/Linux with Python 3, pass a native binary from the same revision as this script:
+
+```sh
+python3 -u scripts/smoke-recovery.py /path/to/keepgoing
+```
+
+This companion to the setup smoke check requires the unreleased reliability changes; v0.1.2 is expected to fail it. It prints the executable SHA-256, version and platform. CI runs it on native macOS/Linux builds; future release publication also gates on the unpacked Linux archive passing. Record the revision alongside that output. A local source build is not evidence that an installed supervisor was upgraded.
+
+Four private temporary loops use synthetic BB events, a local process adapter, and real local Claude/Codex stand-in processes. The check covers active BB retry suppression beyond the nudge allowance, classified connection failure, bounded recovery attempts, a persistent awaiting-user hold, and a loopback webhook rejecting the alert. It restarts actual daemon processes while held, checks that the offline timeline retains the failure and alert warning without side effects, repairs only the stand-in, and requires explicit resume. Headless fixtures explicitly increase their synthetic retry allowance before resume, then reuse their saved fictional session across successful turns; resume itself does not refund spent attempts. Completion is sent once despite rejection and remains held across two daemon restarts. Send allowance and owner identity must survive; a conflicting owner is rejected. The BB held case also spans two ordinary check intervals.
+
+The script supplies a minimal environment and explicit stand-in commands, without inheriting credentials or provider configuration. It creates no service or scheduler and removes its temporary state after stopping its supervisors. Allow about a minute for local processes and real daemon intervals. Tick timestamps are synthetic; daemon intervals use wall time. This is orderly restart evidence, not a process-crash, real network outage, provider cancellation, installed-service lifecycle or live session compatibility check. Windows remains outside this script's coverage. Existing Go fixtures separately cover stop/pause precedence and failure cases.
+
 ## Live install-to-completion walkthrough
 
 Run each row separately with an explicitly selected build, scratch project, existing login and authorized spend. A blocked provider or platform leaves that row unverified. Never deliberately exhaust quota, create accounts, change logins or repoint an existing loop to make a check pass.
@@ -33,7 +47,7 @@ Run each row separately with an explicitly selected build, scratch project, exis
 3. Start in the foreground using the printed command. Have the first turn perform only the first part of the task and leave the second part pending. Observe a second supervised turn. For headless runners confirm the saved session ID is reused, and independently inspect the scratch result; a saved ID alone does not prove resume.
 4. Pause between turns, check status, and verify no new wake across an ordinary interval. Exercise `await-user` separately, verify its hold and report, then explicitly resume. Record any permission interaction and verify that it is surfaced to the person without an automatic answer.
 5. Stop the supervisor process cleanly, then restart the same loop and verify its hold/session metadata persists. Separately request `stop` while an authorized scratch turn is active, and observe cancellation and no subsequent wake. Record platform/provider cancellation limits.
-6. Finish the task, independently check its acceptance criteria, and issue `complete --note` with an evidence reference. Confirm the completion hold across two check intervals and a supervisor restart. Status records a declaration; it is not independent proof of task success. No completion webhook event is implemented yet.
+6. Finish the task, independently check its acceptance criteria, and issue `complete --note` with an evidence reference. Confirm the completion hold across two check intervals and a supervisor restart. Status records a declaration; it is not independent proof of task success. On builds with completion reports (unreleased after v0.1.2), verify the subscribed event and record HTTP acceptance separately from receiver receipt. Completion delivery is single-attempt and is not replayed after restart.
 7. End the scratch supervisor, retain private evidence, and record total setup time, manual corrections and failures. Remove only the scratch resources created for this run. Do not leave another scheduler or unattended loop running.
 
 | Target | Required evidence | Current status |

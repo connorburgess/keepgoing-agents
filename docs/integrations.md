@@ -7,6 +7,8 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 - **Untested**: written but not run.
 - **Research only**: investigated and planned; no implementation or compatibility verification.
 
+**Native recovery gate: Fakes, unreleased.** Built-binary CLI and daemon processes exercise failure, rejected loopback alerts, held restarts, explicit recovery, saved headless session reuse and completion without replay for all four adapters. macOS/Linux CI runs the script; future Linux release archives must pass before publication. No installed runtime or live provider is changed. See [recovery verification](release-verification.md#check-recovery-with-local-stand-ins).
+
 ## Agent providers
 
 | Integration | Used for | Status | Next check |
