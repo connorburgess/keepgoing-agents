@@ -65,7 +65,7 @@ Existing user authorization and repository merge policy remain in effect. Review
 
 ### 1. Task lifecycle and guided setup
 
-- [ ] Normalize goal-command `--help` to a successful exit without loading a configuration or changing state. v0.1.4 prints `goal show --help` but returns usage exit code 2; the fresh-install formula explicitly asserts that published behavior. Add focused CLI regression coverage before changing the contract.
+- [x] Normalize `goal create|revise|show --help` (and `-h`) to a successful exit without loading a configuration or changing state. Offline CLI regressions cover missing/corrupt configuration, unchanged files, missing required mutation flags, and preserved usage errors. Implemented after v0.1.4, not yet released; the v0.1.4 Homebrew formula still explicitly asserts that published binary's help exit code 2.
 
 - [x] Add explicit task completion with `keepgoing complete --note`, persisted in control state and shown in status. It holds wakes and probes across restarts; `resume` explicitly reopens the task with the current target/session and any revised prompt. Completion is never inferred from transcript prose. See [operations](operations.md#completing-a-task).
 - [x] Add guided `keepgoing init`: collect the task or task file, project, agent/session, optional accounts, fallback order, and operating limits. Detect installed supported CLIs and offer a single-agent default.

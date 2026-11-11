@@ -30,7 +30,10 @@ func goalCommand(e env, args []string) int {
 	revision := fs.Uint64("revision", 0, "expected current revision (revise)")
 	asJSON := fs.Bool("json", false, "machine-readable summary")
 	private := fs.Bool("private", false, "show the complete private record and history as JSON")
-	if fs.Parse(args[1:]) != nil {
+	if err := fs.Parse(args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
 		return exitUsage
 	}
 	if fs.NArg() != 0 || (cmd == "show" && (*file != "" || *id != "" || *revision != 0)) || (cmd != "show" && (*file == "" || *private)) || (cmd == "create" && (*id != "" || *revision != 0)) || (cmd == "revise" && (*id == "" || *revision == 0)) {
