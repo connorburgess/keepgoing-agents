@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Prepared [v0.1.4 notes](docs/releases/v0.1.4.md) describe the merged baseline and upgrade limits. The candidate is not published; release and Homebrew verification remain separate.
+
 - Added an optional read-only native macOS menu preview for explicitly registered local loops, using the shared CLI contract. It shows holds, timestamped activity, configured targets, optional private goal text and daemon evidence, without starting supervision or a wake timer. Developer build only; controls, installation, signing and live UI verification remain planned.
 
 - Fixed known rate-limit cooldowns with `errors.failover_on: []`: ordinary checks continue without spending recovery retries or entering an automatic user hold before the reported reset. Earlier structured recovery is observed on the next check. Explicit holds and loop-wide bounds remain authoritative. Offline decision/supervisor fixtures only.
