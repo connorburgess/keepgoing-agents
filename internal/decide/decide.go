@@ -249,6 +249,11 @@ func decideError(in Input) Decision {
 			return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; no confirmed fallback")
 		}
 	}
+	// Disabling handoffs must not turn a known cooldown into failed recovery
+	// attempts and a durable user hold. Keep observing until it lifts instead.
+	if o.ErrorClass == ErrRateLimit && f.ResetIn > 0 {
+		return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; failover disabled; waiting")
+	}
 	// Retrying cannot fix an auth error.
 	if o.ErrorClass == ErrAuth {
 		return Decision{AwaitUser, "auth error"}

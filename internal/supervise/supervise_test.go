@@ -671,3 +671,40 @@ func TestCompletedSkipsProviderProbesYieldAndFingerprint(t *testing.T) {
 		}
 	}
 }
+
+func TestDisabledFailoverObservesCooldownWithoutSpendingRetries(t *testing.T) {
+	for _, recovery := range []string{"early allowed", "reset reached"} {
+		t.Run(recovery, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.Errors.FailoverOn = []string{}
+			obs := limited
+			obs.ResetsAt = t0.Add(24 * time.Hour)
+			p := w.primary(obs)
+			// Every tick reloads persisted state, including after the ordinary
+			// recovery allowance would have been exhausted.
+			for n := 0; n < w.cfg.Loop.Errors.MaxReprompts+3; n++ {
+				res := runTick(t, w, t0.Add(time.Duration(n)*10*time.Minute))
+				if res.Action != "none" || !strings.Contains(res.Reason, "failover disabled; waiting") || res.ResetsAt == nil {
+					t.Fatalf("tick %d: %+v", n, res)
+				}
+			}
+			st, err := state.Load(w.dir)
+			if err != nil || st.Reprompts != 0 || len(p.sent) != 0 {
+				t.Fatalf("state=%+v err=%v sends=%d", st, err, len(p.sent))
+			}
+			ctl, err := control.Load(w.dir)
+			if err != nil || ctl.AwaitingUser {
+				t.Fatalf("control=%+v err=%v", ctl, err)
+			}
+			now, want := obs.ResetsAt, "reprompt"
+			if recovery == "early allowed" {
+				p.obs = decide.Observation{State: decide.Idle}
+				now, want = t0.Add(time.Hour), "wake"
+			}
+			res := runTick(t, w, now)
+			if res.Action != want || len(p.sent) != 1 || len(w.probes) != 0 {
+				t.Fatalf("recovery=%+v sends=%d probes=%v", res, len(p.sent), w.probes)
+			}
+		})
+	}
+}
