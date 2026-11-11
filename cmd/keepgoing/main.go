@@ -47,6 +47,9 @@ Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
   transfer apply|recover   Move a BB primary with an explicit recovery hold
 
+Local client discovery:
+  registry add|list|remove  Register private loop references; never start supervision
+
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
 
@@ -100,6 +103,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "registry":
+		return registryCommand(e, rest)
 	case "transfer":
 		return transferCommand(e, rest, doctorExec)
 	case "goal":

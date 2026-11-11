@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -30,6 +30,7 @@ internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports and diagnostic delivery history
 internal/incident           bounded typed tick/control history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
+internal/registry           explicit private local loop references; independent of loop controls
 internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
@@ -179,3 +180,7 @@ The command layer serializes apply/recovery with ticks and performs bounded BB m
 The command guards combine source snapshots with the pending or final target binding. Pending records suppress automatic work and permissive controls; stop may use only an exact before/after config. Restrictive controls retain their short independent lock. Recovery repeats the primary observation reset without changing goal or allowance files, commits the config if still at the before version, and finishes with a new owner generation and persistent `bbTarget`. This fences old daemons and copied configs even after the pending record is cleared. Begin/finish use existing saved-control incident capture; diagnostic failure never undoes a control save. Existing bindings are checked before tick/poll, manual probes/retarget, enable/resume, validate and startup.
 
 This is a cooperative, process-crash protocol, not a multi-file atomic commit or power-loss guarantee. Model/account identity, external BB metadata changes, old binaries and writers ignoring locks are outside its guarantees. See [transfer scope, recovery and preserved state](transfer.md).
+
+## Local client registry
+
+`internal/registry` owns a bounded schema-1 registry of explicit config/runtime references and a separate short advisory lock. The command layer canonicalizes registry/runtime paths while retaining config-relative path semantics, refuses checkout/project destinations, loads and validates configs for add, and checks their source snapshots before registering. Reads never query registered configs or create files. Add/remove never acquire loop locks or change controls. IDs are discovery references, not authorization or durable filesystem identities; future status/control requests must revalidate their bindings. Atomic replacement preserves a previous record on failed writes, without promising power-loss durability or coordination with external writers. See [local clients](local-clients.md) for privacy, compatibility and planned control requirements.
