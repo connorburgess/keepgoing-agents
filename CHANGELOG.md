@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ticks now write a separate bounded, versioned private incident history with normalized observations, retry availability, decision causes, hold snapshots and build metadata. Retention is capped at 256 records/512 KiB. Journal failure surfaces an error after actions without undoing controls. Detailed provider codes, standalone control transitions, delivery receipts and a timeline command remain follow-up work; verification is offline only.
+
 - BB active provider retries now suppress stall nudges and false nudge-cap holds. Queued input does not imply recovery; matching structured provider activity does. An observed retry followed by active recovery gets one ordinary stall interval without resetting spent nudges, Git evidence, holds or loop-wide limits. Incomplete retry scans suppress prompts and target moves. Offline fixtures cover recovery, restart and legacy cursor migration; live deployment is not yet verified.
 
 ### Added

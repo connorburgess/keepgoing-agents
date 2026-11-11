@@ -110,6 +110,9 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Active || obs.State == decide.Error {
 		obs.Retrying = sig.ok && sig.willRetry
+		if sig.ok && sig.hasError {
+			obs.ErrorClass = sig.class
+		}
 	}
 	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
@@ -134,6 +137,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 }
 
 type signals struct {
+	hasError     bool
 	class        decide.ErrorClass
 	willRetry    bool
 	retryUnknown bool
@@ -150,6 +154,7 @@ func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0}
 	if c.Error != nil {
+		s.hasError = true
 		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
 		s.retryUnknown = !c.Error.RetryKnown
 	}

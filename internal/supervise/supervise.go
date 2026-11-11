@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/handoff"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -78,19 +79,24 @@ type Result struct {
 }
 
 type tick struct {
-	progress         *state.Progress
-	observedTarget   string
-	awaitingInput    bool
-	awaitingChildren []string
-	ctx              context.Context
-	cfg              *config.Config
-	loop             config.Loop
-	fb               *config.Fallbacks
-	opts             Options
-	now              time.Time
-	res              *Result
-	st               state.File
-	reg              *health.Registry
+	incidentStateLoaded bool
+	incidentAdapter     string
+	incidentTarget      string
+	incidentObservation incident.Observation
+	incidentControl     *incident.Controls
+	progress            *state.Progress
+	observedTarget      string
+	awaitingInput       bool
+	awaitingChildren    []string
+	ctx                 context.Context
+	cfg                 *config.Config
+	loop                config.Loop
+	fb                  *config.Fallbacks
+	opts                Options
+	now                 time.Time
+	res                 *Result
+	st                  state.File
+	reg                 *health.Registry
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -130,6 +136,10 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
 	err := t.run()
+	if journalErr := t.recordIncident(err != nil); journalErr != nil {
+		t.warn("incident history write failed; diagnostic evidence is incomplete")
+		err = errors.Join(err, journalErr)
+	}
 	return res, err
 }
 
@@ -159,9 +169,11 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
+	t.incidentStateLoaded = true
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -170,6 +182,8 @@ func (t *tick) run() error {
 		t.st.ActiveTarget = target
 	}
 	res.Target = target
+	t.incidentTarget = target
+	t.incidentAdapter = agent.Adapter
 
 	gate := ctl.Gate()
 	if gate.Stop {
@@ -237,6 +251,7 @@ func (t *tick) run() error {
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason, res.Window = string(decide.Unknown), "could not verify state; no action taken", "not checked"
@@ -416,6 +431,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"

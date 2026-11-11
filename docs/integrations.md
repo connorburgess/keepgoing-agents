@@ -18,6 +18,8 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 
 **BB retry/stall recovery: Fakes, unreleased.** Structured active retries now suppress stall nudges. Offline fixtures cover same-turn recovery metadata, queued input, unknown/missing evidence, partial scans, legacy cursor rebuild, restart, later genuine stalls, and unchanged holds/hard bounds. Event metadata shapes were inspected read-only against BB; this is not a live end-to-end retry/recovery check or an installed-binary claim. See [operations](operations.md#bb-retry-and-stall-handling).
 
+**Tick incident history: Fakes, unreleased.** A common bounded snapshot journal records normalized BB/process/Claude/Codex observations and marks unsupported retry/source details unavailable. Synthetic BB journey fixtures, a local process status command and headless result-file fixtures exercise the contract without a live provider. Retention, restart, privacy and write-failure checks pass locally. Full source-code/timestamp evidence, standalone controls and a timeline remain unfinished; see [diagnostics](diagnostics.md#bounded-tick-incident-history).
+
 Other coding agents can be supervised today through the process adapter, given a status command and a resume command. Cursor and Antigravity are the next planned first-class integrations; neither has an adapter yet. See [Planned integrations](#planned-integrations). Gemini CLI, OpenCode, and Aider remain discovery backlog items, with no compatibility claim or delivery commitment.
 
 ## Guided setup

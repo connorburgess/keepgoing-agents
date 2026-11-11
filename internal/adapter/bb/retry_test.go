@@ -29,7 +29,7 @@ func TestActiveRetryAcrossIntervalsAndRestart(t *testing.T) {
 		o, err := a.Observe(context.Background())
 		in := decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: time.Duration(i+1) * time.Hour, SinceWake: time.Hour, StallAfter: time.Minute, MinWakeInterval: time.Minute, MaxNudges: 3, Nudges: 3}
 		d := decide.Decide(in)
-		if err != nil || !o.Retrying || d.Action != decide.None || d.Reason != "provider is retrying the turn" {
+		if err != nil || !o.Retrying || o.ErrorClass != decide.ErrNetwork || d.Action != decide.None || d.Reason != "provider is retrying the turn" {
 			t.Fatalf("interval %d: %+v %+v %v", i, o, d, err)
 		}
 	}

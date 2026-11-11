@@ -28,6 +28,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports
+internal/incident           bounded typed tick history; diagnostic only
 internal/control            control.json: holds, persistent BB ownership, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
@@ -72,6 +73,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
+| `incidents.json`, `incident.lock` | tick diagnostic writer | versioned rolling snapshots, capped at 256 records/512 KiB; independent lock and atomic replacement; never a decision input |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
 | `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit |
@@ -118,3 +120,9 @@ Creating a configuration, saving its reference, and starting a daemon are separa
 ## Completion declarations
 
 The command layer detects a new completion episode inside the serialized control update, saves `completed` before any delivery, then appends the control log and submits the subscribed `complete` report outside the lock. The saved flag is the deduplication marker; ticks never emit completion reports. Resume explicitly reopens the episode. Payloads describe an unverified declaration without private notes. The report transport uses one attempt without redirects for this event; other events retain their existing retry behavior. This favors avoiding duplicate notifications over guaranteed delivery after crashes, log/config failures or uncertain HTTP results. No independent acceptance verifier or goal revision binding is implemented yet.
+
+## Tick incident snapshots
+
+After the tick returns from its normal decision/action/recording path, `internal/incident` writes a typed snapshot under its own nonblocking lock. It never acquires the tick or control lock, so an unavailable diagnostic writer cannot prevent an already-requested stop or undo a saved hold. A write failure adds a fixed warning and returns a joined error; earlier tick effects and ordinary records remain. Pre-tick lock, ownership and source-snapshot refusals never enter this path. Process termination can leave no snapshot for an attempted action.
+
+The storage boundary allowlists strings, omits raw errors and task/provider content, and hashes the configured target alias for correlation. It records control flags read at the tick's beginning and after its action; concurrent or between-tick changes are not a complete transition audit. BB active error classification is exposed alongside retry intent, without changing pure decision rules. Unsupported detailed codes, source timestamps and headless/process retry intent remain unavailable. This first R2 slice is a diagnostic foundation; it does not implement alert receipts or a timeline command. See [retention, failures and privacy](diagnostics.md#bounded-tick-incident-history).
