@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Incident history now retains numeric release versions with development commit-hash or numeric release-candidate suffixes. Arbitrary suffixes remain redacted; old unavailable build labels cannot be recovered. Offline fixtures only.
+
 - Added opt-in `loop.prompt_goal` to send the latest private goal revision with automatic prompts and handoff briefs, instead of requiring copied goal text in wake policies. Missing or invalid goals refuse sends; existing loops remain unchanged. Offline fixtures only; semantic drift detection and guided goal setup remain planned.
 
 - Added an optional read-only native macOS menu preview for explicitly registered local loops, using the shared CLI contract. It shows holds, timestamped activity, configured targets, optional private goal text and daemon evidence, without starting supervision or a wake timer. Developer build only; controls, installation, signing and live UI verification remain planned.
