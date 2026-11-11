@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func TestInitJSONPreviewAndCreateFromStdin(t *testing.T) {
 		t.Fatalf("preview: %d %s", code, errOut)
 	}
 	preview := decodeInitReport(t, out)
-	if preview.SchemaVersion != 1 || preview.Outcome != "preview" || preview.TaskSource != "stdin" || preview.Primary.Agent.BBThread != "thr_setup_fixture" || preview.Primary.Agent.Provider != "codex" || preview.Primary.Account != "inherited" || preview.Probes != nil || len(preview.Fallbacks) != 0 || preview.Fallbacks == nil || len(preview.Limits.FailoverOn) != 0 || preview.Limits.FailoverOn == nil {
+	if preview.SchemaVersion != 1 || preview.Outcome != "preview" || preview.TaskSource != "stdin" || preview.TaskBinding != "snapshot" || preview.Primary.Agent.BBThread != "thr_setup_fixture" || preview.Primary.Agent.Provider != "codex" || preview.Primary.Account != "inherited" || preview.Probes != nil || len(preview.Fallbacks) != 0 || preview.Fallbacks == nil || len(preview.Limits.FailoverOn) != 0 || preview.Limits.FailoverOn == nil {
 		t.Fatalf("invalid preview: %+v", preview)
 	}
 	if _, err := os.Stat(filepath.Dir(f.destination)); !os.IsNotExist(err) {
@@ -241,4 +243,62 @@ func (r *startedInitReader) Read(b []byte) (int, error) {
 		r.started = nil
 	}
 	return r.Reader.Read(b)
+}
+
+func TestInitTaskFileSnapshotBinding(t *testing.T) {
+	for _, jsonMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%t", jsonMode), func(t *testing.T) {
+			f := newSetupFixture(t)
+			source := filepath.Join(f.root, "private-source.md")
+			original := "Complete the fictional first task."
+			if err := os.WriteFile(source, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append(f.args(), "--task", "", "--task-file", source)
+			if jsonMode {
+				args = append(args, "--json")
+			}
+			for _, dryRun := range []bool{true, false} {
+				callArgs := append([]string{}, args...)
+				if dryRun {
+					callArgs = append(callArgs, "--dry-run")
+				}
+				code, out, errOut := f.run(t, callArgs, "")
+				if code != 0 || strings.Contains(out+errOut, original) || strings.Contains(out+errOut, source) {
+					t.Fatalf("setup failed or exposed input: code %d", code)
+				}
+				if jsonMode {
+					r := decodeInitReport(t, out)
+					if r.TaskSource != "file" || r.TaskBinding != "snapshot" || !slices.Contains(r.Limitations, initTaskBindingNotice) {
+						t.Fatal("missing snapshot metadata")
+					}
+				} else if !strings.Contains(out, initTaskBindingNotice) {
+					t.Fatal("missing snapshot explanation")
+				}
+			}
+			cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := cfg.Loop.PromptText()
+			if err != nil || !strings.Contains(before, original) {
+				t.Fatal("task was not imported", err)
+			}
+			if err := os.WriteFile(source, []byte("An unrelated fictional replacement."), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			after, err := cfg.Loop.PromptText()
+			if err != nil || before != after {
+				t.Fatal("original source edit changed the saved prompt", err)
+			}
+			revised := strings.Replace(before, original, "Complete the revised fictional task.", 1)
+			if err := os.WriteFile(cfg.Loop.PromptFile, []byte(revised), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			after, err = cfg.Loop.PromptText()
+			if err != nil || after != revised {
+				t.Fatal("saved prompt edit was not reread", err)
+			}
+		})
+	}
 }
