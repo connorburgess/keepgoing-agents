@@ -4,7 +4,6 @@ package runner
 
 import (
 	"os/exec"
-	"strconv"
 	"syscall"
 )
 
@@ -22,7 +21,6 @@ func spawn(argv []string, workdir, dir string, env []string) (int, error) {
 	}
 	// Detached and in its own process group, so the turn outlives the tick
 	// and can be ended as a tree.
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup | detachedProcess, HideWindow: true}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -47,14 +45,34 @@ func alive(pid int) bool {
 	return code == stillActive
 }
 
-// terminate ends the wrapper and every process it started.
-func terminate(pid int) error {
-	if pid <= 0 {
+// Hold an unnamed native job for this wrapper and its descendants. Termination
+// uses the retained kernel handle, never a PID lookup or taskkill subprocess.
+func ownedTerminator() (func() error, error) {
+	kernel := syscall.NewLazyDLL("kernel32.dll")
+	job, _, err := kernel.NewProc("CreateJobObjectW").Call(0, 0)
+	if job == 0 {
+		return nil, err
+	}
+	process, err := syscall.GetCurrentProcess()
+	if err != nil {
+		syscall.CloseHandle(syscall.Handle(job))
+		return nil, err
+	}
+	ok, _, err := kernel.NewProc("AssignProcessToJobObject").Call(job, uintptr(process))
+	if ok == 0 {
+		syscall.CloseHandle(syscall.Handle(job))
+		return nil, err
+	}
+	// This handle lives until wrapper exit. It is not inherited or published.
+	return func() error {
+		ok, _, err := kernel.NewProc("TerminateJobObject").Call(job, 1)
+		if ok == 0 {
+			return err
+		}
 		return nil
-	}
-	err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
-	if err != nil && !alive(pid) {
-		return nil // already gone
-	}
-	return err
+	}, nil
+}
+
+func configureWrapper(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup | detachedProcess, HideWindow: true}
 }

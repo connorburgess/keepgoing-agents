@@ -116,7 +116,7 @@ func TestStopKillsTurnAndCrashIsUnknown(t *testing.T) {
 	if err := c.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// The wrapper shell is killed too, so no exit code is written: crashed.
+	// The owned wrapper is terminated too, so no exit code is written: crashed.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		st, _ := c.dir.Status()

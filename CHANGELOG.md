@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Headless stop now asks a private per-turn wrapper to terminate its own Unix group or Windows job instead of signalling a saved PID. Legacy turns without the key are refused. Native subprocess fixtures cover stale records and descendants; live provider cancellation and abrupt-death descendant cleanup remain unverified.
+
 Prepared [v0.1.4 notes](docs/releases/v0.1.4.md) describe the merged baseline and upgrade limits. The candidate is not published; release and Homebrew verification remain separate.
 
 - Incident history now retains numeric release versions with development commit-hash or numeric release-candidate suffixes. Arbitrary suffixes remain redacted; old unavailable build labels cannot be recovered. Offline fixtures only.

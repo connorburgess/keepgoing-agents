@@ -14,7 +14,7 @@ Apply these checks when changing runners, stop commands, service integrations, i
 - **Exercise the deployment environment.** If PowerShell is part of the supported path, test the supported language mode and prefer cmdlets for operations that must work under constrained language. Do not assume arbitrary .NET method calls are available. An installation that requests elevation must show an accessible approval prompt in a visible user-initiated flow; a hidden background process is not an acceptable interactive installer test.
 - **Describe dependency limits honestly.** A dependent change must say what users can do before its prerequisite is available. Keep implemented, tested, released, installed and live-verified claims separate. Recheck the current head against current main after integration; a passing earlier base does not close the review.
 
-The runner's saved-PID stop path still needs the identity work tracked under [reliability checkpoints](roadmap.md#priority-reliability-checkpoints). Existing lifecycle tests and held-daemon SIGKILL smoke checks do not establish PID-reuse safety.
+The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
 ## On a machine with Go
 
