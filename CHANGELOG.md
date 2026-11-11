@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+No additional changes recorded.
+
+## 0.1.4 (2026-11-12)
+
 - Headless stop now asks a private per-turn wrapper to terminate its own Unix group or Windows job instead of signalling a saved PID. Legacy turns without the key are refused. Native subprocess fixtures cover stale records and descendants; live provider cancellation and abrupt-death descendant cleanup remain unverified.
 
-Prepared [v0.1.4 notes](docs/releases/v0.1.4.md) describe the merged baseline and upgrade limits. The candidate is not published; release and Homebrew verification remain separate.
+[v0.1.4 notes](docs/releases/v0.1.4.md) describe the changes and upgrade limits. Publication, package installation and live-provider evidence are tracked separately in [release verification](docs/release-verification.md).
 
 - Incident history now retains numeric release versions with development commit-hash or numeric release-candidate suffixes. Arbitrary suffixes remain redacted; old unavailable build labels cannot be recovered. Offline fixtures only.
 
@@ -16,11 +20,11 @@ Prepared [v0.1.4 notes](docs/releases/v0.1.4.md) describe the merged baseline an
 
 - Added `client prepare-resume` and `client resume`: a five-minute, single-use private ticket binds reviewed config/fallback sources, registration, caller/owner, controls, state and goal evidence. Changed evidence rejects resume; consuming before save prevents automatic replay after a crash or lost response. Preparation never clears holds; resume preserves disabled state, ownership, goals and allowances. Offline fixtures only; native UI/live verification remain pending.
 
-- Added registered `client pause|stop` with binding/source checks, short registry/control locking, preserved holds/ownership and versioned save evidence. Diagnostic failures remain distinct from failed or unconfirmed saves. Offline fixtures only; the native companion remains planned.
+- Added registered `client pause|stop` with binding/source checks, short registry/control locking, preserved holds/ownership and versioned save evidence. Diagnostic failures remain distinct from failed or unconfirmed saves. Offline fixtures only; native controls and installation remain planned.
 
 - Added schema-1 read-only `client status` for registered loops: checked config/runtime bindings, explicit holds and declared completion, configured target, historical action/freshness, optional private goal display and bounded daemon evidence. Unknown/corrupt evidence and changed bindings remain explicit. Offline fixtures and a local authenticated daemon test only; the native companion remains planned.
 
-- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the client status interface is described above; the menu-bar app remains planned.
+- Added explicit local loop discovery through `registry add|list|remove`, with private versioned references, stable IDs, binding-conflict checks, bounded storage and independent locking. Registration never changes loop controls or runs providers. Offline fixtures only; the client status interface is described above; the menu-bar app is a separate read-only developer preview.
 
 - Expanded the BB banner/card status with declared completion, actual target thread, timestamped daemon/check evidence, and historical action outcomes. Failed refreshes show a warning and hide controls/setup until refreshed. External schedulers remain uninspected. SDK/DOM fixtures, typechecking and bundle builds only; no live deployment.
 

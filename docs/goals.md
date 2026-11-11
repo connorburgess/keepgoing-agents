@@ -1,6 +1,6 @@
 # Private goal metadata
 
-On `main` after v0.1.3, `keepgoing goal create|revise|show` records what a loop is working toward. The record has a generated stable ID, an owning loop name and an ordered revision history. Its only state is `recorded`: this means a specification was saved, not that work is running, accepted or complete. Loop controls remain the authority for supervision.
+In v0.1.4, `keepgoing goal create|revise|show` records what a loop is working toward. The record has a generated stable ID, an owning loop name and an ordered revision history. Its only state is `recorded`: this means a specification was saved, not that work is running, accepted or complete. Loop controls remain the authority for supervision.
 
 This is a metadata feature. It does not generate a plan, modify the saved prompt, start a turn, execute a next action, validate a reference or run a reviewer. An explicit `loop.prompt_goal: true` setting can include the latest specification in automatic messages; see below. Completion declarations, verification results and review stages are not yet bound to goal revisions. `complete` and `resume` keep their existing behavior and do not change the goal record. Do not treat an old completion hold as acceptance of a newly revised goal.
 
@@ -63,7 +63,7 @@ Offline storage and command fixtures cover reload, competing edits, ownership, h
 
 ## Current goal context in wake messages
 
-After v0.1.3, unreleased: set `loop.prompt_goal: true` to explicitly share the current private goal specification with the agent on each wake, nudge, recovery re-prompt, handoff and switch-back. This sends the title, all current reference lists and next-action metadata, plus the goal ID/revision. Prior revision contents are excluded. The default is false, so existing loops never begin sharing private goals automatically. Goal create/revise/show still send nothing themselves.
+With v0.1.4, set `loop.prompt_goal: true` to explicitly share the current private goal specification with the agent on each wake, nudge, recovery re-prompt, handoff and switch-back. This sends the title, all current reference lists and next-action metadata, plus the goal ID/revision. Prior revision contents are excluded. The default is false, so existing loops never begin sharing private goals automatically. Goal create/revise/show still send nothing themselves.
 
 ```yaml
 loop:

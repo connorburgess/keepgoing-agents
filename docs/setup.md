@@ -83,7 +83,7 @@ Schema version 1 has these fields:
 | `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
 | `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
 | `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
-| `taskBinding` | `snapshot`: task input is imported once into `promptPath`; the original input is not tracked. Added after v0.1.3; absent in older results means this metadata is unavailable. |
+| `taskBinding` | `snapshot`: task input is imported once into `promptPath`; the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
 | `taskSource` | `inline`, `file`, or `stdin`; never the task text or source filename. |
 | `primary` | An `agent` reference (adapter, provider, group, and applicable thread/workdir/model fields) and `account` selection (`inherited` or `explicit_directory`). BB inherits the existing thread's login/model. |
 | `fallbacks` | Ordered array of `{id, target}`, each target with the same shape as `primary`; empty array for a single agent. |
