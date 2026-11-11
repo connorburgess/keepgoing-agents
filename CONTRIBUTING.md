@@ -19,6 +19,8 @@ Open a branch and a pull request against `main`. Keep each PR to one outcome. Ex
 
 Use the [review and execution evidence checks](docs/testing.md#review-and-execution-evidence), plus the platform checks on that page when applicable. Keep the PR description aligned with its current implementation and list checks not run explicitly. Cite CI with the specific run, jobs and source commit; a green check that skipped the affected platform is not execution evidence for that platform.
 
+Capability and release changes also require a [README and documentation review](docs/testing.md#capability-and-documentation-review) before merge or roadmap check-off. Record which sections and command/release evidence you checked, what you corrected, and remaining gaps. Explain when no documentation change is needed; do not mark partial acceptance complete just because documentation was updated.
+
 ## Commit and PR titles
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):

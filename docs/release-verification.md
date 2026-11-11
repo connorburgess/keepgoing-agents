@@ -118,7 +118,7 @@ Run each row separately with an explicitly selected build, scratch project, exis
 | Separate accounts | Authorized handoff/switch-back with verified distinct existing account contexts | Outstanding; use fixtures for quota exhaustion |
 | Installed services | Native install/remove, login/reboot/sleep/network recovery and soak | Outstanding; requires separate platform lifecycle checks |
 
-Ownership conflicts and takeover are covered by the binary smoke check using fictional owners. Live transfer of the supervised BB target remains unimplemented and must not be represented as ownership takeover.
+Ownership conflicts and takeover are covered by the binary smoke check using fictional owners. BB transfer is implemented in v0.1.4 with separate fixtures, but live transfer remains unverified. Ownership takeover alone does not move a target or establish transfer acceptance.
 
 ## Publish a matching release
 

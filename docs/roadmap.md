@@ -46,6 +46,10 @@ keepgoing is the loop runner. A user supplies a task, chooses an agent, and star
 
 Unchecked items below have unfinished acceptance criteria; some contain an implemented or released subset, described explicitly in their evidence. Implement one focused PR at a time. The sections group capabilities; the delivery priorities below supersede their numerical order. A live check needing an account, host, or explicit authorization blocks only that check. Move to independent authorized work, without creating accounts, changing logins, manufacturing quota limits, or replacing an existing timer. Record evidence and limitations in [integrations.md](integrations.md).
 
+### Delivery and documentation check-off
+
+Every capability/release PR and roadmap check-off includes the [capability and documentation review](testing.md#capability-and-documentation-review). Compare the final implementation with the README and affected setup/operations/integration guides, verify command and release guidance, and record corrections or why no edit is needed in the PR. Revisit the review when implementation or release scope changes; include availability, evidence and remaining gaps in the milestone check-in. Documentation must stay in step with capabilities throughout delivery. Updating docs or passing CI alone never closes an unfinished live acceptance criterion.
+
 ### Delivery priorities after roadmap reassessment
 
 The project retains **Apache-2.0**. Optional paid products or support are business hypotheses, not prerequisites for the local supervisor or a license change.
