@@ -197,6 +197,7 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
+	Notifications     report.DeliveryStatus    `json:"notifications"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
 	Loop              string                   `json:"loop"`
@@ -324,6 +325,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if l.PromptFile != "" {
 		out.TaskSource, out.TaskFile = "file", l.PromptFile
 	}
+	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
 	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
 	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
@@ -389,6 +391,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
 	if a := out.SendAllowance; a != nil {
 		if a.Error != "" {

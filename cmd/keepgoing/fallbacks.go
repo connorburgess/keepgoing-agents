@@ -179,13 +179,13 @@ func reportTest(e env, cfg *config.Config, dryRun bool) int {
 		e.errf("no report configured (set loop.report)")
 		return exitUsage
 	}
-	w, err := report.New(*r)
-	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
-	}
 	ev := report.Event{Type: "test", Loop: cfg.Loop.Name, Text: cfg.Loop.Name + ": test report from keepgoing", At: time.Now(), Data: map[string]any{"test": true}}
 	if dryRun {
+		w, err := report.New(*r)
+		if err != nil {
+			e.errf("%v", err)
+			return exitFailed
+		}
 		body, err := w.Body(ev)
 		if err != nil {
 			e.errf("%v", err)
@@ -197,11 +197,14 @@ func reportTest(e env, cfg *config.Config, dryRun bool) int {
 	// Force delivery regardless of the subscribed events.
 	all := *r
 	all.Events = []string{"all"}
-	w, _ = report.New(all)
+	w, setupErr := report.NewRecorded(all, cfg.Loop.StateDir)
+	if setupErr != nil {
+		e.errf("%v", setupErr)
+	}
 	if err := w.Report(e.ctx, ev); err != nil {
 		e.errf("%v", err)
 		return exitFailed
 	}
-	fmt.Fprintln(e.stdout, "report delivered")
+	fmt.Fprintln(e.stdout, "report HTTP accepted; receipt unverified")
 	return exitOK
 }
