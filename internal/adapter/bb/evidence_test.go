@@ -55,3 +55,17 @@ func TestErrorEvidenceUnknownTokensAndLegacySummary(t *testing.T) {
 		t.Fatal(o, err)
 	}
 }
+
+func TestFailureEventSourceIsNotSystemError(t *testing.T) {
+	for _, typ := range []string{"system/error", "turn/failed"} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, `[{"type":"`+typ+`","data":{"code":"connection_error"}}]`, false)
+		o, err := a.Observe(context.Background())
+		want := "bb_system_error"
+		if typ != "system/error" {
+			want = "bb_failure_event"
+		}
+		if err != nil || o.Evidence.Source != want {
+			t.Fatal(o, err)
+		}
+	}
+}

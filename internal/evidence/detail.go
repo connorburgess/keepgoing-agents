@@ -29,7 +29,7 @@ func Number(n int) *int { return &n }
 
 func Clean(d Detail) Detail {
 	switch d.Source {
-	case "bb_status", "bb_provider_error", "bb_system_error", "bb_error_summary", "bb_rate_limits", "process_json", "process_exit", "runner_state", "runner_exit", "claude_result", "codex_events", "codex_rate_limits":
+	case "bb_status", "bb_provider_error", "bb_system_error", "bb_failure_event", "bb_error_summary", "bb_rate_limits", "process_json", "process_exit", "runner_state", "runner_exit", "claude_result", "codex_events", "codex_rate_limits":
 	default:
 		return Detail{Source: "unavailable", Category: "unavailable", Code: "unavailable"}
 	}

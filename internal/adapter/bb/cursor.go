@@ -120,7 +120,11 @@ func (c *Cursor) apply(e event) {
 			Code string `json:"code"`
 		}
 		if json.Unmarshal(e.Data, &d) == nil {
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_system_error", Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
+			source := "bb_system_error"
+			if e.Type != "system/error" {
+				source = "bb_failure_event"
+			}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)

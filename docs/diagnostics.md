@@ -179,7 +179,7 @@ Schema 2 adds `source`, `category`, `httpStatus` and `exitCode` and fills `provi
 | Source | Evidence represented |
 | --- | --- |
 | `bb_status` | Structured thread status; no retained provider-error details. |
-| `bb_provider_error`, `bb_system_error` | Recognized fields from the retained error summary. Complete log scans refresh that summary; it is not a timestamped stream of every error. |
+| `bb_provider_error`, `bb_system_error`, `bb_failure_event` | Recognized fields from the retained error summary. Complete log scans refresh that summary; it is not a timestamped stream of every error. |
 | `bb_error_summary` | Legacy cursor classification with no detailed metadata; no log replay is added solely to reconstruct it. |
 | `bb_rate_limits` | A blocked structured rate-limit window supplies the effective error classification. |
 | `process_json`, `process_exit` | Parsed status JSON or the status command's exit; a process exit is not the supervised agent's own exit unless that command defines it so. |
