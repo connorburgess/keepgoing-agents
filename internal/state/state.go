@@ -23,6 +23,7 @@ const Primary = "primary"
 
 // File is what one tick leaves for the next.
 type File struct {
+	LastPromptSend    *PromptSend `json:"lastPromptSend,omitempty"`
 	StallRetry        *StallRetry `json:"stallRetry,omitempty"`
 	Fingerprint       string      `json:"fingerprint,omitempty"`
 	LastProgressAt    time.Time   `json:"lastProgressAt,omitempty"`
@@ -91,6 +92,9 @@ func Load(stateDir string) (File, error) {
 	}
 	if err := json.Unmarshal(b, &f); err != nil {
 		return File{}, fmt.Errorf("%s: %w", FileName, err)
+	}
+	if f.LastPromptSend != nil && !f.LastPromptSend.Valid() {
+		f.LastPromptSend = nil
 	}
 	return f, nil
 }

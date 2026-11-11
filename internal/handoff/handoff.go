@@ -44,22 +44,29 @@ Goal:
 // Brief returns the handoff file's text when one exists, otherwise a
 // generated brief.
 func Brief(loop config.Loop, f Facts) (string, error) {
+	m, err := ComposeBrief(loop, f)
+	return m.Text, err
+}
+
+// ComposeBrief preserves goal provenance from the same composition as the text.
+func ComposeBrief(loop config.Loop, f Facts) (prompt.Message, error) {
 	if text, err := loop.HandoffText(); err != nil {
-		return "", err
+		return prompt.Message{}, err
 	} else if text != "" {
-		return prompt.WithGoal(loop, text)
+		return prompt.ComposeGoal(loop, text)
 	}
-	goal, err := prompt.Wake(loop)
+	message, err := prompt.ComposeWake(loop)
 	if err != nil {
-		return "", err
+		return prompt.Message{}, err
 	}
-	f.Goal = strings.TrimSpace(goal)
+	f.Goal = strings.TrimSpace(message.Text)
 	if f.Repositories == nil {
 		f.Repositories = loop.Progress.Repositories
 	}
 	var b bytes.Buffer
 	if err := tmpl.Execute(&b, f); err != nil {
-		return "", err
+		return prompt.Message{}, err
 	}
-	return b.String(), nil
+	message.Text = b.String()
+	return message, nil
 }

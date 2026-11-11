@@ -310,6 +310,11 @@ func TestScheduledProbesRunWhenDueOnly(t *testing.T) {
 
 func TestHandoffToFirstCandidatePassingExactProbe(t *testing.T) {
 	w := newWorld(t, true, true)
+	w.cfg.Loop.PromptGoal = true
+	g, err := control.WriteGoal(w.dir, w.cfg.Loop.Name, "", control.GoalSpec{Title: "Fictional goal", ObjectiveRefs: []string{"o"}, AcceptanceRefs: []string{"a"}}, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := w.primary(limited)
 	// Both healthy on schedule; claude-other then fails its exact probe.
 	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
@@ -338,6 +343,9 @@ func TestHandoffToFirstCandidatePassingExactProbe(t *testing.T) {
 	}
 	if st.ActiveTarget != "codex-main" || st.Handoffs != 1 {
 		t.Errorf("state = %+v", st)
+	}
+	if st.LastPromptSend == nil || st.LastPromptSend.Target != "codex-main" || st.LastPromptSend.Action != "handoff" || st.LastPromptSend.Outcome != "adapter_returned" || st.LastPromptSend.GoalID != g.ID || st.LastPromptSend.GoalRevision != 1 || !strings.Contains(c.sent[0], `"revision": 1`) {
+		t.Fatalf("handoff provenance: %+v", st.LastPromptSend)
 	}
 	// The next tick supervises the new target.
 	c.obs = decide.Observation{State: decide.Active}
@@ -580,6 +588,11 @@ func switchBackWorld(t *testing.T) (*world, *fakeAdapter, *fakeAdapter) {
 
 func TestSwitchBackAfterThePrimaryResets(t *testing.T) {
 	w, p, fb := switchBackWorld(t)
+	w.cfg.Loop.PromptGoal = true
+	g, err := control.WriteGoal(w.dir, w.cfg.Loop.Name, "", control.GoalSpec{Title: "Fictional goal", ObjectiveRefs: []string{"o"}, AcceptanceRefs: []string{"a"}}, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Before the reset: the fallback keeps working.
 	if res := runTick(t, w, t0.Add(time.Hour)); res.Action != "wake" || res.Target != "claude-other" {
 		t.Fatalf("before reset: %+v", res)
@@ -600,6 +613,9 @@ func TestSwitchBackAfterThePrimaryResets(t *testing.T) {
 	st, _ := state.Load(w.dir)
 	if st.Target() != state.Primary || !st.PrimaryResetsAt.IsZero() {
 		t.Errorf("state = %+v", st)
+	}
+	if st.LastPromptSend == nil || st.LastPromptSend.Target != state.Primary || st.LastPromptSend.Action != "switch_back" || st.LastPromptSend.Outcome != "adapter_returned" || st.LastPromptSend.GoalID != g.ID || st.LastPromptSend.GoalRevision != 1 || !strings.Contains(p.sent[0], `"revision": 1`) {
+		t.Fatalf("switch-back provenance: %+v", st.LastPromptSend)
 	}
 	_ = fb
 }

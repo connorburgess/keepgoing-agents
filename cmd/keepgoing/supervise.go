@@ -210,6 +210,7 @@ func controlSignature(stateDir string) string {
 }
 
 type statusOut struct {
+	PromptSend        promptSendStatus         `json:"promptSend"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
 	GoalError         string                   `json:"goalError,omitempty"`
 	Notifications     report.DeliveryStatus    `json:"notifications"`
@@ -317,6 +318,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		summary := g.Summary()
 		out.Goal = &summary
 	}
+	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -398,6 +400,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.GoalError != "" {
 		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
 	}
+	printPromptSend(w, out.PromptSend)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
 		fmt.Fprintf(w, " (%s)", out.TaskFile)

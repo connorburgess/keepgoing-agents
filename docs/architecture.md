@@ -73,7 +73,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |
-| `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, retry/recovery stall grace, last check decision/outcome and build label |
+| `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, retry/recovery stall grace, last check decision/outcome and build label; latest returned automatic prompt provenance |
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
@@ -209,3 +209,10 @@ All saved state fields are bound, so an intervening ordinary tick may require an
 ## Goal-aware prompt composition
 
 `internal/prompt` combines a configured scaffold with the latest `control.LoadGoal` specification only when `loop.prompt_goal` is true. `supervise` uses it for wake/nudge/re-prompt; `handoff` uses it for generated and custom briefs, including switch-back. Configuration parsing remains independent of goal storage. Production sends and cooperating goal edits share the tick lock; arbitrary external writers and already queued messages are outside that guarantee. Invalid/missing/wrong-loop goals return fixed errors before send reservation. No references are read or executed, no goal is revised, and no task text enters decision inputs or reports. Context transport is not approval, acceptance or semantic drift detection.
+
+
+## Recorded automatic prompt provenance
+
+Prompt and handoff composition return a private message plus the ID/revision of the exact goal read while rendering. Supervision passes that text to the adapter and captures its return as `state.PromptSend`, without rereading the goal or persisting task text. The latest returned wake, nudge, re-prompt, handoff or switch-back call is saved with ordinary tick state. Goal-disabled messages explicitly have no goal ID/revision. The record is diagnostic only; it never changes decisions, allowance reservation, retry policy or reporting.
+
+There is no pre-send intent or complete attempt ledger: process termination or a failed final state write can leave an older record, and multiple candidate attempts retain only the last returned call. Adapter nil/error outcomes neither confirm delivery nor establish no side effects. Ordinary status compares recorded ID/revision to the independently read current goal, never to transcript text. Invalid/unsupported provenance is withheld without invalidating other state fields. Primary transfer clears the record with thread observations to avoid attributing old-primary sends to the destination. Other target aliases describe configuration at the historical check; arbitrary config edits are not tracked. Registered client status and incident journals do not yet project this evidence. See [recorded send provenance](goals.md#recorded-send-provenance).
