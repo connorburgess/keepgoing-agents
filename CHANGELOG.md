@@ -36,6 +36,8 @@ Reliability release prepared from the changes after v0.1.2. Publication, package
 
 ### Fixed
 
+- macOS archive builds omit AppleDouble metadata files so local filesystem attributes are not packaged alongside the executable and documentation.
+
 - Git progress fingerprinting now treats inaccessible tracked-file metadata as unknown rather than a deletion. A deterministic symlink-cycle fixture verifies that metadata errors cannot replenish the no-progress timer.
 
 - Setup now describes `--wake-every` as stall-nudge spacing; idle wakes follow the check cadence. No idle scheduling behavior changed, and per-turn nudge counts remain distinct from loop-wide work limits.
