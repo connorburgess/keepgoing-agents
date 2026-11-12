@@ -112,6 +112,20 @@ func TestClientResumeRejectsChangedEvidence(t *testing.T) {
 	for _, change := range []string{"config", "config_comment", "control", "owner", "caller", "goal", "state", "target", "removed", "pending", "bound_target", "expired", "clock_rollback", "corrupt_ticket", "superseded", "repeated_pause"} {
 		t.Run(change, func(t *testing.T) {
 			f := newResumeFixture(t)
+			if change == "repeated_pause" {
+				// Model a clock rollback without sleeping or relying on platform
+				// clock resolution. A repeated pause must advance this loaded time.
+				ctl, err := control.Load(f.entry.StateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctl.UpdatedAt = time.Now().UTC().Add(time.Hour)
+				b, err := json.Marshal(ctl)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumeWrite(t, filepath.Join(f.entry.StateDir, control.FileName), b)
+			}
 			p := f.prepare(t)
 			path := filepath.Join(f.entry.StateDir, control.FileName)
 			switch change {
@@ -166,8 +180,13 @@ func TestClientResumeRejectsChangedEvidence(t *testing.T) {
 			case "superseded":
 				f.prepare(t)
 			case "repeated_pause":
+				previous, _ := control.Load(f.entry.StateDir)
 				if r, c := applyClientHold(context.Background(), f.dir, f.entry.ID, "pause"); c != 0 {
 					t.Fatal(c, r)
+				}
+				current, err := control.Load(f.entry.StateDir)
+				if err != nil || !current.UpdatedAt.After(previous.UpdatedAt) {
+					t.Fatalf("repeated pause did not advance control evidence: %v", err)
 				}
 			}
 			before := resumeBytes(t, path)

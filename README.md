@@ -84,6 +84,8 @@ keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified
 
 `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds. Existing holds remain intact when starting or restarting a supervisor.
 
+Unreleased safety correction: repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; published v0.1.4 does not include the correction.
+
 The quick start needs v0.1.2 or newer. For v0.1.1 use its [tagged documentation](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1). Follow the [setup guide](docs/setup.md) for scripted setup, accounts, bounds, Windows command syntax and private paths. Advanced configurations are in [examples](examples/); release users should use examples from their matching tag.
 
 ## How it connects to models

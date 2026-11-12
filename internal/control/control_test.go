@@ -1,6 +1,29 @@
 package control
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestSaveAdvancesLoadedTimestamp(t *testing.T) {
+	for _, offset := range []time.Duration{0, -time.Hour, time.Second} {
+		t.Run(offset.String(), func(t *testing.T) {
+			dir := t.TempDir()
+			at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			if err := saveAt(dir, File{Paused: true, UpdatedAt: at}, at.Add(offset)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Load(dir)
+			want := at.Add(offset)
+			if offset <= 0 {
+				want = at.Add(time.Nanosecond)
+			}
+			if err != nil || !got.Paused || !got.UpdatedAt.Equal(want) {
+				t.Fatalf("saved control: %+v, error: %v; want timestamp %s", got, err, want)
+			}
+		})
+	}
+}
 
 func TestMissingFileIsDisabled(t *testing.T) {
 	f, err := Load(t.TempDir())
