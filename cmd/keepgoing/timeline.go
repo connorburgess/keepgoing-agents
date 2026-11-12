@@ -654,6 +654,9 @@ func describeIncident(r incident.Record) string {
 			text += fmt.Sprintf("; provider exit %d", *o.ExitCode)
 		}
 	}
+	if o.ErroredChildren > 0 {
+		text += fmt.Sprintf("; %d direct child thread(s) in error (keepgoing does not retry, message or stop children)", o.ErroredChildren)
+	}
 	text += fmt.Sprintf("; action %s; outcome %s; cause %s; controls %s -> %s", r.Action, r.Outcome, r.Cause, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter))
 	if r.TargetKeyAfter != "unavailable" {
 		text += "; target " + timelineTarget(r.TargetKey)

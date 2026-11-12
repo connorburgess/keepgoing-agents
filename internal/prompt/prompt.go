@@ -5,6 +5,7 @@ package prompt
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -31,6 +32,21 @@ func ComposeWake(loop config.Loop) (Message, error) {
 		return Message{}, err
 	}
 	return ComposeGoal(loop, text)
+}
+
+// WithChildErrors appends a fixed notice that n direct child threads are in
+// error. The wording never varies and carries only the count: no child ID,
+// title, task text or error detail.
+func WithChildErrors(m Message, n int) Message {
+	if n <= 0 {
+		return m
+	}
+	m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
+		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
+		"keepgoing has not retried, messaged or stopped them and has not read their content. "+
+		"You own that work: decide whether to retry or replace it. "+
+		"This notice is sent once per change in the set of errored child threads.\n", n, n)
+	return m
 }
 
 // WithGoal adds only the latest revision, including private text and references,

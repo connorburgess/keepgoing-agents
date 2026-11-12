@@ -58,7 +58,7 @@ Reordered after a day of live supervision in which the loop stopped doing its on
 
 0. **Keep the loop going: supervision reliability.** A supervisor that waits silently is worse than none. Close, in this order:
    - **Stale provider-retry signal.** A "will retry" signal with no later evidence must expire so a dead session falls through to bounded re-prompts instead of being left alone indefinitely.
-   - **Errored child threads.** Record what happens today when a child of the supervised thread fails, then surface or recover it; a parent must not be left idle behind children that will never finish. See [BB child awareness](#3-bb-child-awareness-and-loop-ownership).
+   - **Errored child threads.** Record what happens today when a child of the supervised thread fails, then surface or recover it; a parent must not be left idle behind children that will never finish. Surfacing is implemented in unreleased source with offline fixtures (3.5); recovery by keepgoing is not. See [BB child awareness](#3-bb-child-awareness-and-loop-ownership).
    - **Long limit wait that needs a person** ([R8](#priority-reliability-checkpoints)). With failover off or no confirmed fallback, a far-off reset is reported once instead of waited out silently.
    - **Failed handoff briefs.** Count and space briefs a fallback rejects. Implemented per fallback in unreleased source with offline fixtures; see the item under [bounded work](#8-bounded-work-and-portable-goals).
    - **Timing-dependent tests.** Tests that fail under load or on one platform hide real regressions and slow every merge. Fix causes, not deadlines.
@@ -237,6 +237,11 @@ Acceptance: a fixture child with a pending interaction produces an `await_user` 
 Implemented with persistent `control.ownership` metadata and explicit `--take-over`. Claims remain reserved even when a thread is idle or its status cannot be queried; no live status query silently releases ownership. `validate --take-over` previews without changing the claim. Identity-free scheduler/terminal calls preserve the existing owner; they cannot take over. Claims and transfers share the tick lock, control writers use a separate short lock, and a changed generation makes an existing daemon exit before further provider work. Restrictive controls remain available from any thread. Offline fixtures cover competing processes, shared-state config paths, directory aliases, refused control-file symlinks, holds, generation changes, daemon exit, and scheduler behavior. No live thread transfer or model call was used for verification. See [one owner per loop](operations.md#one-owner-per-loop).
 
 Acceptance: enabling from a second fictional thread ID fails without changing ownership; `--take-over` succeeds and records the previous owner as handed off. Offline fixtures also cover conflicting `validate`/`daemon` calls and shared control-file paths. Define scheduler calls without a BB identity and stale ownership explicitly; an unavailable owner-status check must not silently authorize a takeover.
+
+#### 3.5. Children in error
+
+- [x] Tell the owning session when its direct children are in error, and record the count. Errored children are listed from status alone and are not running work. An idle parent's ordinary wake carries a fixed, count-only notice once per set of errored children; tick output, `status` and `timeline` show the count. keepgoing never retries, messages, stops or reads a child. Bounded by the existing idle-wake rules, loop-wide limits and holds. It adds a wake in one case only: an idle parent waiting on other running children is woken once per set, spaced by `min_wake_interval`. Offline adapter, decision-table, supervisor and CLI fixtures against a fake `bb`; unreleased; no live child failure. See [children in error](operations.md#children-in-error).
+- [ ] Decide whether an owner report is wanted for errored children, whether a parent that is itself active or in error should be told sooner, and whether keepgoing should ever recover a child itself. Today no report is sent, such a parent hears on its next wake, and recovery is left to the parent agent.
 
 ### 4. Start and run in the background
 

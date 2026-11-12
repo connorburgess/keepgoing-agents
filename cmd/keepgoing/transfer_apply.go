@@ -313,6 +313,7 @@ func resetTransferState(dir string) error {
 	st.PrimaryResetsAt = time.Time{}
 	st.LastSwitchBackTry = time.Time{}
 	st.ClearBriefs()
+	st.ErroredChildrenNoted = ""
 	if state.Save(dir, st) != nil {
 		return errors.New("could not reset primary observations")
 	}

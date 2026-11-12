@@ -76,3 +76,21 @@ func TestUnavailableGoalRefusesWithoutPrivateErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestWithChildErrorsIsFixedWording(t *testing.T) {
+	m := Message{Text: "Continue the fictional loop.", GoalID: "goal_example", GoalRevision: 2}
+	for _, n := range []int{0, -1} {
+		if got := WithChildErrors(m, n); got != m {
+			t.Fatalf("n=%d changed the message: %+v", n, got)
+		}
+	}
+	got := WithChildErrors(m, 3)
+	want := "Continue the fictional loop.\n\n[keepgoing:child-errors count=3]\n" +
+		"keepgoing notice: 3 direct child thread(s) of this thread were in an error state at this check. " +
+		"keepgoing has not retried, messaged or stopped them and has not read their content. " +
+		"You own that work: decide whether to retry or replace it. " +
+		"This notice is sent once per change in the set of errored child threads.\n"
+	if got.Text != want || got.GoalID != m.GoalID || got.GoalRevision != m.GoalRevision {
+		t.Fatalf("got %q", got.Text)
+	}
+}

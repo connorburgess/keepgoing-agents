@@ -549,6 +549,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
 		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
 		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.ErroredChildren > 0 {
+			fmt.Fprintf(w, "children:  %d direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", c.ErroredChildren)
+		}
 		if c.DryRun {
 			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
 		}
@@ -748,7 +751,8 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
-	st.ClearBriefs() // an operator's retarget starts a new episode
+	st.ClearBriefs()             // an operator's retarget starts a new episode
+	st.ErroredChildrenNoted = "" // children belong to the previous target
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 		e.errf("%v", err)
 		return exitFailed

@@ -49,6 +49,9 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
+	// ErroredChildrenNoted is decide.ErroredChildrenKey of the errored child
+	// set last announced to the session; empty when none is in error.
+	ErroredChildrenNoted string `json:"erroredChildrenNoted,omitempty"`
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
@@ -82,10 +85,12 @@ type Check struct {
 	ObservedTarget string    `json:"observedTarget,omitempty"`
 	ObservedState  string    `json:"observedState"`
 	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
-	Action         string    `json:"action"`
-	Reason         string    `json:"reason"`
-	Outcome        string    `json:"outcome"` // succeeded, failed, or dry_run
-	DryRun         bool      `json:"dryRun,omitempty"`
+	// ErroredChildren is how many direct child threads were in error.
+	ErroredChildren int    `json:"erroredChildren,omitempty"`
+	Action          string `json:"action"`
+	Reason          string `json:"reason"`
+	Outcome         string `json:"outcome"` // succeeded, failed, or dry_run
+	DryRun          bool   `json:"dryRun,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.

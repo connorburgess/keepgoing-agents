@@ -350,7 +350,9 @@ type Observation struct {
 	ActiveChildren     int    `json:"activeChildren"`
 	AwaitingChildren   int    `json:"awaitingChildren"`
 	ChildrenUnverified bool   `json:"childrenUnverified"`
-	Gone               bool   `json:"gone"`
+	// ErroredChildren counts direct children in error; omitted when zero.
+	ErroredChildren int  `json:"erroredChildren,omitempty"`
+	Gone            bool `json:"gone"`
 }
 
 // Observed copies normalized decision evidence, never raw provider output.
@@ -361,7 +363,7 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 	d := evidence.Clean(o.Evidence)
 	r := Observation{Source: d.Source, Category: d.Category, ProviderCode: d.Code, HTTPStatus: d.HTTPStatus, ExitCode: d.ExitCode, Availability: "observed", State: string(o.State), ErrorClass: string(o.ErrorClass),
 		Retry: "unavailable", Queued: o.Queued, Background: o.Background, AwaitingInput: o.AwaitingInput,
-		ActiveChildren: o.ActiveChildren, AwaitingChildren: len(o.AwaitingChildren), ChildrenUnverified: o.ChildrenUnverified, Gone: o.Gone}
+		ActiveChildren: o.ActiveChildren, AwaitingChildren: len(o.AwaitingChildren), ChildrenUnverified: o.ChildrenUnverified, ErroredChildren: min(len(o.ErroredChildren), 200), Gone: o.Gone}
 	if adapter == "bb" && len(o.AwaitingChildren) > 0 {
 		r.ErrorClass = "unavailable" // Child-input escalation skips the parent retry scan.
 	}
@@ -463,6 +465,7 @@ func clean(r Record) Record {
 	o.Background = max(0, o.Background)
 	o.ActiveChildren = max(0, o.ActiveChildren)
 	o.AwaitingChildren = max(0, o.AwaitingChildren)
+	o.ErroredChildren = min(max(0, o.ErroredChildren), 200)
 	if !r.CountersAvailable {
 		r.Nudges = 0
 		r.Reprompts = 0
@@ -495,6 +498,8 @@ func Cause(reason string) string {
 		return "retry_unverified"
 	case "child work running":
 		return "child_busy"
+	case decide.ChildErrorWakeReason:
+		return "child_error"
 	case "child status unverified":
 		return "child_unverified"
 	case "waiting on a person (pending interaction)":
@@ -523,7 +528,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

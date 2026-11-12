@@ -4,9 +4,13 @@
 package decide
 
 import (
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
 // State is the supervised session's coarse status.
@@ -71,6 +75,10 @@ type Observation struct {
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
 	AwaitingChildren []string
+	// ErroredChildren contains verified direct child IDs whose status is
+	// error. They are not running work and never change which action Decide
+	// picks; ChildErrorNote says when a wake should mention them.
+	ErroredChildren []string
 }
 
 // Control is the operator's gate.
@@ -102,6 +110,10 @@ type Input struct {
 	// the primary's limit has had time to reset. The tick still confirms the
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
+
+	// ErroredChildrenNoted: the current set of errored children has already
+	// been announced to the session in an earlier wake.
+	ErroredChildrenNoted bool
 
 	Nudges    int // nudges since progress or the most recent turn end
 	MaxNudges int
@@ -216,6 +228,9 @@ func Decide(in Input) Decision {
 		return none("waiting on a person (pending interaction)")
 	}
 	if o.ActiveChildren > 0 {
+		if childErrorWake(in) {
+			return Decision{Action: Wake, Reason: ChildErrorWakeReason}
+		}
 		return none("child work running")
 	}
 	if o.ChildrenUnverified {
@@ -325,6 +340,58 @@ func Attempted(a Action, c Counters, at time.Time) Counters {
 		c.LastRepromptAt = at
 	}
 	return c
+}
+
+// ChildErrorWakeReason is the reason of the one wake that errored children
+// cause by themselves.
+const ChildErrorWakeReason = "children in error while other children run"
+
+// childErrorWake is the single exception to "a parent with an active child is
+// busy". Some children are in error while others still run, and the parent
+// has not been told about this set: without a wake it would not hear until
+// the last active child finished. It applies only where an idle wake would
+// otherwise be allowed (idle, in the window, nothing queued or running in the
+// background, discovery complete, no provider retry pending), only once per
+// set of errored children, and no sooner than MinWakeInterval after the last
+// send, so a notice that fails to deliver is not retried on every check.
+func childErrorWake(in Input) bool {
+	o := in.Obs
+	return len(o.ErroredChildren) > 0 && !in.ErroredChildrenNoted &&
+		o.State == Idle && in.InWindow && !o.ChildrenUnverified &&
+		!o.RetryUnverified && !o.Retrying && o.Queued == 0 && o.Background == 0 &&
+		in.SinceWake >= in.MinWakeInterval
+}
+
+// ChildErrorNote returns how many errored children a message should announce,
+// or zero for none. Only a wake of an idle session carries the note, and only
+// once per set of errored children: the supervisor never retries, messages or
+// stops a child, so the owning session is told and decides. Every hold and
+// gate that stops the wake stops the note with it. The note rides on the
+// ordinary idle wake, or on the one wake childErrorWake allows.
+func ChildErrorNote(in Input, d Decision) int {
+	if d.Action != Wake || in.ErroredChildrenNoted || in.Obs.ChildrenUnverified {
+		return 0
+	}
+	return len(in.Obs.ErroredChildren)
+}
+
+// ErroredChildrenKey identifies a set of errored children regardless of
+// order or repeats. It is empty for an empty set and holds no child ID.
+func ErroredChildrenKey(ids []string) string {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if len(seen) == 0 {
+		return ""
+	}
+	unique := make([]string, 0, len(seen))
+	for id := range seen {
+		unique = append(unique, id)
+	}
+	sort.Strings(unique)
+	sum := sha256.Sum256([]byte(strings.Join(unique, "\n")))
+	return hex.EncodeToString(sum[:16])
 }
 
 // BriefAttempts records one target's rejected takeover briefs within the
