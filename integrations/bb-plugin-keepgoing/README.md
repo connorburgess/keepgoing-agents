@@ -4,7 +4,7 @@ A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows
 
 ## Install
 
-The next paired release is **CLI v0.1.5 + plugin v0.2.0**. These versions are prepared in source, not published yet; v0.1.4 remains the latest CLI release. After the v0.1.5 tag is published, a new plugin installation can use:
+Use **CLI v0.1.5 + plugin v0.2.0** for goal-aware setup. Verify that the [v0.1.5 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) are available before using this pinned installation command:
 
 ```sh
 bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.1.5 --plugin keepgoing
@@ -30,7 +30,7 @@ bb plugin config keepgoing set configs "/absolute/path/to/keepgoing.yaml"
 
 This flow is implemented on `main` and requires a keepgoing build containing `init --non-interactive --json` and stdin task input (after v0.1.1). The plugin must be rebuilt/reloaded to expose the UI and its host entry. The configured keepgoing executable and BB CLI must be available on each selected host; a bare binary name uses that host's PATH. Setup does not install tools or change logins.
 
-1. Open **Supervise this thread** in the context banner, or its button in the context card. Enter a loop name and task with completion criteria. The **Record a goal for this task** checkbox starts selected; it uses the loop name as the initial title and shares current goal references in later prompts. Goal setup needs an unreleased post-v0.1.4 CLI with `init --with-goal`; update the selected host binary or explicitly deselect the choice for the existing task-only flow. The plugin never silently falls back or upgrades the CLI.
+1. Open **Supervise this thread** in the context banner, or its button in the context card. Enter a loop name and task with completion criteria. The **Record a goal for this task** checkbox starts selected; it uses the loop name as the initial title and shares current goal references in later prompts. Goal setup needs CLI v0.1.5 with `init --with-goal`; update the selected host binary or explicitly deselect the choice for the existing task-only flow. The plugin never silently falls back or upgrades the CLI.
 2. Choose **Preview setup**. The server resolves the existing thread, provider, ready Git checkout, and connected host from BB metadata. Review the displayed project, target, configuration path, and operating limits. The initial UI uses one agent and default limits with no fallbacks; advanced setup remains available through the CLI.
 3. Choose **Create disabled setup**. The host runs the shared `init` command, with task text on stdin. For goal setup, one private `task.md` snapshot is referenced by goal revision 1 while `prompt.md` holds stable wake instructions. Configuration and prompt files go into the CLI's new private setup directory outside the checkout. No agent, probe, scheduler, or account is started or created.
 4. Review the shared doctor results. **Start background supervision** appears only when the saved target matches, BB identity diagnostics pass without errors, no control hold prevents start, and no responding daemon was found. Clicking it calls the existing `start --background` command on the recorded host. It enables supervision with the thread's ownership identity; it does not take over another owner or clear holds. Subsequent ticks may prompt the agent normally.
@@ -53,7 +53,7 @@ Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller
 
 ## Move supervision here
 
-Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 packaging remains unreleased. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 is distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
 
 1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.

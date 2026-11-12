@@ -8,17 +8,17 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 
 ## Current availability
 
-**Latest release: [v0.1.4](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.4).** Homebrew and release archives include the CLI features below. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
+**Version guide: CLI v0.1.5 + BB plugin v0.2.0.** Check [published releases](https://github.com/connorburgess/keepgoing-agents/releases) for available assets and `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
 
 | Surface | What you can use | Verification boundary |
 | --- | --- | --- |
-| Core CLI | Setup, start, controls, bounds, diagnostics, goals and BB transfer | Released in v0.1.4; broad offline tests, with partial live BB evidence |
+| Core CLI | Setup, start, controls, bounds, diagnostics, goals and BB transfer | v0.1.5 includes goal-aware setup; broad offline tests, with partial live BB evidence |
 | Headless Claude Code / Codex | New sessions, saved-session resume and configured account environments | Implemented; full live multi-turn, cancellation and separate-account handoff checks remain open |
 | BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
 | macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
 | Cursor / Antigravity | Integration plans | No built-in adapters or existing IDE-chat attachment today |
 
-Recent changes on `main` are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
+The v0.1.5 changes are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
 
 The complete live setup → multiple turns → hold → restart → recovery → completion walkthrough is still unfinished. Existing tests and package installation do not establish readiness to migrate other threads. The [roadmap](docs/roadmap.md) tracks those acceptance checks separately from implementation.
 
@@ -33,7 +33,7 @@ keepgoing version
 # brew update && brew upgrade keepgoing
 ```
 
-Or download a [release archive](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.4) for macOS, Linux or Windows and verify it against the published SHA-256 checksums. The [package verification record](docs/release-verification.md#v014-release-and-package-evidence) identifies the paths tested; not every OS/architecture has had a native installation walkthrough.
+Or download a [release archive](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) for macOS, Linux or Windows and verify it against the published SHA-256 checksums. The [package verification record](docs/release-verification.md) identifies the paths tested; not every OS/architecture has had a native installation walkthrough.
 
 With Go 1.24 or newer:
 
@@ -43,7 +43,7 @@ go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 
 `go install` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
-The next paired maintenance release, CLI v0.1.5 and BB plugin v0.2.0, is [being prepared](docs/releases/v0.1.5.md). It includes goal-aware setup; neither version is published yet. The plugin has a separate [pinned installation path](integrations/bb-plugin-keepgoing/README.md#install); Homebrew does not install it.
+[CLI v0.1.5 and BB plugin v0.2.0](docs/releases/v0.1.5.md) pair goal-aware setup with goal identity/revision visibility. If your package source still provides v0.1.4, use a published v0.1.5 archive or a development build for goal setup. The plugin has a separate [pinned installation path](integrations/bb-plugin-keepgoing/README.md#install); Homebrew does not install it.
 
 ### Development build
 
@@ -86,7 +86,7 @@ keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified
 
 `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds. Existing holds remain intact when starting or restarting a supervisor.
 
-Unreleased safety correction: repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; published v0.1.4 does not include the correction.
+In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
 
 The quick start needs v0.1.2 or newer. For v0.1.1 use its [tagged documentation](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1). Follow the [setup guide](docs/setup.md) for scripted setup, accounts, bounds, Windows command syntax and private paths. Advanced configurations are in [examples](examples/); release users should use examples from their matching tag.
 
@@ -106,7 +106,7 @@ Automatic model catalogue discovery and retirement/replacement policy remain [pl
 
 Task input is **copied once** into the generated `prompt.md`; changes to the original task file are not tracked. Future prompts reread the saved prompt file. Keep operating instructions stable and have the agent inspect current authorized sources before choosing work.
 
-For a revisioned task, [`goal create|revise|show`](docs/goals.md) stores private goal identity, title, references and revisions. Opt-in `loop.prompt_goal` includes the current specification in automatic prompts and handoffs. The goal commands and prompt transport are available in v0.1.4. On `main` (unreleased), `init --with-goal` and an explicit wizard choice create a goal referencing one private task snapshot, with stable wake policy and current-goal transport enabled. The rebuilt BB setup UI offers the same explicit goal choice; it requires the updated CLI and remains live-unverified. It does not update old queued messages, infer roadmap progress or verify acceptance.
+For a revisioned task, [`goal create|revise|show`](docs/goals.md) stores private goal identity, title, references and revisions. Opt-in `loop.prompt_goal` includes the current specification in automatic prompts and handoffs. The goal commands and prompt transport are available in v0.1.4. In v0.1.5, `init --with-goal` and an explicit wizard choice create a goal referencing one private task snapshot, with stable wake policy and current-goal transport enabled. The rebuilt BB setup UI offers the same explicit goal choice; it requires the updated CLI and remains live-unverified. It does not update old queued messages, infer roadmap progress or verify acceptance.
 
 The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate setup flow with preview, disabled creation, diagnostics and explicit start. It also supports held transfer for plugin-created loops. The CLI's [`transfer preview|apply|recover`](docs/transfer.md) preserves goals and holds while fencing stale targets. Both transfer paths remain fixture-tested rather than live-verified.
 

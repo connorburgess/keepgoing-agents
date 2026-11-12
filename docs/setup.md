@@ -28,9 +28,11 @@ Review the generated task and configuration, then run the exact `start --foregro
 
 The generated prompt tells the agent to honor newer user instructions, finish and verify the entire task before calling `complete`, and call `await-user` when only human-dependent work remains. The agent needs permission to run these control commands and write the private state directory. Setup preserves the provider's current sandbox and permission settings; it does not bypass a permission request. Completion holds across supervisor restarts until an explicit `resume`.
 
-## Optional goal during setup (unreleased)
+<a id="optional-goal-during-setup-unreleased"></a>
 
-On `main` after v0.1.4, `keepgoing init --with-goal` records a durable goal while creating the disabled setup. The interactive wizard asks whether to record and share a goal, suggesting yes; answer no or pass `--with-goal=false` to retain the existing prompt-only setup. Noninteractive callers must explicitly pass `--with-goal`; existing scripts retain their previous behavior. The rebuilt BB plugin exposes an explicit goal checkbox using the same flag; older plugins retain task-only setup. Published v0.1.4 does not support this flag.
+## Optional goal during setup
+
+In v0.1.5, `keepgoing init --with-goal` records a durable goal while creating the disabled setup. The interactive wizard asks whether to record and share a goal, suggesting yes; answer no or pass `--with-goal=false` to retain the existing prompt-only setup. Noninteractive callers must explicitly pass `--with-goal`; existing scripts retain their previous behavior. The rebuilt BB plugin exposes an explicit goal checkbox using the same flag; older plugins retain task-only setup. Published v0.1.4 does not support this flag.
 
 The task and completion criteria are copied once into private `task.md`. The goal title starts as the loop name; both objective and acceptance references point to that absolute snapshot path. `state/goal.json` holds the generated identity and revision 1, using the existing goal store. `prompt.md` contains stable operating instructions, and `loop.prompt_goal` explicitly shares the current goal specification in future automatic messages. Task text is not repeated in that scaffold or ordinary setup output. The agent must be able to read the private snapshot; setup does not grant filesystem access or change provider permissions. The supervisor does not read the goal's references or validate completion criteria.
 
@@ -95,8 +97,8 @@ Schema version 1 has these fields:
 | `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
 | `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
 | `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
-| `taskPath`, `goal` | Unreleased additive fields, present only with `--with-goal`. `taskPath` identifies the private snapshot; `goal` describes `promptContext: true`, `titleSource: "loop_name"`, `specificationSource: "task_snapshot"`, and, after creation only, `record` with generated ID/revision/state. Preview has no saved record. Private task text and goal references are omitted. |
-| `taskBinding` | `snapshot`: task input is imported once into `promptPath` (or unreleased goal setup's `taskPath`); the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
+| `taskPath`, `goal` | Additive fields in v0.1.5, present only with `--with-goal`. `taskPath` identifies the private snapshot; `goal` describes `promptContext: true`, `titleSource: "loop_name"`, `specificationSource: "task_snapshot"`, and, after creation only, `record` with generated ID/revision/state. Preview has no saved record. Private task text and goal references are omitted. |
+| `taskBinding` | `snapshot`: task input is imported once into `promptPath` (or `taskPath` for goal setup in v0.1.5); the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
 | `taskSource` | `inline`, `file`, or `stdin`; never the task text or source filename. |
 | `primary` | An `agent` reference (adapter, provider, group, and applicable thread/workdir/model fields) and `account` selection (`inherited` or `explicit_directory`). BB inherits the existing thread's login/model. |
 | `fallbacks` | Ordered array of `{id, target}`, each target with the same shape as `primary`; empty array for a single agent. |
