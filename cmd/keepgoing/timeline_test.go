@@ -127,7 +127,7 @@ func TestTimelineOfflineSummaryChronologyAndRedaction(t *testing.T) {
 		t.Fatal("timeline changed runtime files")
 	}
 	// Display limiting does not hide warnings or change source-wide summaries.
-	limited := readTimeline(dir, time.Now().UTC(), time.Hour, 1)
+	limited := readTimeline(dir, time.Now().UTC(), time.Hour, 1, timelineFilter{Kinds: []string{}})
 	if limited.Omitted != 5 || len(limited.Events) != 1 || limited.Summary.NotificationWarnings != 1 || limited.Summary.LastHoldEntry.Sequence != 3 {
 		t.Fatal(limited)
 	}
@@ -213,7 +213,7 @@ func TestTimelineClockOrderingDryRunsAndControlPrecedence(t *testing.T) {
 	r.ControlBefore = r.ControlAfter
 	appendTimelineRecord(t, dir, r)
 	control.Save(dir, control.File{Stop: true, Paused: true, AwaitingUser: true, Completed: true, Note: "private"})
-	got := readTimeline(dir, now, time.Minute, 320)
+	got := readTimeline(dir, now, time.Minute, 320, timelineFilter{Kinds: []string{}})
 	if got.Control.State != "stop_requested" || got.Summary.LatestCheck.Sequence != 3 || got.Summary.LatestCheck.Freshness != "stale" || got.Summary.LastObservedActive.Sequence != 1 || got.Summary.LastSendAction != nil || got.Summary.LastHoldEntry != nil {
 		t.Fatal(got.Summary, got.Control)
 	}
@@ -267,7 +267,7 @@ func TestTimelineRetentionAndLegacyEvidence(t *testing.T) {
 	for i := 0; i < incident.MaxRecords+1; i++ {
 		appendTimelineRecord(t, dir, incident.Record{Kind: "tick", CheckStartedAt: at.Add(time.Duration(i) * time.Second), Action: "none", Outcome: "succeeded"})
 	}
-	got := readTimeline(dir, at, time.Hour, 3)
+	got := readTimeline(dir, at, time.Hour, 3, timelineFilter{Kinds: []string{}})
 	if got.Sources[0].Dropped != 1 || got.Sources[0].Retained != 256 || got.Omitted != 253 || len(got.Events) != 3 {
 		t.Fatal(got.Sources, got.Omitted)
 	}
@@ -276,7 +276,7 @@ func TestTimelineRetentionAndLegacyEvidence(t *testing.T) {
 	j := incident.Journal{SchemaVersion: 1, NextSequence: 2, Records: []incident.Record{{Sequence: 1, CheckStartedAt: at, Action: "none", Observation: incident.Observed(decide.Observation{State: decide.Active}, "bb", false)}}}
 	b, _ := json.Marshal(j)
 	os.WriteFile(filepath.Join(legacy, incident.FileName), b, 0600)
-	got = readTimeline(legacy, at, time.Hour, 40)
+	got = readTimeline(legacy, at, time.Hour, 40, timelineFilter{Kinds: []string{}})
 	if got.Events[0].Incident.Decisions.Availability != "unavailable" || got.Events[0].Incident.Observation.Source != "unavailable" {
 		t.Fatal(got.Events)
 	}

@@ -64,7 +64,7 @@ func TestOldJournalsUpgradeAsTicksWithoutControlBackfill(t *testing.T) {
 			t.Fatal(err)
 		}
 		j, err = Load(dir)
-		if err != nil || j.SchemaVersion != 4 || j.Dropped != 3 || j.NextSequence != 6 || j.Records[0].Kind != "tick" || j.Records[1].Kind != "control" {
+		if err != nil || j.SchemaVersion != 5 || j.Dropped != 3 || j.NextSequence != 6 || j.Records[0].Kind != "tick" || j.Records[1].Kind != "control" {
 			t.Fatal(j, err)
 		}
 		if version == 3 && j.Records[0].Decisions.Availability != "captured" {
