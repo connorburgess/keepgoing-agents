@@ -117,6 +117,16 @@ Idle wakes follow the supervisor's check cadence, subject to other gates. `min_w
 
 ## limits
 
+These three optional fields are the only loop-wide bounds on repeated automatic work. None has a default: with all three omitted, an idle session is woken on every eligible ordinary check for as long as the loop stays enabled and no control hold applies. The `progress` and `errors` caps bound one stalled turn or one error episode and reset afterwards. See [bounds on repeated work](operations.md#bounds-on-repeated-work).
+
+| Field | Default | Holds the loop when |
+| --- | --- | --- |
+| `deadline` | none | A check starts at or after this absolute time. |
+| `max_sends` | none (`0` disables) | This many automatic send attempts have been reserved in the state directory. |
+| `no_progress_timeout` | none (`0` disables) | The Git fingerprint of `progress.repositories` has not changed for this long. |
+
+A reached limit persists an awaiting-user hold; it does not cancel a running or queued turn. Stop, pause and the other control holds take precedence over all three. When several are reached at once the hold names the first of `deadline`, `max_sends`, `no_progress_timeout`.
+
 Optional `loop.limits.deadline` is an absolute RFC3339 timestamp including a timezone, for example:
 
 ```yaml

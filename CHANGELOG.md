@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Document the [bounds on repeated work](docs/operations.md#bounds-on-repeated-work): per-turn nudge and re-prompt caps versus the optional loop-wide `deadline`, `max_sends` and `no_progress_timeout`, their precedence, and what they do not cover. No behavior change. New exhaustive decision tables and a repeated-turn supervisor fixture back the description with fakes only.
+
 - Windows control loads and daemon polling open read-only snapshots with delete sharing, paired with POSIX-style replacement for control/goal writes. This requires Windows 10 version 1709 or newer and a filesystem supporting that operation; unsupported operations fail without a legacy fallback. Deterministic fixtures retain an open reader across replacement, compare an incompatible legacy handle and preserve originals on failure. Other readers can still block a save; no retry or general write guarantee is added.
 
 - Extend the local recovery smoke with opt-in `--include-cursor` for source builds. A fictional Cursor CLI verifies unknown-error recovery and exact session reuse across actual held-daemon crashes/restarts, without provider calls. Published v0.1.5 remains compatible with the default four-adapter smoke.
