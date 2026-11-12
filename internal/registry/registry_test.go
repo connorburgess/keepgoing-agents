@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
@@ -121,16 +121,18 @@ func TestRegistryConcurrentWritersAndLock(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("loop-%d", i)
-			for attempt := 0; attempt < 200; attempt++ {
+			// Retry for as long as another writer holds the lock. A holder always
+			// finishes, so this ends; a fixed attempt budget only measured how slow
+			// the filesystem was, and failed when sixteen short writes were not.
+			for {
 				_, err := Add(dir, name, filepath.Join(dir, name+".yaml"), filepath.Join(dir, name))
 				if errors.Is(err, lock.ErrHeld) {
-					time.Sleep(time.Millisecond)
+					runtime.Gosched()
 					continue
 				}
 				errs <- err
 				return
 			}
-			errs <- errors.New("writers never made progress")
 		}(i)
 	}
 	wg.Wait()
