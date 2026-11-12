@@ -35,6 +35,17 @@ Apply these checks when changing runners, stop commands, service integrations, i
 
 The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
+## Timing-sensitive tests
+
+Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.
+
+- **A deadline that times the host, not the code.** macOS assesses a file the first time it is executed and serialises those assessments across the machine. A new shell script takes about half a second to start on an idle machine and many seconds when other processes are also starting new executables; later runs take milliseconds. CPU load alone does not reproduce this. Stand-in CLIs are therefore installed with `internal/testexec`, which runs each script once in a mode that exits before its body while the fixture is built, and hard-links scripts whose content is shared by many fixtures. Replace such a script with the same helper, never by writing through its path. New fixtures that execute a script under a deadline should use it. Compiled fixtures and scripts in service tests are not covered.
+- **A retry budget that is a deadline in disguise.** A fixed number of short retries measures how slow the filesystem is. Retry on the condition itself and let the test timeout bound a real hang.
+- **Two ready cases in one `select`.** Go chooses at random, so code that must not act after cancellation has to check the context when it receives the other event. `TestDaemonWaitNeverPollsAfterCancellation` holds a poll past several ticks to force both cases ready.
+- **A reader blocking a writer on Windows.** An ordinary open handle prevents a file from being replaced. `TestStateSnapshotSavesWhileReadersPoll` and `TestStateSnapshotSaveReplacesFileHeldByReader` run natively in the Windows job; local macOS execution and cross-compilation say nothing about them.
+
+Reproduce before changing anything: repeat the one test with `-count`, then add the pressure that matches the suspected cause (CPU, filesystem writes, or many first executions of new files). Record the failure rate before and after, and name what was not reproduced. Raising a timeout is a fix only when the deadline is shown to be the sole defect.
+
 ## Run discovery contract tests (D1)
 
 `go test -race ./internal/rundiscovery` exercises only the unreleased internal identity and run-boundary contract. Tables cover enrollment and explicit opening, legacy adoption, completion with and without a known run, reopen identity, scheduled triggers with and without an explicit start, unchanged runs across holds, checks, retries, restart events, goal revisions and transfers, distinct attempts across repeated wakes, retry and restart, late/duplicate/conflicting adapter returns, one run recording several sessions and successive runs recording the same session, goal and invocation links, registry references, dry-run immutability, malformed inputs and clock rollback. Tests use fictional caller-supplied IDs and timestamps; no providers, processes, files or controls are used.

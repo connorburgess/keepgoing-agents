@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On Windows, `state.json` is now read with delete sharing and replaced with the POSIX-style rename already used for control files. A status reader holding the file open could make a daemon tick fail after it had acted, losing the record of a stop or pause check and leaving the daemon waiting its full interval. The same Windows 10 version 1709 and filesystem requirements apply; other runtime records are unchanged. The daemon also no longer polls for wake notices once it has been told to exit. Native Windows fixtures cover saving while readers poll and while a reader holds the file.
+
 - `validate` and `status` now say when a loop has no loop-wide limit. With `deadline`, `max_sends` and `no_progress_timeout` all unset, `validate` prints a warning on stderr and `status` shows it on a new `bounds:` line; otherwise both name the configured limits. `status --json` adds `workBounds`. No default limit is applied, and behavior and exit codes are unchanged. Offline fixtures only.
 
 - `timeline` now works as a navigable event log. Incident history schema 5 records the hashed target after each check, per-check probe results, manual retargets and limit-wait causes, so handoffs, switch-backs and retargets show both ends. New `--kind` (including `moves`), `--target`, `--since` and `--until` filters apply to text and JSON (timeline schema 2); summaries still use all retained evidence. No task text, notes, thread IDs or aliases are stored. Older binaries refuse the upgraded journal. Offline fixtures only; work moved outside keepgoing and reporting a long limit wait remain roadmap items.
