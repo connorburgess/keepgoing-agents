@@ -35,6 +35,12 @@ Apply these checks when changing runners, stop commands, service integrations, i
 
 The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
+## Run discovery contract tests (D1)
+
+`go test -race ./internal/rundiscovery` exercises only the unreleased internal identity and run-boundary contract. Tables cover enrollment and explicit opening, legacy adoption, completion with and without a known run, reopen identity, scheduled triggers with and without an explicit start, unchanged runs across holds, checks, retries, restart events, goal revisions and transfers, distinct attempts across repeated wakes, retry and restart, late/duplicate/conflicting adapter returns, one run recording several sessions and successive runs recording the same session, goal and invocation links, registry references, dry-run immutability, malformed inputs and clock rollback. Tests use fictional caller-supplied IDs and timestamps; no providers, processes, files or controls are used.
+
+A `Restart` event test shows the reducer keeps the run for the same in-memory values. It is not a daemon-restart or durable-state test. No production caller, storage transaction, migration, ID-history uniqueness check, invocation deduplication, provider-session validation or CLI/GUI resolver exists yet. Those need separate D2–D6 fixtures and live evidence where applicable. D1 remains unchecked on its restart criterion, and README artwork stays deferred.
+
 ## On a machine with Go
 
 ```sh

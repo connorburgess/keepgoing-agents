@@ -267,6 +267,35 @@ func decideError(in Input) Decision {
 	return Decision{Reprompt, "error: " + string(classOrUnknown(o.ErrorClass))}
 }
 
+// Counters are the per-episode send records the command layer persists and
+// feeds back into Input: Nudges, Reprompts, SinceWake and SinceLastReprompt.
+type Counters struct {
+	Nudges         int
+	Reprompts      int
+	LastSendAt     time.Time
+	LastRepromptAt time.Time
+}
+
+// Attempted returns the counters after the command layer has called the
+// adapter for a wake, nudge or re-prompt at the given time. It deliberately
+// takes no outcome: a send that failed, was unsupported or is uncertain may
+// still have been delivered, so it spends the same cap and starts the same
+// spacing as one that returned cleanly. Other actions leave the counters alone.
+func Attempted(a Action, c Counters, at time.Time) Counters {
+	switch a {
+	case Wake:
+		c.LastSendAt = at
+	case Nudge:
+		c.LastSendAt = at
+		c.Nudges++
+	case Reprompt:
+		c.LastSendAt = at
+		c.Reprompts++
+		c.LastRepromptAt = at
+	}
+	return c
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
