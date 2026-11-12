@@ -75,7 +75,7 @@ func TestIncidentRecordsFailedHandoffProbesWithoutAMove(t *testing.T) {
 	reg.Save(w.dir)
 	runTick(t, w, t0)
 	r := lastIncident(t, w)
-	if r.Action == "handoff" || r.TargetKey != incident.TargetKey(state.Primary) || r.TargetKeyAfter != r.TargetKey || len(r.Probes.Results) != 2 {
+	if r.Action == "handoff" || r.Cause != "other" || r.TargetKey != incident.TargetKey(state.Primary) || r.TargetKeyAfter != r.TargetKey || len(r.Probes.Results) != 2 {
 		t.Fatalf("%+v", r)
 	}
 	for i, id := range []string{"claude-other", "codex-main"} {
@@ -100,5 +100,32 @@ func TestIncidentLabelsALongLimitWaitWithFailoverDisabled(t *testing.T) {
 	// Recording the wait changes nothing: no send, no hold, no report.
 	if len(p.sent) != 0 || r.ControlAfter.AwaitingUser || len(w.reports) != 0 {
 		t.Fatalf("sent=%v control=%+v reports=%s", p.sent, r.ControlAfter, w.reportTypes())
+	}
+}
+
+// With a reset beyond the short-wait window the engine first proposes a
+// handoff; when every candidate fails its probe the re-evaluation waits, and
+// the supervisor appends context to that reason.
+func TestIncidentLabelsALimitWaitAfterAFailedHandoff(t *testing.T) {
+	w := newWorld(t, true, true)
+	obs := limited
+	obs.ResetsAt = t0.Add(4 * time.Hour)
+	p := w.primary(obs)
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+	}
+	reg.Save(w.dir)
+	res := runTick(t, w, t0)
+	if res.Action != "none" || res.Reason != "limit resets in 4h0m0s; no confirmed fallback (no fallback could take over; see probes and warnings)" {
+		t.Fatalf("%+v", res)
+	}
+	r := lastIncident(t, w)
+	e := r.Decisions.Evaluations
+	if r.Cause != "limit_no_fallback" || len(e) != 2 || e[0].Action != "handoff" || e[0].Cause != "other" || e[1].Stage != "handoff_failed" || e[1].Cause != "limit_no_fallback" || e[1].Input.ResetIn != 4*time.Hour {
+		t.Fatalf("%+v", r)
+	}
+	if r.TargetKeyAfter != r.TargetKey || len(r.Probes.Results) != 2 || len(p.sent) != 0 {
+		t.Fatalf("%+v sent=%v", r, p.sent)
 	}
 }

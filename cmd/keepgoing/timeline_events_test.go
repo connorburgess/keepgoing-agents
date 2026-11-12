@@ -175,6 +175,54 @@ func TestTimelineReportsAnOngoingLimitWaitAndLegacyTargets(t *testing.T) {
 	if moves := timelineJSON(t, dir, "--kind", "moves"); len(moves.Events) != 0 {
 		t.Fatalf("%+v", moves.Events)
 	}
+	// A dry run that would have waited is the latest check, but it is not a
+	// wait: the count, the summary and the next step all agree.
+	r.Action, r.Cause = "none", "limit_no_fallback"
+	appendTimelineRecord(t, dir, r)
+	got = timelineJSON(t, dir)
+	if got.Summary.LatestCheck.Sequence != 3 || got.Summary.LimitWaitChecks != 1 || got.Summary.LastLimitWait.Sequence != 1 || strings.Contains(strings.Join(got.NextSteps, "\n"), "waiting for a provider limit to reset") {
+		t.Fatalf("%+v %v", got.Summary, got.NextSteps)
+	}
+}
+
+func TestTimelineDoesNotCountAFailedHandoffAsAMove(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	enabled := &incident.Controls{Enabled: true}
+	primary, fallback := incident.TargetKey(state.Primary), incident.TargetKey("fictional-fallback")
+	r := incident.Record{Kind: "tick", Adapter: "bb", TargetKey: primary, TargetKeyAfter: fallback, Probes: incident.Probes{Availability: "captured"}, CheckStartedAt: now.Add(-5 * time.Minute),
+		Action: "handoff", Outcome: "succeeded", Cause: "other", ControlBefore: enabled, ControlAfter: enabled, Observation: incident.Observation{Availability: "observed", State: "error", ErrorClass: "rate_limit"}}
+	appendTimelineRecord(t, dir, r) // 1: a real move
+	// 2: the handoff errored and the target stayed where it was.
+	r.CheckStartedAt, r.Outcome, r.TargetKeyAfter = now.Add(-4*time.Minute), "failed", primary
+	appendTimelineRecord(t, dir, r)
+	// 3: the target changed even though a later step of the check failed.
+	r.CheckStartedAt, r.TargetKeyAfter = now.Add(-3*time.Minute), fallback
+	appendTimelineRecord(t, dir, r)
+	// 4 and 5: pre-schema-5 records have no second target; only a succeeded outcome counts.
+	r.CheckStartedAt, r.TargetKeyAfter, r.Probes, r.Action = now.Add(-2*time.Minute), "", incident.Probes{}, "switch_back"
+	appendTimelineRecord(t, dir, r)
+	r.CheckStartedAt, r.Outcome = now.Add(-time.Minute), "succeeded"
+	appendTimelineRecord(t, dir, r)
+	// 6: a later failed handoff must not replace the last real move.
+	r.CheckStartedAt, r.Outcome, r.TargetKeyAfter, r.Action = now, "failed", primary, "handoff"
+	appendTimelineRecord(t, dir, r)
+	got := timelineJSON(t, dir, "--kind", "moves")
+	if !reflect.DeepEqual(timelineSequences(got), []uint64{1, 3, 5}) || got.Summary.LastTargetMove.Sequence != 5 {
+		t.Fatalf("%v %+v", timelineSequences(got), got.Summary.LastTargetMove)
+	}
+	all := timelineJSON(t, dir)
+	for _, i := range []int{1, 3, 5} {
+		if !reflect.DeepEqual(all.Events[i].Kinds, []string{"check"}) {
+			t.Fatalf("event %d: %v", i+1, all.Events[i].Kinds)
+		}
+	}
+	if d := all.Events[1].Description; !strings.Contains(d, "action handoff; outcome failed") || !strings.Contains(d, "the target did not change, so this is not a recorded move") {
+		t.Fatal(d)
+	}
+	if strings.Contains(all.Events[0].Description, "not a recorded move") || strings.Contains(all.Events[3].Description, "not a recorded move") {
+		t.Fatal("a move or a legacy record was described as unchanged")
+	}
 }
 
 func TestTimelineFilterArgumentsAreRefusedWithoutEcho(t *testing.T) {

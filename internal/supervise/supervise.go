@@ -87,6 +87,7 @@ type tick struct {
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
+	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
 	progress            *state.Progress
 	observedTarget      string
 	awaitingInput       bool

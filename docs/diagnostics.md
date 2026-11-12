@@ -240,8 +240,8 @@ Unreleased source; **offline fixtures only**. Schema 5 adds the evidence needed 
 
 - `targetKeyAfter` on tick records: the hashed alias of the active target after the check. It differs from `targetKey` only when that check handed off or switched back, so a move records both ends.
 - `probes` on tick records: up to eight results per check, each with a hashed candidate alias, the tier (`scheduled` or `exact`), pass/fail and a normalized error class. `captured` with no results means the check ran no probe. Probe output, models, latency and reset times stay in the existing private health records.
-- `kind: retarget`: a successful manual `retarget`, with the hashed source and destination aliases and `outcome: target_saved`. The `--note` text stays in `runs.jsonl` and never enters this history. A retarget observes, probes and sends nothing, and the record claims none of that.
-- Causes `limit_wait`, `limit_no_fallback` and `limit_failover_disabled` replace `other` when a check sent nothing because a provider limit has a known reset. The reset interval remains in the recorded decision input (`resetInNs`).
+- `kind: retarget`: a successful manual `retarget`, with the hashed source and destination aliases and `outcome: target_saved`. The `--note` text stays in `runs.jsonl` and never enters this history. A retarget observes, probes and sends nothing, and the record claims none of that. Retargeting to the already-active target moves nothing and appends no record.
+- Causes `limit_wait`, `limit_no_fallback` and `limit_failover_disabled` replace `other` when a check sent nothing because a provider limit has a known reset. The cause is the decision engine's typed rule, not a match on reason text, so it also covers a wait decided after every handoff candidate failed its probe or after a failed switch-back probe. The reset interval remains in the recorded decision input (`resetInNs`).
 
 These are hashes of configured aliases, exactly as `targetKey` already was. They name no thread, session, account or model, and they do not anonymize a guessable alias. Loading schema 1–4 is read-only and leaves these fields `unavailable`; the next append upgrades the file. Older binaries refuse a schema-5 journal, as with earlier upgrades. The 256-record and 512 KiB caps are unchanged; the new fields add roughly 50 bytes to an ordinary check and about 130 bytes per probe result, so probe-heavy history reaches the byte cap slightly sooner. A retarget whose history append fails keeps the saved target, prints a fixed warning and exits 1; it is not rolled back.
 
@@ -297,7 +297,7 @@ keepgoing timeline -c keepgoing.yaml
 keepgoing timeline -c keepgoing.yaml --json --limit 100 --stale-after 1h
 # Unreleased source: who had the loop, and when it changed hands.
 keepgoing timeline -c keepgoing.yaml --kind moves --since 168h
-keepgoing timeline -c keepgoing.yaml --kind limit_wait,hold --target primary --json
+keepgoing timeline -c keepgoing.yaml --kind limit_wait,probe --target primary --json
 # Inspect copied/private records even when configuration cannot be loaded:
 keepgoing timeline --state-dir /private/example-loop --json
 ```
@@ -326,7 +326,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | --- | --- |
 | `check` | Any recorded check. `dry_run` marks one that executed no action; a dry run is never labelled as a send or a move. |
 | `wake`, `nudge`, `reprompt`, `stop` | The check's final recorded action. An action is not proof that a message was delivered. |
-| `handoff`, `switch_back` | A check that moved the loop to a fallback or back to the primary. From schema 5 the row shows both targets. |
+| `handoff`, `switch_back` | A check that moved the loop to a fallback or back to the primary. From schema 5 the row shows both targets, and the kind requires them to differ: a handoff or switch-back that failed without changing the target is only a `check`. Older records lack the second target, so the kind requires a succeeded outcome. |
 | `retarget` | A saved manual retarget. |
 | `ownership` | A control save that changed the loop owner, a daemon takeover, or a transfer step. Owner identities are withheld. |
 | `probe` | A check that ran at least one scheduled or exact probe. |
@@ -336,7 +336,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | `notification` | A delivery record. |
 
 - `--kind` takes a comma-separated list; an event matches when it has any listed kind. `moves` is shorthand for `handoff,switch_back,retarget,ownership`: every recorded change of who has the loop.
-- `--target` takes `primary`, a fallback id, or a 64-character target key copied from JSON. An alias is hashed locally and never echoed; the report shows only the key. It matches a record's target before or after the check and any probed candidate. Control saves and deliveries record no target, so a target filter hides them. Text rows name `primary` and shorten any other key to `fallback <first 8 characters>`; a hash cannot be turned back into a fallback id.
+- `--target` takes `primary`, a fallback id, or a 64-character target key copied from JSON. An alias is hashed locally and never echoed; the report shows only the key. It matches a record's target before or after the check and any probed candidate. Control saves and deliveries record no target, so a target filter hides them, including `hold`, `control` and `ownership` events that came from a control command; combine `--target` with check-based kinds. Text rows name `primary` and shorten any other key to `fallback <first 8 characters>`; a hash cannot be turned back into a fallback id.
 - `--since` and `--until` take an RFC 3339 time or a positive duration meaning that long before the read time (`--since 72h`). Bounds are inclusive and compare the local timestamps used for ordering.
 
 Invalid filters exit 2 with a fixed message that does not repeat the rejected value. A filter that matches nothing is a successful, empty view, not evidence that nothing happened.

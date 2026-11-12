@@ -36,7 +36,7 @@ func TestRetargetRecordKeepsOnlyHashedTargets(t *testing.T) {
 		t.Fatal("note or alias leaked")
 	}
 	// A retarget without both hashed targets is not a recorded move.
-	for _, bad := range []func(*Record){func(r *Record) { r.TargetKeyAfter = "" }, func(r *Record) { r.TargetKey = "fictional-fallback" }} {
+	for _, bad := range []func(*Record){func(r *Record) { r.TargetKeyAfter = "" }, func(r *Record) { r.TargetKey = "fictional-fallback" }, func(r *Record) { r.TargetKeyAfter = r.TargetKey }} {
 		r := sample()
 		r.Kind, r.TargetKeyAfter = "retarget", TargetKey("fictional-fallback")
 		bad(&r)
@@ -141,8 +141,8 @@ func TestSchemaFourUpgradeLeavesTargetMovesUnavailable(t *testing.T) {
 	}
 }
 
-// The limit-wait causes are derived from the engine's own reasons, so a
-// reworded rule fails here instead of silently becoming "other".
+// The limit-wait causes come from the engine's typed rule, so neither a
+// reworded reason nor text appended by the supervisor turns them into "other".
 func TestLimitWaitCausesFollowTheDecisionEngine(t *testing.T) {
 	limited := decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
 	in := decide.Input{Obs: limited, Control: decide.Control{Enabled: true}, InWindow: true, MaxReprompts: 2}
@@ -156,8 +156,13 @@ func TestLimitWaitCausesFollowTheDecisionEngine(t *testing.T) {
 	} {
 		in.Failover = tc.failover
 		d := decide.Decide(in)
-		if d.Action != decide.None || Cause(d.Reason) != tc.want || cleanCause(tc.want) != tc.want {
+		if d.Action != decide.None || DecisionCause(d) != tc.want || cleanCause(tc.want) != tc.want {
 			t.Fatalf("%+v -> %q, want %s", tc.failover, d.Reason, tc.want)
+		}
+		appended := d
+		appended.Reason += " (no fallback could take over; see probes and warnings)"
+		if DecisionCause(appended) != tc.want {
+			t.Fatalf("appended reason lost %s", tc.want)
 		}
 		var h Decisions
 		h.Add("normal", in, d)
@@ -165,8 +170,12 @@ func TestLimitWaitCausesFollowTheDecisionEngine(t *testing.T) {
 			t.Fatalf("%+v", h.Evaluations[0])
 		}
 	}
-	if Cause("limit resets in a private reason") != "other" {
-		t.Fatal("unrecognised limit reason was labelled")
+	// Reason text alone never labels a wait, and an unknown rule is not stored.
+	if Cause("limit resets in 4h0m0s; waiting") != "other" || DecisionCause(decide.Decision{LimitWait: "PRIVATE_RULE"}) != "unavailable" {
+		t.Fatal("limit wait labelled without a recognised typed rule")
+	}
+	if d := decide.Decide(decide.Input{Obs: decide.Observation{State: decide.Idle}, Control: decide.Control{Enabled: true}, InWindow: true}); d.LimitWait != "" {
+		t.Fatalf("%+v", d)
 	}
 }
 

@@ -273,17 +273,6 @@ func Cause(reason string) string {
 	case "waiting on a person (pending interaction)":
 		return "input"
 	}
-	// A limit wait names only which rule waited; the reset time stays a decision input.
-	if strings.HasPrefix(reason, "limit resets in ") {
-		switch {
-		case strings.HasSuffix(reason, "; failover disabled; waiting"):
-			return "limit_failover_disabled"
-		case strings.HasSuffix(reason, "; no confirmed fallback"):
-			return "limit_no_fallback"
-		case strings.HasSuffix(reason, "; waiting"):
-			return "limit_wait"
-		}
-	}
 	for _, c := range []struct{ prefix, code string }{
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
 		{"no Git progress within ", "git_limit"}, {"no progress after ", "stall_limit"},
@@ -295,6 +284,15 @@ func Cause(reason string) string {
 		}
 	}
 	return "other"
+}
+
+// DecisionCause prefers the engine's typed limit-wait rule, which survives any
+// text the supervisor appends to a reason, over matching the reason itself.
+func DecisionCause(d decide.Decision) string {
+	if d.LimitWait != "" {
+		return cleanCause(string(d.LimitWait))
+	}
+	return Cause(d.Reason)
 }
 
 func cleanCause(value string) string {

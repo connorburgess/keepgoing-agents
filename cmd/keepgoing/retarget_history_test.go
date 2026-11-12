@@ -16,6 +16,13 @@ import (
 func TestRetargetIsRetainedWithoutItsNoteOrAliases(t *testing.T) {
 	f := newFixture(t)
 	dir := filepath.Join(f.dir, "state")
+	// Retargeting to the already-active target moves nothing and records nothing.
+	if code, out, errs := f.run("retarget", "primary"); code != exitOK || !strings.Contains(out, "target primary (was primary)") {
+		t.Fatalf("no-op retarget: %d %s %s", code, out, errs)
+	}
+	if j, err := incident.Load(dir); err != nil || len(j.Records) != 0 {
+		t.Fatal(j, err)
+	}
 	if code, out, errs := f.run("retarget", "claude-other-account", "--note", "PRIVATE_RETARGET_NOTE"); code != exitOK {
 		t.Fatalf("retarget: %d %s %s", code, out, errs)
 	}

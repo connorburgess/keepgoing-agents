@@ -684,6 +684,10 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "retarget", Reason: note, Target: id, Extra: map[string]any{"from": from}})
 	fmt.Fprintf(e.stdout, "%s: target %s (was %s)\n", cfg.Loop.Name, id, from)
 	// The bounded history keeps hashed aliases only; the note stays in runs.jsonl.
+	// Retargeting to the active target moves nothing and is not recorded as a move.
+	if from == id {
+		return exitOK
+	}
 	// The target is already saved, so a history failure is reported, not undone.
 	if err := incident.Append(cfg.Loop.StateDir, incident.Record{Kind: "retarget", CheckStartedAt: time.Now().UTC(), Build: version,
 		TargetKey: incident.TargetKey(from), TargetKeyAfter: incident.TargetKey(id)}); err != nil {

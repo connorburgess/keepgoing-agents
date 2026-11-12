@@ -156,7 +156,8 @@ func validRecord(r Record) bool {
 	if r.CheckStartedAt.IsZero() {
 		return false
 	}
-	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter)) {
+	// A retarget is a move: both hashed targets are known and they differ.
+	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter) || r.TargetKey == r.TargetKeyAfter) {
 		return false
 	}
 	return r.Kind != "control" || (r.ControlChange != nil && !r.ControlChange.SaveObservedAt.IsZero() && r.ControlBefore != nil && r.ControlAfter != nil)

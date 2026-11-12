@@ -290,8 +290,18 @@ func timelineKinds(r incident.Record) []string {
 			return append(kinds, "dry_run")
 		}
 		switch r.Action {
-		case "wake", "nudge", "reprompt", "handoff", "switch_back", "stop":
+		case "wake", "nudge", "reprompt", "stop":
 			kinds = append(kinds, r.Action)
+		case "handoff", "switch_back":
+			// A move needs evidence that the target changed. Schema-5 records carry
+			// both targets; older ones can only offer a succeeded outcome.
+			moved := r.TargetKeyAfter != r.TargetKey
+			if r.TargetKeyAfter == "unavailable" {
+				moved = r.Outcome == "succeeded"
+			}
+			if moved {
+				kinds = append(kinds, r.Action)
+			}
 		}
 		if len(r.Probes.Results) > 0 {
 			kinds = append(kinds, "probe")
@@ -334,7 +344,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
-	observations, targetRecords, latestCheckCause := 0, 0, ""
+	observations, targetRecords, latestCheckWaits := 0, 0, false
 	for _, rec := range j.Records {
 		at, basis := rec.CheckStartedAt, "check_started_at"
 		if rec.Kind == "control" && rec.ControlChange != nil {
@@ -349,7 +359,8 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 			targetRecords++
 		}
 		if rec.Kind == "tick" {
-			latestCheckCause = rec.Cause
+			// Matches the limit_wait kind and count: a dry run is not a wait.
+			latestCheckWaits = containsString(entry.Kinds, "limit_wait")
 		}
 		for _, k := range entry.Kinds {
 			switch k {
@@ -439,7 +450,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 	if r.Summary.LatestCheck == nil || r.Summary.LatestCheck.Freshness != "recent" {
 		r.NextSteps = append(r.NextSteps, "Check host clocks and the supervisor/scheduler execution context. Use doctor with an explicitly selected scheduler if needed; missing or stale records alone do not identify the cause.")
 	}
-	if timelineLimitWait(latestCheckCause) {
+	if latestCheckWaits {
 		r.NextSteps = append(r.NextSteps, "The latest recorded check was waiting for a provider limit to reset. keepgoing sends nothing and reports nothing while it waits, however far away the reset is; see the recorded reset input on that check and decide whether to wait, retarget or review failover settings.")
 	}
 	if r.Summary.NotificationWarnings > 0 {
@@ -567,6 +578,11 @@ func describeIncident(r incident.Record) string {
 			result = "failed (" + p.ErrorClass + ")"
 		}
 		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
+	}
+	if r.Action == "handoff" || r.Action == "switch_back" {
+		if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter == r.TargetKey && !r.DryRun && r.Outcome != "dry_run" {
+			text += "; the target did not change, so this is not a recorded move"
+		}
 	}
 	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
