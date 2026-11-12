@@ -67,7 +67,7 @@ These priorities are planning decisions, not new verification claims. Maintain s
 
 ### Current release and verification status
 
-- [ ] Publish and verify the paired CLI v0.1.5 / BB plugin v0.2.0 setup release. Version-specific notes and a tagged plugin collection are prepared; package smoke checks now cover prompt-only and goal-aware setup for BB/Claude/Codex. Candidate builds, publication/download checks, matching Homebrew and live plugin installation are separate evidence gates. See [release preparation](release-verification.md#v015-paired-release-preparation).
+- [ ] Publish and verify the paired CLI v0.1.5 / BB plugin v0.2.0 setup release. Version-specific notes and a tagged plugin collection are prepared; all six RC1 archives passed checksum/inventory checks, and the unpacked macOS arm64 candidate passed setup/recovery stand-ins. A clean production-dependency-only plugin build passed. These are local candidate fixtures; final builds, publication/download checks, matching Homebrew and live plugin installation remain separate evidence gates. See [release preparation](release-verification.md#v015-paired-release-preparation).
 
 Use the [tagged release and package evidence](release-verification.md#v014-release-and-package-evidence) when interpreting the implementation checkboxes below.
 
