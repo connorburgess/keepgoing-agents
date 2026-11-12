@@ -93,8 +93,27 @@ keepgoing fallbacks list  -c /private/example-loop/keepgoing.yaml
 
 Until a probe passes, the candidate is not healthy and is not used; `fallbacks list` names candidates that were never probed.
 
-Not covered yet: detecting accounts or logins, listing models for headless CLIs, BB threads on providers other than `claude-code` and `codex`, process/Cursor candidates, removing or reordering existing candidates, turning handoff on or off as a separate command, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
+Not covered yet: detecting accounts or logins, listing models for headless CLIs, BB threads on providers other than `claude-code` and `codex`, process/Cursor candidates, removing a loop's last fallback, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
 
+## Change or remove a fallback
+
+Unreleased source; v0.1.5 does not include these commands. They need a loop that already has fallbacks.
+
+```sh
+keepgoing fallbacks handoff on  -c /private/example-loop/keepgoing.yaml   # or: off
+keepgoing fallbacks move claude-pool-b --to 1 -c /private/example-loop/keepgoing.yaml
+keepgoing fallbacks remove claude-pool-b -c /private/example-loop/keepgoing.yaml
+```
+
+Each command prints what will change, the handoff order (marking the target in use now) and the files it will update, then asks; the default answer is `no`. `--yes` writes without asking, `--dry-run` only previews, and `--json` (with `--yes` or `--dry-run`) prints a `fallback_handoff`, `fallback_remove` or `fallback_move` object with `schemaVersion: 1` and an `outcome` of `preview`, `changed` or `unchanged`. Nothing is run: no agent, model or check. The guards are those of `fallbacks add`: the owning BB thread, no pending transfer, the tick lock, unchanged files since the preview, and no symbolic links.
+
+- **`handoff on|off`** sets `errors.failover_on` to `[rate_limit]` or `[]`, keeping the rest of `keepgoing.yaml` and its comments. `on` does nothing when handoff is already on, including for other error classes or through the default of an absent key; `off` does nothing when it is already off. Turning handoff off does not move a loop that is running on a fallback back to its primary; use `keepgoing retarget primary` for that. Scheduled checks of the fallbacks continue either way.
+- **`move ID --to N`** changes only the order, which decides which fallback is tried first at the next handoff. Recorded health is kept and the loop stays on its current target. A comment above an entry moves with it.
+- **`remove ID`** takes the entry out, with the comment above it. The entry's saved check results are deleted from `health.json`, so a fallback added later under the same id starts with no history. Saved output from failed checks under `probe-failures/` is left in place, and the supervisor's own `state.json` is not edited. It refuses the fallback the loop is running on (move the loop first with `keepgoing retarget primary`) and a loop's only fallback, because a fallbacks file cannot be empty; turn handoff off instead. If the fallbacks left cannot meet the redundancy rule, the preview warns that handoffs will be refused.
+
+Both files are re-emitted as described for `fallbacks add`: other entries, rules and comments are kept, permission bits are preserved, indentation is normalized, CRLF becomes LF and blank lines between entries are dropped.
+
+## Candidates
 ## Candidates
 
 Each candidate is a full agent definition plus an id and a probe:

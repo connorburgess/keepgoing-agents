@@ -103,7 +103,7 @@ func TestFallbacksAddCreatesFileAndKeepsHandoffOff(t *testing.T) {
 			t.Fatalf("fallbacks file mode %v", info.Mode().Perm())
 		}
 	}
-	for _, want := range []string{"Handoff order", "<- new", "OFF. The fallback is saved but never used automatically.", "--id claude-pool-b --exact --dry-run", "may cost money", "failover_on: [rate_limit]", "does not log in"} {
+	for _, want := range []string{"Handoff order", "<- new", "OFF. The fallback is saved but never used automatically.", "--id claude-pool-b --exact --dry-run", "may cost money", "fallbacks handoff on", "does not log in"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
