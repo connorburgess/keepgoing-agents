@@ -43,6 +43,8 @@ go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 
 `go install` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
+The next paired maintenance release, CLI v0.1.5 and BB plugin v0.2.0, is [being prepared](docs/releases/v0.1.5.md). It includes goal-aware setup; neither version is published yet. The plugin has a separate [pinned installation path](integrations/bb-plugin-keepgoing/README.md#install); Homebrew does not install it.
+
 ### Development build
 
 On macOS/Linux, keep a source build separate from the installed release:

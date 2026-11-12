@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prepare CLI v0.1.5 / BB plugin v0.2.0 release notes and a repository plugin collection for explicit tagged installs. The package smoke check now covers prompt-only and goal-aware setup for all three supported agents, with zero provider calls. These releases are not published yet.
+
 - Repeated control writes advance the loaded timestamp even when the wall clock repeats or moves backwards. This prevents a repeated pause from leaving identical evidence for an older registered-resume ticket. Deterministic clock fixtures and the existing resume regressions cover the correction.
 
 - The separately rebuilt BB plugin offers an explicit goal checkbox in setup, binds previews to that choice, and shows recorded goal identity/revision in setup and expanded status without private task text. Goal creation requires the post-v0.1.4 CLI; older builds must use the explicitly deselected task-only path. The preview now correctly distinguishes idle checks from stall-nudge spacing. SDK/host/DOM fixtures only; live deployment and first-loop acceptance remain open.

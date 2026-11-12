@@ -4,6 +4,17 @@ A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows
 
 ## Install
 
+The next paired release is **CLI v0.1.5 + plugin v0.2.0**. These versions are prepared in source, not published yet; v0.1.4 remains the latest CLI release. After the v0.1.5 tag is published, a new plugin installation can use:
+
+```sh
+bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.1.5 --plugin keepgoing
+bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
+```
+
+Confirm BB's displayed source/tag before installation. The repository collection selects this package; BB installs production dependencies and builds its server/app/host entries. It needs Git and network access, but not a separate global npm install. The command does not install the keepgoing CLI, configure a loop or start supervision. New UI-created loops need no manual `configs` entry. Existing managed installs use `bb plugin outdated` and `bb plugin update`; a pinned tag remains pinned, so inspect the recorded source and update policy rather than expecting it to follow new tags. Local path development installs use the path/build workflow below. No live Git installation or installed-plugin acceptance is claimed yet.
+
+For a local source build:
+
 ```sh
 cd integrations/bb-plugin-keepgoing
 npm install
@@ -26,7 +37,7 @@ This flow is implemented on `main` and requires a keepgoing build containing `in
 
 The **Setup** control / expanded banner can refresh diagnostics later. Pause/resume/stop route to the recorded host. Resume explicitly clears holds; it does not start a missing daemon. New disabled setups use the separate start action instead of a misleading Resume button. Stop/completion behavior remains in keepgoing, with no separate loop skill required.
 
-The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in the private prompt file after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
+The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in private `task.md` for goal setup or `prompt.md` for task-only setup after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
 
 Existing configured supervision or a failed status lookup blocks creating another loop through this flow. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
 
@@ -42,7 +53,7 @@ Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller
 
 ## Move supervision here
 
-Implemented on `main` after v0.1.3, unreleased and fixture-tested. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 packaging remains unreleased. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
 
 1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
