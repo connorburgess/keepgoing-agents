@@ -9,6 +9,12 @@ There are two ways to run keepgoing. Pick one per loop.
 
 Ending the daemon does not stop the agent. To stop the agent, run `keepgoing stop`.
 
+### Control-change detection
+
+Unreleased source includes a content fingerprint alongside the regular control file's modification time and size when checking for changes between daemon passes. This catches same-size edits whose filesystem timestamp was preserved or did not advance. Published v0.1.5 and earlier use metadata alone and can wait until the normal interval in that case. Scheduler-driven ticks are unaffected: each invocation already reloads controls.
+
+The fingerprint streams the opened regular file's observed length with bounded memory and stays in memory; neither control text nor its digest is added to logs, status or reports. Missing, unreadable and non-regular files do not count as valid control evidence. A changed signature only requests a new check: ownership, configuration-source and parsed control checks still govern actions. Unchanged files do not trigger repeated early checks. This is change detection for local files, not an atomic snapshot across external in-place writers or a guarantee against hostile filesystem replacement. A saved stop can still wait for an in-flight check or adapter command; it does not kill the current command immediately.
+
 ### Loaded configuration checks
 
 After acquiring `tick.lock`, ticks, daemon notification polls, retargets, and executing manual fallback probes verify that `keepgoing.yaml` and its loaded `fallbacks.yaml` still contain the exact bytes originally parsed. Changed, missing, unreadable, or non-regular sources suppress provider work. Ticks, retargets, and probe execution return exit 75 with a reload/retry diagnostic; early polls wait for the next ordinary reload instead of querying the stale target. Rejected work leaves control, state, health, history, and cursors unchanged. A skipped tick does not advance the last-check timestamp; a responsive daemon alone does not prove checks are succeeding.

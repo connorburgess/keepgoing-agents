@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,11 +204,33 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 }
 
 func controlSignature(stateDir string) string {
-	info, err := os.Stat(filepath.Join(stateDir, control.FileName))
+	path := filepath.Join(stateDir, control.FileName)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return "missing"
 	}
-	return fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+	metadata := fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+	if !info.Mode().IsRegular() {
+		return metadata + ":unavailable"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return metadata + ":unavailable"
+	}
+	defer f.Close()
+	// A cooperating control writer replaces the whole regular file atomically.
+	// Read metadata from the opened file, then hash only that observed size with
+	// bounded memory. The digest stays local; it is never a diagnostic payload.
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return metadata + ":unavailable"
+	}
+	metadata = fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
+	h := sha256.New()
+	if _, err := io.CopyN(h, f, info.Size()); err != nil {
+		return metadata + ":unavailable"
+	}
+	return fmt.Sprintf("%s:%x", metadata, h.Sum(nil))
 }
 
 type statusOut struct {
