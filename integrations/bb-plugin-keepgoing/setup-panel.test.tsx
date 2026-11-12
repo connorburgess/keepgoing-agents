@@ -80,3 +80,35 @@ test("lost creation response retains the destination without a replay button", a
     assert.equal(ui.queryByRole("button", { name: "Start background supervision" }), null);
   } finally { cleanup(); }
 });
+
+test("goal choice is explicit, invalidates preview on change, and shows recorded revision after create", async () => {
+  const calls: Array<{ action: string; withGoal?: boolean }> = [];
+  const call = async (input: { action: string; withGoal?: boolean }): Promise<SetupResult> => {
+    calls.push(input);
+    if (input.action === "preview") return { ok: true, message: "Preview only", plan: { ...plan, ...(input.withGoal ? { withGoal: true } : {}) }, ticket: "ticket" };
+    if (input.action === "create") return { ok: true, record, canStart: true, message: "Saved disabled", goalState: "recorded", goal: { id: "goal_0123456789abcdef0123456789abcdef", revision: 1, state: "recorded" } };
+    return { ok: true, message: "Enter a task" };
+  };
+  const ui = render(<SetupPanel threadId="thr_example" call={call} onChanged={() => {}} />);
+  try {
+    await ui.findByText("Enter a task");
+    const choice = ui.getByRole("checkbox", { name: "Record a goal for this task" }) as HTMLInputElement;
+    assert.equal(choice.checked, true);
+    fireEvent.change(ui.getByLabelText("Task and completion criteria"), { target: { value: "Fictional task and acceptance" } });
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    await ui.findByText(/Goal: record revision 1/);
+    assert.ok(ui.getByText(/Idle threads can wake on a check/));
+    fireEvent.click(choice);
+    assert.equal(ui.queryByRole("button", { name: "Create disabled setup" }), null);
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    await ui.findByText(/Task: copied into wake instructions/);
+    assert.equal(calls.at(-1)?.withGoal, false);
+    fireEvent.click(choice);
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    await ui.findByRole("button", { name: "Create disabled setup" });
+    fireEvent.click(ui.getByRole("button", { name: "Create disabled setup" }));
+    await ui.findByText(/Goal: goal_0123456789abcdef0123456789abcdef.*revision 1/);
+    assert.equal(calls.at(-1)?.withGoal, true);
+    assert.ok(!calls.some(c => c.action === "start"));
+  } finally { cleanup(); }
+});

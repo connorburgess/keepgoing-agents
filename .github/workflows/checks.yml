@@ -46,9 +46,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build CLI for plugin contract fixtures
+        working-directory: .
+        run: go build -o "$RUNNER_TEMP/keepgoing-plugin-test" ./cmd/keepgoing
       - run: npm ci --no-audit --no-fund
       - run: npx tsc --noEmit
       - run: npm test
+        env:
+          KEEPGOING_TEST_BINARY: ${{ runner.temp }}/keepgoing-plugin-test
 
   windows-acl:
     name: Windows access diagnostics

@@ -8,7 +8,7 @@ const text = z.string().min(1).max(4096);
 export const hostContract = defineRpcContract({
   transfer: { input: transferHostInput, output: z.object({ code: z.number().int(), data: z.unknown() }) },
   init: {
-    input: z.object({ bin: text, target: targetSchema, name: text, task: z.string().max(262144), dryRun: z.boolean() }),
+    input: z.object({ bin: text, target: targetSchema, name: text, task: z.string().max(262144), dryRun: z.boolean(), withGoal: z.boolean().optional() }),
     output: z.object({ plan: planSchema }),
   },
   command: {

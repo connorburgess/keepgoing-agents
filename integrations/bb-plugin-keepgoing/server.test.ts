@@ -17,7 +17,8 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
   const environment = { id: "env_example", projectId: "proj_example", hostId: host.id, path: "/projects/example", isGitRepo: true, status: "ready", hostLifecycle: "active", lifecycle: { phase: "active" } };
   const operations: string[] = [];
   const agent = { adapter: "bb", provider: "codex", bbThread: thread.id };
-  const state = { loop: "example-loop", target: "primary", controlState: "disabled", control: {}, window: "open", state: {}, primaryAgent: agent, targetAgent: agent, daemon: { state: "not_recorded" } };
+  const goal = { id: "goal_0123456789abcdef0123456789abcdef", revision: 1, state: "recorded" };
+  const state = { goal: { ...goal, title: "PRIVATE TITLE" }, loop: "example-loop", target: "primary", controlState: "disabled", control: {}, window: "open", state: {}, primaryAgent: agent, targetAgent: agent, daemon: { state: "not_recorded" } };
   const { bb, harness } = createFakePluginHost({
     pluginId: "keepgoing", settings: { keepgoingPath: "keepgoing", configs: "" },
     sdk: { threads: { get: async () => thread }, environments: { get: async () => environment }, hosts: { get: async () => host } },
@@ -25,8 +26,9 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
       assert.equal(hostId, host.id);
       if (method === "init") {
         const p = hostContract.init.input.parse(input); operations.push(p.dryRun ? "preview" : "create");
+        assert.equal(p.withGoal, true);
         assert.equal(p.target.project, environment.path); assert.equal(p.target.provider, "codex");
-        return { plan: { loop: p.name, project: p.target.project, configPath: "/private/example-loop/keepgoing.yaml", stateDir: "/private/example-loop/state", threadId: p.target.threadId, provider: p.target.provider, limits: { interval: "5m", wakeEvery: "1h", stallAfter: "30m", backoff: "10m", maxNudges: 3, maxReprompts: 3 } } };
+        return { plan: { withGoal: true, loop: p.name, project: p.target.project, configPath: "/private/example-loop/keepgoing.yaml", stateDir: "/private/example-loop/state", threadId: p.target.threadId, provider: p.target.provider, limits: { interval: "5m", wakeEvery: "1h", stallAfter: "30m", backoff: "10m", maxNudges: 3, maxReprompts: 3 } } };
       }
       const p = hostContract.command.input.parse(input); operations.push(p.operation);
       return { code: 0, data: p.operation === "doctor" ? { schemaVersion: 1, targetAgent: agent, checks: [{ id: "agent.primary.target", status: "ok", message: "Fixture verified" }] } : p.operation === "status" ? state : null };
@@ -35,12 +37,14 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
   let activeHarness = harness;
   try {
     await plugin(bb);
-    const preview = setupResult.parse(await harness.behavior.callRpc("setup", { action: "preview", threadId: thread.id, name: "example-loop", task: "Fictional task" }));
+    const preview = setupResult.parse(await harness.behavior.callRpc("setup", { action: "preview", threadId: thread.id, name: "example-loop", task: "Fictional task", withGoal: true }));
     assert.equal(preview.ok, true);
-    const created = setupResult.parse(await harness.behavior.callRpc("setup", { action: "create", threadId: thread.id, ticket: preview.ticket, task: "Fictional task" }));
+    const created = setupResult.parse(await harness.behavior.callRpc("setup", { action: "create", threadId: thread.id, ticket: preview.ticket, task: "Fictional task", withGoal: true }));
+    assert.deepEqual(created.goal, goal); assert.ok(!JSON.stringify(created).includes("PRIVATE TITLE"));
     assert.ok(created.record); assert.equal(created.canStart, true); assert.ok(!operations.includes("start"));
     const views = await harness.behavior.callRpc("forThread", { threadId: thread.id }) as { loops: { managedId: string }[] };
     assert.equal(views.loops[0].managedId, created.record.id);
+    assert.ok(JSON.stringify(views).includes(goal.id)); assert.ok(!JSON.stringify(views).includes("PRIVATE TITLE"));
     const wrong = await harness.behavior.callRpc("control", { configPath: "/private/other.yaml", managedId: created.record.id, action: "resume" }) as { ok: boolean };
     assert.equal(wrong.ok, false); assert.ok(!operations.includes("resume"));
     await harness.behavior.callRpc("control", { configPath: created.record.configPath, managedId: created.record.id, action: "pause" });
