@@ -62,7 +62,7 @@ type DecisionInput struct {
 
 func (h *Decisions) Add(stage string, in decide.Input, out decide.Decision) {
 	o := in.Obs
-	e := Evaluation{Stage: stage, Action: string(out.Action), Cause: Cause(out.Reason), Input: DecisionInput{
+	e := Evaluation{Stage: stage, Action: string(out.Action), Cause: DecisionCause(out), Input: DecisionInput{
 		Control: *Gate(in.Control), State: string(o.State), ErrorClass: string(o.ErrorClass),
 		Queued: o.Queued, Background: o.Background, Gone: o.Gone, Retrying: o.Retrying,
 		RetryUnverified: o.RetryUnverified, AwaitingInput: o.AwaitingInput,

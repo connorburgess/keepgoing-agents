@@ -86,6 +86,8 @@ type tick struct {
 	incidentTarget      string
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
+	incidentProbes      incident.Probes
+	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
 	progress            *state.Progress
 	observedTarget      string
 	awaitingInput       bool
@@ -489,6 +491,7 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		t.reg.Record(c.ID, r)
 		t.keepFailure(c.ID, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+		t.incidentProbes.Add(c.ID, string(r.Tier), r.OK, r.ErrorClass)
 		if !r.OK {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
 		}
@@ -520,6 +523,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		t.reg.Record(id, r)
 		t.keepFailure(id, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+		t.incidentProbes.Add(id, string(r.Tier), r.OK, r.ErrorClass)
 		note.Tried = append(note.Tried, id)
 		if !r.OK {
 			continue
@@ -588,6 +592,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	t.keepFailure(state.Primary, r)
 	t.res.Probes = append(t.res.Probes, ProbeNote{ID: state.Primary, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	t.incidentProbes.Add(state.Primary, string(r.Tier), r.OK, r.ErrorClass)
 	if !r.OK {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
 		return false, nil
