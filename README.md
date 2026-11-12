@@ -88,6 +88,8 @@ keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified
 
 In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
 
+Unreleased source also checks control-file contents between daemon passes, so equal file size and modification time cannot hide a pause or stop. Published v0.1.5 still detects those changes through file metadata alone. Scheduler-driven ticks already reload controls on every invocation; see [control detection](docs/operations.md#control-change-detection).
+
 The quick start needs v0.1.2 or newer. For v0.1.1 use its [tagged documentation](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1). Follow the [setup guide](docs/setup.md) for scripted setup, accounts, bounds, Windows command syntax and private paths. Advanced configurations are in [examples](examples/); release users should use examples from their matching tag.
 
 ## How it connects to models

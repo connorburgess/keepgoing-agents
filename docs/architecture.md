@@ -92,6 +92,8 @@ Claims and takeover hold the tick lock, then the control lock. Every runtime con
 
 A daemon binds to the current owner ID and generation (including no owner). It checks the binding under the tick lock before ticks and early polls, and exits when it changes. Takeover cannot overlap an in-flight tick; it must retry after that tick releases the lock. Generations prevent a transfer back to a previous thread from reviving its old daemon. No BB thread is stopped, spawned, or re-parented by ownership handling.
 
+Between daemon passes, the command layer compares control metadata and an in-memory SHA-256 digest of the opened regular file's observed bytes. The streamed digest prevents equal size/mtime from masking a change, without adding a persisted counter or exposing control content. Unreadable/non-regular observations remain unavailable; the signature only requests a full check and never authorizes provider work. Cooperating control writers use atomic replacement; arbitrary concurrent in-place or hostile filesystem changes are outside this snapshot guarantee.
+
 ## Starting a daemon
 
 The command layer implements `start`: hold the daemon lock, acquire the tick lock, validate local setup and ownership, open diagnostics, then claim/enable under the control lock without clearing holds. It releases the tick lock and enters the same daemon loop as `daemon`, retaining the daemon lock and owner generation for its lifetime. A competing start cannot enable or change an existing daemon's controls.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The daemon now checks control-file contents as well as metadata between passes, so same-size pause/stop edits with unchanged modification times request a fresh check. The private digest is never logged; existing ownership, holds and configuration checks still apply. Deterministic native fixtures cover in-place and atomic replacements, changes during polling, and unchanged-file waits.
+
 ## 0.1.5 (2026-11-12)
 
 - CLI v0.1.5 / BB plugin v0.2.0 include version-specific notes and a repository plugin collection for explicit tagged installs. The package smoke check now covers prompt-only and goal-aware setup for all three supported agents, with zero provider calls. See [release verification](docs/release-verification.md) for publication, package and live-acceptance evidence.
