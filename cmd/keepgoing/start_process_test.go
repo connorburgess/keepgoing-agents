@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -136,16 +138,52 @@ loop:
 		}
 		t.Error("daemon did not release its process lock")
 	})
-	wait := func(predicate func() bool) {
+	// Only synthetic files created by this test are eligible for failure output.
+	// Read before killing the child so live daemon evidence is still available.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		info, err := daemoninfo.Query(ctx, stateDir)
+		t.Logf("fixture daemon: %+v; query error: %v", info, err)
+		for _, name := range []string{control.FileName, state.FileName, "incidents.json", state.LogName} {
+			f, err := os.Open(filepath.Join(stateDir, name))
+			if err != nil {
+				t.Logf("fixture %s: %v", name, err)
+				continue
+			}
+			b, err := io.ReadAll(io.LimitReader(f, 16*1024))
+			f.Close()
+			t.Logf("fixture %s (first 16 KiB): %s; read error: %v", name, b, err)
+		}
+		for _, name := range []string{"status", "stop", "resume"} {
+			_, err := os.Stat(filepath.Join(dir, name))
+			t.Logf("fixture %s marker: %v", name, err)
+		}
+	})
+	waitFor := func(stage string, budget time.Duration, predicate func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+		started := time.Now()
+		for deadline := started.Add(budget); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
 			if predicate() {
+				t.Logf("stage %s reached after %s", stage, time.Since(started))
 				return
 			}
 		}
-		t.Fatal("background daemon did not reach expected state")
+		t.Fatalf("background daemon did not reach %s", stage)
 	}
-	wait(func() bool {
+	wait := func(stage string, predicate func() bool) {
+		t.Helper()
+		waitFor(stage, 5*time.Second, predicate)
+	}
+	query := func() (daemoninfo.Snapshot, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		return daemoninfo.Query(ctx, stateDir)
+	}
+	wait("paused check", func() bool {
 		st, _ := state.Load(stateDir)
 		return st.LastCheck != nil && st.LastCheck.Reason == "paused"
 	})
@@ -180,7 +218,7 @@ loop:
 	// requiring a race-dependent zero exit. Never replay the control command.
 	for _, operation := range []string{"pause", "stop"} {
 		var diagnosticLock *lock.Lock
-		wait(func() bool {
+		wait(operation+" diagnostic lock", func() bool {
 			var err error
 			diagnosticLock, err = lock.AcquireNamed(stateDir, "incident")
 			if errors.Is(err, lock.ErrHeld) {
@@ -201,9 +239,33 @@ loop:
 		if err != nil || !saved.Enabled || !saved.Paused || (saved.Stop != (operation == "stop")) || saved.Ownership == nil || saved.Ownership.ThreadID != "thr_start_fixture" {
 			t.Fatalf("%s did not preserve the saved hold/owner: %+v %v", operation, saved, err)
 		}
+		if operation == "pause" {
+			// Settle the repeated pause before stop, so a later checking phase
+			// cannot be the earlier pause pass. The daemon's ordinary interval
+			// is one hour; no unrelated pass should start during this test.
+			wait("saved pause observed and waiting", func() bool {
+				st, err := state.Load(stateDir)
+				info, queryErr := query()
+				return err == nil && st.LastCheck != nil && st.LastCheck.Reason == "paused" &&
+					!st.CheckedAt.Before(saved.UpdatedAt) && queryErr == nil && info.Phase == "waiting"
+			})
+		}
 	}
-	wait(func() bool { _, err := os.Stat(filepath.Join(dir, "stop")); return err == nil })
-	wait(func() bool {
+	// Check scheduling promptly, independently of OS subprocess startup latency.
+	// A fast completed stop also proves the control was handled. No provider
+	// work runs in the earlier hold.
+	wait("stop check started", func() bool {
+		info, err := query()
+		st, stateErr := state.Load(stateDir)
+		return (err == nil && info.Phase == "checking") || (stateErr == nil && st.StopRequestedSent)
+	})
+	// Observe and stop each have the configured adapter timeout. Completion is
+	// a separate assertion from noticing control within the five-second bound.
+	waitFor("stop marker", 2*config.DefaultProcessTimeout+5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(dir, "stop"))
+		return err == nil
+	})
+	wait("successful stop record", func() bool {
 		st, _ := state.Load(stateDir)
 		return st.StopRequestedSent && st.LastCheck != nil && st.LastCheck.Outcome == "succeeded"
 	})
