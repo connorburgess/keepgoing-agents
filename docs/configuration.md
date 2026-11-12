@@ -148,8 +148,8 @@ This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to 
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `max_reprompts` | `3` | Re-prompt attempts, delivered or not, allowed while the session stays in error, before the loop waits for a person. |
-| `backoff` | `10m` | Minimum gap between re-prompt attempts. |
+| `max_reprompts` | `3` | Re-prompt attempts, delivered or not, allowed while the session stays in error, before the loop waits for a person. In unreleased source it is also the cap on [rejected takeover briefs](operations.md#rejected-takeover-briefs) per fallback, and on rejected switch-back briefs. |
+| `backoff` | `10m` | Minimum gap between re-prompt attempts, and between handoff briefs to a fallback that rejected one. |
 | `failover_on` | `[rate_limit]` | Error classes that may trigger a handoff: `rate_limit`, `auth`, `overloaded`, or `network`. `unknown` is not allowed. |
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
 
