@@ -247,7 +247,7 @@ CLI sessions and existing graphical IDE chats are separate capabilities. Officia
 
 #### Antigravity track
 
-- [ ] A1: Implement the internal NDJSON input encoder and lifecycle parser with fictional fixtures. Preserve exact conversation identity, classify documented WAITING separately, and reject missing/conflicting/duplicate terminal evidence. Ignore response text and model-produced structured output.
+- [x] A1: Implement the internal NDJSON input encoder and lifecycle parser with fictional fixtures. Exact conversation identity, documented WAITING, conflicting/duplicate/malformed evidence and model-text isolation are covered by offline tests. [Internal foundation](antigravity.md) only, unreleased: no registered adapter, process execution or live Antigravity verification. Permission and runtime gates remain below.
 - [ ] A2: Resolve the permission contract before general automatic looping. Headless approval denial can return success and only print notices to stderr; neither transcript parsing nor invented WAITING is acceptable. Establish version-specific typed evidence or a reviewed ACP permission bridge.
 - [ ] A3: Implement the detached primary-only runner with private structured stdin, exact conversation resume, owned stop and no duplicate sends. Add restart/hold/error fixtures and explicitly unavailable probes/limits where evidence is missing.
 - [ ] A4: Add guided setup/diagnostics and then record an authorized live two-turn/resume/stop/permission walkthrough with version/platform evidence.

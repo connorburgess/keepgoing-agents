@@ -126,6 +126,8 @@ Documentation review: print mode accepts stdin and structured session/results, b
 
 ### Antigravity
 
+An [internal protocol foundation](antigravity.md) now encodes private stdin prompts and parses one-turn lifecycle/session evidence with offline fixtures. It is unreleased and is not a registered adapter. Structured permission handling, detached runtime integration, setup and live verification remain open.
+
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents print mode and machine-readable output. The [CLI reference](https://antigravity.google/docs/cli/reference/) documents conversation-ID resume. Authentication, cancellation, permission state, and structured quota reporting still require verification for this integration.
 
 Documentation review: the headless guide supports a structured user message on stdin with `--input-format stream-json --output-format stream-json`, closed after one turn, and documented terminal states including `WAITING`. However, denied approvals can still end with success and only a stderr notice. The initial internal encoder/parser can proceed with fictional fixtures, but general unattended setup must wait for a verified typed permission contract or reviewed [ACP bridge](https://antigravity.google/docs/ide/extensions/acp). Neither default permissions nor a sandbox flag proves that contract. No quota/reset classification is inferred from text. These are documented contracts, not installed-version or live keepgoing verification.
