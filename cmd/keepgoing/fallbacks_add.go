@@ -1,0 +1,1204 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"gopkg.in/yaml.v3"
+)
+
+type fallbackAddOptions struct {
+	cfgPath, agent, account, group, model, probeModel, id, workdir string
+	position, probeCap                                             int
+	enableHandoff, nonInteractive, dryRun, asJSON                  bool
+	set                                                            map[string]bool // flags given on the command line
+}
+
+// fallbackAddPlan is the resolved change. Nothing in it has been written.
+type fallbackAddPlan struct {
+	cfg           *config.Config
+	cfgPath       string
+	fallbacksPath string
+	createFile    bool
+	candidate     config.Candidate
+	order         []config.Candidate // resulting handoff order, new candidate included
+	position      int                // 1-based position of the new candidate
+	rules         *config.Fallbacks  // redundancy and probe policy that will apply
+	wasLive       bool               // handoff could already happen before this change
+	failoverOn    []string           // resulting errors.failover_on
+	failoverWrite bool               // this command writes errors.failover_on
+	failoverWas   string             // the setting being replaced, for the preview
+	warnings      []string
+	notes         []string
+	fallbacksYAML []byte
+	configYAML    []byte // nil when keepgoing.yaml is left untouched
+}
+
+// Success-only integration contract. Account-directory paths, environment
+// values, executable paths and raw configuration never enter this report.
+// Next commands are argv arrays and are never executed here.
+type fallbackAddReport struct {
+	SchemaVersion int                  `json:"schemaVersion"`
+	Kind          string               `json:"kind"`    // fallback_add
+	Outcome       string               `json:"outcome"` // preview or added
+	Loop          string               `json:"loop"`
+	Candidate     fallbackAddCandidate `json:"candidate"`
+	Primary       fallbackAddTarget    `json:"primary"`
+	Order         []fallbackAddTarget  `json:"order"`
+	Handoff       fallbackAddHandoff   `json:"handoff"`
+	Redundancy    fallbackAddRule      `json:"redundancy"`
+	Files         fallbackAddFiles     `json:"files"`
+	Next          fallbackAddNext      `json:"next"`
+	Warnings      []string             `json:"warnings"`
+	Notes         []string             `json:"notes"`
+	Limitations   []string             `json:"limitations"`
+}
+
+type fallbackAddCandidate struct {
+	ID         string `json:"id"`
+	Adapter    string `json:"adapter"`
+	Provider   string `json:"provider"`
+	Group      string `json:"group"`
+	Model      string `json:"model"`      // empty: the CLI's configured default, unresolved
+	Account    string `json:"account"`    // inherited or explicit_directory
+	ProbeKind  string `json:"probeKind"`  // claude or codex
+	ProbeModel string `json:"probeModel"` // scheduled probe model; empty uses the target model
+	Position   int    `json:"position"`
+}
+
+type fallbackAddTarget struct {
+	Position int    `json:"position"` // 0 is the primary
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+	Group    string `json:"group"`
+	Model    string `json:"model,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	New      bool   `json:"new,omitempty"`
+}
+
+// Automatic means a handoff can happen after this change: fallbacks exist and
+// failoverOn is not empty. Changed compares that with the loop before it.
+type fallbackAddHandoff struct {
+	Automatic         bool     `json:"automatic"`
+	WasAutomatic      bool     `json:"wasAutomatic"`
+	Changed           bool     `json:"changed"`
+	FailoverOn        []string `json:"failoverOn"`
+	FailoverOnWritten bool     `json:"failoverOnWritten"`
+}
+
+type fallbackAddRule struct {
+	MinHealthy int    `json:"minHealthy"`
+	Span       string `json:"span"`
+	Reachable  bool   `json:"reachable"` // enough distinct candidates exist; says nothing about health
+}
+
+type fallbackAddFiles struct {
+	FallbacksPath    string `json:"fallbacksPath"`
+	FallbacksCreated bool   `json:"fallbacksCreated"`
+	ConfigPath       string `json:"configPath"`
+	ConfigChanged    bool   `json:"configChanged"`
+}
+
+type fallbackAddNext struct {
+	PreviewProbe []string `json:"previewProbe"`
+	ExactProbe   []string `json:"exactProbe"`
+	List         []string `json:"list"`
+}
+
+var fallbackAddLimitations = []string{
+	"Nothing was run: no agent, model call, probe, login, account creation or credential copy.",
+	"The account's identity, login, model access and quota independence have not been verified.",
+	"The exact probe is a real model request that uses the account's quota and may cost money.",
+	"A running daemon uses the new order after it reloads its configuration.",
+}
+
+const fallbackAddUsage = `Add a fallback to an existing loop: another provider, account or model.
+
+Usage:
+  keepgoing fallbacks add -c keepgoing.yaml                 guided questions, preview, then confirm
+  keepgoing fallbacks add -c keepgoing.yaml --non-interactive --agent codex [flags]
+
+The command looks up installed agent CLIs without running them, previews the
+candidate and the handoff order, and writes only after confirmation (or with
+--non-interactive and no --dry-run). It never logs in, creates accounts, copies
+credentials or calls a model.
+
+Flags:
+`
+
+func fallbacksAddCommand(e env, args []string) int {
+	return fallbacksAdd(e, args, os.Stdin, exec.LookPath)
+}
+
+// fallbacksAdd discovers executables, but never invokes an agent or reads its login.
+func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (string, error)) int {
+	o := fallbackAddOptions{set: map[string]bool{}}
+	fs := flag.NewFlagSet("fallbacks add", flag.ContinueOnError)
+	fs.SetOutput(e.stderr)
+	fs.Usage = func() {
+		fmt.Fprint(e.stderr, fallbackAddUsage)
+		fs.PrintDefaults()
+	}
+	fs.StringVar(&o.cfgPath, "c", "keepgoing.yaml", "path to the loop's config file")
+	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless); other agents are refused")
+	fs.StringVar(&o.account, "account-dir", "", "existing account configuration directory (default: the CLI's current login)")
+	fs.StringVar(&o.group, "group", "", "quota group label; accounts sharing limits must share it (default: account directory name, else provider)")
+	fs.StringVar(&o.model, "model", "", "model for this fallback's turns (default: CLI configuration)")
+	fs.StringVar(&o.probeModel, "probe-model", "", "cheaper model for scheduled health probes (default: the target model)")
+	fs.StringVar(&o.id, "id", "", "candidate id: lowercase letters, digits, hyphens (default: derived from agent and group)")
+	fs.StringVar(&o.workdir, "workdir", "", "project directory the fallback works in (default: the primary's)")
+	fs.IntVar(&o.position, "position", 0, "1-based place in the handoff order (default: last)")
+	fs.IntVar(&o.probeCap, "probe-daily-cap", 2, "scheduled probes per fallback per UTC day; only when this creates the fallbacks file")
+	fs.BoolVar(&o.enableHandoff, "enable-handoff", false, "let this loop hand off automatically (default: handoff stays off)")
+	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "take every answer from flags; write without asking unless --dry-run")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "preview only; write nothing")
+	fs.BoolVar(&o.asJSON, "json", false, "print a versioned result; requires --non-interactive")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitUsage
+	}
+	fail := func(code int, format string, a ...any) int {
+		e.errf("fallbacks add: "+format, a...)
+		return code
+	}
+	refuse := func(err error) int {
+		e.errf("fallbacks add: refused, nothing written.\n  %v", err)
+		return exitUsage
+	}
+	if fs.NArg() != 0 {
+		return fail(exitUsage, "unexpected positional arguments")
+	}
+	if o.asJSON && !o.nonInteractive {
+		return fail(exitUsage, "--json requires --non-interactive")
+	}
+	if o.nonInteractive && o.agent == "" {
+		return fail(exitUsage, "--non-interactive requires --agent")
+	}
+	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
+	// Relative paths in a config resolve against the directory it was opened
+	// from, so a symlinked path would describe a different loop than its target.
+	if info, err := os.Lstat(o.cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return refuse(errors.New("The config path is a symbolic link. Pass the real keepgoing.yaml instead."))
+	}
+	cfg, err := config.Load(o.cfgPath)
+	if err != nil {
+		e.errf("config: %v", err)
+		return exitUsage
+	}
+	if cfg.Loop.Adapter == "cursor" {
+		return refuse(errors.New("A Cursor primary supports standalone loops only; fallbacks are unverified."))
+	}
+	if cfg.Loop.Fallbacks != "" {
+		if info, err := os.Lstat(cfg.Loop.Fallbacks); err != nil || !info.Mode().IsRegular() {
+			return refuse(errors.New("The loop's fallbacks file is a symbolic link or not a regular file.\n  Point loop.fallbacks at the real file instead."))
+		}
+	}
+	// Advisory: the same checks run again under the tick lock before writing.
+	if code, err := fallbackAddAllowed(cfg); err != nil {
+		e.errf("fallbacks add: refused, nothing written.\n  %v", err)
+		return code
+	}
+	w := &fallbackAddWizard{e: e, cfg: cfg, o: &o, lookPath: lookPath}
+	if !o.nonInteractive {
+		w.r = bufio.NewReader(input)
+		if err := w.collect(); err != nil {
+			e.errf("\nfallbacks add: stopped, nothing written.\n  %v", err)
+			return exitUsage
+		}
+	}
+	plan, err := planFallbackAdd(cfg, o, lookPath)
+	if err != nil {
+		return refuse(err)
+	}
+	if o.asJSON {
+		if !o.dryRun {
+			if code, err := writeFallbackAdd(plan); err != nil {
+				return fail(code, "%v", err)
+			}
+		}
+		if err := json.NewEncoder(e.stdout).Encode(fallbackAddReportOf(plan, o.dryRun)); err != nil {
+			return fail(exitFailed, "could not write JSON result; files may already be changed")
+		}
+		return exitOK
+	}
+	printFallbackAddPreview(e.stdout, plan)
+	if o.dryRun {
+		fmt.Fprintln(e.stdout, "\nDry run: nothing written.")
+		return exitOK
+	}
+	if !o.nonInteractive {
+		fmt.Fprintln(e.stdout)
+		yes, err := w.askYesNo("Write this fallback? (yes/no)", "no")
+		if err != nil {
+			return fail(exitUsage, "%v", err)
+		}
+		if !yes {
+			fmt.Fprintln(e.stdout, "\nCancelled: nothing written.")
+			return exitOK
+		}
+	}
+	if err := e.ctx.Err(); err != nil {
+		return fail(exitFailed, "%v", err)
+	}
+	if code, err := writeFallbackAdd(plan); err != nil {
+		return fail(code, "%v", err)
+	}
+	printFallbackAddNext(e.stdout, plan)
+	return exitOK
+}
+
+// fallbackAddAllowed applies the guards retarget and manual probes use: the
+// calling BB thread must own the loop, and no BB transfer may be pending.
+func fallbackAddAllowed(cfg *config.Config) (int, error) {
+	if err := checkOwnership(cfg.Loop.StateDir, nil); err != nil {
+		code := exitFailed
+		if errors.Is(err, lock.ErrHeld) {
+			code = exitSkipped
+		}
+		return code, errors.New("Ownership: " + strings.Replace(err.Error(), "; ", ";\n  ", 1))
+	}
+	if err := checkTransferSources(cfg, false); err != nil {
+		return exitSkipped, fmt.Errorf("%w; reload and retry", err)
+	}
+	return exitOK, nil
+}
+
+// fallbackAddLogin is one target's account, as far as configuration shows it.
+type fallbackAddLogin struct {
+	owner, kind, dir, model string
+}
+
+func fallbackAddAccountKey(kind string) string {
+	if kind == "claude" {
+		return "CLAUDE_CONFIG_DIR"
+	}
+	return "CODEX_HOME"
+}
+
+// fallbackAddLogins lists the headless logins already in the loop. A BB or
+// process target's account is not visible in configuration and is omitted.
+func fallbackAddLogins(cfg *config.Config) []fallbackAddLogin {
+	var out []fallbackAddLogin
+	add := func(owner string, a config.Agent) {
+		var env map[string]string
+		switch {
+		case a.Adapter == "claude" && a.Claude != nil:
+			env = a.Claude.Env
+		case a.Adapter == "codex" && a.Codex != nil:
+			env = a.Codex.Env
+		default:
+			return
+		}
+		dir := env[fallbackAddAccountKey(a.Adapter)]
+		if dir != "" {
+			if real, err := filepath.EvalSymlinks(dir); err == nil {
+				dir = real
+			}
+			dir = filepath.Clean(dir)
+		}
+		out = append(out, fallbackAddLogin{owner, a.Adapter, dir, a.Model()})
+	}
+	add("the primary", cfg.Loop.Agent)
+	if cfg.FallbackSet != nil {
+		for _, c := range cfg.FallbackSet.Candidates {
+			add(fmt.Sprintf("fallback %q", c.ID), c.Agent)
+		}
+	}
+	return out
+}
+
+// fallbackAddSameLogin refuses a candidate that is the same login and model
+// as an existing target, and warns when only the model differs.
+func fallbackAddSameLogin(cfg *config.Config, kind, dir, model string) (warning string, err error) {
+	for _, l := range fallbackAddLogins(cfg) {
+		if l.kind != kind || l.dir != dir {
+			continue
+		}
+		if model == "" || model == l.model {
+			return "", fmt.Errorf("This is the same login as %s with the same model, so it\n  shares that limit and cannot take over. Use another account directory,\n  or a different model that has its own limit.", l.owner)
+		}
+		return fmt.Sprintf("Same login as %s. This helps only if model %s has its own limit; an account-wide limit stops both.", l.owner, model), nil
+	}
+	if cfg.Loop.Adapter == "bb" && dir == "" {
+		return "The primary BB thread may use this same login; keepgoing cannot tell.", nil
+	}
+	return "", nil
+}
+
+// fallbackAddAccount expands a leading ~ and requires an existing directory.
+func fallbackAddAccount(account string) (string, error) {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return "", nil
+	}
+	if account == "~" || strings.HasPrefix(account, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", errors.New("Account directory: the home directory is unknown; give a full path.")
+		}
+		account = filepath.Join(home, strings.TrimPrefix(account, "~"))
+	}
+	dir, err := existingDirectory(account)
+	if err != nil {
+		return "", errors.New("Account directory: not an existing directory. Sign in to it first, or leave it blank.")
+	}
+	return dir, nil
+}
+
+func fallbackAddGroup(cfg *config.Config, group string) error {
+	if group == "" || strings.Trim(group, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
+		return errors.New("Quota group labels may contain only letters, digits, hyphens,\n  underscores and dots.")
+	}
+	if group == cfg.Loop.Group {
+		return fmt.Errorf("Quota group %q is the primary's. A fallback on the same\n  limit cannot take over: choose an independent account and its own group.", group)
+	}
+	if cfg.FallbackSet != nil {
+		for _, c := range cfg.FallbackSet.Candidates {
+			if c.Group == group {
+				return fmt.Errorf("Quota group %q is already used by fallback %q.\n  Candidates sharing a limit cannot back each other up: choose an\n  independent account and its own group.", group, c.ID)
+			}
+		}
+	}
+	return nil
+}
+
+func fallbackAddModelName(what, v string) error {
+	if strings.HasPrefix(v, "-") || strings.ContainsFunc(v, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("The %s must be a single name without spaces or a leading hyphen.", what)
+	}
+	return nil
+}
+
+func fallbackAddPosition(cfg *config.Config, s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if max := fallbackAddExisting(cfg) + 1; err != nil || n < 1 || n > max {
+		return 0, fmt.Errorf("The position must be a number between 1 and %d.", max)
+	}
+	return n, nil
+}
+
+type fallbackAddWizard struct {
+	e        env
+	cfg      *config.Config
+	o        *fallbackAddOptions
+	r        *bufio.Reader
+	lookPath func(string) (string, error)
+}
+
+func (w *fallbackAddWizard) ask(label, def string) (string, error) {
+	if err := w.e.ctx.Err(); err != nil {
+		return "", err
+	}
+	if def == "" {
+		fmt.Fprintf(w.e.stdout, "  %s: ", label)
+	} else {
+		fmt.Fprintf(w.e.stdout, "  %s [%s]: ", label, def)
+	}
+	s, err := readInitLine(w.e.ctx, w.r)
+	if err != nil && (s == "" || !errors.Is(err, io.EOF)) {
+		fmt.Fprintln(w.e.stdout)
+		return "", fmt.Errorf("input ended (use --non-interactive for scripts): %w", err)
+	}
+	if s = strings.TrimSpace(s); s == "" {
+		s = def
+	}
+	return s, nil
+}
+
+// askValid repeats a question until check accepts the answer. A value given
+// as a flag is checked once and never asked.
+func (w *fallbackAddWizard) askValid(flagName, label, def string, value *string, check func(string) error) error {
+	if w.o.set[flagName] {
+		return check(*value)
+	}
+	for {
+		s, err := w.ask(label, def)
+		if err != nil {
+			return err
+		}
+		if err := check(s); err != nil {
+			fmt.Fprintf(w.e.stdout, "  ! %v\n", err)
+			continue
+		}
+		*value = s
+		return nil
+	}
+}
+
+func (w *fallbackAddWizard) askYesNo(label, def string) (bool, error) {
+	for {
+		s, err := w.ask(label, def)
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(s) {
+		case "yes", "y":
+			return true, nil
+		case "no", "n":
+			return false, nil
+		}
+		fmt.Fprintln(w.e.stdout, "  ! Please answer yes or no.")
+	}
+}
+
+func (w *fallbackAddWizard) collect() error {
+	out, cfg, o := w.e.stdout, w.cfg, w.o
+	fmt.Fprintf(out, "Add a fallback to loop %q\n\n", cfg.Loop.Name)
+	printFallbackAddCurrent(out, cfg)
+
+	fmt.Fprintln(out, "\nAgent CLIs found on PATH (looked up only; nothing was run):")
+	var usable []string
+	tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+	for _, a := range []struct{ kind, note string }{
+		{"claude", "can be a fallback"},
+		{"codex", "can be a fallback"},
+		{"bb", "manual setup only"},
+		{"cursor", "cannot be a fallback yet"},
+	} {
+		p, err := w.lookPath(initCLIName(a.kind))
+		if err != nil {
+			fmt.Fprintf(tw, "  %s\tnot found\t\n", a.kind)
+			continue
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", a.kind, p, a.note)
+		if a.kind == "claude" || a.kind == "codex" {
+			usable = append(usable, a.kind)
+		}
+	}
+	tw.Flush()
+	if len(usable) == 0 {
+		return errors.New("No claude or codex CLI was found on PATH. Install and sign in to one first.")
+	}
+
+	def := usable[0]
+	for _, a := range usable { // prefer a provider other than the primary's
+		if a != cfg.Loop.Adapter {
+			def = a
+			break
+		}
+	}
+	fmt.Fprintln(out, "\nStep 1 of 4: Provider")
+	err := w.askValid("agent", "Which agent takes over? ("+strings.Join(usable, "/")+")", def, &o.agent, func(s string) error {
+		if err := fallbackAddAgentSupported(s); err != nil {
+			return err
+		}
+		if _, err := w.lookPath(initCLIName(s)); err != nil {
+			return fmt.Errorf("The %s CLI was not found on PATH.", s)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "\nStep 2 of 4: Account")
+	fmt.Fprintln(out, "  Give a directory you have already signed in to, or leave blank to use")
+	fmt.Fprintln(out, "  the CLI's current login. Nothing is created or copied.")
+	err = w.askValid("account-dir", "Account directory", "", &o.account, func(s string) error {
+		_, err := fallbackAddAccount(s)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	dir, _ := fallbackAddAccount(o.account)
+	sameLogin := false
+	for _, l := range fallbackAddLogins(cfg) {
+		if l.kind == o.agent && l.dir == dir {
+			sameLogin = true
+			fmt.Fprintf(out, "  Note: this is the same login as %s. It can only help with a\n  different model that has its own limit; you will choose the model next.\n", l.owner)
+			break
+		}
+	}
+	fmt.Fprintln(out, "  A quota group names one usage limit. Accounts that share a limit must share")
+	fmt.Fprintf(out, "  a group; a fallback must not use the primary's group (%s).\n", cfg.Loop.Group)
+	groupDef := fallbackAddFreeGroup(cfg, fallbackAddDefaultGroup(o.agent, dir))
+	if err := w.askValid("group", "Quota group", groupDef, &o.group, func(s string) error { return fallbackAddGroup(cfg, s) }); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "\nStep 3 of 4: Model")
+	if sameLogin {
+		fmt.Fprintln(out, "  Name a model that differs from the one already used on this login.")
+	} else {
+		fmt.Fprintln(out, "  Leave blank to use the CLI's configured model. Names are not checked here.")
+	}
+	err = w.askValid("model", "Model", "", &o.model, func(s string) error {
+		if err := fallbackAddModelName("model", s); err != nil {
+			return err
+		}
+		_, err := fallbackAddSameLogin(cfg, o.agent, dir, s)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "  Scheduled health probes can use a cheaper model; blank uses the same one.")
+	if err := w.askValid("probe-model", "Probe model", "", &o.probeModel, func(s string) error { return fallbackAddModelName("probe model", s) }); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "\nStep 4 of 4: Handoff")
+	if n := fallbackAddExisting(cfg); n > 0 && !o.set["position"] {
+		var answer string
+		err := w.askValid("position", fmt.Sprintf("Place in the handoff order (1 = tried first, %d = last)", n+1), strconv.Itoa(n+1), &answer, func(s string) error {
+			_, err := fallbackAddPosition(cfg, s)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		o.position, _ = fallbackAddPosition(cfg, answer)
+	}
+	on := cfg.Loop.Errors.FailoverOn
+	switch {
+	case cfg.FallbackSet != nil && len(on) > 0:
+		fmt.Fprintf(out, "  Automatic handoff is already on for: %s.\n", strings.Join(on, ", "))
+	case o.set["enable-handoff"]:
+		fmt.Fprintln(out, "  Automatic handoff will be turned on (--enable-handoff).")
+	default:
+		fmt.Fprintln(out, "  Automatic handoff is off for this loop. Turning it on lets keepgoing move")
+		fmt.Fprintln(out, "  the loop to a fallback when the active agent reports a rate limit.")
+		if len(on) > 0 {
+			fmt.Fprintf(out, "  This loop's errors.failover_on is %s, so answering no writes an\n  explicit empty setting to keep handoff off.\n", strings.Join(on, ", "))
+		}
+		if o.enableHandoff, err = w.askYesNo("Turn on automatic handoff for rate limits? (yes/no)", "no"); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(out)
+	return nil
+}
+
+func fallbackAddExisting(cfg *config.Config) int {
+	if cfg.FallbackSet == nil {
+		return 0
+	}
+	return len(cfg.FallbackSet.Candidates)
+}
+
+// fallbackAddDefaultGroup labels a separate account directory by its name, so
+// several accounts of one provider do not collide on the provider label.
+func fallbackAddDefaultGroup(agent, account string) string {
+	if account != "" {
+		if g := fallbackAddSlug(filepath.Base(filepath.Clean(account))); g != "" {
+			return g
+		}
+	}
+	if agent == "claude" {
+		return "claude-code"
+	}
+	return agent
+}
+
+// fallbackAddFreeGroup makes a suggested label one the wizard can accept.
+func fallbackAddFreeGroup(cfg *config.Config, base string) string {
+	g := base
+	for n := 2; fallbackAddGroup(cfg, g) != nil && n < 100; n++ {
+		g = fmt.Sprintf("%s-%d", base, n)
+	}
+	return g
+}
+
+func fallbackAddAgentSupported(agent string) error {
+	switch agent {
+	case "claude", "codex":
+		return nil
+	case "cursor":
+		return errors.New("Cursor cannot be a fallback yet: its account and model probes are unverified.")
+	case "bb", "process":
+		return fmt.Errorf("Guided add supports headless claude and codex only.\n  A %s candidate still needs a hand-written entry; see docs/fallbacks.md.", agent)
+	case "":
+		return errors.New("Choose an agent: claude or codex.")
+	}
+	return fmt.Errorf("Unknown agent %q. Choose claude or codex.", agent)
+}
+
+// fallbackAddSlug maps a label to the candidate-id alphabet.
+func fallbackAddSlug(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(string) (string, error)) (*fallbackAddPlan, error) {
+	if err := fallbackAddAgentSupported(o.agent); err != nil {
+		return nil, err
+	}
+	if err := fallbackAddModelName("model", o.model); err != nil {
+		return nil, err
+	}
+	if err := fallbackAddModelName("probe model", o.probeModel); err != nil {
+		return nil, err
+	}
+	account, err := fallbackAddAccount(o.account)
+	if err != nil {
+		return nil, err
+	}
+	group := strings.TrimSpace(o.group)
+	if group == "" {
+		group = fallbackAddDefaultGroup(o.agent, account)
+	}
+	if err := fallbackAddGroup(cfg, group); err != nil {
+		return nil, err
+	}
+	warning, err := fallbackAddSameLogin(cfg, o.agent, account, o.model)
+	if err != nil {
+		return nil, err
+	}
+	workdir := o.workdir
+	if workdir == "" {
+		switch {
+		case cfg.Loop.Claude != nil:
+			workdir = cfg.Loop.Claude.Workdir
+		case cfg.Loop.Codex != nil:
+			workdir = cfg.Loop.Codex.Workdir
+		case len(cfg.Loop.Progress.Repositories) > 0:
+			workdir = cfg.Loop.Progress.Repositories[0]
+		default:
+			return nil, errors.New("The loop names no project directory; pass --workdir.")
+		}
+	}
+	if workdir, err = existingDirectory(workdir); err != nil {
+		return nil, errors.New("Project directory: not an existing directory; pass --workdir.")
+	}
+	agent, err := initAgent(o.agent, account, group, o.model, workdir, lookPath)
+	if err != nil {
+		return nil, err
+	}
+	cfgPath, err := filepath.Abs(o.cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	current := cfg.Loop.Errors.FailoverOn
+	p := &fallbackAddPlan{cfg: cfg, cfgPath: cfgPath, fallbacksPath: cfg.Loop.Fallbacks, failoverOn: append([]string{}, current...)}
+	if warning != "" {
+		p.warnings = append(p.warnings, warning)
+	}
+	var existing []config.Candidate
+	if cfg.FallbackSet != nil {
+		existing = cfg.FallbackSet.Candidates
+		if o.set["probe-daily-cap"] {
+			return nil, errors.New("--probe-daily-cap applies only when this command creates the fallbacks\n  file. Edit probe.daily_cap in the existing file instead.")
+		}
+	} else {
+		p.createFile = true
+		p.fallbacksPath = filepath.Join(filepath.Dir(p.cfgPath), "fallbacks.yaml")
+		if _, err := os.Lstat(p.fallbacksPath); !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%s already exists but the loop does not use it.\n  Set loop.fallbacks or move the file.", p.fallbacksPath)
+		}
+		if o.probeCap < 1 {
+			return nil, errors.New("--probe-daily-cap must be positive.")
+		}
+	}
+	ids := map[string]bool{"primary": true}
+	for _, c := range existing {
+		ids[c.ID] = true
+	}
+	id := o.id
+	if id == "" {
+		base := fallbackAddSlug(o.agent + "-" + agent.Group)
+		if agent.Group == agent.Provider || strings.HasPrefix(fallbackAddSlug(agent.Group), o.agent) {
+			base = fallbackAddSlug(agent.Group)
+		}
+		if len(base) > 60 {
+			base = strings.Trim(base[:60], "-")
+		}
+		id = base
+		for n := 2; ids[id]; n++ {
+			id = fmt.Sprintf("%s-%d", base, n)
+		}
+	} else if len(id) > 64 || fallbackAddSlug(id) != id {
+		return nil, errors.New("--id must be 1-64 lowercase letters, digits or hyphens, starting and\n  ending with a letter or digit.")
+	} else if ids[id] {
+		return nil, fmt.Errorf("The id %q is already in use.", id)
+	}
+	p.candidate = config.Candidate{ID: id, Agent: agent, Probe: config.Probe{Kind: o.agent, Model: o.probeModel}}
+	p.position = o.position
+	if p.position == 0 {
+		p.position = len(existing) + 1
+	}
+	if p.position < 1 || p.position > len(existing)+1 {
+		return nil, fmt.Errorf("The position must be a number between 1 and %d.", len(existing)+1)
+	}
+	p.order = append(append(append([]config.Candidate{}, existing[:p.position-1]...), p.candidate), existing[p.position-1:]...)
+
+	// Handoff is a choice of this command, never a side effect of adding the
+	// first fallback: an absent errors.failover_on defaults to rate_limit.
+	rawCfg, err := os.ReadFile(p.cfgPath)
+	if err != nil {
+		return nil, errors.New("The configuration is unreadable.")
+	}
+	keySet := yamlMapValue(yamlMapValue(yamlMapValue(yamlDocRoot(rawCfg), "loop"), "errors"), "failover_on") != nil
+	p.wasLive = !p.createFile && len(current) > 0
+	p.failoverWas = "default " + strings.Join(current, ", ")
+	if keySet {
+		p.failoverWas = strings.Join(current, ", ")
+	}
+	switch {
+	case p.wasLive:
+		if o.enableHandoff {
+			p.notes = append(p.notes, "--enable-handoff had no effect: automatic handoff was already on.")
+		}
+	case o.enableHandoff:
+		if len(current) == 0 {
+			p.failoverOn = []string{"rate_limit"}
+		}
+		p.failoverWrite = !keySet || len(current) == 0 // make an inherited default explicit
+	case len(current) > 0: // first fallback, and the current setting would start handoff
+		p.failoverOn, p.failoverWrite = []string{}, true
+	}
+
+	if p.createFile {
+		fb := config.Fallbacks{Version: 1, Redundancy: config.Redundancy{MinHealthy: 1, Span: "group"},
+			Probe:      config.ProbePolicy{Every: config.Duration{Duration: 12 * time.Hour}, TTL: config.Duration{Duration: 24 * time.Hour}, DailyCap: o.probeCap},
+			Candidates: []config.Candidate{p.candidate}}
+		if p.fallbacksYAML, err = yaml.Marshal(fb); err != nil {
+			return nil, err
+		}
+	} else {
+		raw, err := os.ReadFile(p.fallbacksPath)
+		if err != nil {
+			return nil, errors.New("The fallbacks file is unreadable.")
+		}
+		if p.fallbacksYAML, err = insertCandidateYAML(raw, p.candidate, p.position-1); err != nil {
+			return nil, err
+		}
+	}
+	parsed, err := config.ParseFallbacks(p.fallbacksYAML)
+	if err != nil {
+		return nil, fmt.Errorf("The resulting fallbacks file would be invalid: %w", err)
+	}
+	if len(parsed.Candidates) != len(p.order) || parsed.Candidates[p.position-1].ID != id {
+		return nil, errors.New("Could not place the candidate in the existing fallbacks file; edit it by hand.")
+	}
+	p.rules = parsed
+	if p.createFile || p.failoverWrite {
+		var set *[]string
+		if p.failoverWrite {
+			set = &p.failoverOn
+		}
+		if p.configYAML, err = editLoopYAML(rawCfg, p.createFile, set); err != nil {
+			return nil, err
+		}
+		next, err := config.Parse(p.configYAML)
+		if err != nil {
+			return nil, fmt.Errorf("The resulting configuration would be invalid: %w", err)
+		}
+		if p.createFile && next.Loop.Fallbacks != "fallbacks.yaml" || strings.Join(next.Loop.Errors.FailoverOn, ",") != strings.Join(p.failoverOn, ",") {
+			return nil, errors.New("Could not update keepgoing.yaml safely; edit it by hand.")
+		}
+	}
+	return p, nil
+}
+
+func yamlDocRoot(raw []byte) *yaml.Node {
+	var doc yaml.Node
+	if yaml.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	return yamlRoot(&doc)
+}
+
+// insertCandidateYAML edits the document tree so existing comments and
+// candidates survive. Indentation may be normalized.
+func insertCandidateYAML(raw []byte, c config.Candidate, at int) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, errors.New("The fallbacks file is not valid YAML.")
+	}
+	list := yamlMapValue(yamlRoot(&doc), "candidates")
+	if list == nil || list.Kind != yaml.SequenceNode || at > len(list.Content) {
+		return nil, errors.New("The fallbacks file has no editable candidates list; edit it by hand.")
+	}
+	var n yaml.Node
+	if err := n.Encode(c); err != nil {
+		return nil, err
+	}
+	list.Style = 0 // a flow-style list cannot hold a block candidate legibly
+	list.Content = append(list.Content[:at], append([]*yaml.Node{&n}, list.Content[at:]...)...)
+	return yaml.Marshal(&doc)
+}
+
+// editLoopYAML sets loop.fallbacks and/or errors.failover_on, keeping the
+// rest of the document, including comments.
+func editLoopYAML(raw []byte, setFallbacks bool, failoverOn *[]string) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, errors.New("The configuration is not valid YAML.")
+	}
+	loop := yamlMapValue(yamlRoot(&doc), "loop")
+	if loop == nil || loop.Kind != yaml.MappingNode {
+		return nil, errors.New("The configuration has no editable loop section; edit it by hand.")
+	}
+	if setFallbacks {
+		yamlMapSet(loop, "fallbacks", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "fallbacks.yaml"})
+	}
+	if failoverOn != nil {
+		errs := yamlMapValue(loop, "errors")
+		if errs == nil {
+			errs = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			yamlMapSet(loop, "errors", errs)
+		}
+		if errs.Kind != yaml.MappingNode {
+			return nil, errors.New("loop.errors is not editable; edit it by hand.")
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		for _, class := range *failoverOn {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: class})
+		}
+		yamlMapSet(errs, "failover_on", seq)
+	}
+	return yaml.Marshal(&doc)
+}
+
+func yamlRoot(doc *yaml.Node) *yaml.Node {
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		return doc.Content[0]
+	}
+	return nil
+}
+
+func yamlMapValue(m *yaml.Node, key string) *yaml.Node {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func yamlMapSet(m *yaml.Node, key string, value *yaml.Node) {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content[i+1] = value
+			return
+		}
+	}
+	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+}
+
+// fallbackAddReplace is swapped by tests to exercise write failures.
+var fallbackAddReplace = replaceFile
+
+// writeFallbackAdd holds the tick lock, so supervision never loads a
+// half-applied change. It applies the ownership and transfer guards that
+// retarget uses and refuses when the reviewed sources changed.
+func writeFallbackAdd(p *fallbackAddPlan) (int, error) {
+	l, err := lock.Acquire(p.cfg.Loop.StateDir)
+	if errors.Is(err, lock.ErrHeld) {
+		return exitSkipped, errors.New("a check is running; nothing written. Try again in a moment")
+	}
+	if err != nil {
+		return exitFailed, fmt.Errorf("lock: %w", err)
+	}
+	defer l.Release()
+	if code, err := fallbackAddAllowed(p.cfg); err != nil {
+		return code, fmt.Errorf("%w; nothing written", err)
+	}
+	if p.createFile {
+		f, err := os.OpenFile(p.fallbacksPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return exitFailed, errors.New("could not create the fallbacks file; nothing written")
+		}
+		_, err = f.Write(p.fallbacksYAML)
+		if err == nil {
+			err = f.Sync()
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err == nil {
+			err = fallbackAddReplace(p.cfgPath, p.configYAML)
+		}
+		if err != nil {
+			_ = os.Remove(p.fallbacksPath) // created above, by this command
+			return exitFailed, errors.New("could not update keepgoing.yaml; nothing written")
+		}
+		return exitOK, nil
+	}
+	if err := fallbackAddReplace(p.fallbacksPath, p.fallbacksYAML); err != nil {
+		return exitFailed, errors.New("could not update the fallbacks file; nothing written")
+	}
+	if p.configYAML != nil {
+		if err := fallbackAddReplace(p.cfgPath, p.configYAML); err != nil {
+			return exitFailed, errors.New("the fallback was added, but errors.failover_on could not be updated in keepgoing.yaml; automatic handoff is unchanged")
+		}
+	}
+	return exitOK, nil
+}
+
+// replaceFile swaps in new contents through a synced private sibling file,
+// keeping the original's permission bits. It follows the existing config
+// replacement (config.BBTransferEdit.Commit): sync, then os.Rename. The
+// control package's POSIX-rename helper is not reused because it exists for
+// control snapshots, whose readers open with delete sharing; configuration is
+// read with ordinary opens, so that helper would add its filesystem
+// requirement here without making a concurrent Windows reader any safer. A
+// failed rename leaves the original file untouched.
+func replaceFile(path string, data []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("not a regular file")
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".fallbacks-add-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	if _, err = f.Write(data); err == nil {
+		err = f.Chmod(info.Mode().Perm())
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// fallbackAddReachable reports whether enough distinct candidates exist to
+// satisfy the redundancy rule while the primary is active. Health is unknown.
+func fallbackAddReachable(p *fallbackAddPlan) bool {
+	distinct := map[string]bool{}
+	for _, c := range p.order {
+		if c.Disabled || c.Group == p.cfg.Loop.Group {
+			continue
+		}
+		switch p.rules.Redundancy.Span {
+		case "provider":
+			distinct[c.Provider] = true
+		case "group":
+			distinct[c.Group] = true
+		default:
+			distinct[c.ID] = true
+		}
+	}
+	return len(distinct) >= p.rules.Redundancy.MinHealthy
+}
+
+func fallbackAddArgv(p *fallbackAddPlan, rest ...string) []string {
+	return append([]string{keepgoingExecutable(), "fallbacks"}, append(rest, "-c", p.cfgPath)...)
+}
+
+func fallbackAddReportOf(p *fallbackAddPlan, preview bool) fallbackAddReport {
+	c, live := p.candidate, len(p.failoverOn) > 0
+	r := fallbackAddReport{SchemaVersion: 1, Kind: "fallback_add", Outcome: "added", Loop: p.cfg.Loop.Name,
+		Candidate: fallbackAddCandidate{ID: c.ID, Adapter: c.Adapter, Provider: c.Provider, Group: c.Group, Model: c.Model(),
+			Account: initTargetOf(c.Agent).Account, ProbeKind: c.Probe.Kind, ProbeModel: c.Probe.Model, Position: p.position},
+		Primary:    fallbackAddTarget{ID: "primary", Provider: p.cfg.Loop.Provider, Group: p.cfg.Loop.Group, Model: p.cfg.Loop.Agent.Model()},
+		Handoff:    fallbackAddHandoff{Automatic: live, WasAutomatic: p.wasLive, Changed: live != p.wasLive, FailoverOn: p.failoverOn, FailoverOnWritten: p.failoverWrite},
+		Redundancy: fallbackAddRule{MinHealthy: p.rules.Redundancy.MinHealthy, Span: p.rules.Redundancy.Span, Reachable: fallbackAddReachable(p)},
+		Files:      fallbackAddFiles{FallbacksPath: p.fallbacksPath, FallbacksCreated: p.createFile, ConfigPath: p.cfgPath, ConfigChanged: p.configYAML != nil},
+		Next: fallbackAddNext{
+			PreviewProbe: fallbackAddArgv(p, "check", "--id", c.ID, "--exact", "--dry-run"),
+			ExactProbe:   fallbackAddArgv(p, "check", "--id", c.ID, "--exact"),
+			List:         fallbackAddArgv(p, "list"),
+		},
+		Warnings: append([]string{}, p.warnings...), Notes: append([]string{}, p.notes...),
+		Limitations: fallbackAddLimitations,
+	}
+	if preview {
+		r.Outcome = "preview"
+	}
+	for i, o := range p.order {
+		r.Order = append(r.Order, fallbackAddTarget{Position: i + 1, ID: o.ID, Provider: o.Provider, Group: o.Group, Model: o.Model(), Disabled: o.Disabled, New: o.ID == c.ID})
+	}
+	return r
+}
+
+func fallbackAddModel(m string) string {
+	if m == "" {
+		return "CLI default"
+	}
+	return m
+}
+
+func printFallbackAddCurrent(w io.Writer, cfg *config.Config) {
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "  Primary:\t%s, quota group %s, model %s\n", cfg.Loop.Provider, cfg.Loop.Group, fallbackAddModel(cfg.Loop.Agent.Model()))
+	if n := fallbackAddExisting(cfg); n == 0 {
+		fmt.Fprintf(tw, "  Fallbacks:\tnone yet\n")
+	} else {
+		var ids []string
+		for _, c := range cfg.FallbackSet.Candidates {
+			ids = append(ids, c.ID)
+		}
+		fmt.Fprintf(tw, "  Fallbacks:\t%s\n", strings.Join(ids, ", "))
+	}
+	if on := cfg.Loop.Errors.FailoverOn; len(on) > 0 && cfg.FallbackSet != nil {
+		fmt.Fprintf(tw, "  Handoff:\tautomatic on %s\n", strings.Join(on, ", "))
+	} else {
+		fmt.Fprintf(tw, "  Handoff:\toff\n")
+	}
+	tw.Flush()
+}
+
+func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
+	c := p.candidate
+	fmt.Fprintf(w, "Preview for loop %q (nothing written yet)\n\nNew fallback\n", p.cfg.Loop.Name)
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "  ID:\t%s\n", c.ID)
+	fmt.Fprintf(tw, "  Agent:\t%s (provider %s)\n", c.Adapter, c.Provider)
+	account := "the CLI's current login"
+	for _, dir := range c.ProbeEnv() {
+		account = dir
+	}
+	fmt.Fprintf(tw, "  Account:\t%s\n", account)
+	fmt.Fprintf(tw, "  Login:\tnot checked; sign in to it yourself first\n")
+	fmt.Fprintf(tw, "  Quota group:\t%s\n", c.Group)
+	fmt.Fprintf(tw, "  Model:\t%s\n", fallbackAddModel(c.Model()))
+	probeModel := "same as the model"
+	if c.Probe.Model != "" {
+		probeModel = c.Probe.Model
+	}
+	fmt.Fprintf(tw, "  Probe model:\t%s\n", probeModel)
+	fmt.Fprintf(tw, "  Works in:\t%s\n", c.ProbeWorkdir())
+	tw.Flush()
+	for _, warning := range p.warnings {
+		fallbackAddWrap(w, "  WARNING: ", "  ", warning)
+	}
+
+	fmt.Fprintln(w, "\nHandoff order")
+	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "  \tID\tPROVIDER\tGROUP\tMODEL\t")
+	fmt.Fprintf(tw, "  now\tprimary\t%s\t%s\t%s\t\n", p.cfg.Loop.Provider, p.cfg.Loop.Group, fallbackAddModel(p.cfg.Loop.Agent.Model()))
+	for i, o := range p.order {
+		note := ""
+		switch {
+		case o.ID == c.ID:
+			note = "<- new"
+		case o.Disabled:
+			note = "disabled"
+		}
+		fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\t%s\t%s\n", i+1, o.ID, o.Provider, o.Group, fallbackAddModel(o.Model()), note)
+	}
+	tw.Flush()
+
+	fmt.Fprintln(w, "\nRules")
+	on := strings.Join(p.failoverOn, ", ")
+	switch {
+	case p.wasLive:
+		fmt.Fprintf(w, "  Handoff:     automatic on %s (already on; unchanged)\n", on)
+	case len(p.failoverOn) > 0:
+		fmt.Fprintf(w, "  Handoff:     turned ON by this change, for: %s\n", on)
+	case p.failoverWrite:
+		fmt.Fprintln(w, "  Handoff:     OFF. The fallback is saved but never used automatically.")
+		fmt.Fprintf(w, "               The loop's setting (%s) would start handoff with\n", p.failoverWas)
+		fmt.Fprintln(w, "               the first fallback, so an explicit empty setting is written.")
+	default:
+		fmt.Fprintln(w, "  Handoff:     OFF. The fallback is saved but never used automatically.")
+	}
+	span := map[string]string{"provider": "counted by provider (accounts of one provider count once)", "group": "counted by quota group", "none": "each candidate counts"}[p.rules.Redundancy.Span]
+	fmt.Fprintf(w, "  Redundancy:  needs %d healthy, %s\n", p.rules.Redundancy.MinHealthy, span)
+	if !fallbackAddReachable(p) {
+		fmt.Fprintln(w, "               WARNING: these candidates cannot meet that rule; handoffs stay refused.")
+	}
+	policy := p.rules.Probe
+	if policy.Disabled {
+		fmt.Fprintln(w, "  Probes:      scheduled probes off; one exact probe before each handoff")
+	} else {
+		fmt.Fprintf(w, "  Probes:      while the loop runs, every %s and at most %d a day per\n", fallbackAddDuration(policy.Every.Duration), policy.DailyCap)
+		fmt.Fprintln(w, "               fallback, plus one exact probe before each handoff.")
+		fmt.Fprintln(w, "               Every probe is a real model request.")
+	}
+
+	fmt.Fprintln(w, "\nFiles")
+	if p.createFile {
+		fmt.Fprintf(w, "  create  %s\n", p.fallbacksPath)
+	} else {
+		fmt.Fprintf(w, "  update  %s\n", p.fallbacksPath)
+	}
+	if p.configYAML != nil {
+		var keys []string
+		if p.createFile {
+			keys = append(keys, "loop.fallbacks")
+		}
+		if p.failoverWrite {
+			keys = append(keys, "loop.errors.failover_on")
+		}
+		fmt.Fprintf(w, "  update  %s\n          (%s)\n", p.cfgPath, strings.Join(keys, ", "))
+	}
+	if len(p.notes) > 0 {
+		fmt.Fprintln(w)
+		for _, note := range p.notes {
+			fallbackAddWrap(w, "Note: ", "", note)
+		}
+	}
+	fmt.Fprintln(w, "\nThis command runs no agent and no model. It does not log in, create an")
+	fmt.Fprintln(w, "account or copy credentials.")
+}
+
+// fallbackAddWrap prints text in lines of at most 78 columns.
+func fallbackAddWrap(w io.Writer, first, indent, text string) {
+	line := first
+	for _, word := range strings.Fields(text) {
+		if len(line)+len(word) > 78 && strings.TrimSpace(line) != "" {
+			fmt.Fprintln(w, strings.TrimRight(line, " "))
+			line = indent
+		}
+		line += word + " "
+	}
+	fmt.Fprintln(w, strings.TrimRight(line, " "))
+}
+
+func fallbackAddDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	}
+	return d.String()
+}
+
+func printFallbackAddNext(w io.Writer, p *fallbackAddPlan) {
+	id, cfgPath, prefix := p.candidate.ID, commandQuote(p.cfgPath), initCommandPrefix()
+	fmt.Fprintf(w, "\nAdded fallback %s at position %d of %d.\n\nNext steps\n", id, p.position, len(p.order))
+	cont := lineContinuation()
+	command := func(lines ...string) {
+		fmt.Fprintf(w, "       %s fallbacks %s\n", prefix, strings.Join(append(lines, "-c "+cfgPath), " "+cont+"\n         "))
+	}
+	fmt.Fprintln(w, "  1. Preview the check. Free: no model call.")
+	command("check", "--id "+id+" --exact --dry-run")
+	fmt.Fprintln(w, "  2. Confirm the login and model with one real request. It uses this")
+	fmt.Fprintln(w, "     account's quota and may cost money.")
+	command("check", "--id "+id+" --exact")
+	fmt.Fprintln(w, "  3. See recorded health and the handoff order.")
+	command("list")
+	fmt.Fprintln(w, "\nUntil a check passes, the fallback counts as not healthy and is not used.")
+	if len(p.failoverOn) == 0 {
+		fmt.Fprintln(w, "\nAutomatic handoff is still OFF. To turn it on, set this in keepgoing.yaml:")
+		fmt.Fprintln(w, "  loop:\n    errors:\n      failover_on: [rate_limit]")
+	}
+	fmt.Fprintln(w, "\nA running daemon uses the new order after its next configuration reload.")
+}
