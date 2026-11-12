@@ -2,7 +2,7 @@
 
 Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
-This is a proposed data and navigation model. No graph commands, run index, provider-link resolver or blocker lookup described here are implemented. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; all remain unchecked. D1–D3 are the next new feature after the concrete Windows control-file replacement fix; owner-only/live reliability checks do not gate them, and new provider expansion must not delay them. The already-open ACP work may finish. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
+This is a proposed data and navigation model. Only the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased) below exists in source, as an internal package with no runtime callers. No graph commands, run index, provider-link resolver or blocker lookup described here are implemented. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D2–D6 remain unchecked. D1–D3 are the next new feature after the concrete Windows control-file replacement fix; owner-only/live reliability checks do not gate them, and new provider expansion must not delay them. The already-open ACP work may finish. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
@@ -10,7 +10,55 @@ A routine is a useful top-level view when an external scheduler supplies its ide
 
 The hierarchy is a convenient default view of a graph: routine → runs → chats. Shared chats and blocked-by edges prevent a strict tree from expressing every valid relationship. A missing external routine or provider chat ID remains unavailable, rather than being invented from a timestamp or process ID.
 
-Before implementation, D1 must define run-episode boundaries. An execution run must not accidentally mean each daemon process, poll, provider turn or wake. The design needs a transition table for initial start, an externally identified scheduled invocation, retries, pause/resume, completion/reopen, changed goal revisions and target transfer. It must distinguish a continuing run from a new attempt after restart, and a new run from resumed conversation history. An external routine's run ID is a reference supplied by its structured integration, not necessarily the keepgoing run's ID.
+## Identity and run-boundary contract (D1, internal, unreleased)
+
+`internal/rundiscovery` defines the identities below, what opens or closes a run, and which relationships a run may record. It is a pure package: values in, values out. Nothing in keepgoing calls it yet, so no record is written, no command shows a run and no provider is queried. IDs and timestamps are supplied by the caller; the package performs no IO, generates no IDs and never authorizes a send or control change. Its table tests establish the rules on this page for in-memory values only. Storage, indexes and real restart behavior are D2 and D5.
+
+A run is one opened episode of supervision for a loop. It can span many checks, wakes, provider turns, holds, goal revisions and target changes. A loop has at most one current run. Only an explicit completion closes it, recorded as **completion declared**, never verified success. Only an explicit resume after completion opens the next run, which keeps a predecessor reference when one is known. A run can be open while supervision is disabled or held; `open` is not a claim of activity. Removing a loop's enrollment is not defined yet.
+
+| Identity | Form | Meaning and boundary |
+| --- | --- | --- |
+| External routine and invocation (optional) | Source, routine and optional invocation tokens supplied by a structured integration | Names the scheduler entry and one trigger. Never derived from a timestamp. An invocation ID is a reference on a run, not the run's ID. |
+| Registered loop reference | Existing registry `loop_` plus 32 hex digits | A removable reference to a config/runtime binding. Re-registering creates a new one. It maps to a durable loop only through an explicit, caller-verified record. |
+| Durable loop | `supervision_` plus 32 hex digits | Enrollment identity that owns runs. Distinct from the registry reference, loop name and runtime path. Nothing allocates it yet. |
+| Goal and revision | Existing `goal_` ID and revision 1–128 | A run records each revision in effect; an attempt carries a revision only when it was composed into that prompt. |
+| Execution run | `run_` plus 32 hex digits | One supervision episode. Never a daemon process, PID, poll, scheduled tick, provider turn or wake. |
+| Attempt | `attempt_` plus 32 hex digits | One adapter-send intent in one run: a wake, re-prompt, handoff or switch-back, or a queued nudge that may not start a provider turn. A daemon process is not an identity. |
+| Provider chat/session | Provider token plus the provider's opaque ID | A recorded reference only. It has no parent, owner or URL, and does not say the conversation exists or can be resumed or opened. |
+
+External tokens are 1–128 characters from letters, digits and `. _ : @ -`, starting with a letter or digit. Anything else, including a URL, is refused and stays unavailable; it is not repaired or truncated.
+
+### Run boundaries
+
+| Case | Effect on the run | Recorded alongside |
+| --- | --- | --- |
+| Enroll | None. Records only the durable loop identity; a different identity is refused. | |
+| First enable or start | Opens a run if none exists and completion has not been declared. | The opening routine invocation, when the operation carries one |
+| Repeated enable or start | Keeps the run and its recorded time. Does not clear completion or any hold. | |
+| Scheduled trigger | Never opens, reopens or replaces a run. A trigger opens a run only by arriving as the explicit start or resume above. | An invocation link, only while a run is open. With no run or after completion it relates to no run. |
+| Check, repeated wake or nudge | Keeps the run. | Each send is a new attempt in the same run |
+| Retry | Keeps the run. | A new attempt; the earlier intent stays unresolved and is never replayed or merged |
+| Daemon restart | Keeps the run for the same recorded values. | The first send afterwards is a new attempt; an intent with no recorded return stays an intent |
+| Pause, stop, disable or await-user | Keeps the run. Holds belong to the separate control system. | |
+| Resume from a hold | Keeps the run. With no run and no completion it opens nothing. | |
+| Complete | Closes the run once. With no run, records completion without inventing one. | Late adapter returns and session/goal links may still attach to the closed run |
+| Resume after completion (reopen) | Opens a new run with a new ID and a predecessor reference when known. Does not enable a disabled loop. | The opening routine invocation, when supplied |
+| Goal revision | Keeps the run. | A goal link per revision in effect |
+| Target transfer | Keeps the run. | A session link for the destination; the source link remains. No link is marked current. |
+| Legacy adoption | Opens an `adopted_existing` run only when the caller states it verified eligibility. The recorded time is not a historical start, and no routine is attached. | |
+| Dry run | None. Validates the prospective transition and returns the unchanged state. | |
+
+### Attempts and relationships
+
+`BeginAttempt` validates an intent against the open run and refuses an attempt ID already present in the attempts the caller retains. `FinishAttempt` records only `adapter_returned` or `adapter_error`; neither means delivered or executed. A late result may attach to its original attempt after completion without reopening the run. Repeating an identical result keeps the first timestamp; a conflicting outcome is refused. A missing result remains an intent and never authorizes replay.
+
+`Relate` validates a link from the current run to a provider chat/session, a goal revision or a routine invocation. Links are history: one run may record several chats, and the same chat may be recorded by successive runs. A session link may name the attempt whose send targeted or returned it. There is no session-to-session or run-to-parent edge, so a shared chat never implies BB thread parentage; the only run-to-run reference is the predecessor recorded by an explicit reopen. A link naming any run other than the current one is refused, including a late receipt for a run that has since been superseded.
+
+Caller-supplied timestamps may move backwards; they are not identity or ordering authority.
+
+### What the contract leaves to later items
+
+The package keeps no history. Callers must prevent reuse of discarded run and attempt IDs, verify provenance and target bindings, check current holds and authorization, and serialize and persist each transition, with intent persisted before a send. Registry mapping, enrollment of existing loops, atomic completion/reopen records, superseded-run archives, invocation deduplication, late receipts for superseded runs and recoverable attempt receipts are D2 work. Which target is current after a transfer is D5. Restrictive controls must stay writable when discovery records are unavailable; the runtime integration must settle that transaction boundary before claiming durable identity.
 
 ## Record once, resolve by reference
 
