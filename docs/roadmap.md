@@ -61,7 +61,7 @@ The project retains **Apache-2.0**. Optional paid products or support are busine
 4. **Finish safe BB transfer.** Preserve holds and goal identity, fence stale owners, and reset thread-specific observations. The source-snapshot guard is a prerequisite, not completed transfer.
 5. **Add optional menu-bar visibility.** Start with local loops, goals and explicit freshness through a versioned read/control contract. Configured stages can be shown when supplied; a stage engine is not required for the initial client.
 6. **Pilot bounded independent review.** Use an external workflow with pinned inputs, preserved dissent, explicit incomplete results and budget limits. Evaluate value against a single-review baseline before adding more orchestration.
-7. **Expand integrations.** Capability discovery may proceed independently; defer broad adapter implementation and lower-priority diagnostic expansion until the core experience has evidence.
+7. **Build Cursor and Antigravity concurrently.** Run the two [integration tracks](#6-cursor-and-antigravity-integrations) alongside shared reliability and core-journey work. Neither adapter waits for BB plugin polish or the BB-only live walkthrough. Keep focused independent PRs, merge sequentially against current main, and require each provider's own lifecycle, permission and live-evidence gates. Lower-priority diagnostic expansion remains deferred.
 
 These priorities are planning decisions, not new verification claims. Maintain separate evidence for **implemented**, **released**, **fixture-tested**, and **live-verified**; a checked implementation item does not certify the other three. External research that could not inspect the repository is architecture input, not a source-code audit. Verify suspected defects locally before treating them as findings.
 
@@ -234,12 +234,33 @@ Acceptance: transfer a loop between fictional scratch threads while its schedule
 
 ### 6. Cursor and Antigravity integrations
 
-- [ ] Complete capability discovery for both CLIs, including structured lifecycle/error events, stable session identity, resume, permission waits, cancellation, account selection, and supported versions/platforms.
-- [ ] Implement and verify a Cursor CLI adapter, then expose it in guided setup.
-- [ ] Implement and verify an Antigravity CLI adapter, then expose it in guided setup.
-- [ ] Investigate attaching to existing IDE chats separately. Publish precisely which sessions can be controlled; CLI support alone does not establish IDE-chat support.
+Cursor and Antigravity are concurrent implementation tracks alongside the shared supervisor/recovery work. Neither waits for BB plugin polish or a BB-only live walkthrough. They share the same goals, controls, bounds and evidence rules. PRs remain focused and independent against main; merges are sequential with fresh checks against the current base.
 
-Use the delivery gates and provider-specific plan in [integrations.md](integrations.md#planned-integrations). Thin IDE controls can call the same CLI once a supported session-control interface is established.
+CLI sessions and existing graphical IDE chats are separate capabilities. Official CLI or ACP support does not establish attachment to a conversation already running in an IDE. No support claim precedes its implementation and evidence.
+
+#### Cursor track
+
+- [ ] C1: Implement a primary-only CLI runner. Send the task on private stdin; persist the exact initialized session; verify matching terminal identity and known zero exit before classifying a successful turn. Missing or conflicting identity blocks fresh-session retries. Use existing owned cancellation and reject duplicate active sends.
+- [ ] C2: Verify offline lifecycle fixtures: first turn, exact resume after reconstructing the adapter, isolated targets, partial/crashed output, malformed or conflicting events, stop and all supervisor holds. Stderr-only failures stay unknown. No automatic force/yolo/approval flags or fallback eligibility.
+- [ ] C3: Add guided setup, capability-aware diagnostics and supported-version/platform evidence. Use existing credentials without login changes. Missing structured permission, quota or account data must be shown as unavailable.
+- [ ] C4: Record an authorized real two-turn/resume/stop walkthrough, including permission rejection. Live execution, native fixtures and compilation remain distinct.
+
+#### Antigravity track
+
+- [ ] A1: Implement the internal NDJSON input encoder and lifecycle parser with fictional fixtures. Preserve exact conversation identity, classify documented WAITING separately, and reject missing/conflicting/duplicate terminal evidence. Ignore response text and model-produced structured output.
+- [ ] A2: Resolve the permission contract before general automatic looping. Headless approval denial can return success and only print notices to stderr; neither transcript parsing nor invented WAITING is acceptable. Establish version-specific typed evidence or a reviewed ACP permission bridge.
+- [ ] A3: Implement the detached primary-only runner with private structured stdin, exact conversation resume, owned stop and no duplicate sends. Add restart/hold/error fixtures and explicitly unavailable probes/limits where evidence is missing.
+- [ ] A4: Add guided setup/diagnostics and then record an authorized live two-turn/resume/stop/permission walkthrough with version/platform evidence.
+
+#### Shared later gates
+
+Exact account/model probes, quota/reset handling and fallback eligibility each need their own structured contract and evidence. Never interpret generic error strings or exit 1 as rate limits. Unknown never triggers failover. No automatic provider installation, login change, permission relaxation or model replacement is part of these tracks.
+
+Investigate ACP and existing graphical-chat attachment separately. A custom ACP client generally owns a subprocess; that alone does not prove control of an existing IDE session.
+
+Documentation review accompanies each slice: README support/setup claims, integration matrix, configuration/setup/diagnostics guides where affected, changelog and roadmap. Source implementation, release availability, fixtures and live verification stay separate.
+
+See [provider contracts and sources](integrations.md#planned-integrations) for the reviewed CLI interfaces and remaining capability gaps. Research and work in progress do not check off implementation or live acceptance.
 
 ### 7. Release and recovery verification
 

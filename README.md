@@ -100,6 +100,8 @@ keepgoing uses the agent host's existing credentials and permissions:
 - **Claude Code or Codex:** the installed CLI runs a new headless session on the first wake and resumes its saved session afterward. By default it inherits the launching environment and provider configuration. `init --account-dir` can select an existing account directory; `--model` selects a headless model. Setup does not attach to existing IDE or headless chats.
 - **Process adapter:** supply structured status and resume commands for another system. This is an integration contract, not verified support for every IDE.
 
+Cursor and Antigravity are [parallel integration tracks](docs/roadmap.md#6-cursor-and-antigravity-integrations), beginning with their CLI sessions. Neither adapter is supported in the published release yet; controlling an existing graphical IDE chat has separate verification gates.
+
 Multiple headless accounts and fallback order are configurable; quota-group labels must describe actual shared limits. [Account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks) and [fallback probes](docs/fallbacks.md) explain the model calls and account boundaries. Probe previews with `fallbacks check --dry-run` spend no model quota; actual probes do.
 
 Automatic model catalogue discovery and retirement/replacement policy remain [planned](docs/roadmap.md#11-useful-supervision-features-from-product-analysis). Updating a provider CLI, changing its selected model and upgrading keepgoing are separate operations. keepgoing does not silently upgrade model selections.
