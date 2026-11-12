@@ -46,6 +46,16 @@ type Activator interface {
 	Activate(ctx context.Context) error
 }
 
+// InteractionAdopter is implemented by adapters that report
+// decide.Observation.DeferredInteraction from saved evidence. The supervisor
+// calls it only after the awaiting-user hold for that evidence is saved, so
+// the adapter stops reporting the same interaction. Until then the evidence
+// keeps raising the hold, including after a restart. It must not send, approve
+// or resume anything.
+type InteractionAdopter interface {
+	AdoptInteraction(ctx context.Context) error
+}
+
 // ErrUnsupported marks an operation the adapter cannot perform.
 type ErrUnsupported struct{ Op string }
 
