@@ -30,8 +30,14 @@ func TestJournalRetentionRestartAndPrivacy(t *testing.T) {
 		}
 	}
 	j, err := Load(dir)
-	if err != nil || j.Dropped != 4 || len(j.Records) != MaxRecords || j.NextSequence != MaxRecords+5 || j.Records[0].Sequence != 5 {
+	// Identical checks are collapsed, not pruned: the run keeps its first and
+	// latest check and accounts for every one between.
+	if err != nil || j.Dropped != 0 || j.Collapsed != MaxRecords+2 || len(j.Records) != 2 || j.NextSequence != MaxRecords+5 || j.Records[0].Sequence != 1 || j.Records[1].Sequence != MaxRecords+4 {
 		t.Fatalf("%+v %v", j, err)
+	}
+	base := sample().CheckStartedAt
+	if c := j.Records[1].Collapsed; j.Records[0].Collapsed != nil || c == nil || c.Count != MaxRecords+2 || !c.FirstAt.Equal(base.Add(time.Minute)) || !c.LastAt.Equal(base.Add((MaxRecords+2)*time.Minute)) {
+		t.Fatalf("%+v", j.Records[1].Collapsed)
 	}
 	r := sample()
 	r.Build = "SECRET_PAYLOAD"
@@ -62,7 +68,7 @@ func TestJournalRetentionRestartAndPrivacy(t *testing.T) {
 		t.Fatal(info.Mode())
 	}
 	j, err = Load(dir)
-	if err != nil || j.Dropped != 5 {
+	if err != nil || j.Dropped != 0 || len(j.Records) != 3 {
 		t.Fatal(j.Dropped, err)
 	}
 	last := j.Records[len(j.Records)-1]
@@ -190,7 +196,7 @@ func TestSchemaOneUpgradePreservesHistoryAndUnavailableEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = Load(dir)
-	if err != nil || loaded.SchemaVersion != 5 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
+	if err != nil || loaded.SchemaVersion != 6 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
 		t.Fatal(loaded, err)
 	}
 	if loaded.Records[0].Observation.ProviderCode != "unavailable" {
