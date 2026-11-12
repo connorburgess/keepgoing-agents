@@ -108,13 +108,15 @@ See [testing.md](testing.md) for the per-platform results. The suite passes on m
 
 ## Planned integrations
 
-This section describes future work, not additional supported adapters. keepgoing owns the repeated task prompt, supervision, recovery, and control state. Users should not need a separate loop skill. Task completion is an explicit control signal, not a phrase extracted from a transcript; see the [usability milestone](roadmap.md#next-first-supervised-loop-in-five-minutes).
+Cursor and Antigravity are concurrent implementation tracks alongside shared supervisor work, not additional supported adapters yet. Neither waits for BB-specific UI completion. The [checkable roadmap](roadmap.md#6-cursor-and-antigravity-integrations) separates each provider's implementation, fixture, setup and live gates. keepgoing owns the repeated task prompt, supervision, recovery, and control state. Users should not need a separate loop skill. Task completion is an explicit control signal, not a phrase extracted from a transcript; see the [usability milestone](roadmap.md#next-first-supervised-loop-in-five-minutes).
 
 There are two distinct integration targets: running an agent CLI against a project opened in any editor, and controlling an existing conversation inside an IDE. The first does not imply the second. A custom process wrapper is possible today only when it supplies the required structured status and control commands; the example scripts are placeholders, not working Cursor or Antigravity integrations.
 
 ### Cursor
 
-The official [CLI overview](https://cursor.com/docs/cli/overview) documents print mode and resuming a specific session, and the [output-format reference](https://docs.cursor.com/en/cli/reference/output-format) documents machine-readable results. These are discovery starting points, not evidence that keepgoing already handles Cursor.
+The official [CLI overview](https://cursor.com/docs/cli/overview) documents print mode and resuming a specific session, and the [output-format reference](https://cursor.com/docs/cli/reference/output-format) documents machine-readable results. These are discovery starting points, not evidence that keepgoing already handles Cursor.
+
+Documentation review: print mode accepts stdin and structured session/results, but failures may produce only a nonzero exit and stderr; those remain unknown. The [headless guide](https://cursor.com/docs/cli/headless) says already-allowed actions execute while actions requiring approval are rejected. The first runner must not add force or automatic approval flags, and cannot promise a typed permission-wait signal. The [ACP interface](https://cursor.com/docs/cli/acp) offers richer permissions/questions/cancellation for a separate bridge; it does not establish attachment to arbitrary existing IDE chats. These are documented contracts, not live keepgoing verification.
 
 1. Verify the installed CLI/version, structured start/completion/error output, exact session resume, cancellation, and permission waits in a scratch project. Determine how account identity and limits are exposed without transcript matching.
 2. Implement detached turns with per-target session/state storage, task prompts, explicit completion instructions, and compatible environment overrides where the provider supports account selection. Map only documented or observed structured errors; unknown remains unknown and never triggers failover.
@@ -125,6 +127,8 @@ The official [CLI overview](https://cursor.com/docs/cli/overview) documents prin
 ### Antigravity
 
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents print mode and machine-readable output. The [CLI reference](https://antigravity.google/docs/cli/reference/) documents conversation-ID resume. Authentication, cancellation, permission state, and structured quota reporting still require verification for this integration.
+
+Documentation review: the headless guide supports a structured user message on stdin with `--input-format stream-json --output-format stream-json`, closed after one turn, and documented terminal states including `WAITING`. However, denied approvals can still end with success and only a stderr notice. The initial internal encoder/parser can proceed with fictional fixtures, but general unattended setup must wait for a verified typed permission contract or reviewed [ACP bridge](https://antigravity.google/docs/ide/extensions/acp). Neither default permissions nor a sandbox flag proves that contract. No quota/reset classification is inferred from text. These are documented contracts, not installed-version or live keepgoing verification.
 
 1. Verify `agy` print-mode lifecycle events and conversation-ID resume, including failure after partial output, pending permission, cancellation, and missing authentication. Establish supported versions/platforms and whether separate account configurations are available.
 2. Implement detached turns and per-target state, using stable conversation IDs rather than "most recent" resume. Feed the same task lifecycle and controls used by the other runners.
