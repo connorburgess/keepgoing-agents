@@ -50,7 +50,17 @@ func Load(stateDir string) (File, error) {
 
 // Save writes the control file atomically.
 func Save(stateDir string, f File) error {
-	f.UpdatedAt = time.Now().UTC()
+	return saveAt(stateDir, f, time.Now().UTC())
+}
+
+func saveAt(stateDir string, f File, now time.Time) error {
+	// A repeated hold must change the loaded record even when the wall clock
+	// repeats (coarse platform clocks) or moves backwards. Resume tickets bind
+	// to those bytes, so an identical timestamp could accept stale evidence.
+	if !now.After(f.UpdatedAt) {
+		now = f.UpdatedAt.Add(time.Nanosecond)
+	}
+	f.UpdatedAt = now.UTC()
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
