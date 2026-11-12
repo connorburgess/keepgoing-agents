@@ -41,11 +41,11 @@ The runner now exercises owned cancellation with native subprocess fixtures: leg
 
 `go test -race ./internal/rungraph` exercises the persisted graph in temporary directories: legacy directories with no graph, boundaries derived from saved control state, intents left unconfirmed, direct lookup of every reference type, shared and multiple sessions, retention bounds, file mode and replacement under an open reader, and newer-schema, corrupt, aliased and conflicting records that must stay unread and unwritten. The Windows CI job runs this package natively.
 
-`go test -race ./internal/supervise -run 'Graph|Tick.*Intent|Handoff.*Sessions|DryRuns'` uses fake adapters. It shows the intent is on disk before the send, and that an unusable graph leaves each tick's action, reason, sends, control state and saved check identical apart from one warning.
+`go test -race ./internal/supervise -run 'Graph|Tick.*Intent|Handoff.*Sessions|DryRuns|Unrecordable'` uses fake adapters. It shows the intent is on disk before the send, that an unusable graph leaves each tick's action, reason, sends, control state and saved check identical apart from one warning, that a completion recorded while a check is starting is not read as a reopen, and that an unrecordable chat identifier warns once.
 
 `go test -race ./cmd/keepgoing -run 'RunReference|LostRunBoundary|ClientHoldRecords'` runs the real command entrypoint in separate OS processes against one state directory, with a shell stand-in for BB. It enables a loop, ticks, starts a daemon, kills it, starts another, and checks that the durable loop and run references are unchanged and that every send is its own attempt. This is the D1 restart evidence. It builds only on Unix because the stand-in is a shell script.
 
-Not exercised: a service-managed daemon restart, a host reboot or power loss, a real provider session, a real scheduler supplying a routine identity, and any CLI or GUI reader. Those need D3–D6 fixtures and live evidence where applicable. README artwork stays deferred.
+Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity, and any CLI or GUI reader. Those need D3–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
 ## On a machine with Go
 

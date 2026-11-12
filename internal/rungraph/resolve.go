@@ -65,10 +65,14 @@ type Node struct {
 	Attempt      *Attempt
 	Registration *Registration
 	Edges        []Edge
+	// Unrecorded lists evidence that existed for a run but could not be stored.
+	Unrecorded []Unrecorded
 }
 
-// SessionRef is the stable reference of a provider chat/session node.
-func SessionRef(provider, id string) string { return "session:" + provider + ":" + id }
+// SessionRef is the stable reference of a provider chat/session node. The
+// parts are joined with "/", which no recorded token can contain, so two
+// different pairs never share a reference.
+func SessionRef(provider, id string) string { return "session:" + provider + "/" + id }
 
 // GoalRevisionRef is the stable reference of a goal revision node.
 func GoalRevisionRef(id string, revision uint64) string {
@@ -77,7 +81,7 @@ func GoalRevisionRef(id string, revision uint64) string {
 
 // InvocationRef is the stable reference of a routine invocation node.
 func InvocationRef(r rd.RoutineRef) string {
-	return "routine:" + r.Source + ":" + r.Routine + ":" + r.Invocation
+	return "routine:" + r.Source + "/" + r.Routine + "/" + r.Invocation
 }
 
 func (g *Graph) build() {
@@ -148,6 +152,9 @@ func (g *Graph) build() {
 		}
 		edge(g.index[l.Run], edgeType, ref, l.Target, l.Source, l.RecordedAt)
 		edge(node(ref, typ, l.RecordedAt, l.Source), EdgeRun, l.Run, l.Target, l.Source, l.RecordedAt)
+	}
+	for _, u := range g.Unrecorded {
+		g.index[u.Run].Unrecorded = append(g.index[u.Run].Unrecorded, u)
 	}
 }
 

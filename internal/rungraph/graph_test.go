@@ -357,7 +357,7 @@ func TestRetentionIsBoundedAndExpiryStaysExplicit(t *testing.T) {
 		sync(t, dir, enabled, "resume", n)
 	}
 	g := load(t, dir)
-	if len(g.Runs) != MaxRuns || g.Dropped != (Dropped{Runs: 3, Attempts: 3, Links: 3}) || g.Runs[0].ID != id("run_", 3) || g.CurrentRun != id("run_", MaxRuns+2) {
+	if len(g.Runs) != MaxRuns || g.Dropped != (Dropped{Runs: 3, Attempts: 3, Links: 3, Unrecorded: 0}) || g.Runs[0].ID != id("run_", 3) || g.CurrentRun != id("run_", MaxRuns+2) {
 		t.Fatalf("runs=%d dropped=%#v first=%s", len(g.Runs), g.Dropped, g.Runs[0].ID)
 	}
 	// Dropped records are not recreated, and their absence is not "never recorded".
@@ -391,8 +391,8 @@ func TestRetentionIsBoundedAndExpiryStaysExplicit(t *testing.T) {
 	for n := 0; n < MaxRegistrations+3; n++ {
 		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), at) })
 	}
-	if g = load(t, dir); len(g.Registrations) != MaxRegistrations || g.Registrations[0].ID != id("loop_", 3) {
-		t.Fatalf("%d registrations", len(g.Registrations))
+	if g = load(t, dir); len(g.Registrations) != MaxRegistrations || g.Registrations[0].ID != id("loop_", 3) || g.Dropped.Registrations != 3 {
+		t.Fatalf("%d registrations, dropped %d", len(g.Registrations), g.Dropped.Registrations)
 	}
 }
 
@@ -474,6 +474,13 @@ func TestUnusableRecordsStayExplicitAndAreNeverRewritten(t *testing.T) {
 		"link with two payloads": {edit(func(v map[string]any) {
 			v["links"] = []any{map[string]any{"run": id("run_", 1), "kind": "session", "provider": "bb", "session": "thr_example_a", "goalId": goal, "goalRevision": 1, "source": "configured_target", "recordedAt": at}}
 		}), Corrupt},
+		"skip for unknown run": {edit(func(v map[string]any) {
+			v["unrecorded"] = []any{map[string]any{"run": id("run_", 9), "target": "primary", "reason": ReasonSessionID, "recordedAt": at}}
+		}), Corrupt},
+		"skip with unknown reason": {edit(func(v map[string]any) {
+			v["unrecorded"] = []any{map[string]any{"run": id("run_", 1), "target": "primary", "reason": "guessed", "recordedAt": at}}
+		}), Corrupt},
+		"attempt ID reused as run": {edit(func(v map[string]any) { first(v, "attempts")["run"] = id("attempt_", 1) }), Corrupt},
 		"malformed registration": {edit(func(v map[string]any) {
 			v["registrations"] = []any{map[string]any{"id": "loop_bad", "recordedAt": at, "source": "registered_control"}}
 		}), Corrupt},
@@ -551,5 +558,90 @@ func TestNewIDAndGate(t *testing.T) {
 	f := control.File{Enabled: true, Paused: true, Stop: true, AwaitingUser: true, Completed: true, PendingTransfer: &control.PendingBBTransfer{}}
 	if GateOf(f) != (Gate{true, true, true, true, true, true}) || GateOf(control.File{}) != (Gate{}) {
 		t.Fatal("gate")
+	}
+}
+
+// A dropped registry reference must not read as one that was never used.
+func TestDroppedRegistryReferenceIsExpiredNotUnrecorded(t *testing.T) {
+	dir := t.TempDir()
+	update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", 0), at) })
+	g := load(t, dir)
+	if _, status := g.Lookup(id("loop_", 99)); status != NotRecorded {
+		t.Fatal(status)
+	}
+	for n := 1; n <= MaxRegistrations; n++ {
+		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), at) })
+	}
+	g = load(t, dir)
+	if _, status := g.Lookup(id("loop_", 0)); status != NotRecordedOrExpired || g.Dropped.Registrations != 1 {
+		t.Fatalf("%s %#v", status, g.Dropped)
+	}
+	if _, status := g.Lookup(id("loop_", 1)); status != Found {
+		t.Fatal(status)
+	}
+}
+
+// Tokens may contain ":", so references join their parts with "/", which no
+// token can contain.
+func TestReferencesOfDifferentIdentitiesNeverCollide(t *testing.T) {
+	if SessionRef("example:a", "b") == SessionRef("example", "a:b") {
+		t.Fatal("session references collide")
+	}
+	a := rd.RoutineRef{Source: "example", Routine: "nightly:eu", Invocation: "1"}
+	b := rd.RoutineRef{Source: "example", Routine: "nightly", Invocation: "eu:1"}
+	if InvocationRef(a) == InvocationRef(b) {
+		t.Fatal("invocation references collide")
+	}
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	update(t, dir, func(g *Graph) (bool, error) {
+		for _, r := range []rd.RoutineRef{a, b} {
+			if _, err := g.Relate(Link{Kind: rd.InvocationLink, Routine: routineOf(r), Source: SourceExternal, RecordedAt: at}); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	g := load(t, dir)
+	for _, r := range []rd.RoutineRef{a, b} {
+		if n, status := g.Lookup(InvocationRef(r)); status != Found || len(n.Edges) != 1 {
+			t.Fatalf("%s %#v", status, n)
+		}
+	}
+}
+
+func TestSkipsAreKeptOncePerRunAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Skip("primary", ReasonSessionID, at) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("a skip was recorded without a run")
+	}
+	sync(t, dir, enabled, "start", 1)
+	for name, fn := range map[string]func(*Graph) (bool, error){
+		"unknown reason": func(g *Graph) (bool, error) { return g.Skip("primary", "transcript_said_so", at) },
+		"missing target": func(g *Graph) (bool, error) { return g.Skip("", ReasonSessionID, at) },
+		"missing time":   func(g *Graph) (bool, error) { return g.Skip("primary", ReasonSessionID, time.Time{}) },
+	} {
+		if err := Update(dir, at, fn); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for n := 0; n < MaxUnrecorded+2; n++ {
+		for repeat := 0; repeat < 2; repeat++ {
+			update(t, dir, func(g *Graph) (bool, error) { return g.Skip(fmt.Sprintf("target-%d", n), ReasonSessionID, at) })
+		}
+	}
+	g := load(t, dir)
+	run, _ := g.Current()
+	if len(g.Unrecorded) != MaxUnrecorded || g.Dropped.Unrecorded != 2 || len(run.Unrecorded) != MaxUnrecorded || run.Unrecorded[0].Target != "target-2" {
+		t.Fatalf("%d kept, %d dropped", len(g.Unrecorded), g.Dropped.Unrecorded)
+	}
+	// A skip leaves with its run.
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 0)
+	for n := 2; n <= MaxRuns+1; n++ {
+		sync(t, dir, enabled, "resume", n)
+		sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 0)
+	}
+	if g = load(t, dir); len(g.Unrecorded) != 0 || g.Runs[0].ID == id("run_", 1) {
+		t.Fatalf("%d skips outlived their run", len(g.Unrecorded))
 	}
 }

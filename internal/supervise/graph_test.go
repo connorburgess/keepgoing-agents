@@ -119,7 +119,7 @@ func TestHandoffKeepsTheRunAndBothSessions(t *testing.T) {
 			targets = append(targets, e.Target+"="+e.To)
 		}
 	}
-	if len(g.Runs) != 1 || strings.Join(targets, " ") != "primary=session:bb:thr_primary codex-main=session:bb:thr_codex-main" {
+	if len(g.Runs) != 1 || strings.Join(targets, " ") != "primary=session:bb/thr_primary codex-main=session:bb/thr_codex-main" {
 		t.Fatalf("runs=%d sessions=%v", len(g.Runs), targets)
 	}
 	last := g.Attempts[len(g.Attempts)-1]
@@ -158,6 +158,7 @@ func TestUnusableGraphNeverChangesATick(t *testing.T) {
 		sent                                          int
 		failed                                        bool
 	}
+	var lastRunLog string
 	run := func(t *testing.T, breakGraph func(dir string), setup func(*world, *fakeAdapter)) (outcome, []string) {
 		w := newWorld(t, true, false)
 		p := w.primary(decide.Observation{State: decide.Idle})
@@ -169,6 +170,8 @@ func TestUnusableGraphNeverChangesATick(t *testing.T) {
 			t.Fatalf("%v %+v", loadErr, st)
 		}
 		ctl, _ := control.Load(w.dir)
+		b, _ := os.ReadFile(filepath.Join(w.dir, state.LogName))
+		lastRunLog = string(b)
 		return outcome{res.Action, res.Reason, res.State, res.Target, ctl.Summary(), st.LastCheck.Action + "/" + st.LastCheck.Outcome, len(p.sent), err != nil}, res.Warnings
 	}
 	breaks := map[string]func(dir string){
@@ -200,6 +203,9 @@ func TestUnusableGraphNeverChangesATick(t *testing.T) {
 				if n := strings.Count(strings.Join(warnings, ";"), graphWarning); n != 1 {
 					t.Fatalf("want one graph warning, got %d: %v", n, warnings)
 				}
+				if log := lastRunLog; strings.Count(log, graphWarning) != 1 {
+					t.Fatalf("the warning is missing from runs.jsonl: %s", log)
+				}
 			})
 		}
 	}
@@ -211,5 +217,63 @@ func TestUnusableGraphNeverChangesATick(t *testing.T) {
 	runTick(t, w, t0)
 	if b, _ := os.ReadFile(path); string(b) != `{"schemaVersion":99}` {
 		t.Fatalf("unsupported graph rewritten: %s", b)
+	}
+}
+
+// A completion that is saved and recorded after the tick starts, but before
+// the tick updates the graph, must not be read as a reopen.
+func TestTickNeverAppliesControlOlderThanTheGraph(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.primary(decide.Observation{State: decide.Idle})
+	runTick(t, w, t0)
+	run := loadGraph(t, w.dir).CurrentRun
+	graphSyncHook = func() {
+		graphSyncHook = nil
+		f, err := control.Update(w.dir, func(f *control.File) { f.Completed = true })
+		if err != nil {
+			t.Error(err)
+		}
+		if err := rungraph.Update(w.dir, t0, func(g *rungraph.Graph) (bool, error) {
+			return g.Sync(rungraph.Boundary{Gate: rungraph.GateOf(f), Operation: "complete", At: t0, NewRunID: "run_00000000000000000000000000000009"})
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { graphSyncHook = nil })
+	runTick(t, w, t0.Add(time.Hour))
+	runTick(t, w, t0.Add(2*time.Hour))
+	g := loadGraph(t, w.dir)
+	if len(g.Runs) != 1 || g.CurrentRun != run || !g.Completed || g.Runs[0].ClosedSource != rungraph.SourceControl {
+		t.Fatalf("a run was fabricated from stale control state: %#v", g.Runs)
+	}
+}
+
+// A chat identifier the contract cannot store is a gap in the evidence, said
+// once per run. It is not a failed write and must not warn on every check.
+func TestUnrecordableSessionIdentifierIsNotedOnce(t *testing.T) {
+	for _, thread := range []string{"team/thread-1", "_thread", "two words"} {
+		t.Run(thread, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.Agent.BB.Thread = thread
+			p := w.primary(decide.Observation{State: decide.Idle})
+			first := runTick(t, w, t0)
+			if n := strings.Count(strings.Join(first.Warnings, ";"), "cannot be recorded"); n != 1 || strings.Contains(strings.Join(first.Warnings, ";"), graphWarning) {
+				t.Fatalf("%v", first.Warnings)
+			}
+			for i := 1; i <= 3; i++ {
+				if res := runTick(t, w, t0.Add(time.Duration(i)*2*time.Hour)); len(res.Warnings) != 0 {
+					t.Fatalf("check %d warned again: %v", i, res.Warnings)
+				}
+			}
+			g := loadGraph(t, w.dir)
+			run, _ := g.Current()
+			if len(g.Follow(run, rungraph.EdgeSession)) != 0 || len(run.Unrecorded) != 1 || run.Unrecorded[0].Target != state.Primary || run.Unrecorded[0].Reason != rungraph.ReasonSessionID {
+				t.Fatalf("%#v", run)
+			}
+			b, _ := os.ReadFile(filepath.Join(w.dir, rungraph.FileName))
+			if strings.Contains(string(b), thread) || len(p.sent) == 0 || len(g.Attempts) != len(p.sent) {
+				t.Fatalf("rejected identifier stored, or sends not recorded: %s", b)
+			}
+		})
 	}
 }

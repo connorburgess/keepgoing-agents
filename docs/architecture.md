@@ -80,7 +80,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
-| `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records (32 runs/128 attempts/256 links/256 KiB); independent lock and atomic replacement; a failed write never fails a tick; never a decision input |
+| `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records (32 runs/128 attempts/256 links/256 KiB); independent lock and flushed atomic replacement; a failed write never fails a tick; never a decision input |
 | `incidents.json`, `incident.lock` | tick diagnostic writer | versioned rolling snapshots, capped at 256 records/512 KiB; independent lock and atomic replacement; never a decision input |
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |

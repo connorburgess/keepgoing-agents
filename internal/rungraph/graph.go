@@ -25,6 +25,7 @@ const (
 	MaxAttempts      = 128
 	MaxLinks         = 256
 	MaxRegistrations = 16
+	MaxUnrecorded    = 16
 	maxTarget        = 128
 )
 
@@ -61,6 +62,7 @@ type Graph struct {
 	Runs          []Run          `json:"runs"`
 	Attempts      []Attempt      `json:"attempts"`
 	Links         []Link         `json:"links"`
+	Unrecorded    []Unrecorded   `json:"unrecorded"`
 	Dropped       Dropped        `json:"dropped"`
 
 	index map[string]*Node
@@ -68,9 +70,24 @@ type Graph struct {
 
 // Dropped counts records removed by the retention bounds.
 type Dropped struct {
-	Runs     uint64 `json:"runs"`
-	Attempts uint64 `json:"attempts"`
-	Links    uint64 `json:"links"`
+	Runs          uint64 `json:"runs"`
+	Attempts      uint64 `json:"attempts"`
+	Links         uint64 `json:"links"`
+	Registrations uint64 `json:"registrations"`
+	Unrecorded    uint64 `json:"unrecorded"`
+}
+
+// ReasonSessionID: the target's chat/session identifier is outside the
+// characters the contract accepts, so no session link can be stored for it.
+const ReasonSessionID = "session_id_not_recordable"
+
+// Unrecorded says that evidence existed for a run but could not be stored. It
+// keeps the gap explicit without storing the rejected value.
+type Unrecorded struct {
+	Run        string    `json:"run"`
+	Target     string    `json:"target"`
+	Reason     string    `json:"reason"`
+	RecordedAt time.Time `json:"recordedAt"`
 }
 
 // Registration records a registry loop_ reference that was used to control
@@ -180,38 +197,44 @@ func (g *Graph) state() rd.State {
 // reported as corrupt and never rewritten.
 func (g *Graph) valid() bool {
 	if g.SchemaVersion != SchemaVersion || g.LoopID == "" || g.UpdatedAt.IsZero() ||
-		len(g.Runs) > MaxRuns || len(g.Attempts) > MaxAttempts || len(g.Links) > MaxLinks || len(g.Registrations) > MaxRegistrations {
+		len(g.Runs) > MaxRuns || len(g.Attempts) > MaxAttempts || len(g.Links) > MaxLinks ||
+		len(g.Registrations) > MaxRegistrations || len(g.Unrecorded) > MaxUnrecorded {
 		return false
 	}
 	// The current run is always the newest record; trim relies on that order.
 	if (g.CurrentRun != "" && (len(g.Runs) == 0 || g.Runs[len(g.Runs)-1].ID != g.CurrentRun)) || !g.state().Valid() {
 		return false
 	}
-	seen := map[string]bool{}
+	runs, attempts, registrations := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, r := range g.Runs {
 		closed := !r.ClosedAt.IsZero()
-		if seen[r.ID] || !r.Source.valid() || closed != (r.ClosedSource != "") || (closed && !r.ClosedSource.valid()) ||
+		if runs[r.ID] || !r.Source.valid() || closed != (r.ClosedSource != "") || (closed && !r.ClosedSource.valid()) ||
 			(!closed && r.ID != g.CurrentRun) || !(rd.State{LoopID: g.LoopID, Current: r.episode(), Completed: closed}).Valid() {
 			return false
 		}
-		seen[r.ID] = true
+		runs[r.ID] = true
 	}
 	for _, a := range g.Attempts {
-		if seen[a.ID] || !seen[a.Run] || !a.contract().Valid() || a.Source != SourceAdapter || a.Target == "" || len(a.Target) > maxTarget {
+		if attempts[a.ID] || !runs[a.Run] || !a.contract().Valid() || a.Source != SourceAdapter || a.Target == "" || len(a.Target) > maxTarget {
 			return false
 		}
-		seen[a.ID] = true
+		attempts[a.ID] = true
 	}
 	for _, l := range g.Links {
-		if !seen[l.Run] || !l.contract().Valid() || !l.Source.valid() || len(l.Target) > maxTarget || (l.Kind != rd.SessionLink && l.Target != "") {
+		if !runs[l.Run] || !l.contract().Valid() || !l.Source.valid() || len(l.Target) > maxTarget || (l.Kind != rd.SessionLink && l.Target != "") {
 			return false
 		}
 	}
 	for _, r := range g.Registrations {
-		if _, err := rd.Register(rd.State{LoopID: g.LoopID}, r.ID, r.RecordedAt); err != nil || seen[r.ID] || !r.Source.valid() {
+		if _, err := rd.Register(rd.State{LoopID: g.LoopID}, r.ID, r.RecordedAt); err != nil || registrations[r.ID] || !r.Source.valid() {
 			return false
 		}
-		seen[r.ID] = true
+		registrations[r.ID] = true
+	}
+	for _, u := range g.Unrecorded {
+		if !runs[u.Run] || u.Target == "" || len(u.Target) > maxTarget || u.Reason != ReasonSessionID || u.RecordedAt.IsZero() {
+			return false
+		}
 	}
 	return true
 }
@@ -242,6 +265,13 @@ func (g *Graph) trim() {
 				}
 			}
 			g.Links = links
+			unrecorded := g.Unrecorded[:0]
+			for _, u := range g.Unrecorded {
+				if u.Run != id {
+					unrecorded = append(unrecorded, u)
+				}
+			}
+			g.Unrecorded = unrecorded
 			continue
 		}
 		// Only the current run is left: drop its oldest attempts and links.

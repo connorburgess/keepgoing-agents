@@ -164,3 +164,17 @@ func TestLostRunBoundaryIsReportedThenRecordedFromControl(t *testing.T) {
 		t.Fatalf("%#v", g)
 	}
 }
+
+// A command that records after a later command has saved must not apply its
+// own older view of control over the newer one.
+func TestRunBoundaryIsRecordedFromCurrentControlNotTheCallersSnapshot(t *testing.T) {
+	f := newFixture(t)
+	stateDir := filepath.Join(f.dir, "state")
+	f.run("enable")
+	run := graphOf(t, f).CurrentRun
+	// A "complete" whose save was already undone by a resume records late.
+	recordRunBoundary(stateDir, "complete")
+	if g := graphOf(t, f); g.Completed || g.CurrentRun != run || len(g.Runs) != 1 {
+		t.Fatalf("%#v", g)
+	}
+}

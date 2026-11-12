@@ -102,6 +102,7 @@ type tick struct {
 	st                  state.File
 	reg                 *health.Registry
 	graphFailed         bool
+	graphClosed         bool
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -142,10 +143,7 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
 	t.graphSync()
 	err := t.run()
-	t.graphSession()
-	if t.graphFailed {
-		t.warn("run reference record unavailable; discovery evidence is incomplete")
-	}
+	t.graphClose()
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
@@ -698,6 +696,7 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 }
 
 func (t *tick) record(actErr error) error {
+	t.graphClose()
 	t.st.CheckedAt = t.now
 	outcome := "succeeded"
 	if t.opts.DryRun {

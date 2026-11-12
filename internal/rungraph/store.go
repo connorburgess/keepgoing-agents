@@ -122,6 +122,7 @@ func Update(dir string, now time.Time, fn func(*Graph) (bool, error)) error {
 	g.Runs = append([]Run{}, g.Runs...)
 	g.Attempts = append([]Attempt{}, g.Attempts...)
 	g.Links = append([]Link{}, g.Links...)
+	g.Unrecorded = append([]Unrecorded{}, g.Unrecorded...)
 	if !g.valid() {
 		return ErrUnavailable
 	}

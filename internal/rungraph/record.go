@@ -127,7 +127,7 @@ func (g *Graph) Relate(l Link) (bool, error) {
 // Register records that an accepted control operation reached this loop
 // through a registry reference. It is evidence that the reference named this
 // loop then, not that it is still registered: the registry owns that. When
-// the list is full the oldest reference is dropped.
+// the list is full the oldest reference is dropped and counted.
 func (g *Graph) Register(id string, at time.Time) (bool, error) {
 	if _, err := rd.Register(rd.State{LoopID: g.LoopID}, id, at); err != nil {
 		return false, err
@@ -139,7 +139,27 @@ func (g *Graph) Register(id string, at time.Time) (bool, error) {
 	}
 	if len(g.Registrations) >= MaxRegistrations {
 		g.Registrations = g.Registrations[1:]
+		g.Dropped.Registrations++
 	}
 	g.Registrations = append(g.Registrations, Registration{ID: id, RecordedAt: at, Source: SourceRegistered})
+	return true, nil
+}
+
+// Skip records that evidence for the current run could not be stored. It is
+// kept once per run, target and reason; the caller reports it the first time.
+func (g *Graph) Skip(target, reason string, at time.Time) (bool, error) {
+	if g.run(g.CurrentRun) == nil || target == "" || len(target) > maxTarget || reason != ReasonSessionID || at.IsZero() {
+		return false, rd.ErrInvalid
+	}
+	for _, u := range g.Unrecorded {
+		if u.Run == g.CurrentRun && u.Target == target && u.Reason == reason {
+			return false, nil
+		}
+	}
+	if len(g.Unrecorded) >= MaxUnrecorded {
+		g.Unrecorded = g.Unrecorded[1:]
+		g.Dropped.Unrecorded++
+	}
+	g.Unrecorded = append(g.Unrecorded, Unrecorded{Run: g.CurrentRun, Target: target, Reason: reason, RecordedAt: at})
 	return true, nil
 }
