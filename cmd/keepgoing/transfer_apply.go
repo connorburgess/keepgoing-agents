@@ -312,6 +312,7 @@ func resetTransferState(dir string) error {
 	st.AwaitingReported = false
 	st.PrimaryResetsAt = time.Time{}
 	st.LastSwitchBackTry = time.Time{}
+	st.ClearBriefs()
 	if state.Save(dir, st) != nil {
 		return errors.New("could not reset primary observations")
 	}

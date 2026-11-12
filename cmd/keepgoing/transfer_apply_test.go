@@ -26,7 +26,7 @@ func transferApplyFixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := state.Save(dir, state.File{LastPromptSend: &state.PromptSend{Version: 1, CheckAt: now, Target: "primary", Action: "wake", Mode: "auto", Outcome: "adapter_returned"}, ActiveTarget: state.Primary, Fingerprint: "fixture", LastProgressAt: now, LastWakeAt: now, Reprompts: 3, Nudges: 4, Handoffs: 2, PrimaryResetsAt: now.Add(time.Hour), LastState: "error", StopRequestedSent: true, AwaitingReported: true, StallRetry: &state.StallRetry{Target: "primary", Waiting: true}, LastCheck: &state.Check{At: now, Target: "primary"}, CheckedAt: now}); err != nil {
+	if err := state.Save(dir, state.File{LastPromptSend: &state.PromptSend{Version: 1, CheckAt: now, Target: "primary", Action: "wake", Mode: "auto", Outcome: "adapter_returned"}, ActiveTarget: state.Primary, Fingerprint: "fixture", LastProgressAt: now, LastWakeAt: now, Reprompts: 3, Nudges: 4, Handoffs: 2, SwitchBackRejected: 2, HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 2, LastAt: now}}, PrimaryResetsAt: now.Add(time.Hour), LastState: "error", StopRequestedSent: true, AwaitingReported: true, StallRetry: &state.StallRetry{Target: "primary", Waiting: true}, LastCheck: &state.Check{At: now, Target: "primary"}, CheckedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.WriteGoal(dir, "fixture", "thr_source", control.GoalSpec{Title: "PRIVATE-GOAL", ObjectiveRefs: []string{"x"}, AcceptanceRefs: []string{"y"}}, "", 0); err != nil {
@@ -132,6 +132,9 @@ func TestTransferApplyAndRecoveryBoundaries(t *testing.T) {
 			st, _ := state.Load(dir)
 			if st.StopRequestedSent || st.AwaitingReported || st.StallRetry != nil || st.LastCheck != nil || st.LastPromptSend != nil || st.LastState != "" || !st.PrimaryResetsAt.IsZero() || !st.CheckedAt.IsZero() {
 				t.Fatal("old observations survived")
+			}
+			if len(st.HandoffBriefs) != 0 || st.SwitchBackRejected != 0 {
+				t.Fatal("rejected takeover briefs for the old target survived")
 			}
 			if st.Fingerprint != beforeState.Fingerprint || st.LastProgressAt != beforeState.LastProgressAt || st.LastWakeAt != beforeState.LastWakeAt || st.Nudges != beforeState.Nudges || st.Reprompts != beforeState.Reprompts || st.Handoffs != beforeState.Handoffs {
 				t.Fatal("budget/progress refunded")
