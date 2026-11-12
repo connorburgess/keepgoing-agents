@@ -15,6 +15,23 @@ import (
 func TestMain(m *testing.M) {
 	MaybeRunTurn()
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
+	case "cursor-crash":
+		// The fixture exits on release or its own deadline even if the wrapper
+		// dies. No surviving child writes to a later turn's stdout file.
+		_, _ = io.ReadAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(cursorInit + "\n")
+		ready := os.Getenv("KEEPGOING_TEST_RESULT")
+		if os.WriteFile(ready, []byte(strconv.Itoa(os.Getpid())), 0600) != nil {
+			os.Exit(2)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(ready + ".release"); err == nil {
+				os.Exit(0)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		os.Exit(3)
 	case "cursor":
 		input, _ := io.ReadAll(os.Stdin)
 		cwd, _ := os.Getwd()
