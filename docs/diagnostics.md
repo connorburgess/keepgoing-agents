@@ -13,7 +13,7 @@ The ordinary command resolves configured executable paths and runs supported age
 ## What it checks
 
 - Configuration and fallback parsing/validation, task-file readability, state/control/health readability, and private-file Unix mode bits. Separate read-only OS checks inspect runtime path access on macOS/Linux/Windows and ACL metadata on Linux/macOS/Windows as described below. Doctor does not print task text or control notes or change permissions. Full ACL privacy evaluation is unavailable.
-- Executable availability and recognized version output for the primary and enabled fallback agents. It displays only a narrowly recognized numeric version, never arbitrary stdout or stderr. A recognized version does not establish compatibility with every required provider feature.
+- Executable availability and recognized version output for the primary and enabled fallback agents. It displays only a narrowly recognized provider version, never arbitrary stdout or stderr. A recognized version does not establish compatibility with every required provider feature.
 - BB thread identity from structured JSON, including explicit not-found, archived, and deleted results. A missing ID, mismatched ID, malformed JSON, or failed query is unverified. The configured primary differing from the caller's `BB_THREAD_ID` produces a warning; doctor never transfers the loop.
 - Explicit headless account-directory overrides for existence and absolute paths. Account directory values and all other environment values are withheld. Directory existence does not verify credentials, subscription identity, or independent quota. Inherited account selection is reported as unverified.
 - The recorded active target and quota group, current control state, and last completed tick. A missing or disabled active fallback is an error. Status history is not read from agent transcripts.
@@ -30,6 +30,10 @@ Checks have stable IDs and one of four statuses:
 Exit status is **1** if any check is `error`, **0** otherwise, and **2** for invalid flags. Exit 0 may include warnings and unavailable checks; scripts must inspect the report for their own readiness requirements. Invalid configuration also produces a JSON report when `--json` is requested. Parser errors and raw command output are withheld because they can contain private values.
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
+
+## Cursor diagnostics (unreleased source)
+
+For a Cursor loop, doctor resolves the configured `agent` executable and may read `--version`; `--offline` skips that call. It recognizes the date/hash version shape without treating it as a verified compatibility range. Account identity, login health and quota state remain unavailable. The `agent.<target>.capabilities` check also describes the missing IDE attachment, interactive permission bridge and quota/reset/fallback support. Doctor never runs Cursor login, model-list or prompt commands. These source-only checks do not establish real-provider readiness; see [Cursor evidence](cursor.md).
 
 ## BB automation diagnostics
 
@@ -103,7 +107,7 @@ Inspection works offline without commands, permission changes, temporary writes,
 
 ## Saved headless sessions
 
-For each configured primary or enabled fallback using the Claude Code or Codex headless adapter, doctor inspects `targets/<target>/session` under the loop's state directory. The `agent.<target>.session` check and the JSON `sessions` map identify the saved resume ID. Text output labels it as saved and unverified live. BB and custom process targets do not have these fields.
+For each configured primary or enabled fallback using the Claude Code or Codex headless adapter (and the primary-only Cursor adapter in unreleased source), doctor inspects `targets/<target>/session` under the loop's state directory. The `agent.<target>.session` check and the JSON `sessions` map identify the saved resume ID. Text output labels it as saved and unverified live. BB and custom process targets do not have these fields.
 
 Each map entry has `state` (`saved`, `missing`, or `unavailable`), an optional `id`, `source: "runner_session_file"`, `liveVerified: false`, and an explanatory `message`. Missing records are normal before a resume ID is saved. An unreadable or unrecognized record produces a warning without displaying its content. Only UUID-shaped IDs from regular files of at most 128 bytes are displayed; symlink records are not followed. Other ID formats still work as before in the runner, but diagnostics withhold them.
 

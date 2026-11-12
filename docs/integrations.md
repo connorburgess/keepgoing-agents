@@ -114,7 +114,7 @@ There are two distinct integration targets: running an agent CLI against a proje
 
 ### Cursor
 
-**Unreleased source:** [the primary-only Cursor print adapter](cursor.md) now has offline lifecycle/control fixtures. Published v0.1.5 does not include it. Guided setup, live provider acceptance and fallback probes remain unfinished; the discovery and delivery gates below remain relevant.
+**Unreleased source:** [the primary-only Cursor print adapter](cursor.md) now has offline lifecycle/control fixtures. Published v0.1.5 does not include it. Guided setup is implemented in source; supported-version/platform acceptance, live provider verification and fallback probes remain unfinished; the discovery and delivery gates below remain relevant.
 
 The official [CLI overview](https://cursor.com/docs/cli/overview) documents print mode and resuming a specific session, and the [output-format reference](https://cursor.com/docs/cli/reference/output-format) documents machine-readable results. These document the source adapter contract; they do not establish live compatibility.
 
@@ -123,7 +123,7 @@ Documentation review: print mode accepts stdin and structured session/results, b
 1. Verify the installed CLI/version, structured start/completion/error output, exact session resume, cancellation, and permission waits in a scratch project. Determine how account identity and limits are exposed without transcript matching.
 2. Implement detached turns with per-target session/state storage, task prompts, explicit completion instructions, and compatible environment overrides where the provider supports account selection. Map only documented or observed structured errors; unknown remains unknown and never triggers failover.
 3. Verify manual/scheduled/exact probes against the configured account and model. If a safe or sufficiently precise probe is unavailable, document the limitation and keep fallback eligibility disabled for that path.
-4. Add setup discovery, diagnostics, examples, and supported-version/platform notes after the shared delivery gates below pass.
+4. Source setup now discovers `agent`, creates a disabled Cursor loop and exposes unavailable capabilities in previews/doctor. Complete supported-version/platform evidence and the Cursor-specific live gates; this track does not wait for BB delivery gates.
 5. Investigate an official API, hook, or protocol for attaching to an existing Cursor IDE conversation. Do not assume a CLI session is interchangeable with an IDE chat or use UI scraping as its status source.
 
 ### Antigravity

@@ -340,6 +340,7 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	case a.Cursor != nil:
 		cli, workdir, env = a.Cursor.CLI, a.Cursor.Workdir, a.Cursor.Env
 		r.add(prefix+".account", "unavailable", "Cursor account identity and quota state are not verified; existing CLI configuration and environment are inherited.", "")
+		r.add(prefix+".capabilities", "unavailable", initCursorNotice, "Review the Cursor integration limits before starting supervision.")
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return

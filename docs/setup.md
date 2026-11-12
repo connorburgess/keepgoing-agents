@@ -10,7 +10,7 @@ From an existing Git project with at least one commit, run:
 keepgoing init
 ```
 
-The wizard detects `codex`, `claude`, and `bb` on `PATH`. Choose a task file or enter a task with clear completion criteria, choose an agent, and accept or adjust the operating limits. The default is one agent with no fallbacks. A BB target requires an existing thread ID and its provider label; headless targets start a new session on their first wake and resume that session afterward. Setup does not attach to existing headless or IDE conversations.
+Published v0.1.5 detects `codex`, `claude`, and `bb` on `PATH`. Unreleased source also discovers Cursor through the `agent` executable, preserving the existing selection order when other CLIs are installed; the desktop `cursor` launcher is not a headless CLI. Choose a task file or enter a task with clear completion criteria, choose an agent, and accept or adjust the operating limits. The default is one agent with no fallbacks. A BB target requires an existing thread ID and its provider label; headless targets start a new session on their first wake and resume that session afterward. Setup does not attach to existing headless or IDE conversations.
 
 The wizard shows the target, project, account directory when explicitly selected, quota groups, fallback order, operating limits, and future probe behavior. It does not run providers, test authentication, create accounts, alter permissions, enable supervision, or install a scheduler.
 
@@ -40,7 +40,7 @@ Review the printed `doctor` command, then explicitly start. Goal creation never 
 
 Use [goal revise](goals.md#revise-explicitly) to change the title or references with the expected ID/revision. Editing the original task file does not update the snapshot. Editing a referenced file does not increment the goal revision or track its contents; preserve new specifications in separate files and revise their references when history matters. Goal metadata does not bind completion to a revision or prove useful progress. The rebuilt BB setup flow now uses this contract; its live deployment, the timed first-loop walkthrough and revision-bound results remain unfinished.
 
-Goal task input is bounded to 1 MiB of UTF-8 text; file input must be a regular file. Offline fixtures cover all three supported adapters, preview/create consistency, source-copy behavior, fresh composition after goal revision, preserved holds, private output and cleanup. No live provider or installed loop was changed.
+Goal task input is bounded to 1 MiB of UTF-8 text; file input must be a regular file. Offline fixtures cover the released BB/Claude Code/Codex setup paths and the unreleased Cursor path, preview/create consistency, source-copy behavior, fresh composition after goal revision, preserved holds, private output and cleanup. No live provider or installed loop was changed.
 
 ## Scripted setup
 
@@ -74,6 +74,20 @@ keepgoing init --non-interactive \
 ```
 
 This records the supplied target; it does not verify the thread's identity, switch its model/login, or transfer another supervisor. Use [doctor](diagnostics.md) for target diagnostics. Existing loops can use the separate [BB transfer commands](transfer.md), released in v0.1.4 with fixture tests; live transfer verification remains open.
+
+## Cursor setup (unreleased source)
+
+With a [development build](../README.md#development-build) containing the Cursor adapter, choose `cursor` in the wizard or pass `--agent cursor`. Published v0.1.5 does not support this choice.
+
+```sh
+keepgoing-dev init --non-interactive --agent cursor \
+  --name example-cursor --project /projects/example-app \
+  --task-file /private/example-task.md --with-goal --max-sends 10
+```
+
+Setup resolves `agent` on `PATH` and saves that executable, the project directory and optional `--model`. It never runs the provider or checks/changes its login. Existing Cursor credentials and permissions are inherited. `--account-dir` and `--fallback` are rejected for Cursor without writing a setup; the wizard skips those questions. Cursor is also unavailable as a fallback for other agents. `--dry-run` and the private stdin/JSON path below work as for other targets.
+
+This starts a separate CLI conversation on the first wake. Existing IDE chats, interactive permission bridging, quota/reset detection and automatic fallback recovery are unavailable. Text/JSON previews and doctor disclose these limits; reading a version string does not establish a supported version range. Review [Cursor evidence and remaining live checks](cursor.md) before starting. Creation stays disabled, including with an optional goal.
 
 ## Structured setup for integrations
 

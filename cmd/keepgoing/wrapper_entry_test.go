@@ -12,5 +12,6 @@ import (
 func TestMain(m *testing.M) {
 	runner.MaybeRunTurn()
 	cursorJourneyHelper()
+	initCursorInvocationTrap()
 	os.Exit(m.Run())
 }

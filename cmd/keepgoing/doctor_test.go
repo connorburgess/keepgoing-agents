@@ -301,7 +301,7 @@ func TestDoctorCursorUsesOnlyVersionAndKeepsAuthUnknown(t *testing.T) {
 		}
 		return []byte("2030.01.02-abcdef0\n"), nil
 	})
-	if code != 0 || calls != 1 || doctorCheckByID(t, r, "agent.primary.version").Status != "ok" || doctorCheckByID(t, r, "agent.primary.login").Status != "unavailable" {
+	if code != 0 || calls != 1 || doctorCheckByID(t, r, "agent.primary.version").Status != "ok" || doctorCheckByID(t, r, "agent.primary.login").Status != "unavailable" || doctorCheckByID(t, r, "agent.primary.capabilities").Status != "unavailable" {
 		t.Fatalf("%d calls=%d %+v", code, calls, r)
 	}
 	for _, bad := range []string{"2030.01.02-abcdef0\n" + doctorPrivate, "2030.01.02-secret", ""} {
