@@ -44,6 +44,11 @@ type File struct {
 	// handoff away from it; switch-back waits for it.
 	PrimaryResetsAt   time.Time `json:"primaryResetsAt,omitempty"`
 	LastSwitchBackTry time.Time `json:"lastSwitchBackTry,omitempty"`
+	// HandoffBriefs counts rejected handoff briefs per fallback within the
+	// current error episode. SwitchBackRejected counts rejected switch-back
+	// briefs while the loop stays on its current fallback.
+	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
+	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
@@ -67,6 +72,17 @@ type LimitWaitReport struct {
 	ResetsAt   time.Time `json:"resetsAt"`
 	DetectedAt time.Time `json:"detectedAt"`
 	Outcome    string    `json:"outcome"`
+}
+
+// BriefRecord is one target's rejected takeover briefs.
+type BriefRecord struct {
+	Failed int       `json:"failed"`
+	LastAt time.Time `json:"lastAt"`
+}
+
+// ClearBriefs starts a new episode for handoff and switch-back briefs.
+func (f *File) ClearBriefs() {
+	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
 }
 
 // StallRetry is a target-scoped grace period for ordinary stall nudges only.
