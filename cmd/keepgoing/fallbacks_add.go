@@ -14,6 +14,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -402,7 +404,7 @@ func fallbackAddGroup(cfg *config.Config, group string) error {
 }
 
 func fallbackAddModelName(what, v string) error {
-	if strings.HasPrefix(v, "-") || strings.ContainsFunc(v, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+	if strings.HasPrefix(v, "-") || strings.ContainsFunc(v, func(r rune) bool { return unicode.IsSpace(r) || bbUnprintable(r) }) || !utf8.ValidString(v) {
 		return fmt.Errorf("The %s must be a single name without spaces or a leading hyphen.", what)
 	}
 	return nil
@@ -1194,18 +1196,21 @@ func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 	default:
 		fmt.Fprintln(w, "  Handoff:     OFF. The fallback is saved but never used automatically.")
 	}
-	span := map[string]string{"provider": "counted by provider (accounts of one provider count once)", "group": "counted by quota group", "none": "each candidate counts"}[p.rules.Redundancy.Span]
-	fmt.Fprintf(w, "  Redundancy:  needs %d healthy, %s\n", p.rules.Redundancy.MinHealthy, span)
+	need := "at least 1 fallback that has passed its check"
+	if n := p.rules.Redundancy.MinHealthy; n != 1 {
+		need = fmt.Sprintf("at least %d fallbacks that have passed their checks", n) + map[string]string{"provider": ",\n               from different providers", "group": ",\n               on different quota groups"}[p.rules.Redundancy.Span]
+	}
+	fmt.Fprintf(w, "  Needs:       %s\n", need)
 	if !fallbackAddReachable(p) {
-		fmt.Fprintln(w, "               WARNING: these candidates cannot meet that rule; handoffs stay refused.")
+		fmt.Fprintln(w, "               WARNING: these fallbacks cannot meet that; handoffs stay refused.")
 	}
 	policy := p.rules.Probe
 	if policy.Disabled {
-		fmt.Fprintln(w, "  Probes:      scheduled probes off; one exact probe before each handoff")
+		fmt.Fprintln(w, "  Checks:      once before each handoff; no scheduled checks.")
+		fmt.Fprintln(w, "               Each is a real model request.")
 	} else {
-		fmt.Fprintf(w, "  Probes:      while the loop runs, every %s and at most %d a day per\n", fallbackAddDuration(policy.Every.Duration), policy.DailyCap)
-		fmt.Fprintln(w, "               fallback, plus one exact probe before each handoff.")
-		fmt.Fprintln(w, "               Every probe is a real model request.")
+		fmt.Fprintf(w, "  Checks:      every %s (at most %d a day per fallback) while the loop runs,\n", fallbackAddDuration(policy.Every.Duration), policy.DailyCap)
+		fmt.Fprintln(w, "               and once before each handoff. Each is a real model request.")
 	}
 
 	fmt.Fprintln(w, "\nFiles")

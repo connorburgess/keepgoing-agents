@@ -13,6 +13,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
@@ -22,10 +23,12 @@ import (
 type bbLookup func(ctx context.Context, cli string, args ...string) ([]byte, error)
 
 const (
-	bbLookupTimeout = 20 * time.Second
-	bbLookupLimit   = 8 << 20
-	bbListPage      = 9
+	bbLookupLimit = 8 << 20
+	bbListPage    = 9
 )
+
+// bbLookupTimeout bounds one listing; tests shorten it.
+var bbLookupTimeout = 20 * time.Second
 
 var bbReasoningLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
@@ -120,16 +123,35 @@ func bbModels(ctx context.Context, bb bbLookup, cli, provider string) ([]bbModel
 	}
 	var out []bbModel
 	for _, m := range all {
-		if m.Model != "" && fallbackAddModelName("model", m.Model) == nil {
+		// A listed model is written to configuration, so it must be clean as
+		// given, not merely printable after cleaning.
+		if m.Model != "" && fallbackAddModelName("model", m.Model) == nil && len(m.Model) <= 128 {
 			out = append(out, m)
 		}
 	}
 	return out, nil
 }
 
-// bbLabel makes listed text safe and short for one terminal column.
+// bbUnprintable reports characters that must never reach a terminal from
+// bb's output: C0/C1 controls (which include escape and CSI), format
+// characters such as bidirectional overrides, and line/paragraph separators.
+func bbUnprintable(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+}
+
+// bbLabel makes text that came from bb safe and short for one terminal
+// column. Everything printed from a listing passes through it.
 func bbLabel(s string, max int) string {
-	s = strings.Join(strings.FieldsFunc(s, func(r rune) bool { return r <= ' ' || r == 0x7f }), " ")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		case bbUnprintable(r) || unicode.IsSpace(r):
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s, ""))
+	s = strings.Join(strings.Fields(s), " ")
 	if s == "" {
 		return "(untitled)"
 	}
@@ -158,7 +180,7 @@ func bbProbeKind(provider string) (string, error) {
 	case "":
 		return "", errors.New("A BB fallback needs its thread's provider: claude-code or codex.")
 	}
-	return "", fmt.Errorf("Provider %q has no built-in probe. Guided add supports BB threads\n  on claude-code or codex; others need a hand-written command probe.", provider)
+	return "", fmt.Errorf("Provider %q has no built-in check.\n  Guided add supports BB threads on claude-code or codex; others need a\n  hand-written command probe.", bbLabel(provider, 24))
 }
 
 func bbCLI(cfg *config.Config, lookPath func(string) (string, error)) (string, error) {
@@ -174,18 +196,18 @@ func bbCLI(cfg *config.Config, lookPath func(string) (string, error)) (string, e
 
 // bbUse describes how a thread is already used by the loop.
 type bbUse struct {
-	owner, model string
+	owner, provider, model string
 }
 
 func bbThreadUses(cfg *config.Config, thread string) []bbUse {
 	var out []bbUse
 	if cfg.Loop.BB != nil && cfg.Loop.BB.Thread == thread {
-		out = append(out, bbUse{"the primary", cfg.Loop.BB.Model})
+		out = append(out, bbUse{"the primary", cfg.Loop.Provider, cfg.Loop.BB.Model})
 	}
 	if cfg.FallbackSet != nil {
 		for _, c := range cfg.FallbackSet.Candidates {
 			if c.BB != nil && c.BB.Thread == thread {
-				out = append(out, bbUse{fmt.Sprintf("fallback %q", c.ID), c.BB.Model})
+				out = append(out, bbUse{fmt.Sprintf("fallback %q", c.ID), c.Provider, c.BB.Model})
 			}
 		}
 	}
@@ -194,16 +216,33 @@ func bbThreadUses(cfg *config.Config, thread string) []bbUse {
 
 // bbSameThread refuses a second entry for a thread unless its model differs
 // from every existing use, which is the only thing a handoff would change.
-func bbSameThread(cfg *config.Config, thread, model string) error {
+// Model names are compared without regard to case. A thread has one provider,
+// so a different provider for a thread the loop already uses is a mistake.
+func bbSameThread(cfg *config.Config, thread, provider, model string) error {
 	for _, u := range bbThreadUses(cfg, thread) {
+		if provider != "" && u.provider != "" && provider != u.provider {
+			return fmt.Errorf("This thread is already %s, on provider %s. A thread has one\n  provider: use %s, or choose another thread.", u.owner, bbLabel(u.provider, 24), bbLabel(u.provider, 24))
+		}
 		if model == "" {
 			return fmt.Errorf("This thread is already %s. Adding it again only helps with a\n  different model: name the model to switch to.", u.owner)
 		}
-		if model == u.model {
-			return fmt.Errorf("This thread is already %s on model %s. Choose a different\n  model, or another thread.", u.owner, model)
+		if strings.EqualFold(model, u.model) {
+			return fmt.Errorf("This thread is already %s on model %s. Choose a different\n  model, or another thread.", u.owner, u.model)
 		}
 	}
 	return nil
+}
+
+// bbModelInUse names the model a same-thread fallback must differ from.
+func bbModelInUse(cfg *config.Config, thread string) string {
+	var known []string
+	for _, u := range bbThreadUses(cfg, thread) {
+		if u.model == "" {
+			return "The model in use is not recorded, so make sure yours differs"
+		}
+		known = append(known, u.model)
+	}
+	return "It must differ from " + strings.Join(known, " and ")
 }
 
 // fallbackAddBBDetail is what the preview and report say about a BB candidate.
@@ -256,7 +295,7 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 			return fail(err)
 		}
 	}
-	if err := bbSameThread(cfg, thread, o.model); err != nil {
+	if err := bbSameThread(cfg, thread, provider, o.model); err != nil {
 		return fail(err)
 	}
 	group := strings.TrimSpace(o.group)
@@ -285,20 +324,24 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 	}
 	agent := config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: thread, CLI: cli, Model: o.model, Reasoning: o.reasoning}}
 
+	// One short line each: the preview is read before a yes/no.
 	var warnings []string
 	uses := bbThreadUses(cfg, thread)
+	claim := "this thread"
 	if len(uses) > 0 {
-		warnings = append(warnings, fmt.Sprintf("Same conversation as %s. A handoff switches this thread to model %s and continues in it, with the same history. It is almost certainly the same account, so it helps only if that model has its own limit.", uses[0].owner, o.model))
+		claim = o.model
+		warnings = append(warnings, fmt.Sprintf("Same conversation as %s: same history, likely one account.", uses[0].owner))
 		for _, u := range uses {
 			if u.model == "" {
-				warnings = append(warnings, fmt.Sprintf("The model of %s is not set in its configuration, so it cannot be compared with %s, and returning to it would leave the thread on %s. Set its bb.model to make both explicit.", u.owner, o.model, o.model))
+				warnings = append(warnings, fmt.Sprintf("Returning to %s leaves the thread on %s: its bb.model is unset.", u.owner, o.model))
 			}
 		}
 	} else {
-		warnings = append(warnings, "keepgoing cannot see which account BB uses for this thread. If it shares a usage limit with another target, give them the same quota group.")
+		warnings = append(warnings, "keepgoing cannot see which account BB uses for this thread.")
 	}
+	warnings = append(warnings, fmt.Sprintf("Its own quota group is your claim that %s has a separate limit. keepgoing cannot check that; the check before a handoff is the only test.", claim))
 	if o.model == "" {
-		warnings = append(warnings, fmt.Sprintf("No model is set, so the thread keeps its own. The check before a handoff then uses the local %s CLI's default model, which may differ.", kind))
+		warnings = append(warnings, fmt.Sprintf("No model set: the check uses the local %s CLI's default model.", kind))
 	}
 	return agent, probe, warnings, nil
 }
@@ -331,24 +374,32 @@ func (w *fallbackAddWizard) collectBB() error {
 		fmt.Fprintln(out, "  keepgoing can ask BB for your threads and models so you can pick from a")
 		fmt.Fprintln(out, "  list. That runs two read-only bb commands (bb thread list, bb provider")
 		fmt.Fprintln(out, "  models). No message is sent and no thread is created or changed.")
-		if lookup, err = w.askYesNo("Ask BB for the lists? (yes/no)", "yes"); err != nil {
+		if lookup, err = w.askYesNo("Ask BB for the lists? (yes/no)", "no"); err != nil {
 			return err
 		}
 	}
 	if err := w.pickBBThread(cli, lookup); err != nil {
 		return err
 	}
+	same := bbThreadUses(cfg, o.thread)
+	if len(same) > 0 && same[0].provider != "" && !o.set["provider"] {
+		o.provider = same[0].provider // a thread has one provider; the loop already records it
+	}
 	if _, known := bbProbeKind(o.provider); known != nil || o.set["provider"] {
 		err = w.askValid("provider", "Provider of that thread (claude-code/codex)", "", &o.provider, func(s string) error {
-			_, err := bbProbeKind(s)
-			return err
+			if _, err := bbProbeKind(s); err != nil {
+				return err
+			}
+			if len(same) > 0 && same[0].provider != "" && s != same[0].provider {
+				return fmt.Errorf("This thread is already %s, on provider %s. A thread has one\n  provider: use %s, or choose another thread.", same[0].owner, bbLabel(same[0].provider, 24), bbLabel(same[0].provider, 24))
+			}
+			return nil
 		})
 		if err != nil {
 			return err
 		}
 	}
 	kind, _ := bbProbeKind(o.provider)
-	same := bbThreadUses(cfg, o.thread)
 	if len(same) > 0 {
 		fmt.Fprintf(out, "  Note: this is the same conversation as %s. A handoff will switch its\n  model and continue in it; you will choose that model next.\n", same[0].owner)
 	} else {
@@ -359,12 +410,14 @@ func (w *fallbackAddWizard) collectBB() error {
 	if err := w.pickBBModel(cli, lookup, len(same) > 0); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "  A quota group names one usage limit. Targets that share a limit must share")
-	fmt.Fprintf(out, "  a group; a fallback must not use the primary's group (%s).\n", cfg.Loop.Group)
+	fmt.Fprintln(out, "  A quota group names one usage limit. A fallback needs a group of its own")
+	fmt.Fprintf(out, "  (not %s, the primary's): that is your claim that it has a separate\n", cfg.Loop.Group)
+	fmt.Fprintln(out, "  limit. keepgoing cannot check the claim.")
 	if err := w.askValid("group", "Quota group", bbDefaultGroup(cfg, o.provider, o.model), &o.group, func(s string) error { return fallbackAddGroup(cfg, s) }); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  Before any handoff, the fallback is checked with one small request (a\n  probe) from the local %s CLI. That confirms BB's account only if both\n  use the same login.\n", kind)
+	fmt.Fprintln(out, "  keepgoing hands off only to a fallback that has just passed a check: one")
+	fmt.Fprintf(out, "  small real request from the local %s CLI. It tests BB's account only\n  if both use the same login.\n", kind)
 	if err := w.askValid("probe-model", "Cheaper model for scheduled checks (blank = same model)", "", &o.probeModel, func(s string) error { return fallbackAddModelName("probe model", s) }); err != nil {
 		return err
 	}
@@ -386,6 +439,7 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 	}
 	var threads []bbThread
 	if lookup {
+		fmt.Fprintln(out, "  Asking BB for your threads (up to 20 seconds)...")
 		var err error
 		if threads, err = bbThreads(w.e.ctx, w.bb, cli); err != nil || len(threads) == 0 {
 			fmt.Fprintln(out, "  BB's thread list is unavailable; enter the thread ID instead.")
@@ -403,10 +457,9 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 		}
 	}
 	shown, ids := 0, o.showIDs
-	show := func() {
-		end := min(shown+bbListPage, len(threads))
+	show := func(from, to int) {
 		tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
-		for i := shown; i < end; i++ {
+		for i := from; i < to; i++ {
 			t, title, note := threads[i], "", ""
 			if t.Title != nil {
 				title = *t.Title
@@ -418,23 +471,33 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 			}
 			row := fmt.Sprintf("  %d.\t%s\t%s\t%s\t%s", i+1, bbLabel(title, 30), bbLabel(t.Provider, 14), bbLabel(t.Status, 10), note)
 			if ids {
-				row += "\t" + t.ID
+				row += "\t" + t.ID // matched against the thread-ID pattern when listed
 			}
 			fmt.Fprintln(tw, row)
 		}
 		tw.Flush()
-		shown = end
+		shown = to
+	}
+	more := func() {
+		if shown < len(threads) {
+			fmt.Fprintf(out, "  Type more for the next %d of %d.\n", min(bbListPage, len(threads)-shown), len(threads))
+		}
 	}
 	label := "Thread ID"
 	if len(threads) > 0 {
 		fmt.Fprintln(out, "  Your BB threads (listed by bb; nothing was sent):")
-		show()
+		show(0, min(bbListPage, len(threads)))
 		label = "Thread (a number, or a thread ID)"
-		hint := "  Type ids to show thread IDs"
-		if shown < len(threads) {
-			hint += fmt.Sprintf(", or more for the next %d of %d", min(bbListPage, len(threads)-shown), len(threads))
+		fmt.Fprintln(out, "  Type ids to show thread IDs.")
+		more()
+	}
+	// --provider must agree with what BB lists for a picked thread.
+	conflict := func(t bbThread) bool {
+		if o.set["provider"] && t.Provider != "" && t.Provider != o.provider {
+			fmt.Fprintf(out, "  ! BB lists this thread's provider as %s, but --provider says %s.\n    Pick another thread, or run again without --provider.\n", bbLabel(t.Provider, 24), bbLabel(o.provider, 24))
+			return true
 		}
-		fmt.Fprintln(out, hint+".")
+		return false
 	}
 	for {
 		s, err := w.ask(label, "")
@@ -443,11 +506,13 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 		}
 		switch {
 		case s == "more" && shown < len(threads):
-			show()
+			show(shown, min(shown+bbListPage, len(threads)))
+			more()
 			continue
 		case s == "ids" && len(threads) > 0:
-			ids, shown = true, 0
-			show()
+			ids = true
+			show(0, shown) // keep the place in the list
+			more()
 			continue
 		}
 		if n, err := strconv.Atoi(s); err == nil && len(threads) > 0 {
@@ -456,7 +521,10 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 				continue
 			}
 			t := threads[n-1]
-			if _, err := bbProbeKind(t.Provider); err != nil && !o.set["provider"] {
+			if conflict(t) {
+				continue
+			}
+			if _, err := bbProbeKind(t.Provider); err != nil {
 				fmt.Fprintf(out, "  ! %v\n", err)
 				continue
 			}
@@ -473,9 +541,15 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 			fmt.Fprintln(out, "  ! Enter a number from the list or a thread ID (thr_...).")
 			continue
 		}
-		o.thread = s
+		listed := false
 		for _, t := range threads {
 			if t.ID == s {
+				if conflict(t) {
+					listed = true
+					s = ""
+					break
+				}
+				listed = true
 				if t.Title != nil {
 					o.threadTitle = bbLabel(*t.Title, 44)
 				}
@@ -484,6 +558,14 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 				}
 			}
 		}
+		if s == "" {
+			continue
+		}
+		if len(threads) > 0 && !listed {
+			fmt.Fprintln(out, "  Note: that ID is not in BB's list (it may be archived, hidden or on")
+			fmt.Fprintln(out, "  another machine). It is used as typed.")
+		}
+		o.thread = s
 		return nil
 	}
 }
@@ -494,10 +576,11 @@ func (w *fallbackAddWizard) pickBBModel(cli string, lookup, sameThread bool) err
 		if err := fallbackAddModelName("model", s); err != nil {
 			return err
 		}
-		return bbSameThread(cfg, o.thread, s)
+		return bbSameThread(cfg, o.thread, o.provider, s)
 	}
 	var models []bbModel
 	if lookup && !o.set["model"] {
+		fmt.Fprintf(out, "  Asking BB for %s models (up to 20 seconds)...\n", o.provider)
 		var err error
 		if models, err = bbModels(w.e.ctx, w.bb, cli, o.provider); err != nil || len(models) == 0 {
 			fmt.Fprintln(out, "  BB's model list is unavailable for this provider.")
@@ -510,39 +593,47 @@ func (w *fallbackAddWizard) pickBBModel(cli string, lookup, sameThread bool) err
 			return err
 		}
 	} else {
-		blank := "blank keeps the thread's own model"
+		blank := "Blank keeps the thread's own model"
 		if sameThread {
-			blank = "it must differ from the model already in use"
+			blank = bbModelInUse(cfg, o.thread)
 		}
-		label := "Model"
-		if len(models) > 0 {
-			if len(models) > 2*bbListPage {
-				models = models[:2*bbListPage]
-			}
-			fmt.Fprintf(out, "  Models BB offers for %s:\n", o.provider)
+		label, shown := "Model", 0
+		show := func() {
+			end := min(shown+bbListPage, len(models))
 			tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
-			for i, m := range models {
+			for i := shown; i < end; i++ {
 				note := ""
-				if m.Default {
+				if models[i].Default {
 					note = "BB's default"
 				}
-				fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\n", i+1, bbLabel(m.Model, 30), bbLabel(m.DisplayName, 24), note)
+				fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\n", i+1, models[i].Model, bbLabel(models[i].DisplayName, 24), note)
 			}
 			tw.Flush()
+			if shown = end; shown < len(models) {
+				fmt.Fprintf(out, "  Showing %d of %d. Type more for the next %d.\n", shown, len(models), min(bbListPage, len(models)-shown))
+			}
+		}
+		if len(models) > 0 {
+			fmt.Fprintf(out, "  Models BB offers for %s:\n", o.provider)
+			show()
 			label = "Model (a number, or a name)"
-			fmt.Fprintf(out, "  A name you type is not checked; %s.\n", blank)
+			fmt.Fprintf(out, "  A name you type is not checked.\n  %s.\n", blank)
 		} else {
-			fmt.Fprintf(out, "  Type the model name. It is not checked here; %s.\n", blank)
+			fmt.Fprintf(out, "  Type the model name; it is not checked here.\n  %s.\n", blank)
 		}
 		for {
 			s, err := w.ask(label, "")
 			if err != nil {
 				return err
 			}
+			if s == "more" && shown < len(models) {
+				show()
+				continue
+			}
 			listed := false
 			if n, err := strconv.Atoi(s); err == nil && len(models) > 0 {
-				if n < 1 || n > len(models) {
-					fmt.Fprintf(out, "  ! Choose a number between 1 and %d.\n", len(models))
+				if n < 1 || n > shown {
+					fmt.Fprintf(out, "  ! Choose a number between 1 and %d.\n", shown)
 					continue
 				}
 				s, listed, levels = models[n-1].Model, true, models[n-1].levels()
@@ -578,6 +669,7 @@ func (w *fallbackAddWizard) pickBBModel(cli string, lookup, sameThread bool) err
 }
 
 // printBBCandidate is the preview's "New fallback" block for a BB thread.
+// Rows that would only repeat a default are left out to keep it short.
 func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 	c, d := p.candidate, p.bb
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -606,34 +698,25 @@ func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 			model = m + " (from BB's model list)"
 		}
 	}
-	fmt.Fprintf(tw, "  Model:\t%s\n", model)
-	reasoning := "unchanged"
 	if c.BB.Reasoning != "" {
-		reasoning = c.BB.Reasoning
+		model += ", reasoning " + c.BB.Reasoning
 	}
-	fmt.Fprintf(tw, "  Reasoning:\t%s\n", reasoning)
-	account := "that CLI's current login"
+	fmt.Fprintf(tw, "  Model:\t%s\n", model)
+	fmt.Fprintf(tw, "  Checked with:\tthe local %s CLI; tests BB's account only if same login\n", c.Probe.Kind)
 	if d.probeAccount != "" {
-		account = d.probeAccount
+		fmt.Fprintf(tw, "  Check login:\t%s\n", d.probeAccount)
 	}
-	fmt.Fprintf(tw, "  Checked with:\tthe local %s CLI\n", c.Probe.Kind)
-	fmt.Fprintf(tw, "  Check login:\t%s\n", account)
-	probeModel := "same as the model"
 	if c.Probe.Model != "" {
-		probeModel = c.Probe.Model
+		fmt.Fprintf(tw, "  Check model:\t%s\n", c.Probe.Model)
 	}
-	fmt.Fprintf(tw, "  Check model:\t%s\n", probeModel)
-	tw.Flush()
-	fmt.Fprintln(w, "\nAt a handoff")
 	if what := bbChanges(c); what != "" {
-		fmt.Fprintf(w, "  keepgoing sets the thread's %s with bb thread update,\n", what)
-		fmt.Fprintln(w, "  then sends the handoff message. Nothing is sent or changed now.")
+		fmt.Fprintf(tw, "  At handoff:\tsets the thread's %s (bb thread\n", what)
+		fmt.Fprintf(tw, "  \tupdate), then sends the handoff message. Nothing changes now.\n")
 	} else {
-		fmt.Fprintln(w, "  keepgoing sends the handoff message to the thread as it is. Nothing is")
-		fmt.Fprintln(w, "  sent or changed now.")
+		fmt.Fprintf(tw, "  At handoff:\tsends the handoff message to the thread as it is.\n")
+		fmt.Fprintf(tw, "  \tNothing changes now.\n")
 	}
-	fmt.Fprintln(w, "  The check passing shows the local CLI's login works. It shows BB's account")
-	fmt.Fprintln(w, "  works only if BB uses that same login.")
+	tw.Flush()
 }
 
 // bbChanges names what a handoff changes on the thread before its message.

@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
@@ -46,11 +48,11 @@ func (b *fakeBBLists) lookup(_ context.Context, _ string, args ...string) ([]byt
 }
 
 const fakeBBThreadList = `[
- {"id":"thr_example_docs","providerId":"codex","title":"Docs pass\u0007 with\ttabs","status":"idle","visibility":"visible","archivedAt":null},
+ {"id":"thr_example_docs","providerId":"codex","title":"Docs\u009b2J pass\u0007 with\ttabs\u202e and\u2028 more\u001b[31m","status":"idle\u009b2J","visibility":"visible","archivedAt":null},
  {"id":"thr_example_archived","providerId":"codex","title":"Archived work","status":"idle","visibility":"visible","archivedAt":"2026-01-01T00:00:00Z"},
  {"id":"thr_example_hidden","providerId":"codex","title":"Hidden helper","status":"idle","visibility":"hidden","archivedAt":null},
  {"id":"not a thread id","providerId":"codex","title":"Malformed entry","status":"idle","visibility":"visible","archivedAt":null},
- {"id":"thr_example_pi","providerId":"pi","title":"Other provider","status":"idle","visibility":"visible","archivedAt":null},
+ {"id":"thr_example_pi","providerId":"pi\u009b2J\u202e-with-a-very-long-provider-name-that-is-cut","title":"Other provider","status":"idle","visibility":"visible","archivedAt":null},
  {"id":"thr_example_primary","providerId":"claude-code","title":"Example refactor","status":"active","visibility":"visible","archivedAt":null},
  {"id":"thr_example_untitled","providerId":"codex","title":null,"status":"idle","visibility":"visible","archivedAt":null}
 ]`
@@ -58,7 +60,9 @@ const fakeBBThreadList = `[
 const fakeBBModelList = `[
  {"id":"m1","model":"example-large","displayName":"Example Large","isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},
  {"id":"m2","model":"example-small","displayName":"Example Small","isDefault":false,"supportedReasoningEfforts":[]},
- {"id":"m3","model":"bad name","displayName":"Unusable","isDefault":false}
+ {"id":"m3","model":"bad name","displayName":"Unusable","isDefault":false},
+ {"id":"m4","model":"example\u009b2J","displayName":"Unusable control","isDefault":false},
+ {"id":"m5","model":"example\u202e","displayName":"Unusable format","isDefault":false}
 ]`
 
 func TestFallbacksAddBBSameConversationOnAnotherModel(t *testing.T) {
@@ -84,10 +88,13 @@ func TestFallbacksAddBBSameConversationOnAnotherModel(t *testing.T) {
 	}
 	for _, want := range []string{
 		"BB thread (provider claude-code)", "given by ID (this loop's own conversation)", "chosen by BB; keepgoing cannot see or switch it",
-		"example-large (not checked)", "Reasoning:     high", "Checked with:  the local claude CLI", "Check login:   that CLI's current login",
-		"sets the thread's model and reasoning level with bb thread update,\n  then sends the handoff message. Nothing is sent or changed now.",
-		"WARNING: Same conversation as the primary.", "It does not\n     test the account BB uses for the thread.", "with the same history", "Set its bb.model",
-		"It shows BB's account\n  works only if BB uses that same login.",
+		"example-large (not checked), reasoning high", "the local claude CLI; tests BB's account only if same login", "Check model:   example-small",
+		"sets the thread's model and reasoning level (bb thread\n", "update), then sends the handoff message. Nothing changes now.",
+		"WARNING: Same conversation as the primary: same history, likely one account.",
+		"WARNING: Returning to the primary leaves the thread on example-large: its",
+		"Its own quota group is your claim that example-large has a separate", "keepgoing cannot check that; the check before a handoff is the only",
+		"Needs:       at least 1 fallback that has passed its check", "Each is a real model request.",
+		"It does not\n     test the account BB uses for the thread.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -128,7 +135,7 @@ func TestFallbacksAddBBOtherThreadJSONAndIDs(t *testing.T) {
 		t.Fatalf("bad preview: %+v", pc)
 	}
 	joined := strings.Join(preview.Warnings, "\n")
-	if !strings.Contains(joined, "cannot see which account BB uses") || !strings.Contains(joined, "No model is set") {
+	if !strings.Contains(joined, "cannot see which account BB uses") || !strings.Contains(joined, "your claim that this thread has a separate limit") || !strings.Contains(joined, "No model set") {
 		t.Fatalf("warnings: %v", preview.Warnings)
 	}
 	code, addedOut, errOut := f.add(t, "", args...)
@@ -176,8 +183,13 @@ func TestFallbacksAddBBRefusals(t *testing.T) {
 		"no thread":                 {bb("--provider", "codex"), "needs an existing thread ID"},
 		"malformed thread":          {bb("--thread", "example", "--provider", "codex"), "needs an existing thread ID"},
 		"no provider":               {bb("--thread", "thr_example_new"), "needs its thread's provider"},
-		"provider without a probe":  {bb("--thread", "thr_example_new", "--provider", "pi"), "has no built-in probe"},
+		"provider without a probe":  {bb("--thread", "thr_example_new", "--provider", "pi"), "has no built-in check"},
 		"reasoning level":           {bb("--thread", "thr_example_new", "--provider", "codex", "--reasoning", "extreme"), "reasoning level must be one of"},
+		"primary's other provider":  {bb("--thread", bbPrimaryThread, "--provider", "codex", "--model", "example-large"), "already the primary, on provider claude-code"},
+		"fallback's other provider": {bb("--thread", bbOtherThread, "--provider", "claude-code", "--group", "other-b", "--model", "example-large"), "already fallback \"existing\", on provider codex"},
+		"fallback thread, case":     {bb("--thread", bbOtherThread, "--provider", "codex", "--group", "codex-b", "--model", "Example-Model"), "on model example-model"},
+		"long provider":             {bb("--thread", "thr_example_new", "--provider", strings.Repeat("x", 300)), "Provider \"xxxxxxxxxxxxxxxxxxxxxxx…\" has no built-in check"},
+		"model with a control":      {bb("--thread", "thr_example_new", "--provider", "codex", "--model", "example\u009b2J"), "single name"},
 		"primary thread, no model":  {bb("--thread", bbPrimaryThread, "--provider", "claude-code"), "already the primary"},
 		"fallback thread, no model": {bb("--thread", bbOtherThread, "--provider", "codex", "--group", "codex-b"), "already fallback \"existing\""},
 		"fallback thread, same":     {bb("--thread", bbOtherThread, "--provider", "codex", "--group", "codex-b", "--model", "example-model"), "on model example-model"},
@@ -270,8 +282,8 @@ func TestFallbacksAddBBWizardPicksFromBBLists(t *testing.T) {
 	}
 	for _, want := range []string{
 		"an existing thread can be one", "not supported here", "No message is sent and no thread is created or changed.",
-		"1.  Example refactor", "used by this loop", "Docs pass with tabs", "(untitled)",
-		"! Provider \"pi\" has no built-in probe.", "! Choose a number between 1 and 4.",
+		"1.  Example refactor", "used by this loop", "Docs 2J pass with tabs and mo…", "(untitled)", "Asking BB for your threads (up to 20 seconds)...", "Asking BB for claude-code models (up to 20 seconds)...", "The model in use is not recorded, so make sure yours differs.", "that is your claim that it has a separate", "keepgoing hands off only to a fallback that has just passed a check",
+		"! Provider \"pi 2J-with-a-very-long-…\" has no built-in check.", "! Choose a number between 1 and 4.",
 		"thr_example_docs", // after "ids"
 		"Note: this is the same conversation as the primary.",
 		"1.  example-large  Example Large  BB's default", "2.  example-small",
@@ -284,7 +296,7 @@ func TestFallbacksAddBBWizardPicksFromBBLists(t *testing.T) {
 			t.Errorf("wizard output missing %q", want)
 		}
 	}
-	for _, hidden := range []string{"Archived work", "Hidden helper", "Malformed entry", "Unusable", "\a"} {
+	for _, hidden := range []string{"Archived work", "Hidden helper", "Malformed entry", "Unusable", "\a", "\u009b", "\u202e", "\u2028", "\x1b"} {
 		if strings.Contains(out, hidden) {
 			t.Errorf("wizard offered or echoed %q", hidden)
 		}
@@ -314,8 +326,9 @@ func TestFallbacksAddBBWizardWithoutLists(t *testing.T) {
 		"yes", // write
 	}, "\n") + "\n"
 	for name, setup := range map[string]func(*fakeBBLists) string{
-		"declined":      func(*fakeBBLists) string { return "bb\nno\n" },
-		"listing fails": func(b *fakeBBLists) string { b.fail = true; return "bb\nyes\n" },
+		"declined":       func(*fakeBBLists) string { return "bb\nno\n" },
+		"default answer": func(*fakeBBLists) string { return "bb\n\n" },
+		"listing fails":  func(b *fakeBBLists) string { b.fail = true; return "bb\nyes\n" },
 		"error envelope": func(b *fakeBBLists) string {
 			b.threads, b.models = `{"ok":false,"error":{"code":"unavailable"}}`, `{"ok":false}`
 			return "bb\nyes\n"
@@ -330,7 +343,7 @@ func TestFallbacksAddBBWizardWithoutLists(t *testing.T) {
 			if code != exitOK {
 				t.Fatalf("%d %s\n%s", code, errOut, out)
 			}
-			if name == "declined" && len(lists.calls) != 0 {
+			if (name == "declined" || name == "default answer") && len(lists.calls) != 0 {
 				t.Fatalf("bb was run after the lists were declined: %v", lists.calls)
 			}
 			for _, call := range lists.calls {
@@ -338,7 +351,7 @@ func TestFallbacksAddBBWizardWithoutLists(t *testing.T) {
 					t.Fatalf("unexpected bb command: %s", call)
 				}
 			}
-			for _, want := range []string{"! Enter a number from the list or a thread ID (thr_...).", "! Provider \"pi\" has no built-in probe.", "It is not checked here; blank keeps the thread's own model.", "keepgoing cannot see which account BB uses for this thread.", "the thread's own (not changed)", "sets the thread's reasoning level with bb thread update,"} {
+			for _, want := range []string{"! Enter a number from the list or a thread ID (thr_...).", "! Provider \"pi\" has no built-in check.", "it is not checked here.\n  Blank keeps the thread's own model.", "keepgoing cannot see which account BB uses for this thread.", "the thread's own (not changed)", "sets the thread's reasoning level (bb thread"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("output missing %q:\n%s", want, out)
 				}
@@ -390,5 +403,102 @@ func TestRunBBLookupIsBoundedAndReadsOnlyStdout(t *testing.T) {
 	}
 	if _, err := os.Stat(ok); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFallbacksAddBBThreadWithARecordedModelAndProvider(t *testing.T) {
+	f := newBBAddFixture(t)
+	raw, err := os.ReadFile(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withModel := strings.Replace(string(raw), "thread: "+bbPrimaryThread, "thread: "+bbPrimaryThread+"\n        model: example-large", 1)
+	if err := os.WriteFile(f.cfg, []byte(withModel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := config.Load(f.cfg); err != nil || cfg.Loop.BB.Model != "example-large" {
+		t.Fatalf("fixture: %v\n%s", err, withModel)
+	}
+	before := f.files(t)
+	base := []string{"--non-interactive", "--dry-run", "--agent", "bb", "--thread", bbPrimaryThread, "--provider", "claude-code"}
+	for _, same := range []string{"example-large", "EXAMPLE-Large"} {
+		code, out, errOut := f.add(t, "", append(base, "--model", same)...)
+		if code != exitUsage || out != "" || !strings.Contains(errOut, "already the primary on model example-large") || f.files(t) != before {
+			t.Fatalf("%s: %d %s", same, code, errOut)
+		}
+	}
+	code, out, errOut := f.add(t, "", append(base, "--model", "example-medium")...)
+	if code != exitOK || !strings.Contains(out, "Same conversation as the primary") || strings.Contains(out, "is unset") {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	// The wizard names the model to differ from, takes the provider from the
+	// loop, and does not let --provider contradict what BB lists.
+	lists := &fakeBBLists{threads: fakeBBThreadList, models: fakeBBModelList}
+	f.bb = lists.lookup
+	code, out, errOut = f.add(t, "bb\nyes\n1\n1\n2\n\n\n\n\nno\nno\n")
+	if code != exitOK || !strings.Contains(out, "It must differ from example-large.") || !strings.Contains(out, "! This thread is already the primary on model example-large.") || strings.Contains(out, "Provider of that thread") {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	code, out, errOut = f.add(t, "bb\nyes\n1\nthr_example_primary\nthr_example_unlisted\n\n\n\n\n\nno\nno\n", "--provider", "codex")
+	if code != exitOK {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	for _, want := range []string{"! BB lists this thread's provider as claude-code, but --provider says codex.", "Note: that ID is not in BB's list", "It is used as typed."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "but --provider says") != 2 {
+		t.Errorf("want the conflict reported for the picked number and the typed ID only:\n%s", out)
+	}
+}
+
+func TestFallbacksAddBBListsPageAndKeepTheirPlace(t *testing.T) {
+	f := newBBAddFixture(t)
+	var threads, models []string
+	for i := 1; i <= 21; i++ {
+		threads = append(threads, fmt.Sprintf(`{"id":"thr_example_%02d","providerId":"codex","title":"Fictional thread %02d","status":"idle","visibility":"visible","archivedAt":null}`, i, i))
+		models = append(models, fmt.Sprintf(`{"id":"m%d","model":"example-model-%02d","displayName":"Example %02d","isDefault":false}`, i, i, i))
+	}
+	lists := &fakeBBLists{threads: "[" + strings.Join(threads, ",") + "]", models: "[" + strings.Join(models, ",") + "]"}
+	f.bb = lists.lookup
+	// threads: 12 is not shown yet; more; ids reprints both pages; 12. models: 10 not shown yet; more; 10.
+	code, out, errOut := f.add(t, "bb\nyes\n12\nmore\nids\n12\n10\nmore\n10\n\n\n\n\nno\nno\n")
+	if code != exitOK {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	for _, want := range []string{
+		"Type more for the next 9 of 21.", "! Choose a number between 1 and 9.", "Type more for the next 3 of 21.",
+		"thr_example_18",
+		"Showing 9 of 21. Type more for the next 9.", "Showing 18 of 21. Type more for the next 3.",
+		"Fictional thread 12", "example-model-10 (from BB's model list)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "thr_example_01") != 1 || strings.Contains(out, "thr_example_19") {
+		t.Errorf("ids did not reprint exactly the pages already shown:\n%s", out)
+	}
+}
+
+func TestRunBBLookupStopsAHungListing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell stand-in")
+	}
+	old := bbLookupTimeout
+	bbLookupTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { bbLookupTimeout = old })
+	hung := filepath.Join(t.TempDir(), "bb-hung")
+	if err := os.WriteFile(hung, []byte("#!/bin/sh\nprintf '['\nsleep 60 &\nwait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	threads, err := bbThreads(context.Background(), runBBLookup, hung)
+	if err == nil || threads != nil {
+		t.Fatalf("a hung listing was accepted: %v %v", threads, err)
+	}
+	if took := time.Since(start); took > 15*time.Second {
+		t.Fatalf("hung listing held the wizard for %s", took)
 	}
 }
