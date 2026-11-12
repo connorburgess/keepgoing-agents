@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -13,6 +15,26 @@ import (
 func TestMain(m *testing.M) {
 	MaybeRunTurn()
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
+	case "cursor":
+		input, _ := io.ReadAll(os.Stdin)
+		cwd, _ := os.Getwd()
+		capture, _ := json.Marshal(map[string]any{"args": os.Args[1:], "prompt": string(input), "cwd": cwd, "value": os.Getenv("KEEPGOING_CURSOR_FIXTURE_VALUE")})
+		if os.WriteFile(os.Getenv("KEEPGOING_TEST_RESULT"), capture, 0600) != nil {
+			os.Exit(2)
+		}
+		if os.Getenv("KEEPGOING_CURSOR_FIXTURE_WAIT") != "" {
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(os.Getenv("KEEPGOING_CURSOR_FIXTURE_WAIT")); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		_, _ = os.Stdout.WriteString(os.Getenv("KEEPGOING_CURSOR_FIXTURE_STDOUT"))
+		_, _ = os.Stderr.WriteString("fictional rate limit 429 authentication network failure")
+		code, _ := strconv.Atoi(os.Getenv("KEEPGOING_CURSOR_FIXTURE_EXIT"))
+		os.Exit(code)
 	case "environment":
 		input, _ := io.ReadAll(os.Stdin)
 		value := os.Getenv(envTurnDir) + "|" + os.Getenv(envTurnArgv) + "|" + os.Getenv(envTurnKey) + "|" + string(input)

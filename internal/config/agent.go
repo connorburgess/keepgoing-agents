@@ -15,6 +15,7 @@ type Agent struct {
 	Process  *Process `yaml:"process,omitempty"`
 	Claude   *Claude  `yaml:"claude,omitempty"`
 	Codex    *Codex   `yaml:"codex,omitempty"`
+	Cursor   *Cursor  `yaml:"cursor,omitempty"`
 }
 
 // BB configures the BB thread adapter. Model and Reasoning, when set, are
@@ -60,16 +61,30 @@ type Codex struct {
 	Env              map[string]string `yaml:"env,omitempty"`
 }
 
+// Cursor configures a primary-only Cursor CLI print session. Permissions remain
+// those configured by the user in Cursor; no approval-bypass flags are added.
+type Cursor struct {
+	CLI     string            `yaml:"cli,omitempty"`
+	Workdir string            `yaml:"workdir"`
+	Model   string            `yaml:"model,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+}
+
 // Adapters lists the supported adapter names.
-var Adapters = []string{"bb", "process", "claude", "codex"}
+var Adapters = []string{"bb", "process", "claude", "codex", "cursor"}
 
 func (a *Agent) applyDefaults() {
+	if a.Cursor != nil && a.Cursor.CLI == "" {
+		a.Cursor.CLI = "agent"
+	}
 	if a.Provider == "" {
 		switch a.Adapter {
 		case "claude":
 			a.Provider = "claude-code"
 		case "codex":
 			a.Provider = "codex"
+		case "cursor":
+			a.Provider = "cursor"
 		}
 	}
 	if a.Group == "" {
@@ -95,7 +110,7 @@ func (a Agent) validate(where string) []error {
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(where+format, args...))
 	}
-	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil}
+	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil}
 	known := false
 	for _, n := range Adapters {
 		if a.Adapter == n {
@@ -131,6 +146,10 @@ func (a Agent) validate(where string) []error {
 				add("process.exit_codes[%d]: unknown error class %q", code, class)
 			}
 		}
+	case a.Adapter == "cursor" && a.Cursor != nil:
+		if a.Cursor.Workdir == "" {
+			add("cursor.workdir is required")
+		}
 	case a.Adapter == "claude" && a.Claude != nil:
 		if a.Claude.Workdir == "" {
 			add("claude.workdir is required")
@@ -148,6 +167,8 @@ func (a Agent) Model() string {
 	switch {
 	case a.BB != nil:
 		return a.BB.Model
+	case a.Cursor != nil:
+		return a.Cursor.Model
 	case a.Claude != nil:
 		return a.Claude.Model
 	case a.Codex != nil:
@@ -162,6 +183,8 @@ func (a Agent) Describe() string {
 	switch {
 	case a.BB != nil:
 		s += " " + a.BB.Thread
+	case a.Cursor != nil:
+		s += " " + a.Cursor.Workdir
 	case a.Claude != nil:
 		s += " " + a.Claude.Workdir
 	case a.Codex != nil:
@@ -174,6 +197,10 @@ func (a Agent) Describe() string {
 }
 
 func (a *Agent) resolvePaths(base string) {
+	if a.Cursor != nil {
+		a.Cursor.Workdir = resolve(base, a.Cursor.Workdir)
+		a.Cursor.CLI = resolveExec(base, a.Cursor.CLI)
+	}
 	if a.BB != nil {
 		a.BB.CLI = resolveExec(base, a.BB.CLI)
 	}

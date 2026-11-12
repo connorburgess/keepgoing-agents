@@ -7,6 +7,7 @@ package runner
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,7 +49,11 @@ type Dir string
 func (d Dir) path(name string) string { return filepath.Join(string(d), name) }
 
 // Status inspects the latest turn.
-func (d Dir) Status() (Status, error) {
+func (d Dir) Status() (Status, error) { return d.statusWithOutputLimit(0) }
+
+// statusWithOutputLimit bounds stdout loading for adapters with a finite stream
+// contract. Zero preserves the legacy adapters' output behavior.
+func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	var st Status
 	b, err := os.ReadFile(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -66,16 +71,16 @@ func (d Dir) Status() (Status, error) {
 		var parseErr error
 		st.ExitCode, parseErr = strconv.Atoi(strings.TrimSpace(string(code)))
 		st.ExitCodeKnown = parseErr == nil && st.ExitCode >= 0
-		st.Stdout, _ = os.ReadFile(d.path("stdout"))
-		return st, nil
+		st.Stdout, err = d.readOutput(limit)
+		return st, err
 	}
 	if alive(st.Record.PID) {
 		st.Phase = Running
 		return st, nil
 	}
 	st.Phase = Crashed
-	st.Stdout, _ = os.ReadFile(d.path("stdout"))
-	return st, nil
+	st.Stdout, err = d.readOutput(limit)
+	return st, err
 }
 
 // Session returns the saved session id, if any.
@@ -145,4 +150,34 @@ func envList(env map[string]string) []string {
 		entries = append(entries, k+"="+v)
 	}
 	return entries
+}
+
+func (d Dir) readOutput(limit int64) ([]byte, error) {
+	if limit == 0 {
+		b, _ := os.ReadFile(d.path("stdout"))
+		return b, nil
+	}
+	info, err := os.Lstat(d.path("stdout"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("runner: turn output is not an accessible regular file")
+	}
+	f, err := os.Open(d.path("stdout"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("runner: turn output is unavailable")
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, errors.New("runner: turn output could not be read")
+	}
+	if int64(len(b)) > limit {
+		return nil, errors.New("runner: turn output exceeds the adapter limit")
+	}
+	return b, nil
 }

@@ -393,6 +393,9 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if l.Adapter == "cursor" && (l.Fallbacks != "" || l.SwitchBack.Enabled) {
+		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
+	}
 	if l.SwitchBack.Enabled {
 		switch l.Probe.Kind {
 		case "claude", "codex":

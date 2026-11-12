@@ -16,7 +16,8 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 | Headless Claude Code / Codex | New sessions, saved-session resume and configured account environments | Implemented; full live multi-turn, cancellation and separate-account handoff checks remain open |
 | BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
 | macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
-| Cursor / Antigravity | Integration plans | No built-in adapters or existing IDE-chat attachment today |
+| Cursor CLI | Unreleased primary-only adapter; YAML setup | Offline fixtures; guided setup, live acceptance and existing IDE-chat attachment remain open |
+| Antigravity | Internal protocol foundation only | Offline fixtures; no registered adapter, guided setup or verified existing IDE-chat attachment |
 
 The v0.1.5 changes are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
 
@@ -99,10 +100,11 @@ keepgoing uses the agent host's existing credentials and permissions:
 - **BB:** select an existing thread. BB runs its provider/model; keepgoing observes structured state and sends control/messages through the BB CLI. It does not switch the thread's login or create/re-parent threads.
 - **Claude Code or Codex:** the installed CLI runs a new headless session on the first wake and resumes its saved session afterward. By default it inherits the launching environment and provider configuration. `init --account-dir` can select an existing account directory; `--model` selects a headless model. Setup does not attach to existing IDE or headless chats.
 - **Process adapter:** supply structured status and resume commands for another system. This is an integration contract, not verified support for every IDE.
+- **Cursor CLI (unreleased source):** a primary-only print runner resumes its exact saved session and uses the same control holds. Configure YAML directly; guided setup, probes, limit/reset classification and existing IDE-chat attachment are unfinished. Offline fixtures only; see [Cursor setup and evidence](docs/cursor.md).
 
 Cursor and Antigravity are [parallel integration tracks](docs/roadmap.md#6-cursor-and-antigravity-integrations), beginning with their CLI sessions. Neither adapter is supported in the published release yet; controlling an existing graphical IDE chat has separate verification gates.
 
-Multiple headless accounts and fallback order are configurable; quota-group labels must describe actual shared limits. [Account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks) and [fallback probes](docs/fallbacks.md) explain the model calls and account boundaries. Probe previews with `fallbacks check --dry-run` spend no model quota; actual probes do.
+Multiple headless accounts and fallback order are configurable for Claude Code and Codex; quota-group labels must describe actual shared limits. [Account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks) and [fallback probes](docs/fallbacks.md) explain the model calls and account boundaries. Probe previews with `fallbacks check --dry-run` spend no model quota; actual probes do.
 
 Automatic model catalogue discovery and retirement/replacement policy remain [planned](docs/roadmap.md#11-useful-supervision-features-from-product-analysis). Updating a provider CLI, changing its selected model and upgrading keepgoing are separate operations. keepgoing does not silently upgrade model selections.
 

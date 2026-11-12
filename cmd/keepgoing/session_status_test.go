@@ -17,7 +17,7 @@ import (
 const savedExampleID = "00000000-0000-4000-8000-000000000001"
 
 func TestHeadlessSavedSessionStatusAndDoctor(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "cursor"} {
 		for _, content := range []string{"missing", savedExampleID, doctorPrivate} {
 			// TempDir includes the test name on some platforms. Keep the
 			// privacy marker out of paths that status intentionally displays.

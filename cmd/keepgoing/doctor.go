@@ -337,6 +337,9 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	case a.Codex != nil:
 		cli, accountKey, env = a.Codex.CLI, "CODEX_HOME", a.Codex.Env
 		workdir, extraArgs = a.Codex.Workdir, a.Codex.ExtraArgs
+	case a.Cursor != nil:
+		cli, workdir, env = a.Cursor.CLI, a.Cursor.Workdir, a.Cursor.Env
+		r.add(prefix+".account", "unavailable", "Cursor account identity and quota state are not verified; existing CLI configuration and environment are inherited.", "")
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return
@@ -389,7 +392,7 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	out, err := call("--version")
 	if err != nil {
 		r.add(prefix+".version", "unavailable", "CLI version command failed, timed out, or exceeded its output limit.", "Check the executable and supported --version interface; raw output is withheld.")
-	} else if v := doctorVersion(out); v != "" {
+	} else if v := doctorAgentVersion(a.Adapter, out); v != "" {
 		r.add(prefix+".version", "ok", "CLI version: "+v+". Compatibility is not inferred from the version alone.", "")
 	} else {
 		r.add(prefix+".version", "unavailable", "CLI returned an unrecognized version format; raw output is withheld.", "Check the installed CLI version manually.")
@@ -403,6 +406,8 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	} else if a.Claude != nil {
 		out, err := call("auth", "status", "--json")
 		doctorClaudeLogin(r, prefix+".login", out, err)
+	} else if a.Cursor != nil {
+		r.add(prefix+".login", "unavailable", "Cursor has no verified structured login-status contract; human-readable status is not parsed.", "Check authentication through Cursor; doctor does not change logins.")
 	} else if a.Codex != nil {
 		_, err := call("login", "status")
 		doctorCodexLogin(r, prefix+".login", err)
@@ -494,3 +499,16 @@ func (b *doctorBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *doctorBuffer) Bytes() []byte { return b.buffer.Bytes() }
+
+var doctorCursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
+
+func doctorAgentVersion(adapter string, raw []byte) string {
+	if adapter == "cursor" {
+		v := strings.TrimSpace(string(raw))
+		if doctorCursorVersionPattern.MatchString(v) {
+			return v
+		}
+		return ""
+	}
+	return doctorVersion(raw)
+}
