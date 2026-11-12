@@ -102,6 +102,39 @@ To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `k
 
 Use `await-user` when unfinished work needs a person, and `complete` when all authorized work is done. If the task is an entire roadmap, completing one item is not completion of the task.
 
+## Bounds on repeated work
+
+keepgoing repeats work by design: each ordinary check may send one message to the session. Which rule applies depends on what the adapter reports.
+
+| Session | Sent | Spacing | Count kept | Count resets when |
+| --- | --- | --- | --- | --- |
+| Idle | wake | none: every eligible check | none | not applicable |
+| Active, Git fingerprint unchanged for `stall_after` | nudge | `min_wake_interval` since the last send | `max_nudges` | the fingerprint changes, or the session is seen in any state other than active |
+| Error | re-prompt | `errors.backoff` | `max_reprompts` | the session is seen active or idle |
+
+The nudge and re-prompt caps each bound one stalled turn or one error episode. They are not a bound on total work: a session that keeps finishing turns is woken again on the next check, and both counts start over. A handoff also restarts the re-prompt count, and a switch-back restarts both. With no `loop.limits` field configured, which is the default, nothing limits how many times this repeats. Sending then stops only through `complete`, a stop, pause or disable, or an awaiting-user hold: a per-episode cap, an auth error without a handoff, a missing target, or a child waiting on a person. Other gates, such as the operating window, queued messages, running children or a pending interaction, defer a send without ending the repetition.
+
+Three optional limits apply across turns, targets, restarts and resume. Each persists an awaiting-user hold on the next ordinary check after it is reached:
+
+| Limit | Counts | Not reset by |
+| --- | --- | --- |
+| [`max_sends`](#total-send-allowance) | automatic send attempts of every kind, including failed ones | progress, turn completion, handoff, restart, resume |
+| [`deadline`](#loop-deadline) | host-clock time against an absolute cutoff | restart, resume, retarget; only editing the configured value moves it |
+| [`no_progress_timeout`](#no-progress-timeout) | host-clock time since the Git fingerprint last changed | turn completion, recovery, handoff, restart, resume |
+
+`max_sends` is the only count-based bound on total sends. The two time limits bound how long checks continue, so the number of sends they allow depends on the check interval. `no_progress_timeout` also needs Git to be a meaningful progress signal for the task.
+
+Precedence is fixed. Stop wins over everything and is the only rule that acts on a running turn. Disabled, paused, awaiting-user and completed come next and send nothing. Then `deadline`, `max_sends` and `no_progress_timeout`, in that order, each ahead of every observation of the session.
+
+What the limits do not cover:
+
+- A turn already running or queued is not cancelled, and nothing bounds how long one turn runs or what it spends. Only `stop` reaches a running turn.
+- Scheduled and exact probes, activation and manual commands are not counted by `max_sends`. Scheduled probes keep their own daily cap and stop once any limit hold is persisted.
+- A send that the adapter reports as failed or unsupported does not advance `max_nudges` or `max_reprompts` and does not start their spacing, so the same session is tried again on the next check. `max_sends` counts those attempts; the per-episode caps do not.
+- The bounds depend on the private runtime records described in the sections below. Deleting or rolling them back, power loss, storage corruption and older binaries are outside what is tested.
+
+Evidence is offline only. Decision tables enumerate every session state and error class against each observation gate, the operating window, switch-back, failover and spent or fresh per-episode counts. For each combination they check that a reached limit asks for a person and never sends, and that stop and the other holds win with or without a limit reached. A supervisor fixture with a fake adapter repeats wake, stalled nudge, wake and error re-prompt across completed turns with no Git change. With no limit it sends on every eligible check for twelve rounds without a hold; with each limit, and with all three together, sending stops at the configured point, one awaiting-user report is made, later rounds send nothing, and a stop request still reaches an active turn. These tests establish when keepgoing stops sending in those fixtures. They do not establish that an agent's work terminates, and no live provider, installed service or paid call was used.
+
 ## No-progress timeout
 
 In v0.1.3 or newer, set `loop.limits.no_progress_timeout: 2h` or use `init --no-progress-timeout 2h`. It requires at least one `progress.repositories` entry and a duration of at least one minute; zero/omission disables it. There is no default timeout. This measures elapsed host-clock time without a change in the existing Git metadata fingerprint, not useful work, goal completion, tokens or spend. Research, discussion and untracked files may leave no fingerprint change: use a deadline or send allowance when Git is not an appropriate progress signal.
