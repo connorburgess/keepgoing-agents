@@ -86,16 +86,10 @@ func (g *AntigravityACPGate) Initialize() ([]byte, error) {
 // OpenSession requires negotiated exact-resume support even for a fresh session.
 // cwd must be absolute; it is not a sandbox or ownership guarantee.
 func (g *AntigravityACPGate) OpenSession(cwd string) ([]byte, error) {
-	if g.phase != "initialized" || len(cwd) > antigravityACPFrameLimit || !filepath.IsAbs(cwd) || !utf8.ValidString(cwd) || strings.ContainsRune(cwd, 0) {
+	if g.phase != "initialized" {
 		return nil, g.fail()
 	}
-	method := "session/new"
-	params := map[string]any{"cwd": cwd, "mcpServers": []any{}}
-	if g.saved != "" {
-		method = "session/resume"
-		params["sessionId"] = g.saved
-	}
-	b, err := acpRequest("keepgoing-open", method, params)
+	b, err := acpOpenSessionFrame(g.saved, cwd)
 	if err != nil {
 		return nil, g.fail()
 	}
@@ -103,20 +97,40 @@ func (g *AntigravityACPGate) OpenSession(cwd string) ([]byte, error) {
 	return b, nil
 }
 
+func acpOpenSessionFrame(saved, cwd string) ([]byte, error) {
+	if len(cwd) > antigravityACPFrameLimit || !filepath.IsAbs(cwd) || !utf8.ValidString(cwd) || strings.ContainsRune(cwd, 0) {
+		return nil, errors.New("acp: invalid working directory")
+	}
+	method := "session/new"
+	params := map[string]any{"cwd": cwd, "mcpServers": []any{}}
+	if saved != "" {
+		method = "session/resume"
+		params["sessionId"] = saved
+	}
+	return acpRequest("keepgoing-open", method, params)
+}
+
 // Prompt encodes private stdin data for a future worker. It allows only one
 // prompt per gate, after session setup has returned with a verified identity.
 func (g *AntigravityACPGate) Prompt(text string) ([]byte, error) {
-	if g.phase != "ready" || !utf8.ValidString(text) || len(text) > antigravityACPFrameLimit {
+	if g.phase != "ready" {
 		return nil, g.fail()
 	}
-	b, err := acpRequest("keepgoing-prompt", "session/prompt", map[string]any{
-		"sessionId": g.out.SessionID, "prompt": []any{map[string]string{"type": "text", "text": text}},
-	})
+	b, err := acpPromptFrame(g.out.SessionID, text)
 	if err != nil {
 		return nil, g.fail()
 	}
 	g.phase = "prompting"
 	return b, nil
+}
+
+func acpPromptFrame(session, text string) ([]byte, error) {
+	if !utf8.ValidString(text) || len(text) > antigravityACPFrameLimit {
+		return nil, errors.New("acp: invalid prompt")
+	}
+	return acpRequest("keepgoing-prompt", "session/prompt", map[string]any{
+		"sessionId": session, "prompt": []any{map[string]string{"type": "text", "text": text}},
+	})
 }
 
 // Receive consumes one complete JSON-RPC frame, not arbitrary stream chunks.
