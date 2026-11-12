@@ -136,13 +136,30 @@ const (
 	SwitchBack Action = "switch_back" // return the loop to its primary
 )
 
-// Decision is an action and the rule that produced it.
+// LimitWait names the rule under which a known provider limit reset is waited
+// out. It is diagnostic metadata: nothing reads it to choose an action.
+type LimitWait string
+
+// Limit-wait rules.
+const (
+	WaitResetSoon        LimitWait = "limit_wait"              // the reset is within wait_if_reset_within
+	WaitNoFallback       LimitWait = "limit_no_fallback"       // failover is eligible but no fallback is confirmed
+	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
+)
+
+// Decision is an action and the rule that produced it. LimitWait is set only
+// when the action is None because a provider limit has a known reset.
 type Decision struct {
-	Action Action
-	Reason string
+	Action    Action
+	Reason    string
+	LimitWait LimitWait
 }
 
-func none(reason string) Decision { return Decision{None, reason} }
+func limitWait(kind LimitWait, reason string) Decision {
+	return Decision{Action: None, Reason: reason, LimitWait: kind}
+}
+
+func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
 
 // Decide applies the rules in priority order. Stop and pause always win.
 func Decide(in Input) Decision {
@@ -150,7 +167,7 @@ func Decide(in Input) Decision {
 	o := in.Obs
 	if c.Stop {
 		if o.State == Active || o.State == Pending {
-			return Decision{Stop, "stop requested"}
+			return Decision{Action: Stop, Reason: "stop requested"}
 		}
 		return none("stop requested; session not running")
 	}
@@ -167,19 +184,19 @@ func Decide(in Input) Decision {
 		return none("completed")
 	}
 	if in.DeadlineReached {
-		return Decision{AwaitUser, "loop deadline reached; revise loop.limits.deadline before resuming"}
+		return Decision{Action: AwaitUser, Reason: "loop deadline reached; revise loop.limits.deadline before resuming"}
 	}
 	if in.SendLimitReached {
-		return Decision{AwaitUser, "loop send limit reached; increase loop.limits.max_sends before resuming"}
+		return Decision{Action: AwaitUser, Reason: "loop send limit reached; increase loop.limits.max_sends before resuming"}
 	}
 	if in.NoProgressReached {
-		return Decision{AwaitUser, "no Git progress within loop.limits.no_progress_timeout; inspect work and progress tracking before resuming"}
+		return Decision{Action: AwaitUser, Reason: "no Git progress within loop.limits.no_progress_timeout; inspect work and progress tracking before resuming"}
 	}
 	if o.Gone {
-		return Decision{AwaitUser, "target gone (archived, deleted, or not found)"}
+		return Decision{Action: AwaitUser, Reason: "target gone (archived, deleted, or not found)"}
 	}
 	if len(o.AwaitingChildren) > 0 {
-		return Decision{AwaitUser, "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
+		return Decision{Action: AwaitUser, Reason: "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
 	}
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
@@ -215,15 +232,15 @@ func Decide(in Input) Decision {
 		}
 		// Only between turns: never pull the loop from a fallback mid-turn.
 		if in.SwitchBackReady {
-			return Decision{SwitchBack, "primary's limit has reset"}
+			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
 		}
-		return Decision{Wake, "idle"}
+		return Decision{Action: Wake, Reason: "idle"}
 	case Active:
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
 			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
-				return Decision{AwaitUser, "no progress after " + itoa(in.Nudges) + " nudges"}
+				return Decision{Action: AwaitUser, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
 			}
-			return Decision{Nudge, "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
+			return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
 		}
 		return none("active")
 	}
@@ -240,31 +257,31 @@ func decideError(in Input) Decision {
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
-			return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; waiting")
+			return limitWait(WaitResetSoon, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; waiting")
 		}
 		if f.Available {
-			return Decision{Handoff, "error: " + string(o.ErrorClass)}
+			return Decision{Action: Handoff, Reason: "error: " + string(o.ErrorClass)}
 		}
 		if f.ResetIn > 0 {
-			return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; no confirmed fallback")
+			return limitWait(WaitNoFallback, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; no confirmed fallback")
 		}
 	}
 	// Disabling handoffs must not turn a known cooldown into failed recovery
 	// attempts and a durable user hold. Keep observing until it lifts instead.
 	if o.ErrorClass == ErrRateLimit && f.ResetIn > 0 {
-		return none("limit resets in " + f.ResetIn.Round(time.Minute).String() + "; failover disabled; waiting")
+		return limitWait(WaitFailoverDisabled, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; failover disabled; waiting")
 	}
 	// Retrying cannot fix an auth error.
 	if o.ErrorClass == ErrAuth {
-		return Decision{AwaitUser, "auth error"}
+		return Decision{Action: AwaitUser, Reason: "auth error"}
 	}
 	if in.Reprompts >= in.MaxReprompts {
-		return Decision{AwaitUser, "error persisted after re-prompts"}
+		return Decision{Action: AwaitUser, Reason: "error persisted after re-prompts"}
 	}
 	if in.Reprompts > 0 && in.SinceLastReprompt < in.Backoff {
 		return none("backing off after error")
 	}
-	return Decision{Reprompt, "error: " + string(classOrUnknown(o.ErrorClass))}
+	return Decision{Action: Reprompt, Reason: "error: " + string(classOrUnknown(o.ErrorClass))}
 }
 
 // Counters are the per-episode send records the command layer persists and
