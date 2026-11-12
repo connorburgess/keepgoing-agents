@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,16 +137,41 @@ loop:
 		}
 		t.Error("daemon did not release its process lock")
 	})
-	wait := func(predicate func() bool) {
+	// Only synthetic files created by this test are eligible for failure output.
+	// Read before killing the child so live daemon evidence is still available.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		info, err := daemoninfo.Query(ctx, stateDir)
+		t.Logf("fixture daemon: %+v; query error: %v", info, err)
+		for _, name := range []string{control.FileName, state.FileName, "incidents.json", state.LogName} {
+			f, err := os.Open(filepath.Join(stateDir, name))
+			if err != nil {
+				t.Logf("fixture %s: %v", name, err)
+				continue
+			}
+			b, err := io.ReadAll(io.LimitReader(f, 16*1024))
+			f.Close()
+			t.Logf("fixture %s (first 16 KiB): %s; read error: %v", name, b, err)
+		}
+		for _, name := range []string{"status", "stop", "resume"} {
+			_, err := os.Stat(filepath.Join(dir, name))
+			t.Logf("fixture %s marker: %v", name, err)
+		}
+	})
+	wait := func(stage string, predicate func() bool) {
 		t.Helper()
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
 			if predicate() {
 				return
 			}
 		}
-		t.Fatal("background daemon did not reach expected state")
+		t.Fatalf("background daemon did not reach %s", stage)
 	}
-	wait(func() bool {
+	wait("paused check", func() bool {
 		st, _ := state.Load(stateDir)
 		return st.LastCheck != nil && st.LastCheck.Reason == "paused"
 	})
@@ -180,7 +206,7 @@ loop:
 	// requiring a race-dependent zero exit. Never replay the control command.
 	for _, operation := range []string{"pause", "stop"} {
 		var diagnosticLock *lock.Lock
-		wait(func() bool {
+		wait(operation+" diagnostic lock", func() bool {
 			var err error
 			diagnosticLock, err = lock.AcquireNamed(stateDir, "incident")
 			if errors.Is(err, lock.ErrHeld) {
@@ -202,8 +228,8 @@ loop:
 			t.Fatalf("%s did not preserve the saved hold/owner: %+v %v", operation, saved, err)
 		}
 	}
-	wait(func() bool { _, err := os.Stat(filepath.Join(dir, "stop")); return err == nil })
-	wait(func() bool {
+	wait("stop marker", func() bool { _, err := os.Stat(filepath.Join(dir, "stop")); return err == nil })
+	wait("successful stop record", func() bool {
 		st, _ := state.Load(stateDir)
 		return st.StopRequestedSent && st.LastCheck != nil && st.LastCheck.Outcome == "succeeded"
 	})
