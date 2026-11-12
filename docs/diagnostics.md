@@ -160,7 +160,7 @@ The [priority reliability checkpoints](roadmap.md#priority-reliability-checkpoin
 
 ### Interrupted BB turns and host availability
 
-After v0.1.4, diagnostic records retain the finite code `thread_command_failed` from structured BB failures. The code remains an **unknown** decision error: it does not prove a host disconnect, network outage, quota limit or authentication problem. Error message/detail text is neither classified nor saved. Older redacted records cannot be recovered. This diagnostic correction is unreleased.
+In v0.1.5, diagnostic records retain the finite code `thread_command_failed` from structured BB failures. The code remains an **unknown** decision error: it does not prove a host disconnect, network outage, quota limit or authentication problem. Error message/detail text is neither classified nor saved. Older redacted records cannot be recovered. This diagnostic correction is released in v0.1.5.
 
 `TestIncidentJourneyBBInterruptedCommandRecovery` verifies the following offline through fresh CLI harness invocations and fictional BB responses:
 

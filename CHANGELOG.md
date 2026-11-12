@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.1.5
+## 0.1.5 (2026-11-12)
 
 - CLI v0.1.5 / BB plugin v0.2.0 include version-specific notes and a repository plugin collection for explicit tagged installs. The package smoke check now covers prompt-only and goal-aware setup for all three supported agents, with zero provider calls. See [release verification](docs/release-verification.md) for publication, package and live-acceptance evidence.
 
