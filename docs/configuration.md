@@ -94,7 +94,7 @@ keepgoing runs `codex exec --json` itself, one turn per send. Later turns resume
 
 Environment overrides inherit the rest of the supervisor's environment. They do not change the supervisor's login or environment. Codex's structured rate-limit check uses the same overrides as its turn. `probe.env` overrides inherited values for probes only, including their rate-limit checks. See the [three-account example](fallbacks.md#multiple-subscriptions).
 
-A running headless turn cannot be steered or queued into. A nudge to a stalled headless turn is recorded as a warning instead.
+A running headless turn cannot be steered or queued into. A nudge to a stalled headless turn is recorded as a warning instead. The attempt still counts toward `max_nudges` and `min_wake_interval`, so a headless turn that stays stalled reaches the awaiting-user hold after `max_nudges` warnings.
 
 ## cursor (unreleased)
 
@@ -108,7 +108,7 @@ Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back
 | --- | --- | --- |
 | `repositories` | none | Repositories whose worktrees are fingerprinted. Without this, stall detection is off and an active session is left alone. |
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
-| `max_nudges` | `3` | Nudges a stalled session gets before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
+| `max_nudges` | `3` | Nudge attempts a stalled session gets, delivered or not, before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
@@ -147,8 +147,8 @@ This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to 
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `max_reprompts` | `3` | Re-prompts allowed while the session stays in error, before the loop waits for a person. |
-| `backoff` | `10m` | Minimum gap between re-prompts. |
+| `max_reprompts` | `3` | Re-prompt attempts, delivered or not, allowed while the session stays in error, before the loop waits for a person. |
+| `backoff` | `10m` | Minimum gap between re-prompt attempts. |
 | `failover_on` | `[rate_limit]` | Error classes that may trigger a handoff: `rate_limit`, `auth`, `overloaded`, or `network`. `unknown` is not allowed. |
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
 
