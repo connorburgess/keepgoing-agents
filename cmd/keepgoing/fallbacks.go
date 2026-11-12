@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -99,7 +101,7 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		return exitFailed
 	}
 	out := summarize(cfg, reg, time.Now())
-	printFallbacks(e, out, asJSON)
+	printFallbacks(e, out, asJSON, cfg.Path())
 	if !out.Redundancy.Meets {
 		return exitFailed
 	}
@@ -115,7 +117,7 @@ func fallbacksList(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 		e.errf("%v", err)
 		return exitFailed
 	}
-	printFallbacks(e, summarize(cfg, reg, now), asJSON)
+	printFallbacks(e, summarize(cfg, reg, now), asJSON, cfg.Path())
 	return exitOK
 }
 
@@ -137,7 +139,7 @@ func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallback
 	return out
 }
 
-func printFallbacks(e env, out fallbacksOut, asJSON bool) {
+func printFallbacks(e env, out fallbacksOut, asJSON bool, cfgPath string) {
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
@@ -171,6 +173,15 @@ func printFallbacks(e env, out fallbacksOut, asJSON bool) {
 		verdict = "handoffs refused"
 	}
 	fmt.Fprintf(e.stdout, "\n%d healthy of %d eligible, %d distinct by %s, need %d: %s\n", len(s.Healthy), len(s.Eligible), s.Distinct, s.Span, s.Min, verdict)
+	var unprobed []string
+	for _, r := range out.Candidates {
+		if r.Last == nil && !r.Disabled {
+			unprobed = append(unprobed, r.ID)
+		}
+	}
+	if len(unprobed) > 0 {
+		fmt.Fprintf(e.stdout, "Not probed yet: %s.\nPreview a check for free with:\n  keepgoing fallbacks check --dry-run %s\n    -c %s\n", strings.Join(unprobed, ", "), lineContinuation(), commandQuote(cfgPath))
+	}
 }
 
 func reportTest(e env, cfg *config.Config, dryRun bool) int {
@@ -207,4 +218,12 @@ func reportTest(e env, cfg *config.Config, dryRun bool) int {
 	}
 	fmt.Fprintln(e.stdout, "report HTTP accepted; receipt unverified")
 	return exitOK
+}
+
+// lineContinuation is the shell's line-continuation character for printed commands.
+func lineContinuation() string {
+	if runtime.GOOS == "windows" {
+		return "`"
+	}
+	return "\\"
 }
