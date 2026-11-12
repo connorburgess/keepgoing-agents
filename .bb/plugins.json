@@ -1,0 +1,11 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "keepgoing-integrations",
+  "plugins": [
+    {
+      "name": "keepgoing",
+      "source": "./integrations/bb-plugin-keepgoing"
+    }
+  ]
+}
