@@ -44,8 +44,13 @@ func TestDeferredInteractionHoldsWithoutOverridingControls(t *testing.T) {
 			in := base()
 			in.Obs.DeferredInteraction = true
 			tc.mut(&in)
-			if d := Decide(in); d.Action != tc.want || d.Reason != tc.reason {
+			d := Decide(in)
+			if d.Action != tc.want || d.Reason != tc.reason {
 				t.Fatalf("%+v", d)
+			}
+			// The typed marker is set by this rule only, never by a rule that outranks it.
+			if d.DeferredInteraction != (tc.reason == DeferredInteractionReason) {
+				t.Fatalf("typed cause: %+v", d)
 			}
 			// No rule may turn this evidence into provider work.
 			switch Decide(in).Action {
@@ -57,7 +62,7 @@ func TestDeferredInteractionHoldsWithoutOverridingControls(t *testing.T) {
 	// The field is the only trigger: the same inputs without it keep their
 	// existing outcomes, including a still-pending interaction's plain wait.
 	in := base()
-	if d := Decide(in); d.Action != Wake {
+	if d := Decide(in); d.Action != Wake || d.DeferredInteraction {
 		t.Fatalf("%+v", d)
 	}
 	in.Obs.AwaitingInput = true

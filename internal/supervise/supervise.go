@@ -290,7 +290,7 @@ func (t *tick) run() error {
 		var actErr error
 		if !t.opts.DryRun {
 			// Another rule (a gone target) may own this hold; adopt only our own.
-			t.deferredInteraction = d.Reason == decide.DeferredInteractionReason
+			t.deferredInteraction = d.DeferredInteraction
 			actErr = t.act(a, d)
 			if adopter, ok := a.(adapter.InteractionAdopter); ok && actErr == nil && t.deferredInteraction {
 				actErr = adopter.AdoptInteraction(t.ctx)

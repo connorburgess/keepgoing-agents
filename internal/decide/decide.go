@@ -158,6 +158,9 @@ type Decision struct {
 	Action    Action
 	Reason    string
 	LimitWait LimitWait
+	// DeferredInteraction is set only when the deferred-interaction rule itself
+	// produced an AwaitUser, so a caller never matches on Reason text.
+	DeferredInteraction bool
 }
 
 // DeferredInteractionReason is fixed text; it carries no provider content.
@@ -207,7 +210,7 @@ func Decide(in Input) Decision {
 		return Decision{Action: AwaitUser, Reason: "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
 	}
 	if o.DeferredInteraction {
-		return Decision{Action: AwaitUser, Reason: DeferredInteractionReason}
+		return Decision{Action: AwaitUser, Reason: DeferredInteractionReason, DeferredInteraction: true}
 	}
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
