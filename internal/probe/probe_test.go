@@ -13,12 +13,13 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 func fake(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fake")
-	os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	testexec.Script(t, p, "#!/bin/sh\n"+body+"\n")
 	return p
 }
 

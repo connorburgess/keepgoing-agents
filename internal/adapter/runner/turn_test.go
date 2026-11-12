@@ -13,6 +13,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // helperCLI returns argv that re-runs this test binary as a fake agent CLI.
@@ -39,7 +40,7 @@ func helperCLI(t *testing.T, stdout string, code int, sleep time.Duration) strin
 		body += "sleep " + itoa(int(sleep.Seconds())) + "\n"
 	}
 	body += "cat \"" + filepath.Join(dir, "out.txt") + "\"\nexit " + itoa(code) + "\n"
-	os.WriteFile(p, []byte(body), 0o755)
+	testexec.Script(t, p, body)
 	return p
 }
 
