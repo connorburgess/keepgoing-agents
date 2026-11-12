@@ -8,7 +8,7 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 
 ## Current availability
 
-**Version guide: CLI v0.1.5 + BB plugin v0.2.0.** Check [published releases](https://github.com/connorburgess/keepgoing-agents/releases) for available assets and `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
+**Latest CLI release: [v0.1.5](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5); BB plugin: v0.2.0 from the same tag.** Homebrew and downloaded-package evidence is [recorded here](docs/release-verification.md#v015-release-and-package-evidence). Check `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
 
 | Surface | What you can use | Verification boundary |
 | --- | --- | --- |
