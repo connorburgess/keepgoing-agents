@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -263,13 +264,15 @@ type statusOut struct {
 	Deadline          string                   `json:"deadline,omitempty"`
 	DeadlineReached   bool                     `json:"deadlineReached"`
 	WorkBounds        workBoundsStatus         `json:"workBounds"`
-	Window            string                   `json:"window"`
-	InWindow          bool                     `json:"inWindow"`
-	State             state.File               `json:"state"`
-	Redundancy        *health.Summary          `json:"redundancy,omitempty"`
-	Usage             []usageView              `json:"usage"`
-	StateDir          string                   `json:"stateDir"`
-	Version           string                   `json:"version"`
+	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
+	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
+	Window         string               `json:"window"`
+	InWindow       bool                 `json:"inWindow"`
+	State          state.File           `json:"state"`
+	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
+	Usage          []usageView          `json:"usage"`
+	StateDir       string               `json:"stateDir"`
+	Version        string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -280,6 +283,17 @@ type statusOut struct {
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+}
+
+// takeoverBriefsStatus reports recorded rejections against errors.max_reprompts.
+// Capped lists fallbacks that will not be offered a handoff brief again this
+// error episode. SwitchBackStopped means automatic switch-back has ended until
+// resume, retarget or the next handoff.
+type takeoverBriefsStatus struct {
+	Cap                int      `json:"cap"`
+	Capped             []string `json:"capped"`
+	SwitchBackRejected int      `json:"switchBackRejected"`
+	SwitchBackStopped  bool     `json:"switchBackStopped"`
 }
 
 // workBoundsStatus reports which loop-wide limits the loaded configuration
@@ -399,6 +413,14 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	}
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
+	out.TakeoverBriefs = takeoverBriefsStatus{Cap: l.Errors.MaxReprompts, Capped: []string{}, SwitchBackRejected: st.SwitchBackRejected,
+		SwitchBackStopped: l.SwitchBack.Enabled && st.Target() != state.Primary && st.SwitchBackRejected >= l.Errors.MaxReprompts}
+	for id, r := range st.HandoffBriefs {
+		if r.Failed >= l.Errors.MaxReprompts {
+			out.TakeoverBriefs.Capped = append(out.TakeoverBriefs.Capped, id)
+		}
+	}
+	sort.Strings(out.TakeoverBriefs.Capped)
 	out.WorkBounds = workBoundsStatus{Limits: l.Limits.Configured()}
 	if len(out.WorkBounds.Limits) == 0 {
 		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
@@ -557,6 +579,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
 	}
+	if b := out.TakeoverBriefs; len(b.Capped) > 0 {
+		fmt.Fprintf(w, "handoff briefs: %s rejected %d and will not be tried again this error episode; resume or retarget clears this\n", strings.Join(b.Capped, ", "), b.Cap)
+	}
+	if b := out.TakeoverBriefs; b.SwitchBackStopped {
+		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
+	}
 	printUsage(w, "usage:     ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
@@ -628,6 +656,18 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
+	}
+	if cmd == "resume" {
+		// Resume is the operator saying "try again": a fallback or primary
+		// that was repaired gets fresh takeover briefs. The tick lock is held.
+		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
+			e.errf("warning: could not clear rejected takeover briefs: %v", err)
+		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 {
+			st.ClearBriefs()
+			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
+				e.errf("warning: could not clear rejected takeover briefs: %v", err)
+			}
+		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
@@ -713,6 +753,7 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
+	st.ClearBriefs() // an operator's retarget starts a new episode
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 		e.errf("%v", err)
 		return exitFailed
