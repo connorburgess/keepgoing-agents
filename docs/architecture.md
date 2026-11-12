@@ -32,6 +32,7 @@ internal/report             signed webhook reports and diagnostic delivery histo
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
+internal/rundiscovery       internal pure run identity/boundary contract; no runtime callers or storage
 internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
@@ -221,3 +222,9 @@ All saved state fields are bound, so an intervening ordinary tick may require an
 Prompt and handoff composition return a private message plus the ID/revision of the exact goal read while rendering. Supervision passes that text to the adapter and captures its return as `state.PromptSend`, without rereading the goal or persisting task text. The latest returned wake, nudge, re-prompt, handoff or switch-back call is saved with ordinary tick state. Goal-disabled messages explicitly have no goal ID/revision. The record is diagnostic only; it never changes decisions, allowance reservation, retry policy or reporting.
 
 There is no pre-send intent or complete attempt ledger: process termination or a failed final state write can leave an older record, and multiple candidate attempts retain only the last returned call. Adapter nil/error outcomes neither confirm delivery nor establish no side effects. Ordinary status compares recorded ID/revision to the independently read current goal, never to transcript text. Invalid/unsupported provenance is withheld without invalidating other state fields. Primary transfer clears the record with thread observations to avoid attributing old-primary sends to the destination. Other target aliases describe configuration at the historical check; arbitrary config edits are not tracked. Registered client status and incident journals do not yet project this evidence. See [recorded send provenance](goals.md#recorded-send-provenance).
+
+## Run discovery identity contract (internal, unreleased)
+
+`internal/rundiscovery` defines a pure value contract separate from the decision engine and controls. It distinguishes an external routine invocation, a registry reference, a durable loop, a goal revision, an execution run, a send attempt and a provider chat/session. Explicit transition types and caller-supplied IDs/timestamps keep checks, wakes, retries, restarts, holds, goal revisions, transfers and scheduled triggers from opening or closing a run. Run-to-session, run-to-goal and run-to-invocation links are validated values with no parent edge. It performs no IO and is not used by runtime commands or adapters. The [contract tables](run-discovery.md#identity-and-run-boundary-contract-d1-internal-unreleased) describe boundaries and validation.
+
+Persisted identity, enrollment/control transactions, history, indexes, current-target resolution and CLI projection remain unimplemented. A future caller must retain restrictive control precedence, serialize changes, prevent historical ID reuse, validate target/ownership evidence and persist intent before sending. Reducer results and adapter-return records grant no authority or proof of delivery. No package or file ownership shown above otherwise changes.
