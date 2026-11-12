@@ -4,6 +4,10 @@ The optional menu-bar companion needs an explicit list of loops to display. With
 
 Registration stores a reference only. It never enables, resumes, stops or transfers supervision; queries a provider; creates a thread; changes a scheduler; or reads a task file. Headless and process configurations need no BB installation to register. The registry is separate from the BB plugin's private setup list; neither imports or replaces the other.
 
+## Planned run and chat navigation
+
+The [run discovery plan](run-discovery.md) adds durable local references and CLI/JSON traversal from a routine or loop to its execution runs, provider chats/sessions and known blocking runs. This is planned work, not part of registry or registered status schema 1. Existing registration IDs bind a configuration reference; they do not identify an execution run or authorize navigation-based controls. The optional menu/plugin will consume the same planned contract after CLI navigation exists.
+
 ## Register explicitly
 
 ```sh
