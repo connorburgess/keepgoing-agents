@@ -11,5 +11,6 @@ import (
 // Dispatch wrapper mode before the test harness, just as the production CLI does.
 func TestMain(m *testing.M) {
 	runner.MaybeRunTurn()
+	cursorJourneyHelper()
 	os.Exit(m.Run())
 }
