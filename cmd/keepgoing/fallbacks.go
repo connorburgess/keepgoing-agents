@@ -26,6 +26,7 @@ type candidateRow struct {
 	Disabled bool          `json:"disabled,omitempty"`
 	Healthy  bool          `json:"healthy"`
 	Last     *probe.Result `json:"last,omitempty"`
+	Usage    usageView     `json:"usage"`
 }
 
 type fallbacksOut struct {
@@ -134,6 +135,7 @@ func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallback
 		if en, ok := reg.Candidates[c.ID]; ok {
 			row.Last = en.Last
 		}
+		row.Usage = usageOf(reg, c, now)
 		out.Candidates = append(out.Candidates, row)
 	}
 	return out
@@ -171,6 +173,10 @@ func printFallbacks(e env, out fallbacksOut, asJSON bool, cfgPath string) {
 	verdict := "handoffs allowed"
 	if !s.Meets {
 		verdict = "handoffs refused"
+	}
+	fmt.Fprintln(e.stdout)
+	for _, r := range out.Candidates {
+		printUsage(e.stdout, "usage ", []usageView{r.Usage})
 	}
 	fmt.Fprintf(e.stdout, "\n%d healthy of %d eligible, %d distinct by %s, need %d: %s\n", len(s.Healthy), len(s.Eligible), s.Distinct, s.Span, s.Min, verdict)
 	var unprobed []string
