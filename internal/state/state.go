@@ -59,7 +59,7 @@ type File struct {
 
 // LimitWaitReport outcomes.
 const (
-	LimitWaitRequested     = "requested"       // the reporter returned without error; receipt is unverified
+	LimitWaitRequested     = "requested"       // saved before sending; the send was started or returned without error, receipt unverified
 	LimitWaitFailed        = "delivery_failed" // the one attempt failed and is not retried
 	LimitWaitNotSubscribed = "not_subscribed"  // report.events does not include limit_wait
 )
@@ -72,6 +72,8 @@ type LimitWaitReport struct {
 	ResetsAt   time.Time `json:"resetsAt"`
 	DetectedAt time.Time `json:"detectedAt"`
 	Outcome    string    `json:"outcome"`
+	// Reports counts report attempts in this wait, including this one.
+	Reports int `json:"reports,omitempty"`
 }
 
 // BriefRecord is one target's rejected takeover briefs.

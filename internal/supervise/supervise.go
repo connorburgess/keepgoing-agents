@@ -93,20 +93,23 @@ type tick struct {
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
-	progress                *state.Progress
-	observedTarget          string
-	awaitingInput           bool
-	awaitingChildren        []string
-	deferredInteraction     bool
-	ctx                     context.Context
-	cfg                     *config.Config
-	loop                    config.Loop
-	fb                      *config.Fallbacks
-	opts                    Options
-	now                     time.Time
-	res                     *Result
-	st                      state.File
-	reg                     *health.Registry
+	// handoffAvailable is the last engine input's view of whether a confirmed
+	// fallback could take the loop.
+	handoffAvailable    bool
+	progress            *state.Progress
+	observedTarget      string
+	awaitingInput       bool
+	awaitingChildren    []string
+	deferredInteraction bool
+	ctx                 context.Context
+	cfg                 *config.Config
+	loop                config.Loop
+	fb                  *config.Fallbacks
+	opts                Options
+	now                 time.Time
+	res                 *Result
+	st                  state.File
+	reg                 *health.Registry
 }
 
 func (t *tick) warn(format string, a ...any) {

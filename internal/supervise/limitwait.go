@@ -12,10 +12,33 @@ import (
 // limitWaitEvent is the report event for a long limit wait.
 const limitWaitEvent = "limit_wait"
 
-// limitWaitResetSlack is how much later a reported reset must move before the
-// same wait is reported again. Smaller movements are treated as the provider
-// restating the same reset.
-const limitWaitResetSlack = time.Hour
+// A wait is reported again only when its reset moves later than the reset
+// last reported by a margin that doubles with each report (1h, then 2h), and
+// never more than limitWaitMaxReports times. A provider whose reset keeps
+// sliding forward therefore cannot produce an unbounded stream.
+const (
+	limitWaitResetSlack = time.Hour
+	limitWaitMaxReports = 3
+)
+
+// limitWaitEnded reports positive evidence that the wait is over: the loop
+// moved to another target, the session finished a turn or is working without
+// a provider retry, or it is in error with no reset still ahead. A check that
+// merely decided something else (outside the window, queued messages, an
+// unknown or pending state, a provider retry) says nothing about the limit.
+func limitWaitEnded(before, after string, obs decide.Observation, now time.Time) bool {
+	switch {
+	case after != before:
+		return true
+	case obs.State == decide.Idle:
+		return true
+	case obs.State == decide.Active:
+		return !obs.Retrying && !obs.RetryUnverified
+	case obs.State == decide.Error:
+		return !obs.ResetsAt.After(now)
+	}
+	return false
+}
 
 // reportLongLimitWait runs after the decision and its action, on the path
 // where the target was observed. It never changes the decision, the action or
@@ -24,57 +47,82 @@ const limitWaitResetSlack = time.Hour
 // When the check is waiting on a provider limit, no handoff can happen
 // (failover is off for the error class, or no fallback is confirmed) and the
 // reported reset is further away than errors.report_wait_after, it requests
-// one report for that wait. The record in state.json makes it once: later
-// checks and restarts see it and stay quiet. It is cleared when an observed
-// check is no longer waiting on a limit, so a later wait is reported again,
-// and replaced when the reset moves materially later.
+// one report for that wait. The wait is saved to state.json before the send,
+// so a crash or a restart cannot repeat it: a report is sent at most once,
+// and an interrupted one is lost, like any other single-attempt delivery.
 func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 	if t.opts.DryRun {
 		return
 	}
 	kind := t.incidentLimitWait
 	if t.res.Action != string(decide.None) || kind == "" {
-		// Observed and not waiting on a limit: the wait, if any, is over.
-		t.st.LimitWaitReport = nil
+		if limitWaitEnded(target, t.res.Target, obs, t.now) {
+			t.st.LimitWaitReport = nil
+		}
 		return
 	}
-	// A reset inside wait_if_reset_within is a short wait chosen over a handoff,
-	// and without a reported reset the engine does not wait at all.
-	if kind == decide.WaitResetSoon || obs.ResetsAt.IsZero() {
+	// A short wait chosen over a confirmed fallback is the operator's own
+	// wait_if_reset_within setting, not a wait with no way out.
+	if kind == decide.WaitResetSoon && t.handoffAvailable {
 		return
 	}
 	// Loaded configuration always has a positive threshold (default 6h). A
 	// zero value means it was never set, and nothing is reported.
 	threshold := t.loop.Errors.ReportWaitAfter.Duration
 	resetIn := obs.ResetsAt.Sub(t.now)
-	if threshold <= 0 || resetIn <= threshold {
+	if threshold <= 0 || obs.ResetsAt.IsZero() || resetIn <= threshold {
 		return
 	}
 	subscribed := t.loop.Report.ReportsEvent(limitWaitEvent)
-	if prev := t.st.LimitWaitReport; prev != nil && prev.Target == target && !obs.ResetsAt.After(prev.ResetsAt.Add(limitWaitResetSlack)) {
-		// The same wait. One attempt was made, or nothing was subscribed then
-		// and nothing is now.
-		if prev.Outcome != state.LimitWaitNotSubscribed || !subscribed {
-			return
+	reports := 0
+	if prev := t.st.LimitWaitReport; prev != nil && prev.Target == target {
+		// The same wait.
+		reports = prev.Reports
+		if prev.Outcome == state.LimitWaitNotSubscribed {
+			if !subscribed {
+				return
+			}
+		} else {
+			margin := limitWaitResetSlack << max(0, prev.Reports-1)
+			if prev.Reports >= limitWaitMaxReports || !obs.ResetsAt.After(prev.ResetsAt.Add(margin)) {
+				return
+			}
 		}
 	}
-	rec := &state.LimitWaitReport{Target: target, ResetsAt: obs.ResetsAt.UTC(), DetectedAt: t.now, Outcome: state.LimitWaitNotSubscribed}
-	t.st.LimitWaitReport = rec
-	t.incidentLimitWaitReport = rec.Outcome
+	rec := &state.LimitWaitReport{Target: target, ResetsAt: obs.ResetsAt.UTC(), DetectedAt: t.now, Outcome: state.LimitWaitNotSubscribed, Reports: reports}
 	if !subscribed {
+		t.st.LimitWaitReport = rec
+		t.incidentLimitWaitReport = rec.Outcome
 		return
 	}
+	rec.Outcome, rec.Reports = state.LimitWaitRequested, reports+1
+	// Intent first, as holds and completions are saved before their reports.
+	// If it cannot be saved nothing is sent, so an unwritable state directory
+	// cannot turn into a report on every check.
+	saved, err := state.Load(t.loop.StateDir)
+	if err == nil {
+		saved.LimitWaitReport = rec
+		err = state.Save(t.loop.StateDir, saved)
+	}
+	if err != nil {
+		t.warn("report %s: not sent because the wait could not be recorded", limitWaitEvent)
+		return
+	}
+	t.st.LimitWaitReport = rec
 	reason := "no confirmed fallback"
+	cause := decide.WaitNoFallback
 	if kind == decide.WaitFailoverDisabled {
-		reason = "failover disabled"
+		reason, cause = "failover disabled", kind
 	}
 	text := fmt.Sprintf("%s: %s is waiting on a provider limit that resets in about %s, and no handoff is possible (%s). keepgoing keeps checking and continues when the limit lifts; a person may want to retarget or review failover.",
 		t.loop.Name, target, resetIn.Round(time.Minute), reason)
-	rec.Outcome = state.LimitWaitRequested
-	err := t.opts.Reporter.Report(t.ctx, report.Event{Type: limitWaitEvent, Loop: t.loop.Name, Text: text, At: t.now,
-		Data: map[string]any{"target": target, "resetsAt": rec.ResetsAt, "reason": string(kind), "reportWaitAfter": t.loop.Errors.ReportWaitAfter.Duration.String()}})
+	if rec.Reports > 1 {
+		text += " The reported reset has moved later since the last report for this wait."
+	}
+	err = t.opts.Reporter.Report(t.ctx, report.Event{Type: limitWaitEvent, Loop: t.loop.Name, Text: text, At: t.now,
+		Data: map[string]any{"target": target, "resetsAt": rec.ResetsAt, "reason": string(cause), "reportWaitAfter": threshold.String(), "report": rec.Reports}})
 	if err != nil {
-		// One attempt per wait: a failed delivery is recorded, not retried.
+		// One attempt: a failed delivery is recorded, not retried.
 		rec.Outcome = state.LimitWaitFailed
 		t.warn("report %s: %v", limitWaitEvent, err)
 	}

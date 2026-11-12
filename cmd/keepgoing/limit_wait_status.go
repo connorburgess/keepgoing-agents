@@ -22,6 +22,8 @@ type limitWaitStatus struct {
 	ReportWaitAfter string     `json:"reportWaitAfter"`
 	Subscribed      bool       `json:"subscribed"`
 	Receipt         string     `json:"receipt,omitempty"`
+	// Reports counts report attempts in this wait; at most three are made.
+	Reports int `json:"reports,omitempty"`
 }
 
 func describeLimitWait(r *state.LimitWaitReport, loop config.Loop, now time.Time) limitWaitStatus {
@@ -37,7 +39,7 @@ func describeLimitWait(r *state.LimitWaitReport, loop config.Loop, now time.Time
 	default:
 		out.State = "not_subscribed"
 	}
-	out.Target, out.ResetsAt, out.DetectedAt, out.ResetPassed = r.Target, &r.ResetsAt, &r.DetectedAt, !now.Before(r.ResetsAt)
+	out.Target, out.ResetsAt, out.DetectedAt, out.ResetPassed, out.Reports = r.Target, &r.ResetsAt, &r.DetectedAt, !now.Before(r.ResetsAt), r.Reports
 	return out
 }
 
@@ -52,9 +54,9 @@ func printLimitWait(w io.Writer, s limitWaitStatus) {
 	fmt.Fprintln(w)
 	switch s.State {
 	case "reported":
-		fmt.Fprintln(w, "  one limit_wait report was requested for this wait; receipt unverified, see notifications. The loop is not held and keeps checking.")
+		fmt.Fprintf(w, "  a limit_wait report was requested for this wait (attempt %d of at most 3, each only after the reset moves later); receipt unverified, see notifications. The loop is not held and keeps checking.\n", max(1, s.Reports))
 	case "report_failed":
-		fmt.Fprintln(w, "  the one limit_wait report for this wait FAILED and is not retried; see notifications. The loop is not held and keeps checking.")
+		fmt.Fprintln(w, "  the limit_wait report for this wait FAILED and is not retried; see notifications. The loop is not held and keeps checking.")
 	default:
 		fmt.Fprintln(w, "  nothing was sent: report.events does not include limit_wait. The loop is not held and keeps checking.")
 	}

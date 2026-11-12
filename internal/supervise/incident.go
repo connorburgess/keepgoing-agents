@@ -42,5 +42,6 @@ func (t *tick) decide(stage string, in decide.Input) decide.Decision {
 	d := decide.Decide(in)
 	t.incidentDecisions.Add(stage, in, d)
 	t.incidentLimitWait = d.LimitWait
+	t.handoffAvailable = in.Failover.Available
 	return d
 }

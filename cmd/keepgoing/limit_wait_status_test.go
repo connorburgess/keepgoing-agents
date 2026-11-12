@@ -47,7 +47,7 @@ func TestStatusShowsARecordedLongLimitWait(t *testing.T) {
 		outcome, state, line string
 		resetIn              time.Duration
 	}{
-		{state.LimitWaitRequested, "reported", "one limit_wait report was requested for this wait; receipt unverified", 60 * time.Hour},
+		{state.LimitWaitRequested, "reported", "a limit_wait report was requested for this wait (attempt 1 of at most 3", 60 * time.Hour},
 		{state.LimitWaitFailed, "report_failed", "FAILED and is not retried", 60 * time.Hour},
 		{state.LimitWaitNotSubscribed, "not_subscribed", "report.events does not include limit_wait", 60 * time.Hour},
 		{state.LimitWaitRequested, "reported", "(now passed; the next check decides)", -time.Minute},
