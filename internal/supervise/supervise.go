@@ -718,7 +718,6 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 }
 
 func (t *tick) record(actErr error) error {
-	t.graphClose()
 	t.st.CheckedAt = t.now
 	outcome := "succeeded"
 	if t.opts.DryRun {
@@ -733,6 +732,9 @@ func (t *tick) record(actErr error) error {
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err
 	}
+	// After the state save, so graph work never delays it, and before the
+	// event is built, so a graph warning reaches runs.jsonl.
+	t.graphClose()
 	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target}
 	extra := map[string]any{}
 	if actErr != nil {
