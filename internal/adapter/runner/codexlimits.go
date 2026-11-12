@@ -19,6 +19,17 @@ type CodexLimits struct {
 	ReachedType string
 	// ResetsAt is when the reached window lifts, when reported.
 	ResetsAt time.Time
+	// Windows are the usage windows the snapshot reported, blocked or not.
+	// They are readings only and never decide Blocked.
+	Windows []CodexWindow
+}
+
+// CodexWindow is one usage window from the snapshot. Name is the snapshot's
+// own field name. ResetsAt is zero when the snapshot gave none.
+type CodexWindow struct {
+	Name        string
+	UsedPercent int
+	ResetsAt    time.Time
 }
 
 // ReadCodexLimits asks `codex app-server` for the account's rate-limit
@@ -33,7 +44,7 @@ type rpcMessage struct {
 }
 
 type rateLimitWindow struct {
-	UsedPercent int    `json:"usedPercent"`
+	UsedPercent *int   `json:"usedPercent"`
 	ResetsAt    *int64 `json:"resetsAt"`
 }
 
@@ -125,6 +136,20 @@ func limitsFrom(r rateLimitsResponse) CodexLimits {
 	if t := r.RateLimits.RateLimitReachedType; t != nil && *t != "" {
 		l.Blocked, l.ReachedType = true, *t
 	}
+	for _, named := range []struct {
+		name string
+		w    *rateLimitWindow
+	}{{"primary", r.RateLimits.Primary}, {"secondary", r.RateLimits.Secondary}} {
+		// A window without a usage figure is not a reading.
+		if named.w == nil || named.w.UsedPercent == nil {
+			continue
+		}
+		cw := CodexWindow{Name: named.name, UsedPercent: *named.w.UsedPercent}
+		if named.w.ResetsAt != nil && *named.w.ResetsAt > 0 {
+			cw.ResetsAt = time.Unix(*named.w.ResetsAt, 0).UTC()
+		}
+		l.Windows = append(l.Windows, cw)
+	}
 	if !l.Blocked {
 		return l
 	}
@@ -137,7 +162,7 @@ func limitsFrom(r rateLimitsResponse) CodexLimits {
 		if t.After(any) {
 			any = t
 		}
-		if w.UsedPercent >= 100 && t.After(full) {
+		if w.UsedPercent != nil && *w.UsedPercent >= 100 && t.After(full) {
 			full = t
 		}
 	}

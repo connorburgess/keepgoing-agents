@@ -34,3 +34,26 @@ func TestLimitsFrom(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitsFromReportsWindowsWhetherOrNotBlocked(t *testing.T) {
+	parse := func(s string) CodexLimits {
+		var r rateLimitsResponse
+		if err := json.Unmarshal([]byte(s), &r); err != nil {
+			t.Fatal(err)
+		}
+		return limitsFrom(r)
+	}
+	reset := time.Unix(1900000000, 0).UTC()
+	l := parse(`{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":40,"resetsAt":1900000000},"secondary":{"usedPercent":0}}}`)
+	if l.Blocked || len(l.Windows) != 2 || l.Windows[0] != (CodexWindow{Name: "primary", UsedPercent: 40, ResetsAt: reset}) || l.Windows[1] != (CodexWindow{Name: "secondary"}) {
+		t.Errorf("allowed: %+v", l)
+	}
+	// A window with no usage figure is not a reading, and is still usable for the reset.
+	l = parse(`{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"resetsAt":1900000000},"secondary":null}}`)
+	if !l.Blocked || len(l.Windows) != 0 || !l.ResetsAt.Equal(reset) {
+		t.Errorf("no figure: %+v", l)
+	}
+	if l := parse(`{"ordinaryUsageAllowed":true}`); len(l.Windows) != 0 {
+		t.Errorf("no rateLimits: %+v", l)
+	}
+}

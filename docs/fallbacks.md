@@ -2,6 +2,73 @@
 
 `fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`.
 
+## Add a fallback with guided setup
+
+Unreleased source; v0.1.5 does not include this command. For an existing loop:
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
+```
+
+The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end.
+
+1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback. Only headless `claude` and `codex` are offered.
+2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`; a leading `~/` is expanded), or blank for the CLI's current login, and the quota group. The suggested group is the directory's name, otherwise the provider, with a numeric suffix when that label is taken.
+3. **Model.** The model for the fallback's turns and, optionally, a cheaper one for scheduled probes. Blank keeps the CLI's configured model. Names are not looked up or validated.
+4. **Handoff.** The place in the handoff order when other fallbacks exist, and whether to turn on automatic handoff when it is not already on. The default is no.
+
+The preview shows the candidate, the full handoff order with the new entry marked, the handoff trigger, the redundancy rule (with a warning when the listed candidates cannot meet it), the probe policy and the files to be changed. Nothing is written before `yes`; the default answer is `no`.
+
+Scripts use the same path:
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactive \
+  --agent claude --account-dir /private/accounts/claude-b --group pool-b \
+  --model example-model --position 1 --dry-run --json
+```
+
+`--non-interactive` requires `--agent` and writes without asking unless `--dry-run` is set. Other flags: `--probe-model`, `--id`, `--workdir`, `--enable-handoff`, and `--probe-daily-cap`, which is accepted only when the command creates the fallbacks file. `--json` prints a `fallback_add` object with `schemaVersion: 1`: the candidate, order, redundancy, changed files, `warnings`, `notes` and the follow-up commands as argument arrays. Its `handoff` object reports `automatic` and `wasAutomatic` (whether a handoff can happen after and before the change), `changed`, the resulting `failoverOn` and whether `failoverOnWritten`. Account-directory and agent executable paths are withheld from JSON.
+
+### Handoff stays a choice
+
+A handoff can happen only when fallbacks exist and `errors.failover_on` is not empty. Because an absent `errors.failover_on` means `rate_limit`, adding the first fallback to such a loop would start handoff on its own. The command decides it explicitly instead:
+
+- Handoff already on (fallbacks exist and the setting is not empty): nothing changes. `--enable-handoff` has no effect and the preview says so.
+- You choose handoff: an empty or absent setting is written as `[rate_limit]`; an existing non-empty setting is kept.
+- You do not choose it and the loop's setting would start handoff with the first fallback: `errors.failover_on: []` is written, and the preview names the setting it replaces.
+
+### What it writes
+
+- With an existing fallbacks file, the candidate is inserted at the chosen position. Other candidates, rules and comments are kept. The file is re-emitted, so indentation is normalized, CRLF line endings become LF and blank lines between entries are dropped.
+- Without one, it creates `fallbacks.yaml` beside the config (redundancy `min_healthy: 1`, `span: group`; scheduled probes every 12 hours, 24-hour TTL, daily cap 2) and sets `loop.fallbacks`. `keepgoing.yaml` is re-emitted with the same normalization.
+- `keepgoing.yaml` is not rewritten when neither `loop.fallbacks` nor `errors.failover_on` changes. Replaced files keep their permission bits; a created file is owner-only.
+
+Writes happen under the loop's tick lock with the guards `retarget` uses: the caller must be the owning BB thread when the loop has one, no BB transfer may be pending, and the files must be unchanged since the preview. A refusal exits 1 for ownership and 75 for a running check, a pending transfer or changed sources. A running daemon uses the new order after its next configuration reload.
+
+### What it refuses
+
+Without writing anything:
+
+- Cursor, BB, process or unknown agents, and any loop with a Cursor primary.
+- A quota group equal to the primary's or another candidate's.
+- The same login as an existing target with the same model. Logins are compared by provider and account directory (symlinks resolved); the CLI's current login counts as one login. With a different model the candidate is accepted with a warning, since it helps only when that model has its own limit. Only headless targets can be compared: a BB primary's account is not visible, which the preview states. Other credentials in the environment are not inspected.
+- A config path or fallbacks file that is a symbolic link, because relative paths resolve against the directory the file is opened from.
+- A repeated or invalid id, a missing account or project directory, a CLI that is not on `PATH`, an out-of-range position, a model containing spaces or starting with a hyphen, and `--probe-daily-cap` when the fallbacks file already exists.
+
+### Afterwards
+
+The command never runs an agent or a probe, logs in, creates an account or copies credentials. It cannot tell whether the directory is signed in, which subscription it uses, or whether the model exists. It prints the commands to check that yourself:
+
+```sh
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id claude-pool-b --exact --dry-run   # free preview
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id claude-pool-b --exact             # one real request
+keepgoing fallbacks list  -c /private/example-loop/keepgoing.yaml
+```
+
+Until a probe passes, the candidate is not healthy and is not used; `fallbacks list` names candidates that were never probed.
+
+Not covered yet: detecting accounts or logins, listing models, BB/process/Cursor candidates, removing or reordering existing candidates, turning handoff on or off as a separate command, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
+
 ## Candidates
 
 Each candidate is a full agent definition plus an id and a probe:
@@ -30,7 +97,7 @@ A probe is one tiny real request: "Reply with exactly: OK", with no tools, one t
 
 | Kind | What runs | Healthy when |
 | --- | --- | --- |
-| `claude` | `claude -p` with JSON output, no session persistence, restricted tools | exit 0 and the result is not an error |
+| `claude` | `claude -p` with JSON output (`stream-json` in unreleased source), no session persistence, restricted tools | exit 0 and the result is not an error |
 | `codex` | `codex exec --json --ephemeral` in a read-only sandbox | exit 0 and a `turn.completed` event. On failure without a recognized code, the Codex app-server's `account/rateLimits/read` decides whether it was a usage limit, and when it resets. |
 | `command` | your `probe.command` | exit 0, unless stdout says `{"ok": false}` |
 
@@ -55,9 +122,47 @@ There are three tiers:
 - **Exact probes** run right before a handoff, against the candidate's real target model. A candidate that fails is skipped and the next one is tried.
 - **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it. It holds the tick lock while it runs, and it ignores pause and the time window. Naming a disabled candidate with `--id` probes it anyway.
 
-Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there.
+Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there. Unreleased source also keeps one [usage reading](#usage-readings) per candidate when a probe carries one.
 
-A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In unreleased source the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+
+## Usage readings
+
+Unreleased source records how much of an account's quota a provider says is used, when a probe that already runs happens to carry that information. It is a display value only. No decision reads it: health, redundancy, handoff and switch-back behave exactly as before, and a candidate shown at 100% that passes its probe is still healthy. Switching at a threshold is [planned](roadmap.md#quota-monitoring-planned), not implemented.
+
+| Probe kind | Source | When a reading is recorded |
+| --- | --- | --- |
+| `claude` | `rate_limit_event` messages in the probe's own `stream-json` output | Whenever the probe's output contains the event with usable windows |
+| `codex` | The app-server's `account/rateLimits/read` reply | Only when that read already happens: after a probe fails without a recognized code. A healthy Codex probe carries no reading. |
+| `command`, and every other provider including Cursor | none | Never; shown as unavailable |
+
+No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
+
+The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
+
+- No event, another shape, or a window without a numeric `utilization` between 0 and 1 gives no reading for that window. It is never an error and never changes the probe result.
+- Only `utilization` is required. A `resetsAt` or `status` that is missing, of another type or implausible is left out and the window is kept, shown without that field.
+- Window names are opaque keys. keepgoing does not assume which windows exist or what they mean.
+- When a probe emits several events, later ones override earlier ones per window.
+- Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
+
+One reading per candidate is stored in `health.json` under `usage`: the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
+
+A reading belongs to the account it was read from. The identity is a hash of the candidate's provider, quota group, probe kind, probe executable and probe environment; no path or value is stored. When a candidate ID is pointed at another account, the stored reading stops being shown at once and is dropped by the next probe. Renaming a candidate, or changing its model or target thread, keeps it.
+
+A reading also goes out of date. A window whose reset time has passed is shown as `stale` with that time and no percentage, since the recorded figure describes a window that has since reset. When every window is stale, the reading's state is `stale`. A window with no reset time cannot be judged this way and stays as recorded until a newer reading replaces it, so check its age.
+
+`keepgoing fallbacks list` prints a `usage <id>:` line per candidate. `keepgoing status` prints a `usage:` line for the primary and each candidate when fallbacks are configured, and none otherwise, because only probed targets can have a reading. Both show each window's percentage (rounded down, so only a full window shows 100%), reset time and status, then the reading's age and source, or `unavailable`. Their JSON carries `usage` with `state` (`available`, `stale` or `unavailable`), `observedAt`, `ageSeconds`, `source` and `windows`, each window with a `stale` flag.
+
+What a reading does not tell you:
+
+- `unavailable` and `stale` mean there is no current figure. They do not mean usage is low.
+- A reading describes the login the probe ran with. For a BB candidate that is the account BB uses only when they share the login, as with probe health.
+- It is as fresh as the probe that carried it. Nothing refreshes it between probes, and BB does not expose the event for turns it runs.
+- The primary is probed only for switch-back, so it usually shows unavailable.
+- Headless Claude turns still use `json` output and record no reading.
+
+Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. Live evidence is one live manual probe by the project coordinator, with a binary built from this source, of one headless Claude candidate on Claude Code 2.1.318 and macOS arm64: `fallbacks check --id` exited 0, the candidate was recorded healthy with its credential expiry, one `seven_day` window was recorded and shown by `fallbacks list` and `status`, and no failure capture was written. Scheduled and exact tiers, a failing probe, Codex readings, other CLI versions and Windows have not been exercised live.
 
 ## Preview manual probes
 
