@@ -20,7 +20,7 @@ Record start intent before launching work, then attach structured provider recei
 
 An indexed local resolver should find an ID and its recorded adjacent references directly. Lookup must not require scanning all history, Git commits, task files or provider conversation directories. This is an access-pattern requirement, not a latency or literal constant-time promise. Bound records, traversal and retention; define migrations, interrupted updates, missing nodes, unsupported schema versions, cycles and conflicting identities. Unknown remains explicit, and expired history is not silently recreated.
 
-D3 should deliver CLI/JSON views for active and recent runs and direct reference traversal before GUI work. A user should be able to follow current run → chat or blocked run → blocker → chat even with duplicate loop names. CLI names are intentionally undecided here. Current commands and output schemas remain those documented in [local clients](local-clients.md) and [operations](operations.md).
+D3 should deliver CLI/JSON views for active and recent runs and direct reference traversal before GUI work. A user should be able to follow current run → chat even with duplicate loop names. D3 reports blocker navigation as unavailable until D4 supplies a validated relationship; blocked run → blocker → chat is verified with D4, not a prerequisite for checking off D3. CLI names are intentionally undecided here. Current commands and output schemas remain those documented in [local clients](local-clients.md) and [operations](operations.md).
 
 ## Links and blockers need evidence
 
