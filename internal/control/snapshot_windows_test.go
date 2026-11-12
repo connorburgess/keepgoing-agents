@@ -3,6 +3,7 @@ package control
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -32,6 +33,7 @@ func TestWindowsControlSnapshotLegacyShareBlocksReplacement(t *testing.T) {
 	if err := Save(dir, File{Enabled: true, Paused: true}); err == nil {
 		t.Fatal("legacy handle did not exclude replacement")
 	}
+	assertNoSnapshotTemps(t, dir)
 	got, err := Load(dir)
 	if err != nil || got.Paused {
 		t.Fatalf("rejected replacement changed control: %+v %v", got, err)
@@ -62,4 +64,42 @@ func TestWindowsControlSnapshotOpenFailureDoesNotCreate(t *testing.T) {
 	if f, err := OpenSnapshot(dir); err == nil || f != nil {
 		t.Fatalf("directory opened as snapshot: %v %v", f, err)
 	}
+}
+
+func assertNoSnapshotTemps(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("staging file not cleaned: %s", entry.Name())
+		}
+	}
+}
+
+func TestWindowsControlSnapshotReadOnlyTargetPreserved(t *testing.T) {
+	dir := t.TempDir()
+	original := File{Enabled: true, Note: "original control"}
+	if err := Save(dir, original); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, FileName)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(path, 0600)
+	if err := Save(dir, File{Paused: true}); err == nil {
+		t.Fatal("replaced read-only control")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("failed save changed control: %v", err)
+	}
+	assertNoSnapshotTemps(t, dir)
 }

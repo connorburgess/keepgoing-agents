@@ -11,14 +11,15 @@ import (
 )
 
 func TestControlSnapshotAllowsAtomicReplacement(t *testing.T) {
-	for _, long := range []bool{false, true} {
-		name := "unicode"
-		if long {
-			name = "long-unicode"
-		}
+	for _, name := range []string{"unicode", "long-unicode", "relative"} {
 		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "café-项目")
-			if long {
+			base := t.TempDir()
+			dir := filepath.Join(base, "café-项目")
+			if name == "relative" {
+				t.Chdir(base)
+				dir = "café-项目"
+			}
+			if name == "long-unicode" {
 				for len(dir) < 300 {
 					dir = filepath.Join(dir, strings.Repeat("part", 8))
 				}

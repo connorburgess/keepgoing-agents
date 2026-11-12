@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Windows control loads and daemon polling now open read-only snapshots with delete sharing, so these readers do not block atomic pause/stop writes. Deterministic fixtures retain an open reader across replacement and compare an explicitly incompatible legacy handle. Other readers can still block a save; no retry or general write guarantee is added.
+- Windows control loads and daemon polling open read-only snapshots with delete sharing, paired with POSIX-style replacement for control/goal writes. This requires Windows 10 version 1709 or newer and a filesystem supporting that operation; unsupported operations fail without a legacy fallback. Deterministic fixtures retain an open reader across replacement, compare an incompatible legacy handle and preserve originals on failure. Other readers can still block a save; no retry or general write guarantee is added.
 
 - Extend the local recovery smoke with opt-in `--include-cursor` for source builds. A fictional Cursor CLI verifies unknown-error recovery and exact session reuse across actual held-daemon crashes/restarts, without provider calls. Published v0.1.5 remains compatible with the default four-adapter smoke.
 
