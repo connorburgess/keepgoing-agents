@@ -203,3 +203,159 @@ func TestExpiredRetrySignalDoesNotOverrideControls(t *testing.T) {
 		})
 	}
 }
+
+// A re-prompt makes the session active, so observing it active must not
+// refund the re-prompt allowance. Each row is one check of a session whose
+// re-prompted turns keep failing; before the reset rule changed, the count
+// returned to zero at every active check and the hold was never reached.
+func TestRepromptCapSurvivesActiveChecksBetweenFailures(t *testing.T) {
+	w := newWorld(t, true, true)
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		w.probeOK[c.ID] = true
+	}
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryKnown: true, RetryExpired: true}
+	retrying := decide.Observation{State: decide.Active, ErrorClass: decide.ErrUnknown, Retrying: true, RetryKnown: true}
+	p := w.primary(failed)
+	for i, c := range []struct {
+		minute    int
+		obs       decide.Observation
+		action    string
+		reprompts int
+	}{
+		{0, failed, "reprompt", 1},
+		{1, retrying, "none", 1},                                 // our re-prompt started a turn
+		{2, decide.Observation{State: decide.Active}, "none", 1}, // active alone is not a recovery
+		{20, failed, "reprompt", 2},                              // it failed again
+		{21, retrying, "none", 2},
+		{40, failed, "await_user", 2}, // max_reprompts is 2
+		{50, failed, "none", 2},
+	} {
+		p.obs = c.obs
+		r := runTick(t, w, t0.Add(time.Duration(c.minute)*time.Minute))
+		st, _ := state.Load(w.dir)
+		if r.Action != c.action || st.Reprompts != c.reprompts || r.Handoff != nil {
+			t.Fatalf("check %d (+%dm): %+v reprompts=%d", i, c.minute, r, st.Reprompts)
+		}
+	}
+	if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || len(p.sent) != 2 {
+		t.Fatalf("hold=%+v sends=%d", ctl, len(p.sent))
+	}
+}
+
+// The episode ends, and the allowance starts over, when a turn finishes
+// without an error or the active session makes verified Git progress.
+func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		obs       decide.Observation
+		print     string
+		reprompts int
+	}{
+		{"active_no_progress", decide.Observation{State: decide.Active}, "same", 1},
+		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", 0},
+		{"idle", decide.Observation{State: decide.Idle}, "same", 0},
+		{"error_git_progress", decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, "changed", 1},
+		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+			p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+			run := func(at time.Duration, print string) Result {
+				opts := w.opts(t0.Add(at))
+				opts.Fingerprint = func([]string) (string, error) { return print, nil }
+				r, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r
+			}
+			if r := run(0, "same"); r.Action != "reprompt" {
+				t.Fatalf("%+v", r)
+			}
+			p.obs = tc.obs
+			run(time.Minute, tc.print)
+			if st, _ := state.Load(w.dir); st.Reprompts != tc.reprompts {
+				t.Fatalf("reprompts=%d", st.Reprompts)
+			}
+		})
+	}
+}
+
+// A retry notice that expired on an active thread is not a recovery: it earns
+// no stall grace, and the thread is nudged under the ordinary bounds.
+func TestExpiredRetryOnActiveThreadUsesOrdinaryStallBounds(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.Progress.MaxNudges = 2
+	w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		w.probeOK[c.ID] = true
+	}
+	p := w.primary(decide.Observation{State: decide.Active, ErrorClass: decide.ErrNetwork, Retrying: true, RetryKnown: true})
+	if err := state.Save(w.dir, state.File{Fingerprint: "same", LastProgressAt: t0, LastState: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []struct {
+		hours   float64
+		expired bool
+		action  string
+		reason  string
+		nudges  int
+	}{
+		{1, false, "none", "provider is retrying the turn", 0},
+		{2, true, "nudge", "no progress for 2h0m0s", 1},
+		{2.5, true, "none", "active", 1}, // min_wake_interval since the nudge
+		{3, false, "none", "provider is retrying the turn", 1},
+		{4, true, "nudge", "no progress for 4h0m0s", 2},
+		{6, true, "await_user", "no progress after 2 nudges", 2},
+	} {
+		p.obs.Retrying, p.obs.RetryExpired = !c.expired, c.expired
+		opts := w.opts(t0.Add(time.Duration(c.hours * float64(time.Hour))))
+		opts.Fingerprint = func([]string) (string, error) { return "same", nil }
+		r, err := Tick(context.Background(), w.cfg, opts)
+		st, _ := state.Load(w.dir)
+		if err != nil || r.Action != c.action || r.Reason != c.reason || st.Nudges != c.nudges || r.Handoff != nil || st.Reprompts != 0 {
+			t.Fatalf("check %d: %+v nudges=%d %v", i, r, st.Nudges, err)
+		}
+		if signal := map[bool]string{true: "expired"}[c.expired]; r.RetrySignal != signal {
+			t.Fatalf("check %d: retry signal %q", i, r.RetrySignal)
+		}
+	}
+	if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser {
+		t.Fatal("hold was not persisted")
+	}
+}
+
+// A rate-limited thread whose retry is scheduled for a structured reset is
+// left alone: no handoff, no re-prompt, no spent allowance. Once the adapter
+// reports the notice expired, the ordinary rate-limit rules apply.
+func TestRateLimitRetryNoticeIsNotOverriddenBeforeItExpires(t *testing.T) {
+	for _, fallbacks := range []bool{true, false} {
+		w := newWorld(t, true, fallbacks)
+		if fallbacks {
+			for _, c := range w.cfg.FallbackSet.Candidates {
+				w.probeOK[c.ID] = true
+			}
+		}
+		resets := t0.Add(5 * time.Hour)
+		p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, Retrying: true, RetryKnown: true, ResetsAt: resets})
+		for _, hours := range []int{0, 1, 4} {
+			r := runTick(t, w, t0.Add(time.Duration(hours)*time.Hour))
+			st, _ := state.Load(w.dir)
+			if r.Action != "none" || r.Reason != "provider is retrying the turn" || r.Handoff != nil || st.Reprompts != 0 || len(p.sent) != 0 || st.Target() != state.Primary {
+				t.Fatalf("fallbacks=%t +%dh: %+v", fallbacks, hours, r)
+			}
+		}
+		// Just after the reset the adapter still reports the retry (its grace).
+		p.obs.ResetsAt = time.Time{}
+		if r := runTick(t, w, resets.Add(time.Minute)); r.Action != "none" || len(p.sent) != 0 {
+			t.Fatalf("fallbacks=%t: acted alongside BB's retry: %+v", fallbacks, r)
+		}
+		p.obs.Retrying, p.obs.RetryExpired = false, true
+		r := runTick(t, w, resets.Add(16*time.Minute))
+		want := map[bool]string{true: "handoff", false: "reprompt"}[fallbacks]
+		if r.Action != want || r.RetrySignal != "expired" {
+			t.Fatalf("fallbacks=%t: %+v", fallbacks, r)
+		}
+	}
+}

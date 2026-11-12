@@ -118,11 +118,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Active || obs.State == decide.Error {
 		obs.Retrying = sig.ok && sig.willRetry
-		// An active thread is doing something now, so its retry notice stands
-		// until structured recovery evidence clears it. An errored thread is
-		// not running: its notice counts only while fresh, so a provider that
-		// stopped retrying without saying so cannot hold the loop forever.
-		if obs.Retrying && obs.State == decide.Error && a.retryExpired(sig.retryAt) {
+		// A notice counts only while there is fresh structured evidence behind
+		// it, so a provider that stopped retrying without saying so cannot hold
+		// the loop forever. See retryExpired.
+		if obs.Retrying && a.retryExpired(obs.State, sig) {
 			obs.Retrying, obs.RetryExpired = false, true
 		}
 		if sig.ok && sig.hasError {
@@ -154,29 +153,47 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	return obs, nil
 }
 
-// DefaultRetrySignalTTL is how long a willRetry notice on an errored thread
-// counts as a live retry, measured from the newest notice. It bounds the
-// silence between notices, not the length of a retry: each failed attempt of
-// a genuine retry logs a newer notice and restarts the interval. BB's retry
-// plugin documents waits of about 1, 2, 4 and 8 minutes between its attempts
-// on an unavailable provider, so the default is nearly twice its longest gap.
-// Its longer subscription-window waits carry a rate-limit reset and are
-// handled by the limit rules. See docs/operations.md "Stale retry notices".
+// DefaultRetrySignalTTL is how long a willRetry notice counts as a live retry
+// without newer evidence. It bounds silence, not the length of a retry: each
+// failed attempt of a genuine retry logs a newer notice and restarts the
+// interval. BB's retry plugin documents waits of about 1, 2, 4 and 8 minutes
+// between its attempts on an unavailable provider, so the default is nearly
+// twice its longest gap. See docs/operations.md "Stale retry notices".
 const DefaultRetrySignalTTL = 15 * time.Minute
 
-// retryExpired reports whether retry evidence from at is too old to trust.
-// Evidence with no usable time cannot be shown to be fresh. A local clock that
-// moved backwards yields a negative age, which counts as fresh.
-func (a *Adapter) retryExpired(at time.Time) bool {
+// retryExpired reports whether a retry notice has gone stale at check time.
+//
+//   - Errored thread: nothing is running, so only the newest notice counts.
+//   - Active thread: any newer event in the thread log (tool output, another
+//     notice, queued input) shows the turn is still alive, so the notice
+//     expires only after the whole log has been silent for the interval.
+//   - Rate limit with a structured reset: BB's own retry is scheduled for the
+//     reset, so the interval starts there, not at the notice.
+//
+// Evidence with no usable time cannot be shown to be fresh. A local clock
+// that moved backwards yields a negative age, which counts as fresh.
+func (a *Adapter) retryExpired(state decide.State, sig signals) bool {
 	ttl := a.cfg.RetrySignalTTL.Duration
 	if ttl <= 0 {
 		ttl = DefaultRetrySignalTTL
 	}
+	at := sig.retryAt
+	if state == decide.Active {
+		at = sig.lastEventAt
+	}
+	if (sig.class == decide.ErrRateLimit || sig.blocked) && sig.resetsAt.After(at) {
+		at = sig.resetsAt
+	}
 	return at.IsZero() || a.now().Sub(at) > ttl
 }
 
+// CheckAt fixes the time this adapter compares event and reset times against,
+// so one check uses one clock for its observation and its decision.
+func (a *Adapter) CheckAt(t time.Time) { a.now = func() time.Time { return t } }
+
 type signals struct {
-	retryAt      time.Time
+	retryAt      time.Time // bounded time of the newest retry notice
+	lastEventAt  time.Time // bounded time of the newest event of any kind
 	evidence     evidence.Detail
 	hasError     bool
 	class        decide.ErrorClass
@@ -193,7 +210,7 @@ type signals struct {
 // started count, so a stale error from an earlier turn is ignored.
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
-	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0}
+	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
@@ -202,7 +219,7 @@ func (a *Adapter) signals(ctx context.Context) signals {
 		}
 		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
 		s.retryUnknown = !c.Error.RetryKnown
-		s.retryAt = c.Error.retryEvidenceAt()
+		s.retryAt = c.Error.At
 	}
 	return s
 }

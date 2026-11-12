@@ -21,6 +21,9 @@ func (t *tick) stallAfterRetry(obs decide.Observation, target string, unchanged 
 		// Keep the pending episode; Decide withholds work independently.
 	case obs.Retrying:
 		r = &state.StallRetry{Target: target, Waiting: true}
+	case obs.RetryExpired:
+		// The retry went silent; that is not a recovery and earns no grace.
+		r = nil
 	case obs.State != decide.Active:
 		r = nil
 	case r != nil && r.Waiting:

@@ -253,7 +253,7 @@ func (t *tick) run() error {
 		}
 	}
 
-	a, err := t.opts.NewAdapter(agent, loop.StateDir, target)
+	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
 		return err
 	}
@@ -342,6 +342,7 @@ func (t *tick) run() error {
 	}
 
 	unchangedFor := time.Duration(0)
+	progressed := false // verified Git metadata changed since the last check
 	if len(loop.Progress.Repositories) > 0 {
 		var f string
 		var err error
@@ -354,6 +355,8 @@ func (t *tick) run() error {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
 		}
+		// A first baseline is not progress.
+		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && f != t.st.Fingerprint
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
 			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
 			t.st.Nudges = 0
@@ -373,7 +376,12 @@ func (t *tick) run() error {
 	if !t.st.LastRepromptAt.IsZero() {
 		sinceReprompt = t.now.Sub(t.st.LastRepromptAt)
 	}
-	if obs.State == decide.Active || obs.State == decide.Idle {
+	// The re-prompt count covers one error episode. It ends when a turn has
+	// finished without an error (idle) or the active session made verified Git
+	// progress. Merely seeing the session active does not end it: a re-prompt
+	// itself makes the session active, and one that fails again must spend the
+	// same allowance, or the cap is never reached.
+	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 	}
 	if obs.State != decide.Active {
@@ -454,7 +462,7 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
-	a, err := t.opts.NewAdapter(agent, t.loop.StateDir, target)
+	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
 		return err
 	}
@@ -534,7 +542,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if !r.OK {
 			continue
 		}
-		ta, err := t.opts.NewAdapter(c.Agent, t.loop.StateDir, c.ID)
+		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
 			t.warn("handoff to %s: %v", id, err)
 			continue
@@ -607,7 +615,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("switch-back brief: %w", err)
 	}
-	pa, err := t.opts.NewAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
+	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {
 		return false, err
 	}
@@ -829,4 +837,13 @@ func (t *tick) observeProgress() (state.Progress, error) {
 		return state.Progress{}, fmt.Errorf("could not verify Git progress; no automatic provider work")
 	}
 	return state.ObserveProgress(t.loop.StateDir, previous, state.ProgressSources(repositories), fingerprint, t.now, t.opts.DryRun)
+}
+
+// newAdapter builds an adapter and gives it this check's time.
+func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
+	ad, err := t.opts.NewAdapter(a, stateDir, target)
+	if c, ok := ad.(adapter.CheckTimer); ok && err == nil {
+		c.CheckAt(t.now)
+	}
+	return ad, err
 }

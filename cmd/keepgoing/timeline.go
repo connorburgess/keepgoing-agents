@@ -554,7 +554,7 @@ func describeIncident(r incident.Record) string {
 	if o.Availability == "observed" {
 		retry := o.Retry
 		if retry == "expired" {
-			retry = "expired (stale provider retry notice no longer honored; ordinary error handling applied)"
+			retry = "expired (stale provider retry notice no longer honored; ordinary handling applied)"
 		}
 		text += fmt.Sprintf(" %s; error %s; retry %s; source %s; code %s", o.State, o.ErrorClass, retry, o.Source, o.ProviderCode)
 		if o.HTTPStatus != nil {

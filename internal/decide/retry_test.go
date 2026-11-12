@@ -111,3 +111,35 @@ func TestExpiredRetrySignalUsesOrdinaryErrorHandling(t *testing.T) {
 		})
 	}
 }
+
+// On an active session the expired flag is equally inert: the ordinary stall
+// rules decide, and an expired retry never becomes a re-prompt or a handoff.
+func TestExpiredRetrySignalOnActiveSessionUsesStallRules(t *testing.T) {
+	h := time.Hour
+	for _, tc := range []struct {
+		name   string
+		mut    func(*Input)
+		action Action
+	}{
+		{"not stalled", func(i *Input) { i.UnchangedFor = 10 * time.Minute }, None},
+		{"stalled", func(i *Input) { i.UnchangedFor = 2 * h }, Nudge},
+		{"spaced", func(i *Input) { i.UnchangedFor, i.SinceWake = 2*h, 10*time.Minute }, None},
+		{"nudges spent", func(i *Input) { i.UnchangedFor, i.Nudges = 2*h, 3 }, AwaitUser},
+		{"fallback available", func(i *Input) { i.UnchangedFor, i.Failover = 2*h, Failover{Eligible: true, Available: true} }, Nudge},
+		{"stop", func(i *Input) { i.Control.Stop = true }, Stop},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None},
+		{"still emitting events", func(i *Input) { i.UnchangedFor, i.Obs.Retrying = 2*h, true }, None},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs = Observation{State: Active, ErrorClass: ErrNetwork, RetryKnown: true}
+			in.MaxNudges = 3
+			tc.mut(&in)
+			want := Decide(in)
+			in.Obs.RetryExpired = true
+			if got := Decide(in); got != want || got.Action != tc.action || got.Action == Reprompt || got.Action == Handoff {
+				t.Fatalf("%+v want %+v", got, want)
+			}
+		})
+	}
+}

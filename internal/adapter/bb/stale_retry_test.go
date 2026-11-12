@@ -52,7 +52,7 @@ func TestStaleRetryNoticeOnErroredThreadExpires(t *testing.T) {
 	a.WithStateDir(t.TempDir())
 	observe := func(after time.Duration) decide.Observation {
 		t.Helper()
-		a.now = func() time.Time { return start.Add(after) }
+		a.CheckAt(start.Add(after))
 		o, err := a.Observe(context.Background())
 		if err != nil || o.State != decide.Error || o.ErrorClass != decide.ErrUnknown || o.RetryUnverified || !o.RetryKnown {
 			t.Fatalf("+%s: %+v %v", after, o, err)
@@ -103,11 +103,12 @@ func TestRetryNoticeAfterFailedCompletion(t *testing.T) {
 		{"later_notice_fresh", ended + `,` + at(retryNotice, start.Add(3*time.Minute)) + `]`, 10 * time.Minute, true, false, "error"},
 		{"later_notice_expired", ended + `,` + at(retryNotice, start.Add(3*time.Minute)) + `]`, 19 * time.Minute, false, true, "error"},
 		{"later_notice_declined", ended + `,` + at(providerError("unknown", nil, "unknown", false), start.Add(3*time.Minute)) + `]`, 19 * time.Minute, false, false, "error"},
-		{"later_notice_active_thread", ended + `,` + at(retryNotice, start.Add(3*time.Minute)) + `]`, 50 * time.Minute, true, false, "active"},
+		{"later_notice_active_thread_fresh", ended + `,` + at(retryNotice, start.Add(3*time.Minute)) + `]`, 18 * time.Minute, true, false, "active"},
+		{"later_notice_active_thread_silent", ended + `,` + at(retryNotice, start.Add(3*time.Minute)) + `]`, 19 * time.Minute, false, true, "active"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := newFake(`{"thread":{"status":"`+tc.status+`"}}`, tc.log, false)
-			a.now = func() time.Time { return start.Add(tc.after) }
+			a.CheckAt(start.Add(tc.after))
 			o, err := a.Observe(context.Background())
 			if err != nil || o.Retrying != tc.retry || o.RetryExpired != tc.expired || o.RetryUnverified {
 				t.Fatalf("%+v %v", o, err)
@@ -116,19 +117,158 @@ func TestRetryNoticeAfterFailedCompletion(t *testing.T) {
 	}
 }
 
-// An active thread is running now: its retry notice never expires by age and
-// suppresses nudges exactly as before, however long the provider takes.
-func TestActiveThreadRetryNoticeNeverExpiresByAge(t *testing.T) {
+const toolOutput = `{"type":"item/commandExecution/outputDelta","data":{"providerThreadId":"p1","itemId":"item_example"}}`
+const queuedInput = `{"type":"client/turn/requested","data":{}}`
+
+func stallDecision(o decide.Observation, nudges int) decide.Decision {
+	return decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: 2 * time.Hour, SinceWake: 2 * time.Hour,
+		StallAfter: 30 * time.Minute, MinWakeInterval: time.Hour, Nudges: nudges, MaxNudges: 3,
+		Failover: decide.Failover{Eligible: true, Available: true}, MaxReprompts: 3})
+}
+
+// An active thread that keeps logging events of any kind is alive: its retry
+// notice suppresses nudges exactly as before, for as long as that continues.
+func TestActiveThreadRetryNoticeStandsWhileLogIsNotSilent(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
-	a, _ := newFake(`{"thread":{"status":"active"}}`, `[`+at(turnStarted, start)+`,`+at(retryNotice, start.Add(time.Minute))+`]`, false)
-	a.WithStateDir(t.TempDir())
-	for _, after := range []time.Duration{2 * time.Minute, time.Hour, 47 * time.Hour} {
-		a.now = func() time.Time { return start.Add(after) }
+	events := `[` + at(turnStarted, start) + `,` + at(retryNotice, start.Add(time.Minute))
+	dir := t.TempDir()
+	kinds := []string{toolOutput, retryNotice, queuedInput}
+	for i := 1; i <= 280; i++ { // about 47 hours, one event every ten minutes
+		logged := start.Add(time.Duration(i) * 10 * time.Minute)
+		events += `,` + at(kinds[i%len(kinds)], logged)
+		a, _ := newFake(`{"thread":{"status":"active"}}`, events+`]`, false)
+		a.WithStateDir(dir)
+		a.CheckAt(logged.Add(9 * time.Minute))
 		o, err := a.Observe(context.Background())
-		d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: after, SinceWake: after, StallAfter: time.Minute, MinWakeInterval: time.Minute, MaxNudges: 3})
+		d := stallDecision(o, 0)
 		if err != nil || !o.Retrying || o.RetryExpired || d.Action != decide.None || d.Reason != "provider is retrying the turn" {
-			t.Fatalf("+%s: %+v %+v %v", after, o, d, err)
+			t.Fatalf("event %d: %+v %+v %v", i, o, d, err)
 		}
+	}
+}
+
+// The second observed shape: a re-prompt starts a new turn, which clears the
+// earlier error; the new turn logs a retry notice while the thread is active
+// and then nothing at all. Before the silence rule this returned "provider is
+// retrying the turn" on every later check. An expired notice on an active
+// thread returns the thread to ordinary stall handling: nudges bounded by
+// max_nudges, then a person. It never becomes a re-prompt or a handoff.
+func TestSilentActiveThreadRetryNoticeExpiresIntoStallHandling(t *testing.T) {
+	start := now.Add(-6 * time.Hour)
+	reprompted := start.Add(40 * time.Minute)
+	log := outageLog(start, 22*time.Minute)
+	log = log[:len(log)-1] + `,` + at(queuedInput, reprompted) + `,` + at(turnStarted, reprompted.Add(time.Second)) + `,` + at(retryNotice, reprompted.Add(time.Minute)) + `]`
+	a, _ := newFake(`{"thread":{"status":"active"}}`, log, false)
+	a.WithStateDir(t.TempDir())
+	last := reprompted.Add(time.Minute)
+	for _, tc := range []struct {
+		after  time.Duration
+		nudges int
+		retry  bool
+		action decide.Action
+		reason string
+	}{
+		{0, 0, true, decide.None, "provider is retrying the turn"},
+		{DefaultRetrySignalTTL, 0, true, decide.None, "provider is retrying the turn"},
+		{DefaultRetrySignalTTL + time.Second, 0, false, decide.Nudge, "no progress for 2h0m0s"},
+		{time.Hour, 2, false, decide.Nudge, "no progress for 2h0m0s"},
+		{4 * time.Hour, 3, false, decide.AwaitUser, "no progress after 3 nudges"},
+	} {
+		a.CheckAt(last.Add(tc.after))
+		o, err := a.Observe(context.Background())
+		d := stallDecision(o, tc.nudges)
+		if err != nil || o.State != decide.Active || o.Retrying != tc.retry || o.RetryExpired == tc.retry || o.RetryUnverified || d.Action != tc.action || d.Reason != tc.reason {
+			t.Fatalf("+%s: %+v %+v %v", tc.after, o, d, err)
+		}
+	}
+	// A thread that has not stalled by its own progress rules is simply active.
+	o, _ := a.Observe(context.Background())
+	if d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, StallAfter: 30 * time.Minute}); d.Action != decide.None || d.Reason != "active" {
+		t.Fatalf("%+v", d)
+	}
+}
+
+// BB schedules its own retry of a rate-limited turn for the structured reset.
+// The notice must not expire before that reset, nor for one interval after it,
+// so keepgoing neither hands off early nor prompts alongside BB's retry.
+// Without a structured reset there is nothing scheduled to wait for.
+func TestRateLimitRetryNoticeWaitsForStructuredReset(t *testing.T) {
+	start := now.Add(-12 * time.Hour)
+	notice := at(providerError("rate-limit", 429, "rate_limit_event", true), start.Add(time.Minute))
+	resets := start.Add(5 * time.Hour)
+	for _, status := range []string{"error", "active"} {
+		for _, tc := range []struct {
+			name    string
+			window  string
+			after   time.Duration
+			retry   bool
+			resetIn bool
+		}{
+			{"reset_ahead", at(rateLimitsEvent("blocked", resets), start.Add(time.Minute)), 16 * time.Minute, true, true},
+			{"reset_ahead_hours_later", at(rateLimitsEvent("blocked", resets), start.Add(time.Minute)), 4*time.Hour + 59*time.Minute, true, true},
+			{"just_after_reset", at(rateLimitsEvent("blocked", resets), start.Add(time.Minute)), 5*time.Hour + time.Minute, true, false},
+			{"grace_after_reset", at(rateLimitsEvent("blocked", resets), start.Add(time.Minute)), 5*time.Hour + DefaultRetrySignalTTL, true, false},
+			{"grace_spent", at(rateLimitsEvent("blocked", resets), start.Add(time.Minute)), 5*time.Hour + DefaultRetrySignalTTL + time.Second, false, false},
+			{"no_structured_reset_fresh", "", 15 * time.Minute, true, false},
+			{"no_structured_reset_expired", "", 17 * time.Minute, false, false},
+		} {
+			t.Run(status+"_"+tc.name, func(t *testing.T) {
+				log := `[` + at(turnStarted, start) + `,` + notice
+				if tc.window != "" {
+					log += `,` + tc.window
+				}
+				a, _ := newFake(`{"thread":{"status":"`+status+`"}}`, log+`]`, false)
+				a.CheckAt(start.Add(tc.after))
+				o, err := a.Observe(context.Background())
+				if err != nil || o.ErrorClass != decide.ErrRateLimit || o.Retrying != tc.retry || o.RetryExpired == tc.retry {
+					t.Fatalf("%+v %v", o, err)
+				}
+				if status == "error" && o.ResetsAt.Equal(resets) != tc.resetIn {
+					t.Fatalf("reset reported=%v: %+v", !tc.resetIn, o)
+				}
+				d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, MaxReprompts: 3,
+					Failover: decide.Failover{Eligible: true, Available: true}})
+				if tc.retry && (d.Action != decide.None || d.Reason != "provider is retrying the turn") {
+					t.Fatalf("acted while BB's retry is pending: %+v", d)
+				}
+				if !tc.retry && status == "error" && d.Action != decide.Handoff {
+					t.Fatalf("expired rate limit not handled by the ordinary rules: %+v", d)
+				}
+			})
+		}
+	}
+}
+
+// A BB host whose clock runs behind this machine stamps events in the local
+// past. An event that was not in the previous complete scan cannot be older
+// than that scan, so it is aged from there instead of expiring at once. On a
+// first scan there is no earlier scan, and old events keep their own time.
+func TestEventTimeBehindLocalClockIsBoundedByPreviousScan(t *testing.T) {
+	const skew = 3 * time.Hour
+	dir := t.TempDir()
+	events := `[` + at(turnStarted, now.Add(-skew))
+	a, _ := newFake(`{"thread":{"status":"error"}}`, events+`]`, false)
+	a.WithStateDir(dir)
+	a.CheckAt(now)
+	if o, err := a.Observe(context.Background()); err != nil || o.Retrying || o.RetryExpired {
+		t.Fatalf("%+v %v", o, err)
+	}
+	events += `,` + at(retryNotice, now.Add(5*time.Minute-skew)) // logged five minutes later, stamped three hours behind
+	for _, tc := range []struct {
+		after time.Duration
+		retry bool
+	}{{6 * time.Minute, true}, {15 * time.Minute, true}, {16 * time.Minute, false}} {
+		b, _ := newFake(`{"thread":{"status":"error"}}`, events+`]`, false)
+		b.WithStateDir(dir)
+		b.CheckAt(now.Add(tc.after))
+		if o, err := b.Observe(context.Background()); err != nil || o.Retrying != tc.retry || o.RetryExpired == tc.retry {
+			t.Fatalf("+%s: %+v %v", tc.after, o, err)
+		}
+	}
+	c, _ := newFake(`{"thread":{"status":"error"}}`, events+`]`, false)
+	c.CheckAt(now.Add(6 * time.Minute))
+	if o, err := c.Observe(context.Background()); err != nil || o.Retrying || !o.RetryExpired {
+		t.Fatalf("first scan trusted an event stamped hours ago: %+v %v", o, err)
 	}
 }
 
@@ -227,9 +367,29 @@ func TestRetrySignalTTLIsConfigurable(t *testing.T) {
 	} {
 		a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
 		a.cfg.RetrySignalTTL = config.Duration{Duration: tc.ttl}
-		a.now = func() time.Time { return start.Add(tc.after) }
+		a.CheckAt(start.Add(tc.after))
 		if o, err := a.Observe(context.Background()); err != nil || o.Retrying != tc.retry || o.RetryExpired == tc.retry {
 			t.Fatalf("ttl=%s +%s: %+v %v", tc.ttl, tc.after, o, err)
+		}
+	}
+}
+
+// Signals that carry no retry intent are stamped too, so only a summary saved
+// by an older build is ever re-aged, and only once.
+func TestEverySignalCarriesItsEventTime(t *testing.T) {
+	logged := now.Add(-time.Hour)
+	for _, typ := range []string{"system/error", "turn/failed"} {
+		dir := t.TempDir()
+		for _, checked := range []time.Duration{0, time.Hour} {
+			a, _ := newFake(`{"thread":{"status":"error"}}`, `[`+at(`{"type":"`+typ+`","data":{"code":"connection_error"}}`, logged)+`]`, false)
+			a.WithStateDir(dir)
+			a.CheckAt(now.Add(checked))
+			if _, err := a.Observe(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if c := a.loadCursor(); c.Error == nil || !c.Error.At.Equal(logged) || !c.LastEventAt.Equal(logged) || !c.ScannedAt.Equal(now.Add(checked)) {
+				t.Fatalf("%s +%s: %+v %+v", typ, checked, c, c.Error)
+			}
 		}
 	}
 }

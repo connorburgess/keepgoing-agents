@@ -33,6 +33,31 @@ type Cursor struct {
 	Blocked         bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
 	ResetsAt        time.Time         `json:"resetsAt,omitempty"`
 	Pending         map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
+	// LastEventAt is the bounded time of the newest event of any kind, and
+	// ScannedAt the local time of the last complete scan. See eventTime.
+	LastEventAt time.Time `json:"lastEventAt,omitempty"`
+	ScannedAt   time.Time `json:"scannedAt,omitempty"`
+}
+
+// eventTime bounds BB's createdAt for an event by what this supervisor knows
+// locally. It is never later than seenAt, the scan that read the event, so a
+// source clock running ahead cannot keep evidence fresh. It is never earlier
+// than the previous complete scan, which did not contain the event, so a
+// source clock running behind (a remote BB host) cannot age evidence early.
+// The first scan of a log has no earlier scan, so old events keep their own
+// time there. A missing or unusable createdAt is the scan time.
+func (c *Cursor) eventTime(e event, seenAt time.Time) time.Time {
+	t := e.time()
+	if t.IsZero() || t.After(seenAt) {
+		return seenAt
+	}
+	if !c.ScannedAt.IsZero() && t.Before(c.ScannedAt) {
+		t = c.ScannedAt
+		if t.After(seenAt) { // the local clock moved backwards between scans
+			t = seenAt
+		}
+	}
+	return t
 }
 
 type errorSignal struct {
@@ -41,21 +66,10 @@ type errorSignal struct {
 	Class      decide.ErrorClass `json:"class"`
 	WillRetry  bool              `json:"willRetry,omitempty"`
 	RetryKnown bool              `json:"retryKnown,omitempty"`
-	// At is BB's createdAt for the event, zero when absent or unusable. SeenAt
-	// is the local time of the scan that first read it. Together they bound how
-	// long a willRetry notice can count as a live retry; see retryEvidenceAt.
-	At     time.Time `json:"at,omitempty"`
-	SeenAt time.Time `json:"seenAt,omitempty"`
-}
-
-// retryEvidenceAt is the time a retry notice is aged from: the event's own
-// time, but never later than when this supervisor first read it, so a source
-// clock running ahead cannot keep a notice fresh. Zero means no usable time.
-func (s errorSignal) retryEvidenceAt() time.Time {
-	if s.At.IsZero() || (!s.SeenAt.IsZero() && s.At.After(s.SeenAt)) {
-		return s.SeenAt
-	}
-	return s.At
+	// At is the bounded event time (see Cursor.eventTime). For a retry notice
+	// it is what the freshness interval is measured from. Zero only in a
+	// summary saved before signals carried a time.
+	At time.Time `json:"at,omitempty"`
 }
 
 type event struct {
@@ -85,6 +99,8 @@ func (e event) time() time.Time {
 // apply folds one event into the summary. seenAt is the local scan time.
 func (c *Cursor) apply(e event, seenAt time.Time) {
 	c.LastSeq = e.Seq
+	when := c.eventTime(e, seenAt)
+	c.LastEventAt = when
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
 	}
@@ -117,7 +133,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = d.ProviderThread
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: e.time(), SeenAt: seenAt}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. Tool output can continue independently of
@@ -157,7 +173,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if e.Type != "system/error" {
 				source = "bb_failure_event"
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when}
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)
@@ -233,12 +249,16 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		c = Cursor{Thread: a.cfg.Thread, RetrySchema: 1}
 	}
 	seenAt := a.now().UTC()
-	if c.Error != nil && c.Error.SeenAt.IsZero() {
-		// A summary saved before retry notices carried a time: age it from this
-		// scan, so it is bounded without rereading the log. Copy, because the
-		// cached summary shares this pointer and the scan may still fail.
+	if c.LastSeq > 0 && c.LastEventAt.IsZero() {
+		// A summary saved before event times were kept: age it from this scan,
+		// so it is bounded without rereading the log.
+		c.LastEventAt = seenAt
+	}
+	if c.Error != nil && c.Error.At.IsZero() {
+		// Likewise for its error signal. Copy, because the cached summary
+		// shares this pointer and the scan may still fail.
 		aged := *c.Error
-		aged.SeenAt = seenAt
+		aged.At = seenAt
 		c.Error = &aged
 	}
 	for pages := 0; pages < 10000; pages++ {
@@ -258,6 +278,7 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 			}
 		}
 		if len(events) < pageSize || !progressed {
+			c.ScannedAt = seenAt
 			return c, a.saveCursor(c)
 		}
 	}

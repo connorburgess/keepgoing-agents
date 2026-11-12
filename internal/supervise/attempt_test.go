@@ -94,8 +94,8 @@ func TestFailedAndUnsupportedSendsSpendCapsAndSpacing(t *testing.T) {
 }
 
 // A failed attempt is persisted as spent. Pause and stop then win before any cap
-// is reached and leave the count alone, and a session that recovers on its own
-// starts a fresh count. The pause and stop outcomes themselves are unchanged
+// is reached and leave the count alone, and a session whose turn then ends
+// without an error starts a fresh count. The pause and stop outcomes themselves are unchanged
 // behavior; the persisted count is what the earlier code did not record.
 func TestHoldsAndRecoveryBetweenFailedAttempts(t *testing.T) {
 	for _, hold := range []string{"pause", "stop", "recovers"} {
@@ -119,12 +119,19 @@ func TestHoldsAndRecoveryBetweenFailedAttempts(t *testing.T) {
 			}
 			spent(1, t0)
 			if hold == "recovers" {
+				// Seeing the session active is not yet a recovery: the re-prompt
+				// itself makes it active. A turn that ends without an error is.
 				p.obs, p.sendErr = decide.Observation{State: decide.Active}, nil
 				tick(5 * time.Minute)
+				spent(1, t0)
+				p.obs = decide.Observation{State: decide.Idle}
+				if res := tick(6 * time.Minute); res.Action != "wake" || len(p.sent) != 2 {
+					t.Fatalf("%+v", res)
+				}
 				spent(0, time.Time{})
 				p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
-				for i, at := range []time.Duration{6 * time.Minute, 16 * time.Minute} {
-					if res := tick(at); res.Action != "reprompt" || len(p.sent) != i+2 {
+				for i, at := range []time.Duration{7 * time.Minute, 17 * time.Minute} {
+					if res := tick(at); res.Action != "reprompt" || len(p.sent) != i+3 {
 						t.Fatalf("after recovery at %v: %+v sends=%d", at, res, len(p.sent))
 					}
 				}
