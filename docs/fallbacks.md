@@ -136,7 +136,7 @@ Unreleased source records how much of an account's quota a provider says is used
 | `codex` | The app-server's `account/rateLimits/read` reply | Only when that read already happens: after a probe fails without a recognized code. A healthy Codex probe carries no reading. |
 | `command`, and every other provider including Cursor | none | Never; shown as unavailable |
 
-No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures, not against a live account, and a CLI that rejects those flags would fail its probe.
+No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
 
 The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
 
@@ -162,7 +162,7 @@ What a reading does not tell you:
 - The primary is probed only for switch-back, so it usually shows unavailable.
 - Headless Claude turns still use `json` output and record no reading.
 
-Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. The `stream-json` probe has not yet been run against a live account by this change.
+Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. Live evidence is one live manual probe by the project coordinator, with a binary built from this source, of one headless Claude candidate on Claude Code 2.1.318 and macOS arm64: `fallbacks check --id` exited 0, the candidate was recorded healthy with its credential expiry, one `seven_day` window was recorded and shown by `fallbacks list` and `status`, and no failure capture was written. Scheduled and exact tiers, a failing probe, Codex readings, other CLI versions and Windows have not been exercised live.
 
 ## Preview manual probes
 
