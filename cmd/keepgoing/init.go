@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"gopkg.in/yaml.v3"
 )
@@ -29,7 +31,7 @@ type initOptions struct {
 	fallbacks                                      []initFallback
 	stall, wake, backoff, interval                 time.Duration
 	nudges, reprompts, probeCap                    int
-	nonInteractive, dryRun                         bool
+	nonInteractive, dryRun, withGoal               bool
 }
 
 type initFallback struct {
@@ -50,6 +52,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.StringVar(&o.project, "project", "", "existing Git project with a commit (default: current directory)")
 	fs.StringVar(&o.directory, "directory", "", "new private setup directory outside any checkout")
 	fs.StringVar(&o.task, "task", "", "task text (use --task-file to keep it out of shell history)")
+	fs.BoolVar(&o.withGoal, "with-goal", false, "record a goal referencing the private task snapshot and share its current revision in future prompts")
 	fs.StringVar(&o.taskFile, "task-file", "", "import task text once; - reads up to 1 MiB from stdin with --non-interactive")
 	fs.DurationVar(&o.noProgressTimeout, "no-progress-timeout", 0, "hold after this time without verified Git changes; zero disables")
 	fs.Int64Var(&o.maxSends, "max-sends", 0, "total automatic send attempts while this limit is enabled; zero disables")
@@ -109,21 +112,22 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: %v", err)
 		return exitUsage
 	}
+	var goal *control.Goal
 	if asJSON {
 		if err := e.ctx.Err(); err != nil {
 			e.errf("init: %v", err)
 			return exitFailed
 		}
 		if !o.dryRun {
-			if err := writeInit(o.directory, files); err != nil {
+			if goal, err = writeInit(o.directory, files, setupGoalSpec(o)); err != nil {
 				e.errf("init: %v", err)
 				return exitFailed
 			}
 		}
-		return printInitJSON(e, o, cfg)
+		return printInitJSON(e, o, cfg, goal)
 	}
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
-	fmt.Fprintln(e.stdout, initTaskBindingNotice)
+	fmt.Fprintln(e.stdout, initBindingNotice(o))
 	printInitAccount(e.stdout, cfg.Loop.Agent)
 	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
 	if o.noProgressTimeout > 0 {
@@ -153,12 +157,17 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: %v", err)
 		return exitFailed
 	}
-	if err := writeInit(o.directory, files); err != nil {
+	if goal, err = writeInit(o.directory, files, setupGoalSpec(o)); err != nil {
 		e.errf("init: %v", err)
 		return exitFailed
 	}
 	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
-	fmt.Fprintln(e.stdout, "Created private setup. Review the task and configuration, then run:")
+	if goal != nil {
+		printGoal(e, goal.Summary(), false)
+	}
+	fmt.Fprintln(e.stdout, "Created private setup. Review the task and configuration, then run diagnostics:")
+	fmt.Fprintf(e.stdout, "  %s doctor -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
+	fmt.Fprintln(e.stdout, "Then explicitly start supervision:")
 	fmt.Fprintf(e.stdout, "  %s start --foreground -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
 	fmt.Fprintln(e.stdout, "Or choose --background to keep the daemon running after this terminal closes. Start validates local setup and enables the loop; existing holds remain. No service is installed.")
 	return exitOK
@@ -226,6 +235,20 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			if o.task, err = ask("Task and completion criteria", ""); err != nil {
 				return err
 			}
+		}
+	}
+	if !visited["with-goal"] {
+		choice, err := ask("Record a goal and share its current revision with the agent? (yes/no)", "yes")
+		if err != nil {
+			return err
+		}
+		switch strings.ToLower(choice) {
+		case "yes", "y":
+			o.withGoal = true
+		case "no", "n":
+			o.withGoal = false
+		default:
+			return errors.New("goal choice must be yes or no")
 		}
 	}
 	if err := str("agent", "Agent", &o.agent, installed[0]); err != nil {
@@ -338,7 +361,13 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		return fail(fmt.Errorf("project needs readable Git worktree metadata and an initial commit: %w", err))
 	}
 	if o.taskFile != "" && o.taskFile != "-" {
-		b, err := os.ReadFile(o.taskFile)
+		var b []byte
+		var err error
+		if o.withGoal {
+			b, err = readSetupGoalTask(o.taskFile)
+		} else {
+			b, err = os.ReadFile(o.taskFile)
+		}
 		if err != nil {
 			return fail(err)
 		}
@@ -449,6 +478,12 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		}
 		files["fallbacks.yaml"] = b
 	}
+	if o.withGoal {
+		if err := validateSetupGoal(*o); err != nil {
+			return fail(err)
+		}
+		loop["prompt_goal"] = true
+	}
 	b, err := yaml.Marshal(map[string]any{"version": 1, "loop": loop})
 	if err != nil {
 		return fail(err)
@@ -462,6 +497,10 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	}
 	files["keepgoing.yaml"] = b
 	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, "keepgoing.yaml")))
+	if o.withGoal {
+		files["task.md"] = []byte(o.task + "\n")
+		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, "keepgoing.yaml")))
+	}
 	return files, cfg, nil
 }
 
@@ -556,19 +595,19 @@ func pathWithin(parent, child string) bool {
 
 // Reserve a new directory exclusively. Never overwrite even an empty existing
 // setup, and never change permissions on existing directories.
-func writeInit(dir string, files map[string][]byte) error {
+func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*control.Goal, error) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	var created []string
 	ok := false
 	defer func() {
 		if !ok {
-			for _, p := range created {
-				_ = os.Remove(p)
+			for i := len(created) - 1; i >= 0; i-- {
+				_ = os.Remove(created[i])
 			}
 			_ = os.Remove(dir)
 		}
@@ -577,20 +616,46 @@ func writeInit(dir string, files map[string][]byte) error {
 		p := filepath.Join(dir, name)
 		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		created = append(created, p)
 		_, err = f.Write(b)
 		closeErr := f.Close()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if closeErr != nil {
-			return closeErr
+			return nil, closeErr
+		}
+	}
+	var goal *control.Goal
+	if spec != nil {
+		stateDir := filepath.Join(dir, "state")
+		if err := os.Mkdir(stateDir, 0o700); err != nil {
+			return nil, err
+		}
+		// Only remove files owned by this new setup on failure; never recursively
+		// delete an unexpected writer's files. A crash can leave a disabled partial setup.
+		created = append(created, stateDir, filepath.Join(stateDir, "tick.lock"), filepath.Join(stateDir, "control.lock"), filepath.Join(stateDir, control.GoalName))
+		l, err := lock.Acquire(stateDir)
+		if err != nil {
+			return nil, err
+		}
+		defer l.Release()
+		cfg, err := config.Load(filepath.Join(dir, "keepgoing.yaml"))
+		if err != nil || cfg.Loop.StateDir != stateDir || !cfg.Loop.PromptGoal {
+			return nil, errors.New("goal setup configuration changed or unavailable")
+		}
+		if err := cfg.CheckSources(); err != nil {
+			return nil, errors.New("goal setup configuration changed or unavailable")
+		}
+		goal, err = control.WriteGoal(stateDir, cfg.Loop.Name, "", *spec, "", 0)
+		if err != nil {
+			return nil, err
 		}
 	}
 	ok = true
-	return nil
+	return goal, nil
 }
 
 func keepgoingExecutable() string {

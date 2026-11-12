@@ -133,7 +133,7 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 func TestInitWizardAndFlagsProduceSameConfiguration(t *testing.T) {
 	f := newSetupFixture(t)
 	// Accept all limits, one account, and the current CLI model; no fallback.
-	input := strings.Join([]string{"example-loop", f.project, "", "Complete and verify the fictional example task.", "codex", "", "", "", "", "", "", "", "", "", "", f.destination, ""}, "\n")
+	input := strings.Join([]string{"example-loop", f.project, "", "Complete and verify the fictional example task.", "no", "codex", "", "", "", "", "", "", "", "", "", "", f.destination, ""}, "\n")
 	code, _, errOut := f.run(t, nil, input)
 	if code != 0 {
 		t.Fatalf("wizard: %d %s", code, errOut)
@@ -332,7 +332,7 @@ func TestInitExistingDestinationAndPermissions(t *testing.T) {
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o750 {
 		t.Fatal("changed existing parent permissions")
 	}
-	if err := writeInit(f.destination, map[string][]byte{"prompt.md": []byte("replacement")}); err == nil {
+	if _, err := writeInit(f.destination, map[string][]byte{"prompt.md": []byte("replacement")}, nil); err == nil {
 		t.Fatal("write race overwrote existing setup")
 	}
 }

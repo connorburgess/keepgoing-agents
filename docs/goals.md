@@ -78,7 +78,7 @@ The renderer reloads the latest saved revision when composing each message. Coop
 
 Missing, corrupt or wrong-loop goal records refuse the send before reserving its send allowance; no stale cached goal is substituted. Normal status observations or probes may already have occurred. A dry-run previews decisions without validating/composing the goal message. Stop, pause, disabled, awaiting-user and completed controls keep their existing precedence. This does not update already-running turns or queued messages, fence external writers that ignore locks, detect semantic drift in a roadmap, or bind completion to the goal revision.
 
-Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption and automatic setup wiring remain unverified/planned.
+Offline fixtures cover revised goals across ticks, opt-in privacy, legacy behavior, unavailable records, handoff variants, holds, and logs/reports without private goal text. Live provider adoption remains unverified. Unreleased `init --with-goal` and the wizard choice can create revision 1 and enable this transport during disabled setup; see [goal setup](setup.md#optional-goal-during-setup-unreleased). BB setup wiring and revision-bound results remain unfinished.
 
 
 ## Recorded send provenance
