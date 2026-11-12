@@ -27,6 +27,10 @@ type Entry struct {
 	ProbeDay    string         `json:"probeDay,omitempty"` // UTC date of ProbesToday
 	ProbesToday int            `json:"probesToday,omitempty"`
 	History     []probe.Result `json:"history,omitempty"`
+	// Usage is the latest usage reading any probe of this candidate carried,
+	// with its own observation time. A later probe without a reading leaves
+	// it in place, so it can be older than Last. No decision reads it.
+	Usage *probe.Usage `json:"usage,omitempty"`
 }
 
 // Registry is health.json.
@@ -49,6 +53,12 @@ func Load(stateDir string) (*Registry, error) {
 	}
 	if r.Candidates == nil {
 		r.Candidates = map[string]*Entry{}
+	}
+	for _, e := range r.Candidates {
+		// A stored reading that did not load cleanly is simply absent.
+		if e != nil && !e.Usage.Available() {
+			e.Usage = nil
+		}
 	}
 	return r, nil
 }
@@ -93,6 +103,15 @@ func (r *Registry) Record(id string, res probe.Result) {
 	e := r.entry(id)
 	rc := res
 	e.Last = &rc
+	// A reading belongs to the account it was read from. Once the candidate
+	// is probed as a different account, an earlier reading no longer applies.
+	if e.Usage != nil && res.UsageIdentity != "" && e.Usage.Identity != res.UsageIdentity {
+		e.Usage = nil
+	}
+	if res.Usage.Available() {
+		u := *res.Usage
+		e.Usage = &u
+	}
 	e.History = append([]probe.Result{res}, e.History...)
 	if len(e.History) > historyLen {
 		e.History = e.History[:historyLen]
