@@ -78,6 +78,8 @@ jobs:
       - name: Verify allowance persistence and replacement on Windows
         run: go test -v ./internal/state -run '^Test(SendLedger|ProgressLedger)' -count=1
       - name: Verify runtime records can be replaced while readers poll
+        # Report every record even when an earlier step has already failed.
+        if: always()
         run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/keepgoing -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
       - name: Verify BB transfer and recovery on Windows
         run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
