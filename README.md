@@ -2,77 +2,38 @@
 
 # keepgoing-agents
 
-`keepgoing` keeps long-running coding-agent loops going. It watches an agent session, re-prompts it when it goes idle or stalls, and hands the loop to a confirmed fallback when the session hits a usage limit. A person's stop or pause always wins. It is a single static binary with no runtime, built to be called from cron, launchd, systemd, CI, or an agent IDE's automations. It is not tied to any IDE or provider.
+`keepgoing` supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. The agent does the work; keepgoing never edits, commits to, or merges a repository.
 
-The tool never edits, commits to, or merges a repository. The agent does the work. `keepgoing` only keeps the agent working.
+The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
 
-## Why
+## Current availability
 
-Unattended agent loops die for boring reasons. A session finishes a turn and nobody sends the next one. A turn hangs with no progress. The provider hits a usage limit at three in the morning. Watching for this by hand does not scale. Watching for it by searching transcripts for words like "limit" produces false positives that reroute whole loops.
+**Latest release: [v0.1.4](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.4).** Homebrew and release archives include the CLI features below. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
 
-`keepgoing` decides from structured status only: exit codes, JSON fields, HTTP status, and provider events. Anything it cannot classify is `unknown`, and `unknown` never moves a loop to another provider.
+| Surface | What you can use | Verification boundary |
+| --- | --- | --- |
+| Core CLI | Setup, start, controls, bounds, diagnostics, goals and BB transfer | Released in v0.1.4; broad offline tests, with partial live BB evidence |
+| Headless Claude Code / Codex | New sessions, saved-session resume and configured account environments | Implemented; full live multi-turn, cancellation and separate-account handoff checks remain open |
+| BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
+| macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
+| Cursor / Antigravity | Integration plans | No built-in adapters or existing IDE-chat attachment today |
 
-## What it does
+Recent changes on `main` are **not in v0.1.4**: successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
 
-- **Supervises one loop per config.** The loop can be a BB thread, a headless Claude Code or Codex session that keepgoing runs itself, or any process you describe with a status command and a resume command.
-- **Wakes, nudges, and re-prompts.** An idle session gets the next prompt. A stalled one gets a nudge queued behind its turn, and after `max_nudges` nudges without progress the loop asks a person. An errored one gets a bounded number of re-prompts with backoff, then waits for a person.
-- **Fails over only to confirmed fallbacks.** `fallbacks.yaml` lists candidates in order. Each one is probed on a schedule with a cheap model and again with the exact target model right before a handoff. A handoff needs at least `min_healthy` confirmed fallbacks, counted across distinct providers by default. The default is 1; set 2 for real redundancy.
-- **Supports multiple accounts in headless runners.** Set `claude.env` or `codex.env` per account, with separate quota groups. Turns, probes, and Codex limit checks use that account's environment. See the [three-subscription setup](docs/fallbacks.md#multiple-subscriptions).
-- **Waits out known usage limits.** When the provider reports a reset time within `wait_if_reset_within`, it waits instead of handing off. With failover disabled, a known future reset also waits without spending recovery retries, while ordinary checks keep observing structured provider status (requires v0.1.4). Explicit holds and loop-wide bounds still win.
-- **Reports a completion declaration.** `complete` can send one subscribed `complete` event per completion episode. It explicitly records a declaration, not independently verified success, and omits the private note. Available in v0.1.3 or newer; [delivery semantics](docs/operations.md#completing-a-task).
-- **Knows when a person is needed.** A pending permission prompt or question, or a loop marked with `keepgoing await-user`, means nothing is sent. The person gets an `await_user` report instead of the loop sitting idle. See [docs/agent-chats.md](docs/agent-chats.md).
-- **Can hold after no Git progress.** Optional `loop.limits.no_progress_timeout` (or `init --no-progress-timeout`) tracks elapsed time across turns, restarts and handoffs. This is a Git activity signal, not a judgment of useful work. Available in v0.1.3 or newer; [semantics and limitations](docs/operations.md#no-progress-timeout).
-- **Can cap automatic send attempts.** Optional `loop.limits.max_sends` (or `init --max-sends`) shares a persistent allowance across wakes, recovery and handoffs. Failed attempts count; resume does not reset it. Available in v0.1.3 or newer; [semantics and limitations](docs/operations.md#total-send-allowance).
-- **Can hold supervision at a deadline.** Optional `loop.limits.deadline` (or `init --deadline`) sets an absolute cutoff. The next check persists an awaiting-user hold before automatic provider work. It does not cancel running turns or enforce a spend/turn budget. Available in v0.1.3 or newer; see [deadline behavior](docs/operations.md#loop-deadline).
-- **Honors stop and pause.** The daemon watches the control file and requests a check within seconds. Provider work, including stop execution, requires a [verified loaded configuration](docs/operations.md#loaded-configuration-checks); stale or unreadable sources withhold it until reload/repair.
-- **Reports through signed webhooks.** Payloads are signed with the [Standard Webhooks](https://www.standardwebhooks.com/) scheme. Bearer tokens are supported too.
-- **Includes two helpers.** `ci-wait` waits for every workflow on an exact commit and follows a replacement run after a cancellation. `net-retry` reruns a command only while the network is down.
-
-## Looping and setup
-
-keepgoing already runs the loop: it sends the configured task prompt when the agent becomes idle and applies the retry and fallback rules when work cannot continue. A separate loop skill is not required. Enabling from a BB thread records a persistent [loop owner](docs/operations.md#one-owner-per-loop); another thread needs an explicit takeover. Task instructions tell the agent what to do; the supervisor runs outside that agent session and decides when another turn may start. It needs a running host and scheduler or daemon to do this.
-
-`keepgoing init` guides task setup, discovers installed supported CLIs, and writes a disabled configuration outside the checkout. It supports existing headless account directories and ordered fallbacks without requiring YAML edits. Integrations can use `init --non-interactive --json` for structured preview/create results and `--task-file -` for private task entry through stdin. Task input is copied once into the generated `prompt.md`; later edits to the original task file are not tracked. Edit the saved prompt to revise future task prompts. See the [setup guide](docs/setup.md). These setup commands require v0.1.2 or newer; v0.1.1 does not include them.
-
-`keepgoing doctor` checks setup, BB target identity, CLI versions, headless login status and saved resume IDs, private-file access, and recent tick history without model calls. It also checks runtime path access on macOS, Linux, and Windows without writing data and inspects ACL metadata on those platforms. Windows null/absent DACLs are errors; populated or empty DACLs need review. Full ACL privacy evaluation remains unavailable; Windows runtime checks open and close existing handles without creating files or taking locks. For an explicitly selected BB script automation, it can also report registration, next-run time, and last-run metadata without changing the timer. [Its report](docs/diagnostics.md) distinguishes credential presence from usable quota and marks unsupported checks explicitly.
-
-The [v0.1.3 reliability release](docs/release-verification.md#v013-reliability-release-evidence) includes [BB retry-aware stall handling](docs/operations.md#bb-retry-and-stall-handling): active provider retries suppress stall nudges, and verified recovery restores ordinary stall handling without clearing holds or hard bounds.
-
-A [bounded incident history](docs/diagnostics.md#bounded-tick-incident-history) retains recognized release/development/candidate build labels and records normalized observations, structured error metadata, decision inputs and saved control flags across adapters. [Notification delivery history](docs/diagnostics.md#notification-delivery-evidence) keeps failed or unconfirmed alerts visible. [`keepgoing timeline`](docs/diagnostics.md#offline-incident-timeline) combines these records into a read-only text/JSON view with current flags, historical checks and holds, failed notifications and explicit evidence gaps.
-
-The unreleased [interrupted-turn diagnostic follow-up](docs/diagnostics.md#interrupted-bb-turns-and-host-availability) retains BB's generic failure code without guessing a host-disconnect cause. Offline fixtures verify bounded continuation and holds; keepgoing does not restart the BB host daemon.
-
-These features have passed [offline recovery checks](docs/release-verification.md#check-recovery-with-local-stand-ins) using stand-in providers, rejected local alerts and actual held daemon restarts. The post-v0.1.3 smoke script also checks SIGKILL and restart after recorded held checks; crashes during sends or writes remain outside that check. Source-event timing and live recovery verification remain unfinished. Publication does not upgrade an existing supervisor, prove notification receipt, or establish readiness to migrate other threads. A separate [existing-loop deployment check](docs/release-verification.md#existing-loop-deployment-check) records one verified macOS executable replacement, diagnostic preview and successful ordinary scheduled check.
-
-Preview manual probes with [`keepgoing fallbacks check --dry-run`](docs/fallbacks.md#preview-manual-probes). It shows the selected models, timeouts, and scheduled cap without executing probes or changing state. Dollar cost is unknown, and manual probes are outside the scheduled cap; remove `--dry-run` only when you intend to run them.
-
-In v0.1.4, [`keepgoing goal create|revise|show`](docs/goals.md) stores private, revisioned goal metadata. Ordinary status shows its ID, revision and recorded state; `goal show --private` reveals its title, references and history. Goal edits preserve loop controls and never start work. Opt-in [`loop.prompt_goal`](docs/goals.md#current-goal-context-in-wake-messages) includes the latest private goal revision in automatic prompts and handoffs; stable operating instructions can then stay separate from evolving task metadata. Completion verification and review-stage bindings remain planned. An unreleased [send provenance view](docs/goals.md#recorded-send-provenance) adds the last recorded automatic prompt’s goal revision and adapter return result to ordinary status; delivery and execution remain unverified.
-
-Goal subcommand `--help`/`-h` prints usage without needing a configuration. On `main` it exits successfully; the published v0.1.4 binary returns code 2. This correction is not yet released.
-
-In v0.1.4, [`keepgoing transfer preview`](docs/transfer.md) compares a proposed BB destination with the current primary and displays controls, ownership and goal identity without changing them. `transfer apply` performs an explicit same-environment move with a persisted recovery fence and an awaiting-user hold; `transfer recover` resumes an interrupted move. The BB plugin adds [Move supervision here](integrations/bb-plugin-keepgoing/README.md#move-supervision-here) for plugin-created loops, with an explicit preview, held move and recovery path. The CLI commands require v0.1.4 and are fixture-tested; model/account verification and live transfer remain unfinished.
-
-The v0.1.4 [local loop registry](docs/local-clients.md) lets optional clients discover explicitly registered configurations through `registry add|list|remove`. Registration never starts supervision or changes loop controls. The read-only [`client status`](docs/local-clients.md#registered-status-schema-1) interface adds binding checks, holds, goal identity, optional private goal display and explicit daemon/history evidence for a registered ID. Explicit [`client pause|stop`](docs/local-clients.md#registered-pause-and-stop) commands add restrictive holds without waiting for ticks or querying providers. [`client prepare-resume` and `client resume`](docs/local-clients.md#registered-resume) bind an explicit resume to a reviewed snapshot through a short-lived, single-use ticket. These CLI interfaces require v0.1.4 and are fixture-tested; an optional read-only [native menu preview](integrations/macos/README.md) is implemented; interactive controls and installation remain planned.
-
-The unreleased BB plugin [status view](integrations/bb-plugin-keepgoing/README.md#what-it-shows) also shows declared completion, the actual target thread, daemon/check evidence and recorded action outcomes. Failed refreshes remain visible; external scheduler health stays unverified. This view is fixture-tested, with live deployment outstanding.
-
-`keepgoing status` now distinguishes current holds from [recorded decisions and outcomes](docs/operations.md#understanding-recorded-status), including failures, dry runs, stale history, and build-label differences. It also queries a running daemon for its current phase, next normal check time, and build comparison. `keepgoing start` now validates local setup, enables supervision, and runs in the foreground or background. [`service install|status|remove`](docs/services.md) manages macOS LaunchAgents and Linux systemd user units while preserving loop controls. Service status now explains registration/unit failures, unverified daemons, build differences, and overdue check metadata with [read-only health findings](docs/services.md#health-findings-in-service-status). Recorded Linux services also report structured manager failure reasons and main-process exit codes/signals; unknown details remain unavailable. Recorded services also inspect executable files and compare their on-disk contents with the invoking CLI without running them. Linux service status can also bind an authenticated daemon response to stable systemd process/invocation metadata; this is fixture-tested, with live service verification still outstanding. macOS status explicitly labels service identity and startup/exit checks as [unsupported](docs/services.md#macos-diagnostic-gaps), even when a loop daemon responds. The BB plugin now offers a [Supervise this thread setup flow](integrations/bb-plugin-keepgoing/README.md#supervise-this-thread), with separate preview, disabled creation, diagnostics, and background start; this is fixture-tested, with a live walkthrough still outstanding. Windows service management, expanded scheduler and live headless-session diagnostics, expanded BB transfer scope, and Cursor/Antigravity adapters are [planned next](docs/roadmap.md#next-first-supervised-loop-in-five-minutes). Mark finished work with `keepgoing complete --note "Task verified"`. This persists a completion hold across restarts; only an explicit `resume` clears it. Completion is declared by the agent or operator, never inferred from transcript text. Cursor and Antigravity are not built-in adapters today; see the [integration plan](docs/integrations.md#planned-integrations).
-
-[v0.1.4 notes](docs/releases/v0.1.4.md) cover the rate-limit fix, owned headless cancellation and local goal/transfer/client features. Check the [release and package evidence](docs/release-verification.md) separately from live-provider acceptance; the CLI package does not install additional integrations.
+The complete live setup → multiple turns → hold → restart → recovery → completion walkthrough is still unfinished. Existing tests and package installation do not establish readiness to migrate other threads. The [roadmap](docs/roadmap.md) tracks those acceptance checks separately from implementation.
 
 ## Install
-
-The latest release is [v0.1.3](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.3), which includes the limits and incident diagnostics described above. See [release and package verification](docs/release-verification.md#v013-reliability-release-evidence) for tested paths and remaining live-verification gaps.
-
-This quick start requires **v0.1.2 or newer**, including `init`, `doctor`, `complete`, `start`, and `service`. Check `keepgoing version` after installation. For v0.1.1, use its [versioned README and examples](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1), not the examples from `main`. A release includes implemented features; it does not certify the outstanding [live verification](docs/release-verification.md) checks.
 
 With Homebrew on macOS or Linux:
 
 ```sh
 brew install connorburgess/tap/keepgoing
-# If already installed:
+keepgoing version
+# For an existing Homebrew installation:
 # brew update && brew upgrade keepgoing
 ```
+
+Or download a [release archive](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.4) for macOS, Linux or Windows and verify it against the published SHA-256 checksums. The [package verification record](docs/release-verification.md#v014-release-and-package-evidence) identifies the paths tested; not every OS/architecture has had a native installation walkthrough.
 
 With Go 1.24 or newer:
 
@@ -80,13 +41,11 @@ With Go 1.24 or newer:
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 ```
 
-`go install` builds currently report `dev` from `keepgoing version` because they do not receive the release build label. Use `go version -m /path/to/keepgoing` on the installed executable to check its module version (v0.1.2 or newer), or choose a prebuilt release for an embedded version label.
-
-Prebuilt binaries for macOS, Linux, and Windows, with SHA-256 checksums, are on the [releases page](https://github.com/connorburgess/keepgoing-agents/releases).
+`go install` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
 ### Development build
 
-With Git and Go 1.24 or newer, build from a checkout and keep the binary separate from an installed release. On macOS/Linux:
+On macOS/Linux, keep a source build separate from the installed release:
 
 ```sh
 git clone https://github.com/connorburgess/keepgoing-agents.git
@@ -98,69 +57,97 @@ go build -trimpath -ldflags "-X main.version=dev-$revision" \
 "$HOME/.local/bin/keepgoing-dev" version
 ```
 
-Use this absolute binary path wherever the following instructions say `keepgoing`; setup prints commands using the executable that ran it. Record the revision with any results. This is a source build labeled with its revision; it may include changes newer than the latest release. Building it does not upgrade a running supervisor or change its timer. See [release verification](docs/release-verification.md) for a provider-free binary smoke check and the separate live walkthrough.
-
-### Optional macOS menu preview
-
-The [native menu-bar preview](integrations/macos/README.md) shows explicitly registered local loops through the shared CLI. It reads on menu open or manual refresh, hides private goal text by default, and distinguishes controls, historical activity and daemon evidence. It is an unreleased, read-only developer build; controls, setup installation, signing and live UI verification remain planned. Opening it starts no supervisor or wake timer.
+Substitute that absolute binary path for `keepgoing` below. Record its revision when testing; building does not replace an existing loop's executable or timer. See [binary smoke checks](docs/release-verification.md#check-an-actual-binary-without-provider-calls).
 
 ## Quick start
 
-With v0.1.2 or newer, run this from an existing Git project with at least one commit:
+Install and sign in to a supported agent CLI first, or use an existing BB thread. From an existing Git project with at least one commit:
 
 ```sh
 keepgoing init
 ```
 
-Choose a task and agent, review the resolved plan, then run the `start --foreground` command printed with your config path. Choose `--background` to detach the daemon and keep it running after the terminal closes. Existing pause, stop, awaiting-user, and completion holds remain; `resume` clears them explicitly. The default is a single agent with no fallbacks. Setup does not run agents or probes, change logins, or install a scheduler. See [guided and scripted setup](docs/setup.md) for accounts, operating limits, and noninteractive flags.
+1. Choose a task, an agent and operating limits. The default is one agent with no fallbacks.
+2. Review the plan. Creation writes a **disabled** private setup outside the checkout; it does not run agents, probes, logins or a scheduler.
+3. Run the exact `doctor` command printed by setup. Review its warnings and unavailable checks; credential presence does not establish usable quota.
+4. Run the printed `start --foreground` command to enable and supervise the loop. Use `--background` to detach instead. Background mode installs no service and does not restart after a crash or reboot.
 
-For advanced configuration on this build, copy the appropriate [example](examples/) to a private directory outside the checkout and edit its paths. Run commands with `-c /path/to/keepgoing.yaml`. Nothing is sent until you enable the loop and run ticks or a daemon; a missing control file means disabled. Release users should select examples from their matching tag, as described above.
-
-Control the loop at any time (add `-c` with your generated config path to each command):
+Use the generated config path for subsequent commands. For example, replacing this fictional path with yours:
 
 ```sh
-keepgoing complete --note "Task verified"  # finish the task; hold future wakes
-keepgoing pause --note "reviewing by hand"
-keepgoing resume
-keepgoing stop                 # stop the running turn, then send nothing more
-keepgoing retarget primary     # move back from a fallback by hand
+keepgoing status -c /private/example-loop/keepgoing.yaml
+keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
+keepgoing resume -c /private/example-loop/keepgoing.yaml
+keepgoing stop -c /private/example-loop/keepgoing.yaml
+keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
 ```
 
-Every completed `tick` prints one JSON line describing what it saw and did, so a scheduler or IDE can read it. A tick skipped because the lock was held or loaded config sources changed returns exit 75 and prints only to stderr. Other configuration errors also print only to stderr.
+`complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds. Existing holds remain intact when starting or restarting a supervisor.
 
-## Documentation
+The quick start needs v0.1.2 or newer. For v0.1.1 use its [tagged documentation](https://github.com/connorburgess/keepgoing-agents/tree/v0.1.1). Follow the [setup guide](docs/setup.md) for scripted setup, accounts, bounds, Windows command syntax and private paths. Advanced configurations are in [examples](examples/); release users should use examples from their matching tag.
 
-- [docs/diagnostics.md](docs/diagnostics.md): read-only setup checks, JSON reports, and unavailable checks.
-- [docs/setup.md](docs/setup.md): guided setup, scripted flags, existing accounts, and first-run limits.
-- [docs/architecture.md](docs/architecture.md): packages, boundaries, and the rules that do not bend.
-- [docs/configuration.md](docs/configuration.md): every field in `keepgoing.yaml`.
-- [docs/fallbacks.md](docs/fallbacks.md): candidates, probes, redundancy, and handoff.
-- [docs/operations.md](docs/operations.md): schedulers, the daemon, webhooks, `ci-wait`, `net-retry`, and exit codes.
-- [docs/services.md](docs/services.md): macOS LaunchAgent and Linux systemd user-service install/status/remove, recovery, and verification limits.
-- [docs/windows-services.md](docs/windows-services.md): Task Scheduler investigation and delivery gates; Windows service management is not implemented.
-- [docs/testing.md](docs/testing.md): running the suite, including on machines without Go, and per-platform results.
-- [docs/release-verification.md](docs/release-verification.md): artifact smoke checks, release parity, and live walkthrough evidence.
-- [docs/agent-chats.md](docs/agent-chats.md): supervising a chat thread that a person also talks to.
-- [integrations/bb-plugin-keepgoing](integrations/bb-plugin-keepgoing/README.md): a thin BB plugin that shows keepgoing's state beside each supervised thread.
-- [docs/integrations.md](docs/integrations.md): every tool and service keepgoing talks to, and how far each is verified.
-- [docs/roadmap.md](docs/roadmap.md): what comes next, including [checkable supervision improvements](docs/roadmap.md#11-useful-supervision-features-from-product-analysis).
-- [docs/supervision-feature-analysis.md](docs/supervision-feature-analysis.md): selected lessons from BB, Claude Code and Grok, with planned acceptance criteria rather than a parity claim.
-- [examples/](examples/): configurations and scheduler setups to copy.
-- [schema/](schema/): JSON Schemas for editor completion and validation.
+## How it connects to models
+
+keepgoing uses the agent host's existing credentials and permissions:
+
+- **BB:** select an existing thread. BB runs its provider/model; keepgoing observes structured state and sends control/messages through the BB CLI. It does not switch the thread's login or create/re-parent threads.
+- **Claude Code or Codex:** the installed CLI runs a new headless session on the first wake and resumes its saved session afterward. By default it inherits the launching environment and provider configuration. `init --account-dir` can select an existing account directory; `--model` selects a headless model. Setup does not attach to existing IDE or headless chats.
+- **Process adapter:** supply structured status and resume commands for another system. This is an integration contract, not verified support for every IDE.
+
+Multiple headless accounts and fallback order are configurable; quota-group labels must describe actual shared limits. [Account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks) and [fallback probes](docs/fallbacks.md) explain the model calls and account boundaries. Probe previews with `fallbacks check --dry-run` spend no model quota; actual probes do.
+
+Automatic model catalogue discovery and retirement/replacement policy remain [planned](docs/roadmap.md#11-useful-supervision-features-from-product-analysis). Updating a provider CLI, changing its selected model and upgrading keepgoing are separate operations. keepgoing does not silently upgrade model selections.
+
+## Looping and setup
+
+Task input is **copied once** into the generated `prompt.md`; changes to the original task file are not tracked. Future prompts reread the saved prompt file. Keep operating instructions stable and have the agent inspect current authorized sources before choosing work.
+
+For a revisioned task, [`goal create|revise|show`](docs/goals.md) stores private goal identity, title, references and revisions. Opt-in `loop.prompt_goal` includes the current specification in automatic prompts and handoffs. This is available in v0.1.4, but wiring a goal into guided setup remains unfinished. It does not update old queued messages, infer roadmap progress or verify acceptance.
+
+The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate setup flow with preview, disabled creation, diagnostics and explicit start. It also supports held transfer for plugin-created loops. The CLI's [`transfer preview|apply|recover`](docs/transfer.md) preserves goals and holds while fencing stale targets. Both transfer paths remain fixture-tested rather than live-verified.
+
+### Optional macOS menu preview
+
+The [native preview](integrations/macos/README.md) reads explicitly registered local loops on menu open or refresh. It can show goal metadata privately and distinguish current holds from historical activity. It starts no supervisor or timer. It is an unreleased, read-only developer build; interactive controls and optional installation remain planned.
+
+## Why
+
+An agent can finish a turn before its task is complete, hang without progress, or encounter a usage limit. keepgoing applies explicit continuation and recovery rules so a person does not have to watch every turn.
+
+Decisions use structured status: exit codes, JSON fields, HTTP status and provider events. Transcript prose is never a decision signal. Unknown errors get bounded re-prompts and then a human hold; they never trigger failover.
+
+## What it does
+
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention.
+- **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
+- **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
+- **Preserves control and ownership.** Stop and holds take precedence on checks. A different BB thread needs explicit takeover; transfer keeps the loop held until explicitly resumed. Invalid or stale configuration can withhold provider operations, including stop, until repaired/reloaded.
+- **Explains recorded failures.** `doctor` checks supported setup/access/status signals; `status` separates holds, historical checks and daemon evidence; `timeline` reads keepgoing-owned incident and notification records. Missing evidence stays unavailable. See [diagnostics](docs/diagnostics.md).
+- **Reports attention and completion.** Signed webhooks support escalation and completion declarations. Delivery history distinguishes transport/HTTP results from unverified human receipt. Reports require configuration; they are not an implicit notification service.
+- **Runs with your host.** Use `start`, a daemon, an existing scheduler, or managed macOS/Linux [services](docs/services.md). `ci-wait` and `net-retry` are separate command helpers. Windows service management remains planned.
 
 ## Limitations
 
-- The BB adapter needs the `bb` CLI, including parent-filtered thread listing with hidden children. Verified active direct children suppress parent wakes, stall nudges, error recovery, and target moves. Unverified child discovery also waits; see [child awareness](docs/operations.md#bb-child-awareness). The built-in daemon checks structured child outcome notices before its normal interval, consuming each once and rechecking that the parent can wake. This is covered by offline fixtures; external timers retain their own cadence. Verified pending child interactions put the loop into `await_user` and report the child IDs without prompting the parent or answering the child. Error classification relies on BB's structured provider events. When those are missing, the error is `unknown`.
-- Codex reports a usage limit only as prose in `codex exec --json`. When a Codex probe or turn fails without a recognized code, keepgoing asks the Codex app-server for its structured rate-limit snapshot (`account/rateLimits/read`) instead. This needs a Codex CLI with `app-server`. Until it is, a Codex error without a recognised code classifies as `unknown`. That means it re-prompts and then waits for a person instead of failing over. When Codex is the primary, running it through BB is more reliable, because BB reports rate-limit windows.
-- Headless Claude Code and Codex turns run through a detached copy of the keepgoing binary on macOS, Linux and Windows. The owned-stop implementation uses native subprocess fixtures in CI; live provider cancellation remains unverified.
-- Headless stop uses a private per-turn request to the live wrapper, which terminates its own Unix process group or Windows job. Saved PIDs never authorize signals. Legacy turns without a stop key are refused; let them finish or inspect them manually. A receipt confirms acceptance, not exit. Abrupt wrapper death can leave descendants requiring manual inspection; see [owned headless cancellation](docs/operations.md#owned-headless-cancellation).
-- Switching back to the primary after a handoff is manual by default. Turn on `switch_back` to return automatically once the primary's limit resets and it passes a probe.
-- A probe for a BB candidate runs the local `claude` or `codex` CLI with this machine's login, not through BB. Set `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, when a candidate uses a different account. This selects the probe's account only; keepgoing cannot switch a BB thread's login.
+- A disconnected host cannot run checks. keepgoing does not restart the BB host daemon. Generic errors do not establish an internet or host-disconnect cause; see [interrupted-turn evidence](docs/diagnostics.md#interrupted-bb-turns-and-host-availability).
+- BB error classification needs structured provider events. Codex headless limit classification may query its app-server's structured rate-limit snapshot when a failed turn has no recognized code; unavailable evidence remains unknown. See [integration evidence](docs/integrations.md).
+- Headless stop requests go to an owned wrapper, never a PID trusted from a file. Legacy turns without a stop key are refused. Acceptance is not proof of exit; abrupt wrapper death can leave descendants requiring inspection. [Cancellation details](docs/operations.md#owned-headless-cancellation).
+- A BB fallback probe uses the local Claude/Codex CLI account, not the BB thread's login. Configure the probe account explicitly when needed; keepgoing cannot establish account equivalence from a label.
+- Setup, transfer, multi-account recovery, installed-service lifecycle and menu interaction still have live verification gaps. Do not equate a compiled feature or passing fixture with a successful real-provider walkthrough.
+
+## Documentation
+
+- [Setup](docs/setup.md) and [configuration](docs/configuration.md): wizard, scripts, existing accounts and advanced settings.
+- [Operations](docs/operations.md), [diagnostics](docs/diagnostics.md) and [services](docs/services.md): controls, failure evidence and background execution.
+- [Goals](docs/goals.md), [transfer](docs/transfer.md) and [local clients](docs/local-clients.md): task metadata and optional integrations.
+- [Agent chats](docs/agent-chats.md) and [BB plugin](integrations/bb-plugin-keepgoing/README.md): conversation supervision.
+- [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
+- [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
+- [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Use fictional data everywhere.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Use fictional data everywhere. Roadmap completion includes a [capability and documentation review](docs/testing.md#capability-and-documentation-review); documentation must distinguish implemented, released and live-verified behavior.
 
 ## License
 
-[Apache-2.0](LICENSE). The project retains this license. The [roadmap delivery priorities](docs/roadmap.md#delivery-priorities-after-roadmap-reassessment) put core verification and release consistency ahead of further goal acceptance controls, review workflows, and optional menu-bar visibility.
+[Apache-2.0](LICENSE).
