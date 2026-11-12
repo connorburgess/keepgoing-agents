@@ -121,7 +121,7 @@ jobs:
         run: |
           go build -trimpath -ldflags "-X main.version=smoke-${GITHUB_SHA}" -o "$RUNNER_TEMP/keepgoing-smoke" ./cmd/keepgoing
           python3 scripts/smoke-release.py "$RUNNER_TEMP/keepgoing-smoke"
-          python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/keepgoing-smoke"
+          python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/keepgoing-smoke" --include-cursor
       - name: Build and test the optional macOS menu preview
         if: runner.os == 'macOS'
         run: |
