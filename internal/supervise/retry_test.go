@@ -11,6 +11,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -143,5 +144,62 @@ func TestRetryGraceTargetIsolationAndRecord(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(w.dir, state.LogName))
 	if err != nil || !strings.Contains(string(b), "provider is retrying the turn") {
 		t.Fatal("reason missing from own history")
+	}
+}
+
+// An errored target whose retry notice has expired gets the ordinary bounded
+// recovery: re-prompts spaced by errors.backoff up to max_reprompts, then a
+// persisted hold. An unknown error never moves the loop to a fallback.
+func TestExpiredRetrySignalRecoversThenHolds(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.Errors.FailoverOn = []string{"rate_limit", "network"}
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		w.probeOK[c.ID] = true
+	}
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Retrying: true, RetryKnown: true})
+	check := func(minute int, action, reason, signal string, sends int) {
+		t.Helper()
+		r := runTick(t, w, t0.Add(time.Duration(minute)*time.Minute))
+		st, _ := state.Load(w.dir)
+		if r.Action != action || r.Reason != reason || r.RetrySignal != signal || st.LastCheck.RetrySignal != signal || len(p.sent) != sends || r.Handoff != nil || st.Target() != state.Primary {
+			t.Fatalf("+%dm: %+v sent=%d", minute, r, len(p.sent))
+		}
+	}
+	check(0, "none", "provider is retrying the turn", "", 0)
+	check(10, "none", "provider is retrying the turn", "", 0)
+	p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryKnown: true, RetryExpired: true}
+	check(20, "reprompt", "error: unknown", "expired", 1)
+	check(25, "none", "backing off after error", "expired", 1)
+	check(30, "reprompt", "error: unknown", "expired", 2)
+	check(40, "await_user", "error persisted after re-prompts", "expired", 2)
+	if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser {
+		t.Fatal("hold was not persisted")
+	}
+	check(50, "none", "awaiting user", "", 2)
+	j, err := incident.Load(w.dir)
+	if err != nil || len(j.Records) != 7 {
+		t.Fatal(len(j.Records), err)
+	}
+	var got []string
+	for _, r := range j.Records {
+		got = append(got, r.Observation.Retry)
+	}
+	if strings.Join(got, ",") != "retrying,retrying,expired,expired,expired,expired,unavailable" {
+		t.Fatal(got)
+	}
+}
+
+func TestExpiredRetrySignalDoesNotOverrideControls(t *testing.T) {
+	for _, kind := range []string{"stop", "pause"} {
+		t.Run(kind, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryKnown: true, RetryExpired: true})
+			if _, err := control.Update(w.dir, func(f *control.File) { f.Stop, f.Paused = kind == "stop", kind == "pause" }); err != nil {
+				t.Fatal(err)
+			}
+			if r := runTick(t, w, t0); r.Action != "none" || len(p.sent) != 0 {
+				t.Fatalf("%+v", r)
+			}
+		})
 	}
 }

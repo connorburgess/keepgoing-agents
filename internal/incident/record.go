@@ -155,6 +155,10 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 			r.ErrorClass = "unavailable"
 		case o.Retrying:
 			r.Retry = "retrying"
+		case o.RetryExpired:
+			// A stale retry notice on a session that is not running; the adapter
+			// stopped honoring it, so ordinary error handling applied.
+			r.Retry = "expired"
 		case o.RetryKnown:
 			r.Retry = "not_retrying"
 		}
@@ -238,7 +242,7 @@ func clean(r Record) Record {
 	}
 	o.State = oneOf(o.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
 	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
-	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified")
+	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired")
 	o.SourceTime = "unavailable"
 	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})
 	o.Source, o.Category, o.ProviderCode, o.HTTPStatus, o.ExitCode = d.Source, d.Category, d.Code, d.HTTPStatus, d.ExitCode

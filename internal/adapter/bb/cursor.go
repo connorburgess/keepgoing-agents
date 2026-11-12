@@ -41,16 +41,49 @@ type errorSignal struct {
 	Class      decide.ErrorClass `json:"class"`
 	WillRetry  bool              `json:"willRetry,omitempty"`
 	RetryKnown bool              `json:"retryKnown,omitempty"`
+	// At is BB's createdAt for the event, zero when absent or unusable. SeenAt
+	// is the local time of the scan that first read it. Together they bound how
+	// long a willRetry notice can count as a live retry; see retryEvidenceAt.
+	At     time.Time `json:"at,omitempty"`
+	SeenAt time.Time `json:"seenAt,omitempty"`
+}
+
+// retryEvidenceAt is the time a retry notice is aged from: the event's own
+// time, but never later than when this supervisor first read it, so a source
+// clock running ahead cannot keep a notice fresh. Zero means no usable time.
+func (s errorSignal) retryEvidenceAt() time.Time {
+	if s.At.IsZero() || (!s.SeenAt.IsZero() && s.At.After(s.SeenAt)) {
+		return s.SeenAt
+	}
+	return s.At
 }
 
 type event struct {
 	Seq  int64           `json:"seq"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
+	// CreatedAt is Unix milliseconds in BB. It is decoded leniently so an
+	// unexpected shape loses only the event time, never the whole scan.
+	CreatedAt json.RawMessage `json:"createdAt"`
 }
 
-// apply folds one event into the summary.
-func (c *Cursor) apply(e event) {
+// minEventMillis and maxEventMillis reject values that are not plausible Unix
+// millisecond timestamps (seconds, microseconds, zero or negative numbers).
+const (
+	minEventMillis = int64(1_000_000_000_000) // 2001-09-09
+	maxEventMillis = int64(9_999_999_999_999) // 2286-11-20
+)
+
+func (e event) time() time.Time {
+	var ms int64
+	if len(e.CreatedAt) == 0 || json.Unmarshal(e.CreatedAt, &ms) != nil || ms < minEventMillis || ms > maxEventMillis {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
+
+// apply folds one event into the summary. seenAt is the local scan time.
+func (c *Cursor) apply(e event, seenAt time.Time) {
 	c.LastSeq = e.Seq
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
@@ -84,7 +117,7 @@ func (c *Cursor) apply(e event) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = d.ProviderThread
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: e.time(), SeenAt: seenAt}
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. Tool output can continue independently of
@@ -199,6 +232,15 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		// its delivery watermark, so this scan cannot replay old child notices.
 		c = Cursor{Thread: a.cfg.Thread, RetrySchema: 1}
 	}
+	seenAt := a.now().UTC()
+	if c.Error != nil && c.Error.SeenAt.IsZero() {
+		// A summary saved before retry notices carried a time: age it from this
+		// scan, so it is bounded without rereading the log. Copy, because the
+		// cached summary shares this pointer and the scan may still fail.
+		aged := *c.Error
+		aged.SeenAt = seenAt
+		c.Error = &aged
+	}
 	for pages := 0; pages < 10000; pages++ {
 		out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--after-seq", strconv.FormatInt(c.LastSeq, 10), "--limit", strconv.Itoa(pageSize))
 		if err != nil || ctx.Err() != nil {
@@ -211,7 +253,7 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		progressed := false
 		for _, e := range events {
 			if e.Seq > c.LastSeq {
-				c.apply(e)
+				c.apply(e, seenAt)
 				progressed = true
 			}
 		}

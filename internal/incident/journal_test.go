@@ -239,3 +239,33 @@ func TestJournalBuildLabelsSurviveRestartWithoutPrivateSuffixes(t *testing.T) {
 		}
 	}
 }
+
+func TestExpiredRetrySignalIsRecordedAndSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	r := sample()
+	r.Observation = Observed(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryKnown: true, RetryExpired: true}, "bb", false)
+	if r.Observation.Retry != "expired" {
+		t.Fatal(r.Observation)
+	}
+	if err := Append(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Load(dir)
+	if err != nil || len(j.Records) != 1 || j.Records[0].Observation.Retry != "expired" {
+		t.Fatal(j, err)
+	}
+	// A live or unverified retry outranks the diagnostic flag; other adapters never report it.
+	for _, tc := range []struct {
+		o       decide.Observation
+		adapter string
+		want    string
+	}{
+		{decide.Observation{State: decide.Error, Retrying: true, RetryExpired: true}, "bb", "retrying"},
+		{decide.Observation{State: decide.Error, RetryUnverified: true, RetryExpired: true}, "bb", "unverified"},
+		{decide.Observation{State: decide.Error, RetryExpired: true}, "process", "unavailable"},
+	} {
+		if got := clean(Record{Observation: Observed(tc.o, tc.adapter, false)}).Observation.Retry; got != tc.want {
+			t.Fatalf("%+v: %s", tc.o, got)
+		}
+	}
+}

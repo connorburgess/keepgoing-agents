@@ -552,7 +552,11 @@ func describeIncident(r incident.Record) string {
 	text := fmt.Sprintf("%s check (recorded build %s): observation %s", r.Adapter, r.Build, r.Observation.Availability)
 	o := r.Observation
 	if o.Availability == "observed" {
-		text += fmt.Sprintf(" %s; error %s; retry %s; source %s; code %s", o.State, o.ErrorClass, o.Retry, o.Source, o.ProviderCode)
+		retry := o.Retry
+		if retry == "expired" {
+			retry = "expired (stale provider retry notice no longer honored; ordinary error handling applied)"
+		}
+		text += fmt.Sprintf(" %s; error %s; retry %s; source %s; code %s", o.State, o.ErrorClass, retry, o.Source, o.ProviderCode)
 		if o.HTTPStatus != nil {
 			text += fmt.Sprintf("; provider HTTP %d", *o.HTTPStatus)
 		}

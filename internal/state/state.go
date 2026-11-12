@@ -66,10 +66,13 @@ type Check struct {
 	ObservedTarget string    `json:"observedTarget,omitempty"`
 	ObservedState  string    `json:"observedState"`
 	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
-	Action         string    `json:"action"`
-	Reason         string    `json:"reason"`
-	Outcome        string    `json:"outcome"` // succeeded, failed, or dry_run
-	DryRun         bool      `json:"dryRun,omitempty"`
+	// RetrySignal is "expired" when the check saw a stale provider retry
+	// notice and stopped honoring it; empty otherwise.
+	RetrySignal string `json:"retrySignal,omitempty"`
+	Action      string `json:"action"`
+	Reason      string `json:"reason"`
+	Outcome     string `json:"outcome"` // succeeded, failed, or dry_run
+	DryRun      bool   `json:"dryRun,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.

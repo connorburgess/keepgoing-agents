@@ -48,6 +48,10 @@ type Observation struct {
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
+	// RetryExpired is diagnostic: the adapter saw a retry notice on a session
+	// that is not running and treated it as stale, so Retrying is false. It
+	// never changes Decide policy; ordinary bounded error handling applies.
+	RetryExpired bool
 	// RetryKnown is diagnostic evidence availability; false does not assert that
 	// retries are absent. It does not change decision policy.
 	RetryKnown bool

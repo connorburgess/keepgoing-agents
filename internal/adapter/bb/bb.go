@@ -118,6 +118,13 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Active || obs.State == decide.Error {
 		obs.Retrying = sig.ok && sig.willRetry
+		// An active thread is doing something now, so its retry notice stands
+		// until structured recovery evidence clears it. An errored thread is
+		// not running: its notice counts only while fresh, so a provider that
+		// stopped retrying without saying so cannot hold the loop forever.
+		if obs.Retrying && obs.State == decide.Error && a.retryExpired(sig.retryAt) {
+			obs.Retrying, obs.RetryExpired = false, true
+		}
 		if sig.ok && sig.hasError {
 			obs.ErrorClass = sig.class
 		}
@@ -147,7 +154,29 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	return obs, nil
 }
 
+// DefaultRetrySignalTTL is how long a willRetry notice on an errored thread
+// counts as a live retry, measured from the newest notice. It bounds the
+// silence between notices, not the length of a retry: each failed attempt of
+// a genuine retry logs a newer notice and restarts the interval. BB's retry
+// plugin documents waits of about 1, 2, 4 and 8 minutes between its attempts
+// on an unavailable provider, so the default is nearly twice its longest gap.
+// Its longer subscription-window waits carry a rate-limit reset and are
+// handled by the limit rules. See docs/operations.md "Stale retry notices".
+const DefaultRetrySignalTTL = 15 * time.Minute
+
+// retryExpired reports whether retry evidence from at is too old to trust.
+// Evidence with no usable time cannot be shown to be fresh. A local clock that
+// moved backwards yields a negative age, which counts as fresh.
+func (a *Adapter) retryExpired(at time.Time) bool {
+	ttl := a.cfg.RetrySignalTTL.Duration
+	if ttl <= 0 {
+		ttl = DefaultRetrySignalTTL
+	}
+	return at.IsZero() || a.now().Sub(at) > ttl
+}
+
 type signals struct {
+	retryAt      time.Time
 	evidence     evidence.Detail
 	hasError     bool
 	class        decide.ErrorClass
@@ -173,6 +202,7 @@ func (a *Adapter) signals(ctx context.Context) signals {
 		}
 		s.class, s.willRetry = c.Error.Class, c.Error.WillRetry
 		s.retryUnknown = !c.Error.RetryKnown
+		s.retryAt = c.Error.retryEvidenceAt()
 	}
 	return s
 }

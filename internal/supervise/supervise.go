@@ -59,16 +59,19 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
-	At           time.Time       `json:"at"`
-	Loop         string          `json:"loop"`
-	Target       string          `json:"target"`
-	Control      string          `json:"control"`
-	State        string          `json:"state"`
-	ErrorClass   string          `json:"errorClass,omitempty"`
-	ResetsAt     *time.Time      `json:"resetsAt,omitempty"`
-	Action       string          `json:"action"`
-	Reason       string          `json:"reason"`
-	Window       string          `json:"window"`
+	At         time.Time  `json:"at"`
+	Loop       string     `json:"loop"`
+	Target     string     `json:"target"`
+	Control    string     `json:"control"`
+	State      string     `json:"state"`
+	ErrorClass string     `json:"errorClass,omitempty"`
+	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
+	Action     string     `json:"action"`
+	Reason     string     `json:"reason"`
+	Window     string     `json:"window"`
+	// RetrySignal is "expired" when a stale provider retry notice was seen
+	// and not honored, so ordinary error handling applied to this check.
+	RetrySignal  string          `json:"retrySignal,omitempty"`
 	UnchangedFor string          `json:"unchangedFor,omitempty"`
 	Reprompts    int             `json:"reprompts,omitempty"`
 	Handoff      *HandoffNote    `json:"handoff,omitempty"`
@@ -265,6 +268,9 @@ func (t *tick) run() error {
 	res.State = string(obs.State)
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
+	}
+	if obs.RetryExpired {
+		res.RetrySignal = "expired"
 	}
 	if len(obs.AwaitingChildren) > 0 {
 		// Escalate before probes, fingerprints, and recovery. Child input must
@@ -699,7 +705,7 @@ func (t *tick) record(actErr error) error {
 		outcome = "failed"
 	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
-		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput,
+		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err

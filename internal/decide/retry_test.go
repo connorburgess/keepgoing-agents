@@ -60,3 +60,54 @@ func TestDiagnosticEvidenceCannotAuthorizeRecovery(t *testing.T) {
 		t.Fatalf("diagnostic metadata changed decision: %+v != %+v", got, want)
 	}
 }
+
+// An expired retry notice is reported with Retrying false. The flag itself is
+// diagnostic: every decision equals the one made without it, so an errored
+// session gets the ordinary bounded handling and controls keep precedence.
+func TestExpiredRetrySignalUsesOrdinaryErrorHandling(t *testing.T) {
+	m := time.Minute
+	for _, tc := range []struct {
+		name   string
+		mut    func(*Input)
+		action Action
+		reason string
+	}{
+		{"first re-prompt", func(*Input) {}, Reprompt, "error: unknown"},
+		{"backing off", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 1, 9*m }, None, "backing off after error"},
+		{"re-prompt after backoff", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 2, 10*m }, Reprompt, "error: unknown"},
+		{"cap reached holds for a person", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 3, 60*m }, AwaitUser, "error persisted after re-prompts"},
+		{"unknown never fails over", func(i *Input) { i.Failover = Failover{Eligible: true, Available: true} }, Reprompt, "error: unknown"},
+		{"unclassified never fails over", func(i *Input) { i.Obs.ErrorClass, i.Failover = ErrNone, Failover{Eligible: true, Available: true} }, Reprompt, "error: unknown"},
+		{"network may fail over when configured", func(i *Input) { i.Obs.ErrorClass, i.Failover = ErrNetwork, Failover{Eligible: true, Available: true} }, Handoff, "error: network"},
+		{"auth holds", func(i *Input) { i.Obs.ErrorClass = ErrAuth }, AwaitUser, "auth error"},
+		{"queued input waits", func(i *Input) { i.Obs.Queued = 1 }, None, "messages already queued after error"},
+		{"stop", func(i *Input) { i.Control.Stop = true }, None, "stop requested; session not running"},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None, "paused"},
+		{"disabled", func(i *Input) { i.Control.Enabled = false }, None, "disabled"},
+		{"awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None, "awaiting user"},
+		{"completed", func(i *Input) { i.Control.Completed = true }, None, "completed"},
+		{"deadline", func(i *Input) { i.DeadlineReached = true }, AwaitUser, ""},
+		{"send cap", func(i *Input) { i.SendLimitReached = true }, AwaitUser, ""},
+		{"child input", func(i *Input) { i.Obs.AwaitingChildren = []string{"thr_child"} }, AwaitUser, ""},
+		{"pending interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None, "waiting on a person (pending interaction)"},
+		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None, "child work running"},
+		{"outside window", func(i *Input) { i.InWindow = false }, None, "outside window"},
+		{"scan failed", func(i *Input) { i.Obs.RetryUnverified = true }, None, "provider retry state unverified"},
+		{"fresh notice still suppresses", func(i *Input) { i.Obs.Retrying = true }, None, "provider is retrying the turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs = Observation{State: Error, ErrorClass: ErrUnknown, RetryKnown: true}
+			tc.mut(&in)
+			want := Decide(in)
+			in.Obs.RetryExpired = true
+			got := Decide(in)
+			if got.Action != want.Action || got.Reason != want.Reason || got.LimitWait != want.LimitWait {
+				t.Fatalf("diagnostic flag changed the decision: %+v != %+v", got, want)
+			}
+			if got.Action != tc.action || tc.reason != "" && got.Reason != tc.reason {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
