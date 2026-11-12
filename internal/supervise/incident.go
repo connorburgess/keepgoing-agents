@@ -15,8 +15,11 @@ func (t *tick) recordIncident(failed bool) error {
 		outcome = "failed"
 	}
 	t.incidentDecisions.Availability = "captured"
+	t.incidentProbes.Availability = "captured"
 	r := incident.Record{Kind: "tick", Decisions: t.incidentDecisions, CheckStartedAt: t.now, Build: t.opts.Version, Adapter: t.incidentAdapter,
 		TargetKey: incident.TargetKey(t.incidentTarget), Observation: t.incidentObservation,
+		// The target after this check differs only when a handoff or switch-back moved the loop.
+		TargetKeyAfter: incident.TargetKey(t.res.Target), Probes: t.incidentProbes,
 		ControlBefore: t.incidentControl, Cause: incident.Cause(t.res.Reason), Action: t.res.Action, Outcome: outcome, DryRun: t.opts.DryRun,
 		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts}
 	if c, err := control.Load(t.loop.StateDir); err == nil {

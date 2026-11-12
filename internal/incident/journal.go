@@ -12,6 +12,10 @@ import (
 )
 
 const FileName = "incidents.json"
+
+// SchemaVersion is written on append. Version 5 adds the post-check target
+// key, probe results, retarget records and limit-wait causes.
+const SchemaVersion = 5
 const MaxRecords = 256
 const MaxBytes = 512 * 1024
 
@@ -31,7 +35,7 @@ func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Journal{SchemaVersion: 4, NextSequence: 1, Records: []Record{}}, nil
+		return Journal{SchemaVersion: SchemaVersion, NextSequence: 1, Records: []Record{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
@@ -48,7 +52,7 @@ func Load(dir string) (Journal, error) {
 	var j Journal
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion < 1 || j.SchemaVersion > 4) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
+	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion < 1 || j.SchemaVersion > SchemaVersion) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
 		return Journal{}, ErrUnavailable
 	}
 	if j.Dropped > j.NextSequence-1 || j.NextSequence-1-j.Dropped != uint64(len(j.Records)) {
@@ -70,6 +74,13 @@ func Load(dir string) (Journal, error) {
 		}
 		if j.SchemaVersion < 4 {
 			r.Kind, r.ControlChange = "tick", nil
+		}
+		if j.SchemaVersion < 5 {
+			// Older writers recorded neither a post-check target nor probes.
+			r.TargetKeyAfter, r.Probes = "", Probes{}
+			if r.Kind == "retarget" {
+				r.Kind = "unavailable"
+			}
 		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
@@ -94,7 +105,7 @@ func Append(dir string, r Record) error {
 	if !validRecord(r) || j.NextSequence == ^uint64(0) {
 		return ErrUnavailable
 	}
-	j.SchemaVersion = 4
+	j.SchemaVersion = SchemaVersion
 	r = clean(r)
 	r.Sequence = j.NextSequence
 	j.NextSequence++
@@ -143,6 +154,9 @@ func Append(dir string, r Record) error {
 
 func validRecord(r Record) bool {
 	if r.CheckStartedAt.IsZero() {
+		return false
+	}
+	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter)) {
 		return false
 	}
 	return r.Kind != "control" || (r.ControlChange != nil && !r.ControlChange.SaveObservedAt.IsZero() && r.ControlBefore != nil && r.ControlAfter != nil)

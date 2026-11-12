@@ -18,6 +18,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -682,5 +683,12 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "retarget", Reason: note, Target: id, Extra: map[string]any{"from": from}})
 	fmt.Fprintf(e.stdout, "%s: target %s (was %s)\n", cfg.Loop.Name, id, from)
+	// The bounded history keeps hashed aliases only; the note stays in runs.jsonl.
+	// The target is already saved, so a history failure is reported, not undone.
+	if err := incident.Append(cfg.Loop.StateDir, incident.Record{Kind: "retarget", CheckStartedAt: time.Now().UTC(), Build: version,
+		TargetKey: incident.TargetKey(from), TargetKeyAfter: incident.TargetKey(id)}); err != nil {
+		e.errf("retarget: target saved; incident history write failed; diagnostic evidence is incomplete")
+		return exitFailed
+	}
 	return exitOK
 }

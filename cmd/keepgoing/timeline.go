@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // Timeline is an offline diagnostic projection. It never runs an adapter,
@@ -24,6 +26,7 @@ type timelineReport struct {
 	ReadAt        time.Time        `json:"readAt"`
 	StaleAfter    string           `json:"staleAfter"`
 	Control       timelineControl  `json:"control"`
+	Filter        timelineFilter   `json:"filter"`
 	Sources       []timelineSource `json:"sources"`
 	Summary       timelineSummary  `json:"summary"`
 	Layers        []timelineLayer  `json:"layers"`
@@ -39,6 +42,25 @@ type timelineControl struct {
 	Flags        *incident.Controls `json:"flags,omitempty"`
 	UpdatedAt    *time.Time         `json:"updatedAt,omitempty"`
 }
+
+// A filter narrows displayed events only. Summaries, sources and layers always
+// describe all retained evidence. The target is reported as its key, never the
+// alias typed on the command line.
+type timelineFilter struct {
+	Kinds     []string   `json:"kinds"`
+	TargetKey string     `json:"targetKey,omitempty"`
+	Since     *time.Time `json:"since,omitempty"`
+	Until     *time.Time `json:"until,omitempty"`
+	Matched   int        `json:"matched"`
+	Excluded  int        `json:"excluded"`
+}
+
+// Event kinds are a fixed vocabulary derived from typed records. An event can
+// carry several: a handoff check is also a check and usually a probe.
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "control", "notification"}
+
+// moves selects every recorded change of who has the loop.
+var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
 
 type timelineSource struct {
 	Source        string `json:"source"`
@@ -61,6 +83,7 @@ type timelineEntry struct {
 	Sequence    uint64           `json:"sequence"`
 	Freshness   string           `json:"freshness"`
 	Description string           `json:"description"`
+	Kinds       []string         `json:"kinds"`
 	Incident    *incident.Record `json:"incident,omitempty"`
 	Delivery    *report.Delivery `json:"delivery,omitempty"`
 }
@@ -80,6 +103,9 @@ type timelineSummary struct {
 	LastObservedActive   *timelineRef `json:"lastObservedActive,omitempty"`
 	LastSendAction       *timelineRef `json:"lastSendAction,omitempty"`
 	LastHoldEntry        *timelineRef `json:"lastHoldEntry,omitempty"`
+	LastTargetMove       *timelineRef `json:"lastTargetMove,omitempty"`
+	LastLimitWait        *timelineRef `json:"lastLimitWait,omitempty"`
+	LimitWaitChecks      int          `json:"limitWaitChecks"`
 	RetainedChecks       int          `json:"retainedChecks"`
 	HeldChecks           int          `json:"heldChecks"`
 	NotificationWarnings int          `json:"notificationWarnings"`
@@ -93,6 +119,10 @@ func timelineCommand(e env, args []string) int {
 	asJSON := fs.Bool("json", false, "print the versioned diagnostic report")
 	limit := fs.Int("limit", 40, "newest events to display (1-320); summaries use all retained evidence")
 	stale := fs.Duration("stale-after", defaultStaleAfter, "age at which historical evidence is stale")
+	kind := fs.String("kind", "", "show only these comma-separated event kinds: "+strings.Join(timelineKindNames, ", ")+"; moves selects "+strings.Join(timelineMoveKinds, ", "))
+	target := fs.String("target", "", "show only events for this target: primary, a fallback id, or a recorded target key")
+	since := fs.String("since", "", "show only events at or after this RFC 3339 time, or this long ago (for example 72h)")
+	until := fs.String("until", "", "show only events at or before this RFC 3339 time, or this long ago")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(e.stdout)
@@ -123,7 +153,13 @@ func timelineCommand(e env, args []string) int {
 		}
 		*dir = cfg.Loop.StateDir
 	}
-	r := readTimeline(*dir, time.Now().UTC(), *stale, *limit)
+	now := time.Now().UTC()
+	filter, ok := parseTimelineFilter(*kind, *target, *since, *until, now)
+	if !ok {
+		e.errf("timeline: --kind takes %s or moves; --since and --until take an RFC 3339 time or a positive duration, with since not after until", strings.Join(timelineKindNames, ", "))
+		return exitUsage
+	}
+	r := readTimeline(*dir, now, *stale, *limit, filter)
 	if *asJSON {
 		enc := json.NewEncoder(e.stdout)
 		enc.SetIndent("", "  ")
@@ -146,19 +182,184 @@ func timelineCommand(e env, args []string) int {
 	return exitOK
 }
 
-func readTimeline(dir string, now time.Time, stale time.Duration, limit int) timelineReport {
-	r := timelineReport{SchemaVersion: 1, ReadAt: now, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+// parseTimelineFilter never echoes its arguments: a target alias is hashed and
+// rejected values are reported only by the fixed usage text.
+func parseTimelineFilter(kind, target, since, until string, now time.Time) (timelineFilter, bool) {
+	f := timelineFilter{Kinds: []string{}}
+	seen := map[string]bool{}
+	for _, k := range strings.Split(kind, ",") {
+		k = strings.TrimSpace(k)
+		names := []string{k}
+		if k == "moves" {
+			names = timelineMoveKinds
+		} else if k == "" {
+			if kind == "" {
+				continue
+			}
+			return f, false
+		} else if !containsString(timelineKindNames, k) {
+			return f, false
+		}
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				f.Kinds = append(f.Kinds, n)
+			}
+		}
+	}
+	if target != "" {
+		f.TargetKey = incident.ResolveTargetKey(target)
+	}
+	for _, b := range []struct {
+		text string
+		at   **time.Time
+	}{{since, &f.Since}, {until, &f.Until}} {
+		if b.text == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, b.text)
+		if err != nil {
+			d, derr := time.ParseDuration(b.text)
+			if derr != nil || d <= 0 {
+				return f, false
+			}
+			at = now.Add(-d)
+		}
+		at = at.UTC()
+		*b.at = &at
+	}
+	if f.Since != nil && f.Until != nil && f.Since.After(*f.Until) {
+		return f, false
+	}
+	return f, true
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (f timelineFilter) matches(e timelineEntry) bool {
+	if f.Since != nil && e.At.Before(*f.Since) || f.Until != nil && e.At.After(*f.Until) {
+		return false
+	}
+	if len(f.Kinds) > 0 {
+		found := false
+		for _, k := range e.Kinds {
+			found = found || containsString(f.Kinds, k)
+		}
+		if !found {
+			return false
+		}
+	}
+	if f.TargetKey == "" {
+		return true
+	}
+	// Control saves and deliveries record no target, so a target filter hides them.
+	if e.Incident == nil || e.Incident.Kind == "control" {
+		return false
+	}
+	if e.Incident.TargetKey == f.TargetKey || e.Incident.TargetKeyAfter == f.TargetKey {
+		return true
+	}
+	for _, p := range e.Incident.Probes.Results {
+		if p.TargetKey == f.TargetKey {
+			return true
+		}
+	}
+	return false
+}
+
+func timelineLimitWait(cause string) bool {
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+}
+
+// timelineKinds labels a record from its typed fields. A dry run decided an
+// action without executing it, so it is never labelled as a send or a move.
+func timelineKinds(r incident.Record) []string {
+	var kinds []string
+	entered := !r.DryRun && r.Outcome != "dry_run" && enteredTimelineHold(r.ControlBefore, r.ControlAfter)
+	switch r.Kind {
+	case "tick":
+		kinds = append(kinds, "check")
+		if r.DryRun || r.Outcome == "dry_run" {
+			return append(kinds, "dry_run")
+		}
+		switch r.Action {
+		case "wake", "nudge", "reprompt", "handoff", "switch_back", "stop":
+			kinds = append(kinds, r.Action)
+		}
+		if len(r.Probes.Results) > 0 {
+			kinds = append(kinds, "probe")
+		}
+		if timelineLimitWait(r.Cause) {
+			kinds = append(kinds, "limit_wait")
+		}
+	case "control":
+		kinds = append(kinds, "control")
+		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
+			kinds = append(kinds, "ownership")
+		}
+	case "retarget":
+		kinds = append(kinds, "retarget")
+	}
+	if entered {
+		kinds = append(kinds, "hold")
+	}
+	if kinds == nil {
+		kinds = []string{}
+	}
+	return kinds
+}
+
+// timelineTarget names the fixed primary alias and shortens any other key. It
+// cannot recover a fallback's configured alias from its hash.
+func timelineTarget(key string) string {
+	switch {
+	case len(key) != 64:
+		return "unavailable"
+	case key == incident.TargetKey(state.Primary):
+		return "primary"
+	default:
+		return "fallback " + key[:8]
+	}
+}
+
+func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
+	r := timelineReport{SchemaVersion: 2, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
-	observations := 0
+	observations, targetRecords, latestCheckCause := 0, 0, ""
 	for _, rec := range j.Records {
 		at, basis := rec.CheckStartedAt, "check_started_at"
 		if rec.Kind == "control" && rec.ControlChange != nil {
 			at, basis = rec.ControlChange.SaveObservedAt, "control_save_observed_at"
 		}
-		entry := timelineEntry{At: at, TimeBasis: basis, Source: incident.FileName, Sequence: rec.Sequence, Freshness: timelineFreshness(at, now, stale), Description: describeIncident(rec), Incident: &rec}
+		if rec.Kind == "retarget" {
+			basis = "retarget_save_observed_at"
+		}
+		entry := timelineEntry{At: at, TimeBasis: basis, Source: incident.FileName, Sequence: rec.Sequence, Freshness: timelineFreshness(at, now, stale), Description: describeIncident(rec), Kinds: timelineKinds(rec), Incident: &rec}
 		r.Events = append(r.Events, entry)
+		if rec.TargetKeyAfter != "unavailable" {
+			targetRecords++
+		}
+		if rec.Kind == "tick" {
+			latestCheckCause = rec.Cause
+		}
+		for _, k := range entry.Kinds {
+			switch k {
+			case "handoff", "switch_back", "retarget":
+				r.Summary.LastTargetMove = timelineReference(entry)
+			case "limit_wait":
+				r.Summary.LastLimitWait = timelineReference(entry)
+				r.Summary.LimitWaitChecks++
+			}
+		}
 		if rec.Kind == "tick" {
 			r.Summary.LatestCheck = timelineReference(entry)
 			r.Summary.RetainedChecks++
@@ -183,7 +384,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int) tim
 		}
 	}
 	for _, d := range deliveries.Records {
-		entry := timelineEntry{At: d.UpdatedAt, TimeBasis: "delivery_last_updated_at", Source: report.DeliveryFile, Sequence: d.Sequence, Freshness: timelineFreshness(d.UpdatedAt, now, stale), Description: describeDelivery(d), Delivery: &d}
+		entry := timelineEntry{At: d.UpdatedAt, TimeBasis: "delivery_last_updated_at", Source: report.DeliveryFile, Sequence: d.Sequence, Freshness: timelineFreshness(d.UpdatedAt, now, stale), Description: describeDelivery(d), Kinds: []string{"notification"}, Delivery: &d}
 		r.Events = append(r.Events, entry)
 		if d.Outcome != "http_accepted" {
 			r.Summary.NotificationWarnings++
@@ -201,12 +402,20 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int) tim
 		}
 		return a.Sequence < b.Sequence
 	})
-	r.Omitted = max(0, len(r.Events)-limit)
-	r.Events = r.Events[r.Omitted:]
+	matched := []timelineEntry{}
+	for _, e := range r.Events {
+		if filter.matches(e) {
+			matched = append(matched, e)
+		}
+	}
+	r.Filter.Matched, r.Filter.Excluded = len(matched), len(r.Events)-len(matched)
+	r.Omitted = max(0, len(matched)-limit)
+	r.Events = matched[r.Omitted:]
 	r.Layers = []timelineLayer{
 		{"supervisor_checks", historyAvailability(jerr, r.Summary.RetainedChecks), "Retained checks show past supervisor execution, including held checks; they do not prove present liveness or continuous scheduling."},
 		{"agent_connectivity", historyAvailability(jerr, observations), "Use each observed adapter/source/category/code and retry field. Active can include provider retries; stream errors do not establish an internet root cause."},
 		{"notifications", historyAvailability(derr, len(deliveries.Records)), "Attempts and HTTP responses are recorded separately. Application/human receipt is unverified; later acceptance does not erase earlier retained failures."},
+		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5. Older records, a return to the primary after a fallback is removed or disabled, and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
 		{"scheduler", "unavailable", "No scheduler queried; registration, last scheduler result and next run are unavailable in this offline view."},
 		{"supervisor_liveness", "unavailable", "No daemon endpoint or process queried; recent records are not a live heartbeat."},
 		{"ci_waits", "unavailable", "No CI query or persisted CI-wait evidence read; provider errors and held checks are not evidence of a CI wait."},
@@ -218,7 +427,8 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int) tim
 		"Events sort by local observation timestamps, not provider occurrence or causal order. Clock changes, --now test ticks, concurrent writes and late delivery updates can reorder them; preserve source sequence numbers.",
 		"Latest summary references use retained source sequence order and can refer to events hidden by --limit. Dry-run checks are labelled and excluded from active/send/hold summaries.",
 		"Provider event time, network root cause, installed/running binary identity and delivery receipt remain unavailable. Build labels describe recorded commands only.",
-		"Target keys correlate configured aliases only; retargeting, config changes and reused directories can mix sessions. Delivery records deliberately contain no endpoint or target identity.",
+		"Target keys correlate configured aliases only; they identify no run, chat or provider session. Config changes and reused directories can mix sessions under one key. Delivery records deliberately contain no endpoint or target identity.",
+		"Filters select displayed events only; summaries, sources and layers describe all retained evidence. Control saves and deliveries record no target, so --target hides them. Probe rows cover probes run by a check, not manual fallback checks.",
 	}
 	if r.Control.State != "enabled" && r.Control.State != "unavailable" {
 		r.NextSteps = append(r.NextSteps, "Review current control flags and historical hold evidence. Resolve the cause before explicitly enabling/resuming; this view never clears a hold.")
@@ -228,6 +438,9 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int) tim
 	}
 	if r.Summary.LatestCheck == nil || r.Summary.LatestCheck.Freshness != "recent" {
 		r.NextSteps = append(r.NextSteps, "Check host clocks and the supervisor/scheduler execution context. Use doctor with an explicitly selected scheduler if needed; missing or stale records alone do not identify the cause.")
+	}
+	if timelineLimitWait(latestCheckCause) {
+		r.NextSteps = append(r.NextSteps, "The latest recorded check was waiting for a provider limit to reset. keepgoing sends nothing and reports nothing while it waits, however far away the reset is; see the recorded reset input on that check and decide whether to wait, retarget or review failover settings.")
 	}
 	if r.Summary.NotificationWarnings > 0 {
 		r.NextSteps = append(r.NextSteps, "Inspect notification setup and the receiver before any manual resend. Held checks do not retry notifications; do not resume/re-complete just to resend an alert.")
@@ -313,7 +526,14 @@ func readTimelineControl(dir string) timelineControl {
 
 func describeIncident(r incident.Record) string {
 	if r.Kind == "control" && r.ControlChange != nil {
-		return fmt.Sprintf("control %s saved: %s -> %s; recorded build %s; this is not provider or delivery evidence", r.ControlChange.Operation, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter), r.Build)
+		text := fmt.Sprintf("control %s saved: %s -> %s; recorded build %s; this is not provider or delivery evidence", r.ControlChange.Operation, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter), r.Build)
+		if r.ControlChange.OwnershipChanged {
+			text += "; loop owner changed (identity withheld)"
+		}
+		return text
+	}
+	if r.Kind == "retarget" {
+		return fmt.Sprintf("manual retarget saved: target %s -> %s; recorded build %s; no probe, send or provider check is implied", timelineTarget(r.TargetKey), timelineTarget(r.TargetKeyAfter), r.Build)
 	}
 	if r.Kind != "tick" {
 		return "incident kind unavailable; no check or control save inferred"
@@ -330,6 +550,28 @@ func describeIncident(r incident.Record) string {
 		}
 	}
 	text += fmt.Sprintf("; action %s; outcome %s; cause %s; controls %s -> %s", r.Action, r.Outcome, r.Cause, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter))
+	if r.TargetKeyAfter != "unavailable" {
+		text += "; target " + timelineTarget(r.TargetKey)
+		if r.TargetKeyAfter != r.TargetKey {
+			text += " -> " + timelineTarget(r.TargetKeyAfter)
+		}
+	}
+	for i, p := range r.Probes.Results {
+		if i == 0 {
+			text += "; probes:"
+		} else {
+			text += ","
+		}
+		result := "passed"
+		if !p.OK {
+			result = "failed (" + p.ErrorClass + ")"
+		}
+		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
+	}
+	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
+		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
+		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; nothing is sent or reported while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+	}
 	if r.DryRun || r.Outcome == "dry_run" {
 		text += "; DRY RUN (no executed action)"
 	}
@@ -362,7 +604,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue
@@ -370,13 +612,29 @@ func printTimeline(w io.Writer, r timelineReport) {
 		v := item.ref
 		fmt.Fprintf(w, "%s: %s #%d at %s (%s)\n  %s\n", item.name, v.Source, v.Sequence, v.At.Format(time.RFC3339), v.Freshness, v.Description)
 	}
-	fmt.Fprintf(w, "retained checks: %d; checks with a pre-existing hold: %d; failed/unconfirmed notifications: %d\n", r.Summary.RetainedChecks, r.Summary.HeldChecks, r.Summary.NotificationWarnings)
+	fmt.Fprintf(w, "retained checks: %d; checks with a pre-existing hold: %d; checks waiting for a provider limit: %d; failed/unconfirmed notifications: %d\n", r.Summary.RetainedChecks, r.Summary.HeldChecks, r.Summary.LimitWaitChecks, r.Summary.NotificationWarnings)
 	for _, l := range r.Layers {
 		fmt.Fprintf(w, "%s: %s; %s\n", l.Layer, l.Availability, l.Explanation)
 	}
+	if f := r.Filter; len(f.Kinds) > 0 || f.TargetKey != "" || f.Since != nil || f.Until != nil {
+		fmt.Fprint(w, "\nfilter:")
+		if len(f.Kinds) > 0 {
+			fmt.Fprintf(w, " kinds %s;", strings.Join(f.Kinds, ","))
+		}
+		if f.TargetKey != "" {
+			fmt.Fprintf(w, " target %s;", timelineTarget(f.TargetKey))
+		}
+		if f.Since != nil {
+			fmt.Fprintf(w, " since %s;", f.Since.Format(time.RFC3339))
+		}
+		if f.Until != nil {
+			fmt.Fprintf(w, " until %s;", f.Until.Format(time.RFC3339))
+		}
+		fmt.Fprintf(w, " matched %d of %d retained events (summaries above use all of them)", f.Matched, f.Matched+f.Excluded)
+	}
 	fmt.Fprintf(w, "\nevents (oldest to newest by local timestamp; %d hidden by limit):\n", r.Omitted)
 	for _, ev := range r.Events {
-		fmt.Fprintf(w, "%s [%s #%d; %s; %s]\n  %s\n", ev.At.Format(time.RFC3339Nano), ev.Source, ev.Sequence, ev.TimeBasis, ev.Freshness, ev.Description)
+		fmt.Fprintf(w, "%s [%s #%d; %s; %s; %s]\n  %s\n", ev.At.Format(time.RFC3339Nano), ev.Source, ev.Sequence, ev.TimeBasis, ev.Freshness, strings.Join(ev.Kinds, ","), ev.Description)
 	}
 	fmt.Fprintln(w, "\nlimitations:")
 	for _, s := range r.Limitations {

@@ -13,10 +13,13 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
-// Record describes a tick or a saved control update. Timestamps describe local operations,
-// not provider event time. Unsupported source details are explicitly unavailable.
+// Record describes a tick, a saved control update or a saved manual retarget.
+// Timestamps describe local operations, not provider event time. Unsupported
+// source details are explicitly unavailable.
 type Record struct {
 	Kind                 string         `json:"kind"`
+	TargetKeyAfter       string         `json:"targetKeyAfter"`
+	Probes               Probes         `json:"probes"`
 	ControlChange        *ControlChange `json:"controlChange"`
 	Decisions            Decisions      `json:"decisions"`
 	CountersAvailable    bool           `json:"countersAvailable"`
@@ -45,6 +48,60 @@ type ControlChange struct {
 	OwnerPresentBefore bool      `json:"ownerPresentBefore"`
 	OwnerPresentAfter  bool      `json:"ownerPresentAfter"`
 	OwnershipChanged   bool      `json:"ownershipChanged"`
+}
+
+// MaxProbes bounds the probe results kept for one tick.
+const MaxProbes = 8
+
+// Probes lists the candidate probes a tick ran, in order. Captured with no
+// results means the tick ran none; legacy records are unavailable. Probe
+// output, models, latency and reset times stay in the private health records.
+type Probes struct {
+	Availability string        `json:"availability"`
+	Results      []ProbeResult `json:"results"`
+	Dropped      int           `json:"dropped"`
+}
+
+// ProbeResult is a hashed candidate alias and the probe's typed result.
+type ProbeResult struct {
+	TargetKey  string `json:"targetKey"`
+	Tier       string `json:"tier"`
+	OK         bool   `json:"ok"`
+	ErrorClass string `json:"errorClass"`
+}
+
+// Add appends one result. A passing probe has error class none.
+func (p *Probes) Add(alias, tier string, ok bool, errorClass string) {
+	if ok {
+		errorClass = "none"
+	}
+	p.Availability = "captured"
+	p.Results = append(p.Results, ProbeResult{TargetKey: TargetKey(alias), Tier: tier, OK: ok, ErrorClass: errorClass})
+	*p = cleanProbes(*p)
+}
+
+func cleanProbes(p Probes) Probes {
+	if p.Availability != "captured" {
+		return Probes{Availability: "unavailable", Results: []ProbeResult{}}
+	}
+	p.Dropped = max(0, p.Dropped)
+	if n := len(p.Results) - MaxProbes; n > 0 {
+		p.Dropped += n
+		p.Results = p.Results[n:]
+	}
+	// Copy so cleaning caller-owned records does not mutate their slices.
+	results := make([]ProbeResult, len(p.Results))
+	copy(results, p.Results)
+	p.Results = results
+	for i := range p.Results {
+		r := &p.Results[i]
+		if !keyPattern.MatchString(r.TargetKey) {
+			r.TargetKey = "unavailable"
+		}
+		r.Tier = oneOf(r.Tier, "unavailable", "scheduled", "exact")
+		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
+	}
+	return p
 }
 
 type Controls struct {
@@ -113,6 +170,15 @@ func TargetKey(alias string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(alias)))
 }
 
+// ResolveTargetKey returns a well-formed key unchanged and hashes anything else
+// as a configured alias, so a reader can select by either without storing aliases.
+func ResolveTargetKey(aliasOrKey string) string {
+	if keyPattern.MatchString(aliasOrKey) {
+		return aliasOrKey
+	}
+	return TargetKey(aliasOrKey)
+}
+
 var buildPattern = regexp.MustCompile(`^(dev|v?[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[a-f0-9]{7,40}|-rc\.[0-9]+)?|(?:smoke-)?[a-f0-9]{7,40}(?:-dirty)?)$`)
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
@@ -128,7 +194,13 @@ func oneOf(value, fallback string, allowed ...string) string {
 // clean is the storage boundary: no arbitrary strings or provider-supplied maps
 // cross it. Unknown fields are unavailable rather than truncated raw text.
 func clean(r Record) Record {
-	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control")
+	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control", "retarget")
+	if r.Kind == "retarget" {
+		// A retarget saves the active target without observing, deciding, probing
+		// or sending. Its note and the configured aliases never enter the journal.
+		r = Record{Kind: r.Kind, Sequence: r.Sequence, CheckStartedAt: r.CheckStartedAt, Build: r.Build,
+			TargetKey: r.TargetKey, TargetKeyAfter: r.TargetKeyAfter, Action: "none", Cause: "other", Outcome: "target_saved"}
+	}
 	if r.Kind == "control" {
 		// Control updates do not observe an adapter or run a decision. Never attach
 		// a stale tick snapshot to a new control save.
@@ -151,10 +223,14 @@ func clean(r Record) Record {
 	if !keyPattern.MatchString(r.TargetKey) {
 		r.TargetKey = "unavailable"
 	}
+	if !keyPattern.MatchString(r.TargetKeyAfter) {
+		r.TargetKeyAfter = "unavailable"
+	}
+	r.Probes = cleanProbes(r.Probes)
 	r.Cause = cleanCause(r.Cause)
 	r.Action = cleanAction(r.Action)
 	r.Decisions = cleanDecisions(r.Decisions)
-	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved")
+	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved")
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
 	if o.Availability != "observed" {
@@ -197,6 +273,17 @@ func Cause(reason string) string {
 	case "waiting on a person (pending interaction)":
 		return "input"
 	}
+	// A limit wait names only which rule waited; the reset time stays a decision input.
+	if strings.HasPrefix(reason, "limit resets in ") {
+		switch {
+		case strings.HasSuffix(reason, "; failover disabled; waiting"):
+			return "limit_failover_disabled"
+		case strings.HasSuffix(reason, "; no confirmed fallback"):
+			return "limit_no_fallback"
+		case strings.HasSuffix(reason, "; waiting"):
+			return "limit_wait"
+		}
+	}
 	for _, c := range []struct{ prefix, code string }{
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
 		{"no Git progress within ", "git_limit"}, {"no progress after ", "stall_limit"},
@@ -211,7 +298,7 @@ func Cause(reason string) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

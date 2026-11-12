@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `timeline` now works as a navigable event log. Incident history schema 5 records the hashed target after each check, per-check probe results, manual retargets and limit-wait causes, so handoffs, switch-backs and retargets show both ends. New `--kind` (including `moves`), `--target`, `--since` and `--until` filters apply to text and JSON (timeline schema 2); summaries still use all retained evidence. No task text, notes, thread IDs or aliases are stored. Older binaries refuse the upgraded journal. Offline fixtures only; work moved outside keepgoing and reporting a long limit wait remain roadmap items.
+
 - Windows control loads and daemon polling open read-only snapshots with delete sharing, paired with POSIX-style replacement for control/goal writes. This requires Windows 10 version 1709 or newer and a filesystem supporting that operation; unsupported operations fail without a legacy fallback. Deterministic fixtures retain an open reader across replacement, compare an incompatible legacy handle and preserve originals on failure. Other readers can still block a save; no retry or general write guarantee is added.
 
 - Extend the local recovery smoke with opt-in `--include-cursor` for source builds. A fictional Cursor CLI verifies unknown-error recovery and exact session reuse across actual held-daemon crashes/restarts, without provider calls. Published v0.1.5 remains compatible with the default four-adapter smoke.

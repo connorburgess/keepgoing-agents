@@ -234,6 +234,19 @@ If the journal is locked, malformed or unwritable, the save stays in place. Stan
 
 Schema-1/2/3 records load read-only as ticks with no control-change details. The next append upgrades to schema 4, preserving existing sequence/pruning counts and available observations/decision evidence. Older binaries refuse the newer journal. Tick and control records share the same retention budget. Offline fixtures cover command/held-tick chronology, no-op commands, owner privacy, startup/takeover, rejected/failed saves, history contention/corruption, migration, and preserved completion/report semantics. No installed loop was changed and no live provider was called.
 
+### Target moves, probes and limit waits
+
+Unreleased source; **offline fixtures only**. Schema 5 adds the evidence needed to see how a loop was passed between targets:
+
+- `targetKeyAfter` on tick records: the hashed alias of the active target after the check. It differs from `targetKey` only when that check handed off or switched back, so a move records both ends.
+- `probes` on tick records: up to eight results per check, each with a hashed candidate alias, the tier (`scheduled` or `exact`), pass/fail and a normalized error class. `captured` with no results means the check ran no probe. Probe output, models, latency and reset times stay in the existing private health records.
+- `kind: retarget`: a successful manual `retarget`, with the hashed source and destination aliases and `outcome: target_saved`. The `--note` text stays in `runs.jsonl` and never enters this history. A retarget observes, probes and sends nothing, and the record claims none of that.
+- Causes `limit_wait`, `limit_no_fallback` and `limit_failover_disabled` replace `other` when a check sent nothing because a provider limit has a known reset. The reset interval remains in the recorded decision input (`resetInNs`).
+
+These are hashes of configured aliases, exactly as `targetKey` already was. They name no thread, session, account or model, and they do not anonymize a guessable alias. Loading schema 1–4 is read-only and leaves these fields `unavailable`; the next append upgrades the file. Older binaries refuse a schema-5 journal, as with earlier upgrades. The 256-record and 512 KiB caps are unchanged; the new fields add roughly 50 bytes to an ordinary check and about 130 bytes per probe result, so probe-heavy history reaches the byte cap slightly sooner. A retarget whose history append fails keeps the saved target, prints a fixed warning and exits 1; it is not rolled back.
+
+Not retained: manual `fallbacks check` probes, an automatic return to the primary when the active fallback is removed or disabled, target changes written by older binaries, and anything done outside keepgoing. In particular, work continued by hand in a different conversation leaves no record here: keepgoing has no identity for a run or a chat yet. That belongs to the planned [run and conversation discovery](run-discovery.md) graph (D1–D3). This history deliberately defines no run, chat or conversation identity of its own, so the two cannot disagree; once that graph exists, these events should reference its node IDs.
+
 ### Combined incident acceptance
 
 R2 acceptance is verified by `cmd/keepgoing/incident_journey_test.go` with offline fixtures. Each command invocation reloads config and persisted state through the CLI harness. Checks use an explicit fictional timestamp to avoid waiting through backoff; local headless subprocesses actually run, emit structured output and terminate. This is not a live provider walkthrough or a separate supervisor-process restart test.
@@ -282,6 +295,9 @@ Available in v0.1.3 or newer; **offline fixtures only**:
 ```sh
 keepgoing timeline -c keepgoing.yaml
 keepgoing timeline -c keepgoing.yaml --json --limit 100 --stale-after 1h
+# Unreleased source: who had the loop, and when it changed hands.
+keepgoing timeline -c keepgoing.yaml --kind moves --since 168h
+keepgoing timeline -c keepgoing.yaml --kind limit_wait,hold --target primary --json
 # Inspect copied/private records even when configuration cannot be loaded:
 keepgoing timeline --state-dir /private/example-loop --json
 ```
@@ -290,15 +306,44 @@ keepgoing timeline --state-dir /private/example-loop --json
 
 The text view first shows current saved flags, then retained evidence summaries and chronological events. It answers what was last **recorded**: a check, an active observation (which may include retries), a send-related action, a transition into a hold, held checks, and failed/unconfirmed notifications. An action/outcome is not proof that a message was sent or work succeeded. A last historical hold is deliberately not attributed as the cause of current flags: intervening changes, missing records, retargeting or reused directories can break that link. The hold event includes recorded cause and decision inputs where available, such as spent re-prompts and configured thresholds. It does not rerun the decision engine or invent missing reasons.
 
-JSON schema 1 includes:
+JSON schema 2 (unreleased source; v0.1.3–v0.1.5 print schema 1 without `filter`, event `kinds`, the `target_moves` layer or the target-move and limit-wait summaries) includes:
 
 - `control`: current flag availability/state, flags and available save timestamp, excluding notes and ownership identities. Missing control is explicitly `not_recorded`, with the supervisor's disabled default. Unreadable, non-regular, symlinked, oversized (over 64 KiB) or invalid control is `unavailable`.
 - `sources`: per-file availability, loaded schema version, retained and dropped counts. Empty/missing journals are `not_recorded`; a schema version on an empty source is the loader's default, not proof that the file existed. Invalid or unsupported history is `unavailable` and is not repaired.
 - `summary`: source/sequence references for latest check, last non-dry-run active observation, last non-dry-run send-related action and last retained hold entry, plus counts of retained checks, non-dry-run checks with pre-existing holds, and notification warnings. These summaries use all retained evidence, even if the display limit hides their referenced rows. They use source sequence order, which can differ from clock order.
 - `events`: normalized typed incident/delivery snapshots, descriptions, source/sequence, timestamp basis and freshness. Incident fields retain available adapter/build/target-key/source evidence and ordered decision inputs. Delivery fields retain per-attempt observations and explicitly unverified receipt. Unknown incident strings remain normalized/unavailable; arbitrary payloads and raw errors are never echoed.
+- `events[].kinds`: fixed labels derived from the typed record, listed under [navigating events](#navigating-events).
+- `filter`: the applied kinds, target key and time bounds, with `matched` and `excluded` event counts.
 - `layers`, `limitations`, `nextSteps`: distinguish historical supervisor checks, provider connectivity and notification evidence from unavailable scheduler/liveness/CI/progress evidence, with actions for inspecting incomplete storage, stale checks or alerts. Suggestions never authorize resuming or sending anything.
 
 The display includes the newest 40 events by local timestamp by default; `--limit` accepts 1–320, the combined retention cap. Rows are presented oldest first, ties ordered by source then sequence. `omitted` counts rows hidden by the display limit, separately from records dropped by storage retention. Tick rows use check-start time, control rows use post-save observation time, and delivery rows use their latest recorded update. A delivery is one snapshot with its attempt list, not a separate row for each attempt. Source sequences remain available to reconstruct each file's ordering. Local clocks, explicit test tick timestamps, late webhook results and concurrent file reads prevent cross-source ordering from establishing causality.
+
+### Navigating events
+
+Unreleased source; **offline fixtures only**. Every event carries one or more kinds, and four flags narrow the displayed events. Filters apply before `--limit`. Summaries, sources and layers always describe all retained evidence, filtered or not.
+
+| Kind | Event |
+| --- | --- |
+| `check` | Any recorded check. `dry_run` marks one that executed no action; a dry run is never labelled as a send or a move. |
+| `wake`, `nudge`, `reprompt`, `stop` | The check's final recorded action. An action is not proof that a message was delivered. |
+| `handoff`, `switch_back` | A check that moved the loop to a fallback or back to the primary. From schema 5 the row shows both targets. |
+| `retarget` | A saved manual retarget. |
+| `ownership` | A control save that changed the loop owner, a daemon takeover, or a transfer step. Owner identities are withheld. |
+| `probe` | A check that ran at least one scheduled or exact probe. |
+| `limit_wait` | A check that sent nothing because a provider limit has a known reset. |
+| `hold` | A check or control save that entered a stop, pause, disable, awaiting-user or completed state. |
+| `control` | Any saved control command. |
+| `notification` | A delivery record. |
+
+- `--kind` takes a comma-separated list; an event matches when it has any listed kind. `moves` is shorthand for `handoff,switch_back,retarget,ownership`: every recorded change of who has the loop.
+- `--target` takes `primary`, a fallback id, or a 64-character target key copied from JSON. An alias is hashed locally and never echoed; the report shows only the key. It matches a record's target before or after the check and any probed candidate. Control saves and deliveries record no target, so a target filter hides them. Text rows name `primary` and shorten any other key to `fallback <first 8 characters>`; a hash cannot be turned back into a fallback id.
+- `--since` and `--until` take an RFC 3339 time or a positive duration meaning that long before the read time (`--since 72h`). Bounds are inclusive and compare the local timestamps used for ordering.
+
+Invalid filters exit 2 with a fixed message that does not repeat the rejected value. A filter that matches nothing is a successful, empty view, not evidence that nothing happened.
+
+When the latest retained check is a limit wait, `nextSteps` says so. keepgoing still sends and reports nothing during that wait, however far away the reset is; reporting a long wait to a person is a separate [roadmap item](roadmap.md#priority-reliability-checkpoints) (R8), not part of this view.
+
+Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 
 Freshness is `recent`, `stale` (older than the positive `--stale-after`, default 30 minutes) or `future` (timestamp after the view's read time). It describes the local record's recency, not provider-event freshness or current liveness. Current control flags remain authoritative for the view even if their save timestamp is old. Source event times, internet root cause, installed/running build identity, useful task progress and delivery receipt are unavailable. Build labels describe recorded commands only; target keys correlate aliases, not verified session identity. Use `status` for a separate current daemon check, or `doctor` for setup and explicitly selected scheduler diagnostics.
 

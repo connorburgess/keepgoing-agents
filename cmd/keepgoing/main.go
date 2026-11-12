@@ -41,7 +41,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
-  timeline                 Explain retained incident history offline (text or --json)
+  timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
 
 Transfer planning:
   transfer preview         Inspect a proposed BB move without changing it
