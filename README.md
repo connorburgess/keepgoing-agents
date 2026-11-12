@@ -110,7 +110,7 @@ A loop can name other agents to move to when its current one reports a usage lim
 
 - **Handoff order.** Fallbacks are tried in the order listed in `fallbacks.yaml`. A candidate takes over only after passing an exact probe, one small real request on its own account and model, during the same check.
 - **Quota groups.** Every agent has a `group` label naming the usage limit it draws on. Fallbacks in the active agent's group are skipped, so accounts sharing a limit must share a label. keepgoing cannot verify which subscription a directory signs in to; a wrong label gives false redundancy.
-- **Opt-in.** A loop without a fallbacks file never hands off, and `init` creates single-agent loops with handoff off. Handoff happens only for the structured error classes in `errors.failover_on` (`rate_limit` when setup enables it) and only while the redundancy rule is met. Unknown errors never trigger it. Returning to the primary is manual unless `switch_back` is enabled.
+- **Opt-in.** A loop without a fallbacks file never hands off, and `init` creates single-agent loops with handoff off. Handoff happens only for the structured error classes in `errors.failover_on` and only while the redundancy rule is met. Unknown errors never trigger it. Returning to the primary is manual unless `switch_back` is enabled. In a hand-written config an absent `errors.failover_on` means `rate_limit`, so pointing `loop.fallbacks` at a file turns handoff on; `fallbacks add` never does that as a side effect and writes an explicit empty setting unless you choose handoff.
 - **Probes cost quota.** Scheduled, exact and manual probes are real model requests. `fallbacks check --dry-run` previews them without calling a provider.
 
 Set fallbacks up at creation with `keepgoing init` (wizard, or repeated `--fallback`). To add one to an existing loop, unreleased source has a guided command:
@@ -119,7 +119,7 @@ Set fallbacks up at creation with `keepgoing init` (wizard, or repeated `--fallb
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 ```
 
-It looks up installed agent CLIs without running them, asks for the provider, account directory, quota group and model, previews the candidate and the resulting handoff order, and writes only after confirmation. It leaves handoff off unless you turn it on. Flags with `--non-interactive`, `--dry-run` and `--json` script the same path.
+It looks up installed agent CLIs without running them, asks for the provider, account directory, quota group and model, previews the candidate and the resulting handoff order, and writes only after confirmation. It leaves handoff off unless you turn it on, and refuses a candidate on the same login and model as an existing target. Flags with `--non-interactive`, `--dry-run` and `--json` script the same path.
 
 What is established: fallback files, probes, redundancy, handoff and `init --fallback` for headless Claude Code and Codex are in v0.1.5 and covered by offline tests with fake CLIs. `fallbacks add` is on `main` only and is likewise tested only with fakes. A handoff between real, separately billed accounts has not been run end to end. Cursor cannot be a fallback; BB and process candidates need a hand-written entry. See [fallbacks](docs/fallbacks.md) and [account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks).
 

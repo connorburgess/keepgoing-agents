@@ -10,12 +10,12 @@ Unreleased source; v0.1.5 does not include this command. For an existing loop:
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 ```
 
-The guide runs four steps, then a preview and a confirmation:
+The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end.
 
 1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback. Only headless `claude` and `codex` are offered.
-2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`), or blank for the CLI's current login, and the quota group. The group defaults to the directory's name, otherwise the provider.
+2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`; a leading `~/` is expanded), or blank for the CLI's current login, and the quota group. The suggested group is the directory's name, otherwise the provider, with a numeric suffix when that label is taken.
 3. **Model.** The model for the fallback's turns and, optionally, a cheaper one for scheduled probes. Blank keeps the CLI's configured model. Names are not looked up or validated.
-4. **Handoff.** The place in the handoff order when other fallbacks exist, and whether to turn on automatic handoff when it is off.
+4. **Handoff.** The place in the handoff order when other fallbacks exist, and whether to turn on automatic handoff when it is not already on. The default is no.
 
 The preview shows the candidate, the full handoff order with the new entry marked, the handoff trigger, the redundancy rule (with a warning when the listed candidates cannot meet it), the probe policy and the files to be changed. Nothing is written before `yes`; the default answer is `no`.
 
@@ -27,19 +27,37 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactiv
   --model example-model --position 1 --dry-run --json
 ```
 
-`--non-interactive` requires `--agent` and writes without asking unless `--dry-run` is set. Other flags: `--probe-model`, `--id`, `--workdir`, `--enable-handoff`, and `--probe-daily-cap` for a newly created file. `--json` prints a `fallback_add` object with `schemaVersion: 1`, the candidate, order, handoff and redundancy state, changed files and the follow-up commands as argument arrays. Account-directory and agent executable paths are withheld from JSON.
+`--non-interactive` requires `--agent` and writes without asking unless `--dry-run` is set. Other flags: `--probe-model`, `--id`, `--workdir`, `--enable-handoff`, and `--probe-daily-cap`, which is accepted only when the command creates the fallbacks file. `--json` prints a `fallback_add` object with `schemaVersion: 1`: the candidate, order, redundancy, changed files, `warnings`, `notes` and the follow-up commands as argument arrays. Its `handoff` object reports `automatic` and `wasAutomatic` (whether a handoff can happen after and before the change), `changed`, the resulting `failoverOn` and whether `failoverOnWritten`. Account-directory and agent executable paths are withheld from JSON.
 
-What it writes:
+### Handoff stays a choice
 
-- With an existing fallbacks file, the candidate is inserted at the chosen position. Other candidates, rules and comments are kept; indentation may be normalized.
-- Without one, it creates `fallbacks.yaml` beside the config (redundancy `min_healthy: 1`, `span: group`; scheduled probes every 12 hours, 24-hour TTL, daily cap 2) and sets `loop.fallbacks`.
-- `errors.failover_on` changes only when you choose to turn handoff on, and then to `[rate_limit]`. An existing non-empty setting is left alone.
+A handoff can happen only when fallbacks exist and `errors.failover_on` is not empty. Because an absent `errors.failover_on` means `rate_limit`, adding the first fallback to such a loop would start handoff on its own. The command decides it explicitly instead:
 
-Writes happen under the loop's tick lock and are refused (exit 75) if a check is running or the files changed after the preview. A running daemon uses the new order after its next configuration reload.
+- Handoff already on (fallbacks exist and the setting is not empty): nothing changes. `--enable-handoff` has no effect and the preview says so.
+- You choose handoff: an empty or absent setting is written as `[rate_limit]`; an existing non-empty setting is kept.
+- You do not choose it and the loop's setting would start handoff with the first fallback: `errors.failover_on: []` is written, and the preview names the setting it replaces.
 
-It refuses, without writing: Cursor, BB, process or unknown agents; a Cursor primary; a quota group equal to the primary's or to another candidate's; a repeated or invalid id; a missing account or project directory; a CLI that is not on `PATH`; an out-of-range position; and a model containing spaces or starting with a hyphen.
+### What it writes
 
-The command never runs an agent or a probe, logs in, creates an account or copies credentials. It cannot tell whether the directory is signed in, which subscription it uses, or whether the model exists. Afterwards it prints the commands to check that yourself:
+- With an existing fallbacks file, the candidate is inserted at the chosen position. Other candidates, rules and comments are kept. The file is re-emitted, so indentation is normalized, CRLF line endings become LF and blank lines between entries are dropped.
+- Without one, it creates `fallbacks.yaml` beside the config (redundancy `min_healthy: 1`, `span: group`; scheduled probes every 12 hours, 24-hour TTL, daily cap 2) and sets `loop.fallbacks`. `keepgoing.yaml` is re-emitted with the same normalization.
+- `keepgoing.yaml` is not rewritten when neither `loop.fallbacks` nor `errors.failover_on` changes. Replaced files keep their permission bits; a created file is owner-only.
+
+Writes happen under the loop's tick lock with the guards `retarget` uses: the caller must be the owning BB thread when the loop has one, no BB transfer may be pending, and the files must be unchanged since the preview. A refusal exits 1 for ownership and 75 for a running check, a pending transfer or changed sources. A running daemon uses the new order after its next configuration reload.
+
+### What it refuses
+
+Without writing anything:
+
+- Cursor, BB, process or unknown agents, and any loop with a Cursor primary.
+- A quota group equal to the primary's or another candidate's.
+- The same login as an existing target with the same model. Logins are compared by provider and account directory (symlinks resolved); the CLI's current login counts as one login. With a different model the candidate is accepted with a warning, since it helps only when that model has its own limit. Only headless targets can be compared: a BB primary's account is not visible, which the preview states. Other credentials in the environment are not inspected.
+- A config path or fallbacks file that is a symbolic link, because relative paths resolve against the directory the file is opened from.
+- A repeated or invalid id, a missing account or project directory, a CLI that is not on `PATH`, an out-of-range position, a model containing spaces or starting with a hyphen, and `--probe-daily-cap` when the fallbacks file already exists.
+
+### Afterwards
+
+The command never runs an agent or a probe, logs in, creates an account or copies credentials. It cannot tell whether the directory is signed in, which subscription it uses, or whether the model exists. It prints the commands to check that yourself:
 
 ```sh
 keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id claude-pool-b --exact --dry-run   # free preview
