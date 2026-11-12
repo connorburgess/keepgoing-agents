@@ -108,9 +108,16 @@ func TestCursorLifecycleOnThisPlatform(t *testing.T) {
 	}
 	got := readCursorCapture(t, capture)
 	expected := []string{"-p", "--output-format", "stream-json", "--model", "example-model"}
-	if !reflect.DeepEqual(got.Args, expected) || got.Prompt != prompt || got.Cwd != canonicalCursorPath(t, c.cfg.Workdir) || got.Value != "fictional-private-value" {
-		t.Fatalf("unexpected fixture transport: %+v", got)
+	if !reflect.DeepEqual(got.Args, expected) {
+		t.Fatalf("fixture argv = %q, want %q", got.Args, expected)
 	}
+	if got.Prompt != prompt {
+		t.Fatalf("fixture stdin = %q, want %q", got.Prompt, prompt)
+	}
+	if got.Value != "fictional-private-value" {
+		t.Fatalf("fixture environment = %q", got.Value)
+	}
+	assertCursorWorkdir(t, got.Cwd, c.cfg.Workdir)
 	if obs, err = c.Observe(ctx); err != nil || obs.State != decide.Active {
 		t.Fatalf("active %+v %v", obs, err)
 	}
@@ -253,13 +260,24 @@ func TestCursorOwnedStopOnThisPlatform(t *testing.T) {
 	}
 }
 
-func canonicalCursorPath(t *testing.T, p string) string {
+// Windows may report the same directory using an 8.3 alias, and macOS may
+// resolve a temporary-directory symlink. Compare identity, not path spelling.
+func assertCursorWorkdir(t *testing.T, got, want string) {
 	t.Helper()
-	resolved, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		t.Fatal(err)
+	if !filepath.IsAbs(got) {
+		t.Fatalf("fixture workdir is not absolute: %q", got)
 	}
-	return resolved
+	actual, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat fixture workdir %q: %v", got, err)
+	}
+	expected, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat configured workdir %q: %v", want, err)
+	}
+	if !actual.IsDir() || !os.SameFile(actual, expected) {
+		t.Fatalf("fixture workdir %q differs from configured directory %q", got, want)
+	}
 }
 
 func TestCursorRejectsAmbiguousAndOversizedEvents(t *testing.T) {
