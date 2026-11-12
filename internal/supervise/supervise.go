@@ -54,7 +54,10 @@ type HandoffNote struct {
 	To     string   `json:"to,omitempty"`
 	Reason string   `json:"reason"`
 	Tried  []string `json:"tried,omitempty"`
-	DryRun bool     `json:"dryRun,omitempty"`
+	// Skipped lists fallbacks not probed this check because of rejected
+	// briefs, as "id: backing_off" or "id: capped".
+	Skipped []string `json:"skipped,omitempty"`
+	DryRun  bool     `json:"dryRun,omitempty"`
 }
 
 // Result is what a tick did, printed as JSON by the CLI.
@@ -317,6 +320,8 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Window = why
+	// Kept to tell verified Git progress from a first baseline further down.
+	priorFingerprint, priorProgressAt := t.st.Fingerprint, t.st.LastProgressAt
 
 	// Fallback health: scheduled probes, then the redundancy picture.
 	var summary health.Summary
@@ -378,6 +383,16 @@ func (t *tick) run() error {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
 	}
 
+	// Rejected handoff briefs cover one error episode. It ends on evidence that
+	// the session recovered: a turn that finished without an error (idle), or
+	// verified Git progress while active. Seeing the session active is not
+	// enough: our own re-prompt, or a provider retry, makes it active, and a
+	// turn that errors again must not hand every fallback a fresh allowance.
+	gitProgress := priorFingerprint != "" && !priorProgressAt.IsZero() && t.st.Fingerprint != priorFingerprint
+	if obs.State == decide.Idle || (obs.State == decide.Active && gitProgress) {
+		t.st.HandoffBriefs = nil
+	}
+
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
 		Available:         t.fb != nil && summary.Meets,
@@ -422,13 +437,21 @@ func (t *tick) run() error {
 		}
 		if err != nil {
 			actErr = err
-		} else if !moved && !t.opts.DryRun {
-			// Every candidate failed its exact probe: fall back to the
-			// ordinary error rules for the current target.
+		} else if !moved {
+			// No candidate took over: fall back to the ordinary error rules
+			// for the current target. A dry run only previews that decision.
 			in.Failover.Available = false
 			d = t.decide("handoff_failed", in)
-			res.Action, res.Reason = string(d.Action), d.Reason+" (no fallback could take over; see probes and warnings)"
-			actErr = t.act(a, d)
+			why := " (no fallback could take over; see probes and warnings)"
+			if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
+				why = " (every confirmed fallback is capped or backing off after rejecting its handoff brief)"
+			}
+			// The hold note and report carry the explanation too.
+			d.Reason += why
+			res.Action, res.Reason = string(d.Action), d.Reason
+			if !t.opts.DryRun {
+				actErr = t.act(a, d)
+			}
 		}
 	} else if !t.opts.DryRun {
 		actErr = t.act(a, d)
@@ -508,14 +531,26 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 	note := &HandoffNote{From: from, Reason: string(class), DryRun: t.opts.DryRun}
 	t.res.Handoff = note
 	if t.opts.DryRun {
-		if len(summary.Healthy) > 0 {
-			note.To = summary.Healthy[0]
+		for _, id := range summary.Healthy {
+			if v := decide.BriefGate(t.handoffBriefs(id), t.now, t.loop.Errors.MaxReprompts, t.loop.Errors.Backoff.Duration); v != decide.BriefAllowed {
+				note.Skipped = append(note.Skipped, id+": "+string(v))
+				continue
+			}
+			note.To = id
+			return true, nil
 		}
-		return true, nil
+		// Nothing would be offered a brief: preview the fall-through instead.
+		return len(summary.Healthy) == 0, nil
 	}
 	for _, id := range summary.Healthy {
 		if err := t.sendAllowance(); err != nil {
 			return false, err
+		}
+		// A fallback that keeps rejecting its brief is neither probed nor sent
+		// to again until its own backoff passes, and not at all past its cap.
+		if v := decide.BriefGate(t.handoffBriefs(id), t.now, t.loop.Errors.MaxReprompts, t.loop.Errors.Backoff.Duration); v != decide.BriefAllowed {
+			note.Skipped = append(note.Skipped, id+": "+string(v))
+			continue
 		}
 		c, _ := t.fb.Find(id)
 		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
@@ -535,11 +570,13 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		ta, err := t.opts.NewAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
 			t.warn("handoff to %s: %v", id, err)
+			t.rejectHandoffBrief(id)
 			continue
 		}
 		if act, ok := ta.(adapter.Activator); ok {
 			if err := act.Activate(t.ctx); err != nil {
 				t.warn("handoff to %s: activate: %v", id, err)
+				t.rejectHandoffBrief(id)
 				continue
 			}
 		}
@@ -548,8 +585,10 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		}
 		if err := t.send(ta, brief, adapter.ModeAuto, id, "handoff"); err != nil {
 			t.warn("handoff to %s: send: %v", id, err)
+			t.rejectHandoffBrief(id)
 			continue
 		}
+		t.st.ClearBriefs() // a new target, a new episode
 		note.To = id
 		t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = id, t.now, t.now
 		t.st.Handoffs++
@@ -559,6 +598,29 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		return true, nil
 	}
 	return false, nil
+}
+
+func (t *tick) handoffBriefs(id string) decide.BriefAttempts {
+	r := t.st.HandoffBriefs[id]
+	return decide.BriefAttempts{Failed: r.Failed, LastAt: r.LastAt}
+}
+
+func (t *tick) rejectHandoffBrief(id string) {
+	a := decide.BriefRejected(t.handoffBriefs(id), t.now)
+	if t.st.HandoffBriefs == nil {
+		t.st.HandoffBriefs = map[string]state.BriefRecord{}
+	}
+	t.st.HandoffBriefs[id] = state.BriefRecord{Failed: a.Failed, LastAt: a.LastAt}
+}
+
+// rejectSwitchBack counts a switch-back the primary did not accept after
+// passing its probe, and reports once when that ends further attempts.
+func (t *tick) rejectSwitchBack(from string) {
+	t.st.SwitchBackRejected++
+	if t.st.SwitchBackRejected == t.loop.Errors.MaxReprompts {
+		t.report("switch_back", fmt.Sprintf("%s: switch-back stopped after the primary rejected %d briefs; staying on %s until resume, retarget or the next handoff", t.loop.Name, t.st.SwitchBackRejected, from),
+			map[string]any{"from": from, "to": state.Primary, "stopped": true, "rejected": t.st.SwitchBackRejected})
+	}
 }
 
 // switchBackReady reports whether the loop may try to return to its primary:
@@ -575,6 +637,11 @@ func (t *tick) switchBackReady(target string) bool {
 		earliest = t.st.PrimaryResetsAt
 	}
 	if t.now.Before(earliest) {
+		return false
+	}
+	// retry_every already spaces attempts; the cap ends them.
+	if decide.BriefGate(decide.BriefAttempts{Failed: t.st.SwitchBackRejected}, t.now, t.loop.Errors.MaxReprompts, 0) == decide.BriefCapped {
+		t.warn("switch-back stopped: the primary rejected %d switch-back briefs; staying on %s until resume, retarget or the next handoff", t.st.SwitchBackRejected, target)
 		return false
 	}
 	return t.st.LastSwitchBackTry.IsZero() || t.now.Sub(t.st.LastSwitchBackTry) >= sb.RetryEvery.Duration
@@ -607,11 +674,13 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	pa, err := t.opts.NewAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {
+		t.rejectSwitchBack(from)
 		return false, err
 	}
 	if act, ok := pa.(adapter.Activator); ok {
 		if err := act.Activate(t.ctx); err != nil {
 			t.warn("switch-back: activate primary: %v", err)
+			t.rejectSwitchBack(from)
 			return false, nil
 		}
 	}
@@ -620,12 +689,14 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	if err := t.send(pa, brief, adapter.ModeAuto, state.Primary, "switch_back"); err != nil {
 		t.warn("switch-back: send to primary: %v", err)
+		t.rejectSwitchBack(from)
 		return false, nil
 	}
 	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
 	t.res.Target = state.Primary
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
 	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
+	t.st.ClearBriefs()
 	t.st.Reprompts, t.st.LastRepromptAt, t.st.Nudges = 0, time.Time{}, 0
 	t.report("switch_back", fmt.Sprintf("%s: switched back from %s to the primary", t.loop.Name, from), map[string]any{"from": from, "to": state.Primary})
 	return true, nil
