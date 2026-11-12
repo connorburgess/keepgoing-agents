@@ -23,8 +23,8 @@ func acpHoldLoad(t *testing.T, dir string) AntigravityACPHold {
 	return h
 }
 
-// acpHoldSnapshot returns every file's name and bytes, so a test can assert
-// that nothing was added, replaced or left behind.
+// acpHoldSnapshot returns every file's name and bytes, temporary files
+// included, so a sequential test can assert that a call changed nothing.
 func acpHoldSnapshot(t *testing.T, dir string) string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -41,6 +41,28 @@ func acpHoldSnapshot(t *testing.T, dir string) string {
 	}
 	sort.Strings(files)
 	return strings.Join(files, "|")
+}
+
+// acpHoldRecords lists published records. A temporary file may legitimately
+// remain on Windows when a concurrent reader blocked its removal; anywhere
+// else, with no process killed, one is a defect.
+func acpHoldRecords(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".acp-hold-") {
+			if runtime.GOOS != "windows" {
+				t.Fatalf("temporary file left behind: %s", e.Name())
+			}
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 func acpHoldWrite(t *testing.T, dir string, files map[string]string) {
@@ -82,14 +104,14 @@ func TestAntigravityACPHoldExchangeSavesBeforeCancellationAndSurvivesRestart(t *
 			t.Fatalf("record retains %q", private)
 		}
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 2 || entries[0].Name() != antigravityACPNeedsUserName || entries[1].Name() != antigravityACPReservedName {
-		t.Fatalf("unexpected or leftover files: %v %v", entries, err)
+	names := acpHoldRecords(t, dir)
+	if len(names) != 2 || names[0] != antigravityACPNeedsUserName || names[1] != antigravityACPReservedName {
+		t.Fatalf("unexpected records: %v", names)
 	}
 	if runtime.GOOS != "windows" {
-		for _, e := range entries {
-			if info, err := e.Info(); err != nil || info.Mode().Perm() != 0o600 {
-				t.Fatalf("mode %v %v", info.Mode(), err)
+		for _, name := range names {
+			if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("mode %v %v", info, err)
 			}
 		}
 	}
@@ -169,11 +191,12 @@ func TestAntigravityACPHoldCheckpointOnlyAccumulates(t *testing.T) {
 		{"attempt", []step{{acpFixtureTurn, attempt, true}}, AntigravityACPHold{PromptAttempted: true}, false},
 		{"attempt_then_hold", []step{{acpFixtureTurn, attempt, true}, {acpFixtureTurn, needs, true}, {acpFixtureTurn, needs, true}}, AntigravityACPHold{PromptAttempted: true, NeedsUser: true}, false},
 		{"second_attempt_refused", []step{{acpFixtureTurn, attempt, true}, {acpFixtureTurn, attempt, false}}, AntigravityACPHold{PromptAttempted: true}, false},
-		{"attempt_after_hold_refused", []step{{acpFixtureTurn, needs, true}, {acpFixtureTurn, attempt, false}}, AntigravityACPHold{NeedsUser: true}, false},
+		{"hold_without_reservation_refused", []step{{acpFixtureTurn, needs, false}, {acpFixtureTurn, attempt, true}}, AntigravityACPHold{PromptAttempted: true}, false},
+		{"attempt_after_hold_refused", []step{{acpFixtureTurn, attempt, true}, {acpFixtureTurn, needs, true}, {acpFixtureTurn, attempt, false}}, AntigravityACPHold{PromptAttempted: true, NeedsUser: true}, false},
 		{"combined", []step{{acpFixtureTurn, AntigravityACPCheckpoint{SessionID: acpFixtureSession, BeforePrompt: true, NeedsUser: true}, true}}, AntigravityACPHold{PromptAttempted: true, NeedsUser: true}, false},
 		{"other_session_refused", []step{{acpFixtureTurn, attempt, true}, {acpFixtureTurn, AntigravityACPCheckpoint{SessionID: "session-other", NeedsUser: true}, false}}, AntigravityACPHold{PromptAttempted: true}, false},
 		{"other_turn_refused", []step{{acpFixtureTurn, attempt, true}, {"turn-2", needs, false}, {"turn-2", attempt, false}}, AntigravityACPHold{PromptAttempted: true}, false},
-		{"other_turn_after_hold_refused", []step{{acpFixtureTurn, needs, true}, {"turn-2", needs, false}}, AntigravityACPHold{NeedsUser: true}, false},
+		{"other_turn_after_hold_refused", []step{{acpFixtureTurn, attempt, true}, {acpFixtureTurn, needs, true}, {"turn-2", needs, false}}, AntigravityACPHold{PromptAttempted: true, NeedsUser: true}, false},
 		{"no_evidence", []step{{acpFixtureTurn, AntigravityACPCheckpoint{SessionID: acpFixtureSession}, false}}, AntigravityACPHold{}, true},
 		{"empty_session", []step{{acpFixtureTurn, AntigravityACPCheckpoint{NeedsUser: true}, false}}, AntigravityACPHold{}, true},
 		{"control_session", []step{{acpFixtureTurn, AntigravityACPCheckpoint{SessionID: "session\nother", NeedsUser: true}, false}}, AntigravityACPHold{}, true},
@@ -309,9 +332,42 @@ func TestAntigravityACPHoldConcurrentReservationsAdmitOnePrompt(t *testing.T) {
 		if h := acpHoldLoad(t, dir); !h.PromptAttempted || h.NeedsUser {
 			t.Fatalf("%+v", h)
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) != 1 {
-			t.Fatalf("leftover files: %v %v", entries, err)
+		if names := acpHoldRecords(t, dir); len(names) != 1 || names[0] != antigravityACPReservedName {
+			t.Fatalf("records: %v", names)
+		}
+	}
+}
+
+// Human-input evidence for one identity racing a reservation for another must
+// not leave a pair of records that disagree, which nothing could later repair.
+func TestAntigravityACPHoldEvidenceRequiresItsOwnReservation(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		dir := filepath.Join(t.TempDir(), "target")
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		var needsErr, reserveErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			needsErr = Dir(dir).AntigravityACPHoldCheckpoint("turn-a")(context.Background(), AntigravityACPCheckpoint{SessionID: "session-a", NeedsUser: true})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			reserveErr = Dir(dir).AntigravityACPHoldCheckpoint("turn-b")(context.Background(), AntigravityACPCheckpoint{SessionID: "session-b", BeforePrompt: true})
+		}()
+		close(start)
+		wg.Wait()
+		if needsErr == nil || reserveErr != nil {
+			t.Fatalf("round %d: needs=%v reserve=%v", round, needsErr, reserveErr)
+		}
+		want := AntigravityACPHold{Turn: "turn-b", SessionID: "session-b", PromptAttempted: true}
+		if h := acpHoldLoad(t, dir); h != want {
+			t.Fatalf("round %d: %+v", round, h)
+		}
+		if names := acpHoldRecords(t, dir); len(names) != 1 {
+			t.Fatalf("round %d: records %v", round, names)
 		}
 	}
 }
@@ -409,16 +465,20 @@ func TestAntigravityACPHoldUnreadableRecordsFailClosed(t *testing.T) {
 		}
 	}
 
-	// Readable files that disagree, or an adoption without the evidence it
-	// names, are never trusted and never repaired by a later checkpoint.
+	// Readable files that disagree, evidence without its reservation, or an
+	// adoption without the evidence it names are never trusted, extended or
+	// repaired. The checkpoint applies the same rule as the reader, so no frame
+	// is released on top of records the supervisor could not read.
 	for _, tc := range []struct {
 		name  string
 		files map[string]string
 	}{
 		{"evidence_turns_differ", map[string]string{antigravityACPReservedName: valid, antigravityACPNeedsUserName: other("turn-1", "turn-0")}},
 		{"evidence_sessions_differ", map[string]string{antigravityACPReservedName: valid, antigravityACPNeedsUserName: other("session-example", "session-other")}},
-		{"adoption_names_another_turn", map[string]string{antigravityACPNeedsUserName: valid, antigravityACPAdoptedName: other("turn-1", "turn-0")}},
-		{"adoption_names_another_session", map[string]string{antigravityACPNeedsUserName: valid, antigravityACPAdoptedName: other("session-example", "session-other")}},
+		{"evidence_without_reservation", map[string]string{antigravityACPNeedsUserName: valid}},
+		{"adopted_evidence_without_reservation", map[string]string{antigravityACPNeedsUserName: valid, antigravityACPAdoptedName: valid}},
+		{"adoption_names_another_turn", map[string]string{antigravityACPReservedName: valid, antigravityACPNeedsUserName: valid, antigravityACPAdoptedName: other("turn-1", "turn-0")}},
+		{"adoption_names_another_session", map[string]string{antigravityACPReservedName: valid, antigravityACPNeedsUserName: valid, antigravityACPAdoptedName: other("session-example", "session-other")}},
 		{"adoption_beside_reservation_only", map[string]string{antigravityACPReservedName: valid, antigravityACPAdoptedName: valid}},
 		{"adoption_alone", map[string]string{antigravityACPAdoptedName: valid}},
 	} {
@@ -432,13 +492,12 @@ func TestAntigravityACPHoldUnreadableRecordsFailClosed(t *testing.T) {
 			if err := Dir(dir).AdoptAntigravityACPHold("turn-1"); err == nil {
 				t.Fatal("adopted inconsistent records")
 			}
-			// New human-input evidence must not appear already handled.
-			err := Dir(dir).AntigravityACPHoldCheckpoint("turn-1")(context.Background(), needs)
-			if h, ok, loadErr := Dir(dir).AntigravityACPHold(); loadErr == nil && ok && h.Adopted {
-				t.Fatalf("leftover adoption hides a hold (checkpoint err=%v): %+v", err, h)
-			}
-			if _, hasNeeds := tc.files[antigravityACPNeedsUserName]; !hasNeeds && err == nil {
-				t.Fatal("new evidence saved beside a leftover adoption")
+			for _, turn := range []string{"turn-1", "turn-0"} {
+				for _, c := range []AntigravityACPCheckpoint{needs, attempt, {SessionID: "session-other", NeedsUser: true}} {
+					if err := Dir(dir).AntigravityACPHoldCheckpoint(turn)(context.Background(), c); err == nil {
+						t.Fatalf("checkpoint %s %+v accepted inconsistent records", turn, c)
+					}
+				}
 			}
 			if acpHoldSnapshot(t, dir) != before {
 				t.Fatal("inconsistent records were changed")

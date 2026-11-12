@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"os"
+	"time"
 )
 
 // Each fact is its own file, created once and never replaced or removed. A
 // reader therefore cannot block a writer, and no update can lose another.
+// Unpublished ".acp-hold-*" temporary files are not records and are never read.
 const (
 	antigravityACPReservedName  = "acp-prompt-reserved.json"
 	antigravityACPNeedsUserName = "acp-needs-user.json"
@@ -40,6 +42,16 @@ type AntigravityACPHold struct {
 // an awaiting-user hold. It stays true across restarts until adoption.
 func (h AntigravityACPHold) Deferred() bool { return h.NeedsUser && !h.Adopted }
 
+// acpHoldConsistent is the one rule both the reader and the checkpoint apply:
+// records only exist in the order reservation, human-input evidence, adoption,
+// and all name the same turn and session.
+func acpHoldConsistent(reserved acpHoldID, hasReserved bool, needs acpHoldID, hasNeeds bool, adopted acpHoldID, hasAdopted bool) bool {
+	if hasNeeds && (!hasReserved || needs != reserved) {
+		return false
+	}
+	return !hasAdopted || (hasNeeds && adopted == needs)
+}
+
 // acpHoldID is the content of every record: the turn and session it belongs to.
 type acpHoldID struct{ turn, session string }
 
@@ -62,17 +74,13 @@ func (d Dir) AntigravityACPHold() (AntigravityACPHold, bool, error) {
 	}
 	// Adoption is only trusted beside the evidence it names. Anything else could
 	// hide a hold, so it is unreadable rather than ignored.
-	if (hasReserved && hasNeeds && reserved != needs) || (hasAdopted && (!hasNeeds || adopted != needs)) {
+	if !acpHoldConsistent(reserved, hasReserved, needs, hasNeeds, adopted, hasAdopted) {
 		return AntigravityACPHold{}, false, errAntigravityACPHold
 	}
-	if !hasReserved && !hasNeeds {
+	if !hasReserved {
 		return AntigravityACPHold{}, false, nil
 	}
-	id := reserved
-	if hasNeeds {
-		id = needs
-	}
-	return AntigravityACPHold{Turn: id.turn, SessionID: id.session, PromptAttempted: hasReserved, NeedsUser: hasNeeds, Adopted: hasAdopted}, true, nil
+	return AntigravityACPHold{Turn: reserved.turn, SessionID: reserved.session, PromptAttempted: true, NeedsUser: hasNeeds, Adopted: hasAdopted}, true, nil
 }
 
 // AntigravityACPHoldCheckpoint returns a checkpoint callback for
@@ -80,13 +88,15 @@ func (d Dir) AntigravityACPHold() (AntigravityACPHold, bool, error) {
 // opaque turn identity. A nil return means the evidence is written, synced and
 // published under its final name. An error means the call added nothing, except
 // that a call carrying both facts may have saved the reservation before failing.
+// A temporary file can outlive a call; see publishAntigravityACPRecord.
 //
 // Evidence only accumulates: nothing here replaces or removes a file. The
 // prompt reservation is published with an exclusive create, so of any number of
 // exchanges, restarted or concurrent, at most one is told it may write a
-// prompt; the rest are refused, as is any prompt after human-input evidence. A
-// different turn or session, and new evidence beside a leftover adoption, are
-// refused. There is deliberately no rollover: starting a later turn needs the
+// prompt; the rest are refused, as is any prompt after human-input evidence.
+// Human-input evidence requires this turn's reservation, so two exchanges can
+// never leave records that disagree. A different turn or session, and saved
+// records that are inconsistent with each other, are refused. There is deliberately no rollover: starting a later turn needs the
 // send/session reconciliation that no runner implements yet.
 //
 // Human-input evidence is saved once per turn. Later permission requests in the
@@ -109,15 +119,15 @@ func (d Dir) AntigravityACPHoldCheckpoint(turn string) func(context.Context, Ant
 		if err != nil {
 			return err
 		}
-		_, hasAdopted, err := d.readAntigravityACPRecord(antigravityACPAdoptedName)
+		adopted, hasAdopted, err := d.readAntigravityACPRecord(antigravityACPAdoptedName)
 		if err != nil {
 			return err
 		}
-		if (hasReserved && reserved != id) || (hasNeeds && needs != id) || (hasAdopted && !hasNeeds) {
+		if !acpHoldConsistent(reserved, hasReserved, needs, hasNeeds, adopted, hasAdopted) || (hasReserved && reserved != id) {
 			return errAntigravityACPHold
 		}
 		if c.BeforePrompt {
-			if hasReserved || hasNeeds {
+			if hasReserved {
 				return errAntigravityACPHold
 			}
 			// Losing the exclusive create means another exchange holds the reservation.
@@ -126,6 +136,11 @@ func (d Dir) AntigravityACPHoldCheckpoint(turn string) func(context.Context, Ant
 			}
 		}
 		if c.NeedsUser && !hasNeeds {
+			// Without this turn's reservation (saved above or earlier) a concurrent
+			// exchange could still reserve another identity beside this evidence.
+			if !hasReserved && !c.BeforePrompt {
+				return errAntigravityACPHold
+			}
 			created, err := d.publishAntigravityACPRecord(antigravityACPNeedsUserName, id)
 			if err != nil {
 				return errAntigravityACPHold
@@ -204,6 +219,13 @@ func (d Dir) readAntigravityACPRecord(name string) (acpHoldID, bool, error) {
 // its final name, which fails if that name exists. The file is complete before
 // it is visible and is never replaced. It reports false when the name was
 // already taken.
+//
+// The temporary name is then removed. That can fail: on Windows a reader that
+// opened the new record without delete sharing blocks removing its other name,
+// and a process can die first on any system. Removal is retried briefly and
+// then abandoned. A leftover holds the same two identities as the records in
+// the same private directory, is never read, and is not cleaned up later,
+// because another process's unpublished file is indistinguishable from it.
 func (d Dir) publishAntigravityACPRecord(name string, id acpHoldID) (bool, error) {
 	b, err := json.Marshal(struct {
 		Version   int    `json:"version"`
@@ -220,7 +242,11 @@ func (d Dir) publishAntigravityACPRecord(name string, id acpHoldID) (bool, error
 	if err != nil {
 		return false, err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		for i := 0; i < 5 && os.Remove(f.Name()) != nil; i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	if _, err = f.Write(append(b, '\n')); err == nil {
 		err = f.Sync()
 	}
