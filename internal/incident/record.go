@@ -5,6 +5,7 @@ package incident
 import (
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 // source details are explicitly unavailable.
 type Record struct {
 	Kind                 string         `json:"kind"`
+	Tier                 string         `json:"tier"`
+	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
 	Probes               Probes         `json:"probes"`
 	ControlChange        *ControlChange `json:"controlChange"`
@@ -48,6 +51,220 @@ type ControlChange struct {
 	OwnerPresentBefore bool      `json:"ownerPresentBefore"`
 	OwnerPresentAfter  bool      `json:"ownerPresentAfter"`
 	OwnershipChanged   bool      `json:"ownershipChanged"`
+}
+
+// Retention tiers. Each has reserved room that the others cannot take, so
+// noise in one cannot evict another.
+//   - key: who had the loop and whether it was held. A completed target move,
+//     a retarget, an ownership change, a hold flag entered or cleared.
+//   - condition: evidence of an ongoing problem. Limit waits, failed probes,
+//     and handoff or switch-back attempts that did not move the loop.
+//   - activity: sends, failed checks, control commands that changed nothing.
+//   - routine: a check that observed and did nothing.
+const (
+	TierKey       = "key"
+	TierCondition = "condition"
+	TierActivity  = "activity"
+	TierRoutine   = "routine"
+)
+
+// Collapsed summarizes checks folded into the record that carries it: Count
+// checks identical to it, apart from their times, decision inputs and
+// scheduled probes, ran between FirstAt and LastAt (the earliest and latest
+// folded check times, whatever order the clock produced them in).
+// PassedProbes and FailedProbes count folded scheduled-probe results, each of
+// which repeated that candidate's previous result in the run's retained
+// records. ProbeTargetKeys lists up to MaxProbes of the candidates they
+// probed, so a summary can still be found by target.
+type Collapsed struct {
+	Count           uint64    `json:"count"`
+	FirstAt         time.Time `json:"firstAt"`
+	LastAt          time.Time `json:"lastAt"`
+	PassedProbes    int       `json:"passedProbes"`
+	FailedProbes    int       `json:"failedProbes"`
+	ProbeTargetKeys []string  `json:"probeTargetKeys"`
+}
+
+// foldedProbeTargets adds the candidates of folded probe results, in first
+// seen order, without duplicates and bounded by MaxProbes.
+func foldedProbeTargets(keys []string, results []ProbeResult) []string {
+	out := append([]string{}, keys...)
+	for _, p := range results {
+		if len(out) >= MaxProbes {
+			break
+		}
+		seen := !keyPattern.MatchString(p.TargetKey)
+		for _, k := range out {
+			seen = seen || k == p.TargetKey
+		}
+		if !seen {
+			out = append(out, p.TargetKey)
+		}
+	}
+	return out
+}
+
+func sameControls(a, b *Controls) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func targetMoved(r Record) bool {
+	return r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey
+}
+
+// attempted reports a check that tried to move the loop, whether or not it
+// did: an exact probe ran, or the engine was re-evaluated after a failed
+// handoff or switch-back.
+func attempted(r Record) bool {
+	if r.Action == "handoff" || r.Action == "switch_back" {
+		return true
+	}
+	for _, p := range r.Probes.Results {
+		if p.Tier != "scheduled" {
+			return true
+		}
+	}
+	for _, e := range r.Decisions.Evaluations {
+		if e.Stage == "handoff_failed" || e.Stage == "switch_back_failed" {
+			return true
+		}
+	}
+	return false
+}
+
+// repeatable reports a check that executed nothing, changed nothing and
+// attempted nothing, so a run of them can be summarized without losing an
+// event. A scheduled probe does not prevent it; see consistentProbes.
+func repeatable(r Record) bool {
+	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) {
+		return false
+	}
+	dry := r.DryRun || r.Outcome == "dry_run"
+	if dry {
+		return true // A dry run executes nothing, whatever it proposed.
+	}
+	return r.Action == "none" && !attempted(r)
+}
+
+func limitWaitCause(cause string) bool {
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+}
+
+func failedProbes(r Record) int {
+	n := 0
+	for _, p := range r.Probes.Results {
+		if !p.OK {
+			n++
+		}
+	}
+	return n
+}
+
+// tierOf classifies a cleaned record for retention.
+func tierOf(r Record) string {
+	switch r.Kind {
+	case "retarget":
+		return TierKey
+	case "control":
+		c := r.ControlChange
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
+			return TierKey
+		}
+		return TierActivity
+	case "tick":
+		dry := r.DryRun || r.Outcome == "dry_run"
+		if dry {
+			return TierRoutine
+		}
+		if !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) || r.Action == "await_user" {
+			return TierKey
+		}
+		// A record without a second target can only offer its outcome as evidence of a move.
+		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
+			return TierKey
+		}
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) {
+			return TierCondition
+		}
+		if repeatable(r) && r.Outcome != "failed" {
+			return TierRoutine
+		}
+	}
+	return TierActivity
+}
+
+// sameBase reports two repeatable checks that differ only in when they ran,
+// their decision inputs and their scheduled probes.
+func sameBase(a, b Record) bool {
+	if !repeatable(a) || !repeatable(b) {
+		return false
+	}
+	for _, r := range []*Record{&a, &b} {
+		r.Sequence, r.CheckStartedAt, r.Collapsed, r.LastActiveRecoveryAt, r.Tier = 0, time.Time{}, nil, nil, ""
+		r.Decisions, r.Probes = Decisions{}, Probes{}
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// probeStatus is the latest scheduled-probe result per candidate across a
+// run's retained records: an error class when failing, "" when passing.
+type probeStatus map[string]string
+
+func (s probeStatus) apply(r Record) {
+	for _, p := range r.Probes.Results {
+		if p.OK {
+			s[p.TargetKey] = ""
+		} else {
+			s[p.TargetKey] = p.ErrorClass
+		}
+	}
+}
+
+// repeats reports whether every probe result in r equals that candidate's
+// last result in the run's retained records. A candidate's first result in a
+// run, a first failure, a changed error class and a recovery are all events.
+// A result is never assumed: if the record that showed a candidate failing
+// has been pruned, its next result is retained whatever it is.
+func (s probeStatus) repeats(r Record) bool {
+	for _, p := range r.Probes.Results {
+		class, known := s[p.TargetKey]
+		if !known || (p.OK && class != "") || (!p.OK && class != p.ErrorClass) {
+			return false
+		}
+	}
+	return true
+}
+
+// foldsLatest reports whether next continues the run that ends the retained
+// records, such that the current latest record can be folded into next. The
+// run is the trailing records with the same base as next. Its latest record
+// may be folded only if an earlier record of the run remains and the latest
+// itself added no probe news, so every record that reported something new
+// stays retained.
+func foldsLatest(records []Record, next Record) bool {
+	n := len(records)
+	if n < 2 || !sameBase(records[n-1], next) {
+		return false
+	}
+	start := n - 1
+	for start > 0 && sameBase(records[start-1], next) {
+		start--
+	}
+	if start == n-1 {
+		return false
+	}
+	status := probeStatus{}
+	for _, r := range records[start : n-1] {
+		status.apply(r)
+	}
+	if !status.repeats(records[n-1]) {
+		return false
+	}
+	status.apply(records[n-1])
+	return status.repeats(next)
 }
 
 // MaxProbes bounds the probe results kept for one tick.
@@ -252,6 +469,16 @@ func clean(r Record) Record {
 	}
 	r.Nudges = max(0, r.Nudges)
 	r.Reprompts = max(0, r.Reprompts)
+	if r.Kind != "tick" {
+		r.Collapsed = nil
+	}
+	if r.Collapsed != nil {
+		// Copy so cleaning a caller-owned record does not alias its summary.
+		c := *r.Collapsed
+		c.ProbeTargetKeys = append([]string{}, c.ProbeTargetKeys...)
+		r.Collapsed = &c
+	}
+	r.Tier = tierOf(r) // Derived, never trusted from storage.
 	return r
 }
 

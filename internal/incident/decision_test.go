@@ -68,7 +68,7 @@ func TestLegacyDecisionHistoryUnavailableUntilNextTick(t *testing.T) {
 			t.Fatal(err)
 		}
 		loaded, err = Load(dir)
-		if err != nil || loaded.SchemaVersion != 5 || loaded.Dropped != 3 || loaded.NextSequence != 6 || loaded.Records[0].Decisions.Availability != "unavailable" || loaded.Records[1].Decisions.Availability != "captured" {
+		if err != nil || loaded.SchemaVersion != 6 || loaded.Dropped != 3 || loaded.NextSequence != 6 || loaded.Records[0].Decisions.Availability != "unavailable" || loaded.Records[1].Decisions.Availability != "captured" {
 			t.Fatal(loaded, err)
 		}
 	}
@@ -80,13 +80,15 @@ func TestDecisionHeavyHistoryPrunesByBytes(t *testing.T) {
 	for i := 0; i < MaxEvaluations; i++ {
 		r.Decisions.Add("normal", decide.Input{Control: decide.Control{Enabled: true}, Obs: decide.Observation{State: decide.Active}, SinceWake: time.Hour}, decide.Decision{Action: decide.None, Reason: "active"})
 	}
+	// Sends are never collapsed, so heavy records must be pruned by size.
+	r.Action = "wake"
 	for i := 0; i < 80; i++ {
 		if err := Append(dir, r); err != nil {
 			t.Fatal(err)
 		}
 	}
 	j, err := Load(dir)
-	if err != nil || j.Dropped == 0 || len(j.Records) >= 80 || j.NextSequence != 81 || j.Records[0].Sequence != j.Dropped+1 {
+	if err != nil || j.Dropped == 0 || len(j.Records) >= 80 || j.NextSequence != 81 || j.Records[0].Sequence != j.Dropped+1 || j.Pruned.Activity.Count != j.Dropped || j.Collapsed != 0 {
 		t.Fatal(j, err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, FileName))
