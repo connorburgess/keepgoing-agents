@@ -77,8 +77,8 @@ jobs:
       - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
       - name: Verify allowance persistence and replacement on Windows
         run: go test -v ./internal/state -run '^Test(SendLedger|ProgressLedger)' -count=1
-      - name: Verify state records can be replaced while readers poll
-        run: go test -race -v ./internal/state -run '^TestStateSnapshot' -count=1
+      - name: Verify runtime records can be replaced while readers poll
+        run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/keepgoing -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
       - name: Verify BB transfer and recovery on Windows
         run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
       - run: go test -v ./internal/config -run '^TestBBTransfer' -count=1
