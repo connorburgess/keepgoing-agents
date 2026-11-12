@@ -41,6 +41,11 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if fb := cfg.FallbackSet; fb != nil {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
 	}
+	if limits := l.Limits.Configured(); len(limits) > 0 {
+		fmt.Fprintf(e.stdout, "bounds: %s\n", strings.Join(limits, ", "))
+	} else {
+		e.errf("warning: %s", config.UnboundedWarning)
+	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
@@ -252,6 +257,7 @@ type statusOut struct {
 	ControlState      string                   `json:"controlState"`
 	Deadline          string                   `json:"deadline,omitempty"`
 	DeadlineReached   bool                     `json:"deadlineReached"`
+	WorkBounds        workBoundsStatus         `json:"workBounds"`
 	Window            string                   `json:"window"`
 	InWindow          bool                     `json:"inWindow"`
 	State             state.File               `json:"state"`
@@ -268,6 +274,14 @@ type statusOut struct {
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+}
+
+// workBoundsStatus reports which loop-wide limits the loaded configuration
+// sets. It does not say whether one has been reached; see the allowance fields.
+type workBoundsStatus struct {
+	Limits    []string `json:"limits"`
+	Unbounded bool     `json:"unbounded"`
+	Warning   string   `json:"warning,omitempty"`
 }
 
 // progressAllowanceStatus reports historical evidence without querying Git.
@@ -379,6 +393,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	}
 	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
+	out.WorkBounds = workBoundsStatus{Limits: l.Limits.Configured()}
+	if len(out.WorkBounds.Limits) == 0 {
+		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
+	}
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
@@ -471,6 +489,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintln(w)
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	if out.WorkBounds.Unbounded {
+		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
+	} else {
+		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
+	}
 	if a := out.SendAllowance; a != nil {
 		if a.Error != "" {
 			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
