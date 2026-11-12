@@ -35,11 +35,17 @@ Apply these checks when changing runners, stop commands, service integrations, i
 
 The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
-## Run discovery contract tests (D1)
+## Run discovery tests (D1, D2)
 
-`go test -race ./internal/rundiscovery` exercises only the unreleased internal identity and run-boundary contract. Tables cover enrollment and explicit opening, legacy adoption, completion with and without a known run, reopen identity, scheduled triggers with and without an explicit start, unchanged runs across holds, checks, retries, restart events, goal revisions and transfers, distinct attempts across repeated wakes, retry and restart, late/duplicate/conflicting adapter returns, one run recording several sessions and successive runs recording the same session, goal and invocation links, registry references, dry-run immutability, malformed inputs and clock rollback. Tests use fictional caller-supplied IDs and timestamps; no providers, processes, files or controls are used.
+`go test -race ./internal/rundiscovery` exercises the pure identity and run-boundary contract with fictional caller-supplied IDs and timestamps: every run-boundary case, distinct attempts, run/session links and malformed input.
 
-A `Restart` event test shows the reducer keeps the run for the same in-memory values. It is not a daemon-restart or durable-state test. No production caller, storage transaction, migration, ID-history uniqueness check, invocation deduplication, provider-session validation or CLI/GUI resolver exists yet. Those need separate D2–D6 fixtures and live evidence where applicable. D1 remains unchecked on its restart criterion, and README artwork stays deferred.
+`go test -race ./internal/rungraph` exercises the persisted graph in temporary directories: legacy directories with no graph, boundaries derived from saved control state, intents left unconfirmed, direct lookup of every reference type, shared and multiple sessions, retention bounds, file mode and replacement under an open reader, and newer-schema, corrupt, aliased and conflicting records that must stay unread and unwritten. The Windows CI job runs this package natively.
+
+`go test -race ./internal/supervise -run 'Graph|Tick.*Intent|Handoff.*Sessions|DryRuns'` uses fake adapters. It shows the intent is on disk before the send, and that an unusable graph leaves each tick's action, reason, sends, control state and saved check identical apart from one warning.
+
+`go test -race ./cmd/keepgoing -run 'RunReference|LostRunBoundary|ClientHoldRecords'` runs the real command entrypoint in separate OS processes against one state directory, with a shell stand-in for BB. It enables a loop, ticks, starts a daemon, kills it, starts another, and checks that the durable loop and run references are unchanged and that every send is its own attempt. This is the D1 restart evidence. It builds only on Unix because the stand-in is a shell script.
+
+Not exercised: a service-managed daemon restart, a host reboot or power loss, a real provider session, a real scheduler supplying a routine identity, and any CLI or GUI reader. Those need D3–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
 ## On a machine with Go
 

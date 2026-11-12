@@ -113,6 +113,9 @@ func applyClientHold(ctx context.Context, directory, id, operation string) (clie
 			r.ControlSave = "unconfirmed" // A save error/lost reply is not permission to replay.
 			return nil
 		})
+		if err == nil || errors.Is(err, errControlHistory) {
+			recordRegistration(entry.StateDir, entry.ID)
+		}
 		if err != nil && !errors.Is(err, errControlHistory) {
 			return err
 		}

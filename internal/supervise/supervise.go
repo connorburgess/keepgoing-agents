@@ -99,6 +99,7 @@ type tick struct {
 	res                 *Result
 	st                  state.File
 	reg                 *health.Registry
+	graphFailed         bool
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -137,7 +138,12 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
+	t.graphSync()
 	err := t.run()
+	t.graphSession()
+	if t.graphFailed {
+		t.warn("run reference record unavailable; discovery evidence is incomplete")
+	}
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
@@ -672,11 +678,13 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
 	if err != nil {
 		outcome = "adapter_error"
 	}
+	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision,

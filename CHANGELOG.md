@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Define an internal run-discovery contract (roadmap D1, partial): identities for routine invocations, registry references, durable loops, goal revisions, runs, send attempts and provider chats/sessions, with pure transition tables for what opens or closes a run. There are no runtime callers, new commands or persisted discovery records; nothing is user-visible yet, and D1 stays open until a run reference is persisted across a restart. See the [contract](docs/run-discovery.md#identity-and-run-boundary-contract-d1-internal-unreleased).
+- Record run references in a private `graph.json` in each loop's state directory (roadmap D1, D2 partial): a durable loop identity, runs opened and closed by explicit control changes, each send intent and its returned call, and links to the chat/session and goal revision known without a provider query. Records are versioned, bounded and written atomically; a graph that cannot be read or written never fails a check or changes its decision, and adds one warning. No command reads the graph yet. See [run discovery](docs/run-discovery.md#persisted-reference-graph-d2-unreleased).
 
 - Document the [bounds on repeated work](docs/operations.md#bounds-on-repeated-work): per-turn nudge and re-prompt caps versus the optional loop-wide `deadline`, `max_sends` and `no_progress_timeout`, their precedence, and what they do not cover. No behavior change. New exhaustive decision tables and a repeated-turn supervisor fixture back the description with fakes only.
 

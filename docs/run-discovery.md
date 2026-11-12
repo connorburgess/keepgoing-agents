@@ -2,7 +2,7 @@
 
 Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
-This is a proposed data and navigation model. Only the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased) below exists in source, as an internal package with no runtime callers. No graph commands, run index, provider-link resolver or blocker lookup described here are implemented. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; all remain unchecked, with D1 partial until D2 persists the run reference across a restart. D1–D3 are the next new feature after the concrete Windows control-file replacement fix; owner-only/live reliability checks do not gate them, and new provider expansion must not delay them. The already-open ACP work may finish. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
+This is a data and navigation model in progress. Two parts exist in source and are unreleased: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased) and the [persisted reference graph](#persisted-reference-graph-d2-unreleased) that records it in each loop's state directory. No command reads the graph yet: there are no graph commands, provider-link resolver or blocker lookup. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 is checked, D2 is partial and D3–D6 are planned. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
@@ -12,7 +12,7 @@ The hierarchy is a convenient default view of a graph: routine → runs → chat
 
 ## Identity and run-boundary contract (D1, internal, unreleased)
 
-`internal/rundiscovery` defines the identities below, what opens or closes a run, and which relationships a run may record. It is a pure package: values in, values out. Nothing in keepgoing calls it yet, so no record is written, no command shows a run and no provider is queried. IDs and timestamps are supplied by the caller; the package performs no IO, generates no IDs and never authorizes a send or control change. Its table tests establish the rules on this page for in-memory values only. Storage, indexes and real restart behavior are D2 and D5, so the D1 criterion that restart preserves the run reference is defined here but not yet verified.
+`internal/rundiscovery` defines the identities below, what opens or closes a run, and which relationships a run may record. It is a pure package: values in, values out. IDs and timestamps are supplied by the caller; the package performs no IO, generates no IDs and never authorizes a send or control change. Its only caller is the [persisted reference graph](#persisted-reference-graph-d2-unreleased), which validates every stored record against it. The D1 criterion that restart preserves the run reference is verified there: a run recorded by one process is still the current run for later separate processes, including a daemon started after the previous one was killed. Which target is current after a transfer remains D5.
 
 A run is one opened episode of supervision for a loop. It can span many checks, wakes, provider turns, holds, goal revisions and target changes. A loop has at most one current run. Only an explicit completion closes it, recorded as **completion declared**, never verified success. Only an explicit resume after completion opens the next run, which keeps a predecessor reference when one is known. A run can be open while supervision is disabled or held; `open` is not a claim of activity. Removing a loop's enrollment is not defined yet.
 
@@ -56,9 +56,67 @@ External tokens are 1–128 characters from letters, digits and `. _ : @ -`, sta
 
 Caller-supplied timestamps may move backwards; they are not identity or ordering authority.
 
-### What the contract leaves to later items
+### What the contract leaves to its caller
 
-The package keeps no history. Callers must prevent reuse of discarded run and attempt IDs, verify provenance and target bindings, check current holds and authorization, and serialize and persist each transition, with intent persisted before a send. Registry mapping, enrollment of existing loops, atomic completion/reopen records, superseded-run archives, invocation deduplication, late receipts for superseded runs and recoverable attempt receipts are D2 work. Which target is current after a transfer is D5. Restrictive controls must stay writable when discovery records are unavailable; the runtime integration must settle that transaction boundary before claiming durable identity.
+The package keeps no history. Its caller must prevent reuse of discarded run and attempt IDs, verify provenance and target bindings, check current holds and authorization, and serialize and persist each transition, with intent persisted before a send. The graph below does the storage part. Invocation deduplication, late receipts for superseded runs and the current target after a transfer are still open.
+
+## Persisted reference graph (D2, unreleased)
+
+Each loop's state directory holds one private record, `graph.json`, written by `internal/rungraph`. It stores the durable loop identity, runs, send attempts and the links from a run to provider chats/sessions, goal revisions and routine invocations. It is diagnostic history only. No decision, hold, allowance or send reads it, and no command prints it yet; D3 adds the CLI/JSON views.
+
+### Where identity lives
+
+| Identity | Where it lives | How it is created |
+| --- | --- | --- |
+| Durable loop `supervision_…` | `graph.json` in the loop's state directory | Allocated by the first graph write for that directory. It follows the directory, not the config path, loop name or registry. |
+| Registry reference `loop_…` | The registry; the graph keeps a list of references it has seen used | Recorded when a control operation reaches the loop through that reference (registered client pause, stop or resume). |
+| Run `run_…`, attempt `attempt_…` | `graph.json` | Allocated when a run opens or a send intent is recorded. |
+
+A registry reference maps to a durable loop through its entry's runtime directory: the durable loop is the one recorded in that directory's `graph.json`. The mapping is **recorded** only once the graph lists that reference. `registry add` and `registry remove` never write into a runtime directory, so a reference that has only been added, or one created by removing and adding again, resolves to the directory's loop as **not recorded**. A reader must show that state instead of presenting the loop's earlier runs as belonging to the new reference. The graph's list says a reference was used then, not that it is still registered; the registry answers that. The list keeps the newest 16.
+
+### What is recorded, and when
+
+| Record | Written when | Source label |
+| --- | --- | --- |
+| Run opened, explicit | An accepted `enable` or `start` finds no run and no declared completion | `control_command` |
+| Run opened, `adopted_existing` | A check finds an enabled loop with no hold, no pending transfer and no run. This is how a loop started by an older build gets its first run. | `control_state` |
+| Run closed | Saved control state shows completion and the run is open | `control_command`, or `control_state` when a later check records it |
+| Run opened, `reopened` | Saved control state no longer shows a completion the graph recorded | as above |
+| Send attempt, `intent` | Before every automatic adapter send | `adapter_call` |
+| Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
+| Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
+| Run → chat/session | A check's target is a BB thread (its configured thread ID) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target` or `runner_session_file` |
+| Run → routine invocation | Store API only. No command accepts a routine identity yet. | `external` |
+| Registry reference | A registered client control operation succeeds | `registered_control` |
+
+Run boundaries are derived from saved control state, so they converge. If the write after a control command fails, the next check records the same boundary with the `control_state` source. An attempt left as `intent` means the process stopped, or the graph write failed, between recording the intent and recording the return. It is unconfirmed, not proof that anything was or was not sent. A session link carries the configured target alias it was recorded for. It is history: neither a session link nor the graph says which target is active now. Target moves are recorded once, in the incident journal read by `keepgoing timeline` ([diagnostics](diagnostics.md)); the graph does not duplicate them. A process-adapter target has no recorded session identity. Dry runs record nothing.
+
+### Lookup
+
+`Lookup` takes an exact reference and returns that node with its adjacent recorded references, from an index built once per loaded graph. It reads nothing else: no history scan, provider query, filesystem search or timestamp comparison. References are the run, attempt, durable loop and registry IDs themselves, `session:<provider>:<id>` for a chat/session, `<goal id>@<revision>` for a goal revision and `routine:<source>:<routine>:<invocation>` for an invocation. Every node and edge carries its source label and recorded time; that is the only freshness the graph has, and nothing in it is a live observation.
+
+The paths D2 requires resolve from recorded IDs: loop → current run → chat/session, run → goal revision, run → attempts, run → predecessor, chat/session → every run that recorded it, and registry reference → loop.
+
+### Evidence that is not available
+
+| State | Meaning | Behavior |
+| --- | --- | --- |
+| `missing` | No graph, including every loop last run by an older build | Reads return nothing. The next change creates the record. |
+| `unsupported` | Written by a newer schema | Not read and never rewritten. |
+| `corrupt` | Unreadable, oversized, not a regular file, or failing validation against the contract | Not read and never rewritten or reset. Remove the file to start a new record; the earlier history is gone. |
+| `not_recorded` | The reference is not in the graph | Nothing is inferred. |
+| `not_recorded_or_expired` | The reference is not in the graph and retention has dropped records | Dropped records are counted, never recreated. |
+| Conflict `completion_not_recorded` or `reopen_not_recorded` | Saved control state and the recorded run disagree because a boundary write was lost | Reported to the reader; the next check records the boundary. |
+
+### Storage and failure behavior
+
+- **Private and atomic.** `graph.json` is written with mode 0600 through the control writer's temporary-file replacement, which on Windows replaces a file that a reader still has open. A separate `graph.lock` serializes writers; it is independent of the tick and control locks.
+- **Bounded.** At most 32 runs, 128 attempts, 256 links, 16 registry references and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
+- **Versioned.** `schemaVersion` is 1. Unknown fields are rejected.
+- **Never in the way.** A graph that cannot be read or written does not fail a check, change its decision, block a send or fail a control command. The check adds one warning, `run reference record unavailable; discovery evidence is incomplete`. Control commands stay silent.
+- **No private text.** The record holds IDs, target aliases, action names and times. It holds no prompt, goal text, note, path, URL or error text.
+
+Older builds ignore the file. Copying or deleting runtime files is outside these guarantees.
 
 ## Record once, resolve by reference
 

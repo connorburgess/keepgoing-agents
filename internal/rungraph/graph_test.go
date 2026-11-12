@@ -1,0 +1,555 @@
+package rungraph
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/control"
+	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+)
+
+var at = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+const (
+	goal         = "goal_66666666666666666666666666666666"
+	registration = "loop_77777777777777777777777777777777"
+)
+
+func id(prefix string, n int) string { return fmt.Sprintf("%s%032x", prefix, n) }
+
+var enabled = Gate{Enabled: true}
+
+// update applies fn through the store and fails the test on any error.
+func update(t *testing.T, dir string, fn func(*Graph) (bool, error)) {
+	t.Helper()
+	if err := Update(dir, at, fn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sync(t *testing.T, dir string, gate Gate, operation string, run int) {
+	t.Helper()
+	update(t, dir, func(g *Graph) (bool, error) {
+		return g.Sync(Boundary{Gate: gate, Operation: operation, At: at, NewRunID: id("run_", run)})
+	})
+}
+
+func load(t *testing.T, dir string) Graph {
+	t.Helper()
+	g, availability := Load(dir)
+	if availability != Available {
+		t.Fatalf("graph is %s", availability)
+	}
+	return g
+}
+
+func session(target, provider, session string, source Source) Link {
+	return Link{Kind: rd.SessionLink, Target: target, Provider: provider, Session: session, Source: source, RecordedAt: at}
+}
+
+func TestLegacyStateHasNoGraphAndUnchangedUpdatesCreateNone(t *testing.T) {
+	dir := t.TempDir()
+	if g, availability := Load(dir); availability != Missing || g.LoopID != "" {
+		t.Fatalf("%s %#v", availability, g)
+	}
+	// A disabled or held legacy loop has no run to record.
+	for _, gate := range []Gate{{}, {Enabled: true, Paused: true}, {Enabled: true, Stop: true}, {Enabled: true, AwaitingUser: true}, {Enabled: true, PendingTransfer: true}} {
+		sync(t, dir, gate, "", 1)
+	}
+	if _, err := os.Stat(filepath.Join(dir, FileName)); !os.IsNotExist(err) {
+		t.Fatal("an unchanged update wrote a graph")
+	}
+	var empty Graph
+	if n, status := empty.Lookup(id("run_", 1)); status != NotRecorded || n.Ref != "" {
+		t.Fatal(status)
+	}
+	if _, status := empty.Current(); status != NotRecorded {
+		t.Fatal(status)
+	}
+}
+
+func TestRunBoundariesFollowSavedControlState(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "enable", 1)
+	g := load(t, dir)
+	loop := g.LoopID
+	if !strings.HasPrefix(loop, "supervision_") || len(loop) != 44 || g.CurrentRun != id("run_", 1) || g.Runs[0].Origin != rd.Explicit || g.Runs[0].Source != SourceControl {
+		t.Fatalf("%#v", g)
+	}
+	// Holds, repeated enables and later checks keep the run.
+	for _, step := range []struct {
+		gate Gate
+		op   string
+	}{{enabled, "enable"}, {enabled, "start"}, {Gate{Enabled: true, Paused: true}, "pause"}, {Gate{Enabled: true, Stop: true}, "stop"},
+		{Gate{}, "disable"}, {enabled, "resume"}, {Gate{Enabled: true, AwaitingUser: true}, ""}, {enabled, ""}} {
+		sync(t, dir, step.gate, step.op, 2)
+	}
+	if g = load(t, dir); g.LoopID != loop || g.CurrentRun != id("run_", 1) || len(g.Runs) != 1 || g.Completed {
+		t.Fatalf("a non-boundary operation changed the run: %#v", g)
+	}
+	// Completion closes it once; a boundary whose command-time write was lost
+	// is recorded by the next check with its own source.
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "", 2)
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 2)
+	g = load(t, dir)
+	if !g.Completed || g.Runs[0].ClosedAt.IsZero() || g.Runs[0].ClosedSource != SourceReconciled || g.CurrentRun != id("run_", 1) {
+		t.Fatalf("%#v", g)
+	}
+	// Enable does not reopen completed work; clearing completion does.
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "enable", 2)
+	if g = load(t, dir); len(g.Runs) != 1 {
+		t.Fatal("enable reopened a completed run")
+	}
+	sync(t, dir, enabled, "resume", 2)
+	g = load(t, dir)
+	if g.Completed || g.CurrentRun != id("run_", 2) || g.Runs[1].Origin != rd.Reopened || g.Runs[1].Reopens != id("run_", 1) || g.LoopID != loop {
+		t.Fatalf("%#v", g)
+	}
+}
+
+func TestAdoptionCompletionWithoutARunAndRoutineInvocation(t *testing.T) {
+	dir := t.TempDir()
+	// An enabled legacy loop with no hold is adopted by a later check.
+	sync(t, dir, enabled, "", 1)
+	if g := load(t, dir); g.Runs[0].Origin != rd.Adopted || g.Runs[0].Source != SourceReconciled {
+		t.Fatalf("%#v", g.Runs)
+	}
+	// A legacy loop already completed records completion without inventing a run.
+	dir = t.TempDir()
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "", 1)
+	g := load(t, dir)
+	if !g.Completed || g.CurrentRun != "" || len(g.Runs) != 0 {
+		t.Fatalf("%#v", g)
+	}
+	routine := rd.RoutineRef{Source: "example-scheduler", Routine: "routine-nightly", Invocation: "invocation-0001"}
+	update(t, dir, func(g *Graph) (bool, error) {
+		return g.Sync(Boundary{Gate: enabled, Operation: "resume", At: at, NewRunID: id("run_", 1), Routine: routine})
+	})
+	g = load(t, dir)
+	if g.Runs[0].Origin != rd.Reopened || g.Runs[0].Reopens != "" || routineRef(g.Runs[0].Routine) != routine {
+		t.Fatalf("%#v", g.Runs)
+	}
+	n, status := g.Lookup(InvocationRef(routine))
+	if status != Found || n.Type != InvocationNode || len(n.Edges) != 1 || n.Edges[0].To != id("run_", 1) {
+		t.Fatalf("%s %#v", status, n)
+	}
+	// A malformed supplied identity is refused and nothing is written.
+	before, _ := os.ReadFile(filepath.Join(dir, FileName))
+	bad := rd.RoutineRef{Source: "example-scheduler", Routine: "has space"}
+	err := Update(t.TempDir(), at, func(g *Graph) (bool, error) {
+		return g.Sync(Boundary{Gate: enabled, Operation: "start", At: at, NewRunID: id("run_", 1), Routine: bad})
+	})
+	after, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if !errors.Is(err, rd.ErrInvalid) || !bytes.Equal(before, after) {
+		t.Fatal(err)
+	}
+}
+
+func TestRunReferenceSurvivesReconstructionAndAttemptsStayDistinct(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	first := Attempt{ID: id("attempt_", 1), Target: "primary", Action: "wake", Mode: "auto", GoalID: goal, GoalRevision: 2, RecordedAt: at}
+	update(t, dir, func(g *Graph) (bool, error) { return true, g.Begin(first) })
+	// Everything below reads only the directory, as a new process would. The
+	// first intent has no recorded return: it stays unconfirmed.
+	g := load(t, dir)
+	if g.CurrentRun != id("run_", 1) || len(g.Attempts) != 1 || g.Attempts[0].Outcome != rd.Intent || !g.Attempts[0].ReturnedAt.IsZero() || g.Attempts[0].Run != id("run_", 1) {
+		t.Fatalf("%#v", g)
+	}
+	sync(t, dir, enabled, "", 2) // the restarted supervisor's first check
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return true, g.Begin(first) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("a retained attempt ID was reused after reconstruction")
+	}
+	second := first
+	second.ID = id("attempt_", 2)
+	update(t, dir, func(g *Graph) (bool, error) { return true, g.Begin(second) })
+	update(t, dir, func(g *Graph) (bool, error) { return g.Finish(second.ID, rd.AdapterReturned, at.Add(time.Second)) })
+	update(t, dir, func(g *Graph) (bool, error) { return g.Finish(second.ID, rd.AdapterReturned, at.Add(time.Hour)) })
+	g = load(t, dir)
+	if g.CurrentRun != id("run_", 1) || len(g.Runs) != 1 || len(g.Attempts) != 2 || g.Attempts[0].Outcome != rd.Intent ||
+		g.Attempts[1].Outcome != rd.AdapterReturned || !g.Attempts[1].ReturnedAt.Equal(at.Add(time.Second)) || g.Attempts[1].Run != g.Attempts[0].Run {
+		t.Fatalf("%#v", g)
+	}
+	for name, fn := range map[string]func(*Graph) (bool, error){
+		"conflicting return": func(g *Graph) (bool, error) { return g.Finish(second.ID, rd.AdapterError, at) },
+		"unknown attempt":    func(g *Graph) (bool, error) { return g.Finish(id("attempt_", 9), rd.AdapterReturned, at) },
+		"unsupported action": func(g *Graph) (bool, error) {
+			return true, g.Begin(Attempt{ID: id("attempt_", 3), Target: "primary", Action: "observe", Mode: "auto", RecordedAt: at})
+		},
+		"missing target": func(g *Graph) (bool, error) {
+			return true, g.Begin(Attempt{ID: id("attempt_", 3), Action: "wake", Mode: "auto", RecordedAt: at})
+		},
+	} {
+		if err := Update(dir, at, fn); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	// A send intent needs an open run.
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 2)
+	third := first
+	third.ID = id("attempt_", 3)
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return true, g.Begin(third) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("an intent was recorded for a closed run")
+	}
+	// A late return for the closed run is still recorded and reopens nothing.
+	update(t, dir, func(g *Graph) (bool, error) { return g.Finish(first.ID, rd.AdapterError, at) })
+	if g = load(t, dir); !g.Completed || g.Attempts[0].Outcome != rd.AdapterError || len(g.Runs) != 1 {
+		t.Fatalf("%#v", g)
+	}
+}
+
+func TestLookupResolvesRecordedReferencesDirectly(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	attempt := Attempt{ID: id("attempt_", 1), Target: "primary", Action: "wake", Mode: "auto", GoalID: goal, GoalRevision: 1, RecordedAt: at}
+	update(t, dir, func(g *Graph) (bool, error) {
+		for _, l := range []Link{
+			session("primary", "bb", "thr_example_a", SourceConfigured),
+			session("example-fallback", "claude", "11111111-2222-3333-4444-555555555555", SourceRunnerFile),
+			session("primary", "bb", "thr_example_a", SourceConfigured), // repeated checks add nothing
+			{Kind: rd.GoalLink, GoalID: goal, GoalRevision: 1, Source: SourceGoal, RecordedAt: at},
+			{Kind: rd.GoalLink, GoalID: goal, GoalRevision: 2, Source: SourceGoal, RecordedAt: at.Add(time.Minute)},
+		} {
+			if _, err := g.Relate(l); err != nil {
+				return false, err
+			}
+		}
+		if _, err := g.Register(registration, at); err != nil {
+			return false, err
+		}
+		return true, g.Begin(attempt)
+	})
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 2)
+	sync(t, dir, enabled, "resume", 2)
+	update(t, dir, func(g *Graph) (bool, error) {
+		return g.Relate(session("primary", "bb", "thr_example_a", SourceConfigured))
+	})
+
+	g := load(t, dir)
+	refs := func(nodes []Node) string {
+		var out []string
+		for _, n := range nodes {
+			out = append(out, n.Ref)
+		}
+		return strings.Join(out, " ")
+	}
+	chatA, chatB := SessionRef("bb", "thr_example_a"), SessionRef("claude", "11111111-2222-3333-4444-555555555555")
+	// loop → current run → chat/session
+	loop, status := g.Lookup(g.LoopID)
+	if status != Found || loop.Type != LoopNode {
+		t.Fatal(status)
+	}
+	if got := refs(g.Follow(loop, EdgeCurrentRun)); got != id("run_", 2) {
+		t.Fatalf("current run: %q", got)
+	}
+	current, status := g.Current()
+	if status != Found || current.Run == nil || current.Run.ID != id("run_", 2) || !current.Run.ClosedAt.IsZero() || current.Source != SourceControl || !current.RecordedAt.Equal(at) {
+		t.Fatalf("%s %#v", status, current)
+	}
+	if got := refs(g.Follow(current, EdgeSession)); got != chatA {
+		t.Fatalf("current run sessions: %q", got)
+	}
+	// One run recorded two chats; the later run reuses the first. Each edge
+	// keeps its target alias and source, and nothing links chat to chat.
+	earlier, _ := g.Lookup(id("run_", 1))
+	if got := refs(g.Follow(earlier, EdgeSession)); got != chatA+" "+chatB {
+		t.Fatalf("earlier run sessions: %q", got)
+	}
+	shared, _ := g.Lookup(chatA)
+	if got := refs(g.Follow(shared, EdgeRun)); got != id("run_", 1)+" "+id("run_", 2) || shared.Type != SessionNode {
+		t.Fatalf("runs sharing a chat: %q", got)
+	}
+	for _, e := range shared.Edges {
+		if e.Type != EdgeRun || e.Target != "primary" || e.Source != SourceConfigured || e.RecordedAt.IsZero() {
+			t.Fatalf("%#v", e)
+		}
+	}
+	other, _ := g.Lookup(chatB)
+	if other.Source != SourceRunnerFile || other.Edges[0].Target != "example-fallback" {
+		t.Fatalf("%#v", other)
+	}
+	// run → goal revision, run → attempt → run, run → predecessor, registration → loop
+	if got := refs(g.Follow(earlier, EdgeGoalRevision)); got != GoalRevisionRef(goal, 1)+" "+GoalRevisionRef(goal, 2) {
+		t.Fatalf("goal revisions: %q", got)
+	}
+	if got := refs(g.Follow(current, EdgeGoalRevision)); got != "" {
+		t.Fatalf("a goal revision was carried into the reopened run: %q", got)
+	}
+	sent, status := g.Lookup(attempt.ID)
+	if status != Found || sent.Attempt.Outcome != rd.Intent || refs(g.Follow(sent, EdgeRun)) != id("run_", 1) || sent.Edges[1].To != GoalRevisionRef(goal, 1) {
+		t.Fatalf("%s %#v", status, sent)
+	}
+	if got := refs(g.Follow(current, EdgeReopens)); got != id("run_", 1) {
+		t.Fatalf("predecessor: %q", got)
+	}
+	registered, status := g.Lookup(registration)
+	if status != Found || registered.Registration.Source != SourceRegistered || refs(g.Follow(registered, EdgeLoop)) != g.LoopID {
+		t.Fatalf("%s %#v", status, registered)
+	}
+	// A reference that was never recorded stays explicit.
+	for _, ref := range []string{id("run_", 9), SessionRef("bb", "thr_example_z"), "loop_88888888888888888888888888888888", ""} {
+		if n, status := g.Lookup(ref); status != NotRecorded || n.Ref != "" {
+			t.Fatalf("%q: %s", ref, status)
+		}
+	}
+}
+
+func TestLinksAreValidatedAgainstTheCurrentRun(t *testing.T) {
+	dir := t.TempDir()
+	for name, l := range map[string]Link{
+		"no run yet": session("primary", "bb", "thr_example_a", SourceConfigured),
+	} {
+		if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Relate(l) }); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	sync(t, dir, enabled, "start", 1)
+	for name, l := range map[string]Link{
+		"URL as session":      session("primary", "bb", "https://example.com/chat/1", SourceConfigured),
+		"missing provider":    session("primary", "", "thr_example_a", SourceConfigured),
+		"unknown source":      session("primary", "bb", "thr_example_a", "transcript"),
+		"overlong target":     session(strings.Repeat("a", 129), "bb", "thr_example_a", SourceConfigured),
+		"target on goal link": {Kind: rd.GoalLink, Target: "primary", GoalID: goal, GoalRevision: 1, Source: SourceGoal, RecordedAt: at},
+		"goal revision bound": {Kind: rd.GoalLink, GoalID: goal, GoalRevision: 129, Source: SourceGoal, RecordedAt: at},
+		"unknown kind":        {Kind: "parent", Source: SourceExternal, RecordedAt: at},
+	} {
+		if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Relate(l) }); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	invocation := Link{Kind: rd.InvocationLink, Routine: &Routine{Source: "example-scheduler", Routine: "routine-nightly", Invocation: "invocation-0002"}, Source: SourceExternal, RecordedAt: at}
+	update(t, dir, func(g *Graph) (bool, error) { return g.Relate(invocation) })
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 2)
+	later := invocation
+	later.Routine = &Routine{Source: "example-scheduler", Routine: "routine-nightly", Invocation: "invocation-0003"}
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Relate(later) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("a trigger after completion was related to the closed run")
+	}
+	if g := load(t, dir); len(g.Links) != 1 || len(g.Runs) != 1 {
+		t.Fatalf("%#v", g)
+	}
+	for name, ref := range map[string]string{"durable ID": id("supervision_", 1), "malformed": "loop_bad"} {
+		if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Register(ref, at) }); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s accepted as a registry reference", name)
+		}
+	}
+}
+
+func TestRetentionIsBoundedAndExpiryStaysExplicit(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 0)
+	for n := 1; n <= MaxRuns+2; n++ {
+		update(t, dir, func(g *Graph) (bool, error) {
+			if _, err := g.Relate(session("primary", "bb", fmt.Sprintf("thr_example_%d", n), SourceConfigured)); err != nil {
+				return false, err
+			}
+			return true, g.Begin(Attempt{ID: id("attempt_", n), Target: "primary", Action: "wake", Mode: "auto", RecordedAt: at})
+		})
+		sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 0)
+		sync(t, dir, enabled, "resume", n)
+	}
+	g := load(t, dir)
+	if len(g.Runs) != MaxRuns || g.Dropped != (Dropped{Runs: 3, Attempts: 3, Links: 3}) || g.Runs[0].ID != id("run_", 3) || g.CurrentRun != id("run_", MaxRuns+2) {
+		t.Fatalf("runs=%d dropped=%#v first=%s", len(g.Runs), g.Dropped, g.Runs[0].ID)
+	}
+	// Dropped records are not recreated, and their absence is not "never recorded".
+	for _, ref := range []string{id("run_", 0), id("attempt_", 1), SessionRef("bb", "thr_example_1"), id("run_", 99)} {
+		if _, status := g.Lookup(ref); status != NotRecordedOrExpired {
+			t.Fatalf("%s: %s", ref, status)
+		}
+	}
+	// The oldest retained run still names its dropped predecessor, which does not resolve.
+	oldest, _ := g.Lookup(id("run_", 3))
+	if oldest.Run.Reopens != id("run_", 2) || len(g.Follow(oldest, EdgeReopens)) != 0 {
+		t.Fatalf("%#v", oldest.Run)
+	}
+	// One long run keeps its newest attempts and links only.
+	for n := 0; n < MaxAttempts+MaxLinks; n++ {
+		update(t, dir, func(g *Graph) (bool, error) {
+			if _, err := g.Relate(session("primary", "bb", fmt.Sprintf("thr_long_%d", n), SourceConfigured)); err != nil {
+				return false, err
+			}
+			return true, g.Begin(Attempt{ID: id("attempt_", 1000+n), Target: "primary", Action: "nudge", Mode: "queue", RecordedAt: at})
+		})
+	}
+	g = load(t, dir)
+	info, err := os.Stat(filepath.Join(dir, FileName))
+	if err != nil || info.Size() > MaxBytes || len(g.Attempts) != MaxAttempts || len(g.Links) != MaxLinks || g.CurrentRun != id("run_", MaxRuns+2) {
+		t.Fatalf("size=%v attempts=%d links=%d", info, len(g.Attempts), len(g.Links))
+	}
+	if g.Attempts[len(g.Attempts)-1].ID != id("attempt_", 1000+MaxAttempts+MaxLinks-1) {
+		t.Fatal("the newest attempt was dropped")
+	}
+	for n := 0; n < MaxRegistrations+3; n++ {
+		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), at) })
+	}
+	if g = load(t, dir); len(g.Registrations) != MaxRegistrations || g.Registrations[0].ID != id("loop_", 3) {
+		t.Fatalf("%d registrations", len(g.Registrations))
+	}
+}
+
+func TestStoredRecordIsPrivateVersionedAndReplaceableUnderAnOpenReader(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	path := filepath.Join(dir, FileName)
+	info, err := os.Stat(path)
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("%v %v", info, err)
+	}
+	b, _ := os.ReadFile(path)
+	var raw map[string]any
+	if json.Unmarshal(b, &raw) != nil || raw["schemaVersion"] != float64(1) || raw["attempts"] == nil || raw["links"] == nil || raw["registrations"] == nil {
+		t.Fatalf("%s", b)
+	}
+	// A reader holding the previous snapshot does not block replacement.
+	reader, err := control.OpenPrivateSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 2)
+	if g := load(t, dir); !g.Completed {
+		t.Fatal("replacement under an open reader was lost")
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			t.Fatalf("temporary file left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestUnusableRecordsStayExplicitAndAreNeverRewritten(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	update(t, dir, func(g *Graph) (bool, error) {
+		return true, g.Begin(Attempt{ID: id("attempt_", 1), Target: "primary", Action: "wake", Mode: "auto", RecordedAt: at})
+	})
+	good, _ := os.ReadFile(filepath.Join(dir, FileName))
+	edit := func(fn func(map[string]any)) []byte {
+		var v map[string]any
+		if err := json.Unmarshal(good, &v); err != nil {
+			t.Fatal(err)
+		}
+		fn(v)
+		b, _ := json.Marshal(v)
+		return b
+	}
+	first := func(v map[string]any, key string) map[string]any { return v[key].([]any)[0].(map[string]any) }
+	second := map[string]any{"id": id("run_", 2), "origin": "explicit", "recordedAt": at, "source": "control_command"}
+	cases := map[string]struct {
+		body []byte
+		want Availability
+	}{
+		"newer schema":            {edit(func(v map[string]any) { v["schemaVersion"] = 2; v["future"] = true }), Unsupported},
+		"schema zero":             {edit(func(v map[string]any) { v["schemaVersion"] = 0 }), Corrupt},
+		"not JSON":                {[]byte("{"), Corrupt},
+		"empty":                   {nil, Corrupt},
+		"trailing data":           {append(append([]byte{}, good...), []byte("{}")...), Corrupt},
+		"unknown field":           {edit(func(v map[string]any) { v["extra"] = 1 }), Corrupt},
+		"oversized":               {bytes.Repeat([]byte(" "), MaxBytes+1), Corrupt},
+		"registry ID as loop":     {edit(func(v map[string]any) { v["loopId"] = registration }), Corrupt},
+		"missing update time":     {edit(func(v map[string]any) { delete(v, "updatedAt") }), Corrupt},
+		"current run not stored":  {edit(func(v map[string]any) { v["currentRun"] = id("run_", 9) }), Corrupt},
+		"two open runs":           {edit(func(v map[string]any) { v["runs"] = append(v["runs"].([]any), second) }), Corrupt},
+		"duplicate run":           {edit(func(v map[string]any) { v["runs"] = append(v["runs"].([]any), v["runs"].([]any)[0]) }), Corrupt},
+		"inferred origin":         {edit(func(v map[string]any) { first(v, "runs")["origin"] = "inferred" }), Corrupt},
+		"transcript source":       {edit(func(v map[string]any) { first(v, "runs")["source"] = "transcript" }), Corrupt},
+		"closed without source":   {edit(func(v map[string]any) { first(v, "runs")["closedAt"] = at; v["completed"] = true }), Corrupt},
+		"completed but run open":  {edit(func(v map[string]any) { v["completed"] = true }), Corrupt},
+		"attempt for unknown run": {edit(func(v map[string]any) { first(v, "attempts")["run"] = id("run_", 9) }), Corrupt},
+		"delivered outcome":       {edit(func(v map[string]any) { first(v, "attempts")["outcome"] = "delivered" }), Corrupt},
+		"duplicate attempt":       {edit(func(v map[string]any) { v["attempts"] = append(v["attempts"].([]any), v["attempts"].([]any)[0]) }), Corrupt},
+		"link for unknown run": {edit(func(v map[string]any) {
+			v["links"] = []any{map[string]any{"run": id("run_", 9), "kind": "session", "provider": "bb", "session": "thr_example_a", "source": "configured_target", "recordedAt": at}}
+		}), Corrupt},
+		"link with two payloads": {edit(func(v map[string]any) {
+			v["links"] = []any{map[string]any{"run": id("run_", 1), "kind": "session", "provider": "bb", "session": "thr_example_a", "goalId": goal, "goalRevision": 1, "source": "configured_target", "recordedAt": at}}
+		}), Corrupt},
+		"malformed registration": {edit(func(v map[string]any) {
+			v["registrations"] = []any{map[string]any{"id": "loop_bad", "recordedAt": at, "source": "registered_control"}}
+		}), Corrupt},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, FileName)
+			if err := os.WriteFile(path, tt.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			g, availability := Load(dir)
+			if availability != tt.want || g.LoopID != "" || len(g.Runs) != 0 {
+				t.Fatalf("%s %#v", availability, g)
+			}
+			err := Update(dir, at, func(g *Graph) (bool, error) {
+				return g.Sync(Boundary{Gate: enabled, Operation: "start", At: at, NewRunID: id("run_", 5)})
+			})
+			after, _ := os.ReadFile(path)
+			if !errors.Is(err, ErrUnavailable) || !bytes.Equal(after, tt.body) {
+				t.Fatalf("an unusable record was rewritten or accepted: %v", err)
+			}
+		})
+	}
+	// A directory or symlink in the record's place is never followed or replaced.
+	aliased := t.TempDir()
+	if err := os.Mkdir(filepath.Join(aliased, FileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, availability := Load(aliased); availability != Corrupt {
+		t.Fatal(availability)
+	}
+	if err := Update(aliased, at, func(g *Graph) (bool, error) { return true, nil }); !errors.Is(err, ErrUnavailable) {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		linked := t.TempDir()
+		if err := os.Symlink(filepath.Join(dir, FileName), filepath.Join(linked, FileName)); err != nil {
+			t.Fatal(err)
+		}
+		if _, availability := Load(linked); availability != Corrupt {
+			t.Fatal(availability)
+		}
+	}
+}
+
+func TestConflictWithSavedControlStaysExplicitUntilRecorded(t *testing.T) {
+	dir := t.TempDir()
+	var none Graph
+	if none.Conflict(Gate{Completed: true}) != "" {
+		t.Fatal("a missing graph cannot conflict")
+	}
+	sync(t, dir, enabled, "start", 1)
+	g := load(t, dir)
+	if g.Conflict(enabled) != "" || g.Conflict(Gate{Enabled: true, Paused: true}) != "" {
+		t.Fatal("a hold is not a conflict")
+	}
+	// The completion was saved but its graph write was lost.
+	if got := g.Conflict(Gate{Enabled: true, Completed: true}); got != ConflictCompletionNotRecorded {
+		t.Fatal(got)
+	}
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "", 2)
+	g = load(t, dir)
+	if g.Conflict(Gate{Enabled: true, Completed: true}) != "" || g.Conflict(enabled) != ConflictReopenNotRecorded {
+		t.Fatal("conflict was not cleared by recording, or the lost reopen was not reported")
+	}
+}
+
+func TestNewIDAndGate(t *testing.T) {
+	a, err := NewID("run_")
+	b, _ := NewID("run_")
+	if err != nil || a == b || len(a) != 36 {
+		t.Fatal(a, b, err)
+	}
+	f := control.File{Enabled: true, Paused: true, Stop: true, AwaitingUser: true, Completed: true, PendingTransfer: &control.PendingBBTransfer{}}
+	if GateOf(f) != (Gate{true, true, true, true, true, true}) || GateOf(control.File{}) != (Gate{}) {
+		t.Fatal("gate")
+	}
+}
