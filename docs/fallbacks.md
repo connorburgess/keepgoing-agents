@@ -12,7 +12,7 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 
 The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end.
 
-1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback. Only headless `claude` and `codex` are offered.
+1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback: headless `claude` and `codex`, or `bb` for an existing BB thread (see [BB threads](#bb-threads)).
 2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`; a leading `~/` is expanded), or blank for the CLI's current login, and the quota group. The suggested group is the directory's name, otherwise the provider, with a numeric suffix when that label is taken.
 3. **Model.** The model for the fallback's turns and, optionally, a cheaper one for scheduled probes. Blank keeps the CLI's configured model. Names are not looked up or validated.
 4. **Handoff.** The place in the handoff order when other fallbacks exist, and whether to turn on automatic handoff when it is not already on. The default is no.
@@ -28,6 +28,32 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactiv
 ```
 
 `--non-interactive` requires `--agent` and writes without asking unless `--dry-run` is set. Other flags: `--probe-model`, `--id`, `--workdir`, `--enable-handoff`, and `--probe-daily-cap`, which is accepted only when the command creates the fallbacks file. `--json` prints a `fallback_add` object with `schemaVersion: 1`: the candidate, order, redundancy, changed files, `warnings`, `notes` and the follow-up commands as argument arrays. Its `handoff` object reports `automatic` and `wasAutomatic` (whether a handoff can happen after and before the change), `changed`, the resulting `failoverOn` and whether `failoverOnWritten`. Account-directory and agent executable paths are withheld from JSON.
+
+### BB threads
+
+A fallback can be an existing BB thread: this loop's own conversation continued on another model, or a different thread on another provider.
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactive \
+  --agent bb --thread thr_example123 --provider claude-code \
+  --model example-model --reasoning high --dry-run
+```
+
+In the guide, steps 2 and 3 become:
+
+2. **Thread.** With your agreement, keepgoing runs `bb thread list --json` and shows live, visible threads by title, provider and status, this loop's own thread first. Pick a number or paste a thread ID. Thread IDs are not printed unless you type `ids` or pass `--show-ids`. If you decline, or the listing is unavailable, you enter the ID and the provider.
+3. **Model.** With the same agreement, `bb provider models <provider> --json` supplies a pick list and the reasoning levels each model accepts. A name you type instead is not checked. Blank keeps the thread's own model, except for a thread the loop already uses, where a different model is required. Then the quota group (one usage limit; the suggestion is the model's name, otherwise the provider), a cheaper model for scheduled checks, and an optional account directory for the local check.
+
+Those two listings are the only commands this path can run, only in the guided mode and only after `yes`. They are read-only: no message is sent, no thread is created, moved or changed, and no model is called. Flags never run `bb`. Only the structured output is read; an error reply or unexpected shape means "unavailable".
+
+What the preview states, because keepgoing cannot verify it:
+
+- **The account.** BB chooses the account for a thread. keepgoing cannot see or switch it, so the quota group is your statement of which limit the thread draws on.
+- **The check.** A BB fallback is confirmed with the local `claude` or `codex` CLI, as [probes](#probes) describe. A pass shows that CLI's login works; it shows BB's account works only if BB uses the same login. `--probe-account-dir` points the check at another existing login.
+- **The same conversation.** Adding a thread the loop already uses means a handoff switches that thread's model (and reasoning level, if set) with `bb thread update` and continues in the same conversation, with the same history. It is almost certainly the same account, so it helps only if the other model has its own limit. If the primary's `bb.model` is unset, returning to the primary leaves the thread on the fallback's model; the preview says so.
+- **The model.** Marked as from BB's list or not checked. With no model set, the check before a handoff uses the local CLI's default model, which may differ from the thread's.
+
+Refused without writing: a missing or malformed thread ID; a provider other than `claude-code` or `codex` (no built-in probe); an unknown reasoning level; a thread the loop already uses with no model or the same model; `--account-dir` or `--workdir`; a missing probe account directory; and a missing local `claude` or `codex` CLI, since the fallback could then never be confirmed. `--thread`, `--provider`, `--reasoning`, `--probe-account-dir` and `--show-ids` are refused for headless agents. In JSON, `candidate.thread` is `same_as_primary`, `same_as_fallback` or `other`, `candidate.modelSource` is `bb_list` or `unchecked`, and `candidate.threadId` appears only with `--show-ids`.
 
 ### Handoff stays a choice
 
@@ -49,7 +75,7 @@ Writes happen under the loop's tick lock with the guards `retarget` uses: the ca
 
 Without writing anything:
 
-- Cursor, BB, process or unknown agents, and any loop with a Cursor primary.
+- Cursor, process or unknown agents, and any loop with a Cursor primary.
 - A quota group equal to the primary's or another candidate's.
 - The same login as an existing target with the same model. Logins are compared by provider and account directory (symlinks resolved); the CLI's current login counts as one login. With a different model the candidate is accepted with a warning, since it helps only when that model has its own limit. Only headless targets can be compared: a BB primary's account is not visible, which the preview states. Other credentials in the environment are not inspected.
 - A config path or fallbacks file that is a symbolic link, because relative paths resolve against the directory the file is opened from.
@@ -67,7 +93,7 @@ keepgoing fallbacks list  -c /private/example-loop/keepgoing.yaml
 
 Until a probe passes, the candidate is not healthy and is not used; `fallbacks list` names candidates that were never probed.
 
-Not covered yet: detecting accounts or logins, listing models, BB/process/Cursor candidates, removing or reordering existing candidates, turning handoff on or off as a separate command, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
+Not covered yet: detecting accounts or logins, listing models for headless CLIs, BB threads on providers other than `claude-code` and `codex`, process/Cursor candidates, removing or reordering existing candidates, turning handoff on or off as a separate command, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
 
 ## Candidates
 

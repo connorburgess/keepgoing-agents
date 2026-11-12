@@ -22,6 +22,9 @@ import (
 
 type fallbackAddOptions struct {
 	cfgPath, agent, account, group, model, probeModel, id, workdir string
+	thread, provider, reasoning, probeAccount                      string // BB candidates
+	threadTitle                                                    string // from a BB listing; display only
+	modelListed, showIDs                                           bool
 	position, probeCap                                             int
 	enableHandoff, nonInteractive, dryRun, asJSON                  bool
 	set                                                            map[string]bool // flags given on the command line
@@ -43,6 +46,7 @@ type fallbackAddPlan struct {
 	failoverWas   string             // the setting being replaced, for the preview
 	warnings      []string
 	notes         []string
+	bb            *fallbackAddBBDetail // set for a BB candidate
 	fallbacksYAML []byte
 	configYAML    []byte // nil when keepgoing.yaml is left untouched
 }
@@ -73,10 +77,17 @@ type fallbackAddCandidate struct {
 	Provider   string `json:"provider"`
 	Group      string `json:"group"`
 	Model      string `json:"model"`      // empty: the CLI's configured default, unresolved
-	Account    string `json:"account"`    // inherited or explicit_directory
+	Account    string `json:"account"`    // inherited, explicit_directory or chosen_by_bb
 	ProbeKind  string `json:"probeKind"`  // claude or codex
 	ProbeModel string `json:"probeModel"` // scheduled probe model; empty uses the target model
 	Position   int    `json:"position"`
+	// BB candidates only. Thread is same_as_primary, same_as_fallback or other;
+	// ThreadID is present only with --show-ids.
+	Thread       string `json:"thread,omitempty"`
+	ThreadID     string `json:"threadId,omitempty"`
+	Reasoning    string `json:"reasoning,omitempty"`
+	ModelSource  string `json:"modelSource,omitempty"`  // bb_list or unchecked
+	ProbeAccount string `json:"probeAccount,omitempty"` // inherited or explicit_directory
 }
 
 type fallbackAddTarget struct {
@@ -132,19 +143,27 @@ Usage:
   keepgoing fallbacks add -c keepgoing.yaml --non-interactive --agent codex [flags]
 
 The command looks up installed agent CLIs without running them, previews the
-candidate and the handoff order, and writes only after confirmation (or with
+fallback and the handoff order, and writes only after confirmation (or with
 --non-interactive and no --dry-run). It never logs in, creates accounts, copies
-credentials or calls a model.
+credentials, calls a model, or sends a message to a thread.
+
+A fallback can be a headless claude or codex session, or an existing BB thread
+(--agent bb --thread ID --provider claude-code|codex), including this loop's
+own conversation on another model. For a BB thread the guided questions can,
+after you agree, run two read-only listings (bb thread list, bb provider
+models) to offer pick lists; flags never run bb.
 
 Flags:
 `
 
 func fallbacksAddCommand(e env, args []string) int {
-	return fallbacksAdd(e, args, os.Stdin, exec.LookPath)
+	return fallbacksAdd(e, args, os.Stdin, exec.LookPath, runBBLookup)
 }
 
-// fallbacksAdd discovers executables, but never invokes an agent or reads its login.
-func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (string, error)) int {
+// fallbacksAdd discovers executables, but never invokes an agent or reads its
+// login. The only command it may run is a read-only bb listing, through bb,
+// after the wizard's user agrees; scripts never trigger one.
+func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (string, error), bb bbLookup) int {
 	o := fallbackAddOptions{set: map[string]bool{}}
 	fs := flag.NewFlagSet("fallbacks add", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
@@ -153,7 +172,12 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.cfgPath, "c", "keepgoing.yaml", "path to the loop's config file")
-	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless); other agents are refused")
+	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless), or bb (an existing BB thread)")
+	fs.StringVar(&o.thread, "thread", "", "bb: existing thread ID; may be the primary's thread with another model")
+	fs.StringVar(&o.provider, "provider", "", "bb: the thread's provider, claude-code or codex")
+	fs.StringVar(&o.reasoning, "reasoning", "", "bb: reasoning level set at handoff: low, medium, high, xhigh or max (default: unchanged)")
+	fs.StringVar(&o.probeAccount, "probe-account-dir", "", "bb: account directory the local probe CLI uses (default: its current login)")
+	fs.BoolVar(&o.showIDs, "show-ids", false, "bb: print thread IDs in listings, the preview and JSON")
 	fs.StringVar(&o.account, "account-dir", "", "existing account configuration directory (default: the CLI's current login)")
 	fs.StringVar(&o.group, "group", "", "quota group label; accounts sharing limits must share it (default: account directory name, else provider)")
 	fs.StringVar(&o.model, "model", "", "model for this fallback's turns (default: CLI configuration)")
@@ -213,7 +237,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		e.errf("fallbacks add: refused, nothing written.\n  %v", err)
 		return code
 	}
-	w := &fallbackAddWizard{e: e, cfg: cfg, o: &o, lookPath: lookPath}
+	w := &fallbackAddWizard{e: e, cfg: cfg, o: &o, lookPath: lookPath, bb: bb}
 	if !o.nonInteractive {
 		w.r = bufio.NewReader(input)
 		if err := w.collect(); err != nil {
@@ -398,6 +422,7 @@ type fallbackAddWizard struct {
 	o        *fallbackAddOptions
 	r        *bufio.Reader
 	lookPath func(string) (string, error)
+	bb       bbLookup
 }
 
 func (w *fallbackAddWizard) ask(label, def string) (string, error) {
@@ -467,7 +492,7 @@ func (w *fallbackAddWizard) collect() error {
 	for _, a := range []struct{ kind, note string }{
 		{"claude", "can be a fallback"},
 		{"codex", "can be a fallback"},
-		{"bb", "manual setup only"},
+		{"bb", "an existing thread can be one"},
 		{"cursor", "cannot be a fallback yet"},
 	} {
 		p, err := w.lookPath(initCLIName(a.kind))
@@ -476,18 +501,18 @@ func (w *fallbackAddWizard) collect() error {
 			continue
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", a.kind, p, a.note)
-		if a.kind == "claude" || a.kind == "codex" {
+		if a.kind != "cursor" {
 			usable = append(usable, a.kind)
 		}
 	}
 	tw.Flush()
 	if len(usable) == 0 {
-		return errors.New("No claude or codex CLI was found on PATH. Install and sign in to one first.")
+		return errors.New("No claude, codex or bb CLI was found on PATH. Install and sign in to one first.")
 	}
 
 	def := usable[0]
 	for _, a := range usable { // prefer a provider other than the primary's
-		if a != cfg.Loop.Adapter {
+		if a != cfg.Loop.Adapter && a != "bb" {
 			def = a
 			break
 		}
@@ -504,6 +529,13 @@ func (w *fallbackAddWizard) collect() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if o.agent == "bb" {
+		if err := w.collectBB(); err != nil {
+			return err
+		}
+		return w.collectHandoff()
 	}
 
 	fmt.Fprintln(out, "\nStep 2 of 4: Account")
@@ -553,6 +585,12 @@ func (w *fallbackAddWizard) collect() error {
 		return err
 	}
 
+	return w.collectHandoff()
+}
+
+func (w *fallbackAddWizard) collectHandoff() error {
+	out, cfg, o := w.e.stdout, w.cfg, w.o
+	var err error
 	fmt.Fprintln(out, "\nStep 4 of 4: Handoff")
 	if n := fallbackAddExisting(cfg); n > 0 && !o.set["position"] {
 		var answer string
@@ -617,16 +655,16 @@ func fallbackAddFreeGroup(cfg *config.Config, base string) string {
 
 func fallbackAddAgentSupported(agent string) error {
 	switch agent {
-	case "claude", "codex":
+	case "claude", "codex", "bb":
 		return nil
 	case "cursor":
 		return errors.New("Cursor cannot be a fallback yet: its account and model probes are unverified.")
-	case "bb", "process":
-		return fmt.Errorf("Guided add supports headless claude and codex only.\n  A %s candidate still needs a hand-written entry; see docs/fallbacks.md.", agent)
+	case "process":
+		return errors.New("Guided add supports claude, codex and bb only.\n  A process candidate still needs a hand-written entry; see docs/fallbacks.md.")
 	case "":
-		return errors.New("Choose an agent: claude or codex.")
+		return errors.New("Choose an agent: claude, codex or bb.")
 	}
-	return fmt.Errorf("Unknown agent %q. Choose claude or codex.", agent)
+	return fmt.Errorf("Unknown agent %q. Choose claude, codex or bb.", agent)
 }
 
 // fallbackAddSlug maps a label to the candidate-id alphabet.
@@ -652,38 +690,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	if err := fallbackAddModelName("probe model", o.probeModel); err != nil {
 		return nil, err
 	}
-	account, err := fallbackAddAccount(o.account)
-	if err != nil {
-		return nil, err
-	}
-	group := strings.TrimSpace(o.group)
-	if group == "" {
-		group = fallbackAddDefaultGroup(o.agent, account)
-	}
-	if err := fallbackAddGroup(cfg, group); err != nil {
-		return nil, err
-	}
-	warning, err := fallbackAddSameLogin(cfg, o.agent, account, o.model)
-	if err != nil {
-		return nil, err
-	}
-	workdir := o.workdir
-	if workdir == "" {
-		switch {
-		case cfg.Loop.Claude != nil:
-			workdir = cfg.Loop.Claude.Workdir
-		case cfg.Loop.Codex != nil:
-			workdir = cfg.Loop.Codex.Workdir
-		case len(cfg.Loop.Progress.Repositories) > 0:
-			workdir = cfg.Loop.Progress.Repositories[0]
-		default:
-			return nil, errors.New("The loop names no project directory; pass --workdir.")
-		}
-	}
-	if workdir, err = existingDirectory(workdir); err != nil {
-		return nil, errors.New("Project directory: not an existing directory; pass --workdir.")
-	}
-	agent, err := initAgent(o.agent, account, group, o.model, workdir, lookPath)
+	agent, probe, warnings, err := fallbackAddTargetOf(cfg, o, lookPath)
 	if err != nil {
 		return nil, err
 	}
@@ -693,9 +700,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	}
 	current := cfg.Loop.Errors.FailoverOn
 	p := &fallbackAddPlan{cfg: cfg, cfgPath: cfgPath, fallbacksPath: cfg.Loop.Fallbacks, failoverOn: append([]string{}, current...)}
-	if warning != "" {
-		p.warnings = append(p.warnings, warning)
-	}
+	p.warnings, p.bb = warnings, fallbackAddBBDetailOf(cfg, o, agent)
 	var existing []config.Candidate
 	if cfg.FallbackSet != nil {
 		existing = cfg.FallbackSet.Candidates
@@ -719,7 +724,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	id := o.id
 	if id == "" {
 		base := fallbackAddSlug(o.agent + "-" + agent.Group)
-		if agent.Group == agent.Provider || strings.HasPrefix(fallbackAddSlug(agent.Group), o.agent) {
+		if o.agent != "bb" && (agent.Group == agent.Provider || strings.HasPrefix(fallbackAddSlug(agent.Group), o.agent)) {
 			base = fallbackAddSlug(agent.Group)
 		}
 		if len(base) > 60 {
@@ -734,7 +739,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 	} else if ids[id] {
 		return nil, fmt.Errorf("The id %q is already in use.", id)
 	}
-	p.candidate = config.Candidate{ID: id, Agent: agent, Probe: config.Probe{Kind: o.agent, Model: o.probeModel}}
+	p.candidate = config.Candidate{ID: id, Agent: agent, Probe: probe}
 	p.position = o.position
 	if p.position == 0 {
 		p.position = len(existing) + 1
@@ -811,6 +816,62 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 		}
 	}
 	return p, nil
+}
+
+// fallbackAddTargetOf resolves the candidate's agent and probe from the
+// answers, with any warnings the preview must show.
+func fallbackAddTargetOf(cfg *config.Config, o fallbackAddOptions, lookPath func(string) (string, error)) (config.Agent, config.Probe, []string, error) {
+	fail := func(err error) (config.Agent, config.Probe, []string, error) {
+		return config.Agent{}, config.Probe{}, nil, err
+	}
+	if o.agent == "bb" {
+		return fallbackAddBBTarget(cfg, o, lookPath)
+	}
+	for _, name := range []string{"thread", "provider", "reasoning", "probe-account-dir", "show-ids"} {
+		if o.set[name] {
+			return fail(fmt.Errorf("--%s applies only to --agent bb.", name))
+		}
+	}
+	account, err := fallbackAddAccount(o.account)
+	if err != nil {
+		return fail(err)
+	}
+	group := strings.TrimSpace(o.group)
+	if group == "" {
+		group = fallbackAddDefaultGroup(o.agent, account)
+	}
+	if err := fallbackAddGroup(cfg, group); err != nil {
+		return fail(err)
+	}
+	warning, err := fallbackAddSameLogin(cfg, o.agent, account, o.model)
+	if err != nil {
+		return fail(err)
+	}
+	workdir := o.workdir
+	if workdir == "" {
+		switch {
+		case cfg.Loop.Claude != nil:
+			workdir = cfg.Loop.Claude.Workdir
+		case cfg.Loop.Codex != nil:
+			workdir = cfg.Loop.Codex.Workdir
+		case len(cfg.Loop.Progress.Repositories) > 0:
+			workdir = cfg.Loop.Progress.Repositories[0]
+		default:
+			return fail(errors.New("The loop names no project directory; pass --workdir."))
+		}
+	}
+	if workdir, err = existingDirectory(workdir); err != nil {
+		return fail(errors.New("Project directory: not an existing directory; pass --workdir."))
+	}
+	agent, err := initAgent(o.agent, account, group, o.model, workdir, lookPath)
+	if err != nil {
+		return fail(err)
+	}
+	var warnings []string
+	if warning != "" {
+		warnings = append(warnings, warning)
+	}
+	return agent, config.Probe{Kind: o.agent, Model: o.probeModel}, warnings, nil
 }
 
 func yamlDocRoot(raw []byte) *yaml.Node {
@@ -1030,6 +1091,20 @@ func fallbackAddReportOf(p *fallbackAddPlan, preview bool) fallbackAddReport {
 		Warnings: append([]string{}, p.warnings...), Notes: append([]string{}, p.notes...),
 		Limitations: fallbackAddLimitations,
 	}
+	if d := p.bb; d != nil {
+		r.Candidate.Account = "chosen_by_bb"
+		r.Candidate.Thread, r.Candidate.Reasoning = d.relation, c.BB.Reasoning
+		r.Candidate.ModelSource, r.Candidate.ProbeAccount = "unchecked", "inherited"
+		if d.modelListed {
+			r.Candidate.ModelSource = "bb_list"
+		}
+		if d.probeAccount != "" {
+			r.Candidate.ProbeAccount = "explicit_directory"
+		}
+		if d.showIDs {
+			r.Candidate.ThreadID = d.thread
+		}
+	}
 	if preview {
 		r.Outcome = "preview"
 	}
@@ -1046,9 +1121,17 @@ func fallbackAddModel(m string) string {
 	return m
 }
 
+// fallbackAddAgentModel names an unset model by who decides it.
+func fallbackAddAgentModel(a config.Agent) string {
+	if a.Model() == "" && a.BB != nil {
+		return "thread's own"
+	}
+	return fallbackAddModel(a.Model())
+}
+
 func printFallbackAddCurrent(w io.Writer, cfg *config.Config) {
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(tw, "  Primary:\t%s, quota group %s, model %s\n", cfg.Loop.Provider, cfg.Loop.Group, fallbackAddModel(cfg.Loop.Agent.Model()))
+	fmt.Fprintf(tw, "  Primary:\t%s, quota group %s, model %s\n", cfg.Loop.Provider, cfg.Loop.Group, fallbackAddAgentModel(cfg.Loop.Agent))
 	if n := fallbackAddExisting(cfg); n == 0 {
 		fmt.Fprintf(tw, "  Fallbacks:\tnone yet\n")
 	} else {
@@ -1069,32 +1152,22 @@ func printFallbackAddCurrent(w io.Writer, cfg *config.Config) {
 func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 	c := p.candidate
 	fmt.Fprintf(w, "Preview for loop %q (nothing written yet)\n\nNew fallback\n", p.cfg.Loop.Name)
-	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(tw, "  ID:\t%s\n", c.ID)
-	fmt.Fprintf(tw, "  Agent:\t%s (provider %s)\n", c.Adapter, c.Provider)
-	account := "the CLI's current login"
-	for _, dir := range c.ProbeEnv() {
-		account = dir
+	if p.bb != nil {
+		printBBCandidate(w, p)
+	} else {
+		printHeadlessCandidate(w, c)
 	}
-	fmt.Fprintf(tw, "  Account:\t%s\n", account)
-	fmt.Fprintf(tw, "  Login:\tnot checked; sign in to it yourself first\n")
-	fmt.Fprintf(tw, "  Quota group:\t%s\n", c.Group)
-	fmt.Fprintf(tw, "  Model:\t%s\n", fallbackAddModel(c.Model()))
-	probeModel := "same as the model"
-	if c.Probe.Model != "" {
-		probeModel = c.Probe.Model
+	if len(p.warnings) > 0 {
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintf(tw, "  Probe model:\t%s\n", probeModel)
-	fmt.Fprintf(tw, "  Works in:\t%s\n", c.ProbeWorkdir())
-	tw.Flush()
 	for _, warning := range p.warnings {
 		fallbackAddWrap(w, "  WARNING: ", "  ", warning)
 	}
 
 	fmt.Fprintln(w, "\nHandoff order")
-	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "  \tID\tPROVIDER\tGROUP\tMODEL\t")
-	fmt.Fprintf(tw, "  now\tprimary\t%s\t%s\t%s\t\n", p.cfg.Loop.Provider, p.cfg.Loop.Group, fallbackAddModel(p.cfg.Loop.Agent.Model()))
+	fmt.Fprintf(tw, "  now\tprimary\t%s\t%s\t%s\t\n", p.cfg.Loop.Provider, p.cfg.Loop.Group, fallbackAddAgentModel(p.cfg.Loop.Agent))
 	for i, o := range p.order {
 		note := ""
 		switch {
@@ -1103,7 +1176,7 @@ func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 		case o.Disabled:
 			note = "disabled"
 		}
-		fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\t%s\t%s\n", i+1, o.ID, o.Provider, o.Group, fallbackAddModel(o.Model()), note)
+		fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\t%s\t%s\n", i+1, o.ID, o.Provider, o.Group, fallbackAddAgentModel(o.Agent), note)
 	}
 	tw.Flush()
 
@@ -1174,6 +1247,27 @@ func fallbackAddWrap(w io.Writer, first, indent, text string) {
 	fmt.Fprintln(w, strings.TrimRight(line, " "))
 }
 
+func printHeadlessCandidate(w io.Writer, c config.Candidate) {
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "  ID:\t%s\n", c.ID)
+	fmt.Fprintf(tw, "  Agent:\t%s (provider %s)\n", c.Adapter, c.Provider)
+	account := "the CLI's current login"
+	for _, dir := range c.ProbeEnv() {
+		account = dir
+	}
+	fmt.Fprintf(tw, "  Account:\t%s\n", account)
+	fmt.Fprintf(tw, "  Login:\tnot checked; sign in to it yourself first\n")
+	fmt.Fprintf(tw, "  Quota group:\t%s\n", c.Group)
+	fmt.Fprintf(tw, "  Model:\t%s\n", fallbackAddModel(c.Model()))
+	probeModel := "same as the model"
+	if c.Probe.Model != "" {
+		probeModel = c.Probe.Model
+	}
+	fmt.Fprintf(tw, "  Probe model:\t%s\n", probeModel)
+	fmt.Fprintf(tw, "  Works in:\t%s\n", c.ProbeWorkdir())
+	tw.Flush()
+}
+
 func fallbackAddDuration(d time.Duration) string {
 	if d%time.Hour == 0 {
 		return fmt.Sprintf("%dh", int(d/time.Hour))
@@ -1190,8 +1284,14 @@ func printFallbackAddNext(w io.Writer, p *fallbackAddPlan) {
 	}
 	fmt.Fprintln(w, "  1. Preview the check. Free: no model call.")
 	command("check", "--id "+id+" --exact --dry-run")
-	fmt.Fprintln(w, "  2. Confirm the login and model with one real request. It uses this")
-	fmt.Fprintln(w, "     account's quota and may cost money.")
+	if p.bb != nil {
+		fmt.Fprintf(w, "  2. Check the local %s CLI's login and this model with one real\n", p.candidate.Probe.Kind)
+		fmt.Fprintln(w, "     request. It uses that login's quota and may cost money. It does not")
+		fmt.Fprintln(w, "     test the account BB uses for the thread.")
+	} else {
+		fmt.Fprintln(w, "  2. Confirm the login and model with one real request. It uses this")
+		fmt.Fprintln(w, "     account's quota and may cost money.")
+	}
 	command("check", "--id "+id+" --exact")
 	fmt.Fprintln(w, "  3. See recorded health and the handoff order.")
 	command("list")

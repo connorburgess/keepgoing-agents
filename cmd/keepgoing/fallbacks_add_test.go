@@ -23,6 +23,7 @@ import (
 type addFixture struct {
 	setupFixture
 	cfg, fallbacks string
+	bb             bbLookup // nil: any bb invocation fails the test
 }
 
 func newAddFixture(t *testing.T, initArgs ...string) addFixture {
@@ -47,7 +48,14 @@ func (f addFixture) account(name string) string { return filepath.Join(f.root, "
 func (f addFixture) add(t *testing.T, input string, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := fallbacksAdd(env{context.Background(), &out, &errOut}, append([]string{"-c", f.cfg}, args...), strings.NewReader(input), f.lookPath)
+	bb := f.bb
+	if bb == nil {
+		bb = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			t.Errorf("unexpected bb invocation: %v", args)
+			return nil, errors.New("not allowed")
+		}
+	}
+	code := fallbacksAdd(env{context.Background(), &out, &errOut}, append([]string{"-c", f.cfg}, args...), strings.NewReader(input), f.lookPath, bb)
 	return code, out.String(), errOut.String()
 }
 
@@ -298,8 +306,7 @@ func TestFallbacksAddRefusesUnsupportedCombinations(t *testing.T) {
 		want string
 	}{
 		"cursor":             {[]string{"--agent", "cursor"}, "Cursor cannot be a fallback yet"},
-		"bb":                 {[]string{"--agent", "bb"}, "headless claude and codex only"},
-		"process":            {[]string{"--agent", "process"}, "headless claude and codex only"},
+		"process":            {[]string{"--agent", "process"}, "claude, codex and bb only"},
 		"unknown agent":      {[]string{"--agent", "example"}, "Unknown agent"},
 		"primary group":      {with("--group", "codex"), "is the primary's"},
 		"shared group":       {with("--group", "pool-b"), "already used by fallback \"existing\""},
@@ -336,7 +343,7 @@ func TestFallbacksAddRefusesUnsupportedCombinations(t *testing.T) {
 	t.Run("missing CLI", func(t *testing.T) {
 		var out, errOut bytes.Buffer
 		missing := func(string) (string, error) { return "", errors.New("not found") }
-		code := fallbacksAdd(env{context.Background(), &out, &errOut}, append([]string{"-c", f.cfg, "--non-interactive"}, other...), strings.NewReader(""), missing)
+		code := fallbacksAdd(env{context.Background(), &out, &errOut}, append([]string{"-c", f.cfg, "--non-interactive"}, other...), strings.NewReader(""), missing, nil)
 		if code != exitUsage || !strings.Contains(errOut.String(), "codex CLI not found on PATH") || f.files(t) != before {
 			t.Fatalf("%d %s", code, errOut.String())
 		}
@@ -501,7 +508,7 @@ func TestFallbacksAddRefusesSymlinkedSources(t *testing.T) {
 	}
 	before := f.files(t)
 	var out, errOut bytes.Buffer
-	code := fallbacksAdd(env{context.Background(), &out, &errOut}, []string{"-c", link, "--non-interactive", "--agent", "claude"}, strings.NewReader(""), f.lookPath)
+	code := fallbacksAdd(env{context.Background(), &out, &errOut}, []string{"-c", link, "--non-interactive", "--agent", "claude"}, strings.NewReader(""), f.lookPath, nil)
 	if code != exitUsage || !strings.Contains(errOut.String(), "symbolic link") || f.files(t) != before {
 		t.Fatalf("%d %s", code, errOut.String())
 	}
@@ -666,7 +673,7 @@ func TestFallbacksAddWizardRepromptsInsteadOfStopping(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	input := strings.Join([]string{
-		"cursor", "bb", "codex", // unsupported agents, then a supported one
+		"cursor", "process", "codex", // unsupported agents, then a supported one
 		filepath.Join(f.root, "absent"), "~/codex-b", // missing directory, then one under the home directory
 		"codex", "pool-b", "pool c", "", // primary's group, a used group, bad characters, then the default
 		"two words", "example-model", // bad model name
