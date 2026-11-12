@@ -22,8 +22,9 @@ const SchemaVersion = 6
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
 // use room others have not filled, but when the journal is full only a tier
-// holding more than its reservation is pruned, so no tier can evict another's
-// reserved records.
+// holding more than its reservation is pruned, lowest tier first, so no tier
+// can evict another's reserved records and a lower tier cannot evict a higher
+// tier's borrowed ones.
 const (
 	KeyReserved       = 64
 	ConditionReserved = 48
@@ -33,8 +34,8 @@ const (
 	MaxBytes          = 512 * 1024
 )
 
-// pruneOrder is the order tiers give up records when equally over their
-// reservation, and under byte pressure when none is over.
+// pruneOrder is the order in which tiers give up records: among tiers over
+// their reservation, and under byte pressure when none is over.
 var pruneOrder = []string{TierRoutine, TierActivity, TierCondition, TierKey}
 
 // ErrUnavailable deliberately excludes paths, provider output and raw errors.
@@ -285,6 +286,10 @@ func (j *Journal) add(r Record) {
 		failed := failedProbes(last)
 		c.FailedProbes += failed
 		c.PassedProbes += len(last.Probes.Results) - failed
+		if p := last.Collapsed; p != nil {
+			c.ProbeTargetKeys = p.ProbeTargetKeys
+		}
+		c.ProbeTargetKeys = foldedProbeTargets(c.ProbeTargetKeys, last.Probes.Results)
 		r.Collapsed = &c
 		j.Records[n-1] = r
 		j.Collapsed++
@@ -296,10 +301,11 @@ func (j *Journal) add(r Record) {
 	}
 }
 
-// dropFromFullestTier prunes the oldest record of the tier furthest over its
-// reservation. The newest record always survives. When no tier is over
-// (possible only under byte pressure), routine history goes first and key
-// events last.
+// dropFromFullestTier prunes the oldest record of a tier holding more than its
+// reservation, taking routine first and key last, so volume in a lower tier
+// never costs a higher tier a record, borrowed or reserved. The newest record
+// always survives. When no tier is over (only under byte pressure), the same
+// order applies and can take a tier below its reservation.
 func (j *Journal) dropFromFullestTier() {
 	newest := j.Records[len(j.Records)-1]
 	j.Records = j.Records[:len(j.Records)-1]
@@ -308,17 +314,16 @@ func (j *Journal) dropFromFullestTier() {
 		counts[r.Tier]++
 	}
 	counts[newest.Tier]++ // The newest record still occupies its tier's room.
-	victim, most := "", 0
+	dropped := false
 	for _, tier := range pruneOrder {
-		if over := counts[tier] - Reserved(tier); over > most {
-			victim, most = tier, over
+		if counts[tier] > Reserved(tier) && j.dropOldest(tier) {
+			dropped = true
+			break
 		}
 	}
-	if victim == "" || !j.dropOldest(victim) {
-		for _, tier := range pruneOrder {
-			if j.dropOldest(tier) {
-				break
-			}
+	for _, tier := range pruneOrder {
+		if dropped || j.dropOldest(tier) {
+			break
 		}
 	}
 	j.Records = append(j.Records, newest)
@@ -347,8 +352,15 @@ func validRecord(r Record) bool {
 	if r.CheckStartedAt.IsZero() {
 		return false
 	}
-	if c := r.Collapsed; c != nil && (r.Kind != "tick" || c.Count == 0 || c.FirstAt.IsZero() || c.LastAt.Before(c.FirstAt) || c.PassedProbes < 0 || c.FailedProbes < 0) {
+	if c := r.Collapsed; c != nil && (r.Kind != "tick" || c.Count == 0 || c.FirstAt.IsZero() || c.LastAt.Before(c.FirstAt) || c.PassedProbes < 0 || c.FailedProbes < 0 || len(c.ProbeTargetKeys) > MaxProbes) {
 		return false
+	}
+	if c := r.Collapsed; c != nil {
+		for _, key := range c.ProbeTargetKeys {
+			if !keyPattern.MatchString(key) {
+				return false
+			}
+		}
 	}
 	// A retarget is a move: both hashed targets are known and they differ.
 	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter) || r.TargetKey == r.TargetKeyAfter) {

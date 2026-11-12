@@ -72,14 +72,36 @@ const (
 // checks identical to it, apart from their times, decision inputs and
 // scheduled probes, ran between FirstAt and LastAt (the earliest and latest
 // folded check times, whatever order the clock produced them in).
-// FailedProbes counts folded probe failures that repeated one the run's
-// first record already shows.
+// PassedProbes and FailedProbes count folded scheduled-probe results, each of
+// which repeated that candidate's previous result in the run's retained
+// records. ProbeTargetKeys lists up to MaxProbes of the candidates they
+// probed, so a summary can still be found by target.
 type Collapsed struct {
-	Count        uint64    `json:"count"`
-	FirstAt      time.Time `json:"firstAt"`
-	LastAt       time.Time `json:"lastAt"`
-	PassedProbes int       `json:"passedProbes"`
-	FailedProbes int       `json:"failedProbes"`
+	Count           uint64    `json:"count"`
+	FirstAt         time.Time `json:"firstAt"`
+	LastAt          time.Time `json:"lastAt"`
+	PassedProbes    int       `json:"passedProbes"`
+	FailedProbes    int       `json:"failedProbes"`
+	ProbeTargetKeys []string  `json:"probeTargetKeys"`
+}
+
+// foldedProbeTargets adds the candidates of folded probe results, in first
+// seen order, without duplicates and bounded by MaxProbes.
+func foldedProbeTargets(keys []string, results []ProbeResult) []string {
+	out := append([]string{}, keys...)
+	for _, p := range results {
+		if len(out) >= MaxProbes {
+			break
+		}
+		seen := !keyPattern.MatchString(p.TargetKey)
+		for _, k := range out {
+			seen = seen || k == p.TargetKey
+		}
+		if !seen {
+			out = append(out, p.TargetKey)
+		}
+	}
+	return out
 }
 
 func sameControls(a, b *Controls) bool {
@@ -201,17 +223,15 @@ func (s probeStatus) apply(r Record) {
 	}
 }
 
-// repeats reports whether r's probe results say nothing the run does not
-// already show. A first failure, a changed error class and a recovery are
-// events; a failure repeating a retained one, or a pass by a candidate not
-// shown failing, is not.
+// repeats reports whether every probe result in r equals that candidate's
+// last result in the run's retained records. A candidate's first result in a
+// run, a first failure, a changed error class and a recovery are all events.
+// A result is never assumed: if the record that showed a candidate failing
+// has been pruned, its next result is retained whatever it is.
 func (s probeStatus) repeats(r Record) bool {
 	for _, p := range r.Probes.Results {
 		class, known := s[p.TargetKey]
-		if p.OK && known && class != "" {
-			return false
-		}
-		if !p.OK && (!known || class != p.ErrorClass) {
+		if !known || (p.OK && class != "") || (!p.OK && class != p.ErrorClass) {
 			return false
 		}
 	}
@@ -451,6 +471,12 @@ func clean(r Record) Record {
 	r.Reprompts = max(0, r.Reprompts)
 	if r.Kind != "tick" {
 		r.Collapsed = nil
+	}
+	if r.Collapsed != nil {
+		// Copy so cleaning a caller-owned record does not alias its summary.
+		c := *r.Collapsed
+		c.ProbeTargetKeys = append([]string{}, c.ProbeTargetKeys...)
+		r.Collapsed = &c
 	}
 	r.Tier = tierOf(r) // Derived, never trusted from storage.
 	return r

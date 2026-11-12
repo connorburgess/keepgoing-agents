@@ -256,3 +256,40 @@ func TestTimelineKeepsTheLastMoveUnderProbeNoise(t *testing.T) {
 		t.Fatalf("%+v", got.Retention)
 	}
 }
+
+// A fallback keeps failing its scheduled probe during a limit wait. The
+// repeats are folded, and a view filtered by probe or by that fallback must
+// still show the summary, or it would read as though the failures stopped.
+func TestTimelineFiltersMatchProbesFoldedIntoASummary(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now().UTC().Add(-100 * time.Hour).Truncate(time.Second)
+	on := &incident.Controls{Enabled: true}
+	primary, fallback := incident.TargetKey(state.Primary), incident.TargetKey("fictional-fallback")
+	for i := 0; i < 62; i++ {
+		r := incident.Record{Kind: "tick", Adapter: "bb", TargetKey: primary, TargetKeyAfter: primary, CheckStartedAt: start.Add(time.Duration(i) * 10 * time.Minute), Action: "none", Outcome: "succeeded", Cause: "limit_no_fallback",
+			ControlBefore: on, ControlAfter: on, Observation: incident.Observation{Availability: "observed", State: "error", ErrorClass: "rate_limit"}, Probes: incident.Probes{Availability: "captured"}}
+		if i%6 == 5 {
+			r.Probes.Add("fictional-fallback", "scheduled", false, "auth")
+		}
+		appendTimelineRecord(t, dir, r)
+	}
+	// Sequence 6 is the first failure; 62 is the latest check, with no probe of its own.
+	all := timelineJSON(t, dir)
+	latest := all.Events[len(all.Events)-1]
+	c := latest.Incident.Collapsed
+	if !reflect.DeepEqual(timelineSequences(all), []uint64{1, 5, 6, 62}) || len(latest.Incident.Probes.Results) != 0 || c == nil || c.FailedProbes != 9 || !reflect.DeepEqual(c.ProbeTargetKeys, []string{fallback}) {
+		t.Fatalf("%v %+v", timelineSequences(all), c)
+	}
+	if !reflect.DeepEqual(latest.Kinds, []string{"check", "probe", "limit_wait", "collapsed"}) || !strings.Contains(latest.Description, "0 passing and 9 failed probe results, each repeating that candidate's previous retained result") {
+		t.Fatalf("%v %s", latest.Kinds, latest.Description)
+	}
+	for _, args := range [][]string{{"--kind", "probe"}, {"--target", "fictional-fallback"}, {"--target", fallback, "--kind", "probe"}} {
+		if got := timelineJSON(t, dir, args...); !reflect.DeepEqual(timelineSequences(got), []uint64{6, 62}) {
+			t.Fatalf("%v: %v", args, timelineSequences(got))
+		}
+	}
+	// A candidate that was never probed still matches nothing.
+	if got := timelineJSON(t, dir, "--target", "fictional-other"); len(got.Events) != 0 {
+		t.Fatalf("%v", timelineSequences(got))
+	}
+}

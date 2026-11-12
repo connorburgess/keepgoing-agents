@@ -311,6 +311,9 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 			return true
 		}
 	}
+	if c := e.Incident.Collapsed; c != nil && containsString(c.ProbeTargetKeys, f.TargetKey) {
+		return true
+	}
 	return false
 }
 
@@ -343,7 +346,8 @@ func timelineKinds(r incident.Record) []string {
 				kinds = append(kinds, r.Action)
 			}
 		}
-		if len(r.Probes.Results) > 0 {
+		// A summary stands for the probes folded into it as well as its own.
+		if len(r.Probes.Results) > 0 || (r.Collapsed != nil && r.Collapsed.PassedProbes+r.Collapsed.FailedProbes > 0) {
 			kinds = append(kinds, "probe")
 		}
 		if timelineLimitWait(r.Cause) {
@@ -684,7 +688,7 @@ func describeIncident(r incident.Record) string {
 	if c := r.Collapsed; c != nil {
 		text += fmt.Sprintf("; COLLAPSED: %d identical earlier checks from %s to %s are summarized here", c.Count, c.FirstAt.Format(time.RFC3339), c.LastAt.Format(time.RFC3339))
 		if c.PassedProbes > 0 || c.FailedProbes > 0 {
-			text += fmt.Sprintf(", including %d passing probes and %d failed probes that repeated a retained failure", c.PassedProbes, c.FailedProbes)
+			text += fmt.Sprintf(", including %d passing and %d failed probe results, each repeating that candidate's previous retained result", c.PassedProbes, c.FailedProbes)
 		}
 		text += "; their decision inputs are not retained"
 	}

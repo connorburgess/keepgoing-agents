@@ -127,16 +127,25 @@ func TestLimitWaitSurvivesAsFirstAndLatestCheck(t *testing.T) {
 		mustAppend(t, dir, r)
 	}
 	j := loadAccounted(t, dir)
-	if len(j.Records) != 3 || j.Dropped != 0 || j.Collapsed != checks-2 {
+	// The retarget, the wait's first check, the last check before the first
+	// probe result, that first result, and the latest check.
+	if len(j.Records) != 5 || j.Dropped != 0 || j.Collapsed != checks-4 {
 		t.Fatalf("%d records, dropped %d, collapsed %d", len(j.Records), j.Dropped, j.Collapsed)
 	}
-	first, latest := j.Records[1], j.Records[2]
+	first, probed, latest := j.Records[1], j.Records[3], j.Records[4]
 	if first.Sequence != 2 || first.Collapsed != nil || first.Tier != TierCondition || !first.CheckStartedAt.Equal(retentionStart) || first.Decisions.Evaluations[0].Input.ResetIn != 120*time.Hour {
 		t.Fatalf("%+v", first)
 	}
+	// A candidate's first result in the run is kept, pass or fail.
+	if j.Records[2].Sequence != 13 || j.Records[2].Collapsed.Count != 10 || probed.Sequence != 14 || probed.Collapsed != nil || len(probed.Probes.Results) != 1 || !probed.Probes.Results[0].OK {
+		t.Fatalf("%+v %+v", j.Records[2], probed)
+	}
 	c := latest.Collapsed
-	if latest.Sequence != checks+1 || latest.Tier != TierCondition || c == nil || c.Count != checks-2 || !c.FirstAt.Equal(retentionStart.Add(10*time.Minute)) || !c.LastAt.Equal(retentionStart.Add((checks-2)*10*time.Minute)) || c.PassedProbes != 30 {
+	if latest.Sequence != checks+1 || latest.Tier != TierCondition || c == nil || c.Count != checks-14 || !c.FirstAt.Equal(retentionStart.Add(13*10*time.Minute)) || !c.LastAt.Equal(retentionStart.Add((checks-2)*10*time.Minute)) || c.PassedProbes != 29 || c.FailedProbes != 0 {
 		t.Fatalf("%+v %+v", latest, c)
+	}
+	if len(c.ProbeTargetKeys) != 1 || c.ProbeTargetKeys[0] != TargetKey("fictional-candidate") {
+		t.Fatalf("%+v", c.ProbeTargetKeys)
 	}
 	if latest.Decisions.Evaluations[0].Input.ResetIn != 10*time.Minute {
 		t.Fatalf("latest check lost its own decision input: %+v", latest.Decisions)
@@ -154,8 +163,8 @@ func TestLimitWaitSurvivesAsFirstAndLatestCheck(t *testing.T) {
 		mustAppend(t, dir, r)
 	}
 	j = loadAccounted(t, dir)
-	if j.Records[0].Kind != "retarget" || j.Records[1].Sequence != 2 || j.Records[2].Sequence != checks+1 || j.Records[2].Collapsed.Count != checks-2 {
-		t.Fatalf("key events were evicted by routine history: %+v", j.Records[:3])
+	if j.Records[0].Kind != "retarget" || j.Records[1].Sequence != 2 || j.Records[3].Sequence != 14 || j.Records[4].Sequence != checks+1 || j.Records[4].Collapsed.Count != checks-14 {
+		t.Fatalf("the move or the wait was evicted by routine history: %+v", j.Records[:5])
 	}
 	if j.Pruned.Key.Count != 0 || j.Pruned.Routine.Count == 0 || j.Pruned.Activity.Count == 0 || j.Pruned.Routine.NewestAt == nil || j.Pruned.Activity.NewestAt == nil {
 		t.Fatalf("%+v", j.Pruned)
@@ -297,6 +306,81 @@ func TestBorrowedRoomIsReturnedAndReservedRoomIsNeverTaken(t *testing.T) {
 	}
 	if j.Pruned.Condition.Count != 300-ConditionReserved || j.Pruned.Activity.Count != 300-ActivityReserved {
 		t.Fatalf("%+v", j.Pruned)
+	}
+}
+
+// Key holds 100 records, 36 of them in borrowed room. A stream of wakes then
+// fills and overflows the activity tier. Activity is over its own reservation
+// too, and it is the lower tier, so it prunes itself and key loses nothing.
+func TestLowerTierVolumeDoesNotEvictBorrowedKeyRecords(t *testing.T) {
+	m := newMemJournal()
+	for i := 0; i < 100; i++ {
+		m.add(t, retargetAt(i))
+	}
+	for i := 0; i < ConditionReserved; i++ {
+		r := retentionTick(i)
+		r.Action = "wake"
+		r.Probes.Add("primary", "exact", false, "rate_limit")
+		m.add(t, r)
+	}
+	for i := 0; i < 28; i++ {
+		r := retentionTick(100 + i)
+		r.Observation.Queued = 1 + i%2
+		m.add(t, r)
+	}
+	if c := tierCounts(m.j); c[TierKey] != 100 || c[TierCondition] != ConditionReserved || c[TierRoutine] != 28 || len(m.j.Records) != 176 {
+		t.Fatalf("fixture: %v", c)
+	}
+	for i := 0; i < 500; i++ {
+		r := retentionTick(200 + i)
+		r.Action = "wake"
+		m.add(t, r)
+	}
+	j := m.flush(t)
+	c := tierCounts(j)
+	if c[TierKey] != 100 || j.Pruned.Key.Count != 0 || c[TierCondition] != ConditionReserved || c[TierRoutine] != 28 || c[TierActivity] != ActivityReserved || j.Pruned.Activity.Count != 500-ActivityReserved {
+		t.Fatalf("%v %+v", c, j.Pruned)
+	}
+	// Key gives up its own borrowed room only to tiers that are within their reservation.
+	for i := 0; i < RoutineReserved; i++ {
+		r := retentionTick(900 + i)
+		r.Observation.Queued = 1 + i%2
+		m.add(t, r)
+	}
+	j = m.flush(t)
+	if c = tierCounts(j); c[TierRoutine] != RoutineReserved || c[TierKey] != KeyReserved || c[TierActivity] != ActivityReserved || j.Pruned.Key.Count != 100-KeyReserved || j.Records[0].Sequence != 37 {
+		t.Fatalf("%v %+v first %d", c, j.Pruned, j.Records[0].Sequence)
+	}
+}
+
+// Uses only what the journal offered before retention tiers existed. With
+// oldest-first pruning at 256 records, the move at sequence 1 was gone after
+// 300 later checks; it must now still be the first retained record, and no
+// check may be unaccounted for.
+func TestAMoveOutlivesMoreChecksThanTheJournalHolds(t *testing.T) {
+	dir := t.TempDir()
+	move := sample()
+	move.Action, move.Cause = "handoff", "other"
+	if err := Append(dir, move); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 300; i++ {
+		r := sample()
+		r.CheckStartedAt = r.CheckStartedAt.Add(time.Duration(i+1) * 10 * time.Minute)
+		// Alternate so the checks cannot be summarized as one run.
+		if i%2 == 1 {
+			r.Observation.Retry = "not_retrying"
+		}
+		if err := Append(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Records[0].Sequence != 1 || j.Records[0].Action != "handoff" || len(j.Records) != MaxRecords || j.NextSequence != 302 || j.Dropped != 45 || j.Records[1].Sequence != 47 {
+		t.Fatalf("first retained #%d %s, retained %d, dropped %d", j.Records[0].Sequence, j.Records[0].Action, len(j.Records), j.Dropped)
 	}
 }
 

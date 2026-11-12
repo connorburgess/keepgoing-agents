@@ -117,10 +117,10 @@ func TestAChangedProbeResultEndsTheRun(t *testing.T) {
 	}
 	add("", false, "")                      // 1
 	add("", false, "")                      // 2
-	add("fictional-a", true, "")            // 3 folded later: passing, not known failing
+	add("fictional-a", true, "")            // 3 a's first result in the run: kept
 	add("", false, "")                      // 4
 	add("fictional-a", false, "auth")       // 5 first failure: kept
-	add("", false, "")                      // 6
+	add("", false, "")                      // 6 folded
 	add("fictional-a", false, "auth")       // 7 same failure: folded
 	add("", false, "")                      // 8
 	add("fictional-a", false, "rate_limit") // 9 a different class: kept
@@ -128,14 +128,16 @@ func TestAChangedProbeResultEndsTheRun(t *testing.T) {
 	add("fictional-b", false, "rate_limit") // 11 another candidate: kept
 	add("", false, "")                      // 12
 	add("fictional-b", true, "")            // 13 recovered: kept
-	add("", false, "")                      // 14
-	add("", false, "")                      // 15
+	add("", false, "")                      // 14 folded
+	add("", false, "")                      // 15 folded
+	add("fictional-b", true, "")            // 16 same pass: folded
+	add("", false, "")                      // 17
 	j := loadAccounted(t, dir)
 	var got []uint64
 	for _, r := range j.Records {
 		got = append(got, r.Sequence)
 	}
-	want := []uint64{1, 4, 5, 8, 9, 10, 11, 12, 13, 15}
+	want := []uint64{1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 17}
 	if len(got) != len(want) {
 		t.Fatalf("%v", got)
 	}
@@ -144,11 +146,47 @@ func TestAChangedProbeResultEndsTheRun(t *testing.T) {
 			t.Fatalf("%v, want %v", got, want)
 		}
 	}
-	if c := j.Records[1].Collapsed; c == nil || c.Count != 2 || c.PassedProbes != 1 || c.FailedProbes != 0 {
+	if c := j.Records[5].Collapsed; c == nil || c.Count != 2 || c.FailedProbes != 1 || c.PassedProbes != 0 || len(c.ProbeTargetKeys) != 1 || c.ProbeTargetKeys[0] != TargetKey("fictional-a") {
 		t.Fatalf("%+v", c)
 	}
-	if c := j.Records[3].Collapsed; c == nil || c.Count != 2 || c.FailedProbes != 1 {
+	if c := j.Records[11].Collapsed; c == nil || c.Count != 3 || c.PassedProbes != 1 || c.FailedProbes != 0 || len(c.ProbeTargetKeys) != 1 || c.ProbeTargetKeys[0] != TargetKey("fictional-b") {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// When the record that showed a candidate failing has been pruned, its next
+// result is not assumed to be a repeat: a recovery stays visible.
+func TestARecoveryIsKeptAfterItsFailureRecordIsPruned(t *testing.T) {
+	m := newMemJournal()
+	probe := func(n int, ok bool) {
+		r := retentionTick(n)
+		if n%2 == 1 {
+			r.Probes.Add("fictional-a", "scheduled", ok, "auth")
+		}
+		m.add(t, r)
+	}
+	for n := 0; n < 8; n++ {
+		probe(n, false) // 1, 2 (first failure), then folded into 8
+	}
+	if len(m.j.Records) != 3 || m.j.Records[1].Sequence != 2 || m.j.Records[2].Collapsed.FailedProbes != 2 {
+		t.Fatalf("%+v", m.j.Records)
+	}
+	// Retention removes the run's first check and the first-failure record.
+	if !m.j.dropOldest(TierRoutine) || !m.j.dropOldest(TierCondition) || len(m.j.Records) != 1 {
+		t.Fatalf("%+v", m.j.Records)
+	}
+	probe(8, true)
+	probe(9, true) // the candidate passes: nothing retained says it was failing
+	probe(10, true)
+	j := m.flush(t)
+	var recovery *Record
+	for i, r := range j.Records {
+		if len(r.Probes.Results) == 1 && r.Probes.Results[0].OK {
+			recovery = &j.Records[i]
+		}
+	}
+	if recovery == nil || recovery.Sequence != 10 || recovery.Collapsed != nil {
+		t.Fatalf("the recovery was folded: %+v", j.Records)
 	}
 }
 
