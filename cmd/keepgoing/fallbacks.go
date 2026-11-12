@@ -133,8 +133,7 @@ func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallback
 		if en, ok := reg.Candidates[c.ID]; ok {
 			row.Last = en.Last
 		}
-		row.Usage = usageOf(reg, c.ID, now)
-		row.Usage.ID = c.ID
+		row.Usage = usageOf(reg, c, now)
 		out.Candidates = append(out.Candidates, row)
 	}
 	return out

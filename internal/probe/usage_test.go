@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
 // All events below are fictional. Reset times are arbitrary epoch seconds.
@@ -58,7 +59,14 @@ func TestClaudeUsage(t *testing.T) {
 		{"negative utilization", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":-0.1}}}}`, nil},
 		{"bounds are inclusive", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"a":{"utilization":0},"b":{"utilization":1}}}}`,
 			[]UsageWindow{{Key: "a", Used: 0}, {Key: "b", Used: 1}}},
-		{"window with mistyped fields is skipped", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":"soon","status":7}}}}`, nil},
+		{"null utilization", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":null,"status":"allowed"}}}}`, nil},
+		// Only utilization is required; other fields of another type are left out.
+		{"mistyped reset and status keep the window", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":"soon","status":7}}}}`,
+			[]UsageWindow{{Key: "seven_day", Used: 0.4}}},
+		{"mistyped reset keeps a valid status", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":{"at":1},"status":"allowed"}}}}`,
+			[]UsageWindow{{Key: "seven_day", Used: 0.4, Status: "allowed"}}},
+		{"null reset and status keep the window", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":null,"status":null}}}}`,
+			[]UsageWindow{{Key: "seven_day", Used: 0.4}}},
 		{"implausible reset and free-text status are dropped", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":-5,"status":"please see the example.com notice"}}}}`,
 			[]UsageWindow{{Key: "seven_day", Used: 0.4}}},
 		{"millisecond reset is refused", `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.4,"resetsAt":1900000000000}}}}`,
@@ -101,7 +109,7 @@ func TestCodexUsage(t *testing.T) {
 }
 
 func TestStoredUsageLoadsDefensively(t *testing.T) {
-	good := `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":0.22,"status":"allowed"}]}`
+	good := `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","identity":"0123abcd","windows":[{"key":"seven_day","used":0.22,"status":"allowed"}]}`
 	cases := []struct {
 		name      string
 		json      string
@@ -110,10 +118,11 @@ func TestStoredUsageLoadsDefensively(t *testing.T) {
 		{"good", good, true},
 		{"not an object", `"seven_day 22%"`, false},
 		{"wrong field types", `{"at":5,"source":[],"windows":{}}`, false},
-		{"no observation time", `{"source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":0.22}]}`, false},
-		{"free-text source", `{"at":"2026-11-09T12:00:00Z","source":"see example.com for details","windows":[{"key":"seven_day","used":0.22}]}`, false},
-		{"no windows", `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","windows":[]}`, false},
-		{"only out-of-range windows", `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":3}]}`, false},
+		{"no observation time", `{"source":"claude_rate_limit_event","identity":"0123abcd","windows":[{"key":"seven_day","used":0.22}]}`, false},
+		{"no account identity", `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":0.22}]}`, false},
+		{"free-text source", `{"at":"2026-11-09T12:00:00Z","source":"see example.com for details","identity":"0123abcd","windows":[{"key":"seven_day","used":0.22}]}`, false},
+		{"no windows", `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","identity":"0123abcd","windows":[]}`, false},
+		{"only out-of-range windows", `{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","identity":"0123abcd","windows":[{"key":"seven_day","used":3}]}`, false},
 	}
 	for _, tc := range cases {
 		var u Usage
@@ -124,5 +133,77 @@ func TestStoredUsageLoadsDefensively(t *testing.T) {
 	var nilUsage *Usage
 	if nilUsage.Available() {
 		t.Error("nil reading is available")
+	}
+}
+
+// The identity changes with anything that decides which account a probe
+// reads, and with nothing else. It never contains the values themselves.
+func TestUsageIdentity(t *testing.T) {
+	base := func() config.Candidate {
+		c := config.Candidate{ID: "example", Probe: config.Probe{Kind: "claude", CLI: "claude", Env: map[string]string{"CLAUDE_CONFIG_DIR": "/example/account-a", "EXAMPLE": "1"}}}
+		c.Agent = config.Agent{Adapter: "bb", Provider: "claude-code", Group: "claude-account-a", BB: &config.BB{Thread: "thr_example", Model: "target-model"}}
+		return c
+	}
+	want := UsageIdentity(base())
+	if len(want) != 32 || strings.Contains(want, "account") {
+		t.Fatalf("identity %q", want)
+	}
+	same := map[string]func(*config.Candidate){
+		"candidate id":  func(c *config.Candidate) { c.ID = "renamed" },
+		"target thread": func(c *config.Candidate) { c.BB.Thread = "thr_other" },
+		"models":        func(c *config.Candidate) { c.BB.Model, c.Probe.Model = "other-model", "cheap-model" },
+		"disabled":      func(c *config.Candidate) { c.Disabled = true },
+	}
+	for name, mut := range same {
+		c := base()
+		mut(&c)
+		if UsageIdentity(c) != want {
+			t.Errorf("%s changed the identity", name)
+		}
+	}
+	different := map[string]func(*config.Candidate){
+		"provider":        func(c *config.Candidate) { c.Provider = "codex" },
+		"group":           func(c *config.Candidate) { c.Group = "claude-account-b" },
+		"probe kind":      func(c *config.Candidate) { c.Probe.Kind = "command" },
+		"probe cli":       func(c *config.Candidate) { c.Probe.CLI = "claude-other" },
+		"account dir":     func(c *config.Candidate) { c.Probe.Env["CLAUDE_CONFIG_DIR"] = "/example/account-b" },
+		"env key added":   func(c *config.Candidate) { c.Probe.Env["OTHER"] = "1" },
+		"env key removed": func(c *config.Candidate) { delete(c.Probe.Env, "EXAMPLE") },
+	}
+	for name, mut := range different {
+		c := base()
+		mut(&c)
+		if UsageIdentity(c) == want {
+			t.Errorf("%s did not change the identity", name)
+		}
+	}
+	u := &Usage{At: time.Unix(1900000000, 0), Source: UsageSourceClaude, Identity: want, Windows: []UsageWindow{{Key: "seven_day", Used: 0.2}}}
+	if !u.For(want) || u.For("") || u.For("other") || (*Usage)(nil).For(want) {
+		t.Error("For")
+	}
+}
+
+// A failure capture keeps the end of the output, where the result or error
+// event is, and never the Claude initialization message.
+func TestCaptureKeepsTheTailAndOmitsClaudeInit(t *testing.T) {
+	init := `{"type":"system","subtype":"init","cwd":"/example/private/workdir","session_id":"example-session","tools":["Example"]}`
+	retry := `{"type":"system","subtype":"api_retry","attempt":1}`
+	result := `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429}`
+	filler := `{"type":"assistant","message":{"content":[{"type":"text","text":"` + strings.Repeat("x", 1000) + `"}]}}`
+	big := init + "\n" + retry + "\n" + strings.Repeat(filler+"\n", 100) + eventA + "\n" + result
+	got := string(capture("claude", []byte(big)))
+	if len(got) != rawCap || !strings.HasSuffix(got, eventA+"\n"+result) || strings.Contains(got, "/example/private/workdir") || strings.Contains(got, "example-session") {
+		t.Fatalf("claude capture: len=%d tail=%q", len(got), got[len(got)-80:])
+	}
+	small := string(capture("claude", []byte(init+"\n"+retry+"\n"+result)))
+	if small != retry+"\n"+result {
+		t.Fatalf("small claude capture: %q", small)
+	}
+	// Other kinds keep every line; only the size is bounded, from the end.
+	if got := string(capture("codex", []byte(init+"\n"+result))); got != init+"\n"+result {
+		t.Fatalf("codex capture: %q", got)
+	}
+	if got := capture("command", []byte(strings.Repeat("a", rawCap)+"tail")); len(got) != rawCap || !strings.HasSuffix(string(got), "tail") {
+		t.Fatalf("command capture: len=%d", len(got))
 	}
 }

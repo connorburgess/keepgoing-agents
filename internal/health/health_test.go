@@ -142,10 +142,14 @@ func TestUsageReadingIsKeptPerCandidateAndBounded(t *testing.T) {
 	r := &Registry{Candidates: map[string]*Entry{}}
 	withUsage := ok(now.Add(-2 * time.Hour))
 	withUsage.Raw = []byte("fictional raw output")
-	withUsage.Usage = &probe.Usage{At: withUsage.At, Source: probe.UsageSourceClaude, Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.22, Status: "allowed"}}}
+	withUsage.UsageIdentity = "account-a"
+	withUsage.Usage = &probe.Usage{At: withUsage.At, Source: probe.UsageSourceClaude, Identity: "account-a", Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.22, Status: "allowed"}}}
 	r.Record("claude-alt", withUsage)
-	// A later probe without a reading keeps the earlier one, with its own time.
-	r.Record("claude-alt", fail(now.Add(-time.Hour)))
+	// A later probe of the same account without a reading keeps the earlier
+	// one, with its own time.
+	sameAccount := fail(now.Add(-time.Hour))
+	sameAccount.UsageIdentity = "account-a"
+	r.Record("claude-alt", sameAccount)
 	r.Record("codex-main", ok(now))
 	if err := r.Save(dir); err != nil {
 		t.Fatal(err)
@@ -165,6 +169,19 @@ func TestUsageReadingIsKeptPerCandidateAndBounded(t *testing.T) {
 	if got.Candidates["codex-main"].Usage != nil {
 		t.Fatal("reading invented for a probe that carried none")
 	}
+	// Once the candidate is probed as another account the reading is dropped,
+	// whether or not the new probe carries one.
+	otherAccount := ok(now)
+	otherAccount.UsageIdentity = "account-b"
+	got.Record("claude-alt", otherAccount)
+	if got.Candidates["claude-alt"].Usage != nil {
+		t.Fatal("reading kept after the account identity changed")
+	}
+	otherAccount.Usage = &probe.Usage{At: now, Source: probe.UsageSourceClaude, Identity: "account-b", Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.5}}}
+	got.Record("claude-alt", otherAccount)
+	if u := got.Candidates["claude-alt"].Usage; !u.For("account-b") || u.Windows[0].Used != 0.5 {
+		t.Fatalf("new account's reading: %+v", u)
+	}
 }
 
 func TestHealthFilesWithoutOrWithBadUsageStillLoad(t *testing.T) {
@@ -174,7 +191,8 @@ func TestHealthFilesWithoutOrWithBadUsageStillLoad(t *testing.T) {
 		"null":                                 `,"usage":null`,
 		"wrong type":                           `,"usage":"seven_day 22%"`,
 		"wrong field types":                    `,"usage":{"at":5,"windows":"x"}`,
-		"out of range":                         `,"usage":{"at":"2026-11-09T11:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":22}]}`,
+		"out of range":                         `,"usage":{"at":"2026-11-09T11:00:00Z","source":"claude_rate_limit_event","identity":"account-a","windows":[{"key":"seven_day","used":22}]}`,
+		"no account identity":                  `,"usage":{"at":"2026-11-09T11:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":0.22}]}`,
 	} {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"candidates":{"claude-alt":{`+last+usage+`}}}`), 0o600); err != nil {

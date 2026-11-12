@@ -420,17 +420,14 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.TargetConfigured {
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
-	usageReg, _ := health.Load(l.StateDir) // unreadable history shows as unavailable
-	primaryUsage := usageOf(usageReg, state.Primary, now)
-	primaryUsage.ID = state.Primary
-	out.Usage = []usageView{primaryUsage}
+	out.Usage = []usageView{}
 	if fb := cfg.FallbackSet; fb != nil {
-		for _, c := range fb.Candidates {
-			v := usageOf(usageReg, c.ID, now)
-			v.ID = c.ID
-			out.Usage = append(out.Usage, v)
-		}
 		reg, err := health.Load(l.StateDir)
+		// Readings exist only for probed targets, so they are listed only when
+		// fallbacks are configured. Unreadable history shows as unavailable.
+		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
+			out.Usage = append(out.Usage, usageOf(reg, c, now))
+		}
 		if err == nil {
 			group := l.Group
 			if c, ok := fb.Find(st.Target()); ok {

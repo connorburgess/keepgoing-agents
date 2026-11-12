@@ -57,7 +57,7 @@ There are three tiers:
 
 Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there. Unreleased source also keeps one [usage reading](#usage-readings) per candidate when a probe carries one.
 
-A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. With the unreleased `stream-json` Claude probe a capture holds the event stream up to that cap, including the CLI's initialization message, instead of a single result object. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In unreleased source the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
 
 ## Usage readings
 
@@ -71,26 +71,31 @@ Unreleased source records how much of an account's quota a provider says is used
 
 No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures, not against a live account, and a CLI that rejects those flags would fail its probe.
 
-The Claude event is not a documented contract. Its shape was observed on one Claude Code version (2.1.318), where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
+The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
 
 - No event, another shape, or a window without a numeric `utilization` between 0 and 1 gives no reading for that window. It is never an error and never changes the probe result.
+- Only `utilization` is required. A `resetsAt` or `status` that is missing, of another type or implausible is left out and the window is kept, shown without that field.
 - Window names are opaque keys. keepgoing does not assume which windows exist or what they mean.
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
 
-One reading per candidate is stored in `health.json` under `usage`: the observation time, the source, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
+One reading per candidate is stored in `health.json` under `usage`: the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
 
-`keepgoing fallbacks list` prints a `usage <id>:` line per candidate, and `keepgoing status` a `usage:` line for the primary and each candidate. Both show each window's percentage, reset time and status, then the reading's age and source, or `unavailable`. Their JSON carries `usage` with `state` (`available` or `unavailable`), `observedAt`, `ageSeconds`, `source` and `windows`.
+A reading belongs to the account it was read from. The identity is a hash of the candidate's provider, quota group, probe kind, probe executable and probe environment; no path or value is stored. When a candidate ID is pointed at another account, the stored reading stops being shown at once and is dropped by the next probe. Renaming a candidate, or changing its model or target thread, keeps it.
+
+A reading also goes out of date. A window whose reset time has passed is shown as `stale` with that time and no percentage, since the recorded figure describes a window that has since reset. When every window is stale, the reading's state is `stale`. A window with no reset time cannot be judged this way and stays as recorded until a newer reading replaces it, so check its age.
+
+`keepgoing fallbacks list` prints a `usage <id>:` line per candidate. `keepgoing status` prints a `usage:` line for the primary and each candidate when fallbacks are configured, and none otherwise, because only probed targets can have a reading. Both show each window's percentage (rounded down, so only a full window shows 100%), reset time and status, then the reading's age and source, or `unavailable`. Their JSON carries `usage` with `state` (`available`, `stale` or `unavailable`), `observedAt`, `ageSeconds`, `source` and `windows`, each window with a `stale` flag.
 
 What a reading does not tell you:
 
-- `unavailable` means nothing was recorded. It does not mean usage is low.
+- `unavailable` and `stale` mean there is no current figure. They do not mean usage is low.
 - A reading describes the login the probe ran with. For a BB candidate that is the account BB uses only when they share the login, as with probe health.
 - It is as fresh as the probe that carried it. Nothing refreshes it between probes, and BB does not expose the event for turns it runs.
 - The primary is probed only for switch-back, so it usually shows unavailable.
 - Headless Claude turns still use `json` output and record no reading.
 
-Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, and CLI output. No live probe was run for this change.
+Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. The `stream-json` probe has not yet been run against a live account by this change.
 
 ## Preview manual probes
 

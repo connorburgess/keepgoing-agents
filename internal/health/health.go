@@ -103,6 +103,11 @@ func (r *Registry) Record(id string, res probe.Result) {
 	e := r.entry(id)
 	rc := res
 	e.Last = &rc
+	// A reading belongs to the account it was read from. Once the candidate
+	// is probed as a different account, an earlier reading no longer applies.
+	if e.Usage != nil && res.UsageIdentity != "" && e.Usage.Identity != res.UsageIdentity {
+		e.Usage = nil
+	}
 	if res.Usage.Available() {
 		u := *res.Usage
 		e.Usage = &u

@@ -52,6 +52,9 @@ type Result struct {
 	// per candidate by the health registry, not with each result, and no
 	// decision reads it.
 	Usage *Usage `json:"-"`
+	// UsageIdentity fingerprints the account the probe ran against, set on
+	// every result so a reading from another account can be discarded.
+	UsageIdentity string `json:"-"`
 	// Raw is the probe's stdout, capped. It is never part of health.json and
 	// never read for a decision; KeepFailure saves it so unrecognised error
 	// shapes can be mapped later.
@@ -61,11 +64,37 @@ type Result struct {
 // rawCap bounds the stdout a result carries.
 const rawCap = 64 << 10
 
+// capture bounds the output kept for a failed probe. It keeps the end, where
+// a stream's result or error event is, not the beginning. For a Claude probe
+// it first drops the CLI's initialization message, which describes the local
+// installation (working directory, session and tool lists) and says nothing
+// about the failure.
+func capture(kind string, stdout []byte) []byte {
+	if kind == "claude" {
+		var kept [][]byte
+		for _, line := range bytes.Split(stdout, []byte("\n")) {
+			var event struct {
+				Type    string `json:"type"`
+				Subtype string `json:"subtype"`
+			}
+			if json.Unmarshal(line, &event) == nil && event.Type == "system" && event.Subtype == "init" {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		stdout = bytes.Join(kept, []byte("\n"))
+	}
+	if len(stdout) > rawCap {
+		stdout = stdout[len(stdout)-rawCap:]
+	}
+	return stdout
+}
+
 // Run probes one candidate. exact selects the target model over the cheap
 // probe model.
 func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Duration) Result {
 	model := c.ProbeModel(tier == Exact)
-	res := Result{At: time.Now().UTC(), Tier: tier, Kind: c.Probe.Kind, Model: model}
+	res := Result{At: time.Now().UTC(), Tier: tier, Kind: c.Probe.Kind, Model: model, UsageIdentity: UsageIdentity(c)}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var argv []string
@@ -104,10 +133,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	}
 	start := time.Now()
 	stdout, code, err := run(ctx, argv, workdir, env)
-	res.Raw = stdout
-	if len(res.Raw) > rawCap {
-		res.Raw = res.Raw[:rawCap]
-	}
+	res.Raw = capture(c.Probe.Kind, stdout)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	res.ExitCode = code
 	switch {
@@ -121,7 +147,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	switch c.Probe.Kind {
 	case "claude":
 		judgeClaude(&res, stdout, code)
-		res.Usage = newUsage(res.At, UsageSourceClaude, ClaudeUsage(stdout))
+		res.Usage = newUsage(res.At, UsageSourceClaude, res.UsageIdentity, ClaudeUsage(stdout))
 	case "codex":
 		judgeCodex(&res, stdout, code)
 		// Codex reports a usage limit only as prose in its event stream, so
@@ -129,7 +155,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		if !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
 			l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI(), env)
 			if err == nil {
-				res.Usage = newUsage(res.At, UsageSourceCodex, CodexUsage(l))
+				res.Usage = newUsage(res.At, UsageSourceCodex, res.UsageIdentity, CodexUsage(l))
 			}
 			if err == nil && l.Blocked {
 				res.ErrorClass = string(decide.ErrRateLimit)
@@ -151,7 +177,9 @@ func judgeClaude(res *Result, stdout []byte, code int) {
 	var extra struct {
 		CredentialExpiresAt time.Time `json:"credential_expires_at"`
 	}
-	if json.Unmarshal(lastLine(stdout), &extra) == nil && !extra.CredentialExpiresAt.IsZero() {
+	// Read the expiry from the result object itself: stream output may carry
+	// other events after it.
+	if line, found := runner.ClaudeResultLine(stdout); found && json.Unmarshal(line, &extra) == nil && !extra.CredentialExpiresAt.IsZero() {
 		t := extra.CredentialExpiresAt
 		res.CredentialExpiresAt = &t
 	}
@@ -200,11 +228,6 @@ func judgeCommand(res *Result, stdout []byte, code int, codes map[int]string) {
 			res.ErrorClass = string(adapter.ClassifyCode(s.ErrorClass))
 		}
 	}
-}
-
-func lastLine(b []byte) []byte {
-	lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
-	return lines[len(lines)-1]
 }
 
 func run(ctx context.Context, argv []string, dir string, env []string) ([]byte, int, error) {

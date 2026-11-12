@@ -194,13 +194,32 @@ func TestClaudeProbeJudgesStreamAndPlainOutputAlike(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			plain := Run(context.Background(), cand("claude", fake(t, `echo '`+r.line+`'; exit `+r.exit)), Scheduled, 10*time.Second)
 			stream := Run(context.Background(), cand("claude", fake(t, `printf '%s\n' '{"type":"system","subtype":"init","session_id":"s"}' '`+eventA+`' '{"type":"assistant","message":{"content":[{"type":"text","text":"OK"}]}}' '`+eventB+`' '`+r.line+`'; exit `+r.exit)), Scheduled, 10*time.Second)
-			same := plain.OK == stream.OK && plain.ErrorClass == stream.ErrorClass && plain.Detail == stream.Detail && plain.ExitCode == stream.ExitCode &&
-				(plain.CredentialExpiresAt == nil) == (stream.CredentialExpiresAt == nil)
-			if !same {
-				t.Fatalf("plain %+v\nstream %+v", plain, stream)
+			// The stream puts usage events on both sides of the result line.
+			trailing := Run(context.Background(), cand("claude", fake(t, `printf '%s\n' '`+eventA+`' '`+r.line+`' '`+eventB+`'; exit `+r.exit)), Scheduled, 10*time.Second)
+			expiry := func(r Result) string {
+				if r.CredentialExpiresAt == nil {
+					return "none"
+				}
+				return r.CredentialExpiresAt.UTC().Format(time.RFC3339Nano)
+			}
+			for _, got := range []Result{stream, trailing} {
+				same := plain.OK == got.OK && plain.ErrorClass == got.ErrorClass && plain.Detail == got.Detail && plain.ExitCode == got.ExitCode && expiry(plain) == expiry(got)
+				if !same {
+					t.Fatalf("plain %+v (expiry %s)\nstream %+v (expiry %s)", plain, expiry(plain), got, expiry(got))
+				}
+			}
+			if name == "success" && expiry(plain) != "2026-12-04T18:46:30.684Z" {
+				t.Fatalf("expiry not read: %s", expiry(plain))
+			}
+			if !trailing.Usage.Available() || len(trailing.Usage.Windows) != 2 {
+				t.Fatalf("trailing usage: %+v", trailing.Usage)
 			}
 			if plain.Usage != nil {
 				t.Fatalf("reading without an event: %+v", plain.Usage)
+			}
+			// Every result carries the identity, reading or not.
+			if plain.UsageIdentity == "" || !stream.Usage.For(stream.UsageIdentity) {
+				t.Fatalf("identity: plain %q stream %q usage %+v", plain.UsageIdentity, stream.UsageIdentity, stream.Usage)
 			}
 			if !stream.Usage.Available() || stream.Usage.Source != UsageSourceClaude || !stream.Usage.At.Equal(stream.At) || len(stream.Usage.Windows) != 2 {
 				t.Fatalf("usage: %+v", stream.Usage)

@@ -2,12 +2,15 @@ package probe
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"sort"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
 // Where a usage reading came from.
@@ -29,9 +32,37 @@ const (
 // reported about its quota windows at At. It is a display value. Nothing in
 // the decision engine reads it, and an absent reading means unavailable.
 type Usage struct {
-	At      time.Time     `json:"at"`
-	Source  string        `json:"source"`
-	Windows []UsageWindow `json:"windows"`
+	At     time.Time `json:"at"`
+	Source string    `json:"source"`
+	// Identity is UsageIdentity of the candidate the probe ran against.
+	Identity string        `json:"identity"`
+	Windows  []UsageWindow `json:"windows"`
+}
+
+// UsageIdentity fingerprints what decides which account a candidate's probe
+// reads: provider, quota group, probe kind, probe executable and probe
+// environment. A reading belongs to that identity. When a candidate ID is
+// later pointed at another account the fingerprint changes and the old
+// reading no longer applies. It is a hash, so no path or value is stored.
+func UsageIdentity(c config.Candidate) string {
+	env := c.ProbeEnv()
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := []string{c.Provider, c.Group, c.Probe.Kind, c.ProbeCLI()}
+	for _, k := range keys {
+		parts = append(parts, k, env[k])
+	}
+	b, _ := json.Marshal(parts)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:16])
+}
+
+// For reports whether the reading was taken for the given identity.
+func (u *Usage) For(identity string) bool {
+	return u.Available() && identity != "" && u.Identity == identity
 }
 
 // UsageWindow is one quota window. Key is the provider's own name for it and
@@ -45,7 +76,7 @@ type UsageWindow struct {
 
 // Available reports whether the reading holds at least one window.
 func (u *Usage) Available() bool {
-	return u != nil && !u.At.IsZero() && len(u.Windows) > 0
+	return u != nil && !u.At.IsZero() && u.Identity != "" && len(u.Windows) > 0
 }
 
 // UnmarshalJSON never fails: a stored reading that is malformed or out of
@@ -61,20 +92,24 @@ func (u *Usage) UnmarshalJSON(b []byte) error {
 	if !ok {
 		return nil
 	}
+	identity, ok := usageToken(p.Identity)
+	if !ok {
+		return nil
+	}
 	windows := boundWindows(p.Windows)
 	if len(windows) == 0 {
 		return nil
 	}
-	*u = Usage{At: p.At.UTC(), Source: source, Windows: windows}
+	*u = Usage{At: p.At.UTC(), Source: source, Identity: identity, Windows: windows}
 	return nil
 }
 
-func newUsage(at time.Time, source string, windows []UsageWindow) *Usage {
+func newUsage(at time.Time, source, identity string, windows []UsageWindow) *Usage {
 	windows = boundWindows(windows)
-	if len(windows) == 0 {
+	if len(windows) == 0 || identity == "" {
 		return nil
 	}
-	return &Usage{At: at.UTC(), Source: source, Windows: windows}
+	return &Usage{At: at.UTC(), Source: source, Identity: identity, Windows: windows}
 }
 
 // boundWindows drops windows that are not a plain reading and caps the rest.
@@ -131,7 +166,8 @@ func usageToken(s string) (string, bool) {
 // Claude Code stream-json output. Later events override earlier ones per
 // window. The event is not a documented contract, so anything unexpected
 // (no event, another shape, a utilization outside 0..1) yields no window for
-// that part and never an error.
+// that part and never an error. Only utilization is required: a reset time or
+// status that is missing or of another type is left out and the window kept.
 func ClaudeUsage(stdout []byte) []UsageWindow {
 	var windows []UsageWindow
 	for _, line := range bytes.Split(stdout, []byte("\n")) {
@@ -150,21 +186,23 @@ func ClaudeUsage(stdout []byte) []UsageWindow {
 		}
 		for key, raw := range event.Info.Windows {
 			var w struct {
-				Utilization *float64 `json:"utilization"`
-				ResetsAt    *float64 `json:"resetsAt"`
-				Status      *string  `json:"status"`
+				Utilization json.RawMessage `json:"utilization"`
+				ResetsAt    json.RawMessage `json:"resetsAt"`
+				Status      json.RawMessage `json:"status"`
 			}
-			if json.Unmarshal(raw, &w) != nil || w.Utilization == nil {
+			var used, resets float64
+			if json.Unmarshal(raw, &w) != nil || json.Unmarshal(w.Utilization, &used) != nil || string(w.Utilization) == "null" {
 				continue
 			}
-			window := UsageWindow{Key: key, Used: *w.Utilization}
+			window := UsageWindow{Key: key, Used: used}
 			// Epoch seconds; refuse values that are not a plausible time.
-			if w.ResetsAt != nil && *w.ResetsAt > 0 && *w.ResetsAt < 1e11 {
-				t := time.Unix(int64(*w.ResetsAt), 0).UTC()
+			if json.Unmarshal(w.ResetsAt, &resets) == nil && resets > 0 && resets < 1e11 {
+				t := time.Unix(int64(resets), 0).UTC()
 				window.ResetsAt = &t
 			}
-			if w.Status != nil {
-				window.Status = *w.Status
+			var status string
+			if json.Unmarshal(w.Status, &status) == nil {
+				window.Status = status
 			}
 			windows = append(windows, window)
 		}
