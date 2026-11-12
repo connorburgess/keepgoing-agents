@@ -17,7 +17,7 @@ import (
 )
 
 func TestInitGoalPreviewCreateAndRevisedPrompt(t *testing.T) {
-	for _, adapter := range []string{"bb", "claude", "codex"} {
+	for _, adapter := range []string{"bb", "claude", "codex", "cursor"} {
 		t.Run(adapter, func(t *testing.T) {
 			f := newSetupFixture(t)
 			f.destination = filepath.Join(f.root, "private", "café 项目")

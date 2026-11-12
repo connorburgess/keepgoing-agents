@@ -14,6 +14,8 @@ import (
 
 const initTaskLimit = 1 << 20
 
+const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited; live compatibility and a supported CLI version range have not been verified."
+
 const initTaskBindingNotice = "Task binding: snapshot imported into prompt.md at creation. Later edits to the original task source are not tracked; supervision rereads the saved prompt.md when preparing task prompts."
 
 // Do not expose reader errors: an integration's reader may include task text in
@@ -137,6 +139,9 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 			"Existing provider permissions are inherited; setup does not change models or logins on BB threads.",
 			"Review the task, target, and configuration before explicitly starting supervision. Other timers are not detected or changed.",
 		},
+	}
+	if o.agent == "cursor" {
+		r.Limitations = append(r.Limitations, initCursorNotice)
 	}
 	if o.withGoal {
 		r.TaskPath = filepath.Join(o.directory, "task.md")

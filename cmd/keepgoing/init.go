@@ -57,10 +57,10 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.DurationVar(&o.noProgressTimeout, "no-progress-timeout", 0, "hold after this time without verified Git changes; zero disables")
 	fs.Int64Var(&o.maxSends, "max-sends", 0, "total automatic send attempts while this limit is enabled; zero disables")
 	fs.StringVar(&o.deadline, "deadline", "", "RFC3339 cutoff for future supervision; does not cancel running turns")
-	fs.StringVar(&o.agent, "agent", "", "bb, claude, or codex; detects installed CLIs")
+	fs.StringVar(&o.agent, "agent", "", "bb, claude, codex, or cursor; detects installed CLIs")
 	fs.StringVar(&o.thread, "thread", "", "existing BB thread ID; required for bb")
 	fs.StringVar(&o.provider, "provider", "", "existing BB thread provider label; required for bb")
-	fs.StringVar(&o.account, "account-dir", "", "existing headless account configuration directory")
+	fs.StringVar(&o.account, "account-dir", "", "existing Claude Code or Codex account configuration directory")
 	fs.StringVar(&o.group, "group", "", "primary quota pool label (default: provider)")
 	fs.StringVar(&o.model, "model", "", "headless model (default: CLI configuration)")
 	fs.Func("fallback", "ordered headless fallback: ADAPTER[:GROUP][=ACCOUNT_DIR]; repeatable", func(s string) error {
@@ -128,6 +128,9 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	}
 	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
 	fmt.Fprintln(e.stdout, initBindingNotice(o))
+	if o.agent == "cursor" {
+		fmt.Fprintln(e.stdout, initCursorNotice)
+	}
 	printInitAccount(e.stdout, cfg.Loop.Agent)
 	fmt.Fprintf(e.stdout, "Limits: stall nudge spacing >= %s; stall %s; %d nudges; %d error re-prompts with %s backoff; check every %s\n", o.wake, o.stall, o.nudges, o.reprompts, o.backoff, o.interval)
 	if o.noProgressTimeout > 0 {
@@ -208,14 +211,14 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 		return err
 	}
 	var installed []string
-	for _, a := range []string{"codex", "claude", "bb"} {
-		if _, err := lookPath(a); err == nil {
+	for _, a := range []string{"codex", "claude", "bb", "cursor"} {
+		if _, err := lookPath(initCLIName(a)); err == nil {
 			installed = append(installed, a)
 		}
 	}
 	fmt.Fprintf(e.stdout, "Detected CLIs: %s\n", strings.Join(installed, ", "))
 	if len(installed) == 0 {
-		return errors.New("no supported CLI found on PATH (codex, claude, bb)")
+		return errors.New("no supported CLI found on PATH (codex, claude, bb, or Cursor CLI agent)")
 	}
 	if err := str("name", "Loop name", &o.name, "my-loop"); err != nil {
 		return err
@@ -262,8 +265,12 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			return err
 		}
 	} else {
-		if err := str("account-dir", "Existing account directory (blank inherits current login)", &o.account, ""); err != nil {
-			return err
+		if o.agent != "cursor" {
+			if err := str("account-dir", "Existing account directory (blank inherits current login)", &o.account, ""); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintln(e.stdout, "Cursor uses the agent CLI and inherits its existing login. Separate account directories and fallbacks are unsupported.")
 		}
 		if err := str("model", "Model (blank inherits CLI configuration)", &o.model, ""); err != nil {
 			return err
@@ -272,13 +279,13 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 	provider := o.provider
 	if o.agent == "claude" {
 		provider = "claude-code"
-	} else if o.agent == "codex" {
-		provider = "codex"
+	} else if o.agent == "codex" || o.agent == "cursor" {
+		provider = o.agent
 	}
 	if err := str("group", "Primary quota pool label", &o.group, provider); err != nil {
 		return err
 	}
-	if !visited["fallback"] {
+	if !visited["fallback"] && o.agent != "cursor" {
 		fmt.Fprintln(e.stdout, "Optional fallbacks use existing logins. Use the same quota label for accounts sharing limits. Blank keeps a single agent.")
 		for {
 			a, err := ask("Next fallback agent (claude/codex, blank to finish)", "")
@@ -347,6 +354,9 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string][]byte, *config.Config, error) {
 	fail := func(err error) (map[string][]byte, *config.Config, error) { return nil, nil, err }
 	var err error
+	if o.agent == "cursor" && len(o.fallbacks) > 0 {
+		return fail(errors.New("cursor does not support --fallback; configure a primary-only loop"))
+	}
 	if o.project == "" {
 		o.project, err = os.Getwd()
 		if err != nil {
@@ -464,6 +474,8 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		loop["claude"] = primary.Claude
 	case primary.Codex != nil:
 		loop["codex"] = primary.Codex
+	case primary.Cursor != nil:
+		loop["cursor"] = primary.Cursor
 	}
 	files := map[string][]byte{}
 	if len(fallbacks.Candidates) > 0 {
@@ -509,11 +521,17 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 	if strings.Trim(a.Group, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != "" {
 		return a, errors.New("quota group labels may contain only letters, digits, hyphens, underscores, and dots")
 	}
-	if kind != "bb" && kind != "claude" && kind != "codex" {
-		return a, errors.New("agent must be bb, claude, or codex")
+	if kind != "bb" && kind != "claude" && kind != "codex" && kind != "cursor" {
+		return a, errors.New("agent must be bb, claude, codex, or cursor")
 	}
-	cli, err := lookPath(kind)
+	if kind == "cursor" && account != "" {
+		return a, errors.New("cursor does not support --account-dir; existing Cursor CLI login and environment are inherited")
+	}
+	cli, err := lookPath(initCLIName(kind))
 	if err != nil {
+		if kind == "cursor" {
+			return a, errors.New("Cursor CLI executable \"agent\" not found on PATH; the desktop cursor launcher is not supported")
+		}
 		return a, fmt.Errorf("%s CLI not found on PATH", kind)
 	}
 	cli, err = filepath.Abs(cli)
@@ -544,11 +562,22 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 	case "codex":
 		a.Provider = "codex"
 		a.Codex = &config.Codex{CLI: cli, Workdir: project, Model: model, Env: env}
+	case "cursor":
+		a.Provider = "cursor"
+		a.Cursor = &config.Cursor{CLI: cli, Workdir: project, Model: model}
 	}
 	if a.Group == "" {
 		a.Group = a.Provider
 	}
 	return a, nil
+}
+
+// Cursor's desktop launcher is named cursor; its headless CLI is agent.
+func initCLIName(kind string) string {
+	if kind == "cursor" {
+		return "agent"
+	}
+	return kind
 }
 
 func existingDirectory(p string) (string, error) {

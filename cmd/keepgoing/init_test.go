@@ -227,7 +227,7 @@ func TestInitRejectsInvalidSetupWithoutWrites(t *testing.T) {
 		extra []string
 	}{
 		{"missing task", []string{"--task", ""}}, {"two tasks", []string{"--task-file", "example.md"}},
-		{"bad name", []string{"--name", "../escape"}}, {"unknown agent", []string{"--agent", "cursor"}},
+		{"bad name", []string{"--name", "../escape"}}, {"unknown agent", []string{"--agent", "unsupported-example"}},
 		{"missing account", []string{"--account-dir", filepath.Join(f.root, "missing")}},
 		{"BB no thread", []string{"--agent", "bb", "--provider", "codex"}},
 		{"BB no provider", []string{"--agent", "bb", "--thread", "thr_example"}},
