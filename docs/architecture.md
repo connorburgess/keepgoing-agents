@@ -29,7 +29,7 @@ internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives
 internal/report             signed webhook reports and diagnostic delivery history
-internal/incident           bounded typed tick/control history; diagnostic only
+internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
 internal/rundiscovery       pure run identity/boundary contract; no IO
@@ -173,6 +173,8 @@ Status and doctor read the ledger independently of the tick's last decision. War
 ## Offline incident view
 
 `cmd/keepgoing` implements `timeline` as a read-only composition of `incident.Load`, `report.LoadDeliveries` and a bounded control-file projection. No new decision or storage package is introduced. The command reads these files independently, without locks or provider/daemon/scheduler/CI calls, and keeps current flags separate from historical hold entries. `--state-dir` bypasses normal config loading for copied records or broken configuration. It never consumes transcript text, raw logs or provider output.
+
+Incident schema 5 records the hashed target alias after each check, typed probe results and saved manual retargets, so handoffs, switch-backs and retargets show both ends. `timeline` labels each event with fixed kinds and filters by kind, target key and time before applying the display limit; summaries ignore filters. A limit wait is labelled from a typed rule on the engine's decision, which no rule reads back, not from its reason text. Target keys remain alias hashes. Run, chat and conversation identity belongs to the planned [run discovery](run-discovery.md) graph and is not defined here.
 
 The view retains normalized source/sequence references, local timestamp bases, historical build labels, typed decision inputs and delivery attempts. Sorting by local timestamps is presentation only, not causal inference. Source-wide summaries remain independent of the bounded display limit. Missing, invalid, stale, future or unsupported evidence remains explicit; partial failures print usable sources before returning failure. No diagnostic conclusion authorizes sends, control changes or replay. See the [timeline contract](diagnostics.md#offline-incident-timeline).
 

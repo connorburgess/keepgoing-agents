@@ -86,6 +86,8 @@ type tick struct {
 	incidentTarget      string
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
+	incidentProbes      incident.Probes
+	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
 	progress            *state.Progress
 	observedTarget      string
 	awaitingInput       bool
@@ -476,6 +478,7 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		t.reg.Record(c.ID, r)
 		t.keepFailure(c.ID, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+		t.incidentProbes.Add(c.ID, string(r.Tier), r.OK, r.ErrorClass)
 		if !r.OK {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
 		}
@@ -507,6 +510,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		t.reg.Record(id, r)
 		t.keepFailure(id, r)
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+		t.incidentProbes.Add(id, string(r.Tier), r.OK, r.ErrorClass)
 		note.Tried = append(note.Tried, id)
 		if !r.OK {
 			continue
@@ -575,6 +579,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	t.keepFailure(state.Primary, r)
 	t.res.Probes = append(t.res.Probes, ProbeNote{ID: state.Primary, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	t.incidentProbes.Add(state.Primary, string(r.Tier), r.OK, r.ErrorClass)
 	if !r.OK {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
 		return false, nil
@@ -632,21 +637,21 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
 			return err
 		}
-		if err := t.send(a, text, mode, t.res.Target, string(d.Action)); err != nil {
+		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		// The adapter was called: count the attempt whatever it returned, so a
+		// failing or unsupported send cannot repeat on every check outside the
+		// per-episode caps and spacing.
+		c := decide.Attempted(d.Action, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
 				t.warn("%s adapter: %v", a.Name(), err)
 				return nil
 			}
 			return err
-		}
-		t.st.LastWakeAt = t.now
-		if d.Action == decide.Nudge {
-			t.st.Nudges++
-		}
-		if d.Action == decide.Reprompt {
-			t.st.Reprompts++
-			t.st.LastRepromptAt = t.now
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
