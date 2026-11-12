@@ -61,6 +61,10 @@ func (c *Config) CheckSources() error {
 	return nil
 }
 
+// Path is the absolute path Load read this configuration from; empty for a
+// configuration parsed from memory.
+func (c *Config) Path() string { return c.source.path }
+
 // SourcesDigest identifies the parsed config and fallback source snapshots,
 // including their paths. It is private control metadata, never diagnostic
 // output or an authorization token. CheckSources must still succeed at use.
