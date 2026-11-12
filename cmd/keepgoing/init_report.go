@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 )
 
 const initTaskLimit = 1 << 20
@@ -63,6 +64,8 @@ type initReport struct {
 	ConfigPath    string            `json:"configPath"`
 	StateDir      string            `json:"stateDir"`
 	PromptPath    string            `json:"promptPath"`
+	TaskPath      string            `json:"taskPath,omitempty"`
+	Goal          *initGoalReport   `json:"goal,omitempty"`
 	TaskSource    string            `json:"taskSource"`  // stdin, file, inline
 	TaskBinding   string            `json:"taskBinding"` // snapshot
 	Primary       initTarget        `json:"primary"`
@@ -114,7 +117,7 @@ func initTargetOf(a config.Agent) initTarget {
 	return t
 }
 
-func printInitJSON(e env, o initOptions, cfg *config.Config) int {
+func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal) int {
 	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
 	r := initReport{
 		SchemaVersion: 1, Version: version, Outcome: "created", Loop: o.name,
@@ -128,12 +131,20 @@ func printInitJSON(e env, o initOptions, cfg *config.Config) int {
 			StartBackground: []string{keepgoingExecutable(), "start", "--background", "-c", cfgPath},
 		},
 		Limitations: []string{
-			initTaskBindingNotice,
+			initBindingNotice(o),
 			"Setup leaves supervision disabled; no agents, probes, logins, or schedulers are started.",
 			"Target identity, account access, quota independence, and provider health have not been verified.",
 			"Existing provider permissions are inherited; setup does not change models or logins on BB threads.",
 			"Review the task, target, and configuration before explicitly starting supervision. Other timers are not detected or changed.",
 		},
+	}
+	if o.withGoal {
+		r.TaskPath = filepath.Join(o.directory, "task.md")
+		r.Goal = &initGoalReport{PromptContext: true, TitleSource: "loop_name", SpecificationSource: "task_snapshot"}
+		if goal != nil {
+			summary := goal.Summary()
+			r.Goal.Record = &summary
+		}
 	}
 	if o.noProgressTimeout != 0 {
 		r.Limits.NoProgressTimeout = o.noProgressTimeout.String()

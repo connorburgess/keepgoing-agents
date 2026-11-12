@@ -72,6 +72,8 @@ jobs:
       - name: Verify BB transfer and recovery on Windows
         run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
       - run: go test -v ./internal/config -run '^TestBBTransfer' -count=1
+      - name: Verify goal-aware setup on Windows
+        run: go test -v ./cmd/keepgoing -run '^TestInitGoal' -count=1
       - name: Verify private goal records on Windows
         run: go test -v ./internal/control -run '^TestGoal' -count=1
       - name: Verify native headless runner lifecycle and owned cancellation
