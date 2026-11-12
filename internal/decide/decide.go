@@ -59,6 +59,11 @@ type Observation struct {
 	// AwaitingInput means the session is blocked on a person: a pending
 	// permission prompt, question, or form, reported by the provider.
 	AwaitingInput bool
+	// DeferredInteraction means saved structured evidence that a provider
+	// interaction was cancelled and handed to a person, and that the supervisor
+	// has not yet recorded an awaiting-user hold for it. Unlike AwaitingInput it
+	// is not a still-pending provider state; it never implies approval.
+	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
 	// parent prompt or target move; control holds and stop retain precedence.
@@ -153,7 +158,13 @@ type Decision struct {
 	Action    Action
 	Reason    string
 	LimitWait LimitWait
+	// DeferredInteraction is set only when the deferred-interaction rule itself
+	// produced an AwaitUser, so a caller never matches on Reason text.
+	DeferredInteraction bool
 }
+
+// DeferredInteractionReason is fixed text; it carries no provider content.
+const DeferredInteractionReason = "agent interaction was cancelled and needs a person; nothing was approved"
 
 func limitWait(kind LimitWait, reason string) Decision {
 	return Decision{Action: None, Reason: reason, LimitWait: kind}
@@ -197,6 +208,9 @@ func Decide(in Input) Decision {
 	}
 	if len(o.AwaitingChildren) > 0 {
 		return Decision{Action: AwaitUser, Reason: "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}
+	}
+	if o.DeferredInteraction {
+		return Decision{Action: AwaitUser, Reason: DeferredInteractionReason, DeferredInteraction: true}
 	}
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
