@@ -508,7 +508,7 @@ func Cause(reason string) string {
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
 		{"no Git progress within ", "git_limit"}, {"no progress after ", "stall_limit"},
 		{"no progress for ", "stall"}, {"children waiting on a person ", "child_input"},
-		{"stop requested", "stop"}, {"stop already requested", "stop"},
+		{"provider retry went silent ", "retry_silent"}, {"stop requested", "stop"}, {"stop already requested", "stop"},
 	} {
 		if strings.HasPrefix(reason, c.prefix) {
 			return c.code
@@ -527,7 +527,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

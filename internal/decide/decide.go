@@ -48,9 +48,10 @@ type Observation struct {
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
-	// RetryExpired is diagnostic: the adapter saw a retry notice on a session
-	// that is not running and treated it as stale, so Retrying is false. It
-	// never changes Decide policy; ordinary bounded error handling applies.
+	// RetryExpired means the adapter saw a retry notice with no fresh
+	// evidence behind it and stopped honoring it, so Retrying is false and the
+	// ordinary error or stall handling applies. Its only policy effect is the
+	// bound on a silent active session that has no Git progress tracking.
 	RetryExpired bool
 	// RetryKnown is diagnostic evidence availability; false does not assert that
 	// retries are absent. It does not change decision policy.
@@ -95,7 +96,12 @@ type Input struct {
 	SendLimitReached  bool // total reserved send attempts reached the configured cap
 	DeadlineReached   bool // evaluated at the beginning of this check
 
-	UnchangedFor    time.Duration // since the progress fingerprint last changed
+	UnchangedFor time.Duration // since the progress fingerprint last changed
+	// ProgressTracked: Git repositories are configured, so UnchangedFor is
+	// evidence. RetrySilentFor: how long this active session has been observed
+	// with an expired retry notice; zero when that does not apply.
+	ProgressTracked bool
+	RetrySilentFor  time.Duration
 	SinceWake       time.Duration // since we last sent anything
 	StallAfter      time.Duration
 	MinWakeInterval time.Duration
@@ -231,7 +237,7 @@ func Decide(in Input) Decision {
 	if o.RetryUnverified {
 		return none("provider retry state unverified")
 	}
-	if o.Retrying {
+	if o.Retrying && !limitOutranksRetry(in) {
 		return none("provider is retrying the turn")
 	}
 	switch o.State {
@@ -254,6 +260,13 @@ func Decide(in Input) Decision {
 		}
 		return Decision{Action: Wake, Reason: "idle"}
 	case Active:
+		// Without Git tracking there is no stall evidence and no nudge would
+		// help. A session whose retry notice expired and which has stayed
+		// silent for the patience a tracked loop would have shown (one stall
+		// interval, then every nudge interval) needs a person.
+		if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
+			return Decision{Action: AwaitUser, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+		}
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
 			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
 				return Decision{Action: AwaitUser, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
@@ -263,6 +276,22 @@ func Decide(in Input) Decision {
 		return none("active")
 	}
 	return none("unrecognised state")
+}
+
+// limitOutranksRetry reports whether a retry notice must yield to the limit
+// rules. A rate-limited, errored session whose structured reset is further
+// away than wait_if_reset_within, with no retry actually queued, is handled
+// by decideError (handoff when allowed, a limit wait otherwise), so a notice
+// cannot hold the loop on a limited account past a healthy fallback.
+func limitOutranksRetry(in Input) bool {
+	o, f := in.Obs, in.Failover
+	return o.State == Error && o.ErrorClass == ErrRateLimit && o.Queued == 0 && f.ResetIn > 0 && f.ResetIn > f.WaitIfResetWithin
+}
+
+// SilentRetryPatience is how long an untracked active session may stay silent
+// after its retry notice expired before a person is asked.
+func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges int) time.Duration {
+	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
 }
 
 // decideError bounds recovery from an errored session. A handoff happens

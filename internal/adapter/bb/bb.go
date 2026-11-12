@@ -165,11 +165,15 @@ const DefaultRetrySignalTTL = 15 * time.Minute
 // retryExpired reports whether a retry notice has gone stale at check time.
 //
 //   - Errored thread: nothing is running, so only the newest notice counts.
-//   - Active thread: any newer event in the thread log (tool output, another
-//     notice, queued input) shows the turn is still alive, so the notice
-//     expires only after the whole log has been silent for the interval.
-//   - Rate limit with a structured reset: BB's own retry is scheduled for the
-//     reset, so the interval starts there, not at the notice.
+//   - Active thread: any newer provider or system event in the thread log
+//     (tool output, another notice) shows the turn is still alive, so the
+//     notice expires only after the log has been silent for the interval.
+//     Requested input, including this supervisor's own nudges, is not thread
+//     activity.
+//   - Rate-limit notice with a structured reset: the interval starts at the
+//     reset, not at the notice. Only a notice that is itself classified as a
+//     rate limit qualifies: the last blocked window stays in the summary
+//     across turns and must not lend its reset to a later network error.
 //
 // Evidence with no usable time cannot be shown to be fresh. A local clock
 // that moved backwards yields a negative age, which counts as fresh.
@@ -182,7 +186,7 @@ func (a *Adapter) retryExpired(state decide.State, sig signals) bool {
 	if state == decide.Active {
 		at = sig.lastEventAt
 	}
-	if (sig.class == decide.ErrRateLimit || sig.blocked) && sig.resetsAt.After(at) {
+	if sig.class == decide.ErrRateLimit && sig.resetsAt.After(at) {
 		at = sig.resetsAt
 	}
 	return at.IsZero() || a.now().Sub(at) > ttl

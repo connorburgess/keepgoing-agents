@@ -326,37 +326,39 @@ func TestExpiredRetryOnActiveThreadUsesOrdinaryStallBounds(t *testing.T) {
 	}
 }
 
-// A rate-limited thread whose retry is scheduled for a structured reset is
-// left alone: no handoff, no re-prompt, no spent allowance. Once the adapter
-// reports the notice expired, the ordinary rate-limit rules apply.
-func TestRateLimitRetryNoticeIsNotOverriddenBeforeItExpires(t *testing.T) {
-	for _, fallbacks := range []bool{true, false} {
-		w := newWorld(t, true, fallbacks)
-		if fallbacks {
-			for _, c := range w.cfg.FallbackSet.Candidates {
-				w.probeOK[c.ID] = true
+// A rate-limit retry notice on an errored target is honored only while a
+// retry is queued or the reset is within wait_if_reset_within (30m here).
+// With a far reset and nothing queued the ordinary limit rules decide.
+func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fallbacks bool
+		resetIn   time.Duration
+		queued    int
+		action    string
+		reason    string
+	}{
+		{"far reset, healthy fallback", true, 5 * time.Hour, 0, "handoff", "error: rate_limit"},
+		{"far reset, no fallback", false, 5 * time.Hour, 0, "none", "limit resets in 5h0m0s; no confirmed fallback"},
+		{"far reset, queued retry, healthy fallback", true, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
+		{"far reset, queued retry, no fallback", false, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
+		{"near reset, healthy fallback", true, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
+		{"near reset, no fallback", false, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, true, tc.fallbacks)
+			if tc.fallbacks {
+				for _, c := range w.cfg.FallbackSet.Candidates {
+					w.probeOK[c.ID] = true
+				}
 			}
-		}
-		resets := t0.Add(5 * time.Hour)
-		p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, Retrying: true, RetryKnown: true, ResetsAt: resets})
-		for _, hours := range []int{0, 1, 4} {
-			r := runTick(t, w, t0.Add(time.Duration(hours)*time.Hour))
+			p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, Retrying: true, RetryKnown: true, ResetsAt: t0.Add(tc.resetIn), Queued: tc.queued})
+			r := runTick(t, w, t0)
 			st, _ := state.Load(w.dir)
-			if r.Action != "none" || r.Reason != "provider is retrying the turn" || r.Handoff != nil || st.Reprompts != 0 || len(p.sent) != 0 || st.Target() != state.Primary {
-				t.Fatalf("fallbacks=%t +%dh: %+v", fallbacks, hours, r)
+			if r.Action != tc.action || r.Reason != tc.reason || len(p.sent) != 0 || st.Reprompts != 0 || (r.Handoff != nil) != (tc.action == "handoff") {
+				t.Fatalf("%+v", r)
 			}
-		}
-		// Just after the reset the adapter still reports the retry (its grace).
-		p.obs.ResetsAt = time.Time{}
-		if r := runTick(t, w, resets.Add(time.Minute)); r.Action != "none" || len(p.sent) != 0 {
-			t.Fatalf("fallbacks=%t: acted alongside BB's retry: %+v", fallbacks, r)
-		}
-		p.obs.Retrying, p.obs.RetryExpired = false, true
-		r := runTick(t, w, resets.Add(16*time.Minute))
-		want := map[bool]string{true: "handoff", false: "reprompt"}[fallbacks]
-		if r.Action != want || r.RetrySignal != "expired" {
-			t.Fatalf("fallbacks=%t: %+v", fallbacks, r)
-		}
+		})
 	}
 }
 
@@ -379,6 +381,48 @@ func TestQueuedRetryOutlivesExpiredNotice(t *testing.T) {
 	}
 	p.obs.Queued = 0
 	if r := runTick(t, w, t0.Add(5*time.Hour)); r.Action != "handoff" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A loop with no progress.repositories cannot nudge. An active target whose
+// retry notice expired is held for a person after one stall interval plus
+// max_nudges wake intervals of continued silence (here 30m + 3 x 1h), with
+// one report. Activity in between starts the patience over.
+func TestSilentActiveTargetWithoutGitTrackingIsHeld(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.Progress.MaxNudges = 3
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		w.probeOK[c.ID] = true
+	}
+	silent := decide.Observation{State: decide.Active, ErrorClass: decide.ErrUnknown, RetryKnown: true, RetryExpired: true}
+	p := w.primary(decide.Observation{State: decide.Active, ErrorClass: decide.ErrUnknown, Retrying: true, RetryKnown: true})
+	for i, c := range []struct {
+		minute int
+		obs    decide.Observation
+		action string
+	}{
+		{0, p.obs, "none"},
+		{20, silent, "none"},  // first seen expired
+		{120, silent, "none"}, //
+		{130, decide.Observation{State: decide.Active}, "none"}, // it logged something: the episode ends
+		{140, silent, "none"},             // expired again: patience starts over
+		{140 + 209, silent, "none"},       // 3h29m
+		{140 + 210, silent, "await_user"}, // 3h30m
+		{140 + 220, silent, "none"},       // held
+	} {
+		p.obs = c.obs
+		r := runTick(t, w, t0.Add(time.Duration(c.minute)*time.Minute))
+		if r.Action != c.action || len(p.sent) != 0 || r.Handoff != nil {
+			t.Fatalf("check %d (+%dm): %+v", i, c.minute, r)
+		}
+	}
+	ctl, _ := control.Load(w.dir)
+	if !ctl.AwaitingUser || !strings.HasPrefix(ctl.Note, "provider retry went silent on an active session for 3h30m0s") || strings.Count(w.reportTypes(), "await_user") != 1 {
+		t.Fatalf("%+v reports=%s", ctl, w.reportTypes())
+	}
+	j, _ := incident.Load(w.dir)
+	if r := j.Records[len(j.Records)-2]; r.Cause != "retry_silent" || r.Observation.Retry != "expired" {
 		t.Fatalf("%+v", r)
 	}
 }

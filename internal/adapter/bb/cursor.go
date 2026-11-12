@@ -33,7 +33,8 @@ type Cursor struct {
 	Blocked         bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
 	ResetsAt        time.Time         `json:"resetsAt,omitempty"`
 	Pending         map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
-	// LastEventAt is the bounded time of the newest event of any kind, and
+	// LastEventAt is the bounded time of the newest event that is not
+	// requested input (client/...), and
 	// ScannedAt the local time of the last complete scan. See eventTime.
 	LastEventAt time.Time `json:"lastEventAt,omitempty"`
 	ScannedAt   time.Time `json:"scannedAt,omitempty"`
@@ -100,7 +101,11 @@ func (e event) time() time.Time {
 func (c *Cursor) apply(e event, seenAt time.Time) {
 	c.LastSeq = e.Seq
 	when := c.eventTime(e, seenAt)
-	c.LastEventAt = when
+	// Requested input (a person's message, a child notice, this supervisor's
+	// own nudge) says nothing about whether the turn is alive.
+	if !strings.HasPrefix(e.Type, "client/") {
+		c.LastEventAt = when
+	}
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
 	}

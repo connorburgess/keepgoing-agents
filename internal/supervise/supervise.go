@@ -322,8 +322,6 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Window = why
-	// Kept to tell verified Git progress from a first baseline further down.
-	priorFingerprint, priorProgressAt := t.st.Fingerprint, t.st.LastProgressAt
 
 	// Fallback health: scheduled probes, then the redundancy picture.
 	var summary health.Summary
@@ -381,26 +379,18 @@ func (t *tick) run() error {
 	if !t.st.LastRepromptAt.IsZero() {
 		sinceReprompt = t.now.Sub(t.st.LastRepromptAt)
 	}
-	// The re-prompt count covers one error episode. It ends when a turn has
-	// finished without an error (idle) or the active session made verified Git
-	// progress. Merely seeing the session active does not end it: a re-prompt
-	// itself makes the session active, and one that fails again must spend the
-	// same allowance, or the cap is never reached.
+	// One error episode covers the re-prompt count and the rejected handoff
+	// briefs. It ends on evidence that the session recovered: a turn finished
+	// without an error (idle), or verified Git progress while active. Merely
+	// seeing the session active does not end it: our own re-prompt, or a
+	// provider retry, makes it active, and a turn that errors again must spend
+	// the same allowances, or neither cap is ever reached.
 	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
+		t.st.HandoffBriefs = nil
 	}
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
-	}
-
-	// Rejected handoff briefs cover one error episode. It ends on evidence that
-	// the session recovered: a turn that finished without an error (idle), or
-	// verified Git progress while active. Seeing the session active is not
-	// enough: our own re-prompt, or a provider retry, makes it active, and a
-	// turn that errors again must not hand every fallback a fresh allowance.
-	gitProgress := priorFingerprint != "" && !priorProgressAt.IsZero() && t.st.Fingerprint != priorFingerprint
-	if obs.State == decide.Idle || (obs.State == decide.Active && gitProgress) {
-		t.st.HandoffBriefs = nil
 	}
 
 	failover := decide.Failover{
@@ -414,6 +404,7 @@ func (t *tick) run() error {
 	in := decide.Input{
 		Obs: obs, Control: gate, InWindow: inWindow,
 		UnchangedFor: unchangedFor, SinceWake: sinceWake,
+		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
 		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,

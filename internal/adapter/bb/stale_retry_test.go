@@ -126,13 +126,13 @@ func stallDecision(o decide.Observation, nudges int) decide.Decision {
 		Failover: decide.Failover{Eligible: true, Available: true}, MaxReprompts: 3})
 }
 
-// An active thread that keeps logging events of any kind is alive: its retry
+// An active thread that keeps logging provider events is alive: its retry
 // notice suppresses nudges exactly as before, for as long as that continues.
 func TestActiveThreadRetryNoticeStandsWhileLogIsNotSilent(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
 	events := `[` + at(turnStarted, start) + `,` + at(retryNotice, start.Add(time.Minute))
 	dir := t.TempDir()
-	kinds := []string{toolOutput, retryNotice, queuedInput}
+	kinds := []string{toolOutput, retryNotice, `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`}
 	for i := 1; i <= 280; i++ { // about 47 hours, one event every ten minutes
 		logged := start.Add(time.Duration(i) * 10 * time.Minute)
 		events += `,` + at(kinds[i%len(kinds)], logged)
@@ -179,6 +179,16 @@ func TestSilentActiveThreadRetryNoticeExpiresIntoStallHandling(t *testing.T) {
 		d := stallDecision(o, tc.nudges)
 		if err != nil || o.State != decide.Active || o.Retrying != tc.retry || o.RetryExpired == tc.retry || o.RetryUnverified || d.Action != tc.action || d.Reason != tc.reason {
 			t.Fatalf("+%s: %+v %+v %v", tc.after, o, d, err)
+		}
+	}
+	// Requested input is not thread activity. If BB logs this supervisor's own
+	// nudge (or anyone's message) when it is queued, the notice stays expired.
+	for i, minutes := range []int{17, 77, 137} {
+		log = log[:len(log)-1] + `,` + at(queuedInput, last.Add(time.Duration(minutes)*time.Minute)) + `]`
+		b, _ := newFake(`{"thread":{"status":"active","queuedMessageCount":`+fmt.Sprint(i+1)+`}}`, log, false)
+		b.CheckAt(last.Add(time.Duration(minutes+1) * time.Minute))
+		if o, err := b.Observe(context.Background()); err != nil || o.Retrying || !o.RetryExpired || o.Queued != i+1 {
+			t.Fatalf("queued input %d re-armed the notice: %+v %v", i+1, o, err)
 		}
 	}
 	// A thread that has not stalled by its own progress rules is simply active.
@@ -233,6 +243,39 @@ func TestRateLimitRetryNoticeWaitsForStructuredReset(t *testing.T) {
 				}
 				if !tc.retry && status == "error" && d.Action != decide.Handoff {
 					t.Fatalf("expired rate limit not handled by the ordinary rules: %+v", d)
+				}
+			})
+		}
+	}
+}
+
+// The newest blocked rate-limit window stays in the summary across turns. A
+// later notice of another class must not borrow its reset: before the class
+// check, this network notice was honored until the weekly reset plus the
+// interval, days away, as "provider is retrying the turn".
+func TestOtherErrorClassDoesNotInheritAStaleRateLimitWindow(t *testing.T) {
+	start := now.Add(-6 * time.Hour)
+	weekly := start.Add(5 * 24 * time.Hour)
+	for _, status := range []string{"error", "active"} {
+		for _, tc := range []struct {
+			name, notice string
+		}{
+			{"network", providerError("stream-disconnected", nil, "responseStreamDisconnected", true)},
+			{"unknown", retryNotice},
+			{"overloaded", providerError("overloaded", 529, "overloaded_error", true)},
+		} {
+			t.Run(status+"_"+tc.name, func(t *testing.T) {
+				log := `[` + at(turnStarted, start.Add(-time.Hour)) + `,` + at(rateLimitsEvent("blocked", weekly), start.Add(-50*time.Minute)) + `,` +
+					at(turnStarted, start) + `,` + at(tc.notice, start.Add(time.Minute)) + `]`
+				for _, c := range []struct {
+					after time.Duration
+					retry bool
+				}{{10 * time.Minute, true}, {17 * time.Minute, false}, {26 * time.Hour, false}} {
+					a, _ := newFake(`{"thread":{"status":"`+status+`"}}`, log, false)
+					a.CheckAt(start.Add(c.after))
+					if o, err := a.Observe(context.Background()); err != nil || o.Retrying != c.retry || o.RetryExpired == c.retry {
+						t.Fatalf("+%s: %+v %v", c.after, o, err)
+					}
 				}
 			})
 		}

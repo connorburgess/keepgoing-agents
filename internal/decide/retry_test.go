@@ -61,8 +61,8 @@ func TestDiagnosticEvidenceCannotAuthorizeRecovery(t *testing.T) {
 	}
 }
 
-// An expired retry notice is reported with Retrying false. The flag itself is
-// diagnostic: every decision equals the one made without it, so an errored
+// An expired retry notice is reported with Retrying false. On an errored
+// session the flag itself changes nothing: every decision equals the one made without it, so an errored
 // session gets the ordinary bounded handling and controls keep precedence.
 func TestExpiredRetrySignalUsesOrdinaryErrorHandling(t *testing.T) {
 	m := time.Minute
@@ -139,6 +139,100 @@ func TestExpiredRetrySignalOnActiveSessionUsesStallRules(t *testing.T) {
 			in.Obs.RetryExpired = true
 			if got := Decide(in); got != want || got.Action != tc.action || got.Action == Reprompt || got.Action == Handoff {
 				t.Fatalf("%+v want %+v", got, want)
+			}
+		})
+	}
+}
+
+// A retry notice on a rate-limited, errored session is honored only while a
+// retry is actually queued or the structured reset is within
+// wait_if_reset_within. A far reset with nothing queued goes to the ordinary
+// limit rules, so a healthy fallback is used instead of waiting hours.
+func TestRetryNoticeYieldsToFarRateLimitReset(t *testing.T) {
+	h, m := time.Hour, time.Minute
+	for _, tc := range []struct {
+		name               string
+		resetIn            time.Duration
+		queued             int
+		eligible, fallback bool
+		action             Action
+		reason             string
+		wait               LimitWait
+	}{
+		{"far, queued, fallback", 5 * h, 1, true, true, None, "provider is retrying the turn", ""},
+		{"far, queued, no fallback", 5 * h, 1, true, false, None, "provider is retrying the turn", ""},
+		{"far, not queued, fallback", 5 * h, 0, true, true, Handoff, "error: rate_limit", ""},
+		{"far, not queued, no fallback", 5 * h, 0, true, false, None, "limit resets in 5h0m0s; no confirmed fallback", WaitNoFallback},
+		{"far, not queued, failover off", 5 * h, 0, false, true, None, "limit resets in 5h0m0s; failover disabled; waiting", WaitFailoverDisabled},
+		{"near, not queued, fallback", 20 * m, 0, true, true, None, "provider is retrying the turn", ""},
+		{"near, queued, fallback", 20 * m, 1, true, true, None, "provider is retrying the turn", ""},
+		{"at the boundary", 30 * m, 0, true, true, None, "provider is retrying the turn", ""},
+		{"just past the boundary", 30*m + time.Second, 0, true, true, Handoff, "error: rate_limit", ""},
+		{"no structured reset, fallback", 0, 0, true, true, None, "provider is retrying the turn", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs = Observation{State: Error, ErrorClass: ErrRateLimit, Retrying: true, RetryKnown: true, Queued: tc.queued}
+			in.Failover = Failover{Eligible: tc.eligible, Available: tc.fallback, ResetIn: tc.resetIn, WaitIfResetWithin: 30 * m}
+			if d := Decide(in); d.Action != tc.action || d.Reason != tc.reason || d.LimitWait != tc.wait {
+				t.Fatalf("%+v", d)
+			}
+			// Only an errored rate limit yields. Other classes and an active
+			// session keep honoring the notice.
+			in.Obs.ErrorClass = ErrNetwork
+			if d := Decide(in); d.Reason != "provider is retrying the turn" {
+				t.Fatalf("network: %+v", d)
+			}
+			in.Obs.ErrorClass, in.Obs.State = ErrRateLimit, Active
+			if d := Decide(in); d.Reason != "provider is retrying the turn" {
+				t.Fatalf("active: %+v", d)
+			}
+			in.Obs.State, in.Control.Paused = Error, true
+			if d := Decide(in); d.Reason != "paused" {
+				t.Fatalf("pause: %+v", d)
+			}
+		})
+	}
+}
+
+// Without Git tracking an active session cannot be shown to have stalled and
+// is never nudged. Once its retry notice has expired and it has stayed silent
+// for one stall interval plus every nudge interval, a person is asked.
+func TestSilentActiveSessionWithoutGitTrackingHolds(t *testing.T) {
+	patience := SilentRetryPatience(30*time.Minute, 60*time.Minute, 3)
+	if patience != 3*time.Hour+30*time.Minute {
+		t.Fatal(patience)
+	}
+	for _, tc := range []struct {
+		name   string
+		mut    func(*Input)
+		action Action
+	}{
+		{"within patience", func(i *Input) { i.RetrySilentFor = patience - time.Second }, None},
+		{"patience spent", func(*Input) {}, AwaitUser},
+		{"tracked loops use nudges instead", func(i *Input) { i.ProgressTracked = true }, None},
+		{"tracked and stalled", func(i *Input) { i.ProgressTracked, i.UnchangedFor = true, 5*time.Hour }, Nudge},
+		{"notice not expired", func(i *Input) { i.Obs.RetryExpired = false }, None},
+		{"still retrying", func(i *Input) { i.Obs.RetryExpired, i.Obs.Retrying = false, true }, None},
+		{"stop", func(i *Input) { i.Control.Stop = true }, Stop},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None},
+		{"pending interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None},
+		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None},
+		{"outside window", func(i *Input) { i.InWindow = false }, None},
+		{"errored session uses re-prompts", func(i *Input) { i.Obs.State = Error }, Reprompt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base()
+			in.Obs = Observation{State: Active, ErrorClass: ErrUnknown, RetryKnown: true, RetryExpired: true}
+			in.MaxNudges, in.RetrySilentFor = 3, patience
+			in.Failover = Failover{Eligible: true, Available: true}
+			tc.mut(&in)
+			d := Decide(in)
+			if d.Action != tc.action || d.Action == Handoff {
+				t.Fatalf("%+v", d)
+			}
+			if tc.name == "patience spent" && d.Reason != "provider retry went silent on an active session for 3h30m0s; no Git progress tracking to nudge by" {
+				t.Fatal(d.Reason)
 			}
 		})
 	}

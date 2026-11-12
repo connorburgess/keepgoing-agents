@@ -45,7 +45,7 @@ loop:
 | `thread` | required | The BB thread id. |
 | `cli` | `bb` | Path to the bb executable. |
 | `model`, `reasoning` | none | Applied with `bb thread update` before the first message after a handoff to this agent. |
-| `retry_signal_ttl` | `15m` | How long a provider `willRetry` notice keeps suppressing recovery without newer evidence: the newest notice on an errored thread, the newest log event of any kind on an active one, or a rate limit's structured reset. Minimum `1m`. See [stale retry notices](operations.md#stale-retry-notices). |
+| `retry_signal_ttl` | `15m` | How long a provider `willRetry` notice keeps suppressing recovery without newer evidence: the newest notice on an errored thread, the newest provider or system log event on an active one, or a rate-limit notice's structured reset. Minimum `1m`. See [stale retry notices](operations.md#stale-retry-notices). |
 
 ## process
 
