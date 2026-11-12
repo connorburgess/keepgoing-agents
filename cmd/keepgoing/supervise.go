@@ -245,6 +245,7 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 
 type statusOut struct {
 	PromptSend        promptSendStatus         `json:"promptSend"`
+	LimitWait         limitWaitStatus          `json:"limitWait"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
 	GoalError         string                   `json:"goalError,omitempty"`
 	Notifications     report.DeliveryStatus    `json:"notifications"`
@@ -365,6 +366,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		out.Goal = &summary
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
+	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -457,6 +459,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
 	}
 	printPromptSend(w, out.PromptSend)
+	printLimitWait(w, out.LimitWait)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
 		fmt.Fprintf(w, " (%s)", out.TaskFile)

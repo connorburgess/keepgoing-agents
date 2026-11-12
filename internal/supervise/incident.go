@@ -26,7 +26,8 @@ func (t *tick) recordIncident(failed bool) error {
 		// The target after this check differs only when a handoff or switch-back moved the loop.
 		TargetKeyAfter: incident.TargetKey(t.res.Target), Probes: t.incidentProbes,
 		ControlBefore: t.incidentControl, Cause: cause, Action: t.res.Action, Outcome: outcome, DryRun: t.opts.DryRun,
-		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts}
+		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts,
+		LimitWaitReport: t.incidentLimitWaitReport}
 	if c, err := control.Load(t.loop.StateDir); err == nil {
 		r.ControlAfter = incident.Gate(c.Gate())
 	}

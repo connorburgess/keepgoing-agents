@@ -86,7 +86,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -134,6 +134,7 @@ type timelineSummary struct {
 	LastHoldEntry        *timelineRef `json:"lastHoldEntry,omitempty"`
 	LastTargetMove       *timelineRef `json:"lastTargetMove,omitempty"`
 	LastLimitWait        *timelineRef `json:"lastLimitWait,omitempty"`
+	LastLimitWaitReport  *timelineRef `json:"lastLimitWaitReport,omitempty"`
 	LimitWaitChecks      int          `json:"limitWaitChecks"`
 	RetainedChecks       int          `json:"retainedChecks"`
 	HeldChecks           int          `json:"heldChecks"`
@@ -353,6 +354,9 @@ func timelineKinds(r incident.Record) []string {
 		if timelineLimitWait(r.Cause) {
 			kinds = append(kinds, "limit_wait")
 		}
+		if r.LimitWaitReport != "none" {
+			kinds = append(kinds, "limit_wait_report")
+		}
 	case "control":
 		kinds = append(kinds, "control")
 		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
@@ -387,7 +391,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 3, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 4, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -414,6 +418,8 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 			switch k {
 			case "handoff", "switch_back", "retarget":
 				r.Summary.LastTargetMove = timelineReference(entry)
+			case "limit_wait_report":
+				r.Summary.LastLimitWaitReport = timelineReference(entry)
 			case "limit_wait":
 				r.Summary.LastLimitWait = timelineReference(entry)
 				r.Summary.LimitWaitChecks++
@@ -520,7 +526,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		r.NextSteps = append(r.NextSteps, "Check host clocks and the supervisor/scheduler execution context. Use doctor with an explicitly selected scheduler if needed; missing or stale records alone do not identify the cause.")
 	}
 	if latestCheckWaits {
-		r.NextSteps = append(r.NextSteps, "The latest recorded check was waiting for a provider limit to reset. keepgoing sends nothing and reports nothing while it waits, however far away the reset is; see the recorded reset input on that check and decide whether to wait, retarget or review failover settings.")
+		r.NextSteps = append(r.NextSteps, "The latest recorded check was waiting for a provider limit to reset. keepgoing sends no prompt while it waits. It requests one limit_wait report per wait when no handoff is possible and the reset is further away than errors.report_wait_after, and only if report.events includes limit_wait; see the last long limit-wait report above, or its absence. Decide whether to wait, retarget or review failover settings.")
 	}
 	if r.Summary.NotificationWarnings > 0 {
 		r.NextSteps = append(r.NextSteps, "Inspect notification setup and the receiver before any manual resend. Held checks do not retry notifications; do not resume/re-complete just to resend an alert.")
@@ -680,7 +686,15 @@ func describeIncident(r incident.Record) string {
 	}
 	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
-		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; nothing is sent or reported while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; no prompt is sent while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+	}
+	switch r.LimitWaitReport {
+	case "requested":
+		text += "; LONG LIMIT WAIT: the reset was further away than the configured threshold and no handoff was possible, so one report was requested for this wait (delivery is in the notification records; receipt unverified). The loop was not held"
+	case "delivery_failed":
+		text += "; LONG LIMIT WAIT: the reset was further away than the configured threshold and no handoff was possible; the one report for this wait failed and is not retried. The loop was not held"
+	case "not_subscribed":
+		text += "; LONG LIMIT WAIT: the reset was further away than the configured threshold and no handoff was possible; nothing was sent because report.events does not include limit_wait. The loop was not held"
 	}
 	if r.DryRun || r.Outcome == "dry_run" {
 		text += "; DRY RUN (no executed action)"
@@ -722,7 +736,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue
