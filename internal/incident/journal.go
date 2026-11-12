@@ -19,15 +19,23 @@ const FileName = "incidents.json"
 // retention tiers and collapsed runs of identical checks.
 const SchemaVersion = 6
 
-// Retention is bounded per tier, so frequent routine checks cannot evict rare
-// events. MaxRecords is the sum of the tier caps; MaxBytes bounds the file.
+// Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
+// reserved room, and MaxRecords is the sum of the reservations. A tier may
+// use room others have not filled, but when the journal is full only a tier
+// holding more than its reservation is pruned, so no tier can evict another's
+// reserved records.
 const (
-	MaxKeyRecords      = 96
-	MaxActivityRecords = 96
-	MaxRoutineRecords  = 64
-	MaxRecords         = MaxKeyRecords + MaxActivityRecords + MaxRoutineRecords
-	MaxBytes           = 512 * 1024
+	KeyReserved       = 64
+	ConditionReserved = 48
+	ActivityReserved  = 80
+	RoutineReserved   = 64
+	MaxRecords        = KeyReserved + ConditionReserved + ActivityReserved + RoutineReserved
+	MaxBytes          = 512 * 1024
 )
+
+// pruneOrder is the order tiers give up records when equally over their
+// reservation, and under byte pressure when none is over.
+var pruneOrder = []string{TierRoutine, TierActivity, TierCondition, TierKey}
 
 // ErrUnavailable deliberately excludes paths, provider output and raw errors.
 var ErrUnavailable = errors.New("incident history unavailable; check private state storage")
@@ -47,9 +55,14 @@ type Journal struct {
 // Pruned says what retention removed from each tier since schema 6. Records
 // dropped by older writers are counted in Dropped only, with no tier.
 type Pruned struct {
-	Key      TierPruned `json:"key"`
-	Activity TierPruned `json:"activity"`
-	Routine  TierPruned `json:"routine"`
+	Key       TierPruned `json:"key"`
+	Condition TierPruned `json:"condition"`
+	Activity  TierPruned `json:"activity"`
+	Routine   TierPruned `json:"routine"`
+}
+
+func (p Pruned) total() uint64 {
+	return p.Key.Count + p.Condition.Count + p.Activity.Count + p.Routine.Count
 }
 
 // TierPruned counts a tier's pruned records and keeps the newest pruned
@@ -63,20 +76,25 @@ func (p *Pruned) tier(name string) *TierPruned {
 	switch name {
 	case TierKey:
 		return &p.Key
+	case TierCondition:
+		return &p.Condition
 	case TierActivity:
 		return &p.Activity
 	}
 	return &p.Routine
 }
 
-func tierCap(name string) int {
-	switch name {
+// Reserved returns a tier's reserved record count.
+func Reserved(tier string) int {
+	switch tier {
 	case TierKey:
-		return MaxKeyRecords
+		return KeyReserved
+	case TierCondition:
+		return ConditionReserved
 	case TierActivity:
-		return MaxActivityRecords
+		return ActivityReserved
 	}
-	return MaxRoutineRecords
+	return RoutineReserved
 }
 
 // Load is read-only. Atomic replacement permits readers without a write lock.
@@ -105,14 +123,14 @@ func Load(dir string) (Journal, error) {
 	if d.Decode(&j) != nil || d.Decode(new(any)) != io.EOF || (j.SchemaVersion < 1 || j.SchemaVersion > SchemaVersion) || len(j.Records) > MaxRecords || j.NextSequence == 0 {
 		return Journal{}, ErrUnavailable
 	}
-	if j.SchemaVersion < 6 && (j.Collapsed != 0 || j.Pruned != (Pruned{})) {
+	if j.SchemaVersion < 6 && (j.Collapsed != 0 || j.Pruned.total() != 0) {
 		return Journal{}, ErrUnavailable
 	}
 	// Every allocated sequence is retained, pruned or collapsed.
 	if j.Dropped > j.NextSequence-1 || j.Collapsed > j.NextSequence-1-j.Dropped || j.NextSequence-1-j.Dropped-j.Collapsed != uint64(len(j.Records)) {
 		return Journal{}, ErrUnavailable
 	}
-	if j.Pruned.Key.Count+j.Pruned.Activity.Count+j.Pruned.Routine.Count > j.Dropped {
+	if j.Pruned.total() > j.Dropped {
 		return Journal{}, ErrUnavailable
 	}
 	var previous, folded uint64
@@ -148,10 +166,15 @@ func Load(dir string) (Journal, error) {
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
 		}
+		r = clean(r)
+		// Only a check that executed, changed and attempted nothing can stand for others.
 		if r.Collapsed != nil {
+			if !repeatable(r) {
+				return Journal{}, ErrUnavailable
+			}
 			folded += r.Collapsed.Count
 		}
-		j.Records[i] = clean(r)
+		j.Records[i] = r
 	}
 	// Summaries of pruned records leave the journal total larger, never smaller.
 	if folded > j.Collapsed {
@@ -182,19 +205,9 @@ func Append(dir string, r Record) error {
 	r.Sequence = j.NextSequence
 	j.NextSequence++
 	j.add(clean(r))
-	b, err := json.Marshal(j)
+	b, err := j.encode()
 	if err != nil {
-		return ErrUnavailable
-	}
-	for len(b)+1 > MaxBytes && len(j.Records) > 1 {
-		j.dropForBytes()
-		b, err = json.Marshal(j)
-		if err != nil {
-			return ErrUnavailable
-		}
-	}
-	if len(b)+1 > MaxBytes {
-		return ErrUnavailable
+		return err
 	}
 	f, err := os.CreateTemp(dir, ".incidents-*")
 	if err != nil {
@@ -219,6 +232,25 @@ func Append(dir string, r Record) error {
 	return nil
 }
 
+// encode serializes the journal, pruning until it fits MaxBytes with its
+// trailing newline.
+func (j *Journal) encode() ([]byte, error) {
+	b, err := json.Marshal(j)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	for len(b)+1 > MaxBytes && len(j.Records) > 1 {
+		j.dropFromFullestTier()
+		if b, err = json.Marshal(j); err != nil {
+			return nil, ErrUnavailable
+		}
+	}
+	if len(b)+1 > MaxBytes {
+		return nil, ErrUnavailable
+	}
+	return b, nil
+}
+
 // upgrade replays a legacy journal through the current retention rules, so its
 // repeated checks are collapsed instead of pruned in bulk. Sequence numbers
 // and the legacy dropped count are preserved.
@@ -236,30 +268,60 @@ func upgrade(old Journal) Journal {
 // its latest check, plus a count and time span for everything between.
 func (j *Journal) add(r Record) {
 	n := len(j.Records)
-	if n >= 2 && sameRun(j.Records[n-1], r) && sameRun(j.Records[n-2], j.Records[n-1]) {
+	if foldsLatest(j.Records, r) {
 		last := j.Records[n-1]
-		c := Collapsed{Count: 1, FirstAt: last.CheckStartedAt, LastAt: last.CheckStartedAt, PassedProbes: len(last.Probes.Results)}
-		if last.Collapsed != nil {
-			c.Count += last.Collapsed.Count
-			c.FirstAt = last.Collapsed.FirstAt
-			c.PassedProbes += last.Collapsed.PassedProbes
+		c := Collapsed{Count: 1, FirstAt: last.CheckStartedAt, LastAt: last.CheckStartedAt}
+		if p := last.Collapsed; p != nil {
+			c.Count += p.Count
+			c.PassedProbes, c.FailedProbes = p.PassedProbes, p.FailedProbes
+			// Earliest and latest folded check, even if the clock moved backwards.
+			if p.FirstAt.Before(c.FirstAt) {
+				c.FirstAt = p.FirstAt
+			}
+			if p.LastAt.After(c.LastAt) {
+				c.LastAt = p.LastAt
+			}
 		}
+		failed := failedProbes(last)
+		c.FailedProbes += failed
+		c.PassedProbes += len(last.Probes.Results) - failed
 		r.Collapsed = &c
 		j.Records[n-1] = r
 		j.Collapsed++
 		return
 	}
 	j.Records = append(j.Records, r)
-	counts := map[string]int{}
-	for _, rec := range j.Records {
-		counts[rec.Tier]++
+	for len(j.Records) > MaxRecords {
+		j.dropFromFullestTier()
 	}
-	for _, tier := range []string{TierRoutine, TierActivity, TierKey} {
-		for counts[tier] > tierCap(tier) {
-			j.dropOldest(tier)
-			counts[tier]--
+}
+
+// dropFromFullestTier prunes the oldest record of the tier furthest over its
+// reservation. The newest record always survives. When no tier is over
+// (possible only under byte pressure), routine history goes first and key
+// events last.
+func (j *Journal) dropFromFullestTier() {
+	newest := j.Records[len(j.Records)-1]
+	j.Records = j.Records[:len(j.Records)-1]
+	counts := map[string]int{}
+	for _, r := range j.Records {
+		counts[r.Tier]++
+	}
+	counts[newest.Tier]++ // The newest record still occupies its tier's room.
+	victim, most := "", 0
+	for _, tier := range pruneOrder {
+		if over := counts[tier] - Reserved(tier); over > most {
+			victim, most = tier, over
 		}
 	}
+	if victim == "" || !j.dropOldest(victim) {
+		for _, tier := range pruneOrder {
+			if j.dropOldest(tier) {
+				break
+			}
+		}
+	}
+	j.Records = append(j.Records, newest)
 }
 
 // dropOldest prunes the oldest record of one tier and reports whether it found one.
@@ -281,24 +343,11 @@ func (j *Journal) dropOldest(tier string) bool {
 	return false
 }
 
-// dropForBytes gives up routine history first and key events last. The
-// newest record always survives.
-func (j *Journal) dropForBytes() {
-	newest := j.Records[len(j.Records)-1]
-	j.Records = j.Records[:len(j.Records)-1]
-	for _, tier := range []string{TierRoutine, TierActivity, TierKey} {
-		if j.dropOldest(tier) {
-			break
-		}
-	}
-	j.Records = append(j.Records, newest)
-}
-
 func validRecord(r Record) bool {
 	if r.CheckStartedAt.IsZero() {
 		return false
 	}
-	if c := r.Collapsed; c != nil && (r.Kind != "tick" || c.Count == 0 || c.FirstAt.IsZero() || c.LastAt.IsZero() || c.PassedProbes < 0) {
+	if c := r.Collapsed; c != nil && (r.Kind != "tick" || c.Count == 0 || c.FirstAt.IsZero() || c.LastAt.Before(c.FirstAt) || c.PassedProbes < 0 || c.FailedProbes < 0) {
 		return false
 	}
 	// A retarget is a move: both hashed targets are known and they differ.

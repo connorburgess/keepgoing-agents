@@ -35,13 +35,6 @@ func loadAccounted(t *testing.T, dir string) Journal {
 	if j.NextSequence-1 != uint64(len(j.Records))+j.Dropped+j.Collapsed || len(j.Records) > MaxRecords {
 		t.Fatalf("unaccounted sequences: next %d retained %d dropped %d collapsed %d", j.NextSequence, len(j.Records), j.Dropped, j.Collapsed)
 	}
-	counts := map[string]int{}
-	for _, r := range j.Records {
-		counts[r.Tier]++
-	}
-	if counts[TierKey] > MaxKeyRecords || counts[TierActivity] > MaxActivityRecords || counts[TierRoutine] > MaxRoutineRecords {
-		t.Fatalf("tier cap exceeded: %v", counts)
-	}
 	if info, err := os.Stat(filepath.Join(dir, FileName)); err == nil && info.Size() > MaxBytes {
 		t.Fatalf("file is %d bytes", info.Size())
 	}
@@ -60,20 +53,33 @@ func TestRetentionTiers(t *testing.T) {
 		return clean(Record{Kind: "control", CheckStartedAt: retentionStart, ControlBefore: before, ControlAfter: after,
 			ControlChange: &ControlChange{Operation: op, SaveObservedAt: retentionStart, OwnershipChanged: owner}})
 	}
-	var failed, passed Probes
+	var failed, passed, exact Probes
 	failed.Add("fictional-candidate", "scheduled", false, "auth")
 	passed.Add("fictional-candidate", "scheduled", true, "")
+	exact.Add("fictional-candidate", "exact", true, "")
 	for name, tc := range map[string]struct {
 		r          Record
 		tier       string
 		repeatable bool
 	}{
-		"nothing happened":         {clean(tick), TierRoutine, true},
-		"held check":               {with(func(r *Record) { r.ControlBefore, r.ControlAfter, r.Cause = held, held, "awaiting_user" }), TierRoutine, true},
-		"passing probe":            {with(func(r *Record) { r.Probes = passed }), TierRoutine, true},
-		"dry run":                  {with(func(r *Record) { r.DryRun, r.Outcome, r.Action = true, "dry_run", "wake" }), TierRoutine, true},
-		"legacy check":             {with(func(r *Record) { r.TargetKeyAfter, r.Probes = "", Probes{} }), TierRoutine, true},
-		"limit wait":               {with(func(r *Record) { r.Cause = "limit_failover_disabled" }), TierKey, true},
+		"nothing happened":       {clean(tick), TierRoutine, true},
+		"held check":             {with(func(r *Record) { r.ControlBefore, r.ControlAfter, r.Cause = held, held, "awaiting_user" }), TierRoutine, true},
+		"passing probe":          {with(func(r *Record) { r.Probes = passed }), TierRoutine, true},
+		"dry run":                {with(func(r *Record) { r.DryRun, r.Outcome, r.Action = true, "dry_run", "wake" }), TierRoutine, true},
+		"legacy check":           {with(func(r *Record) { r.TargetKeyAfter, r.Probes = "", Probes{} }), TierRoutine, true},
+		"limit wait":             {with(func(r *Record) { r.Cause = "limit_failover_disabled" }), TierCondition, true},
+		"failed scheduled probe": {with(func(r *Record) { r.Probes = failed }), TierCondition, true},
+		"attempt behind a wait": {with(func(r *Record) {
+			r.Cause, r.Probes = "limit_no_fallback", exact
+			r.Decisions.Evaluations = []Evaluation{{Stage: "normal", Action: "handoff", Cause: "other"}, {Stage: "handoff_failed", Action: "none", Cause: "limit_no_fallback"}}
+		}), TierCondition, false},
+		"exact probe alone": {with(func(r *Record) { r.Probes = exact }), TierCondition, false},
+		"re-evaluation alone": {with(func(r *Record) {
+			r.Decisions.Evaluations = []Evaluation{{Stage: "switch_back_failed", Action: "none", Cause: "active"}}
+		}), TierCondition, false},
+		"failed switch-back wake":  {with(func(r *Record) { r.Action, r.Probes = "wake", exact }), TierCondition, false},
+		"legacy handoff":           {with(func(r *Record) { r.Action, r.TargetKeyAfter, r.Probes = "handoff", "", Probes{} }), TierKey, false},
+		"legacy failed handoff":    {with(func(r *Record) { r.Action, r.Outcome, r.TargetKeyAfter, r.Probes = "handoff", "failed", "", Probes{} }), TierCondition, false},
 		"dry-run limit wait":       {with(func(r *Record) { r.Cause, r.DryRun, r.Outcome = "limit_wait", true, "dry_run" }), TierRoutine, true},
 		"failed observation":       {with(func(r *Record) { r.Outcome, r.Observation = "failed", Observation{Availability: "unavailable"} }), TierActivity, true},
 		"wake":                     {with(func(r *Record) { r.Action = "wake" }), TierActivity, false},
@@ -82,9 +88,8 @@ func TestRetentionTiers(t *testing.T) {
 		"hold entered":             {with(func(r *Record) { r.Action, r.ControlAfter = "await_user", held }), TierKey, false},
 		"hold cleared during tick": {with(func(r *Record) { r.ControlBefore = held }), TierKey, false},
 		"handoff":                  {with(func(r *Record) { r.Action, r.TargetKeyAfter = "handoff", TargetKey("fictional-fallback") }), TierKey, false},
-		"failed handoff":           {with(func(r *Record) { r.Action, r.Outcome = "handoff", "failed" }), TierKey, false},
+		"failed handoff":           {with(func(r *Record) { r.Action, r.Outcome = "handoff", "failed" }), TierCondition, false},
 		"switch back":              {with(func(r *Record) { r.Action, r.TargetKey = "switch_back", TargetKey("fictional-fallback") }), TierKey, false},
-		"failed probe":             {with(func(r *Record) { r.Probes = failed }), TierKey, false},
 		"retarget":                 {clean(Record{Kind: "retarget", CheckStartedAt: retentionStart, TargetKey: TargetKey("primary"), TargetKeyAfter: TargetKey("fictional-fallback")}), TierKey, false},
 		"pause":                    {control("pause", on, &Controls{Enabled: true, Paused: true}, false), TierKey, false},
 		"resume":                   {control("resume", held, on, false), TierKey, false},
@@ -126,11 +131,11 @@ func TestLimitWaitSurvivesAsFirstAndLatestCheck(t *testing.T) {
 		t.Fatalf("%d records, dropped %d, collapsed %d", len(j.Records), j.Dropped, j.Collapsed)
 	}
 	first, latest := j.Records[1], j.Records[2]
-	if first.Sequence != 2 || first.Collapsed != nil || first.Tier != TierKey || !first.CheckStartedAt.Equal(retentionStart) || first.Decisions.Evaluations[0].Input.ResetIn != 120*time.Hour {
+	if first.Sequence != 2 || first.Collapsed != nil || first.Tier != TierCondition || !first.CheckStartedAt.Equal(retentionStart) || first.Decisions.Evaluations[0].Input.ResetIn != 120*time.Hour {
 		t.Fatalf("%+v", first)
 	}
 	c := latest.Collapsed
-	if latest.Sequence != checks+1 || latest.Tier != TierKey || c == nil || c.Count != checks-2 || !c.FirstAt.Equal(retentionStart.Add(10*time.Minute)) || !c.LastAt.Equal(retentionStart.Add((checks-2)*10*time.Minute)) || c.PassedProbes != 30 {
+	if latest.Sequence != checks+1 || latest.Tier != TierCondition || c == nil || c.Count != checks-2 || !c.FirstAt.Equal(retentionStart.Add(10*time.Minute)) || !c.LastAt.Equal(retentionStart.Add((checks-2)*10*time.Minute)) || c.PassedProbes != 30 {
 		t.Fatalf("%+v %+v", latest, c)
 	}
 	if latest.Decisions.Evaluations[0].Input.ResetIn != 10*time.Minute {
@@ -155,7 +160,8 @@ func TestLimitWaitSurvivesAsFirstAndLatestCheck(t *testing.T) {
 	if j.Pruned.Key.Count != 0 || j.Pruned.Routine.Count == 0 || j.Pruned.Activity.Count == 0 || j.Pruned.Routine.NewestAt == nil || j.Pruned.Activity.NewestAt == nil {
 		t.Fatalf("%+v", j.Pruned)
 	}
-	if j.Dropped != j.Pruned.Routine.Count+j.Pruned.Activity.Count || len(j.Records) != 3+MaxActivityRecords+MaxRoutineRecords {
+	// The journal is full; only tiers over their reservation gave anything up.
+	if j.Dropped != j.Pruned.Routine.Count+j.Pruned.Activity.Count || len(j.Records) != MaxRecords || j.Pruned.Condition.Count != 0 {
 		t.Fatalf("dropped %d pruned %+v retained %d", j.Dropped, j.Pruned, len(j.Records))
 	}
 	// The pruning horizon is the newest pruned record of that tier, and
@@ -219,19 +225,78 @@ func TestCollapseKeepsEveryChangeAndEveryRunBoundary(t *testing.T) {
 	}
 }
 
-func TestTierCapsPruneOldestWithinTheTier(t *testing.T) {
+func retargetAt(i int) Record {
+	// Alternate direction: each retarget is a distinct key event.
+	from, to := "primary", "fictional-fallback"
+	if i%2 == 1 {
+		from, to = to, from
+	}
+	return Record{Kind: "retarget", CheckStartedAt: retentionStart.Add(time.Duration(i) * time.Minute), TargetKey: TargetKey(from), TargetKeyAfter: TargetKey(to)}
+}
+
+func tierCounts(j Journal) map[string]int {
+	counts := map[string]int{}
+	for _, r := range j.Records {
+		counts[r.Tier]++
+	}
+	return counts
+}
+
+func TestATierPrunesItsOwnOldestOnceTheJournalIsFull(t *testing.T) {
 	dir := t.TempDir()
-	for i := 0; i < MaxKeyRecords+5; i++ {
-		// Alternate direction: each retarget is a distinct key event.
-		from, to := "primary", "fictional-fallback"
-		if i%2 == 1 {
-			from, to = to, from
-		}
-		mustAppend(t, dir, Record{Kind: "retarget", CheckStartedAt: retentionStart.Add(time.Duration(i) * time.Minute), TargetKey: TargetKey(from), TargetKeyAfter: TargetKey(to)})
+	// A tier may use room nobody else needs, up to the whole journal.
+	for i := 0; i < MaxRecords+5; i++ {
+		mustAppend(t, dir, retargetAt(i))
 	}
 	j := loadAccounted(t, dir)
-	if len(j.Records) != MaxKeyRecords || j.Records[0].Sequence != 6 || j.Pruned.Key.Count != 5 || !j.Pruned.Key.NewestAt.Equal(retentionStart.Add(4*time.Minute)) || j.Pruned.Routine.Count != 0 || j.Dropped != 5 {
+	if len(j.Records) != MaxRecords || j.Records[0].Sequence != 6 || j.Pruned.Key.Count != 5 || !j.Pruned.Key.NewestAt.Equal(retentionStart.Add(4*time.Minute)) || j.Pruned.Routine.Count != 0 || j.Dropped != 5 {
 		t.Fatalf("%d %+v", len(j.Records), j.Pruned)
+	}
+}
+
+// Whatever order the tiers fill in, a full journal settles at each tier's
+// reservation: borrowed room is given back, reserved room is never taken.
+func TestBorrowedRoomIsReturnedAndReservedRoomIsNeverTaken(t *testing.T) {
+	m := newMemJournal()
+	n := 0
+	routine := func() {
+		r := retentionTick(n)
+		r.Observation.Queued = 1 + n%2 // cannot collapse
+		n++
+		m.add(t, r)
+	}
+	for i := 0; i < MaxRecords+40; i++ {
+		routine()
+	}
+	if c := tierCounts(m.flush(t)); c[TierRoutine] != MaxRecords {
+		t.Fatalf("routine could not borrow free room: %v", c)
+	}
+	// Key events arrive: routine gives back what it borrowed, one for one.
+	for i := 0; i < KeyReserved; i++ {
+		m.add(t, retargetAt(i))
+	}
+	j := m.flush(t)
+	if c := tierCounts(j); c[TierKey] != KeyReserved || c[TierRoutine] != MaxRecords-KeyReserved || j.Pruned.Key.Count != 0 {
+		t.Fatalf("%v %+v", c, j.Pruned)
+	}
+	// Probe noise and sends fill their own reservations and then prune only themselves.
+	for i := 0; i < 600; i++ {
+		r := retentionTick(n)
+		n++
+		r.Action = "wake"
+		if i%2 == 0 {
+			r.Probes.Add("primary", "exact", false, "rate_limit")
+		}
+		m.add(t, r)
+		routine()
+	}
+	j = m.flush(t)
+	c := tierCounts(j)
+	if c[TierKey] != KeyReserved || c[TierCondition] != ConditionReserved || c[TierActivity] != ActivityReserved || c[TierRoutine] != RoutineReserved || j.Pruned.Key.Count != 0 {
+		t.Fatalf("%v %+v", c, j.Pruned)
+	}
+	if j.Pruned.Condition.Count != 300-ConditionReserved || j.Pruned.Activity.Count != 300-ActivityReserved {
+		t.Fatalf("%+v", j.Pruned)
 	}
 }
 
@@ -279,7 +344,7 @@ func TestLegacyJournalIsCollapsedOnUpgradeNotPrunedInBulk(t *testing.T) {
 	mustAppend(t, dir, r)
 	j = loadAccounted(t, dir)
 	// first..latest of the active run, the hold, first..latest of the held run, the wake.
-	if j.SchemaVersion != 6 || j.Dropped != 43 || j.Pruned != (Pruned{}) || len(j.Records) != 6 || j.Collapsed != 98+153 || j.NextSequence != 301 {
+	if j.SchemaVersion != 6 || j.Dropped != 43 || j.Pruned.total() != 0 || len(j.Records) != 6 || j.Collapsed != 98+153 || j.NextSequence != 301 {
 		t.Fatalf("schema %d dropped %d pruned %+v retained %d collapsed %d", j.SchemaVersion, j.Dropped, j.Pruned, len(j.Records), j.Collapsed)
 	}
 	for i, want := range []uint64{44, 143, 144, 145, 299, 300} {

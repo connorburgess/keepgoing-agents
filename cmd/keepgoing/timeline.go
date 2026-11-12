@@ -74,9 +74,11 @@ type timelineRetention struct {
 	UntieredPruned uint64 `json:"untieredPruned"`
 }
 
+// Reserved is room other tiers cannot take; a tier may hold more while the
+// journal has room to spare.
 type timelineTier struct {
 	Tier          string     `json:"tier"`
-	Cap           int        `json:"cap"`
+	Reserved      int        `json:"reserved"`
 	Retained      int        `json:"retained"`
 	Pruned        uint64     `json:"pruned"`
 	PrunedThrough *time.Time `json:"prunedThrough,omitempty"`
@@ -271,12 +273,18 @@ func containsString(list []string, s string) bool {
 }
 
 func (f timelineFilter) matches(e timelineEntry) bool {
-	// A record that summarizes collapsed checks stands for their whole span.
-	first := e.At
-	if e.Incident != nil && e.Incident.Collapsed != nil && e.Incident.Collapsed.FirstAt.Before(first) {
-		first = e.Incident.Collapsed.FirstAt
+	// A record that summarizes collapsed checks stands for their whole span,
+	// whichever way the clock moved between them.
+	first, last := e.At, e.At
+	if e.Incident != nil && e.Incident.Collapsed != nil {
+		if c := e.Incident.Collapsed; c.FirstAt.Before(first) {
+			first = c.FirstAt
+		}
+		if c := e.Incident.Collapsed; c.LastAt.After(last) {
+			last = c.LastAt
+		}
 	}
-	if f.Since != nil && e.At.Before(*f.Since) || f.Until != nil && first.After(*f.Until) {
+	if f.Since != nil && last.Before(*f.Since) || f.Until != nil && first.After(*f.Until) {
 		return false
 	}
 	if len(f.Kinds) > 0 {
@@ -490,7 +498,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 	}
 	r.Limitations = []string{
 		"Bounded sampled evidence, not a complete audit. Missing records do not prove nothing happened; dropped counts are per source and omitted counts are display-only.",
-		"incidents.json keeps key events, activity and routine checks in separately bounded tiers. A run of identical checks that executed nothing keeps its first and latest check; the rest are collapsed into a count and time span on the latest, without their decision inputs or passing probes. Pruned records are gone: see retention for each tier's count and the time through which it is incomplete.",
+		"incidents.json reserves room for key events, ongoing conditions, activity and routine checks separately, so one cannot evict another. A run of identical checks that executed and attempted nothing keeps its first and latest check; the rest are collapsed into a count and time span on the latest, without their decision inputs or repeated probe results. Pruned records are gone: see retention for each tier's count and the time through which it is incomplete.",
 		"Files are read independently without writer locks; concurrent changes can produce different snapshots. Current flags are not attributed to an older hold entry.",
 		"Events sort by local observation timestamps, not provider occurrence or causal order. Clock changes, --now test ticks, concurrent writes and late delivery updates can reorder them; preserve source sequence numbers.",
 		"Latest summary references use retained source sequence order and can refer to events hidden by --limit. Dry-run checks are labelled and excluded from active/send/hold summaries.",
@@ -522,14 +530,12 @@ func readTimelineRetention(j incident.Journal, err error) timelineRetention {
 	if err != nil {
 		return ret
 	}
-	tiers := []struct {
-		name   string
-		cap    int
-		pruned incident.TierPruned
-	}{{incident.TierKey, incident.MaxKeyRecords, j.Pruned.Key}, {incident.TierActivity, incident.MaxActivityRecords, j.Pruned.Activity}, {incident.TierRoutine, incident.MaxRoutineRecords, j.Pruned.Routine}}
 	tiered := uint64(0)
-	for _, t := range tiers {
-		row := timelineTier{Tier: t.name, Cap: t.cap, Pruned: t.pruned.Count, PrunedThrough: t.pruned.NewestAt}
+	for _, t := range []struct {
+		name   string
+		pruned incident.TierPruned
+	}{{incident.TierKey, j.Pruned.Key}, {incident.TierCondition, j.Pruned.Condition}, {incident.TierActivity, j.Pruned.Activity}, {incident.TierRoutine, j.Pruned.Routine}} {
+		row := timelineTier{Tier: t.name, Reserved: incident.Reserved(t.name), Pruned: t.pruned.Count, PrunedThrough: t.pruned.NewestAt}
 		for _, rec := range j.Records {
 			if rec.Tier == t.name {
 				row.Retained++
@@ -677,8 +683,8 @@ func describeIncident(r incident.Record) string {
 	}
 	if c := r.Collapsed; c != nil {
 		text += fmt.Sprintf("; COLLAPSED: %d identical earlier checks from %s to %s are summarized here", c.Count, c.FirstAt.Format(time.RFC3339), c.LastAt.Format(time.RFC3339))
-		if c.PassedProbes > 0 {
-			text += fmt.Sprintf(", including %d passing probes", c.PassedProbes)
+		if c.PassedProbes > 0 || c.FailedProbes > 0 {
+			text += fmt.Sprintf(", including %d passing probes and %d failed probes that repeated a retained failure", c.PassedProbes, c.FailedProbes)
 		}
 		text += "; their decision inputs are not retained"
 	}
@@ -764,7 +770,7 @@ func printTimelineRetention(w io.Writer, ret timelineRetention) {
 	}
 	fmt.Fprintf(w, "retention incidents.json (at most %d records and %d KiB):", ret.MaxRecords, ret.MaxBytes/1024)
 	for _, t := range ret.Tiers {
-		fmt.Fprintf(w, " %s %d of %d, pruned %d", t.Tier, t.Retained, t.Cap, t.Pruned)
+		fmt.Fprintf(w, " %s %d (reserved %d), pruned %d", t.Tier, t.Retained, t.Reserved, t.Pruned)
 		if t.PrunedThrough != nil {
 			fmt.Fprintf(w, " through %s", t.PrunedThrough.Format(time.RFC3339))
 		}

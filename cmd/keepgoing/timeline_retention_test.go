@@ -64,20 +64,21 @@ func TestTimelineShowsCollapsedAndPrunedHistory(t *testing.T) {
 	before := timelineFiles(t, dir)
 	got := timelineJSON(t, dir, "--limit", "320")
 	ret := got.Retention
-	if ret.MaxRecords != 256 || ret.MaxBytes != 512*1024 || len(ret.Tiers) != 3 || ret.UntieredPruned != 0 {
+	if ret.MaxRecords != 256 || ret.MaxBytes != 512*1024 || len(ret.Tiers) != 4 || ret.UntieredPruned != 0 {
 		t.Fatalf("%+v", ret)
 	}
-	// Key: the retarget, both ends of the limit wait, the pause and the resume.
-	// Activity: 100 wakes, 4 pruned. Routine: both ends of the held run plus 300
-	// checks that alternate and cannot collapse, cut to the newest 64.
-	key, activity, routine := ret.Tiers[0], ret.Tiers[1], ret.Tiers[2]
-	if key != (timelineTier{Tier: "key", Cap: 96, Retained: 5}) {
-		t.Fatalf("%+v", key)
+	// Key: the retarget, the pause and the resume. Condition: both ends of the
+	// limit wait. Activity: all 100 wakes, borrowing spare room. Routine: both
+	// ends of the held run plus 300 checks that cannot collapse, pruned down
+	// to what is left of the 256.
+	key, condition, activity, routine := ret.Tiers[0], ret.Tiers[1], ret.Tiers[2], ret.Tiers[3]
+	if key != (timelineTier{Tier: "key", Reserved: 64, Retained: 3}) || condition != (timelineTier{Tier: "condition", Reserved: 48, Retained: 2}) || activity != (timelineTier{Tier: "activity", Reserved: 80, Retained: 100}) {
+		t.Fatalf("%+v %+v %+v", key, condition, activity)
 	}
-	if activity.Retained != 96 || activity.Pruned != 4 || activity.PrunedThrough == nil || routine.Retained != 64 || routine.Pruned != 238 || routine.PrunedThrough == nil {
-		t.Fatalf("%+v %+v", activity, routine)
+	if routine.Reserved != 64 || routine.Retained != 151 || routine.Pruned != 151 || routine.PrunedThrough == nil {
+		t.Fatalf("%+v", routine)
 	}
-	if ret.CollapsedChecks != 298 || got.Sources[0].Dropped != 242 || got.Sources[0].Retained != 165 {
+	if ret.CollapsedChecks != 298 || got.Sources[0].Dropped != 151 || got.Sources[0].Retained != 256 {
 		t.Fatalf("%+v %+v", ret, got.Sources[0])
 	}
 	// The held run's 48 collapsed checks went with its pruned routine records.
@@ -138,7 +139,7 @@ func TestTimelineShowsCollapsedAndPrunedHistory(t *testing.T) {
 	}
 	code, out, errs := timelineCLI(t, dir, "--kind", "limit_wait,hold")
 	for _, want := range []string{
-		"retention incidents.json (at most 256 records and 512 KiB): key 5 of 96, pruned 0; activity 96 of 96, pruned 4 through ", "; routine 64 of 64, pruned 238 through " + horizon.Format(time.RFC3339) + "; 298 identical checks collapsed into retained summaries",
+		"retention incidents.json (at most 256 records and 512 KiB): key 3 (reserved 64), pruned 0; condition 2 (reserved 48), pruned 0; activity 100 (reserved 80), pruned 0; routine 151 (reserved 64), pruned 151 through " + horizon.Format(time.RFC3339) + "; 298 identical checks collapsed into retained summaries",
 		"(plus 298 collapsed into them)", "48 more were collapsed into records since pruned", "checks waiting for a provider limit: 300", "check,limit_wait,collapsed]", "COLLAPSED: 298 identical earlier checks",
 		"NOTE: the selected range reaches history that retention pruned (see retention above); no event there does not mean nothing happened",
 	} {
@@ -170,7 +171,7 @@ func TestTimelineCountsCollapsedHeldChecksAndLegacyDrops(t *testing.T) {
 	}
 	// An empty or unreadable journal reports its retention honestly.
 	empty := timelineJSON(t, t.TempDir())
-	if len(empty.Retention.Tiers) != 3 || empty.Retention.CollapsedChecks != 0 || empty.Filter.ReachesPrunedHistory {
+	if len(empty.Retention.Tiers) != 4 || empty.Retention.CollapsedChecks != 0 || empty.Filter.ReachesPrunedHistory {
 		t.Fatalf("%+v", empty.Retention)
 	}
 	broken := t.TempDir()
@@ -192,5 +193,66 @@ func TestTimelineCountsCollapsedHeldChecksAndLegacyDrops(t *testing.T) {
 	}
 	if _, out, _ = timelineCLI(t, legacy); !strings.Contains(out, "3 records were dropped by an older build with no tier or time recorded") {
 		t.Fatal(out)
+	}
+}
+
+func TestTimelineMatchesACollapsedSpanAcrossAClockRollback(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	on := &incident.Controls{Enabled: true}
+	// The host clock moved backwards between checks: the latest record is not the latest time.
+	for _, minute := range []int{0, 50, 10, 40, 20, 30} {
+		appendTimelineRecord(t, dir, incident.Record{Kind: "tick", Adapter: "bb", CheckStartedAt: base.Add(time.Duration(minute) * time.Minute), Action: "none", Outcome: "succeeded", Cause: "active", ControlBefore: on, ControlAfter: on, Observation: incident.Observation{Availability: "observed", State: "active"}})
+	}
+	all := timelineJSON(t, dir)
+	var summary *incident.Record
+	for _, e := range all.Events {
+		if e.Incident.Collapsed != nil {
+			summary = e.Incident
+		}
+	}
+	if len(all.Events) != 2 || summary == nil || !summary.CheckStartedAt.Equal(base.Add(30*time.Minute)) || !summary.Collapsed.FirstAt.Equal(base.Add(10*time.Minute)) || !summary.Collapsed.LastAt.Equal(base.Add(50*time.Minute)) {
+		t.Fatalf("%+v", summary)
+	}
+	at := func(minute int) string { return base.Add(time.Duration(minute) * time.Minute).Format(time.RFC3339) }
+	for _, tc := range []struct {
+		since, until int
+		want         []uint64
+	}{
+		{45, 55, []uint64{6}}, // after the record's own time, inside its folded span
+		{5, 15, []uint64{6}},  // before the record's own time, inside its folded span
+		{51, 60, []uint64{}},
+		{1, 9, []uint64{}},
+		{0, 0, []uint64{1}},
+	} {
+		got := timelineJSON(t, dir, "--since", at(tc.since), "--until", at(tc.until))
+		if !reflect.DeepEqual(timelineSequences(got), tc.want) {
+			t.Fatalf("%d-%d: %v, want %v", tc.since, tc.until, timelineSequences(got), tc.want)
+		}
+	}
+}
+
+// Weeks of failed switch-back probes after a handoff leave the handoff as the
+// last recorded target move.
+func TestTimelineKeepsTheLastMoveUnderProbeNoise(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now().UTC().Add(-400 * time.Hour).Truncate(time.Second)
+	on := &incident.Controls{Enabled: true}
+	primary, fallback := incident.TargetKey(state.Primary), incident.TargetKey("fictional-fallback")
+	appendTimelineRecord(t, dir, incident.Record{Kind: "tick", Adapter: "bb", TargetKey: primary, TargetKeyAfter: fallback, CheckStartedAt: start, Action: "handoff", Outcome: "succeeded", Cause: "other", ControlBefore: on, ControlAfter: on,
+		Observation: incident.Observation{Availability: "observed", State: "error", ErrorClass: "rate_limit"}, Probes: incident.Probes{Availability: "captured"}})
+	for i := 1; i <= 400; i++ {
+		r := incident.Record{Kind: "tick", Adapter: "bb", TargetKey: fallback, TargetKeyAfter: fallback, CheckStartedAt: start.Add(time.Duration(i) * 30 * time.Minute), Action: "wake", Outcome: "succeeded", Cause: "idle", ControlBefore: on, ControlAfter: on,
+			Observation: incident.Observation{Availability: "observed", State: "idle"}}
+		r.Probes.Add(state.Primary, "exact", false, "rate_limit")
+		appendTimelineRecord(t, dir, r)
+	}
+	got := timelineJSON(t, dir, "--kind", "moves")
+	if got.Summary.LastTargetMove == nil || got.Summary.LastTargetMove.Sequence != 1 || !reflect.DeepEqual(timelineSequences(got), []uint64{1}) {
+		t.Fatalf("%+v %v", got.Summary.LastTargetMove, timelineSequences(got))
+	}
+	condition := got.Retention.Tiers[1]
+	if condition.Tier != "condition" || condition.Pruned == 0 || got.Retention.Tiers[0].Pruned != 0 || !got.Filter.ReachesPrunedHistory {
+		t.Fatalf("%+v", got.Retention)
 	}
 }

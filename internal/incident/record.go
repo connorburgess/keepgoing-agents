@@ -53,23 +53,33 @@ type ControlChange struct {
 	OwnershipChanged   bool      `json:"ownershipChanged"`
 }
 
-// Retention tiers. Key events are rare and explain who had the loop and why;
-// activity is sends, failed checks and repeated control commands; routine is
-// a check that observed and did nothing.
+// Retention tiers. Each has reserved room that the others cannot take, so
+// noise in one cannot evict another.
+//   - key: who had the loop and whether it was held. A completed target move,
+//     a retarget, an ownership change, a hold flag entered or cleared.
+//   - condition: evidence of an ongoing problem. Limit waits, failed probes,
+//     and handoff or switch-back attempts that did not move the loop.
+//   - activity: sends, failed checks, control commands that changed nothing.
+//   - routine: a check that observed and did nothing.
 const (
-	TierKey      = "key"
-	TierActivity = "activity"
-	TierRoutine  = "routine"
+	TierKey       = "key"
+	TierCondition = "condition"
+	TierActivity  = "activity"
+	TierRoutine   = "routine"
 )
 
 // Collapsed summarizes checks folded into the record that carries it: Count
-// checks identical to it, apart from their times, decision inputs and passing
-// probes, ran from FirstAt to LastAt after the previous retained record.
+// checks identical to it, apart from their times, decision inputs and
+// scheduled probes, ran between FirstAt and LastAt (the earliest and latest
+// folded check times, whatever order the clock produced them in).
+// FailedProbes counts folded probe failures that repeated one the run's
+// first record already shows.
 type Collapsed struct {
 	Count        uint64    `json:"count"`
 	FirstAt      time.Time `json:"firstAt"`
 	LastAt       time.Time `json:"lastAt"`
 	PassedProbes int       `json:"passedProbes"`
+	FailedProbes int       `json:"failedProbes"`
 }
 
 func sameControls(a, b *Controls) bool {
@@ -79,29 +89,56 @@ func sameControls(a, b *Controls) bool {
 	return *a == *b
 }
 
-// repeatable reports a check that executed nothing and changed nothing, so a
-// run of them can be summarized without losing an event.
+func targetMoved(r Record) bool {
+	return r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey
+}
+
+// attempted reports a check that tried to move the loop, whether or not it
+// did: an exact probe ran, or the engine was re-evaluated after a failed
+// handoff or switch-back.
+func attempted(r Record) bool {
+	if r.Action == "handoff" || r.Action == "switch_back" {
+		return true
+	}
+	for _, p := range r.Probes.Results {
+		if p.Tier != "scheduled" {
+			return true
+		}
+	}
+	for _, e := range r.Decisions.Evaluations {
+		if e.Stage == "handoff_failed" || e.Stage == "switch_back_failed" {
+			return true
+		}
+	}
+	return false
+}
+
+// repeatable reports a check that executed nothing, changed nothing and
+// attempted nothing, so a run of them can be summarized without losing an
+// event. A scheduled probe does not prevent it; see consistentProbes.
 func repeatable(r Record) bool {
-	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) {
+	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) {
 		return false
 	}
 	dry := r.DryRun || r.Outcome == "dry_run"
-	if r.Action != "none" && !dry {
-		return false
+	if dry {
+		return true // A dry run executes nothing, whatever it proposed.
 	}
-	if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey {
-		return false
-	}
-	for _, p := range r.Probes.Results {
-		if !p.OK {
-			return false
-		}
-	}
-	return true
+	return r.Action == "none" && !attempted(r)
 }
 
 func limitWaitCause(cause string) bool {
 	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+}
+
+func failedProbes(r Record) int {
+	n := 0
+	for _, p := range r.Probes.Results {
+		if !p.OK {
+			n++
+		}
+	}
+	return n
 }
 
 // tierOf classifies a cleaned record for retention.
@@ -116,38 +153,98 @@ func tierOf(r Record) string {
 		}
 		return TierActivity
 	case "tick":
-		if repeatable(r) {
-			switch {
-			case limitWaitCause(r.Cause) && !r.DryRun && r.Outcome != "dry_run":
-				return TierKey // the first and latest check of a limit wait
-			case r.Outcome == "failed":
-				return TierActivity
-			}
+		dry := r.DryRun || r.Outcome == "dry_run"
+		if dry {
 			return TierRoutine
 		}
-		if !sameControls(r.ControlBefore, r.ControlAfter) || (r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey) || r.Action == "handoff" || r.Action == "switch_back" || r.Action == "await_user" {
+		if !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) || r.Action == "await_user" {
 			return TierKey
 		}
-		for _, p := range r.Probes.Results {
-			if !p.OK {
-				return TierKey
-			}
+		// A record without a second target can only offer its outcome as evidence of a move.
+		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
+			return TierKey
+		}
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) {
+			return TierCondition
+		}
+		if repeatable(r) && r.Outcome != "failed" {
+			return TierRoutine
 		}
 	}
 	return TierActivity
 }
 
-// sameRun reports two repeatable checks that differ only in when they ran,
-// their decision inputs and their passing probes.
-func sameRun(a, b Record) bool {
+// sameBase reports two repeatable checks that differ only in when they ran,
+// their decision inputs and their scheduled probes.
+func sameBase(a, b Record) bool {
 	if !repeatable(a) || !repeatable(b) {
 		return false
 	}
 	for _, r := range []*Record{&a, &b} {
-		r.Sequence, r.CheckStartedAt, r.Collapsed, r.LastActiveRecoveryAt = 0, time.Time{}, nil, nil
+		r.Sequence, r.CheckStartedAt, r.Collapsed, r.LastActiveRecoveryAt, r.Tier = 0, time.Time{}, nil, nil, ""
 		r.Decisions, r.Probes = Decisions{}, Probes{}
 	}
 	return reflect.DeepEqual(a, b)
+}
+
+// probeStatus is the latest scheduled-probe result per candidate across a
+// run's retained records: an error class when failing, "" when passing.
+type probeStatus map[string]string
+
+func (s probeStatus) apply(r Record) {
+	for _, p := range r.Probes.Results {
+		if p.OK {
+			s[p.TargetKey] = ""
+		} else {
+			s[p.TargetKey] = p.ErrorClass
+		}
+	}
+}
+
+// repeats reports whether r's probe results say nothing the run does not
+// already show. A first failure, a changed error class and a recovery are
+// events; a failure repeating a retained one, or a pass by a candidate not
+// shown failing, is not.
+func (s probeStatus) repeats(r Record) bool {
+	for _, p := range r.Probes.Results {
+		class, known := s[p.TargetKey]
+		if p.OK && known && class != "" {
+			return false
+		}
+		if !p.OK && (!known || class != p.ErrorClass) {
+			return false
+		}
+	}
+	return true
+}
+
+// foldsLatest reports whether next continues the run that ends the retained
+// records, such that the current latest record can be folded into next. The
+// run is the trailing records with the same base as next. Its latest record
+// may be folded only if an earlier record of the run remains and the latest
+// itself added no probe news, so every record that reported something new
+// stays retained.
+func foldsLatest(records []Record, next Record) bool {
+	n := len(records)
+	if n < 2 || !sameBase(records[n-1], next) {
+		return false
+	}
+	start := n - 1
+	for start > 0 && sameBase(records[start-1], next) {
+		start--
+	}
+	if start == n-1 {
+		return false
+	}
+	status := probeStatus{}
+	for _, r := range records[start : n-1] {
+		status.apply(r)
+	}
+	if !status.repeats(records[n-1]) {
+		return false
+	}
+	status.apply(records[n-1])
+	return status.repeats(next)
 }
 
 // MaxProbes bounds the probe results kept for one tick.
