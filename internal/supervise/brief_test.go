@@ -3,11 +3,14 @@ package supervise
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -158,12 +161,21 @@ func TestRejectedBriefKindsSendAllowanceAndDryRun(t *testing.T) {
 	}
 	// Activation fails before a send is reserved; the two unsupported sends are counted.
 	sendsUsed(t, w, 2)
+	// With every fallback capped, a dry run previews what a real check does:
+	// wait for the reported reset, not a handoff.
+	before, _ := state.Load(w.dir)
 	opts := w.opts(t0.Add(31 * time.Minute))
 	opts.DryRun = true
 	res, err := Tick(context.Background(), w.cfg, opts)
-	if err != nil || res.Handoff == nil || res.Handoff.To != "" {
-		t.Fatalf("dry run previews a capped fallback: %+v %v", res.Handoff, err)
+	if err != nil || res.Action != "none" || !strings.Contains(res.Reason, "limit resets in") || !strings.Contains(res.Reason, "every confirmed fallback is capped") ||
+		res.Handoff == nil || res.Handoff.To != "" || strings.Join(res.Handoff.Skipped, ",") != "claude-other: capped,codex-main: capped" {
+		t.Fatalf("dry run: %+v handoff=%+v err=%v", res, res.Handoff, err)
 	}
+	after, _ := state.Load(w.dir)
+	if after.HandoffBriefs["claude-other"] != before.HandoffBriefs["claude-other"] || exactProbes(w, "claude-other") != 2 {
+		t.Fatal("dry run changed brief counts or probed")
+	}
+	sendsUsed(t, w, 2)
 }
 
 // Stop and pause win whatever the brief counts are, and probe nothing.
@@ -221,5 +233,133 @@ func TestRejectedSwitchBackBriefsAreCapped(t *testing.T) {
 	}
 	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
 		t.Fatal("capped switch-back raised a hold")
+	}
+	// Reaching the cap is reported once, marked as not having moved.
+	var stops []map[string]any
+	for _, e := range w.reports {
+		if e.Type == "switch_back" {
+			stops = append(stops, e.Data)
+		}
+	}
+	if len(stops) != 1 || stops[0]["stopped"] != true || stops[0]["rejected"] != 2 || !strings.Contains(w.reports[len(w.reports)-1].Text+w.reportTypes(), "switch_back") {
+		t.Fatalf("switch-back stop reports: %+v", stops)
+	}
+}
+
+// The episode does not end because the session was seen active. After every
+// fallback is capped the primary is re-prompted; that turn runs, then errors
+// again. The fallbacks must stay capped, or each such cycle would hand them a
+// fresh allowance. A finished turn or verified Git progress does end it.
+func TestBriefCountsSurviveErrorActiveError(t *testing.T) {
+	for _, ending := range []string{"active only", "active with git progress", "idle"} {
+		t.Run(ending, func(t *testing.T) {
+			w, p, fallbacks := rejectingWorld(t, false)
+			w.cfg.Loop.Progress.Repositories = []string{"/example/repo"}
+			fingerprint := "unchanged"
+			tick := func(minute int) Result {
+				t.Helper()
+				opts := w.opts(t0.Add(time.Duration(minute) * time.Minute))
+				opts.Fingerprint = func([]string) (string, error) { return fingerprint, nil }
+				res, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return res
+			}
+			for minute := 0; minute <= 10; minute++ {
+				tick(minute)
+			}
+			if len(fallbacks["claude-other"].sent) != 2 || len(fallbacks["codex-main"].sent) != 2 || len(p.sent) != 2 {
+				t.Fatalf("setup: %d %d primary %d", len(fallbacks["claude-other"].sent), len(fallbacks["codex-main"].sent), len(p.sent))
+			}
+			// The second re-prompt's turn is seen running, then it errors again.
+			errored := p.obs
+			switch ending {
+			case "active only":
+				p.obs = decide.Observation{State: decide.Active}
+			case "active with git progress":
+				p.obs, fingerprint = decide.Observation{State: decide.Active}, "changed"
+			case "idle":
+				p.obs = decide.Observation{State: decide.Idle}
+			}
+			tick(11)
+			st, _ := state.Load(w.dir)
+			kept := ending == "active only"
+			if (len(st.HandoffBriefs) == 2) != kept {
+				t.Fatalf("after %s: briefs=%+v", ending, st.HandoffBriefs)
+			}
+			p.obs = errored
+			for minute := 12; minute < 40; minute++ {
+				tick(minute)
+			}
+			want := 2
+			if !kept {
+				want = 4 // a real recovery starts a new episode with a fresh allowance
+			}
+			if len(fallbacks["claude-other"].sent) != want || len(fallbacks["codex-main"].sent) != want || exactProbes(w, "claude-other") != want {
+				t.Fatalf("after %s: briefs %d %d, probes %d, want %d", ending, len(fallbacks["claude-other"].sent), len(fallbacks["codex-main"].sent), exactProbes(w, "claude-other"), want)
+			}
+		})
+	}
+}
+
+// A fallback whose adapter cannot be built after it passed its exact probe is
+// counted and spaced like one that rejected the brief, so it is not probed on
+// every check.
+func TestUnbuildableFallbackIsCappedAndSpaced(t *testing.T) {
+	w, _, fallbacks := rejectingWorld(t, true)
+	for minute := 0; minute < 30; minute++ {
+		opts := w.opts(t0.Add(time.Duration(minute) * time.Minute))
+		build := opts.NewAdapter
+		opts.NewAdapter = func(a config.Agent, dir, target string) (adapter.Adapter, error) {
+			if target == "claude-other" {
+				return nil, errors.New("adapter unavailable")
+			}
+			return build(a, dir, target)
+		}
+		if _, err := Tick(context.Background(), w.cfg, opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, _ := state.Load(w.dir)
+	if st.HandoffBriefs["claude-other"].Failed != 2 || exactProbes(w, "claude-other") != 2 || len(fallbacks["claude-other"].sent) != 0 {
+		t.Fatalf("briefs=%+v probes=%d", st.HandoffBriefs, exactProbes(w, "claude-other"))
+	}
+}
+
+// Counts live in state.json, so a new process mid-episode honors them, and a
+// state file written before these fields existed starts from zero.
+func TestBriefCountsPersistAcrossRestartAndLoadFromOlderState(t *testing.T) {
+	w, _, fallbacks := rejectingWorld(t, true)
+	runTick(t, w, t0)
+	raw, _ := os.ReadFile(filepath.Join(w.dir, state.FileName))
+	if !strings.Contains(string(raw), `"handoffBriefs"`) {
+		t.Fatalf("state.json: %s", raw)
+	}
+	// A restart: nothing in memory survives, only the files.
+	fresh := map[string]*fakeAdapter{}
+	for _, id := range []string{"claude-other", "codex-main"} {
+		fresh[id] = &fakeAdapter{obs: decide.Observation{State: decide.Idle}, sendErr: errors.New("brief rejected")}
+		w.adapters[id] = fresh[id]
+	}
+	probes := len(w.probes)
+	if res := runTick(t, w, t0.Add(time.Minute)); len(fresh["claude-other"].sent) != 0 || len(w.probes) != probes || strings.Join(res.Handoff.Skipped, ",") != "claude-other: backing_off,codex-main: backing_off" {
+		t.Fatalf("restart forgot the counts: %+v", res.Handoff)
+	}
+	_ = fallbacks
+
+	// An older state file has neither field.
+	old := newWorld(t, true, true)
+	old.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	old.primary(limited)
+	if err := os.WriteFile(filepath.Join(old.dir, state.FileName), []byte(`{"activeTarget":"primary","reprompts":1,"lastRepromptAt":"2026-11-09T11:00:00Z","handoffs":2}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(old.dir)
+	if err != nil || st.HandoffBriefs != nil || st.SwitchBackRejected != 0 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if res := runTick(t, old, t0); res.Action != "handoff" || res.Target != "claude-other" {
+		t.Fatalf("older state: %+v", res)
 	}
 }

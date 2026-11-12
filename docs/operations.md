@@ -140,22 +140,29 @@ Evidence is offline only. Decision tables enumerate every session state and erro
 
 ### Rejected takeover briefs
 
-A fallback can pass its exact probe and still not take the loop: its model cannot be applied, or the brief send fails or is unsupported. The same can happen to the primary on switch-back. Unreleased source counts those rejections so the same target is not probed and sent to on every check.
+A fallback can pass its exact probe and still not take the loop: its adapter cannot be built, its model cannot be applied, or the brief send fails or is unsupported. The same can happen to the primary on switch-back. Unreleased source counts those rejections so the same target is not probed and sent to on every check.
 
 **Handoff.** Each fallback has its own count and spacing within one error episode:
 
 - After a rejection, that fallback is skipped until `errors.backoff` has passed. Skipped means not probed and not sent to.
 - After `errors.max_reprompts` rejections it is skipped for the rest of the episode, and the next healthy fallback is tried.
-- The episode ends when the active session is seen active or idle again, when a handoff or switch-back succeeds, or on `retarget`. The counts then start over.
-- Every brief send is still reserved against `max_sends`. A failed activation happens before the send, so it counts toward the cap but not toward `max_sends`.
+- The episode ends on evidence that the session recovered: a turn that finished without an error (the session is seen idle), or verified Git progress while it is active. It also ends when a handoff or switch-back succeeds, on `retarget`, on a BB transfer and on `resume`. The counts then start over.
+- Seeing the session active does not end the episode. A re-prompt from keepgoing, or a provider retry, makes it active; if that turn errors again the fallbacks stay capped. Without `progress.repositories` there is no Git evidence, so only a finished turn ends it.
+- Every brief send is still reserved against `max_sends`. A failed adapter build or activation happens before the send, so it counts toward the cap but not toward `max_sends`.
 
 When no fallback can be offered a brief on a check, the loop does what it already did when no fallback could take over: it waits for a reported reset, or applies the re-prompt rules to the current target and holds once those are spent. The reason, hold note and report then say that every confirmed fallback is capped or backing off after rejecting its handoff brief. The tick's `handoff.skipped` lists each skipped fallback as `backing_off` or `capped`.
 
-**Switch-back.** Attempts were already spaced by `switch_back.retry_every`. After `errors.max_reprompts` rejected switch-back briefs, keepgoing stops trying, warns on each check that it has stopped, and keeps the fallback working. It tries again only after the next handoff or a `retarget`. No hold is raised, because the loop is still running on the fallback.
+**Switch-back.** Attempts were already spaced by `switch_back.retry_every`. After `errors.max_reprompts` rejected switch-back briefs, keepgoing stops trying and keeps the fallback working. No hold is raised, because the loop is still running on the fallback. When the cap is reached it sends one `switch_back` report whose data has `stopped: true`, so a subscriber must not read every `switch_back` report as a completed move. Each later check carries a warning, and `status` prints a `switch-back: stopped` line and sets `takeoverBriefs.switchBackStopped`. There is no time-based retry: it starts again only after `resume`, `retarget` or the next handoff.
+
+**Trying a repaired target again.** `keepgoing resume` clears all rejected-brief counts, for fallbacks and for switch-back, as well as the holds it already clears. Use it after repairing a fallback that was capped while the primary is still in error, or after repairing the primary when switch-back has stopped. `keepgoing retarget <id>` clears them too and moves the loop without waiting for a brief. Pause, enable and the other controls leave the counts alone, and so does the registered `client resume`, which does not change `state.json`. `status` lists capped fallbacks on a `handoff briefs:` line and in `takeoverBriefs.capped`.
+
+**A brief that arrived anyway.** A send reported as failed may still have been delivered. keepgoing then counts a rejection and keeps the loop pointed at the current target while that fallback starts working. It can be sent up to `errors.max_reprompts` briefs in total, and a later fallback may also be handed the loop, so two sessions can work on the task at once. This is the same uncertainty as a failed wake or re-prompt; check the fallback's session when a handoff brief is reported as failed.
+
+**Dry runs.** A dry run previews the first fallback that would be offered a brief. When none would be, it previews the wait or hold a real check would reach, and changes no counts.
 
 **Why per fallback, and what it costs.** The count belongs to one fallback so that a single broken fallback cannot use up the attempts of a healthy one that is listed after it. The cost is more total attempts: with N fallbacks that all reject, one error episode can make up to N times `max_reprompts` probes and brief sends before the loop falls through. A single count for the whole episode would cap that total at `max_reprompts`, but one fallback's failures would then stop the others from being tried. The rule is one pure function, `decide.BriefGate`, applied per fallback in the handoff loop, so changing to a per-episode count is a small change. Both limits reuse `errors.max_reprompts` and `errors.backoff`; there is no separate setting.
 
-Evidence is offline: a decision table for the gate, and fake-adapter fixtures with a rate-limited primary and two fallbacks that pass the probe and reject the brief, with and without a reported reset. In those, each fallback is probed and sent to twice, ten minutes apart, over forty one-minute checks, where the earlier code did so on every check. No live handoff was run.
+Evidence is offline: a decision table for the gate, and fake-adapter fixtures with a rate-limited primary and two fallbacks that pass the probe and reject the brief, with and without a reported reset. In those, each fallback is probed and sent to twice, ten minutes apart, over forty one-minute checks, where the earlier code did so on every check. Further fixtures cover an error, active, error sequence that keeps the caps, recovery that clears them, a fallback whose adapter cannot be built, a restart mid-episode, older state files, `resume`, `retarget` and transfer. No live handoff was run.
 
 ## No-progress timeout
 
