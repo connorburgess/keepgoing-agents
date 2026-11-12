@@ -95,6 +95,7 @@ type tick struct {
 	observedTarget      string
 	awaitingInput       bool
 	awaitingChildren    []string
+	deferredInteraction bool
 	ctx                 context.Context
 	cfg                 *config.Config
 	loop                config.Loop
@@ -282,6 +283,24 @@ func (t *tick) run() error {
 		var actErr error
 		if !t.opts.DryRun {
 			actErr = t.act(a, d)
+		}
+		return t.record(actErr)
+	}
+	if obs.DeferredInteraction {
+		// Same precedence as child input: save the hold before probes, the
+		// fingerprint or recovery can fail. The adapter is told only after the hold is saved, so a crash in
+		// between raises it again instead of losing it.
+		d := t.decide("normal", decide.Input{Control: gate, Obs: obs})
+		res.Action, res.Reason, res.Window = string(d.Action), d.Reason, "not checked"
+		res.Reprompts, t.st.LastState = t.st.Reprompts, string(obs.State)
+		var actErr error
+		if !t.opts.DryRun {
+			// Another rule (a gone target) may own this hold; adopt only our own.
+			t.deferredInteraction = d.DeferredInteraction
+			actErr = t.act(a, d)
+			if adopter, ok := a.(adapter.InteractionAdopter); ok && actErr == nil && t.deferredInteraction {
+				actErr = adopter.AdoptInteraction(t.ctx)
+			}
 		}
 		return t.record(actErr)
 	}
@@ -662,6 +681,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if len(t.awaitingChildren) > 0 {
 			data["children"] = t.awaitingChildren
 			data["pendingInteraction"] = true
+		}
+		if t.deferredInteraction {
+			data["deferredInteraction"] = true
 		}
 		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), data)
 	case decide.Stop:
