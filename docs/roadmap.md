@@ -224,6 +224,14 @@ Implemented with persistent `control.ownership` metadata and explicit `--take-ov
 
 Acceptance: enabling from a second fictional thread ID fails without changing ownership; `--take-over` succeeds and records the previous owner as handed off. Offline fixtures also cover conflicting `validate`/`daemon` calls and shared control-file paths. Define scheduler calls without a BB identity and stale ownership explicitly; an unavailable owner-status check must not silently authorize a takeover.
 
+#### 3.5. Errored children
+
+- [ ] Surface direct children whose status is `error`, and decide whether keepgoing should recover them. Nothing is implemented.
+
+Current behavior, recorded by `TestErroredChildrenAreNotSurfacedOrRecovered` (passing, fake `bb`) and the `failed` rows of the adapter and early-wake fixtures: a child in `error` is a known non-active state, so it is not counted as running work and does not make discovery unverified. The parent is then handled on its own status alone. An idle parent gets its ordinary wake (early, when BB logged the child's structured `failed` notice); an active parent is left as `active`; an errored parent gets its own error handling. The wake prompt is the loop's ordinary prompt and does not mention the child. No tick output, `status`, `timeline`, incident record or report names or counts an errored child, and no child is messaged, retried or restarted. A parent left alone earlier as `child work running` therefore becomes eligible again once its children fail, but whether the failed work is redone depends entirely on the parent agent noticing. A child with a pending interaction is still escalated under 3.3 whatever its status.
+
+Open questions for the owner before any implementation: report only (a count and IDs in `status` and one report) or also recover; whether recovery means prompting the parent to redo the work or re-prompting the child directly, which keepgoing has never done; and which bound applies per child.
+
 ### 4. Start and run in the background
 
 - [x] Add a single start operation that validates setup, enables the loop, and starts supervision with a clear foreground/background choice. Detect an existing daemon instead of starting a duplicate.
