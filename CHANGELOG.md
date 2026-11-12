@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `validate` and `status` now say when a loop has no loop-wide limit. With `deadline`, `max_sends` and `no_progress_timeout` all unset, `validate` prints a warning on stderr and `status` shows it on a new `bounds:` line; otherwise both name the configured limits. `status --json` adds `workBounds`. No default limit is applied, and behavior and exit codes are unchanged. Offline fixtures only.
+
 - `timeline` now works as a navigable event log. Incident history schema 5 records the hashed target after each check, per-check probe results, manual retargets and limit-wait causes, so handoffs, switch-backs and retargets show both ends. New `--kind` (including `moves`), `--target`, `--since` and `--until` filters apply to text and JSON (timeline schema 2); summaries still use all retained evidence. No task text, notes, thread IDs or aliases are stored. Older binaries refuse the upgraded journal. Offline fixtures only; work moved outside keepgoing and reporting a long limit wait remain roadmap items.
 
 - Nudge and re-prompt attempts now count toward `max_nudges` and `max_reprompts` and start `min_wake_interval` and `errors.backoff` even when the adapter reports the send as failed or unsupported. Previously such a send was retried on every check without a cap or a hold. Because a failed send may still have been delivered, an adapter that keeps failing now reaches the awaiting-user hold after the configured number of attempts; a stalled headless turn, which cannot be nudged, does too. `lastWakeAt` records the attempt time. Stop and control holds are unchanged. Failed handoff briefs are not covered. Offline tables and fake-adapter fixtures only.
