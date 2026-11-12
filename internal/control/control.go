@@ -168,8 +168,14 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
+	// Sync before publishing, as the send ledger does: a hold must not be
+	// replaced by an empty file after a crash. Not a power-loss guarantee.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return snapshot.Replace(name, path)
+	return snapshot.ReplaceStrict(name, path)
 }

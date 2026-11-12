@@ -133,6 +133,12 @@ func Save(stateDir string, f File) error {
 		tmp.Close()
 		return err
 	}
+	// This record is what stops a stop or prompt being repeated. Sync it
+	// before publishing, as the send ledger does. Not a power-loss guarantee.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}

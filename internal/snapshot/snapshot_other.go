@@ -10,3 +10,6 @@ func Open(path string) (*os.File, error) { return os.Open(path) }
 
 // Replace atomically moves a closed staging file over target.
 func Replace(source, target string) error { return os.Rename(source, target) }
+
+// ReplaceStrict is Replace; the two differ only on Windows.
+func ReplaceStrict(source, target string) error { return os.Rename(source, target) }

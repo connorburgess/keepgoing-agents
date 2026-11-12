@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 const FileName = "registry.json"
@@ -78,7 +79,7 @@ func Load(dir string) (File, error) {
 	if privateFile(path) != nil {
 		return File{}, ErrInvalid
 	}
-	f, err := os.Open(path)
+	f, err := snapshot.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
 	}
@@ -155,7 +156,7 @@ func update(dir string, fn func(*File) (bool, error)) error {
 	if err := tmp.Close(); err != nil {
 		return ErrInvalid
 	}
-	if err := os.Rename(name, filepath.Join(dir, FileName)); err != nil {
+	if err := snapshot.Replace(name, filepath.Join(dir, FileName)); err != nil {
 		return ErrInvalid
 	}
 	return nil
