@@ -26,7 +26,8 @@
             "bb",
             "process",
             "claude",
-            "codex"
+            "codex",
+            "cursor"
           ]
         },
         "provider": {
@@ -313,8 +314,39 @@
               "description": "extra environment for the probe, for example CLAUDE_CONFIG_DIR or CODEX_HOME to check another account's login"
             }
           }
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "adapter": {
+                "const": "cursor"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cursor"
+            ],
+            "properties": {
+              "fallbacks": {
+                "const": ""
+              },
+              "switch_back": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {
@@ -475,6 +507,31 @@
             "type": "string"
           },
           "description": "Environment overrides for turns and inherited by probes. Values are literal; use absolute account configuration paths."
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "agent"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }

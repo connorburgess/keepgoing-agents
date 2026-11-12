@@ -285,3 +285,28 @@ func TestDoctorVersionAndOutputLimit(t *testing.T) {
 		t.Fatal("output cap bypassed")
 	}
 }
+
+func TestDoctorCursorUsesOnlyVersionAndKeepsAuthUnknown(t *testing.T) {
+	f := newDoctorFixture(t)
+	delete(f.loop, "bb")
+	f.loop["adapter"] = "cursor"
+	f.loop["provider"] = "cursor"
+	f.loop["cursor"] = map[string]any{"cli": f.executable, "workdir": f.root, "env": map[string]string{"CURSOR_API_KEY": doctorPrivate}}
+	f.save(t)
+	calls := 0
+	code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, env map[string]string, dir string) ([]byte, error) {
+		calls++
+		if !reflect.DeepEqual(args, []string{"--version"}) || dir != f.root || env["CURSOR_API_KEY"] != doctorPrivate {
+			t.Fatal("unexpected diagnostic command or environment")
+		}
+		return []byte("2030.01.02-abcdef0\n"), nil
+	})
+	if code != 0 || calls != 1 || doctorCheckByID(t, r, "agent.primary.version").Status != "ok" || doctorCheckByID(t, r, "agent.primary.login").Status != "unavailable" {
+		t.Fatalf("%d calls=%d %+v", code, calls, r)
+	}
+	for _, bad := range []string{"2030.01.02-abcdef0\n" + doctorPrivate, "2030.01.02-secret", ""} {
+		if doctorAgentVersion("cursor", []byte(bad)) != "" {
+			t.Fatal("unrecognized version surfaced")
+		}
+	}
+}

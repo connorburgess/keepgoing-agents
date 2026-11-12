@@ -151,7 +151,9 @@ func startPreflight(ctx context.Context, cfg *config.Config) error {
 	check := func(id string, a config.Agent) {
 		doctorAgent(ctx, &r, id, a, true, 0, nil)
 		var workdir string
-		if a.Claude != nil {
+		if a.Cursor != nil {
+			workdir = a.Cursor.Workdir
+		} else if a.Claude != nil {
 			workdir = a.Claude.Workdir
 		} else if a.Codex != nil {
 			workdir = a.Codex.Workdir

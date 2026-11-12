@@ -23,6 +23,8 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 		return process.New(*a.Process), nil
 	case "claude":
 		return runner.NewClaude(*a.Claude, dir), nil
+	case "cursor":
+		return runner.NewCursor(*a.Cursor, dir), nil
 	case "codex":
 		return runner.NewCodex(*a.Codex, dir), nil
 	}

@@ -147,7 +147,7 @@ func clean(r Record) Record {
 	if !buildPattern.MatchString(r.Build) {
 		r.Build = "unavailable"
 	}
-	r.Adapter = oneOf(r.Adapter, "unavailable", "bb", "process", "claude", "codex")
+	r.Adapter = oneOf(r.Adapter, "unavailable", "bb", "process", "claude", "codex", "cursor")
 	if !keyPattern.MatchString(r.TargetKey) {
 		r.TargetKey = "unavailable"
 	}

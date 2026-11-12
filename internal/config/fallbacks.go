@@ -173,6 +173,9 @@ func (f *Fallbacks) Validate() error {
 			add("%sprovider is required (for example claude-code or codex); redundancy counts by it", where)
 		}
 		errs = append(errs, c.Agent.validate(where)...)
+		if c.Adapter == "cursor" {
+			add("%sCursor fallback candidates are not supported; exact account/model probes are unverified", where)
+		}
 		switch c.Probe.Kind {
 		case "claude", "codex":
 		case "command":

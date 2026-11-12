@@ -299,6 +299,8 @@ func refOf(a config.Agent) agentRef {
 	switch {
 	case a.BB != nil:
 		r.BBThread = a.BB.Thread
+	case a.Cursor != nil:
+		r.Workdir = a.Cursor.Workdir
 	case a.Claude != nil:
 		r.Workdir = a.Claude.Workdir
 	case a.Codex != nil:
