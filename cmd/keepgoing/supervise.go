@@ -262,6 +262,7 @@ type statusOut struct {
 	InWindow          bool                     `json:"inWindow"`
 	State             state.File               `json:"state"`
 	Redundancy        *health.Summary          `json:"redundancy,omitempty"`
+	Usage             []usageView              `json:"usage"`
 	StateDir          string                   `json:"stateDir"`
 	Version           string                   `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
@@ -419,8 +420,14 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.TargetConfigured {
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
+	out.Usage = []usageView{}
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
+		// Readings exist only for probed targets, so they are listed only when
+		// fallbacks are configured. Unreadable history shows as unavailable.
+		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
+			out.Usage = append(out.Usage, usageOf(reg, c, now))
+		}
 		if err == nil {
 			group := l.Group
 			if c, ok := fb.Find(st.Target()); ok {
@@ -545,6 +552,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
 	}
+	printUsage(w, "usage:     ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }

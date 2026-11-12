@@ -37,19 +37,32 @@ type ClaudeResult struct {
 	TerminalReason string `json:"terminal_reason"`
 }
 
-// ParseClaudeResult reads the last JSON object in stdout.
+// ParseClaudeResult reads the last result object in stdout.
 func ParseClaudeResult(stdout []byte) (ClaudeResult, bool) {
+	r, _, ok := claudeResult(stdout)
+	return r, ok
+}
+
+// ClaudeResultLine returns the JSON text ParseClaudeResult reads: the last
+// line holding a result object, wherever it sits in the output, or the whole
+// output when that is one multi-line result object.
+func ClaudeResultLine(stdout []byte) ([]byte, bool) {
+	_, line, ok := claudeResult(stdout)
+	return line, ok
+}
+
+func claudeResult(stdout []byte) (ClaudeResult, []byte, bool) {
 	var r ClaudeResult
 	lines := bytes.Split(bytes.TrimSpace(stdout), []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		if json.Unmarshal(lines[i], &r) == nil && r.Type == "result" {
-			return r, true
+			return r, lines[i], true
 		}
 	}
-	if json.Unmarshal(bytes.TrimSpace(stdout), &r) == nil && r.Type == "result" {
-		return r, true
+	if whole := bytes.TrimSpace(stdout); json.Unmarshal(whole, &r) == nil && r.Type == "result" {
+		return r, whole, true
 	}
-	return r, false
+	return r, nil, false
 }
 
 // Class classifies a failed result from structured fields only.
