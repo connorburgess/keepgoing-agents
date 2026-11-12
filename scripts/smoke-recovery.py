@@ -21,6 +21,7 @@ import time
 
 PRIVATE = "FICTIONAL_PRIVATE_RECOVERY_TASK"
 SCRIPT = Path(__file__).resolve()
+CURSOR_SESSION = "00000000-0000-4000-8000-0000000000c1"
 
 
 def require(condition, message):
@@ -68,6 +69,22 @@ def fixture(kind, args):
     if kind == "process-resume":
         require(sys.stdin.read() == PRIVATE, "Unexpected fixture task.")
         return 0
+    if kind == "cursor":
+        expected = ["-p", "--output-format", "stream-json"]
+        invocations = (root / "calls.jsonl").read_text().splitlines()
+        if len(invocations) > 1:
+            expected.append("--resume=" + CURSOR_SESSION)
+        require(args == expected, "Cursor fixture did not receive exact, permission-preserving arguments.")
+        require(sys.stdin.read() == PRIVATE, "Unexpected fixture task.")
+        print(json.dumps({"type": "system", "subtype": "init", "session_id": CURSOR_SESSION}))
+        if (root / "recovered").exists():
+            print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                              "session_id": CURSOR_SESSION, "result": PRIVATE}))
+            return 0
+        # A complete initialization followed by nonzero exit retains identity,
+        # but stderr is never a taxonomy or proof of quota/auth/network state.
+        print("fictional 429 rate limit authentication network failure", file=sys.stderr)
+        return 1
     if kind in ("claude", "codex"):
         if (kind == "codex" and args[:1] != ["exec"]) or (kind == "claude" and "--output-format" not in args):
             (root / "unexpected").touch()
@@ -139,9 +156,9 @@ class Loop:
             "RECOVERY_URL": f"http://127.0.0.1:{receiver.server.server_port}",
             "RECOVERY_SECRET": "fictional-recovery-key",
         }
-        for name in ("bb", "claude", "codex"):
+        for name, adapter in (("bb", "bb"), ("claude", "claude"), ("codex", "codex"), ("agent", "cursor")):
             stub = self.commands / name
-            stub.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(SCRIPT), "--fixture", name]) + ' "$@"\n')
+            stub.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, str(SCRIPT), "--fixture", adapter]) + ' "$@"\n')
             stub.chmod(0o700)
         self.observation("idle")
         save(root / "events.json", [])
@@ -166,7 +183,8 @@ class Loop:
                 "resume_command": [sys.executable, str(SCRIPT), "--fixture", "process-resume"],
             }
         else:
-            loop[self.kind] = {"cli": str(self.commands / self.kind), "workdir": str(self.root)}
+            executable = "agent" if self.kind == "cursor" else self.kind
+            loop[self.kind] = {"cli": str(self.commands / executable), "workdir": str(self.root)}
         save(self.config, {"version": 1, "loop": loop})  # JSON is a YAML subset.
 
     def cli(self, command, *args, expected=0, owner="thr_example_owner"):
@@ -224,9 +242,11 @@ class Loop:
         before, requests = self.calls(), self.receiver.count()
         control_before = load(self.state / "control.json")
         sends_before = load(self.state / "sends.json")
+        session = self.state / "targets" / "primary" / "session"
+        session_before = session.read_bytes() if self.kind == "cursor" else None
         # Crash the first held daemon after a recorded check, then start a new
-        # process against the same files and stale endpoint. Only the BB case
-        # waits for an additional ordinary interval in each process.
+        # process against the same files and stale endpoint. BB and Cursor cases
+        # wait for an additional ordinary interval in each process.
         endpoint = self.state / "daemon-endpoint.json"
         crashed_endpoint = None
         for exit_signal in (signal.SIGKILL, signal.SIGTERM):
@@ -250,6 +270,8 @@ class Loop:
             else:
                 require(not endpoint.exists(), "Orderly shutdown left its endpoint behind.")
             require(load(self.state / "control.json") == control_before, "Restart changed controls/owner.")
+            if session_before is not None:
+                require(session.read_bytes() == session_before, "Held restart changed saved Cursor session identity.")
         require(control_before[flag], "Expected persistent hold is absent.")
         require(self.calls() == before and self.receiver.count() == requests,
                 "Held daemon queried a provider or replayed a notification.")
@@ -263,8 +285,13 @@ class Loop:
         require(view["control"]["state"] == "awaiting_user", "Timeline lost current hold.")
         require(view["summary"]["heldChecks"] >= 2 and view["summary"]["notificationWarnings"] == 1,
                 "Timeline lost held checks or failed alert.")
-        require(any(e.get("incident", {}).get("observation", {}).get("errorClass") == "network"
-                    for e in view["events"]), "Timeline lost network-class evidence.")
+        expected_class = "unknown" if self.kind == "cursor" else "network"
+        require(any(e.get("incident", {}).get("observation", {}).get("errorClass") == expected_class
+                    for e in view["events"]), "Timeline lost expected failure-class evidence.")
+        if self.kind == "cursor":
+            observations = [e.get("incident", {}).get("observation", {}) for e in view["events"]]
+            require(not any(o.get("errorClass") in ("network", "auth", "rate_limit") for o in observations),
+                    "Cursor stderr became classified evidence.")
         require(PRIVATE not in output and str(self.root) not in output and "fictional-recovery-key" not in output,
                 "Timeline exposed private fixture content.")
         after = {p.name: p.read_bytes() for p in self.state.iterdir() if p.is_file()}
@@ -274,7 +301,7 @@ class Loop:
 
 
 def exercise(loop):
-    headless = loop.kind in ("claude", "codex")
+    headless = loop.kind in ("claude", "codex", "cursor")
     loop.cli("enable")
     if loop.kind == "bb":
         loop.observation("active")
@@ -298,7 +325,10 @@ def exercise(loop):
         loop.wait_turn(1)
     else:
         loop.observation("error", "network")
-    loop.tick(5, "reprompt")
+    failed = loop.tick(5, "reprompt")
+    if loop.kind == "cursor":
+        require(failed.get("errorClass") == "unknown" and not failed.get("handoff") and not failed.get("probes"),
+                "Cursor failure was classified or triggered fallback work.")
     if headless:
         loop.wait_turn(1)
     requests = loop.receiver.count()
@@ -308,7 +338,7 @@ def exercise(loop):
     saved = load(loop.state / "control.json")
     loop.cli("enable", expected=1, owner="thr_example_other")
     require(load(loop.state / "control.json") == saved, "Conflicting owner changed hold.")
-    loop.restart_held("awaitingUser", ordinary_intervals=(loop.kind == "bb"))
+    loop.restart_held("awaitingUser", ordinary_intervals=(loop.kind in ("bb", "cursor")))
     loop.verify_timeline()
     spent = load(loop.state / "sends.json")["used"]
     # Repair only the stand-in. Explicitly increase its synthetic retry allowance
@@ -333,8 +363,13 @@ def exercise(loop):
         loop.tick(9, "wake")  # Observe clean result, then one more resumed turn.
         loop.wait_turn(0)
         invocations = [json.loads(line) for line in loop.calls().splitlines()]
-        require(len(invocations) == 4 and "session_example" in invocations[-1] and
-                ("resume" in invocations[-1] or "--resume" in invocations[-1]), "Saved headless session was not reused.")
+        if loop.kind == "cursor":
+            first = ["cursor", "-p", "--output-format", "stream-json"]
+            require(invocations == [first] + [first + ["--resume=" + CURSOR_SESSION]] * 3,
+                    "Cursor session was not reused exactly across failure, hold and restart.")
+        else:
+            require(len(invocations) == 4 and "session_example" in invocations[-1] and
+                    ("resume" in invocations[-1] or "--resume" in invocations[-1]), "Saved headless session was not reused.")
     else:
         require(load(loop.state / "state.json")["lastState"] == "active", "Recovery was not observed.")
     require(load(loop.state / "sends.json")["used"] == spent + (2 if headless else 0), "Unexpected send accounting after recovery.")
@@ -350,13 +385,16 @@ def exercise(loop):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path, help="native built or unpacked keepgoing binary")
+    parser.add_argument("--include-cursor", action="store_true",
+                        help="also verify the unreleased Cursor adapter; requires a build containing it")
     args = parser.parse_args()
     require(os.name == "posix", "This fixture requires macOS/Linux and Python 3.")
     binary = args.binary.resolve(strict=True)
     print(f"artifact sha256={hashlib.sha256(binary.read_bytes()).hexdigest()} platform={platform.system()}/{platform.machine()}")
     with tempfile.TemporaryDirectory(prefix="keepgoing-recovery-") as temporary, Receiver() as receiver:
         root = Path(temporary).resolve()
-        for kind in ("bb", "process", "claude", "codex"):
+        kinds = ("bb", "process", "claude", "codex") + (("cursor",) if args.include_cursor else ())
+        for kind in kinds:
             loop = Loop(binary, root / kind, kind, receiver)
             print("binary version=" + loop.cli("version").strip())
             exercise(loop)
