@@ -10,6 +10,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // Before attempts were counted, each of these sessions was sent to on every
@@ -92,8 +93,10 @@ func TestFailedAndUnsupportedSendsSpendCapsAndSpacing(t *testing.T) {
 	}
 }
 
-// Pause and stop win between failed attempts, before any cap is reached, and a
-// session that recovers on its own starts a fresh re-prompt count.
+// A failed attempt is persisted as spent. Pause and stop then win before any cap
+// is reached and leave the count alone, and a session that recovers on its own
+// starts a fresh count. The pause and stop outcomes themselves are unchanged
+// behavior; the persisted count is what the earlier code did not record.
 func TestHoldsAndRecoveryBetweenFailedAttempts(t *testing.T) {
 	for _, hold := range []string{"pause", "stop", "recovers"} {
 		t.Run(hold, func(t *testing.T) {
@@ -107,9 +110,18 @@ func TestHoldsAndRecoveryBetweenFailedAttempts(t *testing.T) {
 			if res := tick(0); res.Action != "reprompt" || len(p.sent) != 1 {
 				t.Fatalf("%+v", res)
 			}
+			spent := func(want int, wantAt time.Time) {
+				t.Helper()
+				st, err := state.Load(w.dir)
+				if err != nil || st.Reprompts != want || !st.LastRepromptAt.Equal(wantAt) {
+					t.Fatalf("reprompts=%d last=%v err=%v, want %d at %v", st.Reprompts, st.LastRepromptAt, err, want, wantAt)
+				}
+			}
+			spent(1, t0)
 			if hold == "recovers" {
 				p.obs, p.sendErr = decide.Observation{State: decide.Active}, nil
 				tick(5 * time.Minute)
+				spent(0, time.Time{})
 				p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
 				for i, at := range []time.Duration{6 * time.Minute, 16 * time.Minute} {
 					if res := tick(at); res.Action != "reprompt" || len(p.sent) != i+2 {
@@ -134,6 +146,55 @@ func TestHoldsAndRecoveryBetweenFailedAttempts(t *testing.T) {
 			if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
 				t.Fatal("hold replaced by an escalation")
 			}
+			spent(1, t0)
 		})
+	}
+}
+
+// A wake whose adapter call fails may still have started a turn, so its time is
+// recorded and the next stall nudge is spaced from it.
+func TestFailedWakeRecordsLastSendAndSpacesTheNextNudge(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Progress.Repositories = []string{"/example/repo"}
+	p := w.primary(decide.Observation{State: decide.Idle})
+	p.sendErr = errors.New("uncertain delivery")
+	tick := func(at time.Duration) (Result, error) {
+		opts := w.opts(t0.Add(at))
+		opts.Fingerprint = func([]string) (string, error) { return "unchanged", nil }
+		return Tick(context.Background(), w.cfg, opts)
+	}
+	if res, err := tick(0); err == nil || res.Action != "wake" || len(p.sent) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	st, err := state.Load(w.dir)
+	if err != nil || !st.LastWakeAt.Equal(t0) || st.Nudges != 0 || st.Reprompts != 0 {
+		t.Fatalf("lastWakeAt=%v nudges=%d reprompts=%d err=%v", st.LastWakeAt, st.Nudges, st.Reprompts, err)
+	}
+	if st.LastCheck == nil || st.LastCheck.Outcome != "failed" || st.LastPromptSend == nil || st.LastPromptSend.Outcome != "adapter_error" {
+		t.Fatalf("check=%+v send=%+v", st.LastCheck, st.LastPromptSend)
+	}
+	// The turn did start. It is stalled after 30m, but min_wake_interval is 1h.
+	p.obs, p.sendErr = decide.Observation{State: decide.Active}, nil
+	if res, err := tick(40 * time.Minute); err != nil || res.Action != "none" || len(p.sent) != 1 {
+		t.Fatalf("nudged inside the wake interval: %+v %v", res, err)
+	}
+	if res, err := tick(61 * time.Minute); err != nil || res.Action != "nudge" || len(p.sent) != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// An unsupported send is also recorded as an attempt, but the check itself
+// succeeds: only the prompt-send record and the warning show it.
+func TestUnsupportedSendIsRecordedOnASucceededCheck(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+	p.sendErr = adapter.ErrUnsupported{Op: "send"}
+	res := runTick(t, w, t0)
+	st, err := state.Load(w.dir)
+	if err != nil || res.Action != "reprompt" || len(res.Warnings) != 1 || st.Reprompts != 1 || !st.LastWakeAt.Equal(t0) {
+		t.Fatalf("%+v reprompts=%d lastWakeAt=%v err=%v", res, st.Reprompts, st.LastWakeAt, err)
+	}
+	if st.LastCheck.Outcome != "succeeded" || st.LastPromptSend.Outcome != "adapter_error" {
+		t.Fatalf("check=%+v send=%+v", st.LastCheck, st.LastPromptSend)
 	}
 }

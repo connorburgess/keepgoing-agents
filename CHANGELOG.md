@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Nudge and re-prompt attempts now count toward `max_nudges` and `max_reprompts` and start `min_wake_interval` and `errors.backoff` even when the adapter reports the send as failed or unsupported. Previously such a send was retried on every check without a cap or a hold. Because a failed send may still have been delivered, an adapter that keeps failing now reaches the awaiting-user hold after the configured number of attempts; a stalled headless turn, which cannot be nudged, does too. `lastWakeAt` records the attempt time. Stop and control holds are unchanged. Offline tables and fake-adapter fixtures only.
+- Nudge and re-prompt attempts now count toward `max_nudges` and `max_reprompts` and start `min_wake_interval` and `errors.backoff` even when the adapter reports the send as failed or unsupported. Previously such a send was retried on every check without a cap or a hold. Because a failed send may still have been delivered, an adapter that keeps failing now reaches the awaiting-user hold after the configured number of attempts; a stalled headless turn, which cannot be nudged, does too. `lastWakeAt` records the attempt time. Stop and control holds are unchanged. Failed handoff briefs are not covered. Offline tables and fake-adapter fixtures only.
 
 - Document the [bounds on repeated work](docs/operations.md#bounds-on-repeated-work): per-turn nudge and re-prompt caps versus the optional loop-wide `deadline`, `max_sends` and `no_progress_timeout`, their precedence, and what they do not cover. No behavior change. New exhaustive decision tables and a repeated-turn supervisor fixture back the description with fakes only.
 
