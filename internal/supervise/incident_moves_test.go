@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +128,84 @@ func TestIncidentLabelsALimitWaitAfterAFailedHandoff(t *testing.T) {
 	}
 	if r.TargetKeyAfter != r.TargetKey || len(r.Probes.Results) != 2 || len(p.sent) != 0 {
 		t.Fatalf("%+v sent=%v", r, p.sent)
+	}
+}
+
+// A handoff attempt whose candidates pass their exact probes but cannot be
+// activated ends in the same wait as the checks around it. The attempt must
+// stay its own record instead of being folded into that wait.
+func TestIncidentKeepsAFailedHandoffAttemptOutOfTheCollapsedWait(t *testing.T) {
+	w := newWorld(t, true, true)
+	obs := limited
+	obs.ResetsAt = t0.Add(10 * time.Hour)
+	p := w.primary(obs)
+	candidates := []string{"claude-other", "codex-main"}
+	setHealth := func(at time.Time, ok bool) {
+		t.Helper()
+		reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+		for _, id := range candidates {
+			reg.Record(id, probe.Result{At: at, Tier: probe.Scheduled, OK: ok, ErrorClass: "auth"})
+		}
+		if err := reg.Save(w.dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range candidates {
+		w.adapters[id] = &fakeAdapter{obs: decide.Observation{State: decide.Idle}, activateErr: errors.New("model not available")}
+		w.probeOK[id] = true
+	}
+	wait := func(minute int) {
+		t.Helper()
+		res := runTick(t, w, t0.Add(time.Duration(minute)*time.Minute))
+		if res.Action != "none" || !strings.HasPrefix(res.Reason, "limit resets in ") || len(res.Probes) != 0 || res.Handoff != nil {
+			t.Fatalf("minute %d was not a plain wait: %+v", minute, res)
+		}
+	}
+	// No confirmed fallback, and no scheduled probe due: four plain waits.
+	setHealth(t0.Add(-time.Hour), false)
+	for _, minute := range []int{0, 10, 20, 30} {
+		wait(minute)
+	}
+	// Both fallbacks become healthy, pass their exact probes, and cannot be activated.
+	setHealth(t0.Add(35*time.Minute), true)
+	res := runTick(t, w, t0.Add(40*time.Minute))
+	if res.Action != "none" || !strings.HasSuffix(res.Reason, "(no fallback could take over; see probes and warnings)") || len(res.Probes) != 2 || res.Handoff == nil || res.Target != state.Primary {
+		t.Fatalf("%+v", res)
+	}
+	setHealth(t0.Add(35*time.Minute), false)
+	for _, minute := range []int{50, 60, 70, 80} {
+		wait(minute)
+	}
+	j, err := incident.Load(w.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uint64
+	for _, r := range j.Records {
+		got = append(got, r.Sequence)
+		if r.Cause != "limit_no_fallback" || r.Action != "none" || r.TargetKeyAfter != r.TargetKey {
+			t.Fatalf("%+v", r)
+		}
+	}
+	if len(got) != 5 || got[0] != 1 || got[1] != 4 || got[2] != 5 || got[3] != 6 || got[4] != 9 || j.Collapsed != 4 {
+		t.Fatalf("sequences %v, collapsed %d", got, j.Collapsed)
+	}
+	attempt := j.Records[2]
+	e := attempt.Decisions.Evaluations
+	if attempt.Tier != incident.TierCondition || attempt.Collapsed != nil || len(e) != 2 || e[0].Action != "handoff" || e[1].Stage != "handoff_failed" || len(attempt.Probes.Results) != 2 {
+		t.Fatalf("%+v", attempt)
+	}
+	for _, pr := range attempt.Probes.Results {
+		if pr.Tier != "exact" || !pr.OK {
+			t.Fatalf("%+v", pr)
+		}
+	}
+	for _, i := range []int{1, 4} {
+		if c := j.Records[i].Collapsed; c == nil || c.Count != 2 || j.Records[i].Tier != incident.TierCondition {
+			t.Fatalf("record %d: %+v", i, j.Records[i])
+		}
+	}
+	if len(p.sent) != 0 {
+		t.Fatalf("sent %v", p.sent)
 	}
 }
