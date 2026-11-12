@@ -267,9 +267,10 @@ func TestTimelineRetentionAndLegacyEvidence(t *testing.T) {
 	for i := 0; i < incident.MaxRecords+1; i++ {
 		appendTimelineRecord(t, dir, incident.Record{Kind: "tick", CheckStartedAt: at.Add(time.Duration(i) * time.Second), Action: "none", Outcome: "succeeded"})
 	}
-	got := readTimeline(dir, at, time.Hour, 3, timelineFilter{Kinds: []string{}})
-	if got.Sources[0].Dropped != 1 || got.Sources[0].Retained != 256 || got.Omitted != 253 || len(got.Events) != 3 {
-		t.Fatal(got.Sources, got.Omitted)
+	// Identical checks collapse into the run's first and latest record; none is pruned.
+	got := readTimeline(dir, at, time.Hour, 1, timelineFilter{Kinds: []string{}})
+	if got.Sources[0].Dropped != 0 || got.Sources[0].Retained != 2 || got.Omitted != 1 || len(got.Events) != 1 || got.Retention.CollapsedChecks != incident.MaxRecords-1 || got.Events[0].Sequence != incident.MaxRecords+1 {
+		t.Fatal(got.Sources, got.Omitted, got.Retention)
 	}
 	// Version-1 loading does not fabricate source/decision metadata or mutate it.
 	legacy := t.TempDir()

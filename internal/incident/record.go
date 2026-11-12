@@ -5,6 +5,7 @@ package incident
 import (
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 // source details are explicitly unavailable.
 type Record struct {
 	Kind                 string         `json:"kind"`
+	Tier                 string         `json:"tier"`
+	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
 	Probes               Probes         `json:"probes"`
 	ControlChange        *ControlChange `json:"controlChange"`
@@ -48,6 +51,103 @@ type ControlChange struct {
 	OwnerPresentBefore bool      `json:"ownerPresentBefore"`
 	OwnerPresentAfter  bool      `json:"ownerPresentAfter"`
 	OwnershipChanged   bool      `json:"ownershipChanged"`
+}
+
+// Retention tiers. Key events are rare and explain who had the loop and why;
+// activity is sends, failed checks and repeated control commands; routine is
+// a check that observed and did nothing.
+const (
+	TierKey      = "key"
+	TierActivity = "activity"
+	TierRoutine  = "routine"
+)
+
+// Collapsed summarizes checks folded into the record that carries it: Count
+// checks identical to it, apart from their times, decision inputs and passing
+// probes, ran from FirstAt to LastAt after the previous retained record.
+type Collapsed struct {
+	Count        uint64    `json:"count"`
+	FirstAt      time.Time `json:"firstAt"`
+	LastAt       time.Time `json:"lastAt"`
+	PassedProbes int       `json:"passedProbes"`
+}
+
+func sameControls(a, b *Controls) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// repeatable reports a check that executed nothing and changed nothing, so a
+// run of them can be summarized without losing an event.
+func repeatable(r Record) bool {
+	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) {
+		return false
+	}
+	dry := r.DryRun || r.Outcome == "dry_run"
+	if r.Action != "none" && !dry {
+		return false
+	}
+	if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey {
+		return false
+	}
+	for _, p := range r.Probes.Results {
+		if !p.OK {
+			return false
+		}
+	}
+	return true
+}
+
+func limitWaitCause(cause string) bool {
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+}
+
+// tierOf classifies a cleaned record for retention.
+func tierOf(r Record) string {
+	switch r.Kind {
+	case "retarget":
+		return TierKey
+	case "control":
+		c := r.ControlChange
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
+			return TierKey
+		}
+		return TierActivity
+	case "tick":
+		if repeatable(r) {
+			switch {
+			case limitWaitCause(r.Cause) && !r.DryRun && r.Outcome != "dry_run":
+				return TierKey // the first and latest check of a limit wait
+			case r.Outcome == "failed":
+				return TierActivity
+			}
+			return TierRoutine
+		}
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey) || r.Action == "handoff" || r.Action == "switch_back" || r.Action == "await_user" {
+			return TierKey
+		}
+		for _, p := range r.Probes.Results {
+			if !p.OK {
+				return TierKey
+			}
+		}
+	}
+	return TierActivity
+}
+
+// sameRun reports two repeatable checks that differ only in when they ran,
+// their decision inputs and their passing probes.
+func sameRun(a, b Record) bool {
+	if !repeatable(a) || !repeatable(b) {
+		return false
+	}
+	for _, r := range []*Record{&a, &b} {
+		r.Sequence, r.CheckStartedAt, r.Collapsed, r.LastActiveRecoveryAt = 0, time.Time{}, nil, nil
+		r.Decisions, r.Probes = Decisions{}, Probes{}
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // MaxProbes bounds the probe results kept for one tick.
@@ -252,6 +352,10 @@ func clean(r Record) Record {
 	}
 	r.Nudges = max(0, r.Nudges)
 	r.Reprompts = max(0, r.Reprompts)
+	if r.Kind != "tick" {
+		r.Collapsed = nil
+	}
+	r.Tier = tierOf(r) // Derived, never trusted from storage.
 	return r
 }
 
