@@ -114,6 +114,8 @@ keepgoing repeats work by design: each ordinary check may send one message to th
 
 The nudge and re-prompt caps each bound one stalled turn or one error episode. They are not a bound on total work: a session that keeps finishing turns is woken again on the next check, and both counts start over. A handoff also restarts the re-prompt count, and a switch-back restarts both. With no `loop.limits` field configured, which is the default, nothing limits how many times this repeats. Sending then stops only through `complete`, a stop, pause or disable, or an awaiting-user hold: a per-episode cap, an auth error without a handoff, a missing target, or a child waiting on a person. Other gates, such as the operating window, queued messages, running children or a pending interaction, defer a send without ending the repetition.
 
+Unreleased source makes that visible. `keepgoing validate` prints a `warning:` line on stderr when none of the three limits below is configured, and otherwise a `bounds:` line naming those that are. `keepgoing status` prints the same on its `bounds:` line, and `status --json` adds `workBounds` with `limits` (configured limit names in decision order, possibly empty), `unbounded` and, when unbounded, `warning`. The warning is advice about the loaded configuration only: no default limit is applied, nothing is refused, exit codes are unchanged, and it says nothing about whether a configured limit has been reached. Other commands, including `start`, `tick` and `doctor`, do not print it.
+
 Three optional limits apply across turns, targets, restarts and resume. Each persists an awaiting-user hold on the next ordinary check after it is reached:
 
 | Limit | Counts | Not reset by |
