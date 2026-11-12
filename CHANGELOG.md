@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Prepare CLI v0.1.5 / BB plugin v0.2.0 release notes and a repository plugin collection for explicit tagged installs. The package smoke check now covers prompt-only and goal-aware setup for all three supported agents, with zero provider calls. These releases are not published yet.
+## 0.1.5
+
+- CLI v0.1.5 / BB plugin v0.2.0 include version-specific notes and a repository plugin collection for explicit tagged installs. The package smoke check now covers prompt-only and goal-aware setup for all three supported agents, with zero provider calls. See [release verification](docs/release-verification.md) for publication, package and live-acceptance evidence.
 
 - Repeated control writes advance the loaded timestamp even when the wall clock repeats or moves backwards. This prevents a repeated pause from leaving identical evidence for an older registered-resume ticket. Deterministic clock fixtures and the existing resume regressions cover the correction.
 
-- The separately rebuilt BB plugin offers an explicit goal checkbox in setup, binds previews to that choice, and shows recorded goal identity/revision in setup and expanded status without private task text. Goal creation requires the post-v0.1.4 CLI; older builds must use the explicitly deselected task-only path. The preview now correctly distinguishes idle checks from stall-nudge spacing. SDK/host/DOM fixtures only; live deployment and first-loop acceptance remain open.
+- The separately rebuilt BB plugin offers an explicit goal checkbox in setup, binds previews to that choice, and shows recorded goal identity/revision in setup and expanded status without private task text. Goal creation requires CLI v0.1.5; older builds must use the explicitly deselected task-only path. The preview now correctly distinguishes idle checks from stall-nudge spacing. SDK/host/DOM fixtures only; live deployment and first-loop acceptance remain open.
 
 - Guided setup offers an explicit goal choice; scripted setup can use `init --with-goal`. It saves one private task snapshot referenced by the existing goal store and shares the current revision through stable wake instructions. Creation remains disabled; previews write nothing and ordinary output omits task text. Existing noninteractive callers keep prompt-only setup. Offline fixtures only; a live first-loop walkthrough remains unfinished.
 
@@ -14,7 +16,7 @@
 
 - Diagnostic records retain BB's generic `thread_command_failed` code, while its decision classification stays `unknown`. Offline CLI fixtures cover unreadable status, interrupted turns, queued work, bounded re-prompts and preserved holds. This does not identify or restart a disconnected host; previously redacted records remain unavailable.
 
-- Goal subcommand help (`create|revise|show --help` or `-h`) now exits successfully without loading configuration or changing state. Invalid arguments still return usage errors. v0.1.4 returns exit code 2 for this help; the correction is not yet released.
+- Goal subcommand help (`create|revise|show --help` or `-h`) now exits successfully without loading configuration or changing state. Invalid arguments still return usage errors. v0.1.4 returns exit code 2 for this help; v0.1.5 includes the correction.
 
 ## 0.1.4 (2026-11-12)
 
