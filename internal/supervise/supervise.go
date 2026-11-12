@@ -645,21 +645,21 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
 			return err
 		}
-		if err := t.send(a, text, mode, t.res.Target, string(d.Action)); err != nil {
+		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		// The adapter was called: count the attempt whatever it returned, so a
+		// failing or unsupported send cannot repeat on every check outside the
+		// per-episode caps and spacing.
+		c := decide.Attempted(d.Action, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if err != nil {
 			var unsupported adapter.ErrUnsupported
 			if errors.As(err, &unsupported) {
 				t.warn("%s adapter: %v", a.Name(), err)
 				return nil
 			}
 			return err
-		}
-		t.st.LastWakeAt = t.now
-		if d.Action == decide.Nudge {
-			t.st.Nudges++
-		}
-		if d.Action == decide.Reprompt {
-			t.st.Reprompts++
-			t.st.LastRepromptAt = t.now
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
