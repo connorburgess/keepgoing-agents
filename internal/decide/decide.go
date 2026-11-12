@@ -327,6 +327,48 @@ func Attempted(a Action, c Counters, at time.Time) Counters {
 	return c
 }
 
+// BriefAttempts records one target's rejected takeover briefs within the
+// current episode: handoff briefs to one fallback while an error lasts, or
+// switch-back briefs to the primary while the loop stays on a fallback.
+type BriefAttempts struct {
+	Failed int
+	LastAt time.Time
+}
+
+// BriefVerdict says whether a target may be offered another brief.
+type BriefVerdict string
+
+// Brief verdicts.
+const (
+	BriefAllowed    BriefVerdict = "allowed"
+	BriefBackingOff BriefVerdict = "backing_off" // a rejected brief is too recent
+	BriefCapped     BriefVerdict = "capped"      // no more briefs this episode
+)
+
+// BriefGate bounds briefs per target. The count and spacing belong to the one
+// target, so a fallback that keeps rejecting its brief is skipped without
+// spending the attempts of the others. A target at its cap is skipped for the
+// rest of the episode; below it, briefs are at least backoff apart. The gate
+// applies before the exact probe, so a skipped target is not probed either.
+func BriefGate(a BriefAttempts, now time.Time, max int, backoff time.Duration) BriefVerdict {
+	switch {
+	case a.Failed >= max:
+		return BriefCapped
+	case a.Failed > 0 && now.Sub(a.LastAt) < backoff:
+		return BriefBackingOff
+	}
+	return BriefAllowed
+}
+
+// BriefRejected returns the record after a brief was not accepted at the given
+// time. Like Attempted it takes no reason: a failed activation, a failed send
+// and an unsupported send all count, because each may repeat on every check.
+func BriefRejected(a BriefAttempts, at time.Time) BriefAttempts {
+	a.Failed++
+	a.LastAt = at
+	return a
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
