@@ -85,6 +85,29 @@ func (l Limits) DeadlineReached(now time.Time) bool {
 	return err == nil && !now.Before(deadline)
 }
 
+// Configured names the loop-wide limits that are set, in the order the decision
+// engine applies them. An empty result means nothing bounds repeated automatic
+// work across turns; the per-turn nudge and re-prompt caps are not listed
+// because they reset. It reports configuration only, not whether a limit has
+// been reached or its accounting is readable.
+func (l Limits) Configured() []string {
+	names := []string{}
+	if l.Deadline != "" {
+		names = append(names, "deadline")
+	}
+	if l.MaxSends > 0 {
+		names = append(names, "max_sends")
+	}
+	if l.NoProgressTimeout.Duration > 0 {
+		names = append(names, "no_progress_timeout")
+	}
+	return names
+}
+
+// UnboundedWarning is shown by validate and status when no loop-wide limit is
+// configured. It is advice: nothing is refused and no default is applied.
+const UnboundedWarning = "no loop-wide limit is configured (loop.limits deadline, max_sends or no_progress_timeout); automatic sends repeat until complete, stop, pause or a hold"
+
 // SwitchBack controls the automatic return to the primary.
 type SwitchBack struct {
 	Enabled bool `yaml:"enabled,omitempty"`
