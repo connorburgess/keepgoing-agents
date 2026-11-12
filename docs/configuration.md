@@ -117,7 +117,7 @@ Idle wakes follow the supervisor's check cadence, subject to other gates. `min_w
 
 ## limits
 
-These three optional fields are the only loop-wide bounds on repeated automatic work. None has a default: with all three omitted, an idle session is woken on every eligible ordinary check for as long as the loop stays enabled and no control hold applies. The `progress` and `errors` caps bound one stalled turn or one error episode and reset afterwards. See [bounds on repeated work](operations.md#bounds-on-repeated-work).
+These three optional fields are the only loop-wide bounds on repeated automatic work. None has a default: with all three omitted, an idle session is woken on every eligible ordinary check for as long as the loop stays enabled and no control hold applies. The `progress` and `errors` caps bound one stalled turn or one error episode and reset afterwards. See [bounds on repeated work](operations.md#bounds-on-repeated-work). In unreleased source, `validate` and `status` warn when all three are unset; the warning changes no behavior or exit code.
 
 | Field | Default | Holds the loop when |
 | --- | --- | --- |

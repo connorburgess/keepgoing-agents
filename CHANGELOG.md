@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `validate` and `status` now say when a loop has no loop-wide limit. With `deadline`, `max_sends` and `no_progress_timeout` all unset, `validate` prints a warning on stderr and `status` shows it on a new `bounds:` line; otherwise both name the configured limits. `status --json` adds `workBounds`. No default limit is applied, and behavior and exit codes are unchanged. Offline fixtures only.
+
 - Nudge and re-prompt attempts now count toward `max_nudges` and `max_reprompts` and start `min_wake_interval` and `errors.backoff` even when the adapter reports the send as failed or unsupported. Previously such a send was retried on every check without a cap or a hold. Because a failed send may still have been delivered, an adapter that keeps failing now reaches the awaiting-user hold after the configured number of attempts; a stalled headless turn, which cannot be nudged, does too. `lastWakeAt` records the attempt time. Stop and control holds are unchanged. Failed handoff briefs are not covered. Offline tables and fake-adapter fixtures only.
 
 - Define an internal run-discovery contract (roadmap D1, partial): identities for routine invocations, registry references, durable loops, goal revisions, runs, send attempts and provider chats/sessions, with pure transition tables for what opens or closes a run. There are no runtime callers, new commands or persisted discovery records; nothing is user-visible yet, and D1 stays open until a run reference is persisted across a restart. See the [contract](docs/run-discovery.md#identity-and-run-boundary-contract-d1-internal-unreleased).
