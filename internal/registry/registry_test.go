@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
@@ -116,22 +117,27 @@ func TestRegistryConcurrentWritersAndLock(t *testing.T) {
 	held.Release()
 	var wg sync.WaitGroup
 	errs := make(chan error, 16)
+	deadline := time.Now().Add(2 * time.Minute)
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("loop-%d", i)
-			// Retry for as long as another writer holds the lock. A holder always
-			// finishes, so this ends; a fixed attempt budget only measured how slow
-			// the filesystem was, and failed when sixteen short writes were not.
+			// Retry for as long as another writer holds the lock. A fixed budget of
+			// two hundred short retries only measured how slow the filesystem was.
+			// The overall limit is far beyond sixteen short writes on any host and
+			// exists to name a leaked lock instead of hanging until the test timeout.
 			for {
 				_, err := Add(dir, name, filepath.Join(dir, name+".yaml"), filepath.Join(dir, name))
-				if errors.Is(err, lock.ErrHeld) {
-					runtime.Gosched()
-					continue
+				if !errors.Is(err, lock.ErrHeld) {
+					errs <- err
+					return
 				}
-				errs <- err
-				return
+				if time.Now().After(deadline) {
+					errs <- errors.New("registry lock still held after two minutes: a holder leaked it or never finished")
+					return
+				}
+				runtime.Gosched()
 			}
 		}(i)
 	}

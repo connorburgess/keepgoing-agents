@@ -64,7 +64,10 @@ func Script(t TB, path, content string) {
 // fixture, which costs nothing. The assessed copy lives in the user's temporary
 // directory under a name derived from the content, so it is reused by later
 // test runs and its number is bounded by the number of distinct scripts.
-// Replace a path installed this way with Script, never by writing through it.
+// Replace a path installed this way with Script, never by writing through it:
+// the path is a hard link, so a write through it changes the shared copy and
+// every other fixture still linked to it. Shared notices a changed copy and
+// rebuilds it for later fixtures, but cannot repair links already handed out.
 func Shared(t TB, path, content string) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
