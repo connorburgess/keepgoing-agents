@@ -239,6 +239,41 @@ func TestRateLimitRetryNoticeWaitsForStructuredReset(t *testing.T) {
 	}
 }
 
+// BB counts a retry its plugin has scheduled as a queued message. An errored
+// thread with queued messages is left alone ahead of any handoff or re-prompt,
+// so a scheduled retry survives the expiry of its notice, with or without a
+// structured reset (a pooled route has none that keepgoing can see).
+func TestQueuedRetryIsLeftAloneAfterItsNoticeExpires(t *testing.T) {
+	start := now.Add(-3 * time.Hour)
+	for _, tc := range []struct {
+		name, notice string
+		class        decide.ErrorClass
+	}{
+		{"rate_limit_without_reset", providerError("rate-limit", 429, "rate_limit_event", true), decide.ErrRateLimit},
+		{"network", providerError("stream-disconnected", nil, "responseStreamDisconnected", true), decide.ErrNetwork},
+		{"unknown", retryNotice, decide.ErrUnknown},
+	} {
+		for _, queued := range []int{1, 0} {
+			t.Run(fmt.Sprintf("%s_queued_%d", tc.name, queued), func(t *testing.T) {
+				a, _ := newFake(fmt.Sprintf(`{"thread":{"status":"error","queuedMessageCount":%d}}`, queued), `[`+at(turnStarted, start)+`,`+at(tc.notice, start.Add(time.Minute))+`,`+at(turnFailed, start.Add(2*time.Minute))+`,`+at(tc.notice, start.Add(3*time.Minute))+`]`, false)
+				a.CheckAt(start.Add(2 * time.Hour))
+				o, err := a.Observe(context.Background())
+				if err != nil || o.Retrying || !o.RetryExpired || o.ErrorClass != tc.class || o.Queued != queued {
+					t.Fatalf("%+v %v", o, err)
+				}
+				d := decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, MaxReprompts: 3,
+					Failover: decide.Failover{Eligible: true, Available: true}})
+				if queued > 0 && (d.Action != decide.None || d.Reason != "messages already queued after error") {
+					t.Fatalf("acted over a queued retry: %+v", d)
+				}
+				if queued == 0 && d.Action == decide.None {
+					t.Fatalf("nothing queued and nothing done: %+v", d)
+				}
+			})
+		}
+	}
+}
+
 // A BB host whose clock runs behind this machine stamps events in the local
 // past. An event that was not in the previous complete scan cannot be older
 // than that scan, so it is aged from there instead of expiring at once. On a

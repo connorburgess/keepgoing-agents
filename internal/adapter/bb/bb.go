@@ -156,9 +156,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 // DefaultRetrySignalTTL is how long a willRetry notice counts as a live retry
 // without newer evidence. It bounds silence, not the length of a retry: each
 // failed attempt of a genuine retry logs a newer notice and restarts the
-// interval. BB's retry plugin documents waits of about 1, 2, 4 and 8 minutes
-// between its attempts on an unavailable provider, so the default is nearly
-// twice its longest gap. See docs/operations.md "Stale retry notices".
+// interval. A retry that BB's retry plugin has scheduled does not depend on
+// it: that retry is a queued message, counted in queuedMessageCount, and an
+// errored thread with queued messages is left alone by the decision engine.
+// See docs/operations.md "Stale retry notices".
 const DefaultRetrySignalTTL = 15 * time.Minute
 
 // retryExpired reports whether a retry notice has gone stale at check time.

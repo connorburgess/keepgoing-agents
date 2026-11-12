@@ -359,3 +359,26 @@ func TestRateLimitRetryNoticeIsNotOverriddenBeforeItExpires(t *testing.T) {
 		}
 	}
 }
+
+// A retry that BB has queued is left alone after its notice expires: no
+// handoff with healthy fallbacks, no re-prompt, no spent allowance. Once the
+// queue is empty the ordinary rules act.
+func TestQueuedRetryOutlivesExpiredNotice(t *testing.T) {
+	w := newWorld(t, true, true)
+	w.cfg.Loop.Errors.FailoverOn = []string{"rate_limit", "network"}
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		w.probeOK[c.ID] = true
+	}
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, RetryKnown: true, RetryExpired: true, Queued: 1})
+	for _, minutes := range []int{0, 30, 240} {
+		r := runTick(t, w, t0.Add(time.Duration(minutes)*time.Minute))
+		st, _ := state.Load(w.dir)
+		if r.Action != "none" || r.Reason != "messages already queued after error" || r.RetrySignal != "expired" || r.Handoff != nil || len(p.sent) != 0 || st.Reprompts != 0 || st.Target() != state.Primary {
+			t.Fatalf("+%dm: %+v", minutes, r)
+		}
+	}
+	p.obs.Queued = 0
+	if r := runTick(t, w, t0.Add(5*time.Hour)); r.Action != "handoff" {
+		t.Fatalf("%+v", r)
+	}
+}
