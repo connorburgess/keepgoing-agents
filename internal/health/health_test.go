@@ -1,6 +1,9 @@
 package health
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,5 +134,55 @@ func TestSaveLoad(t *testing.T) {
 	g, err := Load(dir)
 	if err != nil || len(g.Candidates["x"].History) != 5 || !g.Healthy("x", now.Add(time.Hour), 6*time.Hour) {
 		t.Errorf("%+v %v", g, err)
+	}
+}
+
+func TestUsageReadingIsKeptPerCandidateAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Candidates: map[string]*Entry{}}
+	withUsage := ok(now.Add(-2 * time.Hour))
+	withUsage.Raw = []byte("fictional raw output")
+	withUsage.Usage = &probe.Usage{At: withUsage.At, Source: probe.UsageSourceClaude, Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.22, Status: "allowed"}}}
+	r.Record("claude-alt", withUsage)
+	// A later probe without a reading keeps the earlier one, with its own time.
+	r.Record("claude-alt", fail(now.Add(-time.Hour)))
+	r.Record("codex-main", ok(now))
+	if err := r.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Count(string(b), `"usage"`) != 1 || strings.Contains(string(b), "fictional raw output") {
+		t.Fatalf("stored record: %s", b)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := got.Candidates["claude-alt"].Usage
+	if !u.Available() || !u.At.Equal(now.Add(-2*time.Hour)) || u.Windows[0].Used != 0.22 || !got.Candidates["claude-alt"].Last.At.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("reading: %+v", u)
+	}
+	if got.Candidates["codex-main"].Usage != nil {
+		t.Fatal("reading invented for a probe that carried none")
+	}
+}
+
+func TestHealthFilesWithoutOrWithBadUsageStillLoad(t *testing.T) {
+	last := `"last":{"at":"2026-11-09T11:00:00Z","tier":"scheduled","kind":"claude","ok":true,"latencyMs":5,"exitCode":0}`
+	for name, usage := range map[string]string{
+		"file written before readings existed": ``,
+		"null":                                 `,"usage":null`,
+		"wrong type":                           `,"usage":"seven_day 22%"`,
+		"wrong field types":                    `,"usage":{"at":5,"windows":"x"}`,
+		"out of range":                         `,"usage":{"at":"2026-11-09T11:00:00Z","source":"claude_rate_limit_event","windows":[{"key":"seven_day","used":22}]}`,
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"candidates":{"claude-alt":{`+last+usage+`}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := Load(dir)
+		if err != nil || r.Candidates["claude-alt"].Usage != nil || !r.Healthy("claude-alt", now, 6*time.Hour) {
+			t.Errorf("%s: %+v err=%v", name, r, err)
+		}
 	}
 }

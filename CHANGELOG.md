@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record and show usage readings. When a probe that already runs reports quota windows, keepgoing stores one bounded reading per candidate in `health.json` and shows it, with its age, in `fallbacks list` and `status` (text and JSON); otherwise it shows `unavailable`. Claude readings come from `rate_limit_event` messages, an observed and undocumented shape, so the Claude probe now requests `stream-json` output and is judged from the same result object. Codex readings come only from the existing app-server read after an unclassified probe failure. No decision uses these values, no provider call is added and no credential is read. Fictional fixtures only; not checked against a live account.
+
 - `validate` and `status` now say when a loop has no loop-wide limit. With `deadline`, `max_sends` and `no_progress_timeout` all unset, `validate` prints a warning on stderr and `status` shows it on a new `bounds:` line; otherwise both name the configured limits. `status --json` adds `workBounds`. No default limit is applied, and behavior and exit codes are unchanged. Offline fixtures only.
 
 - `timeline` now works as a navigable event log. Incident history schema 5 records the hashed target after each check, per-check probe results, manual retargets and limit-wait causes, so handoffs, switch-backs and retargets show both ends. New `--kind` (including `moves`), `--target`, `--since` and `--until` filters apply to text and JSON (timeline schema 2); summaries still use all retained evidence. No task text, notes, thread IDs or aliases are stored. Older binaries refuse the upgraded journal. Offline fixtures only; work moved outside keepgoing and reporting a long limit wait remain roadmap items.

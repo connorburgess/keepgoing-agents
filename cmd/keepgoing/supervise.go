@@ -262,6 +262,7 @@ type statusOut struct {
 	InWindow          bool                     `json:"inWindow"`
 	State             state.File               `json:"state"`
 	Redundancy        *health.Summary          `json:"redundancy,omitempty"`
+	Usage             []usageView              `json:"usage"`
 	StateDir          string                   `json:"stateDir"`
 	Version           string                   `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
@@ -419,7 +420,16 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.TargetConfigured {
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
+	usageReg, _ := health.Load(l.StateDir) // unreadable history shows as unavailable
+	primaryUsage := usageOf(usageReg, state.Primary, now)
+	primaryUsage.ID = state.Primary
+	out.Usage = []usageView{primaryUsage}
 	if fb := cfg.FallbackSet; fb != nil {
+		for _, c := range fb.Candidates {
+			v := usageOf(usageReg, c.ID, now)
+			v.ID = c.ID
+			out.Usage = append(out.Usage, v)
+		}
 		reg, err := health.Load(l.StateDir)
 		if err == nil {
 			group := l.Group
@@ -545,6 +555,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
 	}
+	printUsage(w, "usage:     ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }

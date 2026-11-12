@@ -48,6 +48,10 @@ type Result struct {
 	CredentialExpiresAt *time.Time `json:"credentialExpiresAt,omitempty"`
 	// ResetsAt is when a reported usage limit lifts, when the provider says.
 	ResetsAt *time.Time `json:"resetsAt,omitempty"`
+	// Usage is a usage reading the probe happened to carry. It is stored once
+	// per candidate by the health registry, not with each result, and no
+	// decision reads it.
+	Usage *Usage `json:"-"`
 	// Raw is the probe's stdout, capped. It is never part of health.json and
 	// never read for a decision; KeepFailure saves it so unrecognised error
 	// shapes can be mapped later.
@@ -71,7 +75,9 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	}
 	switch c.Probe.Kind {
 	case "claude":
-		argv = []string{c.ProbeCLI(), "-p", Prompt, "--output-format", "json", "--no-session-persistence",
+		// stream-json carries the same final result object as json, plus the
+		// usage events ClaudeUsage reads. Print mode requires --verbose with it.
+		argv = []string{c.ProbeCLI(), "-p", Prompt, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
 			"--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}
 		if model != "" {
 			argv = append(argv, "--model", model)
@@ -115,12 +121,17 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	switch c.Probe.Kind {
 	case "claude":
 		judgeClaude(&res, stdout, code)
+		res.Usage = newUsage(res.At, UsageSourceClaude, ClaudeUsage(stdout))
 	case "codex":
 		judgeCodex(&res, stdout, code)
 		// Codex reports a usage limit only as prose in its event stream, so
 		// ask its app-server for the structured rate-limit snapshot.
 		if !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
-			if l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI(), env); err == nil && l.Blocked {
+			l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI(), env)
+			if err == nil {
+				res.Usage = newUsage(res.At, UsageSourceCodex, CodexUsage(l))
+			}
+			if err == nil && l.Blocked {
 				res.ErrorClass = string(decide.ErrRateLimit)
 				res.Detail = "account/rateLimits/read: " + l.ReachedType
 				if !l.ResetsAt.IsZero() {

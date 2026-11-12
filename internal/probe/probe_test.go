@@ -178,3 +178,77 @@ fi`)
 		t.Fatalf("limit check did not use effective probe environment: %+v", r)
 	}
 }
+
+// The stream-json probe must judge a turn exactly as the earlier json probe
+// did: same health, class, detail and credential expiry for the same result
+// object, whether or not usage events surround it.
+func TestClaudeProbeJudgesStreamAndPlainOutputAlike(t *testing.T) {
+	results := map[string]struct{ line, exit string }{
+		"success":                          {`{"type":"result","subtype":"success","is_error":false,"session_id":"s","credential_expires_at":"2026-12-04T18:46:30.684Z","result":"OK"}`, "0"},
+		"rate limit":                       {`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"result":"limit"}`, "1"},
+		"auth":                             {`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":401,"result":"login"}`, "1"},
+		"unknown":                          {`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"x"}`, "1"},
+		"error exit with a success result": {`{"type":"result","subtype":"success","is_error":false,"result":"OK"}`, "3"},
+	}
+	for name, r := range results {
+		t.Run(name, func(t *testing.T) {
+			plain := Run(context.Background(), cand("claude", fake(t, `echo '`+r.line+`'; exit `+r.exit)), Scheduled, 10*time.Second)
+			stream := Run(context.Background(), cand("claude", fake(t, `printf '%s\n' '{"type":"system","subtype":"init","session_id":"s"}' '`+eventA+`' '{"type":"assistant","message":{"content":[{"type":"text","text":"OK"}]}}' '`+eventB+`' '`+r.line+`'; exit `+r.exit)), Scheduled, 10*time.Second)
+			same := plain.OK == stream.OK && plain.ErrorClass == stream.ErrorClass && plain.Detail == stream.Detail && plain.ExitCode == stream.ExitCode &&
+				(plain.CredentialExpiresAt == nil) == (stream.CredentialExpiresAt == nil)
+			if !same {
+				t.Fatalf("plain %+v\nstream %+v", plain, stream)
+			}
+			if plain.Usage != nil {
+				t.Fatalf("reading without an event: %+v", plain.Usage)
+			}
+			if !stream.Usage.Available() || stream.Usage.Source != UsageSourceClaude || !stream.Usage.At.Equal(stream.At) || len(stream.Usage.Windows) != 2 {
+				t.Fatalf("usage: %+v", stream.Usage)
+			}
+		})
+	}
+	// No result object at all is still an unknown failure, with or without events.
+	r := Run(context.Background(), cand("claude", fake(t, `echo '`+eventA+`'`)), Scheduled, 10*time.Second)
+	if r.OK || r.ErrorClass != "unknown" || r.Detail != "no result object" {
+		t.Fatalf("%+v", r)
+	}
+	argsFile := filepath.Join(t.TempDir(), "args")
+	Run(context.Background(), cand("claude", fake(t, `echo "$@" > `+argsFile)), Scheduled, 10*time.Second)
+	args, _ := os.ReadFile(argsFile)
+	if !strings.Contains(string(args), "--output-format stream-json --verbose") {
+		t.Fatalf("args: %s", args)
+	}
+}
+
+// A Codex reading comes only from the app-server read the probe already makes
+// after an unclassified failure. A healthy probe makes no such call.
+func TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead(t *testing.T) {
+	calls := 0
+	defer func(orig func(context.Context, string, []string) (runner.CodexLimits, error)) {
+		runner.ReadCodexLimits = orig
+	}(runner.ReadCodexLimits)
+	limits := runner.CodexLimits{Windows: []runner.CodexWindow{{Name: "primary", UsedPercent: 40}, {Name: "secondary", UsedPercent: 81}}}
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
+		calls++
+		return limits, nil
+	}
+	healthy := fake(t, `printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.completed","usage":{}}'`)
+	if r := Run(context.Background(), cand("codex", healthy), Scheduled, 10*time.Second); !r.OK || r.Usage != nil || calls != 0 {
+		t.Fatalf("healthy probe: %+v calls=%d", r, calls)
+	}
+	failed := fake(t, `echo '{"type":"thread.started","thread_id":"t"}'; exit 1`)
+	r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second)
+	if r.OK || r.ErrorClass != "unknown" || calls != 1 || !r.Usage.Available() || r.Usage.Source != UsageSourceCodex || r.Usage.Windows[1].Used != 0.81 {
+		t.Fatalf("not blocked: %+v usage=%+v calls=%d", r, r.Usage, calls)
+	}
+	limits.Blocked, limits.ReachedType = true, "rate_limit_reached"
+	if r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second); r.ErrorClass != "rate_limit" || !r.Usage.Available() {
+		t.Fatalf("blocked: %+v", r)
+	}
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
+		return runner.CodexLimits{}, errors.New("unavailable")
+	}
+	if r := Run(context.Background(), cand("codex", failed), Scheduled, 10*time.Second); r.ErrorClass != "unknown" || r.Usage != nil {
+		t.Fatalf("read failed: %+v", r)
+	}
+}
