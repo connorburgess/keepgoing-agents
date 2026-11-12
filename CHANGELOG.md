@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Windows control loads and daemon polling now open read-only snapshots with delete sharing, so these readers do not block atomic pause/stop writes. Deterministic fixtures retain an open reader across replacement and compare an explicitly incompatible legacy handle. Other readers can still block a save; no retry or general write guarantee is added.
+
 - Extend the local recovery smoke with opt-in `--include-cursor` for source builds. A fictional Cursor CLI verifies unknown-error recovery and exact session reuse across actual held-daemon crashes/restarts, without provider calls. Published v0.1.5 remains compatible with the default four-adapter smoke.
 
 - The daemon now checks control-file contents as well as metadata between passes, so same-size pause/stop edits with unchanged modification times request a fresh check. The private digest is never logged; existing ownership, holds and configuration checks still apply. Deterministic native fixtures cover in-place and atomic replacements, changes during polling, and unchanged-file waits.

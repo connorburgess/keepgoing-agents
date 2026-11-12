@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -35,10 +36,15 @@ type File struct {
 // no error.
 func Load(stateDir string) (File, error) {
 	var f File
-	b, err := os.ReadFile(filepath.Join(stateDir, FileName))
+	reader, err := OpenSnapshot(stateDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return f, nil
 	}
+	if err != nil {
+		return f, err
+	}
+	defer reader.Close()
+	b, err := io.ReadAll(reader)
 	if err != nil {
 		return f, err
 	}
@@ -46,6 +52,15 @@ func Load(stateDir string) (File, error) {
 		return File{}, fmt.Errorf("%s: %w", FileName, err)
 	}
 	return f, nil
+}
+
+// OpenSnapshot opens the current control file for reading. On Windows the
+// handle allows read/write/delete sharing so observing control does not block
+// a cooperating writer's atomic replacement. Callers must close the file. The
+// opened file remains the old snapshot after replacement; in-place external
+// writes are not isolated. Missing files return an error (unlike Load).
+func OpenSnapshot(stateDir string) (*os.File, error) {
+	return openSnapshotFile(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.

@@ -204,6 +204,10 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 }
 
 func controlSignature(stateDir string) string {
+	return controlSignatureWithOpen(stateDir, control.OpenSnapshot)
+}
+
+func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, error)) string {
 	path := filepath.Join(stateDir, control.FileName)
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -213,7 +217,7 @@ func controlSignature(stateDir string) string {
 	if !info.Mode().IsRegular() {
 		return metadata + ":unavailable"
 	}
-	f, err := os.Open(path)
+	f, err := open(stateDir)
 	if err != nil {
 		return metadata + ":unavailable"
 	}
