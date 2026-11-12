@@ -1,4 +1,4 @@
-package control
+package snapshot
 
 import (
 	"os"
@@ -7,7 +7,9 @@ import (
 	"syscall"
 )
 
-func openSnapshotFile(path string) (*os.File, error) {
+// Open opens path read-only. The handle allows read/write/delete sharing, so
+// holding it does not block Replace. It remains the old snapshot afterwards.
+func Open(path string) (*os.File, error) {
 	name, err := snapshotWindowsPath(path)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}

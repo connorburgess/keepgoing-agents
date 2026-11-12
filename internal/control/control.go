@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // FileName of the control file inside the state directory.
@@ -60,7 +61,7 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return openSnapshotFile(filepath.Join(stateDir, FileName))
+	return snapshot.Open(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.
@@ -170,5 +171,5 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return replaceSnapshotFile(name, path)
+	return snapshot.Replace(name, path)
 }

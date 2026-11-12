@@ -1,4 +1,4 @@
-package control
+package snapshot
 
 import (
 	"os"
@@ -24,12 +24,14 @@ type snapshotRenameInfo struct {
 	FileName       [32768]uint16
 }
 
-// replaceSnapshotFile is used only by this package's control/goal atomic writer.
-// MoveFileEx cannot replace an open destination, even with DELETE sharing.
-// Windows 10 1709+ and a filesystem supporting POSIX rename are required.
-// Unsupported operations fail; no remove-first, legacy rename or retry fallback
-// is safe to advertise as retaining snapshots with the same semantics.
-func replaceSnapshotFile(source, target string) error {
+// Replace moves a closed staging file over target. On Windows, MoveFileEx
+// cannot replace an open destination, even with DELETE sharing, so this uses a
+// POSIX-semantics rename: Windows 10 1709+ and a filesystem supporting it are
+// required. Unsupported operations fail; no remove-first, legacy rename or
+// retry fallback is safe to advertise as retaining snapshots with the same
+// semantics. A reader that opened target without DELETE sharing, which Open
+// never does, still blocks replacement.
+func Replace(source, target string) error {
 	return replaceSnapshotWith(source, target, setSnapshotRename)
 }
 

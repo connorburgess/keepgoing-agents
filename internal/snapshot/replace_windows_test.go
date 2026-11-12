@@ -1,4 +1,4 @@
-package control
+package snapshot
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ func TestWindowsControlSnapshotRenameFailurePreservesFiles(t *testing.T) {
 			if err := os.Mkdir(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			source, target := filepath.Join(dir, "staging"), filepath.Join(dir, FileName)
+			source, target := filepath.Join(dir, "staging"), filepath.Join(dir, "control.json")
 			if err := os.WriteFile(source, []byte("new"), 0600); err != nil {
 				t.Fatal(err)
 			}
