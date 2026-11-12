@@ -53,3 +53,18 @@ test("historical dry-run, future and missing evidence never imply a successful s
   assert.match(lines, /missing or disabled/); assert.match(lines, /future/); assert.match(lines, /wake · dry_run · dry run/);
   assert.match(lines, /not confirmed/); assert.match(lines, /unavailable/);
 });
+
+test("goal status excludes private fields and malformed metadata stays unavailable", async () => {
+  const { goalDetails, goalLabel } = await import("./status-details.ts");
+  const valid = { id: "goal_0123456789abcdef0123456789abcdef", revision: 3, state: "recorded" };
+  const d = goalDetails({ ...valid, title: "PRIVATE", objectiveRefs: ["PRIVATE"] }, undefined);
+  assert.deepEqual(d, { goal: valid, goalState: "recorded" });
+  assert.match(goalLabel(d.goal, d.goalState), /revision 3.*not verified completion/);
+  for (const bad of [{ ...valid, id: "PRIVATE" }, { ...valid, revision: -1 }, { ...valid, revision: 2**54 }, null]) {
+    const result = goalDetails(bad, undefined);
+    assert.equal(result.goalState, "unavailable"); assert.equal(result.goal, null);
+    assert.ok(!JSON.stringify(result).includes("PRIVATE"));
+  }
+  assert.equal(goalDetails(valid, "PRIVATE ERROR").goalState, "unavailable");
+  assert.match(goalLabel(null, goalDetails(undefined, undefined).goalState), /older CLI/);
+});

@@ -4,7 +4,9 @@
 
 - Repeated control writes advance the loaded timestamp even when the wall clock repeats or moves backwards. This prevents a repeated pause from leaving identical evidence for an older registered-resume ticket. Deterministic clock fixtures and the existing resume regressions cover the correction.
 
-- Guided setup offers an explicit goal choice; scripted setup can use `init --with-goal`. It saves one private task snapshot referenced by the existing goal store and shares the current revision through stable wake instructions. Creation remains disabled; previews write nothing and ordinary output omits task text. Existing noninteractive callers keep prompt-only setup. Offline fixtures only; BB setup UI wiring and a live first-loop walkthrough remain unfinished.
+- The separately rebuilt BB plugin offers an explicit goal checkbox in setup, binds previews to that choice, and shows recorded goal identity/revision in setup and expanded status without private task text. Goal creation requires the post-v0.1.4 CLI; older builds must use the explicitly deselected task-only path. The preview now correctly distinguishes idle checks from stall-nudge spacing. SDK/host/DOM fixtures only; live deployment and first-loop acceptance remain open.
+
+- Guided setup offers an explicit goal choice; scripted setup can use `init --with-goal`. It saves one private task snapshot referenced by the existing goal store and shares the current revision through stable wake instructions. Creation remains disabled; previews write nothing and ordinary output omits task text. Existing noninteractive callers keep prompt-only setup. Offline fixtures only; a live first-loop walkthrough remains unfinished.
 
 - Ordinary status now shows the latest recorded automatic prompt attempt’s goal ID/revision, target alias, mode and adapter return result. Metadata comes from the same composition as the prompt and persists with completed ticks. Offline fixtures cover revisions, queued nudges, failures, holds and restart reads; delivery/execution, crash-complete history and source tracking remain unverified or unfinished.
 

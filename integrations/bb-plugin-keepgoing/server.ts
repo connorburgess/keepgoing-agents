@@ -1,7 +1,7 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
-import { checkSchema, runtimeSchema, daemonSchema, detailsSchema } from "./status-details.ts";
+import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import { createSetupController } from "./setup-controller.ts";
 /** The subset of `keepgoing status --json` this plugin reads. */
 const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
 const statusSchema = z.object({
+  goal: z.unknown().optional(), goalError: z.unknown().optional(),
   loop: z.string(),
   target: z.string(),
   controlState: z.string(),
@@ -147,6 +148,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const view = (s: z.infer<typeof statusSchema>, configPath: string, threadId: string | null): LoopView => ({
     details: {
+      ...goalDetails(s.goal, s.goalError),
       readAt: new Date().toISOString(), completed: s.control.completed ?? false,
       targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
       targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
@@ -234,7 +236,7 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun) => host.call("init", { bin, target, name, task, dryRun }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal) => host.call("init", { bin, target, name, task, dryRun, withGoal }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });

@@ -85,3 +85,27 @@ test("reload/dispose invalidates in-memory previews without retaining task conte
   const f = fixture(); const p = await f.preview(); f.controller.dispose();
   assert.equal((await f.create(p.ticket)).ok, false); assert.ok(!f.calls.includes("create"));
 });
+
+test("goal selection binds the preview and is passed through every init call", async () => {
+  const f = fixture(); const choices: boolean[] = [];
+  f.d.init = async (_bin, _target, _name, _task, dry, withGoal) => {
+    choices.push(withGoal); f.calls.push(dry ? "preview" : "create");
+    return { plan: { ...f.plan, ...(withGoal ? { withGoal: true } : {}) } };
+  };
+  const request = { threadId: f.target.threadId, name: "example-loop", task: "Fictional private task", withGoal: true };
+  const p = await f.controller.call({ ...request, action: "preview" });
+  assert.equal(p.plan?.withGoal, true);
+  const changed = await f.controller.call({ ...request, action: "create", ticket: p.ticket, withGoal: false });
+  assert.equal(changed.ok, false); assert.ok(!f.calls.includes("create"));
+  const goal = { id: "goal_0123456789abcdef0123456789abcdef", revision: 1, state: "recorded", title: "PRIVATE TITLE" };
+  Object.assign(f.state, { goal });
+  const next = await f.controller.call({ ...request, action: "preview" });
+  const created = await f.controller.call({ ...request, action: "create", ticket: next.ticket });
+  assert.equal(created.ok, true); assert.equal(created.goal?.revision, 1); assert.equal(created.goalState, "recorded");
+  assert.ok(!JSON.stringify(created).includes("PRIVATE")); assert.ok(!f.calls.includes("start"));
+  assert.ok(choices.length >= 4 && choices.every(Boolean));
+  Object.assign(f.state, { goalError: "PRIVATE FAILURE" });
+  const held = await f.controller.call({ action: "start", threadId: f.target.threadId });
+  assert.equal(held.canStart, false); assert.equal(held.goalState, "unavailable");
+  assert.ok(!f.calls.includes("start")); assert.ok(!JSON.stringify(held).includes("PRIVATE"));
+});

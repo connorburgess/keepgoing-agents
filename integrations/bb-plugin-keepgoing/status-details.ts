@@ -12,7 +12,23 @@ export const daemonSchema = z.object({
   state: z.string(), phase: z.string().optional(), observedAt: z.string().optional(),
   nextCheckAt: z.string().optional(), dryRun: z.boolean().optional(), binaryComparison: z.string().optional(),
 });
+export const goalSummarySchema = z.object({
+  id: z.string().regex(/^goal_[0-9a-f]{32}$/), revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), state: z.literal("recorded"),
+});
+export const goalStateSchema = z.enum(["recorded", "unavailable", "not_reported"]);
+export function goalDetails(goal: unknown, error: unknown) {
+  const parsed = goalSummarySchema.safeParse(goal);
+  if (error !== undefined || (goal !== undefined && !parsed.success)) return { goal: null, goalState: "unavailable" as const };
+  if (parsed.success) return { goal: parsed.data, goalState: "recorded" as const };
+  return { goal: null, goalState: "not_reported" as const };
+}
+export function goalLabel(goal: z.infer<typeof goalSummarySchema> | null | undefined, state: string | undefined): string {
+  if (state === "recorded" && goal) return `Goal: ${goal.id} · revision ${goal.revision} (recorded; not verified completion)`;
+  if (state === undefined) return "Goal: unavailable from this response";
+  return state === "unavailable" ? "Goal: unavailable; inspect the goal record privately" : "Goal: not reported; no goal record or an older CLI";
+}
 export const detailsSchema = z.object({
+  goal: goalSummarySchema.nullable().optional(), goalState: goalStateSchema.optional(),
   readAt: z.string(), completed: z.boolean(),
   targetThread: z.string().nullable(), targetAdapter: z.string(), targetConfigured: z.boolean().nullable(),
   runtime: runtimeSchema.nullable(), daemon: daemonSchema.nullable(), lastCheck: checkSchema.nullable(),
@@ -29,6 +45,7 @@ export function diagnosticLines(d: StatusDetails | undefined, target: string, su
   if (!d) return ["Detailed status unavailable from this build"];
   const lines = [
     `Status read: ${dateLabel(d.readAt)} (snapshot)`,
+    goalLabel(d.goal, d.goalState),
     `Task completion: ${d.completed ? "declared; not independently verified" : "not declared"}`,
     `Current target: ${d.targetThread ?? d.targetAdapter} (${target})${supervising ? "; this thread" : "; not this thread"}${d.targetConfigured === false ? "; missing or disabled in config" : ""}`,
     d.runtime ? `Check evidence: ${d.runtime.state} · ${d.runtime.freshness} · source ${d.runtime.source}` : "Check evidence: unavailable from this build",
