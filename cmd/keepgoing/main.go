@@ -66,6 +66,7 @@ Control:
   retarget <id|primary>    Point the loop at a fallback or back at the primary
 
 Fallbacks:
+  fallbacks add            Guide adding a provider, account or model; preview, then confirm
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
 
@@ -140,6 +141,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if len(rest) == 0 {
 			e.errf("%s needs a subcommand; see keepgoing help", cmd)
 			return exitUsage
+		}
+		if cmd == "fallbacks" && rest[0] == "add" {
+			return fallbacksAddCommand(e, rest[1:])
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}

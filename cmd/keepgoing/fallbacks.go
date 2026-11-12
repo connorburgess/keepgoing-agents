@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -171,6 +172,15 @@ func printFallbacks(e env, out fallbacksOut, asJSON bool) {
 		verdict = "handoffs refused"
 	}
 	fmt.Fprintf(e.stdout, "\n%d healthy of %d eligible, %d distinct by %s, need %d: %s\n", len(s.Healthy), len(s.Eligible), s.Distinct, s.Span, s.Min, verdict)
+	var unprobed []string
+	for _, r := range out.Candidates {
+		if r.Last == nil && !r.Disabled {
+			unprobed = append(unprobed, r.ID)
+		}
+	}
+	if len(unprobed) > 0 {
+		fmt.Fprintf(e.stdout, "Not probed yet: %s.\nPreview a check for free with: keepgoing fallbacks check --dry-run\n", strings.Join(unprobed, ", "))
+	}
 }
 
 func reportTest(e env, cfg *config.Config, dryRun bool) int {

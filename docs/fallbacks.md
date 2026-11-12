@@ -2,6 +2,55 @@
 
 `fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`.
 
+## Add a fallback with guided setup
+
+Unreleased source; v0.1.5 does not include this command. For an existing loop:
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
+```
+
+The guide runs four steps, then a preview and a confirmation:
+
+1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback. Only headless `claude` and `codex` are offered.
+2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`), or blank for the CLI's current login, and the quota group. The group defaults to the directory's name, otherwise the provider.
+3. **Model.** The model for the fallback's turns and, optionally, a cheaper one for scheduled probes. Blank keeps the CLI's configured model. Names are not looked up or validated.
+4. **Handoff.** The place in the handoff order when other fallbacks exist, and whether to turn on automatic handoff when it is off.
+
+The preview shows the candidate, the full handoff order with the new entry marked, the handoff trigger, the redundancy rule (with a warning when the listed candidates cannot meet it), the probe policy and the files to be changed. Nothing is written before `yes`; the default answer is `no`.
+
+Scripts use the same path:
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactive \
+  --agent claude --account-dir /private/accounts/claude-b --group pool-b \
+  --model example-model --position 1 --dry-run --json
+```
+
+`--non-interactive` requires `--agent` and writes without asking unless `--dry-run` is set. Other flags: `--probe-model`, `--id`, `--workdir`, `--enable-handoff`, and `--probe-daily-cap` for a newly created file. `--json` prints a `fallback_add` object with `schemaVersion: 1`, the candidate, order, handoff and redundancy state, changed files and the follow-up commands as argument arrays. Account-directory and agent executable paths are withheld from JSON.
+
+What it writes:
+
+- With an existing fallbacks file, the candidate is inserted at the chosen position. Other candidates, rules and comments are kept; indentation may be normalized.
+- Without one, it creates `fallbacks.yaml` beside the config (redundancy `min_healthy: 1`, `span: group`; scheduled probes every 12 hours, 24-hour TTL, daily cap 2) and sets `loop.fallbacks`.
+- `errors.failover_on` changes only when you choose to turn handoff on, and then to `[rate_limit]`. An existing non-empty setting is left alone.
+
+Writes happen under the loop's tick lock and are refused (exit 75) if a check is running or the files changed after the preview. A running daemon uses the new order after its next configuration reload.
+
+It refuses, without writing: Cursor, BB, process or unknown agents; a Cursor primary; a quota group equal to the primary's or to another candidate's; a repeated or invalid id; a missing account or project directory; a CLI that is not on `PATH`; an out-of-range position; and a model containing spaces or starting with a hyphen.
+
+The command never runs an agent or a probe, logs in, creates an account or copies credentials. It cannot tell whether the directory is signed in, which subscription it uses, or whether the model exists. Afterwards it prints the commands to check that yourself:
+
+```sh
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id claude-pool-b --exact --dry-run   # free preview
+keepgoing fallbacks check -c /private/example-loop/keepgoing.yaml --id claude-pool-b --exact             # one real request
+keepgoing fallbacks list  -c /private/example-loop/keepgoing.yaml
+```
+
+Until a probe passes, the candidate is not healthy and is not used; `fallbacks list` names candidates that were never probed.
+
+Not covered yet: detecting accounts or logins, listing models, BB/process/Cursor candidates, removing or reordering existing candidates, turning handoff on or off as a separate command, and a BB plugin UI. Tests use fake CLI discovery and temporary loops; no provider was called. See the [roadmap](roadmap.md#11-useful-supervision-features-from-product-analysis).
+
 ## Candidates
 
 Each candidate is a full agent definition plus an id and a probe:
