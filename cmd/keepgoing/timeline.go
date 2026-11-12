@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -514,7 +515,8 @@ func readTimelineControl(dir string) timelineControl {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxControlBytes {
 		return unavailable
 	}
-	f, err := os.Open(p)
+	// Never block a concurrent control or state save (Windows).
+	f, err := snapshot.Open(p)
 	if err != nil {
 		return unavailable
 	}
