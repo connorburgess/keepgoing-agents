@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Nudge and re-prompt attempts now count toward `max_nudges` and `max_reprompts` and start `min_wake_interval` and `errors.backoff` even when the adapter reports the send as failed or unsupported. Previously such a send was retried on every check without a cap or a hold. Because a failed send may still have been delivered, an adapter that keeps failing now reaches the awaiting-user hold after the configured number of attempts; a stalled headless turn, which cannot be nudged, does too. `lastWakeAt` records the attempt time. Stop and control holds are unchanged. Offline tables and fake-adapter fixtures only.
+
 - Document the [bounds on repeated work](docs/operations.md#bounds-on-repeated-work): per-turn nudge and re-prompt caps versus the optional loop-wide `deadline`, `max_sends` and `no_progress_timeout`, their precedence, and what they do not cover. No behavior change. New exhaustive decision tables and a repeated-turn supervisor fixture back the description with fakes only.
 
 - Windows control loads and daemon polling open read-only snapshots with delete sharing, paired with POSIX-style replacement for control/goal writes. This requires Windows 10 version 1709 or newer and a filesystem supporting that operation; unsupported operations fail without a legacy fallback. Deterministic fixtures retain an open reader across replacement, compare an incompatible legacy handle and preserve originals on failure. Other readers can still block a save; no retry or general write guarantee is added.
