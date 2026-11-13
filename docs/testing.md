@@ -85,6 +85,7 @@ Not covered yet: child failure reports, scheduler death, state upgrades, two sup
 | just before a stop is made | makes the stop; the stop hold is kept | enforced |
 | right after a handoff brief | holds for a person (`a handoff brief to <fallback> may have been delivered ...`) and sends nothing to either conversation | enforced |
 | right after a switch-back brief | holds for a person (`a switch-back brief to the primary may have been delivered ...`), does not wake the fallback and does not brief the primary again | enforced |
+| right after a handoff brief, with two fallbacks, then `resume`, or `retarget` to the briefed fallback and `resume` (`TestFaultHandoffBriefKilledThenResumed`) | `resume` names the brief it settles and the route the loop continues on; the next check briefs no fallback, and the second fallback is never briefed | enforced |
 | right after a send, with `max_sends` | the allowance already counts the interrupted send (it is reserved first) | enforced |
 | while the report of a hold is delivered | keeps the hold, sends nothing, runs no `bb` command, does not report again (the hold is saved first) | enforced |
 | while a report with no hold is delivered (a question on the thread) | sends nothing and does not report again | enforced |

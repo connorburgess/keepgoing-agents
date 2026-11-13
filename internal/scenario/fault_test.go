@@ -462,3 +462,73 @@ const WaitStatusUnreadable Waiting = "status names an unreadable record, test-su
 // nothing, so it is held in effect, but a scheduler or daemon keeps running.
 // Reported from the fault-injection suite; not assigned yet.
 const WaitStopDamagedControl Waiting = "stop with a damaged control.json, unassigned"
+
+// secondFallback is a second BB fallback, on a third account.
+const secondFallback = `  - id: claude-third-account
+    adapter: bb
+    provider: claude-code
+    group: claude-account-d
+    bb: {thread: thr_example_third, cli: "%[1]s/bb", model: example-third-model, reasoning: medium}
+    probe: {model: example-probe-model, cli: "%[1]s/claude"}
+`
+
+// TestFaultHandoffBriefKilledThenResumed: a check is killed right after the
+// handoff brief to the first of two fallbacks, before it could save that the
+// loop moved. The next check holds for a person. A person then resumes,
+// either as is (the brief was not taken) or after retargeting the loop to
+// the briefed fallback (it was). Resume names the brief it settles and the
+// route the loop continues on, and the next check briefs no fallback, so the
+// task is never put on a second conversation.
+func TestFaultHandoffBriefKilledThenResumed(t *testing.T) {
+	t.Parallel()
+	for _, follow := range []bool{false, true} {
+		name := "resumed as is"
+		if follow {
+			name = "retargeted to the briefed fallback, then resumed"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w := NewWorld(t, scenarioStart)
+			w.Thread("thr_example_third")
+			limitLoop(w, existingFallback, secondFallback)
+			primary := w.Thread(primaryThread)
+			w.Control("enable")
+			w.Advance(time.Minute)
+			w.Tick()
+			w.Advance(20 * time.Minute)
+			primary.RateLimited(w.Now.Add(5 * time.Hour))
+			w.killAfter("tell")
+			w.Advance(time.Minute)
+			s := w.killedTick("killed after the handoff brief")
+			w.Check(s, "the brief went to the first fallback", sentExactly(s, Send{Kind: "tell", Thread: altThread, Mode: "auto"}))
+			w.Advance(time.Minute)
+			s = w.Tick()
+			w.Check(s, "the restart holds and sends nothing", all(action(s, "await_user"), holds(s, "awaitingUser"), nothingSent(s),
+				reasonHas(s, "a handoff brief to "+altCandidate+" may have been delivered")))
+
+			w.Advance(5 * time.Minute)
+			route := "primary"
+			if follow {
+				s = w.Control("retarget", altCandidate)
+				w.Check(s, "retarget", exit(s, 0))
+				route = altCandidate
+			}
+			s = w.Control("resume")
+			out := s.Result.Stdout
+			w.Check(s, "resume names the settled brief and the route", all(exit(s, 0),
+				check(strings.Contains(out, "the handoff brief to "+altCandidate+" is settled as delivered"), "resume said: %q", out),
+				check(strings.Contains(out, "the loop continues on "+route+"; no route is briefed on the next check"), "resume said: %q", out),
+			))
+
+			w.Advance(time.Minute)
+			s = w.Tick()
+			w.Check(s, "the next check briefs no fallback", all(holds(s), nothingSentTo(s, altThread), nothingSentTo(s, "thr_example_third")))
+			if follow {
+				w.Check(s, "the loop is on the briefed fallback", targetIs(s, altCandidate, altThread))
+			} else {
+				w.Check(s, "the loop stays on the primary", all(targetIs(s, "primary", primaryThread), nothingSent(s)))
+			}
+			w.Check(s, "the second fallback was never briefed", journeySends(w, "thr_example_third"))
+		})
+	}
+}
