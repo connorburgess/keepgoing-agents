@@ -171,6 +171,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
+- [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 
 ## Contributing
 
