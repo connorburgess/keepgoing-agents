@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -97,7 +98,15 @@ type Cursor struct {
 	Workdir string            `yaml:"workdir"`
 	Model   string            `yaml:"model,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
+	// FreshStartVersions lists further CLI versions, beyond the inspected ones,
+	// for which the operator has confirmed that the CLI writes its first stream
+	// records before it submits a prompt. See docs/cursor.md.
+	FreshStartVersions []string `yaml:"fresh_start_versions,omitempty"`
 }
+
+// CursorVersionPattern is the only version token shape accepted from the CLI
+// or from configuration.
+var CursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
 
 // Adapters lists the supported adapter names.
 var Adapters = []string{"bb", "process", "claude", "codex", "cursor"}
@@ -190,6 +199,15 @@ func (a Agent) validate(where string) []error {
 	case a.Adapter == "cursor" && a.Cursor != nil:
 		if a.Cursor.Workdir == "" {
 			add("cursor.workdir is required")
+		}
+		if len(a.Cursor.FreshStartVersions) > 16 {
+			add("cursor.fresh_start_versions: at most 16 versions")
+		}
+		for _, v := range a.Cursor.FreshStartVersions {
+			if !CursorVersionPattern.MatchString(v) {
+				add("cursor.fresh_start_versions: each entry must be a Cursor CLI version such as 2030.01.02-abcdef0")
+				break
+			}
 		}
 	case a.Adapter == "claude" && a.Claude != nil:
 		if a.Claude.Workdir == "" {

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Verify that every commit in BASE..HEAD carries a Signed-off-by line matching
 # its author and that neither commits nor PR_TEXT carry a tool attribution.
+# A sign-off records contribution origin. This check does not verify that a
+# contributor accepted the contributor agreement: a maintainer does that
+# before merging (see CONTRIBUTING.md).
 # Merge commits are exempt: GitHub generates them when a pull request is
 # merged and never adds a sign-off. The commits they merge are still checked.
 set -euo pipefail

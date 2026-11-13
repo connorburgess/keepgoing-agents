@@ -7,6 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -31,6 +35,11 @@ type CursorOutcome struct {
 	SessionID     string
 	Success       bool
 	UnsafeSession bool
+	// ConnectionLost means the stream's last connection record for this
+	// session said the CLI was reconnecting. It is diagnostic evidence from a
+	// structured record seen in one inspected CLI version. It never changes
+	// the error class, which stays unknown.
+	ConnectionLost bool
 }
 
 const cursorMaxOutput = 8 << 20
@@ -73,6 +82,17 @@ func ParseCursorEvents(stdout []byte) CursorOutcome {
 		}
 		documented := lifecycle || typ == "user" || typ == "assistant" || typ == "tool_call"
 		if !documented {
+			// Connection records are not part of the published schema. Read only
+			// their subtype, only for the initialized session, and never let one
+			// invalidate the turn.
+			if typ == "connection" && initialized && cursorString(fields, "session_id", &session) && session == out.SessionID && cursorString(fields, "subtype", &subtype) {
+				switch subtype {
+				case "reconnecting":
+					out.ConnectionLost = true
+				case "reconnected":
+					out.ConnectionLost = false
+				}
+			}
 			continue
 		}
 		if !cursorString(fields, "session_id", &session) || !sessionIDPattern.MatchString(session) || (initialized && out.SessionID != session) {
@@ -105,6 +125,7 @@ func ParseCursorEvents(stdout []byte) CursorOutcome {
 	out.Success = out.Success && !malformed && !out.UnsafeSession
 	if out.UnsafeSession {
 		out.SessionID = ""
+		out.ConnectionLost = false
 	}
 	return out
 }
@@ -196,6 +217,12 @@ func (c *Cursor) Observe(ctx context.Context) (decide.Observation, error) {
 	if st.Phase == Finished && st.ExitCodeKnown && st.ExitCode == 0 && out.Success {
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: detail}, nil
 	}
+	if out.ConnectionLost {
+		// Diagnostic only: the class below stays unknown, so this can never
+		// make a failure eligible for failover.
+		detail.Category = "connection_error"
+		detail = evidence.Clean(detail)
+	}
 	return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Evidence: detail}, nil
 }
 
@@ -228,13 +255,113 @@ func (c *Cursor) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 	if err != nil {
 		return err
 	}
-	// An abandoned turn is one no process ever ran: its wrapper was shut out
-	// before it began. Like a turn that was never started, it left no
-	// conversation that a new one could duplicate.
-	if st.Phase != NeverRun && session == "" && !st.Record.Abandoned {
-		return errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
+	if st.Phase != NeverRun && session == "" {
+		if err := c.freshStartAllowed(st); err != nil {
+			return err
+		}
 	}
-	return c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env))
+	// Record which CLI version runs this turn. If the turn fails before it
+	// starts, the fresh-start rule is judged by this version, not by whatever
+	// is installed when the re-prompt comes (the CLI can update itself between).
+	// The previous turn's record is removed first so it can never stand in.
+	version := c.version(ctx)
+	_ = os.Remove(c.dir.path(cursorTurnVersionName))
+	if err := c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env)); err != nil {
+		return err
+	}
+	if version != "" {
+		// Best effort: without a record a later fresh start is refused.
+		_ = os.WriteFile(c.dir.path(cursorTurnVersionName), []byte(version+"\n"), 0o600)
+	}
+	return nil
+}
+
+// cursorTurnVersionName holds the CLI version read when the latest turn started.
+const cursorTurnVersionName = "cursor-version"
+
+// turnVersion returns the version recorded for the latest turn, or "" when
+// there is no record or it is not exactly one version token.
+func (c *Cursor) turnVersion() string {
+	info, err := os.Lstat(c.dir.path(cursorTurnVersionName))
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 128 {
+		return ""
+	}
+	b, err := os.ReadFile(c.dir.path(cursorTurnVersionName))
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSuffix(string(b), "\n")
+	if !config.CursorVersionPattern.MatchString(v) {
+		return ""
+	}
+	return v
+}
+
+// CursorInspectedVersions lists the CLI versions whose source was read to
+// confirm that the stream's initialization and user records are written before
+// the prompt is submitted, and on which that was then seen in a live run.
+var CursorInspectedVersions = map[string]bool{"2026.09.18-9a7762b": true}
+
+var errCursorNoSession = errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
+
+// freshStartAllowed decides whether a turn that left no session may be followed
+// by a new conversation. That is allowed for one observed shape only: the turn
+// finished with exit code 1, its output file exists and is empty, and the CLI
+// version recorded when that turn started is one known to write its first
+// records before it submits the prompt.
+// A live untrusted-workspace refusal had this shape.
+//
+// The evidence is keepgoing's own record of the turn, not a statement from
+// Cursor that no conversation began: the CLI offers none. A wrapper that
+// discards output and exits 1 is indistinguishable, which is why the shape is
+// this narrow. Any other exit code (including signal-style codes), any output,
+// a missing output file, a crashed wrapper, or a turn whose version is
+// unverified or was not recorded keeps the refusal, and the loop ends in its
+// ordinary hold for a person.
+func (c *Cursor) freshStartAllowed(st Status) error {
+	// An abandoned turn is one no process ever ran: its wrapper was shut out
+	// under the turn lock before it began, and the binary on disk was asked
+	// first whether it keeps that contract. Like a turn that was never
+	// started, it left no conversation that a new one could duplicate.
+	if st.Record.Abandoned {
+		return nil
+	}
+	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode != 1 || len(st.Stdout) != 0 {
+		return errCursorNoSession
+	}
+	if info, err := os.Lstat(c.dir.path("stdout")); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		return errCursorNoSession
+	}
+	version := c.turnVersion()
+	if CursorInspectedVersions[version] {
+		return nil
+	}
+	for _, v := range c.cfg.FreshStartVersions {
+		if version != "" && v == version {
+			return nil
+		}
+	}
+	return errors.New("cursor: the previous turn exited with an error before writing any output, but the CLI version that ran it was not recorded or is not a version whose start order has been verified, so a new conversation is refused; see docs/cursor.md before listing the version in cursor.fresh_start_versions")
+}
+
+// version runs only the CLI's version command, bounded in time and output, and
+// returns the token when it has exactly the expected shape.
+func (c *Cursor) version(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.cfg.CLI, "--version")
+	cmd.Dir = c.cfg.Workdir
+	cmd.Env = append(os.Environ(), envList(c.cfg.Env)...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil || len(out) > 128 {
+		return ""
+	}
+	v := strings.TrimSpace(string(out))
+	if !config.CursorVersionPattern.MatchString(v) {
+		return ""
+	}
+	return v
 }
 
 func (c *Cursor) Stop(ctx context.Context) error {
