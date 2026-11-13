@@ -127,3 +127,37 @@ func TestAnUnusableClaimDirectoryActsOnNothing(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+// Stop wins: if the claim cannot be taken for any reason other than another
+// loop's live check, the stop goes ahead without it and says so. Pause takes
+// no claim at all.
+func TestStopProceedsWithoutAnUnusableClaim(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Active})
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Stop = true }); err != nil {
+		t.Fatal(err)
+	}
+	file := w.sessions + "/not-a-directory"
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := w.opts(t0)
+	opts.SessionDir = file
+	res, err := Tick(context.Background(), w.cfg, opts)
+	if err != nil || res.Action != "stop" || p.stopped != 1 || !strings.Contains(strings.Join(res.Warnings, ";"), "stop proceeds without the session claim") {
+		t.Fatalf("%+v %v, stopped %d", res, err, p.stopped)
+	}
+}
+
+func TestPauseTakesNoClaim(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Paused = true }); err != nil {
+		t.Fatal(err)
+	}
+	otherLoopClaims(t, w, "thr_primary")
+	res, err := Tick(context.Background(), w.cfg, w.opts(t0))
+	if err != nil || res.Reason != "paused" || p.observed != 0 || len(p.sent) != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
