@@ -141,7 +141,11 @@ func TestNoProgressFollowsTheRecords(t *testing.T) {
 		// real writer leaves it; only the provider's answer says what was sent.
 		{"re-prompts that sent nothing are not messages", npConfig(nil, npInt(0)), npState(), npOn, &incident.Journal{Records: []incident.Record{
 			npRetry(npSince.Add(1*time.Minute), "already_queued"), npRetry(npSince.Add(2*time.Minute), "already_queued"), npRetry(npSince.Add(3*time.Minute), "not_in_error"),
-			func() incident.Record { r := npRetry(npSince.Add(4*time.Minute), "refused"); r.Outcome = "failed"; return r }()}},
+			func() incident.Record {
+				r := npRetry(npSince.Add(4*time.Minute), "refused")
+				r.Outcome = "failed"
+				return r
+			}()}},
 			npRetryGraph(npSince.Add(1*time.Minute), npSince.Add(2*time.Minute), npSince.Add(3*time.Minute), npSince.Add(4*time.Minute)), "clear",
 			"Clear: 0 messages and 4 checks with an error or retry in 3 h with no recorded change to its repositories.", "0/false/false", "4/false/false"},
 		// A retry with nothing to retry, or a provider without retry, falls
