@@ -138,6 +138,36 @@ type Progress struct {
 	// MaxNudges is how many nudges a stalled session gets before the loop
 	// asks a person. Progress or ending the turn resets the count.
 	MaxNudges int `yaml:"max_nudges,omitempty"`
+	// FlagAfterSends and FlagAfterErrors raise the panel's no-progress flag:
+	// at that many sends, or that many checks that found an error or retried
+	// the turn, with no recorded change to the repositories. Unset means the
+	// default; 0 turns that fact's flag off. The flag only informs a person.
+	FlagAfterSends  *int `yaml:"flag_after_sends,omitempty"`
+	FlagAfterErrors *int `yaml:"flag_after_errors,omitempty"`
+}
+
+// Defaults of the no-progress flag's thresholds.
+const (
+	DefaultFlagAfterSends  = 6
+	DefaultFlagAfterErrors = 4
+	maxFlagAfter           = 1000
+)
+
+// SendsFlag is the send count that raises the no-progress flag; 0 is off.
+func (p Progress) SendsFlag() int {
+	if p.FlagAfterSends == nil {
+		return DefaultFlagAfterSends
+	}
+	return *p.FlagAfterSends
+}
+
+// ErrorsFlag is the error-or-retry count that raises the no-progress flag;
+// 0 is off.
+func (p Progress) ErrorsFlag() int {
+	if p.FlagAfterErrors == nil {
+		return DefaultFlagAfterErrors
+	}
+	return *p.FlagAfterErrors
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -527,6 +557,14 @@ func (c *Config) Validate() error {
 	}
 	if l.Progress.MaxNudges < 1 {
 		add("loop.progress.max_nudges must be at least 1")
+	}
+	for _, f := range []struct {
+		name string
+		v    *int
+	}{{"flag_after_sends", l.Progress.FlagAfterSends}, {"flag_after_errors", l.Progress.FlagAfterErrors}} {
+		if f.v != nil && (*f.v < 0 || *f.v > maxFlagAfter) {
+			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
+		}
 	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")

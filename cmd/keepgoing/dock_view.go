@@ -177,6 +177,9 @@ type dockLoop struct {
 	LimitWait   *dockLimitWait   `json:"limitWait,omitempty"`
 	Issues      []string         `json:"issues"`
 	Identifiers *dockIdentifiers `json:"identifiers,omitempty"`
+	// NoProgress is the no-progress flag, the same value status shows; nil
+	// when the loop's status could not be read. It is never a need.
+	NoProgress *noProgressView `json:"noProgress,omitempty"`
 	// Can is which changes fit the loop's control flags as read: pause when
 	// not paused, stop when no stop is requested, resume when any hold is
 	// set. Empty when the flags could not be read. A page offers them only
@@ -952,7 +955,8 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.RoutesSummary = dockRoutesSummary(r)
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
-		if quiet[l.State] && l.Away == nil {
+		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
+		if quiet[l.State] && l.Away == nil && !flagged {
 			continue
 		}
 		t := txt()
@@ -964,6 +968,12 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 				t = txt(t, " ")
 			}
 			t = txt(t, l.Away.Short, ": ", strings.ToLower(l.Away.Why[0].T[:1]), l.Away.Why[0].T[1:], dockText(l.Away.Why[1:]), ".")
+		}
+		if flagged {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, l.NoProgress.Text)
 		}
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
@@ -1248,6 +1258,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	l.Chain = dockHandoffChain(in.Chain, use, dockTestingOf(l.State, st, in.Chain), l.Fallbacks, now, identifiers)
 	l.Away = dockAwayOf(st, in.Chain, l.Chain.Entries, in.Timeline, now)
 	l.PickerState = l.Phrase
+	if st != nil {
+		np := st.NoProgress
+		l.NoProgress = &np
+		if np.Availability == "flagged" {
+			l.PickerState += " \u00B7 no progress"
+		}
+	}
 	if l.Away != nil {
 		l.PickerState += " · " + l.Away.Picker
 		for _, d := range l.Away.Departures {

@@ -179,6 +179,13 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			// it left on is not a limit on the routes other loops are using.
 			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: payments-account\n  switch_back: {enabled: true}\n", 1)
 		}
+		if name == "nightly-dependency-bumps" || name == "docs-site-refresh" {
+			// Progress repositories, so the no-progress flag has a source.
+			cfgYAML = strings.Replace(cfgYAML, "  prompt: ", "  progress:\n    repositories: [repo]\n  prompt: ", 1)
+			if err := os.MkdirAll(filepath.Join(dir, "repo"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
 		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), cfgYAML)
 		if withFallbacks {
 			dockWrite(t, filepath.Join(dir, "fallbacks.yaml"), fbYAML)
@@ -204,6 +211,8 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		switch name {
 		case "docs-site-refresh":
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "child work running")
+			// Its repositories changed 57 minutes ago: the no-progress flag is clear.
+			st.Fingerprint, st.LastProgressAt = "fixture-fingerprint", now.Add(-57*time.Minute)
 			// One lane is itself a registered loop: mobile-onboarding's thread.
 			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf(dockLoopThread("mobile-onboarding")), Status: rungraph.ChildActive},
 				{Key: childKeyOf("thr_child0003"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0004"), Status: rungraph.ChildErrored}}
@@ -263,6 +272,17 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		case "nightly-dependency-bumps":
 			at := now.Add(-5*time.Hour - 12*time.Minute)
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "wake", "idle")
+			// No change to its repositories in 30 hours, and a wake every three
+			// hours since: eight sends, enough to raise the no-progress flag.
+			st.Fingerprint, st.LastProgressAt = "fixture-fingerprint", now.Add(-30*time.Hour)
+			on := &incident.Controls{Enabled: true}
+			for k := 7; k >= 0; k-- {
+				when := at.Add(-time.Duration(k) * 3 * time.Hour)
+				if err := incident.Append(sd, incident.Record{Kind: "tick", CheckStartedAt: when, Action: "wake", Outcome: "succeeded", Cause: "idle",
+					TargetKey: incident.TargetKey(state.Primary), TargetKeyAfter: incident.TargetKey(state.Primary), ControlBefore: on, ControlAfter: on}); err != nil {
+					t.Fatal(err)
+				}
+			}
 		case "data-export-cleanup":
 			ctl.Enabled = false
 		case "payments-reconciler", "inventory-sync", "report-builder":

@@ -12,6 +12,18 @@ public struct PanelLoop: Decodable, Equatable {
     public let state: String
     public let phrase: String
     public let needsYou: Bool
+    /// The panel's no-progress sentence when that flag is raised, absent
+    /// otherwise. It informs and is never a need: it changes no badge.
+    public let noProgress: String?
+
+    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil) {
+        self.key = key
+        self.name = name
+        self.state = state
+        self.phrase = phrase
+        self.needsYou = needsYou
+        self.noProgress = noProgress
+    }
 }
 
 public struct PanelList: Decodable, Equatable {
@@ -232,9 +244,13 @@ public enum MenuBuilder {
             }
             if !list.loops.isEmpty { rows.append(separator) }
             for loop in list.loops.prefix(maxLoops) {
-                let name = Contract.text(loop.name), short = shortened(name, to: maxName), phrase = shortened(Contract.text(loop.phrase), to: maxPhrase)
+                let name = Contract.text(loop.name), short = shortened(name, to: maxName)
+                let flag = loop.noProgress.map(Contract.text) ?? ""
+                // The panel's own words: its phrase, and "no progress" as the
+                // panel's picker row says it when that flag is raised.
+                let phrase = shortened(Contract.text(loop.phrase) + (flag.isEmpty ? "" : " · no progress"), to: maxPhrase)
                 rows.append(MenuRow(kind: .loop, title: short, detail: phrase, symbol: symbols[loop.state] ?? "questionmark.circle",
-                                    accessibilityLabel: "\(name), \(phrase)", accessibilityHelp: "Opens this loop in the panel.",
+                                    accessibilityLabel: flag.isEmpty ? "\(name), \(phrase)" : "\(name), \(Contract.text(loop.phrase)). \(flag)", accessibilityHelp: "Opens this loop in the panel.",
                                     toolTip: short == name ? "" : name, command: .openLoop(key: loop.key)))
             }
             let total = list.loops.count + list.omitted

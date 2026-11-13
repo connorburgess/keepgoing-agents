@@ -318,6 +318,8 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	// NoProgress is the no-progress flag, the same value the panel shows.
+	NoProgress noProgressView `json:"noProgress"`
 	// SharedWith lists, in words, other enabled loops that share this loop's
 	// session, a fallback's session, its working directory or a repository.
 	SharedWith []string `json:"sharedWith,omitempty"`
@@ -497,6 +499,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w)
 	}
 	printLimitWait(w, out.LimitWait)
+	fmt.Fprintf(w, "no progress: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
@@ -682,6 +685,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	var journal *incident.Journal
+	if j, err := incident.Load(l.StateDir); err == nil {
+		journal = &j
+	}
+	out.NoProgress = noProgressOf(cfg, st, ctl, journal, now)
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {
