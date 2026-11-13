@@ -15,7 +15,11 @@ for t in $targets; do
   ext=""; [ "$os" = windows ] && ext=".exe"
   (cd "$root" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
     -ldflags "-s -w -X main.version=$version" -o "$work/keepgoing$ext" ./cmd/keepgoing)
-  cp "$root/LICENSE" "$root/README.md" "$work/"
+  # LICENSE is the Sustainable Use License: everyone who gets the executable
+  # gets its terms. The file points to LICENSING.md and the preserved Apache
+  # text, so both ship beside it.
+  cp "$root/LICENSE" "$root/LICENSING.md" "$root/README.md" "$work/"
+  mkdir -p "$work/LICENSES" && cp "$root/LICENSES/Apache-2.0.txt" "$work/LICENSES/"
   if [ "$os" = windows ]; then
     (cd "$dist" && zip -qr "$name.zip" "$name")
   else
