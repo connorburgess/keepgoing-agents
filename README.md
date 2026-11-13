@@ -137,11 +137,13 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 ### The keepgoing panel: one page for every loop
 
-`keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its last decision, any hold, its preferred routes in order with the one its records name as current, each route's readiness and usage reading, a usage limit it moved off with the reported reset, its lanes, recent history and limits. A Routes view shows each account group's recorded allowance. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. Unreleased and tested with fixtures only; controls and configuration from the page are planned. See [the panel](docs/dock.md).
+`keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its last decision, any hold, its preferred routes in order with the one its records name as current, each route's readiness and usage reading, a usage limit it moved off with the reported reset, its lanes, recent history and limits. A Routes view shows each account's recorded allowance. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. Unreleased and tested with fixtures only; controls and configuration from the page are planned. See [the panel](docs/dock.md).
+
+`keepgoing panel` opens that page in your browser with one command and nothing to copy: it starts a background server for this computer only when none is running, opens it through a single-use address that becomes a session cookie, and the server stops by itself when unused ([details](docs/dock.md#opening-it-with-one-command-keepgoing-panel)). `keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its preferred routes in order (`primary`, then each fallback), the one its records name as current, each route's readiness and usage reading, its lanes, last check and limits. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. Unreleased and tested with fixtures only; controls and configuration from the page are planned. See [the panel](docs/dock.md).
 
 ### Optional macOS menu preview
 
-The [native preview](integrations/macos/README.md) reads explicitly registered local loops on menu open or refresh. It can show goal metadata privately and distinguish current holds from historical activity. It starts no supervisor or timer. It is an unreleased, read-only developer build; interactive controls and optional installation remain planned.
+The [native menu preview](integrations/macos/README.md) opens the keepgoing panel (`keepgoing panel`) and lists each registered loop as a row, with its state in the panel's words, that opens that loop's page. A count beside the icon says how many loops need a person, and a `?` says the loops could not be read. It reads `keepgoing panel list` when started, when the menu opens and once a minute, with no provider call; it starts no supervisor. It is an unreleased, read-only developer build; controls for loops and optional installation remain planned.
 
 ## Why
 
@@ -178,6 +180,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
+- [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing

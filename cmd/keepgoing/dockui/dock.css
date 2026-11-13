@@ -287,6 +287,8 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 
 .foot { max-width: 76rem; margin: 2.5rem auto 0; padding: 1.25rem 1.5rem 2.5rem; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 0.8125rem; }
 .foot p { margin: 0; max-width: 75ch; }
+.foot p + p { margin-top: 0.4rem; }
+.foot p:empty { display: none; }
 .words { margin-top: 0.75rem; max-width: 75ch; }
 .words summary { cursor: pointer; font-weight: 550; color: var(--ink); width: fit-content; border-radius: 6px; padding: 0.2rem 0.3rem; margin-left: -0.3rem; }
 .words dl { margin: 0.5rem 0 0; display: grid; gap: 0.4rem; }
@@ -330,4 +332,16 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
   .dot, .event .mark { background: CanvasText; forced-color-adjust: none; }
   .dot-unknown { background: Canvas; border: 1px solid CanvasText; }
   .pick[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+
+/* The page shown for a used or expired link. It has no session and no script. */
+.notice { max-width: 76rem; margin: 0 auto; padding: 2.5rem 1.5rem 3rem; }
+.notice > * { max-width: 62ch; }
+.notice p { margin: 0.9rem 0 0; color: var(--ink-2); }
+.notice .lede { margin-top: 0.6rem; color: var(--ink); font-size: 1.0625rem; }
+.notice .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; min-height: 2.25rem; }
+.notice .copy[hidden] { display: none; }
+.command { -webkit-user-select: all; user-select: all; padding: 0.1rem 0.4rem; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+@media (max-width: 52rem) {
+  .notice { padding: 1.5rem 1rem 2rem; }
 }

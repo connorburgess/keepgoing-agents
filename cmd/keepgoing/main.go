@@ -56,6 +56,7 @@ Local client discovery:
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
+  panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
@@ -151,6 +152,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runsCommand(e, rest)
 	case "dock":
 		return dockCommand(e, rest)
+	case "panel":
+		return panelCommand(e, rest)
+	case "__panel-server":
+		return panelServerCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
