@@ -305,6 +305,80 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	return a.call(ctx, "", "thread", "stop", a.cfg.Thread, "--json")
 }
 
+// retryReason is shown by BB on a queued retry row. It is fixed text; nothing
+// from the task or the loop is sent with a retry.
+const retryReason = "keepgoing: recover the failed turn"
+
+// RetryFailedTurn implements adapter.TurnRetrier via `bb thread retry`, which
+// re-submits the failed turn by reference: no new user message, and an
+// attempt number that increments. Only the JSON result on stdout is read.
+//
+//	{"ok":true,"delivery":"sent"|"queued","attempt":N,...}
+//	{"ok":false,"error":{"code":"no_failed_turn"|"retry_already_queued"|...}}
+//
+// BB applies no age limit: a failed turn stays retryable for as long as the
+// thread is in error and its last turn request is stored. When the provider
+// had already accepted that turn's input, BB continues it with a short nudge
+// of its own instead of sending the input twice.
+//
+// Any other code, delivery or shape is an error: the caller must not treat an
+// unreadable result as permission to send a prompt.
+func (a *Adapter) RetryFailedTurn(ctx context.Context) (adapter.TurnRetry, error) {
+	out, runErr := a.run(ctx, "", "thread", "retry", a.cfg.Thread, "--reason", retryReason, "--json")
+	var res struct {
+		OK       *bool  `json:"ok"`
+		Delivery string `json:"delivery"`
+		Attempt  int    `json:"attempt"`
+		Error    *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(out, &res) != nil || res.OK == nil {
+		if runErr != nil {
+			return adapter.TurnRetry{}, fmt.Errorf("bb thread retry: %w", runErr)
+		}
+		return adapter.TurnRetry{}, errors.New("bb thread retry: unreadable result")
+	}
+	attempt := max(0, res.Attempt)
+	if *res.OK {
+		switch res.Delivery {
+		case "sent":
+			return adapter.TurnRetry{Outcome: adapter.TurnRetried, Attempt: attempt}, nil
+		case "queued":
+			return adapter.TurnRetry{Outcome: adapter.TurnRetryQueued, Attempt: attempt}, nil
+		}
+		return adapter.TurnRetry{}, errors.New("bb thread retry: unrecognised delivery")
+	}
+	code := ""
+	if res.Error != nil {
+		code = res.Error.Code
+	}
+	switch code {
+	case "no_failed_turn":
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}, nil
+	case "retry_already_queued":
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+	case "unknown_command":
+		// A BB release without `thread retry`: recover as before it existed.
+		return adapter.TurnRetry{}, adapter.ErrUnsupported{Op: "turn retry"}
+	}
+	// Only a short code token is kept; BB's message may hold prose and is dropped.
+	return adapter.TurnRetry{}, fmt.Errorf("bb thread retry: refused (%s)", codeToken(code))
+}
+
+// codeToken keeps a code that looks like one and replaces anything else.
+func codeToken(code string) string {
+	if code == "" || len(code) > 48 {
+		return "unknown"
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return "unknown"
+		}
+	}
+	return code
+}
+
 // Activate applies the configured model and reasoning level before the
 // first message after a handoff.
 func (a *Adapter) Activate(ctx context.Context) error {

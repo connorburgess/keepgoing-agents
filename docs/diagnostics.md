@@ -173,7 +173,7 @@ In v0.1.5, diagnostic records retain the finite code `thread_command_failed` fro
 - If the error persists after the configured attempt cap, supervision enters an awaiting-user hold. A new active turn cannot clear that hold; explicit resume permits observation again and clears stale error evidence on the new turn.
 - An isolated copy of keepgoing's journal reconstructs the sequence through `timeline`, including the generic code, unavailable observations and hold transitions, without provider logs or private error text.
 
-This tests existing bounded re-prompt behavior; it adds no recovery action. The adapter uses `bb thread tell`, not failed-turn retry by reference. It does not restart BB's host daemon or distinguish the host cause from a generic failure. Checks cannot run while their own host or scheduler is unavailable. A transient failure that starts and ends between checks may leave no failure snapshot. Live unattended recovery from a host disconnect and host-specific structured classification remain unverified.
+This tests existing bounded re-prompt behavior. Through v0.1.5 the adapter recovers with `bb thread tell`. In unreleased source the same re-prompt decision retries the failed turn by reference with `bb thread retry` and sends no prompt; see [recovering a failed BB turn](operations.md#recovering-a-failed-bb-turn-by-retry). It does not restart BB's host daemon or distinguish the host cause from a generic failure. Checks cannot run while their own host or scheduler is unavailable. A transient failure that starts and ends between checks may leave no failure snapshot. Live unattended recovery from a host disconnect and host-specific structured classification remain unverified.
 
 ## Bounded tick incident history
 
@@ -361,6 +361,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | `probe` | A check that ran at least one scheduled or exact probe, or that summarizes folded checks which did. |
 | `limit_wait` | A check that sent nothing because a provider limit has a known reset. |
 | `limit_wait_report` | The check that detected a long limit wait with no handoff possible and requested its one report (or recorded that none was sent). |
+| `turn_retry` | A re-prompt that asked the provider to re-run the failed turn by reference. The row says what the provider answered and whether a prompt was sent instead. |
 | `hold` | A check or control save that entered a stop, pause, disable, awaiting-user or completed state. |
 | `control` | Any saved control command. |
 | `collapsed` | A check that also summarizes identical earlier checks. |
@@ -373,6 +374,8 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 Invalid filters exit 2 with a fixed message that does not repeat the rejected value. A filter that matches nothing is a successful, empty view, not evidence that nothing happened.
 
 When the latest retained check is a limit wait, `nextSteps` says so. keepgoing sends no prompt during that wait. The check that first finds the reset further away than `errors.report_wait_after`, with no handoff possible, is marked `limit_wait_report` and says whether its one report was requested, failed or not subscribed; `summary.lastLimitWaitReport` references it. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). The marker is incident schema 7 (`limitWaitReport` on tick records: `none`, `requested`, `delivery_failed` or `not_subscribed`); a marked check is never collapsed and is kept in the `condition` tier. Timeline JSON is schema 4 with this addition.
+
+Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`, `nothing_to_retry`, `already_queued`, `refused` or `unsupported`. `summary.lastTurnRetry` references the newest marked check, and timeline JSON is schema 5 with it. Older binaries refuse a schema-8 journal, as with earlier upgrades.
 
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 

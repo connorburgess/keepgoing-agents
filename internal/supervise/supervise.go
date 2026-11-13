@@ -93,6 +93,9 @@ type Result struct {
 	Window       string     `json:"window"`
 	UnchangedFor string     `json:"unchangedFor,omitempty"`
 	Reprompts    int        `json:"reprompts,omitempty"`
+	// Recovery says how a re-prompt was carried out: turn_retry re-ran the
+	// failed turn by reference with no new text, prompt sent the wake text.
+	Recovery string `json:"recovery,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is
 	// a lower bound. ChildErrorNote is set when this check's wake announces
@@ -129,6 +132,8 @@ type tick struct {
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
 	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
 	incidentLimitWaitReport string
+	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
+	incidentTurnRetry string
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -614,6 +619,11 @@ func (t *tick) run() error {
 	} else if !t.opts.DryRun {
 		actErr = t.act(a, d)
 	}
+	if t.opts.DryRun && res.Action == string(decide.Reprompt) {
+		// Preview the method only; a dry run asks the provider for nothing.
+		_, canRetry := a.(adapter.TurnRetrier)
+		res.Recovery = string(decide.RecoverBy(decide.Decision{Action: decide.Reprompt}, obs, canRetry))
+	}
 	if errors.Is(actErr, state.ErrSendLimit) || errors.Is(actErr, state.ErrSendLedger) {
 		actErr = t.sendAllowanceFailure(actErr)
 	}
@@ -928,6 +938,16 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
+		reserved := false
+		if r, ok := a.(adapter.TurnRetrier); ok && decide.RecoverBy(d, t.decisionInput.Obs, true) == decide.RecoverByTurnRetry {
+			done, err := t.retryTurn(r, d)
+			if done {
+				return err
+			}
+			// The provider reported no failed turn: fall back to the prompt,
+			// under the send already reserved for this recovery.
+			reserved = true
+		}
 		text, err := prompt.ComposeWake(loop)
 		if err != nil {
 			return err
@@ -943,8 +963,14 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		} else {
 			text = prompt.WithChildErrors(text, childErrors)
 		}
-		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
-			return err
+		if !reserved {
+			if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
+				return err
+			}
+		}
+		t.res.Recovery = ""
+		if d.Action == decide.Reprompt {
+			t.res.Recovery = string(decide.RecoverByPrompt)
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
 		t.reserve = reserveReports // the send has been made

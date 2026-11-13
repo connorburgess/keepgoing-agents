@@ -201,9 +201,10 @@ func TestIncidentJourneyBBInterruptedCommandRecovery(t *testing.T) {
 	}
 	write(t, show, `{"thread":{"status":"error"}}`, 0600)
 	journeyTick(t, f, 3)
+	// The failed turn is retried by reference: no second copy of the task.
 	sent := f.read("thr_primary.told")
-	if sent != journeyPrivate+"\n" {
-		t.Fatalf("expected one continuation prompt, got %q", sent)
+	if sent != "" || strings.Count(f.read("calls"), "thread retry thr_primary ") != 1 {
+		t.Fatalf("expected one turn retry and no prompt, got %q\n%s", sent, f.read("calls"))
 	}
 	// The same recorded failure on a later check exhausts the configured cap.
 	journeyTick(t, f, 4)
@@ -236,8 +237,8 @@ func TestIncidentJourneyBBInterruptedCommandRecovery(t *testing.T) {
 	if o := r[8].Observation; o.State != "active" || o.ErrorClass != "none" || o.ProviderCode != "unavailable" {
 		t.Fatal("new turn retained old failure", o)
 	}
-	if f.read("probes") != "" || strings.Contains(f.read("calls"), "thread retry") || f.read("thr_primary.told") != sent {
-		t.Fatal("recovery probed, retried a turn by reference, or sent extra prompts")
+	if f.read("probes") != "" || strings.Count(f.read("calls"), "thread retry thr_primary ") != 1 || f.read("thr_primary.told") != sent {
+		t.Fatalf("recovery probed, retried the turn more than once, or sent a prompt:\n%s", f.read("calls"))
 	}
 }
 

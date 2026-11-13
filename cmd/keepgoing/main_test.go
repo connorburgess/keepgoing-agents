@@ -25,7 +25,9 @@ import (
 
 // fakeBB emulates the bb CLI over files in $FAKE_BB: <thread>.show and
 // <thread>.log are returned as-is (log fixtures carry seq numbers, as bb's
-// events do); tell, update, and stop are recorded.
+// events do); tell, update, and stop are recorded. retry answers from
+// <thread>.retry when present, and otherwise as BB does for a failed turn it
+// dispatched again.
 const fakeBB = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
@@ -35,6 +37,7 @@ case "$1 $2" in
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
+"thread retry") if [ -f "$d/$t.retry" ]; then cat "$d/$t.retry"; else echo '{"ok":true,"threadId":"'"$t"'","delivery":"sent","turnRequestId":"req_example1","attempt":2}'; fi ;;
 *) echo '{"ok":true}' ;;
 esac
 `
