@@ -62,7 +62,7 @@ What the preview states, because keepgoing cannot verify it:
 - **The same conversation.** Adding a thread the loop already uses means a handoff switches that thread's model (and reasoning level, if set) with `bb thread update` and continues in the same conversation, with the same history. It is very likely the same account, so it helps only if the other model has its own limit, which only the check before a handoff tests. The provider must be the one the loop already records for that thread. If the primary's `bb.model` is unset, returning to the primary leaves the thread on the fallback's model; the preview says so.
 - **The model.** Marked as from BB's list or not checked. With no model set, the check before a handoff uses the local CLI's default model, which may differ from the thread's.
 
-Refused without writing: a missing or malformed thread ID; a provider other than `claude-code` or `codex` (no built-in probe); an unknown reasoning level; a thread the loop already uses with no model, the same model or a different provider; in the guide, a `--provider` that contradicts what BB lists for the picked thread; `--account-dir` or `--workdir`; a missing probe account directory; and a missing local `claude` or `codex` CLI, since the fallback could then never be confirmed. `--thread`, `--provider`, `--reasoning`, `--probe-account-dir` and `--show-ids` are refused for headless agents. In JSON, `candidate.thread` is `same_as_primary`, `same_as_fallback` or `other`, `candidate.modelSource` is `bb_list` or `unchecked`, and `candidate.threadId` appears only with `--show-ids`.
+Refused without writing: a missing or malformed thread ID; a provider other than `claude-code` or `codex` (no built-in probe); an unknown reasoning level; a thread the loop already uses with no model, the same model or a different provider; in the guide, a `--provider` that contradicts what BB lists for the picked thread; `--account-dir` or `--workdir`; a missing probe account directory; and a missing local `claude` or `codex` CLI, since the fallback could then never be confirmed. `--thread`, `--new-thread`, `--permission-mode`, `--provider`, `--reasoning`, `--probe-account-dir` and `--show-ids` are refused for headless agents. In JSON, `candidate.thread` is `same_as_primary`, `same_as_fallback` or `other`, `candidate.modelSource` is `bb_list` or `unchecked`, and `candidate.threadId` appears only with `--show-ids`.
 
 ### Handoff stays a choice
 
@@ -263,7 +263,7 @@ Remove `--dry-run` to execute. The command prints the plan to stderr before prob
 | `probe.daily_cap` | 6 |
 | `probe.timeout` | `90s` |
 
-Scheduled probes run one after another inside the tick, so a long list of slow probes makes that tick long. The daemon still notices a stop or pause written during the tick and acts on it right after.
+Scheduled probes run one after another inside the tick. Through v0.1.5 a long list of slow probes makes that tick long; in unreleased source each starts only when its whole timeout fits the [check time budget](operations.md#check-time-budget), and one that does not fit is skipped and stays due. The daemon still notices a stop or pause written during the tick and acts on it right after.
 
 ## Redundancy
 
@@ -356,7 +356,7 @@ The new thread then becomes the active target and is supervised like any other. 
 - BB may itself retry that conversation later, for example when its provider limit resets. keepgoing does not prevent this and no longer observes that thread, so two conversations can then be active on the task.
 - The new thread works in the **same environment and checkout** as the one it continues. Nothing isolates the two.
 
-**Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it and shows it in the preview.
+**Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it (`--permission-mode`, accepted only with `--new-thread`) and shows it in the preview.
 
 **Exactly one thread per handoff, and every attempt counts.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token, and counts the attempt against the cap in the same write. Then:
 

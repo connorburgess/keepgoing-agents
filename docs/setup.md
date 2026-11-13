@@ -58,7 +58,7 @@ keepgoing init --non-interactive \
 
 Add `--dry-run` to preview without writing files. `keepgoing init --help` lists all flags. Input ending or cancellation while answering the wizard writes no setup. Existing setups are never overwritten; edit their private configuration or choose a new name/directory.
 
-In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume; downtime counts. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
+In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran or the network was down. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
 
 In v0.1.3 or newer, optional `--max-sends 20` caps automatic send attempts with a persistent counter; failed attempts count and resume does not reset it. Zero or omission leaves accounting disabled. See [send allowance](operations.md#total-send-allowance).
 

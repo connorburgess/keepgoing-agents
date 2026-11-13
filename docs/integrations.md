@@ -130,7 +130,7 @@ Documentation review: print mode accepts stdin and structured session/results, b
 
 ### Antigravity
 
-An [internal protocol foundation](antigravity.md) now encodes private stdin prompts and parses one-turn lifecycle/session evidence with offline fixtures. It is unreleased and is not a registered adapter. Structured permission handling, detached runtime integration, setup and live verification remain open.
+An [internal protocol foundation](antigravity.md) encodes private stdin prompts, parses one-turn lifecycle/session evidence, and adds an ACP permission gate, a saved interaction hold and an unregistered detached runner. It is unreleased and tested only with offline fixtures and a stand-in agent; Antigravity itself has never been run, and no adapter is registered, so no loop can select it. A verified permission contract, registration, setup and live verification remain open.
 
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents print mode and machine-readable output. The [CLI reference](https://antigravity.google/docs/cli/reference/) documents conversation-ID resume. Authentication, cancellation, permission state, and structured quota reporting still require verification for this integration.
 

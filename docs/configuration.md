@@ -143,7 +143,7 @@ loop:
     max_sends: 20
 ```
 
-At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns and downtime. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran (beyond one usual interval) or in which the connectivity check found the network down. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
 
 ## window
 
@@ -171,7 +171,7 @@ The re-prompt budget resets when the session is seen idle, or when it is active 
 
 ## network
 
-The connectivity check made before an error re-prompt, a handoff and fallback probes. See [network outages](operations.md#network-outages).
+The connectivity check made before an error re-prompt, a handoff, a stall nudge and fallback probes, among the situations listed under network outages. See [network outages](operations.md#network-outages).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -192,7 +192,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait` and `child_error` are unreleased source) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
@@ -206,4 +206,4 @@ Each tick prints one JSON line:
 {"at":"2026-11-09T12:00:00Z","loop":"example-loop","target":"primary","control":"enabled","state":"error","errorClass":"rate_limit","action":"handoff","reason":"error: rate_limit","window":"no window configured","handoff":{"from":"primary","to":"codex-thread","reason":"rate_limit","tried":["codex-thread"]}}
 ```
 
-`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, or `handoff`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
