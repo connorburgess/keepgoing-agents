@@ -132,9 +132,10 @@ func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Deci
 // to carry it on, so it is sent as its own short notice-only message, the
 // same one the extra wake for errored children uses. It never contains the
 // task, so it cannot stack task prompts. It is one more send against the
-// allowance. Where the rule gives a re-prompt no notice, this sends nothing.
+// allowance. Where the re-prompt would have carried no notice, because no
+// child has newly entered error, this sends nothing.
 func (t *tick) childNoticeAfterRetry(a adapter.Adapter, d decide.Decision) error {
-	childErrors := childErrorNote(t.decisionInput, d)
+	childErrors := decide.ChildErrorNote(t.decisionInput, d)
 	if childErrors == 0 {
 		return nil
 	}

@@ -83,3 +83,45 @@ func TestTickTimeoutMustFitOneScheduledProbe(t *testing.T) {
 		}
 	}
 }
+
+// The connectivity check is a mandatory step of a check, so it may use only
+// what tick_timeout has beyond the minimum. A file with the smallest
+// tick_timeout, valid before the check existed, still loads: the check then
+// has no room and is not made, with a warning, instead of the file being
+// rejected.
+func TestSmallTickTimeoutStillLoadsAndShrinksTheNetworkCheck(t *testing.T) {
+	for _, tc := range []struct {
+		extra   string
+		timeout time.Duration
+		warn    bool
+	}{
+		{"", 8 * time.Second, false}, // default 3m
+		{"  tick_timeout: 2m40s\n", 0, true},
+		{"  tick_timeout: 164s\n", 4 * time.Second, true},
+		{"  tick_timeout: 168s\n", 8 * time.Second, false},
+		{"  tick_timeout: 2m40s\n  network: {check: \"off\"}\n", 0, false},
+		{"  tick_timeout: 180s\n  network: {timeout: 30s}\n", 20 * time.Second, true},
+		{"  tick_timeout: 190s\n  network: {timeout: 30s}\n", 30 * time.Second, false},
+	} {
+		cfg, err := Parse([]byte(valid + tc.extra))
+		if err != nil {
+			t.Fatalf("%q no longer loads: %v", tc.extra, err)
+		}
+		if got := cfg.Loop.NetworkCheckTimeout(); got != tc.timeout || (cfg.Loop.NetworkCheckWarning() != "") != tc.warn {
+			t.Fatalf("%q: timeout %s warning %q", tc.extra, got, cfg.Loop.NetworkCheckWarning())
+		}
+	}
+	for _, bad := range []string{
+		"  network: {url: \"http://\"}\n", "  network: {url: \"https:///zen\"}\n", "  network: {url: \"example.com\"}\n",
+		"  network: {command: [\"\"]}\n", "  network: {command: [\" \", \"x\"]}\n",
+		"  network: {verify_after: 30s}\n",
+	} {
+		if _, err := Parse([]byte(valid + bad)); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	cfg, err := Parse([]byte(valid + "  network: {url: \"https://example.com/health\", verify_after: 30m}\n"))
+	if err != nil || cfg.Loop.Network.VerifyAfter.Duration != 30*time.Minute {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+}
