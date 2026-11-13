@@ -152,6 +152,22 @@ type Probe struct {
 
 // Online runs the check once.
 func (p Probe) Online(ctx context.Context) bool {
+	return p.Check(ctx) == Reached
+}
+
+// Finding is what one connectivity check found.
+type Finding string
+
+const (
+	Reached       Finding = "reached"
+	Unreachable   Finding = "unreachable"    // no answer: a transport error or a timeout
+	Redirected    Finding = "redirected"     // the answer sent the client elsewhere
+	SignInNeeded  Finding = "sign_in_needed" // 511 Network Authentication Required
+	CommandFailed Finding = "command_failed" // the configured command did not exit 0
+)
+
+// Check runs the check once and says what it found. Only Reached is online.
+func (p Probe) Check(ctx context.Context) Finding {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = 8 * time.Second
@@ -162,11 +178,24 @@ func (p Probe) Online(ctx context.Context) bool {
 	case len(p.Command) > 0:
 		cmd := exec.CommandContext(ctx, p.Command[0], p.Command[1:]...)
 		cmd.WaitDelay = 2 * time.Second
-		return cmd.Run() == nil
+		if cmd.Run() != nil {
+			return CommandFailed
+		}
+		return Reached
 	case p.URL != "":
-		return get(ctx, p.URL)
+		return fetch(ctx, p.URL)
 	}
-	return defaultOnline(ctx)
+	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
+		if shell(ctx, probe).Run() != nil {
+			return CommandFailed
+		}
+		return Reached
+	}
+	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
+	if url == "" {
+		url = DefaultURL
+	}
+	return fetch(ctx, url)
 }
 
 // client never follows a redirect: the redirect itself is the answer.
@@ -184,17 +213,26 @@ var client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) er
 // answers a plain http request in place, with a page of its own and an
 // ordinary status, cannot be told from the target; use https.
 func get(ctx context.Context, url string) bool {
+	return fetch(ctx, url) == Reached
+}
+
+func fetch(ctx context.Context, url string) Finding {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		return Unreachable
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return Unreachable
 	}
 	resp.Body.Close()
-	redirect := resp.StatusCode >= 300 && resp.StatusCode < 400
-	return !redirect && resp.StatusCode != http.StatusNetworkAuthenticationRequired
+	switch {
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return Redirected
+	case resp.StatusCode == http.StatusNetworkAuthenticationRequired:
+		return SignInNeeded
+	}
+	return Reached
 }
 
 // shell runs a command line with the platform's shell.

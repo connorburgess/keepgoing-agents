@@ -214,8 +214,9 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 			if !sawNetworkDown {
 				t.Fatalf("retrying=%t networkDown=%t", sawRetrying, sawNetworkDown)
 			}
-			// The provider is asked directly at most once per verify interval.
-			if limit := int(outage/time.Hour) + 2; verifications > limit {
+			// The provider is asked directly ever less often: about nine times
+			// in three weeks.
+			if limit := min(int(outage/time.Hour)+2, 10); verifications > limit {
 				t.Fatalf("%d verification probes in %s", verifications, outage)
 			}
 			_, offline := check(start.Add(outage + 4*time.Minute + 30*time.Second))
@@ -279,6 +280,116 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 			}
 			if outage > time.Hour && (first.After(start.Add(time.Hour)) || last.Before(start.Add(outage))) {
 				t.Fatalf("the offline period is not retained as one span: %v to %v of %s", first.Sub(start), last.Sub(start), outage)
+			}
+		})
+	}
+}
+
+// The same scenario with a turn that never fails: the host sleeps in the
+// middle of a request, so BB still shows the turn as active, with no error
+// and no retry notice, for as long as the network is gone. A turn that looks
+// stalled while offline is not nudged and not held, at any length; the
+// outage is recorded; no_progress_timeout does not count it; and when the
+// network is back the turn gets stall_after of active time before a nudge.
+func TestOfflineWithAHungTurnForAnyLength(t *testing.T) {
+	for _, outage := range []time.Duration{20 * time.Minute, 4 * time.Hour, 3 * 24 * time.Hour, 21 * 24 * time.Hour} {
+		t.Run(outage.String(), func(t *testing.T) {
+			w := newWorld(t, true, true)
+			w.cfg.Loop.Progress.MaxNudges = 3
+			w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+			w.cfg.Loop.Limits.NoProgressTimeout = config.Duration{Duration: 2 * time.Hour}
+			w.cfg.Loop.Daemon.Interval = config.Duration{Duration: 10 * time.Minute}
+			w.cfg.Loop.Report = &config.Report{}
+			dir := t.TempDir()
+			t.Setenv("FAKE_BB_DIR", dir)
+			cli := filepath.Join(dir, "bb")
+			testexec.Shared(t, cli, offlineBBScript)
+			w.cfg.Loop.BB.CLI = cli
+			start := time.Date(2030, 3, 4, 9, 0, 0, 0, time.UTC)
+			for name, body := range map[string]string{
+				"show": `{"thread":{"status":"active","queuedMessageCount":0}}`,
+				"log":  fmt.Sprintf(`[{"seq":1,"createdAt":%d,"type":"turn/started","data":{"providerThreadId":"p1"}}]`, start.Add(-20*time.Minute).UnixMilli()),
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sends := func() int {
+				b, _ := os.ReadFile(filepath.Join(dir, "sends"))
+				return strings.Count(string(b), "tell ")
+			}
+			online, connectivityChecks := true, 0
+			rep := &offlineReporter{online: &online}
+			check := func(at time.Time) (Result, state.File) {
+				t.Helper()
+				opts := w.opts(at)
+				opts.NewAdapter = factory.New
+				opts.Fingerprint = func([]string) (string, error) { return "same", nil }
+				opts.Online = func(context.Context) bool { connectivityChecks++; return online }
+				opts.Reporter = rep
+				r, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatalf("%s: %v", at.Sub(start), err)
+				}
+				st, _ := state.Load(w.dir)
+				return r, st
+			}
+			for _, c := range w.cfg.FallbackSet.Candidates {
+				w.probeOK[c.ID] = true
+			}
+			// Working, checked every ten minutes, with Git last changed twenty
+			// minutes before the network drops.
+			for _, before := range []time.Duration{-20 * time.Minute, -10 * time.Minute} {
+				if r, _ := check(start.Add(before)); r.Action != "none" || r.Reason != "active" {
+					t.Fatalf("before the outage: %+v", r)
+				}
+			}
+			online = false
+			var offsets []time.Duration
+			for _, early := range []time.Duration{3 * time.Minute, 12 * time.Minute, 19 * time.Minute, 55 * time.Minute, 130 * time.Minute, 220 * time.Minute} {
+				if early < outage {
+					offsets = append(offsets, early)
+				}
+			}
+			for off, step := 7*time.Hour, 0; off < outage; off, step = off+time.Duration(5+step%4*3)*time.Hour+13*time.Minute, step+1 {
+				if off > outage/3 && off < 2*outage/3 {
+					continue
+				}
+				offsets = append(offsets, off)
+			}
+			offsets = append(offsets, outage+time.Minute, outage+4*time.Minute) // behind the portal
+			known := false
+			for _, off := range offsets {
+				r, st := check(start.Add(off))
+				ctl, _ := control.Load(w.dir)
+				if r.Action != "none" || r.Outcome != "succeeded" || ctl.AwaitingUser || sends() != 0 || st.Nudges != 0 || len(rep.types) != 0 {
+					t.Fatalf("+%s: spent or held while offline: %+v held=%t sends=%d nudges=%d reports=%v", off, r, ctl.AwaitingUser, sends(), st.Nudges, rep.types)
+				}
+				if r.Network == "down" {
+					known = true
+				} else if known {
+					t.Fatalf("+%s: the outage was forgotten while it lasted: %+v", off, r)
+				}
+			}
+			if !known || connectivityChecks == 0 {
+				t.Fatalf("the outage was never noticed (%d connectivity checks)", connectivityChecks)
+			}
+			// The portal is cleared and the hung request goes through. The
+			// turn is not nudged or held for the outage.
+			online = true
+			back := start.Add(outage + 8*time.Minute)
+			r, st := check(back)
+			if ctl, _ := control.Load(w.dir); r.Action != "none" || sends() != 0 || ctl.AwaitingUser || r.Network != "restored" || !st.NetworkDownSince.IsZero() {
+				t.Fatalf("first check after connectivity: %+v sends=%d", r, sends())
+			}
+			for _, after := range []time.Duration{10 * time.Minute, 20 * time.Minute} {
+				if r, _ := check(back.Add(after)); r.Action != "none" || r.Reason != "active" || sends() != 0 {
+					t.Fatalf("+%s after the outage: %+v", after, r)
+				}
+			}
+			// Half an hour of active time with no Git change is a stall, as ever.
+			if r, _ := check(back.Add(30 * time.Minute)); r.Action != "nudge" || sends() != 1 {
+				t.Fatalf("an ordinary stall is no longer nudged: %+v sends=%d", r, sends())
 			}
 		})
 	}

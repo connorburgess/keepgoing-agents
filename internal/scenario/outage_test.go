@@ -268,3 +268,92 @@ func noTellTo(s *Step, thread string) error {
 	}
 	return nil
 }
+
+// TestScenarioOutageHungTurn is the same outage with a turn that never
+// fails: the host sleeps in the middle of a request, so BB still shows the
+// turn as active when the network is gone. A session that looks stalled
+// while offline is neither nudged nor held; the outage is shown once it has
+// been noticed; and when the network is back the turn is not nudged for the
+// time it could not work.
+func TestScenarioOutageHungTurn(t *testing.T) {
+	t.Parallel()
+	for _, o := range outages {
+		t.Run(o.name, func(t *testing.T) {
+			t.Parallel()
+			w := NewWorld(t, scenarioStart)
+			w.Init("await_user", "complete", "stop")
+			primary := w.Thread(primaryThread)
+
+			w.Control("enable")
+			w.Advance(time.Minute)
+			s := w.Tick()
+			w.Check(s, "first wake", all(action(s, "wake"), sentExactly(s, Send{Kind: "tell", Thread: primaryThread, Mode: "auto"})))
+			w.Advance(4 * time.Minute)
+			s = w.Tick()
+			w.Check(s, "working", all(action(s, "none"), nothingSent(s)))
+
+			// The network drops mid-turn and the turn hangs, still active.
+			w.Advance(2 * time.Minute)
+			drop := w.Now
+			w.Net.Offline()
+			noticed := false
+			for _, at := range o.checks {
+				w.At(drop.Add(at))
+				s = w.Tick()
+				w.Check(s, "offline with a hung turn: nothing sent, no hold, no report", all(action(s, "none"), nothingSent(s), holds(s), noReports(s)))
+				if s.Tick["network"] == "down" {
+					noticed = true
+				} else if noticed {
+					w.Failf(s, "the outage was noticed and then forgotten while it lasted: network %v", s.Tick["network"])
+				}
+			}
+			if o.length >= 4*time.Hour && !noticed {
+				w.Failf(s, "the outage was never shown in %s offline", o.length)
+			}
+
+			// Behind the captive portal the loop still waits.
+			w.At(drop.Add(o.length))
+			w.Net.Portal()
+			for _, d := range []time.Duration{time.Minute, 2 * time.Minute} {
+				w.Advance(d)
+				s = w.Tick()
+				w.Check(s, "behind the portal: nothing sent, no hold", all(action(s, "none"), nothingSent(s), holds(s)))
+			}
+
+			// The portal clears and the hung request goes through.
+			w.Advance(3 * time.Minute)
+			w.Net.Online()
+			w.Advance(time.Minute)
+			s = w.Tick()
+			w.Check(s, "not nudged for the time the network was down", all(action(s, "none"), nothingSent(s), holds(s)))
+			w.Advance(10 * time.Minute)
+			s = w.Tick()
+			w.Check(s, "still not nudged ten minutes on", all(action(s, "none"), nothingSent(s), holds(s)))
+
+			w.Advance(5 * time.Minute)
+			w.Commit("feat: fictional work after the outage")
+			primary.FinishTurn()
+			s = w.AgentRuns("complete", "--note", "Fictional task verified")
+			w.Check(s, "complete", all(exit(s, 0), holds(s, "completed"), reported(s, "keepgoing.complete")))
+
+			var toPrimary []Send
+			var reports []Report
+			for _, st := range w.Journal {
+				reports = append(reports, st.Reports...)
+				for _, m := range st.Sent {
+					toPrimary = append(toPrimary, Send{Kind: m.Kind, Thread: m.Thread, Mode: m.Mode})
+				}
+			}
+			var err error
+			if fmt.Sprint(toPrimary) != fmt.Sprint([]Send{{Kind: "tell", Thread: primaryThread, Mode: "auto"}}) {
+				err = fmt.Errorf("the agent received %s", describeSends(toPrimary))
+			}
+			w.Check(s, "the agent receives one thing in the whole journey: the wake", err)
+			err = nil
+			if got := reportTypes(reports); fmt.Sprint(got) != fmt.Sprint([]string{"keepgoing.complete"}) {
+				err = fmt.Errorf("reported %v", got)
+			}
+			w.Check(s, "the only report in the whole journey is the completion", err)
+		})
+	}
+}

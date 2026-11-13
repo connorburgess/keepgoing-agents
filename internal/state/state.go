@@ -40,37 +40,40 @@ type File struct {
 	// and FailedSince is when that run began.
 	// NetworkDownSince is when a connectivity check first failed in the
 	// current run of failures; zero once a check did not find it down.
-	// the most recent gap. They tell a long gap in which no check ran from an
-	// ordinary interval.
-	CheckInterval time.Duration `json:"checkIntervalNs,omitempty"`
-	LastCheckGap  time.Duration `json:"lastCheckGapNs,omitempty"`
-	// ActiveSince is when the target was first seen active after it was seen
-	// in error, after an outage, or after a gap with no check. The
-	// stall clock does not reach back past it. Zero means unknown.
+	// RecentCheckGaps are the times between the last few checks, newest last.
+	// Their median is the loop's usual interval, which tells a gap in which no
+	// check ran from a scheduler that is simply slow.
+	RecentCheckGaps []time.Duration `json:"recentCheckGapsNs,omitempty"`
+	// ActiveSince is the earliest moment the stall clock may count from: when
+	// the target was seen active again after an error or an outage, or the
+	// last Git change moved forward by time in which no check ran. Zero means
+	// the clock counts from the last Git change.
 	ActiveSince      time.Time `json:"activeSince,omitempty"`
 	NetworkDownSince time.Time `json:"networkDownSince,omitempty"`
 	// NetworkVerifiedAt is when the provider was last tested directly during
-	// that outage, and NetworkReportedAt when the outage was reported.
+	// that outage, NetworkVerifications how many times, and NetworkReportedAt
+	// when the outage was last reported.
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
 	// until the check itself passes.
-	NetworkVerifiedAt time.Time      `json:"networkVerifiedAt,omitempty"`
-	NetworkReportedAt time.Time      `json:"networkReportedAt,omitempty"`
-	NetworkDistrusted bool           `json:"networkDistrusted,omitempty"`
-	FailedChecks      int            `json:"failedChecks,omitempty"`
-	FailedSince       time.Time      `json:"failedSince,omitempty"`
-	HandoffDeferrals  int            `json:"handoffDeferrals,omitempty"`
-	ExactCut          map[string]int `json:"exactCut,omitempty"`
-	Fingerprint       string         `json:"fingerprint,omitempty"`
-	LastProgressAt    time.Time      `json:"lastProgressAt,omitempty"`
-	LastWakeAt        time.Time      `json:"lastWakeAt,omitempty"`
-	CheckedAt         time.Time      `json:"checkedAt,omitempty"`
-	LastState         string         `json:"lastState,omitempty"`
-	LastCheck         *Check         `json:"lastCheck,omitempty"`
-	Reprompts         int            `json:"reprompts,omitempty"`
-	Nudges            int            `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt    time.Time      `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent bool           `json:"stopSent,omitempty"`
+	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
+	NetworkVerifications int            `json:"networkVerifications,omitempty"`
+	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted    bool           `json:"networkDistrusted,omitempty"`
+	FailedChecks         int            `json:"failedChecks,omitempty"`
+	FailedSince          time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals     int            `json:"handoffDeferrals,omitempty"`
+	ExactCut             map[string]int `json:"exactCut,omitempty"`
+	Fingerprint          string         `json:"fingerprint,omitempty"`
+	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
+	LastWakeAt           time.Time      `json:"lastWakeAt,omitempty"`
+	CheckedAt            time.Time      `json:"checkedAt,omitempty"`
+	LastState            string         `json:"lastState,omitempty"`
+	LastCheck            *Check         `json:"lastCheck,omitempty"`
+	Reprompts            int            `json:"reprompts,omitempty"`
+	Nudges               int            `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt       time.Time      `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent    bool           `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`

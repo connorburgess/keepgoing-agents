@@ -268,8 +268,18 @@ func doctorNetworkCheck(ctx context.Context, r *doctorReport, l config.Loop, st 
 	case l.Network.URL != "":
 		target = "the configured URL"
 	}
-	if (netretry.Probe{URL: l.Network.URL, Command: l.Network.Command, Timeout: timeout}).Online(ctx) {
+	found := netretry.Probe{URL: l.Network.URL, Command: l.Network.Command, Timeout: timeout}.Check(ctx)
+	switch found {
+	case netretry.Reached:
 		r.add("network.check", "ok", fmt.Sprintf("The connectivity check reached %s from this process.", target), "")
+		return
+	case netretry.Redirected, netretry.SignInNeeded:
+		what := "a redirect"
+		if found == netretry.SignInNeeded {
+			what = "511 Network Authentication Required"
+		}
+		r.add("network.check", "warning", fmt.Sprintf("The connectivity check got %s from %s, which it reads as offline: a captive portal answers that way. While it does, re-prompts, handoffs, nudges and fallback probes wait.", what, target),
+			"If this network needs a sign-in, complete it. If the target itself always redirects, point loop.network.url at an address that answers directly (redirects are never followed), or set network: {check: \"off\"}.")
 		return
 	}
 	fix := "If the network is working, this machine or this environment cannot reach the check's target (a proxy, a DNS filter, a TLS-inspecting gateway). Point loop.network at a url or command that reflects your provider's reachability, or set network: {check: \"off\"}."

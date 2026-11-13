@@ -179,7 +179,7 @@ The connectivity check made before an error re-prompt, a handoff and fallback pr
 | `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
 | `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
 | `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
-| `verify_after` | `1h` | Once the check has failed this long, and again at this interval, ask the provider directly with one probe and attempt a `network_wait` report. If the provider answers, the check is set aside for that outage. At least `1m`. |
+| `verify_after` | `1h` | Once the check has failed this long, ask the provider directly with one probe and attempt a `network_wait` report; then again after twice as long each time, up to a week. If the probe passes or is refused with `rate_limit` or `overloaded`, the check is set aside for that outage. At least `1m`. |
 
 ## report, yield, daemon
 

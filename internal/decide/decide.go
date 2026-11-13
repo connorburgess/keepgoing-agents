@@ -316,6 +316,9 @@ func Decide(in Input) Decision {
 		// silent for the patience a tracked loop would have shown (one stall
 		// interval, then every nudge interval) needs a person.
 		if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
+			if in.NetworkDown {
+				return none(NetworkDownReason)
+			}
 			return Decision{Action: AwaitUser, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
 		}
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {

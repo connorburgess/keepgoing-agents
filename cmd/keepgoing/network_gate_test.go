@@ -5,6 +5,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +147,24 @@ func TestDoctorTestsTheConnectivityCheck(t *testing.T) {
 				t.Fatalf("default probe ran=%t, want %t", err == nil, tc.probed)
 			}
 		})
+	}
+}
+
+// doctor names what a target that redirects, or asks for a network sign-in,
+// returned, since that reads as offline and a redirect is never followed.
+func TestDoctorNamesARedirect(t *testing.T) {
+	for want, status := range map[string]int{"got a redirect from the configured URL": http.StatusFound, "got 511 Network Authentication Required from the configured URL": http.StatusNetworkAuthenticationRequired} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "http://portal.example.com/sign-in")
+			w.WriteHeader(status)
+		}))
+		t.Cleanup(srv.Close)
+		f := newFixture(t)
+		networkConfig(t, f, "  network: {url: \""+srv.URL+"\"}\n")
+		_, out, _ := f.run("doctor", "--json")
+		if !strings.Contains(out, want) || !strings.Contains(out, "redirects are never followed") {
+			t.Fatalf("want %q in:\n%s", want, out)
+		}
 	}
 }
 

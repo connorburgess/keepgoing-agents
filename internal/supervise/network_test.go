@@ -225,10 +225,10 @@ func probeWorld(t *testing.T, reach func() probe.Result) (*world, *fakeAdapter, 
 }
 
 // A real outage of any length is waited out. After network.verify_after the
-// provider is asked directly, once per interval; while that probe does not
-// get through either, nothing is spent and no hold is raised, however long
-// it lasts. A report is attempted at each verification until one is
-// accepted.
+// provider is asked directly, and then again after twice as long each time,
+// up to a week; while that probe does not get through either, nothing is
+// spent and no hold is raised, however long it lasts. A report is attempted
+// at each look until one is accepted.
 func TestRealOutageIsVerifiedAndWaitedOutHoweverLong(t *testing.T) {
 	w, p, check := probeWorld(t, func() probe.Result { return probe.Result{ErrorClass: "unknown", Detail: "timeout", TimedOut: true} })
 	reports := func() int { return strings.Count(w.reportTypes(), "network_wait") }
@@ -238,26 +238,24 @@ func TestRealOutageIsVerifiedAndWaitedOutHoweverLong(t *testing.T) {
 			t.Fatalf("+%dm: %+v probes=%v", minute, r, w.probes)
 		}
 	}
-	// Checks every half hour for a day: one probe per hour at most.
+	// Checks every half hour for a day: probes at 1h, 3h, 7h and 15h.
 	for minute := 60; minute <= 24*60; minute += 30 {
 		if r, st := check(minute, false); r.Action != "none" || r.Network != "down" || st.NetworkDistrusted || st.Reprompts != 0 || len(p.sent) != 0 {
 			t.Fatalf("+%dm: %+v", minute, r)
 		}
 	}
-	if len(w.probes) != 24 || reports() != 1 {
-		t.Fatalf("verification probes=%d (want 24), reports=%d", len(w.probes), reports())
+	if len(w.probes) != 4 || reports() != 1 {
+		t.Fatalf("verification probes=%d (want 4), reports=%d", len(w.probes), reports())
 	}
-	// Then three weeks of occasional checks, hours apart: still nothing but
-	// one probe per check, and no hold.
-	checks := 0
+	// Then three weeks of occasional checks, hours apart: a handful of
+	// probes, ever further apart, and no hold.
 	for minute := 24*60 + 7*60; minute <= 21*24*60; minute += 7*60 + 13 {
-		checks++
 		if r, st := check(minute, false); r.Action != "none" || r.Network != "down" || st.NetworkDistrusted || st.Reprompts != 0 || len(p.sent) != 0 {
 			t.Fatalf("+%dm: %+v", minute, r)
 		}
 	}
-	if len(w.probes) != 24+checks || reports() != 1 {
-		t.Fatalf("verification probes=%d (want %d), reports=%d", len(w.probes), 24+checks, reports())
+	if n := len(w.probes); n < 8 || n > 10 || reports() != 1 {
+		t.Fatalf("verification probes=%d (want about nine in three weeks), reports=%d", n, reports())
 	}
 	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
 		t.Fatal("a real outage ended in a hold")
@@ -274,16 +272,16 @@ func TestRealOutageIsVerifiedAndWaitedOutHoweverLong(t *testing.T) {
 // not hold a loop without limit. At the first verification the provider
 // answers the probe, so the check is set aside for that outage and the
 // ordinary error rules apply: no worse than before the check existed. A
-// provider that refuses for its own reason (an expired login) counts as an
-// answer too, which is how that case reaches its hold and report. Only the
-// check itself passing ends the distrust.
+// refusal that can only come from the provider answering (a rate limit,
+// overload) counts as an answer too. Only the check itself passing ends the
+// distrust.
 func TestWrongCheckTargetIsSetAsideWhenTheProviderAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		answer probe.Result
 	}{
 		{"probe passes", probe.Result{OK: true}},
-		{"provider refuses: login expired", probe.Result{ErrorClass: "auth"}},
+		{"provider refuses: overloaded", probe.Result{ErrorClass: "overloaded"}},
 		{"provider refuses: rate limited", probe.Result{ErrorClass: "rate_limit"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,13 +322,36 @@ func TestWrongCheckTargetIsSetAsideWhenTheProviderAnswers(t *testing.T) {
 	}
 }
 
+// A probe result that is not positive evidence of connectivity leaves the
+// loop waiting. A CLI can find its stored login expired without making a
+// request, so auth says nothing about the network; network and unknown say
+// nothing was reached.
+func TestProbeResultWithoutEvidenceOfConnectivityKeepsWaiting(t *testing.T) {
+	for _, class := range []string{"auth", "network", "unknown"} {
+		t.Run(class, func(t *testing.T) {
+			w, p, check := probeWorld(t, func() probe.Result { return probe.Result{ErrorClass: class} })
+			check(0, false)
+			for _, minute := range []int{60, 70, 180, 190} {
+				if r, st := check(minute, false); r.Action != "none" || r.Network != "down" || st.NetworkDistrusted || len(p.sent) != 0 {
+					t.Fatalf("+%dm: %+v", minute, r)
+				}
+			}
+			if len(w.probes) != 2 || strings.Count(w.reportTypes(), "network_wait") != 1 {
+				t.Fatalf("probes=%v reports=%s", w.probes, w.reportTypes())
+			}
+		})
+	}
+}
+
 // With no probe configured for the target the provider cannot be asked. The
 // loop keeps waiting, and the report says that it cannot tell the two cases
-// apart.
+// apart. It is repeated at each look, ever further apart, so a loop held up
+// by a blocked check target does not go silent.
 func TestOutageWithoutAProbeIsReportedAndWaitedOut(t *testing.T) {
 	w, p, check := probeWorld(t, func() probe.Result { return probe.Result{OK: true} })
 	w.cfg.Loop.Probe = config.Probe{}
-	for _, minute := range []int{0, 60, 120, 600} {
+	// Looks at 1h, 3h, 7h and 15h.
+	for minute := 0; minute <= 24*60; minute += 30 {
 		if r, _ := check(minute, false); r.Action != "none" || r.Network != "down" || len(w.probes) != 0 || len(p.sent) != 0 {
 			t.Fatalf("+%dm: %+v", minute, r)
 		}
@@ -341,7 +362,7 @@ func TestOutageWithoutAProbeIsReportedAndWaitedOut(t *testing.T) {
 			texts = append(texts, e.Text)
 		}
 	}
-	if len(texts) != 1 || !strings.Contains(texts[0], "No probe is configured for this target") {
+	if len(texts) != 4 || !strings.Contains(texts[0], "No probe is configured for this target") || !strings.Contains(texts[0], "looks again in 2h") || !strings.Contains(texts[3], "looks again in 16h") {
 		t.Fatalf("%q", texts)
 	}
 }
@@ -474,21 +495,22 @@ func TestNoProgressTimeoutCountsOnlyTimeWorkWasPossible(t *testing.T) {
 		t.Fatalf("ordinary time did not count: %+v", r)
 	}
 
-	// A three-week gap with no check at all counts as one ordinary interval
-	// (30 minutes here), not as three weeks.
+	// A three-week gap with no check at all counts as one usual interval
+	// (ten minutes here), not as three weeks.
 	_, _, run = setup()
+	run(-10*time.Minute, true)
 	run(0, true)
 	if r := run(21*24*time.Hour, true); held(r) {
 		t.Fatalf("held because the clock advanced while nothing ran: %+v", r)
 	}
-	// From there ordinary checks count again: the gap's 30 minutes plus 90
-	// more reach the two hours.
-	for m := 10; m <= 80; m += 10 {
+	// From there ordinary checks count again: the ten minutes before the
+	// gap, ten of the gap and 100 more reach the two hours.
+	for m := 10; m <= 90; m += 10 {
 		if r := run(21*24*time.Hour+time.Duration(m)*time.Minute, true); held(r) {
 			t.Fatalf("held before two hours of countable time, at +%dm: %+v", m, r)
 		}
 	}
-	if r := run(21*24*time.Hour+90*time.Minute, true); !held(r) {
+	if r := run(21*24*time.Hour+100*time.Minute, true); !held(r) {
 		t.Fatalf("the limit no longer applies after a gap: %+v", r)
 	}
 

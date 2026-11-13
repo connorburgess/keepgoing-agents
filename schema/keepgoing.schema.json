@@ -271,7 +271,7 @@
             },
             "verify_after": {
               "$ref": "#/$defs/duration",
-              "description": "after the check has failed this long, and again at this interval, test the provider with one probe and attempt a report; default 1h"
+              "description": "after the check has failed this long, test the provider with one probe and attempt a report, then again after twice as long each time up to a week; default 1h"
             }
           }
         },

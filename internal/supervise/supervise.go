@@ -372,11 +372,12 @@ func (t *tick) run() error {
 			return t.record(err)
 		}
 		t.progress = &p
-		if p.Reached(t.now, timeout) && t.networkDown() {
+		if p.Reached(t.now, timeout) && (t.networkDown() || t.outageJustEnded()) {
 			// The limit is the owner's, but it measures time in which work was
 			// possible. With the network down nothing was: the time since the
 			// last observation is credited now, and the limit is looked at
-			// again without it.
+			// again without it. The interval in which the network came back
+			// is credited too: when in it is not known.
 			if credited, err := state.CreditProgress(loop.StateDir, p, t.progressCounted, t.opts.DryRun); err == nil {
 				p, t.progressCounted = credited, 0
 				t.progress = &p
@@ -541,6 +542,12 @@ func (t *tick) run() error {
 	}
 	t.reserve = reserveSend + reserveReports + t.reserveNetwork // the fingerprint has been taken
 	unchangedFor = t.stallAfterRetry(obs, target, unchangedFor)
+	if obs.State == decide.Active && t.outageKnown() {
+		// The last check found the network down. An active session sends
+		// nothing, so nothing else would look again, and the stall clock
+		// would run through the outage.
+		t.networkDown()
+	}
 	unchangedFor = t.stallSinceActive(obs, unchangedFor)
 	sinceWake := 100 * 365 * 24 * time.Hour
 	if !t.st.LastWakeAt.IsZero() {
@@ -622,15 +629,18 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
-	// A re-prompt or a handoff needs the network, and a hold raised for an
-	// errored session (a spent re-prompt cap, an auth error) may only be the
-	// outage showing. Check connectivity now, when one of those is about to
+	// A re-prompt, a handoff or a nudge needs the network, and a hold raised
+	// for an errored session (a spent re-prompt cap, an auth error) or for a
+	// stalled one (the nudges are spent, a retry went silent) may only be the
+	// outage showing: a turn whose host slept mid-request stays active and
+	// never fails. Check connectivity now, when one of those is about to
 	// happen, and let the engine decide what a dead network means: holds that
-	// have nothing to do with the session's error still win there. A wake, a
-	// nudge or a switch-back does not trigger a check, but is not sent when
-	// this check has already found the network down.
-	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || (obs.State == decide.Error && d.Action == decide.AwaitUser)
-	sendsAnyway := d.Action == decide.Wake || d.Action == decide.Nudge || d.Action == decide.SwitchBack
+	// have nothing to do with the session still win there. An idle wake or a
+	// switch-back does not trigger a check, but is not sent when this check
+	// has already found the network down.
+	recovering := obs.State == decide.Error || obs.State == decide.Active
+	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
+	sendsAnyway := d.Action == decide.Wake || d.Action == decide.SwitchBack || obs.State == decide.Active
 	if (needsNetwork && t.networkDown()) || (sendsAnyway && t.networkGated) {
 		in.NetworkDown = true
 		t.decisionInput = in
@@ -1222,6 +1232,7 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 }
 
 func (t *tick) record(actErr error) error {
+	t.noteCheckGap()
 	t.st.CheckedAt = t.now
 	outcome := "succeeded"
 	if t.opts.DryRun {
@@ -1513,11 +1524,38 @@ func (t *tick) verifyAfter() time.Duration {
 	return config.DefaultNetworkVerifyAfter
 }
 
+// verifyMaxInterval is the longest wait between two looks at one outage.
+const verifyMaxInterval = 7 * 24 * time.Hour
+
+// verifyInterval is the wait before the next closer look at the outage:
+// verify_after before the first, then twice as long each time up to a week,
+// so three weeks offline cost nine probes and not five hundred.
+func (t *tick) verifyInterval() time.Duration {
+	d := t.verifyAfter()
+	for i := 0; i < t.st.NetworkVerifications && d < verifyMaxInterval; i++ {
+		d *= 2
+	}
+	return min(d, verifyMaxInterval)
+}
+
 // verifyDue says the outage is old enough to be looked at more closely, and
-// was not looked at within the last interval.
+// was not looked at within the current interval.
 func (t *tick) verifyDue() bool {
-	after := t.verifyAfter()
-	return t.networkDownFor() >= after && (t.st.NetworkVerifiedAt.IsZero() || t.now.Sub(t.st.NetworkVerifiedAt) >= after)
+	if t.st.NetworkVerifiedAt.IsZero() {
+		return t.networkDownFor() >= t.verifyAfter()
+	}
+	return t.now.Sub(t.st.NetworkVerifiedAt) >= t.verifyInterval()
+}
+
+// outageKnown says the previous check found the network down and believed it.
+func (t *tick) outageKnown() bool {
+	return !t.st.NetworkDownSince.IsZero() && !t.st.NetworkDistrusted
+}
+
+// outageJustEnded says this check found the network working after a check
+// that found it down.
+func (t *tick) outageJustEnded() bool {
+	return t.networkChecked && !t.networkOffline && t.outageKnown()
 }
 
 // verifyOutage keeps a failing check from holding a loop in silence, without
@@ -1525,15 +1563,24 @@ func (t *tick) verifyDue() bool {
 //
 // The check's target can be unreachable while the provider works (a DNS
 // filter, a proxy, an untrusted intercepting gateway). So the provider is
-// asked directly, with the one exact probe a switch-back would use. A probe
-// that passes, or that the provider refuses for a reason of its own (a rate
-// limit, an expired login, overload), shows the network works: the check is
-// set aside for this outage and the ordinary rules apply, which is also how
-// an expired login reaches its hold and its report. A probe that does not get
-// through leaves the loop waiting, however long the outage lasts.
+// asked directly, with the one exact probe a switch-back would use. Only
+// positive evidence that the provider was reached sets the check aside for
+// this outage:
 //
-// A report is attempted at the same interval until one is accepted. In a
-// real outage it cannot be delivered and nothing depends on it.
+//   - the probe passes;
+//   - rate_limit or overloaded: the provider's own answer to a request that
+//     reached it. No CLI produces either without a response.
+//
+// Everything else leaves the loop waiting, however long the outage lasts:
+// network and unknown say nothing was reached, and auth is not evidence
+// either way, because a CLI can find its stored login expired without making
+// a request. An expired login with a working network is not held up by this:
+// the connectivity check passes then, and the auth hold is reached as usual.
+//
+// The wait between looks doubles, up to a week. A report is attempted at
+// each look until one is accepted; with no probe configured, where keepgoing
+// cannot tell a real outage from a blocked check target, it is repeated at
+// every look so the loop never goes silent.
 func (t *tick) verifyOutage() {
 	_, agent := t.resolve(t.st.Target())
 	c := t.loop.PrimaryCandidate()
@@ -1560,25 +1607,27 @@ func (t *tick) verifyOutage() {
 		tested = true
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: probe.Exact, OK: r.OK, ErrorClass: r.ErrorClass, Detail: "connectivity verification"})
 		switch decide.ErrorClass(r.ErrorClass) {
-		case decide.ErrRateLimit, decide.ErrAuth, decide.ErrOverloaded:
+		case decide.ErrRateLimit, decide.ErrOverloaded:
 			r.OK = true // the provider answered: the network works
 		}
 		if r.OK {
 			t.st.NetworkDistrusted, t.networkGated = true, false
 			t.st.NetworkVerifiedAt = t.now
+			t.st.NetworkVerifications++
 			return
 		}
 	}
 	t.st.NetworkVerifiedAt = t.now
-	if !t.st.NetworkReportedAt.IsZero() {
+	t.st.NetworkVerifications++
+	if tested && !t.st.NetworkReportedAt.IsZero() {
 		return
 	}
 	how := "A direct probe of the provider did not get through either, so this looks like a real outage."
 	if !tested {
 		how = "No probe is configured for this target, so keepgoing cannot tell a real outage from a check target this machine cannot reach."
 	}
-	text := fmt.Sprintf("%s: keepgoing's connectivity check has failed for %s, so re-prompts, handoffs and fallback probes are waiting. %s If the network is in fact working, run `keepgoing doctor` and review loop.network. keepgoing keeps waiting and looks again every %s.",
-		t.loop.Name, t.networkDownFor().Truncate(time.Minute), how, t.verifyAfter())
+	text := fmt.Sprintf("%s: keepgoing's connectivity check has failed for %s, so re-prompts, handoffs and fallback probes are waiting. %s If the network is in fact working, run `keepgoing doctor` and review loop.network. keepgoing keeps waiting and looks again in %s.",
+		t.loop.Name, t.networkDownFor().Truncate(time.Minute), how, t.verifyInterval())
 	ctx, cancel, ok := t.reportContext("network_wait", text)
 	if !ok {
 		return
@@ -1586,34 +1635,69 @@ func (t *tick) verifyOutage() {
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: "network_wait", Loop: t.loop.Name, Text: text, At: t.now,
 		Data: map[string]any{"downSince": t.st.NetworkDownSince, "providerTested": tested}}); err != nil {
-		t.warn("report network_wait: %v; it is attempted again at the next verification", err)
+		t.warn("report network_wait: %v; it is attempted again at the next look", err)
 		return
 	}
 	t.st.NetworkReportedAt = t.now
 }
 
-// ordinaryGap is the longest time between two checks that is still an
-// ordinary interval: half an hour, or three times daemon.interval if that is
-// longer. keepgoing does not know an external scheduler's cadence, so
-// daemon.interval stands for it; a scheduler slower than every half hour
-// should have daemon.interval set to its own interval. Zero, for a loop built
-// without defaults, means there is nothing to judge by.
-func (t *tick) ordinaryGap() time.Duration {
-	interval := t.loop.Daemon.Interval.Duration
-	if interval <= 0 {
+// Cadence. A gap between two checks is ordinary when it is no more than
+// missedGapFactor times the loop's usual interval, and the usual interval is
+// what the loop itself has shown: the longest of its last cadenceWindow gaps,
+// or daemon.interval if that is longer. Before the loop has shown any gap
+// there is nothing to judge by, and no gap is judged. So a scheduler that
+// runs every hour, or at uneven times, is not mistaken for a host that
+// sleeps, whatever daemon.interval says. The longest gap and not a typical
+// one, because a check run by hand between two scheduled ones must not make
+// the scheduled interval look like an outage.
+const (
+	cadenceWindow   = 5
+	missedGapFactor = 3
+)
+
+// usualInterval is the loop's usual time between checks. Zero means there is
+// nothing to judge a gap by.
+func (t *tick) usualInterval() time.Duration {
+	if len(t.st.RecentCheckGaps) == 0 {
 		return 0
 	}
-	return max(30*time.Minute, 3*interval)
+	usual := t.loop.Daemon.Interval.Duration
+	for _, g := range t.st.RecentCheckGaps {
+		usual = max(usual, g)
+	}
+	return usual
 }
 
 // missedTime is the part of the time since the previous check, of any kind,
-// in which no check ran.
+// in which no check ran although one was expected: the host slept or the
+// scheduler was stopped. It is the excess over the usual interval, for a gap
+// longer than missedGapFactor usual intervals, and zero otherwise.
 func (t *tick) missedTime() time.Duration {
-	ordinary := t.ordinaryGap()
-	if ordinary == 0 || t.st.CheckedAt.IsZero() {
+	usual := t.usualInterval()
+	if usual <= 0 || t.st.CheckedAt.IsZero() {
 		return 0
 	}
-	return max(time.Duration(0), t.now.Sub(t.st.CheckedAt)-ordinary)
+	gap := t.now.Sub(t.st.CheckedAt)
+	if gap <= missedGapFactor*usual {
+		return 0
+	}
+	return gap - usual
+}
+
+// noteCheckGap records the time since the previous check for usualInterval.
+// A gap judged to hold missed time is recorded as the longest ordinary one,
+// so an outage does not pass for the loop's cadence, while a scheduler that
+// has really slowed down is learned within a few checks.
+func (t *tick) noteCheckGap() {
+	if t.st.CheckedAt.IsZero() || !t.now.After(t.st.CheckedAt) {
+		return
+	}
+	gap := t.now.Sub(t.st.CheckedAt)
+	if usual := t.usualInterval(); usual > 0 {
+		gap = min(gap, missedGapFactor*usual)
+	}
+	gaps := append(t.st.RecentCheckGaps, gap)
+	t.st.RecentCheckGaps = gaps[max(0, len(gaps)-cadenceWindow):]
 }
 
 // noteNetwork records the state of the outage after a check.
@@ -1624,11 +1708,18 @@ func (t *tick) noteNetwork() {
 	switch {
 	case t.networkChecked && !t.networkOffline:
 		// The check passed: the outage, its report and any distrust are over.
+		// When in the last interval the network came back is not known, so
+		// none of it counts toward no_progress_timeout.
+		if t.outageKnown() && t.progress != nil {
+			if p, err := state.CreditProgress(t.loop.StateDir, *t.progress, t.progressCounted, false); err == nil {
+				t.progress, t.progressCounted = &p, 0
+			}
+		}
 		if !t.st.NetworkDownSince.IsZero() {
 			t.res.Network, t.res.NetworkDownFor = "restored", t.networkDownFor().Truncate(time.Second).String()
 			t.warn("network back: the connectivity check passed after failing for %s", t.networkDownFor().Truncate(time.Second))
 		}
-		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt, t.st.NetworkDistrusted = time.Time{}, time.Time{}, time.Time{}, false
+		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt, t.st.NetworkDistrusted, t.st.NetworkVerifications = time.Time{}, time.Time{}, time.Time{}, false, 0
 	case t.networkOffline:
 		if t.st.NetworkDownSince.IsZero() {
 			t.st.NetworkDownSince = t.now
@@ -1651,7 +1742,7 @@ func (t *tick) noteNetwork() {
 	case t.sessionRecovered:
 		// No check was needed and the session is not in error: whatever the
 		// last check said, nothing is waiting for the network now.
-		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt = time.Time{}, time.Time{}, time.Time{}
+		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt, t.st.NetworkVerifications = time.Time{}, time.Time{}, time.Time{}, 0
 	}
 }
 
@@ -1741,18 +1832,29 @@ func (t *tick) releaseNetworkReserve() {
 }
 
 // stallSinceActive keeps the stall clock from counting time in which the
-// session could not have been working: while it was in error, while the
-// network was down, and while no check ran. After any of those the clock
-// starts when the session is seen active again, not at the last Git change
-// before the outage. A session woken from idle is timed as before, from its
-// last Git change, with min_wake_interval spacing the nudge from the wake.
+// session could not have been working. On positive evidence of that, the
+// clock restarts when the session is seen active again: it was in error at
+// the last check, or a connectivity check found the network down at the last
+// check or at this one. Where only a gap with no check is known, the clock is
+// paused for the missed time and not restarted. A session woken from idle is
+// timed as before, from its last Git change, with min_wake_interval spacing
+// the nudge from the wake.
 func (t *tick) stallSinceActive(obs decide.Observation, unchanged time.Duration) time.Duration {
 	since := t.st.ActiveSince
 	switch {
 	case obs.State != decide.Active:
 		since = time.Time{}
-	case t.st.LastState == string(decide.Error) || t.missedTime() > 0 || t.networkGated:
+	case t.st.LastState == string(decide.Error) || t.networkGated || t.outageKnown():
 		since = t.now
+	default:
+		if missed := t.missedTime(); missed > 0 {
+			if changed := t.now.Add(-unchanged); since.Before(changed) {
+				since = changed
+			}
+			if since = since.Add(missed); since.After(t.now) {
+				since = t.now
+			}
+		}
 	}
 	if !t.opts.DryRun {
 		t.st.ActiveSince = since
