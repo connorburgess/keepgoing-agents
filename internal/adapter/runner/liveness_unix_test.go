@@ -4,6 +4,7 @@ package runner
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,5 +202,65 @@ func TestConcurrentStartsNeverRunTwoAgentsAtOnce(t *testing.T) {
 		if runs := len(lines) / 2; started < 1 || runs < started || runs > 2 || len(lines)%2 != 0 {
 			t.Fatalf("round %d: %d starts reported success and the agent ran %d times: %v", i, started, runs, lines)
 		}
+	}
+}
+
+// When the previous turn's exit code cannot be removed, Start refuses. It
+// used to go on: the new turn then read as finished, with the old code,
+// before it had run. Here the directory is read-only and its files writable.
+func TestStartRefusesWhenThePreviousExitCodeCannotBeRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	log := filepath.Join(t.TempDir(), "runs")
+	cli := fakeCLI(t, "echo run >> '"+log+"'; echo first; exit 7")
+	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "first prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := waitPhase(t, d, Finished)
+	before := map[string]string{}
+	for _, name := range []string{"run.json", "exit", "stdout", "prompt"} {
+		b, err := os.ReadFile(d.path(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = string(b)
+	}
+	if err := os.Chmod(string(d), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			os.Chmod(string(d), 0o700)
+		}
+	}
+	defer restore()
+	err := d.Start([]string{cli}, filepath.Dir(string(d)), "second prompt", nil)
+	var none notSpawned
+	if !errors.As(err, &none) {
+		t.Fatalf("Start with an exit code it could not remove returned %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	for name, want := range before {
+		if got, _ := os.ReadFile(d.path(name)); string(got) != want {
+			t.Errorf("%s changed to %q", name, got)
+		}
+	}
+	if runs, _ := os.ReadFile(log); string(runs) != "run\n" {
+		t.Fatalf("the agent ran %q; the refused start must not run it", runs)
+	}
+	if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 7 || st.Record.StopKey != first.Record.StopKey {
+		t.Fatalf("the earlier turn reads as %+v %v", st, err)
+	}
+	// Once the directory can be written again a start runs normally.
+	restore()
+	if err := d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Dir(string(d)), "third prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if st := waitPhase(t, d, Finished); st.ExitCode != 0 || st.Record.StopKey == first.Record.StopKey {
+		t.Fatalf("%+v", st)
 	}
 }

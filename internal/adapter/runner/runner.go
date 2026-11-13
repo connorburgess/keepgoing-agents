@@ -380,8 +380,13 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 		return "", notSpawned{err}
 	}
 	defer setup.Release()
+	// The previous turn's exit code goes first. If it cannot be removed the
+	// new turn would read as finished, with that code, before it had run: so
+	// refuse, with everything still as it was.
 	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName} {
-		os.Remove(d.path(name))
+		if err := os.Remove(d.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", notSpawned{errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))}
+		}
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
 		return "", notSpawned{err}
