@@ -106,6 +106,8 @@ keepgoing enable -c loop.yaml --routine example-scheduler/nightly/2026-11-13
 keepgoing resume -c loop.yaml --routine example-scheduler/nightly/2026-11-14
 ```
 
+A BB script automation that runs `keepgoing tick` should pass `--routine bb-automation/<automation id>`: `status`, `doctor`, the panel and the `check_gap` report then name that automation when checks stop. The check also records the identity it was started with in `state.json` (`startedBy`), replaced at every check.
+
 The value is `source/routine` or `source/routine/invocation`. Each part is 1–128 letters, digits and `. _ : @ -`, starting with a letter or digit. A timestamp with `+00:00`, a name with a space or an ID containing `/` does not fit; pass an identifier that does. `start`, `daemon` and the other commands do not take the flag.
 
 A value that cannot be recorded, including an empty one, is handled by what the command is for:

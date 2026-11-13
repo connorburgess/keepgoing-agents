@@ -61,6 +61,10 @@ type clientRuntime struct {
 	StaleAfter       string     `json:"staleAfter"`
 	BinaryComparison string     `json:"binaryComparison"`
 	CheckedAt        *time.Time `json:"checkedAt,omitempty"`
+	// Overdue is the overdue rule's verdict (see state.ScheduleOf), with
+	// what to say about it.
+	Overdue        bool   `json:"overdue"`
+	OverdueMessage string `json:"overdueMessage,omitempty"`
 }
 type clientCheck struct {
 	At      *time.Time `json:"at,omitempty"`
@@ -278,7 +282,8 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 				issue("window_unavailable")
 			} else {
 				rt := describeRuntime(ctl, st, in, configured, now, staleAfter, version)
-				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt)}
+				sch := describeSchedule(st, cfg.Loop.Daemon.Interval.Duration, ctl.Enabled, now)
+				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt), sch.Overdue, sch.Message}
 			}
 		}
 		if c := st.LastCheck; c != nil {

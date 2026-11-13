@@ -1,7 +1,7 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
-import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails } from "./status-details.ts";
+import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails, scheduleSchema } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -31,6 +31,7 @@ const statusSchema = z.object({
     .passthrough(),
   redundancy: z.object({ healthy: z.array(z.string()), distinct: z.number(), min: z.number(), meets: z.boolean() }).optional(),
   runtime: runtimeSchema.optional(),
+  schedule: scheduleSchema.optional(),
   daemon: daemonSchema.optional(),
   targetConfigured: z.boolean().optional(),
   primaryAgent: agentRef,
@@ -153,6 +154,7 @@ export default async function plugin(bb: BbPluginApi) {
       targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
       targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
       daemon: s.daemon ?? null, lastCheck: s.state.lastCheck ?? null,
+      schedule: s.schedule ?? null,
     },
     loop: s.loop,
     configPath,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"runtime"
 	"unicode/utf8"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -112,6 +113,9 @@ type initNextCommands struct {
 	Doctor          []string `json:"doctor"`
 	StartForeground []string `json:"startForeground"`
 	StartBackground []string `json:"startBackground"`
+	// Service is the recommended way to keep checks running, on macOS and
+	// Linux: a service the operating system restarts. Absent elsewhere.
+	Service []string `json:"service,omitempty"`
 }
 
 func initTargetOf(a config.Agent) initTarget {
@@ -134,6 +138,7 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 			Doctor:          []string{keepgoingExecutable(), "doctor", "--json", "-c", cfgPath},
 			StartForeground: []string{keepgoingExecutable(), "start", "--foreground", "-c", cfgPath},
 			StartBackground: []string{keepgoingExecutable(), "start", "--background", "-c", cfgPath},
+			Service:         serviceInstallCommand(cfgPath),
 		},
 		Limitations: []string{
 			initBindingNotice(o),
@@ -177,4 +182,13 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 		return exitFailed
 	}
 	return exitOK
+}
+
+// serviceInstallCommand is `keepgoing service install` for the configuration, where
+// a managed service exists (macOS and Linux).
+func serviceInstallCommand(cfgPath string) []string {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return nil
+	}
+	return []string{keepgoingExecutable(), "service", "install", "-c", cfgPath}
 }

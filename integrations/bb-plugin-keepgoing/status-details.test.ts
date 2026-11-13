@@ -68,3 +68,13 @@ test("goal status excludes private fields and malformed metadata stays unavailab
   assert.equal(goalDetails(valid, "PRIVATE ERROR").goalState, "unavailable");
   assert.match(goalLabel(null, goalDetails(undefined, undefined).goalState), /older CLI/);
 });
+
+test("an overdue schedule is shown with its message, and a running one says so", () => {
+  const base = { readAt: "2030-01-01T00:00:00Z", completed: false, targetThread: "thr_example", targetAdapter: "bb", targetConfigured: true, runtime: null, daemon: null, lastCheck: null };
+  const overdue = diagnosticLines({ ...base, schedule: { overdue: true, message: "no check has run for 3h10m; checks normally run every 10m, so the loop's scheduler may have stopped" } }, "primary", true);
+  assert.ok(overdue.includes("Schedule: no check has run for 3h10m; checks normally run every 10m, so the loop's scheduler may have stopped"));
+  const running = diagnosticLines({ ...base, schedule: { overdue: false } }, "primary", true);
+  assert.ok(running.includes("Schedule: checks are running at their usual interval"));
+  const older = diagnosticLines(base, "primary", true);
+  assert.ok(older.some((line) => line.startsWith("External scheduler health: not inspected")));
+});

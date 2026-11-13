@@ -228,6 +228,17 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	if stateErr == nil {
+		if ctl, err := control.Load(cfg.Loop.StateDir); err == nil {
+			sch := describeSchedule(st, cfg.Loop.Daemon.Interval.Duration, ctl.Enabled, r.CheckedAt)
+			switch {
+			case sch.Overdue:
+				r.add("supervisor.schedule", "warning", "This loop's scheduler may have stopped: "+sch.Message+".", "Start the scheduler again. A BB automation that failed repeatedly may have disabled itself (doctor --bb-automation <id> --bb-project <id> inspects one); `keepgoing service install` runs checks from a service the operating system restarts.")
+			case sch.LastCheckAt != nil && ctl.Enabled:
+				r.add("supervisor.schedule", "ok", "Checks are running: the last one was "+sch.For+" ago.", "")
+			}
+		}
+	}
 	if _, err := state.LoadLedger(cfg.Loop.StateDir); err != nil {
 		r.add("supervisor.send_record", "error", "The send record sends.json cannot be read, so no check sends anything.", "Restore sends.json from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends.")
 	} else {

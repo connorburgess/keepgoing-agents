@@ -218,6 +218,7 @@ type tick struct {
 	briefHold           []control.Brief // briefs named by a hold already raised for them
 	stopRequested       bool            // a stop is requested in control.json
 	stopsMade           []string        // targets this check sent a stop to
+	enabled             bool            // the loop is enabled in control.json
 	stBeforeRecords     state.File      // state before the records were handled, to undo them
 	quietFailure        bool            // a failure already reported by an earlier check
 	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
@@ -521,12 +522,14 @@ func (t *tick) run() error {
 	}
 	res.Control = ctl.Summary()
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
+	t.enabled = ctl.Enabled
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
 	t.incidentStateLoaded = true
 	t.savedSends = t.st.SendsRecorded
+	t.reportCheckGap()
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -1657,6 +1660,11 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if r := t.opts.Routine; r.Source != "" {
+		t.st.StartedBy = &state.Routine{Source: r.Source, Routine: r.Routine}
+	} else {
+		t.st.StartedBy = nil // started without a scheduler identity
+	}
 	if t.st.UnconfirmedReprompts > t.st.Reprompts {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
@@ -1826,6 +1834,40 @@ func copyState(f state.File) state.File {
 	return c
 }
 
+// reportCheckGap sends one check_gap report when this check is the first
+// after the loop went overdue: no check had run for longer than the overdue
+// rule allows (state.ScheduleOf), so its scheduler had probably stopped. It is
+// sent once per gap, keyed on the time of the last check before it, and
+// recorded before it is sent. status, doctor and the panel say the same while
+// the gap lasts; this tells the owner afterwards if nobody was looking.
+func (t *tick) reportCheckGap() {
+	sch := state.ScheduleOf(t.st, t.loop.Daemon.Interval.Duration, t.enabled, t.now)
+	if !sch.Overdue || t.opts.DryRun || t.st.CheckGapReported.Equal(sch.LastCheckAt) || !t.loop.Report.ReportsEvent(checkGapEvent) {
+		return
+	}
+	// The gap is reported by the first check after it, or not at all: the
+	// next check finds a recent check before it.
+	if !t.canReport(checkGapEvent) {
+		t.warn("report %s not sent: no time is left in this check", checkGapEvent)
+		return
+	}
+	key := sch.LastCheckAt.UTC().Format(time.RFC3339Nano)
+	if _, err := t.reserveSend("report:check_gap", t.st.Target(), key); err != nil {
+		t.warn("report check_gap not sent, because the record of sending it could not be saved: %v", err)
+		return
+	}
+	t.st.CheckGapReported = sch.LastCheckAt
+	text := fmt.Sprintf("%s: no check ran from %s to %s (%s, where checks normally run every %s), so the loop's scheduler had probably stopped. Checks are running again.",
+		t.loop.Name, sch.LastCheckAt.UTC().Format(time.RFC3339), t.now.UTC().Format(time.RFC3339), sch.For.Truncate(time.Minute), sch.Usual)
+	if r := sch.StartedBy; r != nil && r.Source == state.RoutineBBAutomation {
+		text += " The BB automation that runs it (" + r.Routine + ") may have disabled itself and been turned back on."
+	}
+	t.report(checkGapEvent, text, map[string]any{"lastCheckAt": sch.LastCheckAt, "gap": sch.For.String(), "usual": sch.Usual.String()})
+}
+
+// checkGapEvent is the report event for a gap in which no check ran.
+const checkGapEvent = "check_gap"
+
 // reserveReport records a report that is sent once, whose record of having
 // been sent is otherwise only saved at the end of the check, before it is
 // delivered: a supervisor stopped while it is delivered does not send it
@@ -1900,6 +1942,11 @@ func (t *tick) countUnrecordedSends() error {
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
+		case "report:check_gap":
+			if at, err := time.Parse(time.RFC3339Nano, p.Key); err == nil {
+				t.st.CheckGapReported = at
+			}
+			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
@@ -2267,7 +2314,7 @@ func (t *tick) verifyOutage() {
 // the scheduled interval look like an outage.
 const (
 	cadenceWindow   = 5
-	cadenceMinGaps  = 3
+	cadenceMinGaps  = state.CadenceMinGaps
 	missedGapFactor = 3
 )
 
@@ -2371,7 +2418,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true, checkGapEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget

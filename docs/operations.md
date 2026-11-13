@@ -81,11 +81,21 @@ keepgoing cannot run itself when an external scheduler stops calling it. Known w
 - The scheduler disables the job after consecutive failures or timeouts. A tick killed by the scheduler's own timeout writes nothing, so keepgoing's history simply ends.
 - The host sleeps, reboots or loses the user session.
 
-What keepgoing shows afterwards, when someone runs it:
+Nothing that has stopped can report that it stopped, so keepgoing judges it from the record, wherever the record is read. Unreleased; **fixture-tested only**.
 
-- `status` prints `history: stale` once the last check is older than the stale threshold, with the reason `no recent check; inspect the supervisor and its scheduler`. It does not query any scheduler.
+**The overdue rule.** A loop is *overdue* when it is enabled, has shown at least three gaps between checks (its fourth check, as for missed time, so a slow scheduler's first gaps are not taken for a stopped one), and no check has been recorded for more than three times its usual interval, and never less than 15 minutes. The usual interval is the longest of its last five gaps between checks, or `daemon.interval` if that is longer: the same as the [missed-time rule](#time-in-which-no-check-ran), so a scheduler that is slow but regular is never called stopped. A disabled loop is never overdue, because its scheduler may have been stopped on purpose. The next recorded check of any kind, held or not, ends it.
+
+**Who says so, with no process of its own:**
+
+- `status` prints `schedule:  no check has run for 3h10m; checks normally run every 10m, so the loop's scheduler may have stopped`, and `schedule` in `status --json` (`overdue`, `lastCheckAt`, `for`, `usual`, `threshold`, `startedBy`, `message`).
+- `doctor` adds a `supervisor.schedule` warning saying what to look at.
+- The panel lists the loop under **needs you** (kind `overdue`), so the macOS menu's badge counts it, and the BB plugin's loop card says `keepgoing: checks have stopped` with the same sentence.
+- When the record shows that the last check was started by a BB automation, all of them say so: `the BB automation that runs this loop (auto_…) may have disabled itself: check it in BB's Automations`. That needs the automation to identify itself, as `keepgoing tick … --routine bb-automation/<automation id>` (see [run discovery](run-discovery.md)); otherwise they say to check the scheduler that runs `keepgoing tick`. It is never guessed from the configuration.
 - `doctor --bb-automation <id> --bb-project <id>` reads the selected BB automation and warns `The selected automation is disabled; scheduled runs are not expected.` See [BB automation diagnostics](diagnostics.md#bb-automation-diagnostics).
-- Nothing notifies anyone. No report is sent when checks stop, because nothing is running to send it. A self-check that reports the gap on the next run is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+**After the gap.** The first check that runs after an overdue gap sends one `check_gap` report (`no check ran from <time> to <time> (3h10m, where checks normally run every 10m)…`), naming a BB automation the same way. It is sent once per gap, keyed on the last check before it, and recorded before it is sent like any [one-off report](#a-send-recorded-before-it-is-made), and makes a single attempt. It is in the default event list. Only that first check can send it: if it is not subscribed, or that check has no time left, the gap is not reported later.
+
+**The bound.** With the macOS menu running, or the panel or the BB plugin open, a person is told within the overdue threshold plus one refresh (60 seconds for the menu, 30 for the plugin). With none of them open, the `check_gap` report tells them when checks run again. A notification from the menu, so the bound holds when nobody is looking at a screen, is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
 
 Prefer `keepgoing start`, the daemon or a managed [service](services.md) where one is available: the service manager restarts it, and it does not depend on a scheduler's failure counting. If you keep an external scheduler, give its timeout a comfortable margin over `loop.tick_timeout` (below) and treat exit 75 as success.
 
@@ -106,7 +116,7 @@ Each step is either mandatory, with a fixed maximum that is reserved for it unti
 | Exact probe before a switch-back | optional | `probe.timeout` | started only when the whole timeout fits |
 | Model switch and send (wake, nudge, re-prompt or brief) | mandatory | 60s (30s per `bb` command) | reserved until the send has been made. A [handoff to a new thread](fallbacks.md#hand-off-to-a-new-conversation) uses the same 60s instead: read the place 10s, `bb thread spawn` 30s, look the thread up by title 20s. Looking for a thread whose creation is unsettled, at the start of a check, takes up to 20s out of the observation's 90s |
 | Routine reports (`probe_failed`, `degraded`, `recovered`, `wake`, `nudge`, `reprompt`) | optional | two attempts of `report.timeout` (20s) each | sent only with at least 10s free, and limited to the free time |
-| Essential reports (`await_user`, `error`, `stop`, `handoff`, `switch_back`, `complete`, `limit_wait`, `child_error`, `network_wait`) | mandatory | 30s reserved: three reports of 10s each | use free time when there is some |
+| Essential reports (`await_user`, `error`, `stop`, `handoff`, `switch_back`, `complete`, `limit_wait`, `child_error`, `network_wait`, `check_gap`) | mandatory | 30s reserved: three reports of 10s each | use free time when there is some |
 
 With the network down, each due fallback's scheduled probe ran to its 90-second timeout and was followed by a failed report, before the session was considered at all. Four due fallbacks made one check last over seven minutes, so a scheduler with a five-minute timeout killed it before it wrote anything.
 
@@ -391,7 +401,7 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait` and `child_error`, are included in the default event list on `main`; an explicit event list must include them or `all`. All four make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `check_gap` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait`, `child_error` and `check_gap`, are included in the default event list on `main`; an explicit event list must include them or `all`. All five make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 

@@ -44,6 +44,11 @@ type File struct {
 	// The longest of them is the loop's usual interval, which tells a gap in
 	// which no check ran from a scheduler that is simply slow.
 	RecentCheckGaps []time.Duration `json:"recentCheckGapsNs,omitempty"`
+	// StartedBy is the scheduler identity the last check was started with,
+	// when one was supplied with tick --routine. CheckGapReported is the last
+	// check time before a gap whose check_gap report was sent.
+	StartedBy        *Routine  `json:"startedBy,omitempty"`
+	CheckGapReported time.Time `json:"checkGapReported,omitempty"`
 	// ActiveSince is the earliest moment the stall clock may count from: when
 	// the target was seen active again after an error or an outage, or the
 	// last Git change moved forward by time in which no check ran. Zero means

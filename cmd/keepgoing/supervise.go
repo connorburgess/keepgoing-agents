@@ -363,6 +363,7 @@ type statusOut struct {
 	TaskSource       string         `json:"taskSource"`
 	TaskFile         string         `json:"taskFile,omitempty"`
 	Runtime          runtimeStatus  `json:"runtime"`
+	Schedule         scheduleStatus `json:"schedule"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
 }
@@ -639,6 +640,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
 	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+	if out.Schedule.Overdue {
+		fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
+	}
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
 	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
 	if st.Reprompts > 0 {
@@ -774,6 +778,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	out.Schedule = describeSchedule(st, l.Daemon.Interval.Duration, ctl.Enabled, now)
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()

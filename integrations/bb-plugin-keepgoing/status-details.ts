@@ -8,6 +8,9 @@ export const checkSchema = z.object({
 export const runtimeSchema = z.object({
   state: z.string(), source: z.string(), freshness: z.string(),
 });
+export const scheduleSchema = z.object({
+  overdue: z.boolean(), message: z.string().optional(),
+});
 export const daemonSchema = z.object({
   state: z.string(), phase: z.string().optional(), observedAt: z.string().optional(),
   nextCheckAt: z.string().optional(), dryRun: z.boolean().optional(), binaryComparison: z.string().optional(),
@@ -32,6 +35,7 @@ export const detailsSchema = z.object({
   readAt: z.string(), completed: z.boolean(),
   targetThread: z.string().nullable(), targetAdapter: z.string(), targetConfigured: z.boolean().nullable(),
   runtime: runtimeSchema.nullable(), daemon: daemonSchema.nullable(), lastCheck: checkSchema.nullable(),
+  schedule: scheduleSchema.nullable().optional(),
 });
 export type StatusDetails = z.infer<typeof detailsSchema>;
 
@@ -57,7 +61,9 @@ export function diagnosticLines(d: StatusDetails | undefined, target: string, su
   } else {
     lines.push(`Daemon: ${daemon?.state ?? "unavailable from this build"}; running supervisor not confirmed`);
   }
-  lines.push("External scheduler health: not inspected; a daemon reply does not establish agent health");
+  if (d.schedule?.overdue) lines.push(`Schedule: ${d.schedule.message ?? "no check has run for longer than usual; the loop's scheduler may have stopped"}`);
+  else if (d.schedule) lines.push("Schedule: checks are running at their usual interval");
+  else lines.push("External scheduler health: not inspected; a daemon reply does not establish agent health");
   const check = d.lastCheck;
   lines.push(check
     ? `Last recorded action: ${check.action} · ${check.outcome}${check.dryRun ? " · dry run" : ""} · target ${check.target} · ${dateLabel(check.at)}`
