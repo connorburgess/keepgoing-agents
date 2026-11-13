@@ -345,3 +345,22 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 @media (max-width: 52rem) {
   .notice { padding: 1.5rem 1rem 2rem; }
 }
+
+/* Changes, on a panel started with --allow-changes: one loop at a time,
+   reviewed before it is confirmed. */
+.change { display: grid; gap: 0.55rem; }
+.change.is-review { border-color: var(--attn-line); box-shadow: inset 3px 0 0 var(--attn); }
+.change h2 { margin: 0; }
+.change-line { margin: 0; max-width: 70ch; color: var(--ink); }
+.change-buttons { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.btn.is-primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btn.is-primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
+.btn:disabled { opacity: 1; cursor: progress; color: var(--ink-2); }
+.change-result { margin: 0; padding: 0.5rem 0.75rem; border-radius: 8px; max-width: 70ch; }
+.change-result.is-done { background: var(--good-soft); }
+.change-result.is-refused, .change-result.is-review_again { background: var(--sunk); }
+.change-result.is-uncertain { background: var(--warn-soft); }
+@media (forced-colors: active) {
+  .change.is-review, .change-result { border: 1px solid CanvasText; }
+  .btn.is-primary { forced-color-adjust: none; background: ButtonText; color: ButtonFace; }
+}
