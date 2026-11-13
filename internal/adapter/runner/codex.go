@@ -13,19 +13,66 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
-// Codex runs `codex exec --json` headless, one turn per Send, resuming the
-// same session. Status comes from the event stream's event types and any
+// codexSpec is `codex exec --json` headless, one turn per process, resuming
+// the same session. Status comes from the event stream's event types and any
 // structured error code, plus the exit code.
-type Codex struct {
-	cfg config.Codex
-	dir Dir
+var codexSpec = &Spec{
+	Name:         "codex",
+	Provider:     "codex",
+	DefaultCLI:   "codex",
+	AccountEnv:   "CODEX_HOME",
+	SettingNames: []string{"cli", "workdir", "model", "sandbox", "skip_git_repo_check", "extra_args", "env"},
+	Prompt:       PromptStdin,
+	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
+	Settings: func(a config.Agent) (Settings, bool) {
+		if a.Codex == nil {
+			return Settings{}, false
+		}
+		return Settings{CLI: a.Codex.CLI, Workdir: a.Codex.Workdir, Model: a.Codex.Model, Env: a.Codex.Env}, true
+	},
+	Argv: func(a config.Agent, session string) []string { return codexArgv(*a.Codex, session) },
+	Read: func(turn Status) Reading {
+		o := ParseCodexEvents(turn.Stdout)
+		if o.Evidence.Source != "" {
+			o.Evidence.ExitCode = runnerEvidence(turn).ExitCode
+		}
+		return Reading{Session: o.ThreadID, Completed: o.Completed && !o.Failed, Class: o.Class, Evidence: o.Evidence}
+	},
+	// Codex's event stream reports a usage limit only as prose. Its
+	// app-server has the structured snapshot.
+	Limits: &LimitLookup{
+		Read: func(ctx context.Context, cli string, env []string) (CodexLimits, error) {
+			return ReadCodexLimits(ctx, cli, env)
+		},
+		EvidenceSource: "codex_rate_limits", EvidenceCode: "subscription_window_blocked",
+		ProbeDetail: "account/rateLimits/read: ",
+	},
+	Probe: ProbeSpec{
+		Argv: func(cli, model, prompt string) []string {
+			argv := []string{cli, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only"}
+			if model != "" {
+				argv = append(argv, "-m", model)
+			}
+			return append(argv, prompt)
+		},
+		Judge: func(stdout []byte, code int) ProbeVerdict {
+			o := ParseCodexEvents(stdout)
+			switch {
+			case o.Completed && !o.Failed && code == 0:
+				return ProbeVerdict{OK: true, Detail: "turn.completed"}
+			case o.Failed:
+				return ProbeVerdict{Class: o.Class, Detail: "turn.failed"}
+			}
+			return ProbeVerdict{Class: decide.ErrUnknown, Detail: fmt.Sprintf("exit %d without turn.completed", code)}
+		},
+	},
 }
 
 // NewCodex returns a headless Codex adapter storing turn files in dir.
-func NewCodex(cfg config.Codex, dir string) *Codex { return &Codex{cfg: cfg, dir: Dir(dir)} }
-
-// Name implements adapter.Adapter.
-func (c *Codex) Name() string { return "codex" }
+func NewCodex(cfg config.Codex, dir string) *Headless {
+	h, _ := New(config.Agent{Adapter: codexSpec.Name, Codex: &cfg}, dir)
+	return h
+}
 
 // CodexOutcome summarises a `codex exec --json` event stream.
 type CodexOutcome struct {
@@ -91,88 +138,30 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 	return out
 }
 
-// Observe implements adapter.Adapter.
-func (c *Codex) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, err := c.dir.Status()
-	if err != nil {
-		return decide.Observation{State: decide.Unknown}, err
-	}
-	defer func() {
-		if obs.Evidence.Source == "" {
-			obs.Evidence = runnerEvidence(st)
-		}
-	}()
-	switch st.Phase {
-	case NeverRun:
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
-	case Running:
-		return decide.Observation{State: decide.Active, ErrorClass: decide.ErrNone}, nil
-	case Crashed:
-		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
-	}
-	o := ParseCodexEvents(st.Stdout)
-	if o.Evidence.Source != "" {
-		o.Evidence.ExitCode = runnerEvidence(st).ExitCode
-	}
-	c.dir.SaveSession(o.ThreadID)
-	if o.Completed && !o.Failed && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: o.Evidence}, nil
-	}
-	obs = decide.Observation{State: decide.Error, ErrorClass: o.Class, Evidence: o.Evidence}
-	// Codex's event stream reports a usage limit only as prose. Ask the
-	// app-server for the structured snapshot instead.
-	if obs.ErrorClass == decide.ErrUnknown {
-		if l, err := ReadCodexLimits(ctx, c.cfg.CLI, envList(c.cfg.Env)); err == nil && l.Blocked {
-			obs.ErrorClass, obs.ResetsAt = decide.ErrRateLimit, l.ResetsAt
-			obs.Evidence = evidence.Clean(evidence.Detail{Source: "codex_rate_limits", Code: "subscription_window_blocked", ExitCode: runnerEvidence(st).ExitCode})
-		}
-	}
-	return obs, nil
-}
-
-// Args builds the codex argv for one turn. The prompt is read from stdin.
-func (c *Codex) Args() []string {
-	args := []string{c.cfg.CLI, "exec"}
-	session := c.dir.Session()
+// codexArgv builds the codex argv for one turn. The prompt is read from stdin.
+func codexArgv(cfg config.Codex, session string) []string {
+	args := []string{cfg.CLI, "exec"}
 	if session != "" {
 		args = append(args, "resume")
 	}
 	args = append(args, "--json")
-	if c.cfg.Model != "" {
-		args = append(args, "-m", c.cfg.Model)
+	if cfg.Model != "" {
+		args = append(args, "-m", cfg.Model)
 	}
-	if c.cfg.SkipGitRepoCheck {
+	if cfg.SkipGitRepoCheck {
 		args = append(args, "--skip-git-repo-check")
 	}
-	if c.cfg.Sandbox != "" {
+	if cfg.Sandbox != "" {
 		if session != "" {
 			// resume has no --sandbox flag; set it as a config override.
-			args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", c.cfg.Sandbox))
+			args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", cfg.Sandbox))
 		} else {
-			args = append(args, "-s", c.cfg.Sandbox)
+			args = append(args, "-s", cfg.Sandbox)
 		}
 	}
-	args = append(args, c.cfg.ExtraArgs...)
+	args = append(args, cfg.ExtraArgs...)
 	if session != "" {
 		args = append(args, session)
 	}
 	return append(args, "-")
 }
-
-// Send starts a turn. A running turn cannot be steered or queued into.
-func (c *Codex) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	st, err := c.dir.Status()
-	if err != nil {
-		return err
-	}
-	if st.Phase == Running {
-		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running headless turn (%s mode)", mode)}
-	}
-	if st.Phase == Finished {
-		c.dir.SaveSession(ParseCodexEvents(st.Stdout).ThreadID)
-	}
-	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, envList(c.cfg.Env))
-}
-
-// Stop implements adapter.Adapter.
-func (c *Codex) Stop(ctx context.Context) error { return c.dir.Stop() }

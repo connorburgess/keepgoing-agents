@@ -55,6 +55,10 @@ def fixture(kind, args):
         elif command == ["thread", "tell"]:
             require(sys.stdin.read() == PRIVATE, "Unexpected fixture task.")
             value = {"ok": True}
+        elif command == ["thread", "retry"]:
+            # As BB answers for a failed turn it dispatched again by reference.
+            require(sys.stdin.read() == "", "A turn retry carried text.")
+            value = {"ok": True, "threadId": args[2], "delivery": "sent", "turnRequestId": "req_smoke1", "attempt": 2}
         elif command == ["thread", "stop"]:
             save(root / "observation.json", {"state": "idle", "errorClass": "none"})
             value = {"ok": True}

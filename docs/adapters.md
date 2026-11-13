@@ -48,7 +48,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a |
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
-| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | missing · none | missing · fixture | missing · fixture | missing · none | missing · none | missing · none |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
@@ -121,7 +121,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 
 Ask the provider to retry the failed turn itself, instead of sending a new prompt.
 
-- **BB thread:** missing, evidence none. The provider's own scheduled retry is waited for. keepgoing never asks for one.
+- **BB thread:** yes, evidence fixture. A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by keepgoing. [`TestRetryFailedTurnReadsOnlyTheStructuredResult`](../internal/adapter/bb/turn_retry_test.go) [`TestFailedTurnIsRetriedByReferenceNotPromptedAgain`](../internal/supervise/turnretry_test.go) [`TestTurnRetryAfterAnOutageOfAnyLength`](../internal/supervise/turnretry_test.go) [`TestTickRetriesAFailedBBTurnByReference`](../cmd/keepgoing/turn_retry_test.go) [operations.md#recovering-a-failed-bb-turn-by-retry](operations.md#recovering-a-failed-bb-turn-by-retry)
 - **Claude Code headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Codex headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
@@ -132,7 +132,7 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 
 Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
 
-- **BB thread:** missing, evidence none. A structured network class is recognised, but it is handled like any other error: re-prompts are spent into the outage and the loop ends on an awaiting-user hold. [`TestObserveStreamDisconnectIsNetworkAndRetrying`](../internal/adapter/bb/bb_test.go)
+- **BB thread:** missing, evidence none. A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold. [`TestObserveStreamDisconnectIsNetworkAndRetrying`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** missing, evidence fixture. An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
 - **Codex headless:** missing, evidence fixture. As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
 - **Cursor headless:** missing, evidence none. Every failure is unknown.
@@ -257,7 +257,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 - **Claude Code headless:** missing, evidence none. permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state. [configuration.md](configuration.md)
 - **Codex headless:** missing, evidence none. The sandbox setting is passed to the CLI. No typed permission state is read. [configuration.md](configuration.md)
 - **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered. [antigravity.md](antigravity.md)
+- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
 <!-- capability-matrix:end -->
 

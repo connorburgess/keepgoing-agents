@@ -345,3 +345,36 @@ func TestSchemaSixUpgradeKeepsAccounting(t *testing.T) {
 		t.Fatalf("schema %d collapsed %d dropped %d pruned %+v", j.SchemaVersion, j.Collapsed, j.Dropped, j.Pruned)
 	}
 }
+
+// The turn-retry marker is a fixed vocabulary on ticks only, and a journal
+// written before it existed cannot claim one.
+func TestTurnRetryMarkerIsTypedAndAbsentFromOlderJournals(t *testing.T) {
+	for in, want := range map[string]string{"retried": "retried", "queued": "queued", "nothing_to_retry": "nothing_to_retry", "already_queued": "already_queued", "refused": "refused", "unsupported": "unsupported", "": "none", "PRIVATE_MARKER": "none"} {
+		r := retentionTick(0)
+		r.Action, r.TurnRetry = "reprompt", in
+		if got := clean(r); got.TurnRetry != want || repeatable(got) {
+			t.Errorf("%q: %s", in, got.TurnRetry)
+		}
+	}
+	c := clean(Record{Kind: "control", CheckStartedAt: retentionStart, TurnRetry: "retried", ControlBefore: &Controls{}, ControlAfter: &Controls{}, ControlChange: &ControlChange{Operation: "pause", SaveObservedAt: retentionStart}})
+	if c.TurnRetry != "none" {
+		t.Fatal("a control save carried a turn-retry marker")
+	}
+	dir := t.TempDir()
+	r := retentionTick(0)
+	r.Action, r.TurnRetry, r.Sequence = "reprompt", "retried", 1
+	b, _ := json.Marshal(Journal{SchemaVersion: 7, NextSequence: 2, Records: []Record{r}})
+	if err := os.WriteFile(filepath.Join(dir, FileName), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Load(dir)
+	if err != nil || j.SchemaVersion != 7 || j.Records[0].TurnRetry != "none" {
+		t.Fatalf("%+v %v", j.Records, err)
+	}
+	next := retentionTick(1)
+	next.Action, next.TurnRetry = "reprompt", "queued"
+	mustAppend(t, dir, next)
+	if j = loadAccounted(t, dir); j.SchemaVersion != SchemaVersion || j.Records[0].TurnRetry != "none" || j.Records[1].TurnRetry != "queued" {
+		t.Fatalf("%+v", j.Records)
+	}
+}

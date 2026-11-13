@@ -54,11 +54,16 @@ type Adapter struct {
 	// of which decision inputs it can produce.
 	Files []string
 	// Inputs are the decide.Observation fields the adapter's code refers to.
+	// For an agent on the runner contract the shared runner (spec.go) sets
+	// the fields, so its Inputs are what its specification can produce.
 	// The decision engine can only act on what an adapter can report.
 	Inputs []string
 	// Activator and WakePoller say the adapter implements those optional
 	// interfaces.
 	Activator, WakePoller bool
+	// TurnRetrier says the adapter can ask its provider to re-run a failed
+	// turn by reference (adapter.TurnRetrier).
+	TurnRetrier bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
 }
@@ -73,21 +78,22 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/claude.go"},
+		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "codex", Title: "Codex headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/codex.go"},
+		Files:  []string{"internal/adapter/runner/codex.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "ResetsAt", "State"}},
 	{ID: "cursor", Title: "Cursor headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/cursor.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "antigravity", Title: "Antigravity", Registered: false,
-		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go"}},
+		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go",
+			"internal/adapter/runner/antigravity_runner.go", "internal/adapter/runner/antigravity_worker.go"}},
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
@@ -181,12 +187,13 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "turn_retry", Title: "Recover a failed turn: retry the turn", What: "Ask the provider to retry the failed turn itself, instead of sending a new prompt.",
 		Cells: merge(map[string]Cell{
-			"bb": {Missing, None, "The provider's own scheduled retry is waited for. keepgoing never asks for one.", nil},
+			"bb": {Yes, Fixture, "A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by keepgoing.",
+				[]Ref{t("internal/adapter/bb/turn_retry_test.go", "TestRetryFailedTurnReadsOnlyTheStructuredResult"), t("internal/supervise/turnretry_test.go", "TestFailedTurnIsRetriedByReferenceNotPromptedAgain"), t("internal/supervise/turnretry_test.go", "TestTurnRetryAfterAnOutageOfAnyLength"), t("cmd/keepgoing/turn_retry_test.go", "TestTickRetriesAFailedBBTurnByReference"), d("docs/operations.md#recovering-a-failed-bb-turn-by-retry")}},
 		}, same(Cell{Missing, None, "A re-prompt is always a new turn in the resumed session.", nil}, headless...),
 			same(Cell{Missing, None, "The contract has a resume command only.", nil}, "process"))},
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: re-prompts are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
+			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
 			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
 			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
 			"cursor":  {Missing, None, "Every failure is unknown.", nil},
@@ -269,7 +276,7 @@ var Matrix = []Behaviour{
 			"codex":   {Missing, None, "The sandbox setting is passed to the CLI. No typed permission state is read.", []Ref{d("docs/configuration.md")}},
 			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
-		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
 }
 
 // Render returns the generated part of docs/adapters.md.
