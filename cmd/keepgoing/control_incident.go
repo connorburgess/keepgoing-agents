@@ -14,10 +14,28 @@ import (
 var errControlHistory = errors.New("control saved; incident history write failed; diagnostic evidence is incomplete")
 
 func updateControlWithHistory(dir, operation string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFrom(dir, operation, "", fn, routine...)
+}
+
+// controlOrigins are where a control change can come from besides a command:
+// "panel" is the keepgoing panel's own pause, stop and resume. The history
+// records it in the operation's value ("panel_pause"), never as a field of
+// its own, because the journal is decoded strictly and a binary from before
+// that field would refuse the whole journal. Older binaries read an
+// operation value they do not know as "unavailable" instead.
+var controlOrigins = map[string]bool{"panel": true}
+
+// updateControlFrom is updateControlWithHistory for a change from origin
+// ("" for a command). The run graph is given the plain operation.
+func updateControlFrom(dir, operation, origin string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	recorded := operation
+	if controlOrigins[origin] {
+		recorded = origin + "_" + operation
+	}
 	var r incident.Record
 	f, err := control.UpdateChecked(dir, func(f *control.File) error {
 		r = incident.Record{Kind: "control", CheckStartedAt: time.Now().UTC(), Build: version,
-			ControlBefore: incident.Gate(f.Gate()), ControlChange: &incident.ControlChange{Operation: operation}}
+			ControlBefore: incident.Gate(f.Gate()), ControlChange: &incident.ControlChange{Operation: recorded}}
 		owner, generation := ownerIdentity(*f)
 		r.ControlChange.OwnerPresentBefore = f.Ownership != nil
 		if err := fn(f); err != nil {

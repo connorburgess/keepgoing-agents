@@ -225,3 +225,31 @@ func TestClientHoldLostResponseKeepsSave(t *testing.T) {
 		t.Fatal(j, err)
 	}
 }
+
+// A hold from the keepgoing panel is the same save as the command's, recorded
+// as coming from the panel; the command's own record is unchanged.
+func TestClientHoldFromThePanelIsRecordedAsSuch(t *testing.T) {
+	dir, entry := clientFixture(t)
+	for _, c := range []struct{ origin, op, recorded, phrase string }{
+		{"panel", "pause", "panel_pause", "Paused from the panel"},
+		{"", "stop", "stop", "Stop requested by a command"},
+		// Already stopped: the save is recorded, and nothing changed to word.
+		{"panel", "stop", "panel_stop", "A control change was saved; no hold changed"},
+	} {
+		r, code := applyClientHoldFrom(context.Background(), dir, entry.ID, c.op, c.origin)
+		if code != 0 || r.ControlSave != "confirmed" {
+			t.Fatalf("%+v: %d %+v", c, code, r)
+		}
+		j, err := incident.Load(entry.StateDir)
+		if err != nil || len(j.Records) == 0 {
+			t.Fatal(err)
+		}
+		last := j.Records[len(j.Records)-1]
+		if last.ControlChange == nil || last.ControlChange.Operation != c.recorded {
+			t.Errorf("%+v: recorded %+v", c, last.ControlChange)
+		}
+		if got := dockControlPhrase(last); got != c.phrase {
+			t.Errorf("%+v: %q", c, got)
+		}
+	}
+}

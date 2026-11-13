@@ -70,7 +70,7 @@ func clientResumeCommand(e env, args []string) int {
 		return exitUsage
 	}
 	// The CLI acts as the BB thread it runs in, or as nobody outside BB.
-	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, os.Getenv("BB_THREAD_ID"), time.Now, nil)
+	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, os.Getenv("BB_THREAD_ID"), "", time.Now, nil)
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(r) != nil {
 			return exitFailed
@@ -169,10 +169,10 @@ func clientResumeBinding(entry registry.Entry, cfg *config.Config, caller string
 }
 
 // caller is the BB thread the request acts as, "" for none; the ticket is
-// bound to it. afterConsume is nil in production; tests simulate process exit
+// bound to it. origin is where the change comes from, as in updateControlFrom. afterConsume is nil in production; tests simulate process exit
 // at the durable consume-before-save boundary. There is deliberately no
 // automatic recovery.
-func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, caller string, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
+func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, caller, origin string, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
 	r := clientResumeReport{clientHoldReport: clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}}
 	reject := errors.New("client resume rejected")
 	fail := func(code string) error { r.Issues = append(r.Issues, code); return reject }
@@ -246,7 +246,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		if readTransferRecord(entry.StateDir, control.FileName, &initial) != nil {
 			return fail("resume_evidence_unavailable")
 		}
-		f, err := updateControlWithHistory(entry.StateDir, "resume", func(f *control.File) error {
+		f, err := updateControlFrom(entry.StateDir, "resume", origin, func(f *control.File) error {
 			current, checked, err := binding()
 			if err != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("resume_evidence_unavailable")
