@@ -221,3 +221,6 @@ jobs:
       - name: Check the rule that decides what a change needs
         if: runner.os == 'Linux'
         run: scripts/ci-scope-test.sh
+      - name: Check the rule against large files and committed executables
+        if: runner.os == 'Linux'
+        run: scripts/check-contributions-test.sh
