@@ -197,3 +197,30 @@ func TestHeadlessLoopsInOneDirectoryAreWarnedNotRefused(t *testing.T) {
 		t.Fatalf("second claude: %d %s", code, errs)
 	}
 }
+
+// When the variables move the registry or the claims, doctor says where.
+func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
+	f := newFixture(t)
+	var out, errs bytes.Buffer
+	doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
+	var r struct {
+		Checks []doctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("%v %s", err, out.String())
+	}
+	found := map[string]string{}
+	for _, c := range r.Checks {
+		found[c.ID] = c.Message
+	}
+	if !strings.Contains(found["registry.directory"], os.Getenv(registryDirEnv)) || !strings.Contains(found["session.directory"], os.Getenv("KEEPGOING_SESSION_DIR")) {
+		t.Fatalf("%v", found)
+	}
+	t.Setenv(registryDirEnv, "")
+	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	out.Reset()
+	doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
+	if strings.Contains(out.String(), "registry.directory") || strings.Contains(out.String(), "session.directory") {
+		t.Fatal("named a directory that was not moved")
+	}
+}

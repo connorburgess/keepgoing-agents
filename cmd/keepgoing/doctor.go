@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"io"
 	"os"
 	"os/exec"
@@ -95,6 +96,13 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.Loop = cfg.Loop.Name
 	r.add("config", "ok", "Configuration and configured fallbacks validate.", "")
+	// The variables move what every command reads, so doctor says where.
+	if dir := os.Getenv(registryDirEnv); dir != "" {
+		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
+	}
+	if dir := os.Getenv(session.DirEnv); dir != "" {
+		r.add("session.directory", "ok", "KEEPGOING_SESSION_DIR is set: session claims are kept in "+dir+". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory.")
+	}
 	doctorFile(&r, "config.permissions", *path, false)
 	if cfg.Loop.Fallbacks != "" {
 		doctorFile(&r, "fallbacks.permissions", cfg.Loop.Fallbacks, false)

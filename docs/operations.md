@@ -663,7 +663,7 @@ Other loops are found two ways: the [registry](local-clients.md), and a supervis
 
 **Warnings.** `status` (a `shared:` line, and `sharedWith` in JSON), `validate`, `enable` and `start` say when another enabled loop shares any of this loop's sessions, a fallback's included, or when its current agent works in the same directory, or it tracks the same progress repository. Two headless agents of different kinds in one checkout, a Claude Code loop and a Codex loop, are two conversations, so they are warned about and not refused or claimed against each other: the hazard there is two agents editing one checkout. Lanes a loop starts are not loops and are not affected.
 
-**What this does not cover.** Loops run by different operating-system users, or with different `HOME` or `XDG_STATE_HOME`, have different claim directories and do not see each other. `KEEPGOING_SESSION_DIR` sets the claim directory explicitly; loops given different values do not see each other either.
+**What this does not cover.** Loops run by different operating-system users, or with different `HOME` or `XDG_STATE_HOME`, have different claim directories and do not see each other. `KEEPGOING_SESSION_DIR` sets the claim directory explicitly; loops given different values do not see each other either. `doctor` names the directory whenever it is set.
 
 ## One owner per loop
 
