@@ -1400,11 +1400,17 @@ func dockMaximalInput(i int) dockInput {
 	in.Chain.Primary.ID = state.Primary
 	in.Chain.Primary.Agent = cands[0].Agent
 	windows := []usageWindowView{}
+	// The longest projection sentences: a run-out time already passed, with
+	// readings ignored, and too early to project, which also brings the note.
+	longest := []projectionView{
+		{State: "projected", UsedAtReset: func() *float64 { f := 9.99; return &f }(), RunsOutAt: dockPtr(dockNow.Add(-1000 * time.Hour)), Readings: 24, Ignored: 24, SpanSeconds: 999 * 3600, now: dockNow},
+		{State: "unavailable", Reason: "too_early", Readings: 24, SpanSeconds: 999 * 3600, ResetsInSeconds: 9999 * 3600, now: dockNow},
+	}
 	for k := range 12 {
-		windows = append(windows, usageWindowView{UsageWindow: probe.UsageWindow{Key: long("window_", k), Used: 1, ResetsAt: dockPtr(dockNow.Add(time.Hour))}})
+		windows = append(windows, usageWindowView{UsageWindow: probe.UsageWindow{Key: long("window_", k), Used: 1, ResetsAt: dockPtr(dockNow.Add(time.Hour))}, Projection: longest[k%2]})
 	}
 	read := dockNow.Add(-time.Minute)
-	in.Chain.PrimaryUse = &usageView{State: "available", ObservedAt: &read, AgeSeconds: secondsSince(dockNow, read), Windows: windows}
+	in.Chain.PrimaryUse = &usageView{State: "available", ObservedAt: &read, AgeSeconds: secondsSince(dockNow, read), Windows: windows, ProbesOnly: true}
 	in.Chain.Summary = &fallbacksOut{}
 	for _, c := range cands {
 		in.Chain.Summary.Candidates = append(in.Chain.Summary.Candidates, candidateRow{ID: c.ID, Last: &probe.Result{At: dockNow.Add(-2 * time.Hour), OK: false, ErrorClass: "rate_limit"},
@@ -1437,8 +1443,9 @@ func dockMaximalInput(i int) dockInput {
 }
 
 // The largest registry, with every loop maximal, stays well inside the
-// response bound, with and without identifiers. It measured about 4.4 MB
-// with ASCII names (5.1 MB with four-byte ones, below), which dock.go and
+// response bound, with and without identifiers. It measured about 5.3 MB
+// with identifiers and ASCII names (6.0 MB with four-byte ones, below), with
+// the longest projection sentence in every usage window; dock.go and
 // docs/dock.md quote.
 func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 	inputs := make([]dockInput, dockMaxLoops)
@@ -1460,7 +1467,8 @@ func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 		}
 		l := r.Loops[0]
 		if len(l.Chain.Entries) != dockMaxChain+1 || l.Chain.More == "" || len(l.Lanes.Lanes) != dockMaxLanes || l.Lanes.Omitted == 0 || len(l.Events.Events) > dockMaxEvents ||
-			len(l.Chain.Entries[0].Usage.Windows) != dockMaxWindows || l.Away == nil || len(l.Away.Departures) > dockMaxChain+1 {
+			len(l.Chain.Entries[0].Usage.Windows) != dockMaxWindows || len(l.Chain.Entries[0].Usage.Windows[0].Projection) == 0 || l.Chain.Entries[0].Usage.ReadingsNote == "" ||
+			l.Away == nil || len(l.Away.Departures) > dockMaxChain+1 {
 			t.Errorf("caps: %d entries, %d lanes (%d omitted), %d events, %d windows", len(l.Chain.Entries), len(l.Lanes.Lanes), l.Lanes.Omitted, len(l.Events.Events), len(l.Chain.Entries[0].Usage.Windows))
 		}
 		for _, x := range r.Routes {
