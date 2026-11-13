@@ -59,6 +59,9 @@ type Adapter struct {
 	// Activator and WakePoller say the adapter implements those optional
 	// interfaces.
 	Activator, WakePoller bool
+	// TurnRetrier says the adapter can ask its provider to re-run a failed
+	// turn by reference (adapter.TurnRetrier).
+	TurnRetrier bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
 }
@@ -73,7 +76,7 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
@@ -181,12 +184,13 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "turn_retry", Title: "Recover a failed turn: retry the turn", What: "Ask the provider to retry the failed turn itself, instead of sending a new prompt.",
 		Cells: merge(map[string]Cell{
-			"bb": {Missing, None, "The provider's own scheduled retry is waited for. keepgoing never asks for one.", nil},
+			"bb": {Yes, Fixture, "A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by keepgoing.",
+				[]Ref{t("internal/adapter/bb/turn_retry_test.go", "TestRetryFailedTurnReadsOnlyTheStructuredResult"), t("internal/supervise/turnretry_test.go", "TestFailedTurnIsRetriedByReferenceNotPromptedAgain"), t("internal/supervise/turnretry_test.go", "TestTurnRetryAfterAnOutageOfAnyLength"), t("cmd/keepgoing/turn_retry_test.go", "TestTickRetriesAFailedBBTurnByReference"), d("docs/operations.md#recovering-a-failed-bb-turn-by-retry")}},
 		}, same(Cell{Missing, None, "A re-prompt is always a new turn in the resumed session.", nil}, headless...),
 			same(Cell{Missing, None, "The contract has a resume command only.", nil}, "process"))},
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: re-prompts are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
+			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
 			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
 			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
 			"cursor":  {Missing, None, "Every failure is unknown.", nil},
