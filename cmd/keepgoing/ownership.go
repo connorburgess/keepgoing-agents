@@ -145,3 +145,18 @@ func ownershipError(e env, err error) int {
 	}
 	return exitFailed
 }
+
+// invalidHoldSummary is the control state while something under the hold
+// marker's name is not a valid hold: it reads as a stop.
+const invalidHoldSummary = "stopped (invalid hold marker)"
+
+// heldSummary is the control summary of f with the hold marker applied, so
+// output never calls a loop enabled while the marker holds it.
+func heldSummary(stateDir string, f control.File) string {
+	h, err := control.LoadHold(stateDir)
+	if h != nil && err != nil {
+		return invalidHoldSummary
+	}
+	h.Apply(&f)
+	return f.Summary()
+}

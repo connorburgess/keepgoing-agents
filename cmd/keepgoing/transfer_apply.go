@@ -45,8 +45,13 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 		if !((digest == p.Before && cfg.Loop.BB.Thread == p.From) || (digest == p.After && cfg.Loop.BB.Thread == p.To)) {
 			return errors.New("configuration does not match pending transfer")
 		}
-		if allowStop && ctl.Stop {
+		// A stop kept in a valid hold marker is a stop too.
+		h, holdErr := control.LoadHold(cfg.Loop.StateDir)
+		if allowStop && (ctl.Stop || (h != nil && holdErr == nil && h.Stop)) {
 			return nil
+		}
+		if h != nil {
+			return fmt.Errorf("%w; nothing is sent meanwhile, and the hold in %s still applies after transfer recover", control.ErrTransferPending, control.HoldFileName)
 		}
 		return control.ErrTransferPending
 	}

@@ -315,7 +315,7 @@ func TestAMarkerThatHoldsNothingIsAStop(t *testing.T) {
 			if code != exitFailed || f.read("thr_primary.told") != told || f.read("probes") != probes {
 				t.Fatalf("a check with an unusable marker did work: exit %d %s\nprobes %q", code, out, f.read("probes"))
 			}
-			if _, out, _ := f.run("status"); !strings.Contains(out, "control:   stopped (control record unreadable)") || strings.Contains(out, "since never") {
+			if _, out, _ := f.run("status"); !strings.Contains(out, "control:   stopped (invalid hold marker)") || strings.Contains(out, "since never") {
 				t.Fatalf("status:\n%s", out)
 			}
 		})
@@ -538,5 +538,41 @@ func TestAPipeInPlaceOfControlJSONDoesNotHangStop(t *testing.T) {
 	}
 	if h, err := control.LoadHold(dir); err != nil || h == nil || !h.Stop {
 		t.Fatal(h, err)
+	}
+}
+
+// Something under the marker's name that is not a valid hold reads as a
+// stop, and status says so instead of showing it as a valid stop; output
+// after enable never calls a held loop enabled.
+func TestStatusAndEnableShowTheMarker(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	dir := filepath.Join(f.dir, "state")
+	if _, err := control.SaveHold(dir, false, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := f.run("enable"); code != 0 || strings.Contains(out, ": enabled") || !strings.Contains(out, "paused") {
+		t.Fatalf("enable with a pause marker: %d %s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, control.HoldFileName), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := f.run("status"); !strings.Contains(out, "control:   stopped (invalid hold marker)") || !strings.Contains(out, "is not a valid hold") {
+		t.Fatalf("status:\n%s", out)
+	}
+	_, out, _ := f.run("status", "--json")
+	var v map[string]any
+	if err := json.Unmarshal([]byte(out), &v); err != nil || v["controlState"] != "stopped (invalid hold marker)" || v["controlHoldInvalid"] != true {
+		t.Fatalf("status --json: %v %s", err, out)
+	}
+	if code, out, _ := f.run("enable"); code != 0 || !strings.Contains(out, "stopped (invalid hold marker)") {
+		t.Fatalf("enable with an invalid marker: %d %s", code, out)
+	}
+	// With control.json damaged as well, the invalid marker is still shown.
+	if err := os.WriteFile(filepath.Join(dir, control.FileName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := f.run("status"); !strings.Contains(out, "control:   stopped (invalid hold marker)") {
+		t.Fatalf("status:\n%s", out)
 	}
 }

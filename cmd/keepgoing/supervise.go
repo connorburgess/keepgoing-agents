@@ -323,11 +323,14 @@ type statusOut struct {
 	Unreadable []unreadableRecord `json:"unreadable,omitempty"`
 	// ControlHold is the hold marker, when a stop or pause had to be saved
 	// beside an unreadable control.json.
-	ControlHold     *control.Hold    `json:"controlHold,omitempty"`
-	Deadline        string           `json:"deadline,omitempty"`
-	DeadlineReached bool             `json:"deadlineReached"`
-	WorkBounds      workBoundsStatus `json:"workBounds"`
-	TickBudget      tickBudgetStatus `json:"tickBudget"`
+	ControlHold *control.Hold `json:"controlHold,omitempty"`
+	// ControlHoldInvalid is set when something under the marker's name is
+	// not a valid hold; it reads as a stop.
+	ControlHoldInvalid bool             `json:"controlHoldInvalid,omitempty"`
+	Deadline           string           `json:"deadline,omitempty"`
+	DeadlineReached    bool             `json:"deadlineReached"`
+	WorkBounds         workBoundsStatus `json:"workBounds"`
+	TickBudget         tickBudgetStatus `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -525,7 +528,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
-	if h := out.ControlHold; h != nil {
+	if out.ControlHoldInvalid {
+		fmt.Fprintf(w, "hold:      %s is not a valid hold, so it holds the loop stopped; move it aside to release it, or run resume once control.json can be read\n", control.HoldFileName)
+	} else if h := out.ControlHold; h != nil {
 		since := "an unknown time"
 		if !h.At.IsZero() {
 			since = when(h.At)
@@ -661,7 +666,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	// which, and what to do, and shows what it can. The error is still
 	// returned, so callers that need both records (the dock) skip the loop.
 	var unreadable []unreadableRecord
-	hold, _ := control.LoadHold(l.StateDir)
+	hold, holdErr := control.LoadHold(l.StateDir)
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
 		unreadable = append(unreadable, unreadableControl(err))
@@ -700,6 +705,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		case state.FileName:
 			out.Target = "unavailable"
 		}
+	}
+	if hold != nil && holdErr != nil {
+		// Something under the marker's name that is not a valid hold reads
+		// as a stop; only doctor said so before.
+		out.ControlState, out.ControlHoldInvalid = invalidHoldSummary, true
 	}
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
@@ -1022,7 +1032,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			e.errf("warning: report not delivered: %v", err)
 		}
 	}
-	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
+	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, heldSummary(dir, f))
 	if openQuestion && f.OpenQuestion != nil {
 		// The note is not repeated here; status shows it, as it shows any note.
 		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")

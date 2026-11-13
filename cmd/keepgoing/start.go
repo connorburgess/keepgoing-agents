@@ -118,7 +118,7 @@ func startForeground(e env, cfg *config.Config, path string, ready startReady) i
 		}
 		e.stderr = io.Discard // Do not accumulate daemon errors in the startup buffer.
 	} else {
-		fmt.Fprintf(e.stdout, "started %s in foreground; control: %s (Ctrl-C ends the daemon)\n", cfg.Loop.Name, f.Summary())
+		fmt.Fprintf(e.stdout, "started %s in foreground; control: %s (Ctrl-C ends the daemon)\n", cfg.Loop.Name, heldSummary(cfg.Loop.StateDir, f))
 	}
 	return daemonLoop(e, cfg, path, false, leaseOf(f), monitor)
 }

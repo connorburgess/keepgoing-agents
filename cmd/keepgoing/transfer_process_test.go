@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 )
@@ -129,5 +130,61 @@ func TestTransferProcessCrashStopRecoveryAndNewTargetOnly(t *testing.T) {
 	final, _ := os.ReadFile(filepath.Join(fixtureDir, "calls"))
 	if string(calls) != string(final) {
 		t.Fatal("old config copy touched provider")
+	}
+}
+
+// A stop kept in a valid hold marker is a stop during a pending transfer
+// too, as a stop in control.json is: the check stops the destination
+// session and tells nothing. An invalid marker lets nothing run, and the
+// refusal says the hold is kept.
+func TestAMarkerStopDuringAPendingTransfer(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(map[bool]string{true: "valid", false: "invalid"}[valid], func(t *testing.T) {
+			path, dir := transferApplyFixture(t)
+			ctl, _ := control.Load(dir)
+			ctl.Paused, ctl.Stop, ctl.Completed, ctl.AwaitingUser = false, false, false, false
+			control.Save(dir, ctl)
+			fixtureDir := filepath.Join(t.TempDir(), "bb")
+			os.Mkdir(fixtureDir, 0700)
+			t.Setenv("FAKE_BB", fixtureDir)
+			cli := filepath.Join(t.TempDir(), "bb")
+			write(t, cli, fakeBB, 0700)
+			raw, _ := os.ReadFile(path)
+			quoted, _ := json.Marshal(cli)
+			raw = []byte(strings.Replace(string(raw), "  bb:\n", "  bb:\n    cli: "+string(quoted)+"\n", 1))
+			os.WriteFile(path, raw, 0600)
+			for _, id := range []string{"thr_source", "thr_destination"} {
+				v := transferResponse(id)
+				if id == "thr_destination" {
+					v["thread"].(map[string]any)["status"] = "active"
+				}
+				b, _ := json.Marshal(v)
+				os.WriteFile(filepath.Join(fixtureDir, id+".show"), b, 0600)
+			}
+			if code, out := transferProcess(t, "thr_source", "config", "transfer", "apply", "-c", path, "--from", "thr_source", "--thread", "thr_destination"); code != 93 {
+				t.Fatal(code, out)
+			}
+			if valid {
+				if _, err := control.SaveHold(dir, true, false, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(filepath.Join(dir, control.HoldFileName), []byte("{}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out := transferProcess(t, "", "", "tick", "-c", path)
+			calls, _ := os.ReadFile(filepath.Join(fixtureDir, "calls"))
+			if strings.Contains(string(calls), "thread tell") {
+				t.Fatal("a pending transfer sent a message", string(calls))
+			}
+			if valid {
+				if code != 0 || !strings.Contains(string(calls), "thread stop thr_destination") {
+					t.Fatalf("exit %d, calls %q: %s", code, calls, out)
+				}
+				return
+			}
+			if code != exitSkipped || !strings.Contains(out, control.HoldFileName) || strings.Contains(string(calls), "thread stop") {
+				t.Fatalf("exit %d, calls %q: %s", code, calls, out)
+			}
+		})
 	}
 }
