@@ -75,6 +75,12 @@ func TestDeclinedRetryNoticeIsDroppedAtOnce(t *testing.T) {
 	if got := calls(); len(got) != 2 || got[0] != explainCall || got[1] != statusCall {
 		t.Fatalf("%v", got)
 	}
+	// A decision stamped at the very moment of the check still counts.
+	a, _ = pluginFake(t, "error", start, 6*time.Minute, decision("decline", now), nothingPending)
+	a.CheckAt(now)
+	if o, err = a.Observe(context.Background()); err != nil || !o.RetryDeclined {
+		t.Fatalf("%+v %v", o, err)
+	}
 	// The ordinary error rules now apply: a re-prompt, carried out as a turn retry.
 	d := errorDecision(o, 0, 0)
 	if d.Action != decide.Reprompt || decide.RecoverBy(d, o, true) != decide.RecoverByTurnRetry {
@@ -101,6 +107,10 @@ func TestRetryNoticeIsKeptUnlessTheDeclineIsCertain(t *testing.T) {
 		"declined, but a retry is pending": {decision("decline", failed), onePending, 2},
 		"declined before this turn began":  {decision("decline", start.Add(-time.Minute)), nothingPending, 1},
 		"no decision recorded":             {`{"threadId":"thr_example123","diagnostic":null}`, nothingPending, 1},
+		"declined after this check":        {decision("decline", now.Add(time.Second)), nothingPending, 1},
+		"declined in the far future":       {decision("decline", now.Add(1000*time.Hour)), nothingPending, 1},
+		"explain output is too large":      {strings.Replace(decision("decline", failed), `"PRIVATE_REASON"`, `"`+strings.Repeat("x", maxRetryPluginOutput)+`"`, 1), nothingPending, 1},
+		"status output is too large":       {decision("decline", failed), `{"retries":[],"padding":"` + strings.Repeat("x", maxRetryPluginOutput) + `"}`, 2},
 		"another thread's answer":          {strings.Replace(decision("decline", failed), "thr_example123", "thr_example999", 1), nothingPending, 1},
 		"an unknown decision kind":         {strings.Replace(decision("decline", failed), `"decline"`, `"PRIVATE_KIND"`, 1), nothingPending, 1},
 		"no decision time":                 {`{"threadId":"thr_example123","diagnostic":{"decision":{"kind":"decline","reason":"x"}}}`, nothingPending, 1},

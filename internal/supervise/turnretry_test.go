@@ -551,3 +551,102 @@ func TestDeclinedRetryNoticeIsReportedAndRecovered(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// The count is of consecutive checks. BB may queue its own retry between the
+// observation and the call: that check is answered "already queued", and the
+// next one sees the queued message and never asks. Any number of those, with
+// other checks between them, must never add up to a prompt beside a retry
+// that really is waiting.
+func TestAlreadyQueuedCountIsBrokenByAnyOtherCheck(t *testing.T) {
+	queued := func(int) (adapter.TurnRetry, error) {
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+	}
+	errored := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
+	for name, between := range map[string]func(w *retryWorld){
+		"the retry shows in the queue count": func(w *retryWorld) {
+			w.a.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Queued: 1}
+		},
+		"the retried turn is running":  func(w *retryWorld) { w.a.obs = decide.Observation{State: decide.Active} },
+		"the status could not be read": func(w *retryWorld) { w.a.obsErr = errors.New("bb thread show: exit 1") },
+		"the loop was paused": func(w *retryWorld) {
+			if _, err := control.Update(w.dir, func(f *control.File) { f.Paused = true }); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		w := newRetryWorld(t, decide.ErrUnknown)
+		w.a.answer = queued
+		minute := 0
+		for i := 0; i < 8; i++ {
+			// A check answered "already queued"...
+			w.a.obs, w.a.obsErr = errored, nil
+			if _, err := control.Update(w.dir, func(f *control.File) { f.Paused = false }); err != nil {
+				t.Fatal(err)
+			}
+			w.mustTick(t, t0.Add(time.Duration(minute)*time.Minute))
+			minute++
+			if st := savedState(t, w.dir); st.TurnRetryNoOps != 1 || st.LastTurnRetry.Outcome != "already_queued" {
+				t.Fatalf("%s, round %d: count %d outcome %s", name, i, st.TurnRetryNoOps, st.LastTurnRetry.Outcome)
+			}
+			// ...then one that ends some other way.
+			between(w)
+			w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+			minute++
+			if st := savedState(t, w.dir); st.TurnRetryNoOps != 0 {
+				t.Fatalf("%s, round %d: count %d after another check", name, i, st.TurnRetryNoOps)
+			}
+		}
+		if st := savedState(t, w.dir); len(w.a.sent) != 0 || st.Reprompts != 0 || w.a.retries != 8 {
+			t.Fatalf("%s: prompts %d reprompts %d retries %d", name, len(w.a.sent), st.Reprompts, w.a.retries)
+		}
+	}
+	// A dry run decides and records, but does not break or advance the count.
+	w := newRetryWorld(t, decide.ErrUnknown)
+	w.a.answer = queued
+	w.mustTick(t, t0)
+	opts := w.options(t0.Add(time.Minute))
+	opts.DryRun = true
+	if _, err := Tick(context.Background(), w.cfg, opts); err != nil {
+		t.Fatal(err)
+	}
+	if st := savedState(t, w.dir); st.TurnRetryNoOps != 1 {
+		t.Fatalf("count %d after a dry run", st.TurnRetryNoOps)
+	}
+}
+
+// Past the bound the prompt is still sent only to a thread that is in error
+// with nothing queued. If the retry turns out to be waiting, or the thread
+// is running again, nothing is sent and nothing is counted.
+func TestQueueUnconfirmedFallbackRereadsTheStatus(t *testing.T) {
+	for name, still := range map[string]func() (bool, error){
+		"a retry is queued after all, or the thread recovered": func() (bool, error) { return false, nil },
+		"the status cannot be read":                            func() (bool, error) { return false, errors.New("bb thread show: exit 1") },
+	} {
+		w := newRetryWorld(t, decide.ErrUnknown)
+		w.cfg.Loop.Limits.MaxSends = 5
+		w.a.answer = func(int) (adapter.TurnRetry, error) {
+			return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+		}
+		w.a.stillFailed = still
+		for i := 0; i < 7; i++ {
+			w.mustTick(t, t0.Add(time.Duration(i)*time.Minute))
+		}
+		st := savedState(t, w.dir)
+		used, _ := state.LoadSends(w.dir)
+		// The status is read on the fourth and each later check, never before.
+		if len(w.a.sent) != 0 || st.Reprompts != 0 || used != 0 || st.LastTurnRetry.Outcome != "already_queued" || w.a.rechecks != 4 {
+			t.Fatalf("%s: prompts %d reprompts %d used %d outcome %s re-reads %d", name, len(w.a.sent), st.Reprompts, used, st.LastTurnRetry.Outcome, w.a.rechecks)
+		}
+	}
+	// Still in error with nothing queued: the fourth check prompts, once.
+	w := newRetryWorld(t, decide.ErrUnknown)
+	w.a.answer = func(int) (adapter.TurnRetry, error) {
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+	}
+	for i := 0; i < 4; i++ {
+		w.mustTick(t, t0.Add(time.Duration(i)*time.Minute))
+	}
+	if st := savedState(t, w.dir); len(w.a.sent) != 1 || st.Reprompts != 1 || w.a.rechecks != 1 || st.LastTurnRetry.Outcome != "queue_unconfirmed" || st.TurnRetryNoOps != 0 {
+		t.Fatalf("prompts %d reprompts %d re-reads %d outcome %s count %d", len(w.a.sent), st.Reprompts, w.a.rechecks, st.LastTurnRetry.Outcome, st.TurnRetryNoOps)
+	}
+}

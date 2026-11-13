@@ -13,6 +13,11 @@ import (
 // fresh retry notice sits on an errored thread.
 const retryPluginTimeout = 5 * time.Second
 
+// maxRetryPluginOutput is the most plugin output that is parsed. A decision
+// is a few hundred bytes and a pending list a few rows; anything larger is
+// not an answer this code recognises, and is treated as unknown.
+const maxRetryPluginOutput = 256 << 10
+
 // retryService asks BB's optional provider-retry plugin what it decided for
 // this thread's last failed turn and whether it has a retry pending.
 //
@@ -25,10 +30,14 @@ const retryPluginTimeout = 5 * time.Second
 //	  {"retries":[...]}
 //
 // The plugin keeps one decision per thread, the one for its latest failed
-// turn. It is tied to the current failure by time: observedAt, BB's clock when
-// the turn failed, must not be earlier than BB's createdAt of the latest
-// turn/started event. Both are BB's clock, so skew against this host does not
-// matter. Only kinds and numbers are read; the reason text is not.
+// turn. It is tied to the current failure by time: observedAt, the plugin's
+// time when the turn failed, must not be earlier than BB's createdAt of the
+// latest turn/started event, and must not be later than this check. Both
+// times are stamped by BB. Whether one process stamps both has not been
+// verified; if a remote host stamps events from a clock behind the server's,
+// a decline for an earlier turn could look current. The thread is in error
+// either way, so the cost is recovering it before its notice aged out. Only
+// kinds and numbers are read; the reason text is not.
 //
 // The plugin is optional. A missing command, a failed call, another thread's
 // answer or an unrecognised shape leaves the facts false, which keeps the
@@ -46,7 +55,7 @@ func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.
 		} `json:"diagnostic"`
 	}
 	out, err := a.runBounded(ctx, "provider-retry", "explain", a.cfg.Thread, "--json")
-	if err != nil || json.Unmarshal(out, &explain) != nil || explain.Thread != a.cfg.Thread {
+	if err != nil || len(out) > maxRetryPluginOutput || json.Unmarshal(out, &explain) != nil || explain.Thread != a.cfg.Thread {
 		return s
 	}
 	d := explain.Diagnostic
@@ -55,7 +64,8 @@ func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.
 	}
 	s.DecisionKnown = true
 	s.Declined = d.Decision.Kind == "decline"
-	s.ForCurrentTurn = turnStartedMs > 0 && *d.ObservedAt >= turnStartedMs
+	// A decision stamped after this check cannot be about what it observed.
+	s.ForCurrentTurn = turnStartedMs > 0 && *d.ObservedAt >= turnStartedMs && *d.ObservedAt <= a.now().UnixMilli()
 	if !s.Declined || !s.ForCurrentTurn {
 		return s
 	}
@@ -63,7 +73,7 @@ func (a *Adapter) retryService(ctx context.Context, turnStartedMs int64) decide.
 		Retries *[]json.RawMessage `json:"retries"`
 	}
 	out, err = a.runBounded(ctx, "provider-retry", "status", a.cfg.Thread, "--json")
-	if err != nil || json.Unmarshal(out, &status) != nil || status.Retries == nil {
+	if err != nil || len(out) > maxRetryPluginOutput || json.Unmarshal(out, &status) != nil || status.Retries == nil {
 		return s
 	}
 	s.PendingKnown, s.Pending = true, len(*status.Retries)

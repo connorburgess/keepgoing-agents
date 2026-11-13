@@ -28,7 +28,9 @@ const (
 )
 
 // turnRetryMaxNoOps is how many consecutive checks may be answered "a retry
-// is already queued" while the session reports nothing queued. That pair
+// is already queued" while the session reports nothing queued. Consecutive
+// means with no other check between them: the count is cleared by every
+// check that does not end in that answer. That pair
 // contradicts itself: a retry that is waiting is a queued message, and a
 // session in error with queued messages is not re-prompted at all. Beyond
 // this the answer is treated as unknown and the ordinary error rules apply,
@@ -97,14 +99,23 @@ func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Deci
 		}
 	}
 	if outcome == string(adapter.TurnRetryAlreadyQueued) {
+		// record clears the count on every check that does not set this.
+		t.turnRetryAlreadyQueued = true
 		t.st.TurnRetryNoOps++
 		if t.st.TurnRetryNoOps > turnRetryMaxNoOps {
-			// Unknown, not "queued": recover with the prompt, counted as usual.
-			outcome, fallBack = turnRetryQueueUnconfirmed, true
+			// Unknown, not "queued". The prompt is the recovery, but only for a
+			// session still in error with nothing queued, as for "no failed
+			// turn": otherwise it would steer a live turn or sit beside a
+			// retry that really is waiting.
+			ctx, cancel := context.WithTimeout(t.ctx, turnRecheckTimeout)
+			failed, checkErr := r.StillFailed(ctx)
+			cancel()
+			if checkErr == nil && failed {
+				// This check ends in a prompt, not in "already queued", so the
+				// count starts again from it.
+				outcome, fallBack, t.turnRetryAlreadyQueued = turnRetryQueueUnconfirmed, true, false
+			}
 		}
-	}
-	if outcome != string(adapter.TurnRetryAlreadyQueued) {
-		t.st.TurnRetryNoOps = 0
 	}
 	t.incidentTurnRetry = outcome
 	t.st.LastTurnRetry = &state.TurnRetry{CheckAt: t.now, Target: t.res.Target, Outcome: outcome, Attempt: res.Attempt}
