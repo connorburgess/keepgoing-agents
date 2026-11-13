@@ -77,6 +77,26 @@ func acpStandIn() {
 		case "session/prompt":
 			note("prompt", session)
 			switch mode {
+			case "cancellable":
+				// A long turn that ends cleanly when it is asked to.
+				note("waiting", session)
+				for {
+					next, err := r.ReadBytes('\n')
+					if err != nil {
+						os.Exit(5)
+					}
+					var g struct{ Method string }
+					json.Unmarshal(next, &g)
+					if g.Method == "session/cancel" {
+						break
+					}
+				}
+				note("cancel", session)
+				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "cancelled"}})
+			case "ignore-cancel":
+				// A long turn that never reads its input again.
+				note("waiting", session)
+				time.Sleep(60 * time.Second)
 			case "refusal", "max_tokens":
 				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": mode}})
 			case "auth-error":
@@ -216,7 +236,7 @@ func TestACPRunnerNeverReplacesASavedSession(t *testing.T) {
 // and every word of prose are unknown.
 func TestACPRunnerClassifiesOnlyTypedEnds(t *testing.T) {
 	for mode, want := range map[string]decide.ErrorClass{
-		"refusal":     acpRestricted,
+		"refusal":     acpRefused,
 		"auth-error":  decide.ErrAuth,
 		"other-error": decide.ErrUnknown,
 		"max_tokens":  decide.ErrUnknown,
@@ -238,8 +258,10 @@ func TestACPRunnerClassifiesOnlyTypedEnds(t *testing.T) {
 	if obs := newACPWorld(t, "resume", "ok").turn("fictional prompt"); obs.State != decide.Idle {
 		t.Fatalf("%+v", obs)
 	}
-	if string(acpRestricted) != "restricted" {
-		t.Fatal("the class name must match decide.ErrRestricted once it is on main")
+	// One place names the class until #174 defines it; this fails if the
+	// name ever stops matching what that change calls it.
+	if string(acpRefused) != "refused" {
+		t.Fatal("the class name must match decide's refused class")
 	}
 }
 
@@ -263,4 +285,110 @@ func TestACPRunnerNeverGrantsAPermission(t *testing.T) {
 	if obs, _ := NewACP(w.cfg, w.dir).Observe(context.Background()); obs.DeferredInteraction {
 		t.Fatalf("an adopted hold was raised again: %+v", obs)
 	}
+}
+
+// awaitEvent waits until the stand-in has logged an event.
+func (w *acpWorld) awaitEvent(event string) {
+	w.t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if strings.Contains(w.events(), event) {
+			return
+		}
+	}
+	w.t.Fatalf("the agent never logged %q:\n%s", event, w.events())
+}
+
+// stopAndWait stops the running turn and returns how long it took to end.
+func (w *acpWorld) stopAndWait() time.Duration {
+	w.t.Helper()
+	start := time.Now()
+	if err := NewACP(w.cfg, w.dir).Stop(context.Background()); err != nil {
+		w.t.Fatalf("stop: %v", err)
+	}
+	for deadline := start.Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if obs, err := NewACP(w.cfg, w.dir).Observe(context.Background()); err == nil && obs.State != decide.Active {
+			return time.Since(start)
+		}
+	}
+	w.t.Fatal("the turn was still running long after the stop")
+	return 0
+}
+
+// A stop first asks the agent to cancel its prompt. An agent that does ends
+// its turn itself: the worker records the cancelled prompt and the agent's
+// own exit, and nothing is killed. The session it was continuing is kept.
+func TestACPRunnerStopCancelsThePromptCleanly(t *testing.T) {
+	w := newACPWorld(t, "resume", "cancellable")
+	w.cfg.CancelOnStop, w.cfg.CancelWait = true, 4*time.Second
+	if err := NewACP(w.cfg, w.dir).Send(context.Background(), "fictional prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	w.awaitEvent("waiting")
+	took := w.stopAndWait()
+	if took >= w.cfg.CancelWait {
+		t.Fatalf("the cancel was not prompt: %s", took)
+	}
+	if !strings.Contains(w.events(), "cancel "+acpSession) {
+		t.Fatalf("the agent was not asked to cancel:\n%s", w.events())
+	}
+	// The turn ended by itself: an exit status is recorded, where an ended
+	// process group leaves none.
+	st, err := Dir(w.dir).Status()
+	if err != nil || st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode != 0 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	out, ok, err := Dir(w.dir).antigravityTurnDir(mustTurn(t, w.dir)).antigravityOutcome()
+	if err != nil || !ok || out.stopReason != "cancelled" || out.returned || out.session != acpSession {
+		t.Fatalf("%+v %v %v", out, ok, err)
+	}
+	if obs, _ := NewACP(w.cfg, w.dir).Observe(context.Background()); obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown || obs.DeferredInteraction {
+		t.Fatalf("a cancelled turn: %+v", obs)
+	}
+	// The next turn continues the same session.
+	w.cfg.Env["ACP_MODE"] = "ok"
+	if obs := w.turn("second fictional prompt"); obs.State != decide.Idle || !strings.Contains(w.events(), "resume "+acpSession) {
+		t.Fatalf("%+v\n%s", obs, w.events())
+	}
+}
+
+// An agent that ignores the cancel is ended by the owned stop once the short
+// wait is over, and no sooner.
+func TestACPRunnerStopEndsAnAgentThatIgnoresTheCancel(t *testing.T) {
+	w := newACPWorld(t, "resume", "ignore-cancel")
+	w.cfg.CancelOnStop, w.cfg.CancelWait = true, 2*time.Second
+	if err := NewACP(w.cfg, w.dir).Send(context.Background(), "fictional prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	w.awaitEvent("waiting")
+	took := w.stopAndWait()
+	if took < w.cfg.CancelWait || took > w.cfg.CancelWait+15*time.Second {
+		t.Fatalf("ended after %s; the wait is %s", took, w.cfg.CancelWait)
+	}
+	// Ended, not finished: no exit status, so the turn is an unknown error.
+	if st, _ := Dir(w.dir).Status(); st.Phase == Finished && st.ExitCodeKnown && st.ExitCode == 0 {
+		t.Fatalf("an agent that ignored the cancel was recorded as finished cleanly: %+v", st)
+	}
+	if obs, _ := NewACP(w.cfg, w.dir).Observe(context.Background()); obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
+		t.Fatalf("%+v", obs)
+	}
+
+	// Without the option a stop ends the group at once, as for Antigravity.
+	plain := newACPWorld(t, "resume", "cancellable")
+	if err := NewACP(plain.cfg, plain.dir).Send(context.Background(), "fictional prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	plain.awaitEvent("waiting")
+	plain.stopAndWait()
+	if strings.Contains(plain.events(), "cancel "+acpSession) {
+		t.Fatalf("a cancel was sent without the option:\n%s", plain.events())
+	}
+}
+
+func mustTurn(t *testing.T, dir string) string {
+	t.Helper()
+	turn, ok, err := Dir(dir).antigravityTurn()
+	if err != nil || !ok {
+		t.Fatalf("no current turn: %v", err)
+	}
+	return turn
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,6 +102,11 @@ func (d Dir) requestStop(key string) error {
 	}
 }
 
+// stopHook, when set by the turn this wrapper is running, is called once a
+// stop request has been accepted and before the process group is ended. It
+// must return within a short bound of its own.
+var stopHook atomic.Pointer[func()]
+
 func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
@@ -109,6 +115,11 @@ func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) 
 			// Acknowledgement means accepted by the owned wrapper, not proof of exit.
 			// Persist it before the wrapper terminates its own group/job.
 			if writeStopMessage(d.path("stop-ack.json"), m) == nil {
+				// A turn that can end cleanly is asked to first, for a
+				// bounded time; then the owned stop ends whatever is left.
+				if hook := stopHook.Load(); hook != nil {
+					(*hook)()
+				}
 				if terminate() == nil {
 					return
 				}

@@ -35,9 +35,14 @@ type ACPConfig struct {
 	// AllowWithoutResume accepts an agent that advertises no way to continue
 	// a session; a saved session is then never continued and never replaced.
 	AllowWithoutResume bool
-	Command            []string
-	Workdir            string
-	Env                map[string]string
+	// CancelOnStop makes a stop ask the agent to cancel its prompt first,
+	// and wait CancelWait (default acpCancelWait) for the turn to end,
+	// before the owned stop ends the process group.
+	CancelOnStop bool
+	CancelWait   time.Duration
+	Command      []string
+	Workdir      string
+	Env          map[string]string
 	// HandshakeTimeout bounds initialization and session setup inside the
 	// detached worker; ExitTimeout bounds the wait for the agent process to
 	// exit after its turn. Zero selects the defaults.
@@ -75,7 +80,7 @@ func NewACP(cfg ACPConfig, dir string) *ACP { return &ACP{cfg: cfg, dir: Dir(dir
 func acpClass(out antigravityOutcome) decide.ErrorClass {
 	switch {
 	case out.stopReason == "refusal":
-		return acpRestricted
+		return acpRefused
 	case out.errorCode != nil && *out.errorCode == acpAuthRequired:
 		return decide.ErrAuth
 	}
@@ -83,9 +88,13 @@ func acpClass(out antigravityOutcome) decide.ErrorClass {
 }
 
 const (
-	// acpRestricted is decide.ErrRestricted, named here until the change
-	// that defines it (#174) is on main.
-	acpRestricted decide.ErrorClass = "restricted"
+	// acpRefused is the class of a turn the provider declined. It is
+	// decide's "refused" class, named here, in this one place, until the
+	// change that defines it (#174) is on main.
+	acpRefused decide.ErrorClass = "refused"
+	// acpCancelWait is how long a stop waits for a cancelled prompt to end
+	// before the process group is ended.
+	acpCancelWait = 5 * time.Second
 	// acpAuthRequired is ACP's authentication-required error code.
 	acpAuthRequired = -32000
 )
@@ -541,7 +550,15 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 		return errors.New("antigravity: could not record the new turn")
 	}
 	handshake, exit := a.limits()
-	spec, _ := json.Marshal(antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds(), RequireResume: !a.cfg.AllowWithoutResume})
+	turnSpec := antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds(), RequireResume: !a.cfg.AllowWithoutResume}
+	if a.cfg.CancelOnStop {
+		wait := a.cfg.CancelWait
+		if wait <= 0 || wait > acpCancelWait {
+			wait = acpCancelWait
+		}
+		turnSpec.CancelMs = wait.Milliseconds()
+	}
+	spec, _ := json.Marshal(turnSpec)
 	turnDir := a.dir.antigravityTurnDir(turn)
 	record := func(name string, v any) error {
 		b, _ := json.Marshal(v)

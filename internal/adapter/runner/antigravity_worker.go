@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,23 @@ type antigravityTurnSpec struct {
 	ExitMs      int64  `json:"exitMs"`
 	// RequireResume is the gate option of the same name.
 	RequireResume bool `json:"requireResume"`
+	// CancelMs, when positive, makes a stop ask the agent to cancel its
+	// prompt and wait this long for the turn to end before the owned stop
+	// ends the process group.
+	CancelMs int64 `json:"cancelMs,omitempty"`
+}
+
+// lockedWriter serializes writes to the agent, so a cancellation sent on
+// stop can never land inside another frame.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // runAntigravityACPTurn is the detached worker for one prompt. It owns the
@@ -135,9 +153,37 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 			_ = cmd.Process.Kill() // this process's own child, by its live handle
 		}
 	}()
+	// On stop, ask the agent to cancel the prompt and give the turn a short
+	// bounded time to end by itself: an agent killed while writing can lose
+	// the session it was asked to keep. Whatever is left when the hook
+	// returns is ended by the wrapper's owned stop.
+	agent := &lockedWriter{w: toAgent}
+	var prompted atomic.Value // the session, once the prompt is about to be written
+	turnEnded := make(chan struct{})
+	defer close(turnEnded)
+	if spec.CancelMs > 0 {
+		hook := func() {
+			session, _ := prompted.Load().(string)
+			if session == "" {
+				return // still setting up: nothing to cancel
+			}
+			if frame, err := acpRequest("", "session/cancel", map[string]string{"sessionId": session}); err == nil {
+				_, _ = agent.Write(frame)
+			}
+			timer := time.NewTimer(time.Duration(spec.CancelMs) * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-turnEnded:
+			case <-timer.C:
+			}
+		}
+		stopHook.Store(&hook)
+		defer stopHook.Store(nil)
+	}
 	hold := turnDir.AntigravityACPHoldCheckpoint(spec.Turn)
 	checkpoint := func(ctx context.Context, c AntigravityACPCheckpoint) error {
 		if c.BeforePrompt {
+			prompted.Store(c.SessionID)
 			setup.Do(func() { close(setupDone) })
 			// Setup can take long enough for a later turn to be recorded. A
 			// worker that is no longer current must not write its prompt.
@@ -147,7 +193,7 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 		}
 		return hold(ctx, c)
 	}
-	result, exErr := ExchangeACP(context.Background(), fromAgent, toAgent, ACPOptions{RequireResume: spec.RequireResume}, saved, cwd, string(prompt), checkpoint)
+	result, exErr := ExchangeACP(context.Background(), fromAgent, agent, ACPOptions{RequireResume: spec.RequireResume}, saved, cwd, string(prompt), checkpoint)
 	close(exchangeDone)
 	out.session, out.needsUser = result.SessionID, result.NeedsUser
 	out.stopReason, out.errorCode = result.StopReason, result.ErrorCode
