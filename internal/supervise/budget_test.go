@@ -34,6 +34,10 @@ type outage struct {
 	// activateTime and yieldTime model a slow model switch and yield command.
 	activateTime time.Duration
 	yieldTime    time.Duration
+	// checkNetwork configures a connectivity check; offline makes it run to
+	// its timeout and fail.
+	checkNetwork bool
+	offline      bool
 	// threads, when set, creates and finds BB threads for new-thread handoffs.
 	threads ThreadCreator
 	// observeLimit is the time the latest observation was allowed.
@@ -108,6 +112,16 @@ func (o *outage) tick(t *testing.T, at time.Time) (Result, time.Duration, error)
 		opts.Threads = func(string) ThreadCreator { return o.threads }
 	}
 	opts.Clock = func() time.Time { return o.clock }
+	if o.checkNetwork {
+		opts.Online = func(context.Context) bool {
+			if o.offline {
+				o.clock = o.clock.Add(config.DefaultNetworkTimeout)
+				return false
+			}
+			o.clock = o.clock.Add(time.Second)
+			return true
+		}
+	}
 	opts.Busy = func(context.Context, config.Yield) (bool, error) {
 		o.clock = o.clock.Add(o.yieldTime)
 		return false, nil
@@ -418,7 +432,14 @@ func TestCheckEndsWithinItsHardLimitInEveryCombination(t *testing.T) {
 			var worst time.Duration
 			var where string
 			runs := 0
-			for mask := 0; mask < 32; mask++ {
+			// The connectivity check is configured throughout. For a few
+			// combinations the network is also down, so the check runs to its
+			// own timeout as well.
+			for n := 0; n < 32+4; n++ {
+				mask, offline := n, n >= 32
+				if offline {
+					mask = []int{0, 4, 6, 31}[n-32]
+				}
 				slow := func(bit int, d time.Duration) time.Duration {
 					if mask&(1<<bit) != 0 {
 						return d
@@ -449,6 +470,7 @@ func TestCheckEndsWithinItsHardLimitInEveryCombination(t *testing.T) {
 						if healthyFirst {
 							first = healthyThenHung(t, o, "fallback-1", "fallback-2", "fallback-3", "fallback-4")
 						}
+						o.checkNetwork, o.offline = true, offline
 						o.yieldTime = slow(0, 10*time.Second)
 						o.observeTime = time.Second + slow(1, observeTimeout-time.Second)
 						o.fingerprintTime = slow(2, state.FingerprintTimeout)
@@ -459,8 +481,8 @@ func TestCheckEndsWithinItsHardLimitInEveryCombination(t *testing.T) {
 							r, took := o.next(t, first+i)
 							runs++
 							if took > worst {
-								worst, where = took, fmt.Sprintf("yield=%s observe=%s fingerprint=%s send=%s activate=%s healthyFirst=%t state=%s class=%s check=%d action=%s",
-									o.yieldTime, o.observeTime, o.fingerprintTime, o.sendTime, o.activateTime, healthyFirst, obs.State, obs.ErrorClass, i, r.Action)
+								worst, where = took, fmt.Sprintf("offline=%t yield=%s observe=%s fingerprint=%s send=%s activate=%s healthyFirst=%t state=%s class=%s check=%d action=%s",
+									offline, o.yieldTime, o.observeTime, o.fingerprintTime, o.sendTime, o.activateTime, healthyFirst, obs.State, obs.ErrorClass, i, r.Action)
 							}
 						}
 					}

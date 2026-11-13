@@ -60,6 +60,13 @@ func TestErroredParentIsRecoveredWhateverItsChildrenDo(t *testing.T) {
 			ErrNetwork: {AwaitUser, "error persisted after re-prompts", ""}, ErrUnknown: {AwaitUser, "error persisted after re-prompts", ""}}},
 		{"backing off between re-prompts", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 1, time.Minute }, map[ErrorClass]want{
 			ErrRateLimit: {None, "backing off after error", ""}, ErrAuth: authHold, ErrNetwork: {None, "backing off after error", ""}, ErrUnknown: {None, "backing off after error", ""}}},
+		// The network gate is one of the error rules: a session in error with
+		// children reaches it and waits while the network is down.
+		{"network down", func(i *Input) { i.NetworkDown = true }, same(want{None, NetworkDownReason, ""})},
+		{"network down, confirmed fallback", func(i *Input) {
+			eligible(i, classes...)
+			i.NetworkDown, i.Failover.Available = true, true
+		}, same(want{None, NetworkDownReason, ""})},
 		// Gates that come before the error rules keep their place.
 		{"outside the window", func(i *Input) { i.InWindow = false }, same(want{None, "outside window", ""})},
 		{"provider retry state unverified", func(i *Input) { i.Obs.RetryUnverified = true }, same(want{None, "provider retry state unverified", ""})},

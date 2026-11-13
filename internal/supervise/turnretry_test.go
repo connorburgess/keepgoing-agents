@@ -237,19 +237,11 @@ func TestNoFailedTurnOnARecoveredSessionSendsNothing(t *testing.T) {
 	}
 }
 
-// A turn retry has no text to carry the errored-children notice. Under a rule
-// where a re-prompt carries it, the retry is followed by the short
-// notice-only message, never by the task prompt, and the notice is recorded
-// as announced exactly as when a prompt carries it.
+// A turn retry has no text to carry the errored-children notice. A re-prompt
+// carries it when a direct child has newly entered error, so the retry is
+// followed by the short notice-only message, never by the task prompt, and
+// the notice is recorded as announced exactly as when a prompt carries it.
 func TestTurnRetryIsFollowedByTheChildErrorNotice(t *testing.T) {
-	original := childErrorNote
-	t.Cleanup(func() { childErrorNote = original })
-	childErrorNote = func(in decide.Input, d decide.Decision) int {
-		if d.Action != decide.Reprompt {
-			return original(in, d)
-		}
-		return len(in.Obs.ErroredChildren)
-	}
 	errored := decide.Observation{State: decide.Error, ErrorClass: decide.ErrNetwork, ErroredChildren: []string{"thr_child_one", "thr_child_two"}}
 
 	w := newRetryWorld(t, decide.ErrNetwork)
@@ -303,10 +295,17 @@ func TestTurnRetryIsFollowedByTheChildErrorNotice(t *testing.T) {
 		t.Fatalf("%+v retries %d sent %d", res, w.a.retries, len(w.a.sent))
 	}
 
-	// Under the rule on main a re-prompt carries no notice, and none is sent.
-	childErrorNote = original
+	// Children already announced are not announced again: the next retry,
+	// after the backoff, is followed by nothing.
 	w = newRetryWorld(t, decide.ErrNetwork)
+	w.cfg.Loop.Limits.MaxSends = 5
 	w.a.obs = errored
+	w.mustTick(t, t0)
+	if res := w.mustTick(t, t0.Add(11*time.Minute)); res.Action != "reprompt" || w.a.retries != 2 || len(w.a.sent) != 1 || res.ChildErrorNote {
+		t.Fatalf("%+v retries %d sent %v", res, w.a.retries, w.a.sent)
+	}
+	// With no errored child the retry stands alone.
+	w = newRetryWorld(t, decide.ErrNetwork)
 	if res := w.mustTick(t, t0); w.a.retries != 1 || len(w.a.sent) != 0 || res.ChildErrorNote {
 		t.Fatalf("%+v sent %v", res, w.a.sent)
 	}

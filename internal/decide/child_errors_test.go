@@ -50,7 +50,9 @@ func TestErroredChildrenChangeTheDecisionInOneCaseOnly(t *testing.T) {
 						}
 						n := ChildErrorNote(in, got)
 						wantNote := 0
-						if got.Action == Wake && due {
+						// A re-prompt of a parent in error can happen with an
+						// incomplete listing; the note is withheld then.
+						if (got.Action == Wake || got.Action == Reprompt) && due && !in.Obs.ChildrenUnverified {
 							wantNote = 3
 						}
 						if n != wantNote && failures < 5 {
@@ -103,7 +105,13 @@ func TestChildErrorNote(t *testing.T) {
 		{"background work running", func(i *Input) { i.Obs.Background = 1 }, 0, false},
 		{"parent active", func(i *Input) { i.Obs.State = Active }, 0, false},
 		{"parent active and stalled is nudged without the note", func(i *Input) { i.Obs.State, i.UnchangedFor = Active, 2*i.StallAfter }, 0, false},
-		{"parent errored is re-prompted without the note", func(i *Input) { i.Obs.State, i.Obs.ErrorClass = Error, ErrUnknown }, 0, false},
+		{"parent errored: the re-prompt carries the note", func(i *Input) { i.Obs.State, i.Obs.ErrorClass = Error, ErrUnknown }, 2, false},
+		{"parent errored and backing off: nothing is sent, so no note", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.Reprompts, i.SinceLastReprompt = Error, ErrUnknown, 1, time.Minute
+		}, 0, false},
+		{"parent errored, network down: nothing is sent, so no note", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.NetworkDown = Error, ErrUnknown, true
+		}, 0, false},
 		{"switch-back instead of a wake", func(i *Input) { i.SwitchBackReady = true }, 0, false},
 		{"parent gone", func(i *Input) { i.Obs.Gone = true }, 0, false},
 
@@ -113,7 +121,10 @@ func TestChildErrorNote(t *testing.T) {
 		{"another child running, something sent too recently", func(i *Input) { running(i); i.SinceWake = i.MinWakeInterval - 1 }, 0, false},
 		{"another child running, exactly the wake interval since the last send", func(i *Input) { running(i); i.SinceWake = i.MinWakeInterval }, 2, true},
 		{"another child running, parent active", func(i *Input) { running(i); i.Obs.State = Active }, 0, false},
-		{"another child running, parent errored", func(i *Input) { running(i); i.Obs.State = Error }, 0, false},
+		// A parent in error is re-prompted whatever its children do, and the
+		// re-prompt carries the notice.
+		{"another child running, parent errored", func(i *Input) { running(i); i.Obs.State = Error }, 2, false},
+		{"another child running, parent errored, discovery incomplete", func(i *Input) { running(i); i.Obs.State, i.Obs.ChildrenUnverified = Error, true }, 0, false},
 		{"another child running, outside the window", func(i *Input) { running(i); i.InWindow = false }, 0, false},
 		{"another child running, messages queued", func(i *Input) { running(i); i.Obs.Queued = 1 }, 0, false},
 		{"another child running, background work", func(i *Input) { running(i); i.Obs.Background = 1 }, 0, false},

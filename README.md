@@ -141,7 +141,7 @@ The [native preview](integrations/macos/README.md) reads explicitly registered l
 
 An agent can finish a turn before its task is complete, hang without progress, or encounter a usage limit. keepgoing applies explicit continuation and recovery rules so a person does not have to watch every turn.
 
-Decisions use structured status: exit codes, JSON fields, HTTP status and provider events. Transcript prose is never a decision signal. Unknown errors get bounded re-prompts and then a human hold; they never trigger failover.
+Decisions use structured status: exit codes, JSON fields, HTTP status and provider events. Unreleased source also makes one outbound request of its own: before re-prompting or handing off an errored session, or probing a fallback, keepgoing sends a plain `GET https://api.github.com/zen` with no identifier to learn whether the network is up, and waits if it is not. Turn it off or point it elsewhere with [`loop.network`](docs/operations.md#network-outages). Transcript prose is never a decision signal. Unknown errors get bounded re-prompts and then a human hold; they never trigger failover.
 
 ## What it does
 
