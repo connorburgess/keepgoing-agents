@@ -45,8 +45,9 @@ const (
 	// dockMaxResponse bounds the JSON a read may produce. The projection
 	// caps every list and string, and states what it leaves out. The largest
 	// registry (128 loops) with every list at its cap and every name at its
-	// longest measured about 4.5 MB with identifiers; a test keeps it under
-	// five eighths of this bound.
+	// longest measured about 4.4 MB with identifiers, and 5.1 MB with names
+	// of four-byte characters; tests keep both under three quarters of this
+	// bound (6 MiB).
 	dockMaxResponse = 8 << 20
 	// dockReadTimeout bounds one whole read of the registry.
 	dockReadTimeout = 20 * time.Second
@@ -442,6 +443,10 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 			if reg, err := health.Load(cfg.Loop.StateDir); err == nil {
 				out := summarize(cfg, reg, now)
 				in.Chain.Summary = &out
+				in.Chain.Due = map[string]string{}
+				for _, c := range fb.Candidates {
+					_, in.Chain.Due[c.ID] = reg.Due(c, fb.Probe, now)
+				}
 				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now)
 				in.Chain.PrimaryUse = &use
 			}

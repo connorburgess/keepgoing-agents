@@ -245,6 +245,7 @@
   // exists and offers to show it.
   function showNotesButton() {
     var b = el("button", "linkish", "Show identifiers and notes");
+    b.setAttribute("data-focus", "show-notes");
     b.type = "button";
     b.addEventListener("click", function () { if (!state.identifiers) $("identifiers").click(); });
     return b;
@@ -673,10 +674,11 @@
     state.said = text;
     $("live").textContent = text;
   }
-  // A focusable element is found again after a redraw by what it is: its
-  // tag, its link target and its text, and which of those it was in order.
+  // A focusable element is found again after a redraw by a key that does
+  // not change when its text does (an age, a count): its tag, its link
+  // target, its id or data-focus name, and which of those it was in order.
   var FOCUSABLE = "a[href], button, [tabindex]";
-  function signature(n) { return n.tagName + "|" + (n.getAttribute("href") || "") + "|" + (n.id || "") + "|" + (n.textContent || "").trim(); }
+  function signature(n) { return n.tagName + "|" + (n.getAttribute("href") || "") + "|" + (n.id || "") + "|" + (n.getAttribute("data-focus") || ""); }
   function focusKey(node, root) {
     if (!node || node === document.body || !root.contains(node) || !node.matches(FOCUSABLE)) return null;
     var sig = signature(node), nth = 0, all = root.querySelectorAll(FOCUSABLE);

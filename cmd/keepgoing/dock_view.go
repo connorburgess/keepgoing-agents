@@ -505,11 +505,6 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 		for _, e := range l.Chain.Entries {
 			i, ok := index[e.Route]
 			if !ok {
-				if len(routes) >= dockMaxRoutes {
-					omitted++
-					index[e.Route] = -1
-					continue
-				}
 				i = len(routes)
 				index[e.Route] = i
 				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Effort: e.Effort, Tool: e.Tool,
@@ -518,10 +513,10 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 					Notes: []dockNote{}, RunningNow: []dockRouteLoop{}, RecordedFor: []dockRouteLoop{}, Standby: []dockStandby{}, Unknown: []dockStandby{},
 					LeftBy: []dockDeparture{}, Lanes: "unknown", identity: e.identity})
 			}
-			if i < 0 {
-				continue
-			}
 			n := &routes[i]
+			if n.identity == "" {
+				n.identity = e.identity
+			}
 			switch {
 			case e.ProbeAge != nil && (n.ProbeAge == nil || *e.ProbeAge < *n.ProbeAge) && e.Readiness != "current":
 				n.Readiness, n.Phrase, n.ProbeAge = e.Readiness, e.Phrase, e.ProbeAge
@@ -536,7 +531,7 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 			}
 			if a := l.Away; a != nil {
 				for _, d := range a.Departures {
-					if d.Position == e.Position && len(n.LeftBy) < dockMaxRouteLoops {
+					if d.Position == e.Position {
 						d.Others, d.loop, d.key = a.departureText(d, l.Name, now), l.Name, l.Key
 						n.LeftBy = append(n.LeftBy, d)
 					}
@@ -593,6 +588,18 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 		if n := len(r.RunningNow); n > 0 {
 			r.UseText = dockPlural(n, "loop on it now", "loops on it now")
 		}
+		// Departures at a limit first, then the newest; the rest are counted.
+		sort.SliceStable(r.LeftBy, func(a, b int) bool {
+			x, y := r.LeftBy[a], r.LeftBy[b]
+			if x.atLimit() != y.atLimit() {
+				return x.atLimit()
+			}
+			return x.At != nil && (y.At == nil || x.At.After(*y.At))
+		})
+		if len(r.LeftBy) > dockMaxRouteLoops {
+			r.Omitted += len(r.LeftBy) - dockMaxRouteLoops
+			r.LeftBy = r.LeftBy[:dockMaxRouteLoops]
+		}
 		if r.Omitted > 0 {
 			r.More = dockPlural(r.Omitted, "more loop is", "more loops are") + " not listed."
 		}
@@ -611,7 +618,8 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 	}
 	// A route on the same account as one a loop left on a usage limit that
 	// has not reset says so; its own readiness is left as it is. "The same
-	// account" is the same usage identity, never the same group name alone.
+	// account" is the same recorded account identity (see dockAccountIdentity),
+	// never the same group name alone; a route with none claims nothing.
 	for i := range routes {
 		var best *dockDeparture
 		for j := range routes {
@@ -667,6 +675,12 @@ func dockRoutes(loops []dockLoop, now time.Time) ([]dockRoute, int) {
 		}
 		return len(routes[i].RunningNow) > len(routes[j].RunningNow)
 	})
+	// The cap comes after the sort, so the routes left out are the least
+	// important ones, and they are counted.
+	if len(routes) > dockMaxRoutes {
+		omitted = len(routes) - dockMaxRoutes
+		routes = routes[:dockMaxRoutes]
+	}
 	return routes, omitted
 }
 
@@ -686,7 +700,12 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 	out := []dockAllowance{}
 	omitted := 0
 	for _, r := range routes {
+		// A route with no recorded account identity is a line of its own: it
+		// is not said to share an allowance with anything.
 		key := r.Provider + "\x00" + r.Account + "\x00" + r.identity
+		if r.identity == "" {
+			key = "route\x00" + r.Key
+		}
 		i, ok := index[key]
 		if !ok {
 			if len(out) >= dockMaxAllowances {
@@ -719,7 +738,11 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			if !d.atLimit() {
 				continue
 			}
-			s := txt(d.loop + " hit a usage limit on a route on this account")
+			where := " hit a usage limit on a route on this account"
+			if a.identity == "" {
+				where = " hit a usage limit on this route"
+			}
+			s := txt(d.loop + where)
 			if d.At != nil {
 				s = txt(s, " on ", tm(*d.At, "date"))
 			}
@@ -733,7 +756,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 	}
 	names := map[string]int{}
 	for _, a := range out {
-		names[a.Provider+"\x00"+a.Title]++
+		if a.identity != "" {
+			names[a.Provider+"\x00"+a.Title]++
+		}
 	}
 	seen := map[string]int{}
 	for i := range out {
@@ -743,7 +768,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 			parts = append(parts, "provider "+a.Provider)
 		}
 		parts = append(parts, dockPlural(a.Routes, "route", "routes"))
-		if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
+		if a.identity == "" {
+			parts = append(parts, "which account is not identified by a test")
+		} else if n := names[a.Provider+"\x00"+a.Title]; n > 1 {
 			seen[a.Provider+"\x00"+a.Title]++
 			parts = append(parts, fmt.Sprintf("account %d of %d named %s", seen[a.Provider+"\x00"+a.Title], n, a.Title))
 		}
@@ -810,6 +837,10 @@ type dockChainInput struct {
 	// the first route is configured.
 	ProbeEvery time.Duration
 	SwitchBack bool
+	// Due is health.Due's reason for each fallback ("due", "probed recently",
+	// "daily cap reached", ...), as the scheduler would see it now; nil when
+	// the probe history was not read.
+	Due map[string]string
 }
 
 // dockInput is everything one loop's view is built from.
@@ -841,13 +872,23 @@ func dockKey(id string) string {
 	return "l" + hex.EncodeToString(h[:6])
 }
 
+// clip cuts s to n runes and to 2n bytes, whichever is shorter, so a name of
+// four-byte characters costs no more than twice one of ASCII.
 func clip(s string, n int) string {
 	s = strings.ToValidUTF8(s, "�")
-	if utf8.RuneCountInString(s) <= n {
+	if utf8.RuneCountInString(s) <= n && len(s) <= 2*n {
 		return s
 	}
-	r := []rune(s)
-	return string(r[:n-1]) + "…"
+	out := []rune{}
+	size := len("…")
+	for _, r := range s {
+		if len(out) >= n-1 || size+utf8.RuneLen(r) > 2*n {
+			break
+		}
+		out = append(out, r)
+		size += utf8.RuneLen(r)
+	}
+	return string(out) + "…"
 }
 
 func secondsSince(now, t time.Time) *int64 {
@@ -1094,12 +1135,17 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	l.Fallbacks = dockFallbackReadiness(st, in.Chain)
 	if st != nil {
 		l.Limits = dockLimits(st, now)
-		if w := st.LimitWait; w.State != "none" && dockSaneReset(now, w.ResetsAt) {
-			lw := &dockLimitWait{ResetsAt: w.ResetsAt, Passed: w.ResetPassed}
-			if w.ResetPassed {
-				lw.Text = txt("Provider limit reset ", dockUntil(now, *w.ResetsAt))
-			} else {
-				lw.Text = txt("Provider limit resets ", dockUntil(now, *w.ResetsAt))
+		if w := st.LimitWait; w.State != "none" {
+			lw := &dockLimitWait{Passed: w.ResetPassed}
+			switch {
+			case dockSaneReset(now, w.ResetsAt) && w.ResetPassed:
+				lw.ResetsAt, lw.Text = w.ResetsAt, txt("Provider limit reset ", dockUntil(now, *w.ResetsAt))
+			case dockSaneReset(now, w.ResetsAt):
+				lw.ResetsAt, lw.Text = w.ResetsAt, txt("Provider limit resets ", dockUntil(now, *w.ResetsAt))
+			case w.ResetsAt != nil && !w.ResetsAt.IsZero():
+				lw.Text = txt("Provider limit: the reported reset is more than a year away; it is not shown")
+			default:
+				lw.Text = txt("Provider limit: no reset time was reported")
 			}
 			l.LimitWait = lw
 		}
@@ -1144,12 +1190,11 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked recently", "It is on, and its last recorded check is older than "+dockDuration(staleAfter)+"."
 		case !st.State.NetworkDownSince.IsZero() && !st.State.NetworkDistrusted:
 			// The record status prints as "network: down at the last
-			// connectivity check". The time is counted to that check, not to
-			// this read.
-			checked := st.State.CheckedAt
-			failing := checked.Sub(st.State.NetworkDownSince)
+			// connectivity check". State keeps when a connectivity check first
+			// failed, and clears it when one passes; when a later check last
+			// ran one is not recorded, so only that first time is said.
 			l.State, l.Phrase = "waiting_on_network", "Waiting for the network"
-			l.Detail = "The network was down at the last connectivity check, " + dockAgo(now, checked) + ", after failing for " + dockSpan(failing) + ". Work that needs the network waits until a check finds it back."
+			l.Detail = "A connectivity check found the network down " + dockAgo(now, st.State.NetworkDownSince) + ", and no connectivity check since has found it back. Work that needs the network waits until one does."
 		case l.LimitWait != nil && !l.LimitWait.Passed:
 			l.State, l.Phrase, l.Detail = "waiting_on_limit", "Waiting for a limit to reset", "A check recorded a provider usage limit with no other route able to take over. The loop is not held and keeps checking."
 		case l.LastCheck.FailedInRow > 0:
@@ -1615,11 +1660,8 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 		t.ReadLine = "Usage read " + dockAgo(now, *v.ObservedAt)
 	}
 	for _, w := range v.Windows {
-		if len(t.Windows) >= dockMaxWindows {
-			t.Omitted++
-			continue
-		}
 		win := dockUsageWindow{Name: dockWindowName(w.Key), UsedPercent: min(100, max(0, usagePercent(w.Used))), Stale: w.Stale}
+		far := w.ResetsAt != nil && !w.ResetsAt.IsZero() && !dockSaneReset(now, w.ResetsAt)
 		if dockSaneReset(now, w.ResetsAt) {
 			win.ResetsAt = w.ResetsAt
 			if w.Stale {
@@ -1628,16 +1670,27 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 				win.Reset = txt("Resets ", dockUntil(now, *w.ResetsAt))
 			}
 		}
-		t.Windows = append(t.Windows, win)
+		if far {
+			win.Reset = txt("Reported to reset more than a year away; not shown")
+		}
+		// A used-up window is said even when it is past the cap of windows shown.
 		if len(t.UsedUp) == 0 && !win.Stale && win.UsedPercent >= 100 && v.ObservedAt != nil {
 			s := txt(dockCapital(win.Name) + " allowance used up when read " + dockAgo(now, *v.ObservedAt))
-			if win.ResetsAt != nil {
+			switch {
+			case win.ResetsAt != nil:
 				s = txt(s, "; resets ", dockUntil(now, *win.ResetsAt), ".")
-			} else {
+			case far:
+				s = txt(s, "; the reported reset is more than a year away and is not shown.")
+			default:
 				s = txt(s, "; no reset time was reported.")
 			}
 			t.UsedUp = s
 		}
+		if len(t.Windows) >= dockMaxWindows {
+			t.Omitted++
+			continue
+		}
+		t.Windows = append(t.Windows, win)
 	}
 	return t
 }
@@ -1657,7 +1710,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		identity := probe.UsageIdentity(cand)
 		e := dockChainEntry{Position: pos, Tool: tool, Provider: provider,
 			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, effort, ref.Adapter, identity), Account: group, Effort: effort, Model: model,
-			Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown", Notes: []dockNote{}, After: []string{}, identity: identity,
+			Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown", Notes: []dockNote{}, After: []string{},
 			Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}, ReadLine: "No usage reading"}}
 		if identifiers {
 			e.ID = clip(cand.ID, dockMaxText)
@@ -1688,6 +1741,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 	if len(main.Usage.UsedUp) > 0 {
 		main.Notes = append(main.Notes, dockNote{Tone: "limit", Text: main.Usage.UsedUp})
 	}
+	main.identity = dockAccountIdentity(in.Primary, main.Usage)
 	c.Entries = append(c.Entries, main)
 	if len(in.Candidates) == 0 {
 		c.Availability = "none_configured"
@@ -1724,6 +1778,11 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 			notTested = "scheduled tests are off for this loop"
 		case test.eligible != nil && !test.eligible[cand.ID]:
 			notTested = "not tested while the loop runs on a route in the same account group"
+		case in.Due[cand.ID] == "scheduled probes are off":
+			notTested = "scheduled tests are off for this loop"
+		case in.Due[cand.ID] == "daily cap reached":
+			// health.Due: the scheduled tests allowed per day are spent.
+			notTested = "the day's tests are used up"
 		}
 		switch {
 		case cand.Disabled:
@@ -1769,6 +1828,7 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		if len(e.Usage.UsedUp) > 0 {
 			e.Notes = append(e.Notes, dockNote{Tone: "limit", Text: e.Usage.UsedUp})
 		}
+		e.identity = dockAccountIdentity(cand, e.Usage)
 		c.Entries = append(c.Entries, e)
 	}
 	if c.Omitted > 0 {
@@ -1791,6 +1851,18 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f 
 		c.Brief, c.Short = fmt.Sprintf("%d of %d other routes ready", f.Ready, f.Eligible), !f.Enough
 	}
 	return c
+}
+
+// dockAccountIdentity is the route's account identity when one is recorded:
+// the probe's usage identity, when its configuration selects an account (an
+// environment or an executable of its own) or a usage reading was recorded
+// under it. Without either the usage identity is only the provider and group
+// names, which say nothing about which account a route uses, so it is "".
+func dockAccountIdentity(c config.Candidate, u dockUsageTarget) string {
+	if len(c.ProbeEnv()) == 0 && c.ProbeCLI() == "" && u.Availability == "unavailable" {
+		return ""
+	}
+	return probe.UsageIdentity(c)
 }
 
 // dockEnter says how a loop gets onto a route, from its configuration alone.

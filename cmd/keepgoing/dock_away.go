@@ -27,6 +27,9 @@ const (
 	dockReturnOn      = "on"
 	dockReturnOff     = "off"
 	dockReturnStopped = "stopped"
+	// dockReturnNoHandoff: returning is on, but it follows only a handoff and
+	// state records none (a retarget does not set one), so it will not come.
+	dockReturnNoHandoff = "no_handoff"
 )
 
 // dockDeparture is one route the loop left on its way to its current route.
@@ -39,6 +42,9 @@ type dockDeparture struct {
 	// first route on a usage limit; only the first route has one.
 	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
 	ResetPassed bool       `json:"resetPassed"`
+	// ResetFar: the provider reported a reset more than a year from the
+	// read; it is not shown.
+	ResetFar bool `json:"resetFar,omitempty"`
 	// Text is the sentence on the loop's page; Others is the same fact on the
 	// routes view, starting with the loop's name.
 	Text   dockText `json:"text"`
@@ -58,7 +64,7 @@ type dockAway struct {
 	Since  *time.Time `json:"since,omitempty"`
 	// How is why the first route was left, as in dockDeparture.How.
 	How           string          `json:"how"`
-	Return        string          `json:"return"` // on, off or stopped
+	Return        string          `json:"return"` // on, off, stopped or no_handoff
 	LastReturnTry *time.Time      `json:"lastReturnTry,omitempty"`
 	Departures    []dockDeparture `json:"departures"`
 	// Short and Why are the two lines of the Route card; Picker is what the
@@ -144,9 +150,13 @@ func dockAwayOf(st *statusOut, chain *dockChainInput, entries []dockChainEntry, 
 		return ""
 	}
 	switch {
+	case !chain.SwitchBack:
 	case st.TakeoverBriefs.SwitchBackStopped:
 		a.Return = dockReturnStopped
-	case chain.SwitchBack:
+	case st.State.LastHandoffAt.IsZero():
+		// switchBackReady returns false without a recorded handoff.
+		a.Return = dockReturnNoHandoff
+	default:
 		a.Return = dockReturnOn
 	}
 	if t := st.State.LastSwitchBackTry; !t.IsZero() {
@@ -180,8 +190,12 @@ func dockAwayOf(st *statusOut, chain *dockChainInput, entries []dockChainEntry, 
 		if pos == 0 && m.isHandoff && m.how == dockLeftLimit && i == newestFromFirst {
 			// state keeps the reset reported at the newest handoff off the first
 			// route; it belongs to this departure and no other.
-			if r := st.State.PrimaryResetsAt; dockSaneReset(now, &r) && !st.State.LastHandoffAt.IsZero() && !at.After(st.State.LastHandoffAt) {
-				d.ResetsAt, d.ResetPassed = &r, !now.Before(r)
+			if r := st.State.PrimaryResetsAt; !r.IsZero() && !st.State.LastHandoffAt.IsZero() && !at.After(st.State.LastHandoffAt) {
+				if dockSaneReset(now, &r) {
+					d.ResetsAt, d.ResetPassed = &r, !now.Before(r)
+				} else {
+					d.ResetFar = true
+				}
 			}
 		}
 		found[pos] = true
@@ -230,6 +244,8 @@ func (a *dockAway) finish(now time.Time) {
 	switch first.How {
 	case dockLeftLimit:
 		switch {
+		case first.ResetFar:
+			a.Why = txt("First choice hit a usage limit; the reported reset is more than a year away")
 		case first.ResetsAt == nil:
 			a.Why = txt("First choice hit a usage limit; no reset time was reported")
 		case first.ResetPassed:
@@ -311,6 +327,8 @@ func (a *dockAway) departureText(d dockDeparture, subject string, now time.Time)
 	// Only the first route has a reported reset and a return.
 	if d.How == dockLeftLimit {
 		switch {
+		case d.ResetFar:
+			s = txt(s, " The provider reported a reset more than a year away; it is not shown.")
 		case d.ResetsAt == nil:
 			s = txt(s, " The provider reported no reset time.")
 		case d.ResetPassed:
@@ -328,6 +346,12 @@ func (a *dockAway) departureText(d dockDeparture, subject string, now time.Time)
 		s = txt(s, " keepgoing will not return by itself: returning is switched off for "+forWhom+".")
 	case dockReturnStopped:
 		s = txt(s, " keepgoing has stopped trying to return, after its attempts were refused.")
+	case dockReturnNoHandoff:
+		if d.How == dockLeftCommand {
+			s = txt(s, " keepgoing will not return by itself: the loop was moved by a command.")
+		} else {
+			s = txt(s, " keepgoing will not return by itself: its state records no handoff to return from.")
+		}
 	default:
 		switch {
 		case d.How == dockLeftLimit && d.ResetsAt != nil && !d.ResetPassed:

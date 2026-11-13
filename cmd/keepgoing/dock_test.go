@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -340,7 +341,7 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		}},
 			"waiting_on_limit", "Waiting for a limit to reset", "A check recorded a provider usage limit with no other route able to take over. The loop is not held and keeps checking.", "", "In use now"},
 		{"on, network down at the last connectivity check", dockEvidence{controls: on, status: func(s *statusOut) { s.State.NetworkDownSince = dockNow.Add(-40 * time.Minute) }},
-			"waiting_on_network", "Waiting for the network", "The network was down at the last connectivity check, 1 min ago, after failing for 39 min. Work that needs the network waits until a check finds it back.", "", "In use now"},
+			"waiting_on_network", "Waiting for the network", "A connectivity check found the network down 40 min ago, and no connectivity check since has found it back. Work that needs the network waits until one does.", "", "In use now"},
 		{"on, network down at a connectivity check that is now stale", dockEvidence{controls: on, status: func(s *statusOut) {
 			s.State.CheckedAt, s.State.NetworkDownSince = dockNow.Add(-2*time.Hour), dockNow.Add(-3*time.Hour)
 		}},
@@ -865,10 +866,11 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 	if thread == nil || headless == nil || payFirst == nil {
 		t.Fatalf("routes %v", len(routes))
 	}
-	// The route two loops left carries both records, each in its own words.
+	// The route two loops left carries both records, each in its own words,
+	// the one still at a limit first.
 	if len(thread.LeftBy) != 2 || thread.Attention != "limit" || len(thread.Notes) != 2 ||
-		say(thread.Notes[1].Text) != "report-builder hit a usage limit here on Sun 3 Mar, and moved on. The provider reported no reset time. keepgoing will not return by itself: returning is switched off for report-builder." ||
-		thread.Notes[0].Tone != "plain" || thread.Notes[1].Tone != "limit" {
+		say(thread.Notes[0].Text) != "report-builder hit a usage limit here on Sun 3 Mar, and moved on. The provider reported no reset time. keepgoing will not return by itself: returning is switched off for report-builder." ||
+		thread.Notes[0].Tone != "limit" || thread.Notes[1].Tone != "plain" {
 		t.Errorf("%+v", thread.Notes)
 	}
 	if len(payFirst.LeftBy) != 1 || payFirst.Attention != "limit" {
@@ -987,14 +989,42 @@ func TestDockAwayAttributesEachRouteToItsOwnRecord(t *testing.T) {
 			}
 		}
 	}
-	// A stopped return, and a reset hundreds of years out, which is not taken
-	// as a reported time.
+	// A stopped return, and a reset hundreds of years out, which is said as
+	// reported but not shown.
+	back := *chain
+	back.SwitchBack = true
 	st := &statusOut{Target: first, TargetConfigured: true, State: state.File{PrimaryResetsAt: dockNow.AddDate(300, 0, 0), LastHandoffAt: t1}}
 	st.TakeoverBriefs.SwitchBackStopped = true
 	tl := &timelineReport{Events: []timelineEntry{move(t1, "tick", state.Primary, first, "rate_limit")}}
-	if a := dockAwayOf(st, chain, nil, tl, dockNow); a.Return != dockReturnStopped || a.Departures[0].ResetsAt != nil ||
-		say(a.Departures[0].Text, dockNow) != "Hit a usage limit here on Mon 4 Mar, and the loop moved on. The provider reported no reset time. keepgoing has stopped trying to return, after its attempts were refused." {
+	if a := dockAwayOf(st, &back, nil, tl, dockNow); a.Return != dockReturnStopped || a.Departures[0].ResetsAt != nil || !a.Departures[0].ResetFar ||
+		say(a.Departures[0].Text, dockNow) != "Hit a usage limit here on Mon 4 Mar, and the loop moved on. The provider reported a reset more than a year away; it is not shown. keepgoing has stopped trying to return, after its attempts were refused." ||
+		say(a.Why, dockNow) != "First choice hit a usage limit; the reported reset is more than a year away" {
 		t.Errorf("%+v %q", a, say(a.Departures[0].Text, dockNow))
+	}
+	// Returning is on, but after a retarget alone state records no handoff,
+	// and keepgoing returns only from a handoff.
+	st = &statusOut{Target: first, TargetConfigured: true}
+	tl = &timelineReport{Events: []timelineEntry{move(t1, "retarget", state.Primary, first, "")}}
+	if a := dockAwayOf(st, &back, nil, tl, dockNow); a.Return != dockReturnNoHandoff ||
+		say(a.Departures[0].Text, dockNow) != "The loop was pointed at another route by a command on Mon 4 Mar. keepgoing will not return by itself: the loop was moved by a command." {
+		t.Errorf("%+v %q", a, say(a.Departures[0].Text, dockNow))
+	}
+	// With a handoff recorded, the same loop does return, and says so.
+	st.State.LastHandoffAt, st.State.LastSwitchBackTry = t1, t2
+	tl = &timelineReport{Events: []timelineEntry{move(t1, "tick", state.Primary, first, "auth")}}
+	if a := dockAwayOf(st, &back, nil, tl, dockNow); a.Return != dockReturnOn || !strings.HasSuffix(say(a.Departures[0].Text, dockNow), " A return was last tried 3 h ago.") {
+		t.Errorf("%+v %q", a, say(a.Departures[0].Text, dockNow))
+	}
+	// Each departure carries the time of its own hop, not the newest one.
+	st = &statusOut{Target: second, TargetConfigured: true, State: state.File{LastHandoffAt: t2}}
+	tl = &timelineReport{Events: []timelineEntry{move(t1, "tick", state.Primary, first, "auth"), move(t2, "tick", first, second, "rate_limit")}}
+	a := dockAwayOf(st, chain, nil, tl, dockNow)
+	at := map[int]time.Time{}
+	for _, d := range a.Departures {
+		at[d.Position] = *d.At
+	}
+	if !at[0].Equal(t1) || !at[1].Equal(t2) || !a.Since.Equal(t2) {
+		t.Errorf("hop times %v since %v", at, a.Since)
 	}
 }
 
@@ -1407,8 +1437,9 @@ func dockMaximalInput(i int) dockInput {
 }
 
 // The largest registry, with every loop maximal, stays well inside the
-// response bound, with and without identifiers. It measured about 4.5 MB,
-// which dock.go and docs/dock.md quote.
+// response bound, with and without identifiers. It measured about 4.4 MB
+// with ASCII names (5.1 MB with four-byte ones, below), which dock.go and
+// docs/dock.md quote.
 func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 	inputs := make([]dockInput, dockMaxLoops)
 	for i := range inputs {
@@ -1421,8 +1452,8 @@ func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("identifiers %t: %d bytes, %d routes (%d omitted)", ids, len(body), len(r.Routes), r.RoutesOmitted)
-		if len(body) > dockMaxResponse*5/8 {
-			t.Errorf("identifiers %t: %d bytes, over five eighths of the %d-byte bound", ids, len(body), dockMaxResponse)
+		if len(body) > dockMaxResponse*3/4 {
+			t.Errorf("identifiers %t: %d bytes, over three quarters of the %d-byte bound", ids, len(body), dockMaxResponse)
 		}
 		if len(r.Routes) > dockMaxRoutes || r.RoutesOmitted == 0 {
 			t.Errorf("%d routes, %d omitted", len(r.Routes), r.RoutesOmitted)
@@ -1557,5 +1588,216 @@ func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
 		if bytes.Contains(body, []byte(id)) {
 			t.Errorf("%q in the default report", id)
 		}
+	}
+}
+
+// A usage limit is said to be shared only between routes with a recorded
+// account identity: with no probe, the usage identity is just the provider
+// and group names, and two routes are not said to share anything.
+func TestDockSharedLimitNeedsARecordedAccountIdentity(t *testing.T) {
+	left := dockNow.Add(-time.Hour)
+	build := func(withProbe bool) dockReport {
+		agent := func(model string) config.Candidate {
+			c := config.Candidate{ID: state.Primary}
+			c.Adapter, c.Provider, c.Group = "bb", "claude-code", "shared-group"
+			c.BB = &config.BB{Model: model}
+			// The kind configuration loading gives a claude-code route with no
+			// probe block; nothing in it selects an account.
+			c.Probe.Kind = "claude"
+			if withProbe {
+				c.Probe.Env = map[string]string{"CLAUDE_CONFIG_DIR": "/fictional/accounts/shared"}
+			}
+			return c
+		}
+		loop := func(n int, model string, away bool) dockInput {
+			in := dockEvidence{controls: &clientControls{Enabled: true}}.input()
+			in.Entry = registry.Entry{ID: fmt.Sprintf("loop_%032x", n), Loop: fmt.Sprintf("example-loop-%d", n)}
+			fallback := config.Candidate{ID: "example-fallback"}
+			fallback.Adapter, fallback.Provider, fallback.Group = "bb", "example", "other-group"
+			in.Chain = &dockChainInput{Primary: agent(model), Candidates: []config.Candidate{fallback}}
+			if away {
+				in.Status.Target, in.Status.State.LastCheck.Target = "example-fallback", "example-fallback"
+				in.Status.State.LastHandoffAt = left
+				in.Timeline = &timelineReport{Events: []timelineEntry{{At: left, Incident: &incident.Record{Kind: "tick", CheckStartedAt: left, Action: "handoff", Outcome: "succeeded",
+					TargetKey: incident.TargetKey(state.Primary), TargetKeyAfter: incident.TargetKey("example-fallback"), Observation: incident.Observation{ErrorClass: "rate_limit"}}}}}
+			}
+			return in
+		}
+		return buildDockReport([]dockInput{loop(1, "example-large", true), loop(2, "example-small", false)}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true)
+	}
+	shares := func(r dockReport) int {
+		n := 0
+		for _, x := range r.Routes {
+			for _, note := range x.Notes {
+				if strings.HasPrefix(say(note.Text, dockNow), "Shares its account") {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	r := build(false)
+	if n := shares(r); n != 0 {
+		t.Errorf("%d sharing claims with no recorded account identity", n)
+	}
+	unidentified := 0
+	for _, a := range r.Allowances {
+		if strings.Contains(a.Sub, "which account is not identified by a test") {
+			unidentified++
+		}
+		for _, note := range a.Notes {
+			if strings.Contains(say(note.Text, dockNow), "on this account") {
+				t.Errorf("%q", say(note.Text, dockNow))
+			}
+		}
+	}
+	if unidentified != len(r.Allowances) || len(r.Allowances) != len(r.Routes) {
+		t.Errorf("%d of %d allowance lines unidentified, %d routes", unidentified, len(r.Allowances), len(r.Routes))
+	}
+	// Both first routes select the same account directory: now they do share it.
+	if n := shares(build(true)); n != 1 {
+		t.Errorf("%d sharing claims with a recorded account identity", n)
+	}
+}
+
+// Routes are sorted by importance before the cap, and every list says how
+// many it left out.
+func TestDockRouteListsAreSortedBeforeTheyAreCapped(t *testing.T) {
+	known := dockTarget{Availability: "known"}
+	limit := &dockAway{Choice: 2, Return: dockReturnOff, Departures: []dockDeparture{{Position: 0, How: dockLeftLimit, At: dockPtr(dockNow.Add(-time.Hour))}}}
+	limit.finish(dockNow)
+	command := &dockAway{Choice: 2, Return: dockReturnOff, Departures: []dockDeparture{{Position: 0, How: dockLeftCommand, At: dockPtr(dockNow.Add(-time.Minute))}}}
+	command.finish(dockNow)
+	entry := func(route string) dockChainEntry {
+		return dockChainEntry{Position: 0, Route: route, Title: route, Readiness: "main", Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}}
+	}
+	// More routes than the cap; the one at a limit comes from the last loop.
+	loops := []dockLoop{}
+	for i := range dockMaxRoutes + 6 {
+		l := dockLoop{Key: fmt.Sprintf("l%d", i), Name: fmt.Sprintf("example-%d", i), State: "supervising", CurrentRoute: known, Chain: dockChain{Entries: []dockChainEntry{entry(fmt.Sprintf("r%03d", i))}}}
+		if i == dockMaxRoutes+5 {
+			l.Away = limit
+		}
+		loops = append(loops, l)
+	}
+	routes, omitted := dockRoutes(loops, dockNow)
+	if len(routes) != dockMaxRoutes || omitted != 6 || routes[0].Key != fmt.Sprintf("r%03d", dockMaxRoutes+5) || routes[0].Attention != "limit" {
+		t.Errorf("%d routes, %d omitted, first %s %s", len(routes), omitted, routes[0].Key, routes[0].Attention)
+	}
+	// More loops left one route than are listed: the one at a limit is kept,
+	// the newer command moves are cut, and the cut is counted.
+	loops = []dockLoop{}
+	for i := range dockMaxRouteLoops + 4 {
+		a := command
+		if i == 0 {
+			a = limit
+		}
+		loops = append(loops, dockLoop{Key: fmt.Sprintf("l%d", i), Name: fmt.Sprintf("example-%d", i), State: "supervising", CurrentRoute: known, Away: a, Chain: dockChain{Entries: []dockChainEntry{entry("r-shared")}}})
+	}
+	routes, _ = dockRoutes(loops, dockNow)
+	r := routes[0]
+	if len(r.LeftBy) != dockMaxRouteLoops || !r.LeftBy[0].atLimit() || r.Attention != "limit" || r.Omitted < 4 || r.More == "" || r.Notes[0].Tone != "limit" {
+		t.Errorf("%d left by, first at limit %t, omitted %d, more %q", len(r.LeftBy), r.LeftBy[0].atLimit(), r.Omitted, r.More)
+	}
+	// A used-up window past the cap of windows shown is still said.
+	windows := []usageWindowView{}
+	for k := range dockMaxWindows + 2 {
+		windows = append(windows, usageWindowView{UsageWindow: probe.UsageWindow{Key: fmt.Sprintf("window_%d", k), Used: 0.1}})
+	}
+	windows[len(windows)-1].Used = 1
+	read := dockNow.Add(-time.Minute)
+	if u := dockUsageOf(usageView{State: "available", ObservedAt: &read, Windows: windows}, dockNow); len(u.Windows) != dockMaxWindows || u.Omitted != 2 || len(u.UsedUp) == 0 {
+		t.Errorf("%d windows, %d omitted, used up %q", len(u.Windows), u.Omitted, say(u.UsedUp, dockNow))
+	}
+}
+
+// A reported reset more than a year away is said as reported, not as missing.
+func TestDockFarResetsAreSaidAndNotShown(t *testing.T) {
+	far, read := dockNow.AddDate(300, 0, 0), dockNow.Add(-time.Minute)
+	u := dockUsageOf(usageView{State: "available", ObservedAt: &read, Windows: []usageWindowView{{UsageWindow: probe.UsageWindow{Key: "five_hour", Used: 1, ResetsAt: &far}}}}, dockNow)
+	if u.Windows[0].ResetsAt != nil || say(u.Windows[0].Reset, dockNow) != "Reported to reset more than a year away; not shown" ||
+		say(u.UsedUp, dockNow) != "5-hour allowance used up when read 1 min ago; the reported reset is more than a year away and is not shown." {
+		t.Errorf("%+v %q", u.Windows[0], say(u.UsedUp, dockNow))
+	}
+	for _, c := range []struct {
+		resets *time.Time
+		want   string
+	}{
+		{&far, "Provider limit: the reported reset is more than a year away; it is not shown"},
+		{nil, "Provider limit: no reset time was reported"},
+	} {
+		in := dockEvidence{controls: &clientControls{Enabled: true}, status: func(s *statusOut) {
+			s.LimitWait = limitWaitStatus{State: "reported", Target: "primary", ResetsAt: c.resets}
+		}}.input()
+		l, _ := projectDockLoop(in, dockNow, defaultStaleAfter, false)
+		if l.State != "waiting_on_limit" || l.LimitWait == nil || l.LimitWait.ResetsAt != nil || say(l.LimitWait.Text, dockNow) != c.want {
+			t.Errorf("%s %+v", l.State, l.LimitWait)
+		}
+	}
+}
+
+// Through the reader: a loop with scheduled tests switched off is never
+// overdue, and one whose tests for the day are spent says so.
+func TestDockOverdueFollowsTheSchedulersOwnRules(t *testing.T) {
+	d, root := dockFixtureReader(t)
+	headless := func() string {
+		d.cache = nil
+		return dockLoopNamed(t, d.read(context.Background(), false), "inventory-sync").Chain.Entries[2].Phrase
+	}
+	if got := headless(); got != "Passed its test 8 h ago; a new test is overdue (it is tested every 4 h)" {
+		t.Fatalf("%q", got)
+	}
+	dir := filepath.Join(root, "loops", "inventory-sync")
+	cfg, err := config.Load(filepath.Join(dir, "keepgoing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := health.Load(cfg.Loop.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Candidates["codex-headless"].ProbeDay, reg.Candidates["codex-headless"].ProbesToday = dockNow.UTC().Format("2006-01-02"), cfg.FallbackSet.Probe.DailyCap
+	if err := reg.Save(cfg.Loop.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	if got := headless(); got != "Ready: passed its test 8 h ago; the day's tests are used up" {
+		t.Errorf("daily cap: %q", got)
+	}
+	fb := filepath.Join(dir, "fallbacks.yaml")
+	b, err := os.ReadFile(fb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockWrite(t, fb, strings.Replace(string(b), "probe:\n", "probe:\n  scheduled_disabled: true\n", 1))
+	if got := headless(); got != "Ready: passed its test 8 h ago" {
+		t.Errorf("tests off: %q", got)
+	}
+}
+
+// Names of four-byte characters cost at most twice their ASCII length, so
+// the largest registry stays inside the bound whatever its names are.
+func TestDockFourByteNamesStayUnderTheResponseBound(t *testing.T) {
+	if got := clip(strings.Repeat("\U0001D4B3", 200), dockMaxText); len(got) > 2*dockMaxText || !strings.HasSuffix(got, "…") || !utf8.ValidString(got) {
+		t.Errorf("%d bytes", len(got))
+	}
+	inputs := make([]dockInput, dockMaxLoops)
+	for i := range inputs {
+		in := dockMaximalInput(i)
+		wide := func(s string) string { return strings.Repeat("\U0001D4B3", 200) + s }
+		in.Entry.Loop = wide(in.Entry.Loop)
+		for j := range in.Chain.Candidates {
+			c := &in.Chain.Candidates[j]
+			c.Provider, c.Group, c.BB.Model = wide(c.Provider), wide(c.Group), wide(c.BB.Model)
+		}
+		in.Chain.Primary.Agent = in.Chain.Candidates[0].Agent
+		inputs[i] = in
+	}
+	body, err := json.Marshal(buildDockReport(inputs, dockNow, time.Minute, defaultStaleAfter, true, true, 0, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%d bytes", len(body))
+	if len(body) > dockMaxResponse*3/4 {
+		t.Errorf("%d bytes, over three quarters of the %d-byte bound", len(body), dockMaxResponse)
 	}
 }
