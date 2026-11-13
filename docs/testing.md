@@ -70,7 +70,7 @@ Routine identities are covered at each layer: parsing in `internal/rundiscovery`
 
 Blockers are covered at each layer: the waiting record and its schema upgrade in `internal/rungraph`; a check recording the child picture by key only, and as unknown when it is incomplete, in `internal/supervise`; blocker, blocking-loop and owner projection in `^TestRuns`; and a Unix-only command test that runs a parent and a child loop at once against the stand-in provider and checks that reading and following the blocker sends nothing and changes no file in either loop.
 
-Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity (only the flag was exercised), and any GUI reader. `keepgoing runs` has one [live check](run-discovery.md#live-check) on a BB target; its headless, duplicate-name, registry and send traversal paths are fixture-only. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
+Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity (only the flag was exercised), and any GUI reader. `keepgoing runs` has one [live check](run-discovery.md#live-check) on a BB target and one of [what a loop is waiting on](run-discovery.md#live-check-waiting-on), which showed a working child and the owner but not a failed, stuck or registered child; its headless, duplicate-name, registry and send traversal paths are fixture-only. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
 ## On a machine with Go
 
