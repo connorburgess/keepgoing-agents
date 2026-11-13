@@ -125,7 +125,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
         // its re-check declines. Only a confirmed start is reported as one.
         job.outcome = started.started === true
           ? { ...job.outcome, startedAutomatically: true, message: "Started when this thread was created." }
-          : { ...job.outcome, message: `Created from this thread's first message. It was not started automatically${started.ok ? `: ${started.message}` : ", because the start could not be confirmed, and it was not tried again. Check the status below, then start it here if it is not running."}` };
+          : { ...job.outcome, message: started.refused ? `Created from this thread's first message and left switched off. ${started.message}` : `Created from this thread's first message. It was not started automatically${started.ok ? `: ${started.message}` : ", because the start could not be confirmed, and it was not tried again. Check the status below, then start it here if it is not running."}` };
       }
     } catch {
       fail(job, attempted

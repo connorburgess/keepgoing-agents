@@ -21,11 +21,29 @@ export const setupInput = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).optional(),
   task: z.string().max(262144).optional(), ticket: text.optional(),
 });
+/**
+ * A refusal keepgoing reports in a structured form. The plugin shows a fixed
+ * sentence for each known code, with the other loop's name and nothing else:
+ * no path, no account, no text from the CLI. The name must be a loop name.
+ * A refusal is never overridden from the plugin.
+ */
+export const refusalSchema = z.object({
+  code: z.literal("second_loop_on_session"),
+  otherLoop: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+});
+export type Refusal = z.infer<typeof refusalSchema>;
+/** What `keepgoing init --json` and `start` print on stdout when they refuse. */
+export const refusedReportSchema = z.object({ schemaVersion: z.literal(1), outcome: z.literal("refused"), refusal: refusalSchema });
+export function refusalMessage(r: Refusal, command: "init" | "start"): string {
+  return `keepgoing refused to ${command === "init" ? "set up" : "start"} this loop: loop ${r.otherLoop} already supervises this thread's session, and two loops on one session would both prompt it. ${command === "init" ? "Nothing was created." : "Nothing was started."} To have this thread supervised here instead, pause or disable ${r.otherLoop} first.`;
+}
 export const checkSchema = z.object({ id: text, status: z.enum(["ok", "warning", "error", "unavailable"]), message: text, fix: z.string().max(4096).optional() });
 export const setupResult = z.object({
   ok: z.boolean(), message: z.string(), ticket: z.string().optional(), plan: planSchema.optional(),
   record: recordSchema.optional(), goal: goalSummarySchema.nullable().optional(), goalState: goalStateSchema.optional(), checks: z.array(checkSchema).optional(), canStart: z.boolean().optional(),
   // True only when this call ran the start command and it reported success.
   started: z.boolean().optional(),
+  // Set when keepgoing itself refused, with a structured reason.
+  refused: refusalSchema.optional(),
 });
 export type SetupResult = z.infer<typeof setupResult>;

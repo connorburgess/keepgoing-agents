@@ -132,3 +132,42 @@ test("goal selection binds the preview and is passed through every init call", a
   assert.equal(held.canStart, false); assert.equal(held.goalState, "unavailable");
   assert.ok(!f.calls.includes("start")); assert.ok(!JSON.stringify(held).includes("PRIVATE"));
 });
+
+const refused = { code: "second_loop_on_session" as const, otherLoop: "other-loop" };
+
+test("keepgoing's refusal to set up a second loop is shown in plain words with the other loop's name, and nothing is created", async () => {
+  for (const at of ["preview", "create"] as const) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (bin, target, name, task, dry, goal, bounds) => {
+      // Refused at preview, or only when creation re-checks (another loop was enabled in between).
+      if ((at === "preview" && dry) || (at === "create" && !dry)) { f.calls.push(dry ? "preview" : "create"); return { refused }; }
+      return init(bin, target, name, task, dry, goal, bounds);
+    };
+    const p = await f.preview();
+    const r = at === "preview" ? p : await f.create(p.ticket);
+    assert.equal(r.ok, false, at); assert.deepEqual(r.refused, refused);
+    assert.equal(r.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.");
+    assert.equal(f.records().length, 0, `${at}: no reference is saved`);
+    assert.ok(!f.calls.includes("start"), `${at}: nothing is started`);
+    assert.ok(!/allow-second-loop|override|anyway/i.test(r.message), "the plugin offers no way around the refusal");
+  }
+});
+
+test("keepgoing's refusal to start is shown with the other loop's name and is not retried", async () => {
+  const f = fixture();
+  const p = await f.preview(); await f.create(p.ticket);
+  const command = f.d.command;
+  f.d.command = async (bin, record, op) => op === "start"
+    ? (f.calls.push("start"), { code: 1, data: { schemaVersion: 1, outcome: "refused", refusal: refused } })
+    : command(bin, record, op);
+  const r = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(r.ok, false); assert.equal(r.started, false); assert.equal(r.canStart, false); assert.deepEqual(r.refused, refused);
+  assert.match(r.message, /^keepgoing refused to start this loop: loop other-loop already supervises this thread's session/);
+  assert.match(r.message, /Nothing was started\./);
+  assert.equal(f.calls.filter(c => c === "start").length, 1);
+  // A start failure without a structured reason keeps the existing wording.
+  f.d.command = async (bin, record, op) => op === "start" ? { code: 1, data: null } : command(bin, record, op);
+  const plain = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(plain.refused, undefined); assert.match(plain.message, /Start could not be confirmed/);
+});

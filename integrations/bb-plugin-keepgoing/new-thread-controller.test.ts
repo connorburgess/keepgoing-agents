@@ -342,6 +342,30 @@ test("a creation that could not be confirmed names what may exist and where, and
   assert.equal(t.state, "failed"); assert.ok(t.configPath); assert.ok(!JSON.stringify(t).includes("PRIVATE")); assert.equal(threw.c.held().taskBytes, 0);
 });
 
+test("keepgoing's own refusal reaches the thread in its words, with the other loop's name", async () => {
+  const atPreview = fixture();
+  const setup = atPreview.d.setup;
+  atPreview.d.setup = async (input, bounds) => input.action === "preview"
+    ? (atPreview.w.setups.push({ action: "preview", threadId: input.threadId, name: input.name, task: input.task, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session." })
+    : setup(input, bounds);
+  atPreview.c.dispatched(atPreview.dispatch(await atPreview.arm())); await atPreview.c.advance("thr_new");
+  const o = await atPreview.outcome();
+  assert.equal(o.state, "failed"); assert.equal(o.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session.");
+  assert.deepEqual(atPreview.w.setups.map(s => s.action), ["preview"]); assert.equal(o.configPath, undefined);
+
+  const atStart = fixture(); atStart.w.mode = "automatic";
+  const setup2 = atStart.d.setup;
+  atStart.d.setup = async (input, bounds) => input.action === "start"
+    ? (atStart.w.setups.push({ action: "start", threadId: input.threadId, bounds }), { ok: false, started: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to start this loop: loop other-loop already supervises this thread's session. Nothing was started." })
+    : setup2(input, bounds);
+  atStart.c.dispatched(atStart.dispatch(await atStart.arm())); await atStart.c.advance("thr_new");
+  const s = await atStart.outcome();
+  assert.equal(s.state, "ready"); assert.equal(s.startedAutomatically, false);
+  assert.match(s.message, /left switched off\. keepgoing refused to start this loop: loop other-loop/);
+  await atStart.c.advance("thr_new"); await atStart.outcome();
+  assert.equal(atStart.w.setups.filter(x => x.action === "start").length, 1, "never retried");
+});
+
 test("bounds outside the closed list are refused before anything is recorded", async () => {
   const f = fixture();
   for (const bounds of [{ maxSends: 0, noProgressTimeout: "24h" }, { maxSends: 5000, noProgressTimeout: "24h" }, { maxSends: 40, noProgressTimeout: "0" }, { maxSends: 40 }]) {

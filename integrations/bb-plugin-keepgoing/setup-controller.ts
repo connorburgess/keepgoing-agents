@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { goalDetails } from "./status-details.ts";
-import { checkSchema, setupInput, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
+import { checkSchema, refusalMessage, refusedReportSchema, setupInput, type Refusal, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
 import type { Bounds } from "./new-thread-contract.ts";
 
 export interface SetupDependencies {
@@ -10,7 +10,7 @@ export interface SetupDependencies {
   records(): Promise<SetupRecord[]>;
   save(records: SetupRecord[]): Promise<void>;
   guard(threadId: string): Promise<void>;
-  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds): Promise<{ plan: SetupPlan }>;
+  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds): Promise<{ plan: SetupPlan } | { refused: Refusal }>;
   command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start"): Promise<{ code: number; data: unknown }>;
   changed(): void;
 }
@@ -68,6 +68,8 @@ export function createSetupController(d: SetupDependencies) {
       if (input.action === "inspect" || !result.canStart) return result;
       await sameTarget(existing);
       const start = await d.command(bin, existing, "start");
+      const startRefused = start.code !== 0 ? refusedReportSchema.safeParse(start.data) : undefined;
+      if (startRefused?.success) { d.changed(); return { ...result, ok: false, canStart: false, started: false, refused: startRefused.data.refusal, message: refusalMessage(startRefused.data.refusal, "start") }; }
       d.changed();
       return { ...result, canStart: false, ok: start.code === 0, started: start.code === 0, message: start.code === 0 ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
     }
@@ -81,7 +83,9 @@ export function createSetupController(d: SetupDependencies) {
       if (!input.name) throw new SetupPolicyError("Enter a loop name using lowercase letters, digits, and hyphens.");
       for (const [key, p] of previews) if (p.expires < Date.now()) previews.delete(key);
       if (previews.size >= 64) throw new SetupPolicyError("Too many pending previews. Wait five minutes and retry.");
-      const { plan } = await d.init(bin, target, input.name, task, true, withGoal, bounds);
+      const previewed = await d.init(bin, target, input.name, task, true, withGoal, bounds);
+      if ("refused" in previewed) return { ok: false, refused: previewed.refused, message: refusalMessage(previewed.refused, "init") };
+      const { plan } = previewed;
       const ticket = randomUUID();
       previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, bounds, bin, plan, expires: Date.now() + 300_000 });
       return { ok: true, ticket, plan, message: "Preview only. Creating this setup leaves supervision disabled; fallbacks and automatic handoffs are off." };
@@ -91,8 +95,12 @@ export function createSetupController(d: SetupDependencies) {
     if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || !equal(preview.bounds, bounds) || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, target, or binary changed. Preview again.");
     if (records.length >= MAX_SETUPS) throw new SetupPolicyError(`The plugin already has ${MAX_SETUPS} saved setups; manage existing loops before adding another.`);
     const fresh = await d.init(bin, target, preview.name, task, true, withGoal, bounds);
+    if ("refused" in fresh) return { ok: false, refused: fresh.refused, message: refusalMessage(fresh.refused, "init") };
     if (!equal(fresh.plan, preview.plan)) throw new SetupPolicyError("The resolved setup changed. Preview again before creating it.");
     const created = await d.init(bin, target, preview.name, task, false, withGoal, bounds);
+    // Refused at creation, after a preview that passed: keepgoing checks
+    // before it writes anything, so nothing was created.
+    if ("refused" in created) return { ok: false, refused: created.refused, message: refusalMessage(created.refused, "init") };
     if (!equal(created.plan, preview.plan)) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
     const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop };
     try { await d.save([...records, record]); }

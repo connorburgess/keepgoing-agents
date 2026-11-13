@@ -112,3 +112,19 @@ test("goal choice is explicit, invalidates preview on change, and shows recorded
     assert.ok(!calls.some(c => c.action === "start"));
   } finally { cleanup(); }
 });
+
+test("keepgoing's refusal is shown in its words and the panel offers no way around it", async () => {
+  const message = "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.";
+  const call = async (input: { action: string }): Promise<SetupResult> => input.action === "preview"
+    ? { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message }
+    : { ok: true, message: "Enter a task" };
+  const ui = render(<SetupPanel threadId="thr_example" call={call} onChanged={() => {}} />);
+  try {
+    await ui.findByText("Enter a task");
+    fireEvent.change(ui.getByLabelText("Task and completion criteria"), { target: { value: "Fictional task" } });
+    fireEvent.click(ui.getByRole("button", { name: "Preview setup" }));
+    assert.equal((await ui.findByRole("alert")).textContent, message);
+    assert.equal(ui.queryByRole("button", { name: /Create|Start|anyway|override/i }), null);
+    assert.ok(!ui.container.textContent?.includes("allow-second-loop"));
+  } finally { ui.unmount(); cleanup(); }
+});

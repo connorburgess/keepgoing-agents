@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import { goalSummarySchema } from "./status-details.ts";
-import { planSchema, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
+import { planSchema, refusedReportSchema, type Refusal, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
 import { durationMs, type Bounds } from "./new-thread-contract.ts";
 
 export type Execute = (bin: string, args: string[], input: string, threadId: string, signal?: AbortSignal) => Promise<{ code: number; data: unknown }>;
@@ -26,7 +26,7 @@ const cliPlan = z.object({
   fallbacks: z.array(z.unknown()).length(0),
   limits: planSchema.shape.limits.extend({ failoverOn: z.array(z.unknown()).length(0) }),
 });
-export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds }, signal?: AbortSignal, run: Execute = execute) {
+export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema> } | { refused: Refusal }> {
   const { bin, target, name, task, dryRun, withGoal = false, bounds } = input;
   const project = await realpath(target.project);
   const args = ["init", "--non-interactive", "--json", "--name", name, "--agent", "bb", "--thread", target.threadId, "--provider", target.provider, "--project", project, "--task-file", "-"];
@@ -35,6 +35,10 @@ export async function setupOnHost(input: { bin: string; target: SetupTarget; nam
   if (bounds) args.push("--max-sends", String(bounds.maxSends), "--no-progress-timeout", bounds.noProgressTimeout);
   if (dryRun) args.push("--dry-run");
   const result = await run(bin, args, task, target.threadId, signal);
+  // keepgoing's own refusal, when it reports one in a structured form. Only
+  // the code and the other loop's name cross back; never its stderr.
+  const refused = result.code !== 0 ? refusedReportSchema.safeParse(result.data) : undefined;
+  if (refused?.success) return { refused: refused.data.refusal };
   const parsed = cliPlan.safeParse(result.data);
   if (result.code !== 0 || !parsed.success) throw new Error("Setup failed or returned an unsupported result. " + (withGoal ? "Goal setup needs a CLI with init --with-goal (after v0.1.4); update the CLI or explicitly turn off goal creation and preview again. " : "") + "Check the setup destination; existing files are never overwritten.");
   const p = parsed.data;

@@ -39,7 +39,7 @@ The **Setup** control / expanded banner can refresh diagnostics later. Pause/res
 
 The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in private `task.md` for goal setup or `prompt.md` for task-only setup after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
 
-Existing configured supervision or a failed status lookup blocks creating another loop through this flow. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
+Existing configured supervision or a failed status lookup blocks creating another loop through this flow. When keepgoing itself refuses a second loop on the same session and reports that in a structured form, **Supervise this thread** shows its reason with the other loop's name; it never offers to override it. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
 
 ### Recovery and verification limits
 
@@ -82,6 +82,7 @@ When it cannot go ahead, it says why and does nothing else:
 - Another loop already supervises the thread, or that could not be checked: nothing is created or started.
 - The thread does not work in a Git repository: nothing is created.
 - The message has no text, or more than 256 KiB.
+- keepgoing itself refuses, for example because another loop already supervises the thread's session: the thread shows keepgoing's reason in plain words with the other loop's name, and nothing else from the CLI. The plugin offers no way to override the refusal. This needs a keepgoing that reports the refusal in a structured form (`{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"<name>"}}` on stdout); with one that reports it only as text, the ordinary "could not complete" message is shown.
 - Creation was asked for and could not be confirmed: the thread names the loop and shows its configuration path, because a switched-off setup may exist on the host. Check it there with `keepgoing status -c <path>`; to discard it, delete its directory. It is never started and never created again automatically.
 
 Limits of this flow:
