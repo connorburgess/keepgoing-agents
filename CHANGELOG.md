@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `keepgoing runs`, a read-only offline view of the run references in `graph.json` (roadmap D3): the current and earlier runs, their sends and chat/session references, for one loop or every registered loop, with `--id` to follow one exact reference and versioned `--json`. It takes no lock, calls no provider and changes no control. Session links and blocker navigation are reported as unavailable. See [CLI navigation](docs/run-discovery.md#cli-navigation-d3-unreleased).
+
 - Record run references in a private `graph.json` in each loop's state directory (roadmap D1, D2 partial): a durable loop identity, runs opened and closed by explicit control changes, each send intent and its returned call, and links to the chat/session and goal revision known without a provider query. Records are versioned, bounded and written atomically; a graph that cannot be read or written never fails a check or changes its decision, and adds one warning. No command reads the graph yet. See [run discovery](docs/run-discovery.md#persisted-reference-graph-d2-unreleased).
 
 - Guided `fallbacks add` now adds an existing BB thread (`--agent bb`): the loop's own conversation on another model, or a different thread on `claude-code` or `codex`, with model, reasoning level, quota group and probe settings. In the guided mode, after agreement, it offers pick lists from two read-only listings (`bb thread list`, `bb provider models`); flags never run `bb`. Thread IDs stay out of output unless requested. The preview states that BB's account cannot be seen and that a same-thread fallback shares the conversation. No message is sent and no thread is created or changed. Offline fixtures with a fake `bb` only.

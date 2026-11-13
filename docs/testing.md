@@ -45,7 +45,9 @@ The runner now exercises owned cancellation with native subprocess fixtures: leg
 
 `go test -race ./cmd/keepgoing -run 'RunReference|LostRunBoundary|ClientHoldRecords'` runs the real command entrypoint in separate OS processes against one state directory, with a shell stand-in for BB. It enables a loop, ticks, starts a daemon, kills it, starts another, and checks that the durable loop and run references are unchanged and that every send is its own attempt. This is the D1 restart evidence. It builds only on Unix because the stand-in is a shell script.
 
-Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity, and any CLI or GUI reader. Those need D3–D6 fixtures and live evidence where applicable. README artwork stays deferred.
+`go test -race ./cmd/keepgoing -run '^TestRuns'` exercises the `runs` reader against graphs written in temporary directories: loop, registry and exact-reference views, evidence labels, bounds, unusable records, two registered loops with one name, held loops with the tick, control and graph locks held, and byte-for-byte unchanged files. The Windows CI job runs these natively. A Unix-only test follows real `enable`/`tick` commands with the reader and checks the stand-in provider was not called.
+
+Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity, and any GUI reader. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
 ## On a machine with Go
 

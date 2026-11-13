@@ -41,6 +41,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   status                   Show control, active target, window, and fallback health
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
+  runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
 
 Transfer planning:
@@ -126,6 +127,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return startChild(e, rest)
 	case "timeline":
 		return timelineCommand(e, rest)
+	case "runs":
+		return runsCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
