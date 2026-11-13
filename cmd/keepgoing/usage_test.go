@@ -4,12 +4,15 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 )
 
@@ -163,5 +166,102 @@ func TestUsageReadingIsDisplayOnlyAndGoesStale(t *testing.T) {
 	_, out, _ = f.run("fallbacks", "list", "--json", "-now", "2026-11-16T13:30:00Z")
 	if !strings.Contains(out, `"state": "stale"`) {
 		t.Fatalf("stale state: %s", out)
+	}
+}
+
+// Each check whose probe carries a reading adds it to the history; no extra
+// probe or provider call is made for it. Two readings seconds apart are too
+// close to give a rate, and the BB route says where its readings come from.
+func TestUsageHistoryFromChecksAndProjectionLines(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.dir, "bin", "claude"), fakeClaudeWithUsage, 0o755)
+	for i := 0; i < 2; i++ {
+		if code, _, errs := f.run("fallbacks", "check"); code != exitOK {
+			t.Fatalf("check: %d %s", code, errs)
+		}
+	}
+	if probes := f.read("probes"); strings.Count(probes, "\n") != 4 {
+		t.Fatalf("one probe per candidate per check, no extra calls: %q", probes)
+	}
+	reg, err := health.Load(filepath.Join(f.dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := reg.Candidates["claude-other-account"].UsageHistory
+	if s := h.Find("seven_day"); s == nil || len(s.Samples) != 2 || h.Find("example_window") == nil {
+		t.Fatalf("history: %+v", h)
+	}
+	want := "projected claude-other-account: example_window can't project: the readings cover less than 6h 0m; readings for a BB thread come only from its probes; seven_day can't project: the readings cover less than 6h 0m; readings for a BB thread come only from its probes\n"
+	if _, out, _ := f.run("fallbacks", "list"); !strings.Contains(out, want) || strings.Contains(out, "projected codex-main") {
+		t.Fatalf("list: %s", out)
+	}
+	if _, out, _ := f.run("status"); !strings.Contains(out, "projected: claude-other-account: example_window can't project") {
+		t.Fatalf("status: %s", out)
+	}
+}
+
+// A recorded history projects each window from its own readings, with the
+// rules it used, in text and JSON. A reading of another window instance, a
+// window without a reset time, and a reset window are not projected.
+func TestProjectionFromRecordedHistory(t *testing.T) {
+	f := newFixture(t)
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude, _ := cfg.FallbackSet.Find("claude-other-account")
+	id := probe.UsageIdentity(claude)
+	if err := os.Mkdir(filepath.Join(f.dir, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(f.dir, "state", "health.json"), `{"candidates":{"claude-other-account":{
+  "usage":{"at":"2026-11-09T12:00:00Z","source":"claude_rate_limit_event","identity":"`+id+`","windows":[
+   {"key":"fast","used":0.4,"resetsAt":"2026-11-13T00:00:00Z"},
+   {"key":"moved","used":0.3,"resetsAt":"2026-11-20T00:00:00Z"},
+   {"key":"open","used":0.5},
+   {"key":"slow","used":0.2,"resetsAt":"2026-11-13T00:00:00Z"}]},
+  "usageHistory":{"identity":"`+id+`","windows":[
+   {"key":"fast","resetsAt":"2026-11-13T00:00:00Z","samples":[{"at":"2026-11-09T00:00:00Z","used":0.1},{"at":"2026-11-09T12:00:00Z","used":0.4}]},
+   {"key":"moved","resetsAt":"2026-11-13T00:00:00Z","samples":[{"at":"2026-11-09T00:00:00Z","used":0.1},{"at":"2026-11-09T12:00:00Z","used":0.3}]},
+   {"key":"slow","resetsAt":"2026-11-13T00:00:00Z","samples":[{"at":"2026-11-09T00:00:00Z","used":0.1},{"at":"2026-11-09T06:00:00Z","used":0.12},{"at":"2026-11-09T12:00:00Z","used":0.2}]}]}}}}`, 0o600)
+	code, out, errs := f.run("fallbacks", "list", "-now", "2026-11-09T13:00:00Z")
+	want := "projected claude-other-account: fast runs out about 2d 12h before it resets, at 2026-11-10 12:00Z (2 readings over 12h 0m); " +
+		"moved can't project: no earlier reading of this window is recorded; readings for a BB thread come only from its probes; " +
+		"open can't project: no reset time was reported; readings for a BB thread come only from its probes; " +
+		"slow 90% at reset (3 readings over 12h 0m)\n"
+	if code != exitOK || !strings.Contains(out, want) {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	// Seven hours after the newest reading it is older than the probe TTL.
+	if _, out, _ := f.run("fallbacks", "list", "-now", "2026-11-09T19:00:01Z"); !strings.Contains(out, "slow can't project: the newest reading is older than 6h 0m") {
+		t.Fatalf("too old: %s", out)
+	}
+	var list fallbacksOut
+	_, out, _ = f.run("fallbacks", "list", "--json", "-now", "2026-11-09T13:00:00Z")
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		t.Fatal(err)
+	}
+	u := list.Candidates[0].Usage
+	fast, moved, slow := u.Windows[0].Projection, u.Windows[1].Projection, u.Windows[3].Projection
+	if !u.ProbesOnly || fast.State != "projected" || fast.RunsOutAt == nil || !fast.RunsOutAt.Equal(time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)) ||
+		moved.State != "unavailable" || moved.Reason != "no_history" || slow.UsedAtReset == nil || math.Abs(*slow.UsedAtReset-0.9) > 1e-9 ||
+		slow.Readings != 3 || slow.SpanSeconds != 43200 || slow.MinSpanSeconds != 21600 || slow.MaxAgeSeconds != 21600 {
+		t.Fatalf("%+v", u)
+	}
+	// The same projection is shown whether or not a probe passed; nothing reads it.
+	if !strings.Contains(out, `"readingsFromProbesOnly": true`) || list.Candidates[0].Healthy {
+		t.Fatalf("json: %s", out)
+	}
+}
+
+// A route that is not a BB thread is not told its readings come from probes.
+func TestProjectionTextOutsideBB(t *testing.T) {
+	resets := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	v := usageView{ID: "headless", State: "available", Windows: []usageWindowView{{
+		UsageWindow: probe.UsageWindow{Key: "seven_day", Used: 0.2, ResetsAt: &resets},
+		Projection:  projectionView{State: "unavailable", Reason: "one_reading", Readings: 1},
+	}}}
+	if got := v.projectionText(); got != "seven_day can't project: one reading in this window" {
+		t.Fatal(got)
 	}
 }
