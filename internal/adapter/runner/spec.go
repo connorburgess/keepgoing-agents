@@ -34,12 +34,13 @@ type Spec struct {
 	// Capabilities declares what the agent does and reports.
 	Capabilities Capabilities
 
-	// Settings returns the settings every runner needs from the loop's agent
-	// definition. ok is false when the definition is not for this agent.
-	Settings func(a config.Agent) (s Settings, ok bool)
-	// Argv builds the command for one turn from the loop's settings. session
-	// is the saved session to resume, or "" to start one.
-	Argv func(a config.Agent, session string) []string
+	// MaxOutput bounds the turn output that is read, in bytes. Zero keeps
+	// the built-in runners' unbounded read.
+	MaxOutput int64
+	// Argv builds the command for one turn from the agent's settings.
+	// session is the saved session to resume, or "" to start one. With
+	// PromptFile, promptFile is the private file holding the prompt.
+	Argv func(set Settings, session, promptFile string) []string
 	// Read interprets a finished turn from structured output and the exit
 	// code only, never from prose. It must not have side effects.
 	Read func(turn Status) Reading
@@ -53,9 +54,14 @@ type Spec struct {
 // PromptVia is how a turn receives its prompt.
 type PromptVia string
 
-// PromptStdin passes the prompt on standard input, from a private file. It is
-// the only way the shared runner implements.
-const PromptStdin PromptVia = "stdin"
+// A prompt is never put in argv.
+const (
+	// PromptStdin passes the prompt on standard input, from a private file.
+	PromptStdin PromptVia = "stdin"
+	// PromptFile gives the agent the path of the private prompt file and an
+	// empty standard input.
+	PromptFile PromptVia = "file"
+)
 
 // Capabilities declares what an agent does itself and what it reports in a
 // structured form. False means "not established", not "known absent":
@@ -86,20 +92,26 @@ type Capabilities struct {
 	StructuredWaiting bool
 }
 
-// Settings are the settings every runner needs, whatever the agent.
+// Settings are an agent's settings as a specification sees them, whatever
+// the agent: the four every runner needs, and the agent's own by name.
 type Settings struct {
 	CLI     string
 	Workdir string
 	Model   string
 	Env     map[string]string
+	// Options are the agent's other settings by their configuration key,
+	// as text. An unset setting is absent.
+	Options map[string]string
+	// ExtraArgs are passed through as they are.
+	ExtraArgs []string
 }
 
 // Reading is what a finished turn's output says.
 type Reading struct {
 	// Session is the session identity the turn reported, or "".
 	Session string
-	// Completed: the agent reported that the turn ended without an error.
-	// The turn is healthy only when the exit code is also zero.
+	// Completed: the turn ended healthy, by the agent's report and its exit
+	// code together.
 	Completed bool
 	// Waiting: the agent reported, in a structured form, that it is waiting
 	// on a person.
@@ -112,10 +124,43 @@ type Reading struct {
 	Evidence evidence.Detail
 }
 
+// Limits is what an agent's own interface says about its account's usage
+// limit.
+type Limits struct {
+	// Blocked: ordinary usage is not allowed, or a limit is reported reached.
+	Blocked     bool
+	ReachedType string
+	// ResetsAt is when the reached window lifts, when reported.
+	ResetsAt time.Time
+	// Windows are the usage windows reported, blocked or not. They are
+	// readings only and never decide Blocked.
+	Windows []LimitWindow
+}
+
+// LimitWindow is one usage window. Name is the agent's own name for it.
+// ResetsAt is zero when none was given.
+type LimitWindow struct {
+	Name        string
+	UsedPercent int
+	ResetsAt    time.Time
+}
+
+// UsageReading is one usage window read from a probe's own output. Used is a
+// fraction from 0 to 1.
+type UsageReading struct {
+	Key      string
+	Used     float64
+	ResetsAt *time.Time
+	Status   string
+}
+
 // LimitLookup asks the agent's own interface whether the account is blocked
 // by a usage limit.
 type LimitLookup struct {
-	Read func(ctx context.Context, cli string, env []string) (CodexLimits, error)
+	Read func(ctx context.Context, cli string, env []string) (Limits, error)
+	// UsageSource labels a usage reading taken from the lookup's windows, or
+	// "" when they are not kept as a reading.
+	UsageSource string
 	// EvidenceSource and EvidenceCode label a turn classified by the lookup.
 	EvidenceSource, EvidenceCode string
 	// ProbeDetail prefixes the reached limit type in a probe result.
@@ -124,13 +169,30 @@ type LimitLookup struct {
 
 // ProbeSpec is one tiny real request that shows the account and model work.
 type ProbeSpec struct {
-	// Argv builds the probe command. model may be "".
-	Argv func(cli, model, prompt string) []string
+	// Command builds the probe command and its standard input. Model may be
+	// "". A built-in probe passes its fixed prompt as an argument; a defined
+	// agent receives it as its turns do.
+	Command func(p ProbeRequest) (argv []string, stdin string)
+	// Usage, when set, reads usage windows from the probe's own output, and
+	// UsageSource labels the reading.
+	Usage       func(stdout []byte) []UsageReading
+	UsageSource string
 	// Judge reads the probe's output and exit code.
 	Judge func(stdout []byte, exitCode int) ProbeVerdict
 	// Trim, when set, drops output that describes the local installation
 	// before a failed probe's output is kept.
 	Trim func(stdout []byte) []byte
+}
+
+// ProbeRequest is what a probe command is built from.
+type ProbeRequest struct {
+	// CLI is the executable, already resolved: the candidate's own, or the
+	// specification's default.
+	CLI    string
+	Model  string
+	Prompt string
+	// PromptFile is a private file holding Prompt, for PromptFile agents.
+	PromptFile string
 }
 
 // ProbeVerdict is what a probe's output says.
@@ -149,7 +211,7 @@ type ProbeVerdict struct {
 func (s *Spec) ObservationInputs() []string {
 	in := []string{"ErrorClass", "Evidence", "State"}
 	if s.Capabilities.StructuredWaiting {
-		in = append([]string{"AwaitingInput"}, in...)
+		in = append([]string{"DeferredInteraction"}, in...)
 	}
 	if s.Limits != nil {
 		in = append(in[:len(in)-1], "ResetsAt", "State")
@@ -194,27 +256,51 @@ func KeepsSessionFile(adapterName string) bool {
 // Headless runs one agent from its Spec: one turn per Send, resuming the same
 // session. It implements adapter.Adapter.
 type Headless struct {
-	spec  *Spec
-	agent config.Agent
-	set   Settings
-	dir   Dir
+	spec *Spec
+	set  Settings
+	dir  Dir
 }
 
 // New returns the runner for a's adapter, storing turn files in dir. ok is
 // false when no specification is registered for it or a carries no settings
 // for it.
 func New(a config.Agent, dir string) (h *Headless, ok bool) {
-	spec, ok := SpecFor(a.Adapter)
-	if !ok {
-		return nil, false
-	}
-	set, ok := spec.Settings(a)
-	if !ok || spec.Prompt != PromptStdin {
+	spec, set, ok := Resolve(a)
+	if !ok || (spec.Prompt != PromptStdin && spec.Prompt != PromptFile) {
 		// No settings for this agent, or a way of passing the prompt the
 		// shared runner does not implement.
 		return nil, false
 	}
-	return &Headless{spec: spec, agent: a, set: set, dir: Dir(dir)}, true
+	return &Headless{spec: spec, set: set, dir: Dir(dir)}, true
+}
+
+// Resolve returns the specification and settings for an agent definition: a
+// registered agent with its typed settings, or one defined in configuration.
+// A specification never sees the configuration; it is handed Settings.
+func Resolve(a config.Agent) (*Spec, Settings, bool) {
+	if a.Adapter == config.CustomAdapter {
+		if a.Custom == nil {
+			return nil, Settings{}, false
+		}
+		spec, set := specFromDefinition(*a.Custom)
+		return spec, set, true
+	}
+	spec, ok := SpecFor(a.Adapter)
+	if !ok {
+		return nil, Settings{}, false
+	}
+	read, ok := builtinSettings[spec.Name]
+	if !ok {
+		return nil, Settings{}, false
+	}
+	set, ok := read(a)
+	return spec, set, ok
+}
+
+// builtinSettings reads each registered agent's typed settings into Settings.
+var builtinSettings = map[string]func(config.Agent) (Settings, bool){
+	"claude": claudeSettings,
+	"codex":  codexSettings,
 }
 
 // Name implements adapter.Adapter.
@@ -224,11 +310,16 @@ func (h *Headless) Name() string { return h.spec.Name }
 func (h *Headless) Spec() *Spec { return h.spec }
 
 // Args builds the argv for the next turn.
-func (h *Headless) Args() []string { return h.spec.Argv(h.agent, h.dir.Session()) }
+func (h *Headless) Args() []string {
+	return h.spec.Argv(h.set, h.dir.Session(), h.dir.path("prompt"))
+}
+
+// status reads the latest turn within the specification's output bound.
+func (h *Headless) status() (Status, error) { return h.dir.statusWithOutputLimit(h.spec.MaxOutput) }
 
 // Observe implements adapter.Adapter.
 func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, err := h.dir.Status()
+	st, err := h.status()
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
@@ -247,10 +338,13 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 	}
 	r := h.spec.Read(st)
 	h.dir.SaveSession(r.Session)
-	if r.Completed && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, AwaitingInput: h.waiting(r), Evidence: r.Evidence}, nil
+	// A turn that ended waiting on a person raises a hold once: it is
+	// reported until the supervisor has saved the hold (AdoptInteraction).
+	waiting := h.waiting(r) && !h.dir.waitAdopted(st.Record)
+	if r.Completed {
+		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, DeferredInteraction: waiting, Evidence: r.Evidence}, nil
 	}
-	obs = decide.Observation{State: decide.Error, ErrorClass: r.Class, AwaitingInput: h.waiting(r), Evidence: r.Evidence}
+	obs = decide.Observation{State: decide.Error, ErrorClass: r.Class, DeferredInteraction: waiting, Evidence: r.Evidence}
 	// Some agents report a usage limit only as prose. Ask the agent's own
 	// structured interface instead of reading it.
 	if l := h.spec.Limits; l != nil && obs.ErrorClass == decide.ErrUnknown {
@@ -270,7 +364,7 @@ func (h *Headless) waiting(r Reading) bool {
 
 // Send starts a turn. A running turn cannot be steered or queued into.
 func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	st, err := h.dir.Status()
+	st, err := h.status()
 	if err != nil {
 		return err
 	}
@@ -280,7 +374,23 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	if st.Phase == Finished {
 		h.dir.SaveSession(h.spec.Read(st).Session)
 	}
-	return h.dir.Start(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
+	env := envList(h.set.Env)
+	if h.spec.Prompt == PromptFile {
+		env = append(env, envTurnStdin+"=none")
+	}
+	return h.dir.Start(h.Args(), h.set.Workdir, prompt, env)
+}
+
+// AdoptInteraction implements adapter.InteractionAdopter: the hold for the
+// latest turn's wait is saved, so the turn stops reporting it. Nothing is
+// sent or approved. After a person resumes the loop the turn is read by its
+// other rules, and the next send continues the session.
+func (h *Headless) AdoptInteraction(ctx context.Context) error {
+	st, err := h.status()
+	if err != nil || st.Phase != Finished {
+		return err
+	}
+	return h.dir.adoptWait(st.Record)
 }
 
 // Stop implements adapter.Adapter. An agent that does not declare it can be

@@ -109,7 +109,7 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
 		return err
 	}
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json"} {
+	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", waitAdoptedFile} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
@@ -140,6 +140,24 @@ func (d Dir) Stop() error {
 		return err
 	}
 	return d.requestStop(st.Record.StopKey)
+}
+
+// waitAdoptedFile records that the awaiting-user hold for a turn that ended
+// waiting on a person has been saved. It names the turn, so it cannot apply
+// to a later one, and a new turn removes it.
+const waitAdoptedFile = "wait-adopted"
+
+func waitKey(rec Record) string {
+	return rec.StopKey + "|" + rec.StartedAt.UTC().Format(time.RFC3339Nano)
+}
+
+func (d Dir) waitAdopted(rec Record) bool {
+	b, err := os.ReadFile(d.path(waitAdoptedFile))
+	return err == nil && strings.TrimSpace(string(b)) == waitKey(rec)
+}
+
+func (d Dir) adoptWait(rec Record) error {
+	return os.WriteFile(d.path(waitAdoptedFile), []byte(waitKey(rec)+"\n"), 0o600)
 }
 
 // envList supplies overrides to subprocesses without changing the supervisor's

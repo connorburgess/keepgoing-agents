@@ -17,6 +17,8 @@ type Agent struct {
 	Claude   *Claude  `yaml:"claude,omitempty"`
 	Codex    *Codex   `yaml:"codex,omitempty"`
 	Cursor   *Cursor  `yaml:"cursor,omitempty"`
+	// Custom is an agent defined in configuration.
+	Custom *Custom `yaml:"custom,omitempty"`
 }
 
 // BB configures the BB thread adapter. Model and Reasoning, when set, are
@@ -100,7 +102,7 @@ type Cursor struct {
 }
 
 // Adapters lists the supported adapter names.
-var Adapters = []string{"bb", "process", "claude", "codex", "cursor"}
+var Adapters = []string{"bb", "process", "claude", "codex", "cursor", CustomAdapter}
 
 func (a *Agent) applyDefaults() {
 	if a.Cursor != nil && a.Cursor.CLI == "" {
@@ -114,10 +116,17 @@ func (a *Agent) applyDefaults() {
 			a.Provider = "codex"
 		case "cursor":
 			a.Provider = "cursor"
+		case CustomAdapter:
+			if a.Custom != nil {
+				a.Provider = a.Custom.Name
+			}
 		}
 	}
 	if a.Group == "" {
 		a.Group = a.Provider
+	}
+	if a.Custom != nil {
+		a.Custom.applyDefaults()
 	}
 	if a.BB != nil && a.BB.CLI == "" {
 		a.BB.CLI = DefaultBBCLI
@@ -139,7 +148,7 @@ func (a Agent) validate(where string) []error {
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(where+format, args...))
 	}
-	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil}
+	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, CustomAdapter: a.Custom != nil}
 	known := false
 	for _, n := range Adapters {
 		if a.Adapter == n {
@@ -199,6 +208,8 @@ func (a Agent) validate(where string) []error {
 		if a.Codex.Workdir == "" {
 			add("codex.workdir is required")
 		}
+	case a.Adapter == CustomAdapter && a.Custom != nil:
+		a.Custom.validate(add)
 	}
 	return errs
 }
@@ -214,6 +225,8 @@ func (a Agent) Model() string {
 		return a.Claude.Model
 	case a.Codex != nil:
 		return a.Codex.Model
+	case a.Custom != nil:
+		return a.Custom.Values["model"]
 	}
 	return ""
 }
@@ -232,6 +245,8 @@ func (a Agent) Describe() string {
 		s += " " + a.Claude.Workdir
 	case a.Codex != nil:
 		s += " " + a.Codex.Workdir
+	case a.Custom != nil:
+		s += " " + a.Custom.Name + " " + a.Custom.Workdir
 	}
 	if m := a.Model(); m != "" {
 		s += " (" + m + ")"
@@ -240,6 +255,9 @@ func (a Agent) Describe() string {
 }
 
 func (a *Agent) resolvePaths(base string) {
+	if a.Custom != nil {
+		a.Custom.resolvePaths(base)
+	}
 	if a.Cursor != nil {
 		a.Cursor.Workdir = resolve(base, a.Cursor.Workdir)
 		a.Cursor.CLI = resolveExec(base, a.Cursor.CLI)

@@ -25,7 +25,7 @@ func TestRegistryHoldsCompleteSpecifications(t *testing.T) {
 	for _, s := range Specs() {
 		names = append(names, s.Name)
 		if s.Provider == "" || s.DefaultCLI == "" || len(s.SettingNames) == 0 || s.Prompt != PromptStdin ||
-			s.Settings == nil || s.Argv == nil || s.Read == nil || s.Probe.Argv == nil || s.Probe.Judge == nil {
+			builtinSettings[s.Name] == nil || s.Argv == nil || s.Read == nil || s.Probe.Command == nil || s.Probe.Judge == nil {
 			t.Errorf("%s: incomplete specification", s.Name)
 		}
 		// What the shared runner provides for every agent on it.
@@ -93,7 +93,8 @@ func TestSpecificationCommandLines(t *testing.T) {
 		{"codex bare", config.Agent{Adapter: "codex", Codex: &config.Codex{CLI: "codex"}}, "", "codex exec --json -"},
 	} {
 		spec, _ := SpecFor(tc.agent.Adapter)
-		if got := strings.Join(spec.Argv(tc.agent, tc.session), " "); got != tc.want {
+		_, set, _ := Resolve(tc.agent)
+		if got := strings.Join(spec.Argv(set, tc.session, ""), " "); got != tc.want {
 			t.Errorf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
 		}
 		// The runner built from the same definition produces the same line.
@@ -117,7 +118,8 @@ func TestSpecificationCommandLines(t *testing.T) {
 		{"codex", "", []string{"codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "PROMPT"}},
 	} {
 		spec, _ := SpecFor(tc.kind)
-		if got := spec.Probe.Argv(tc.kind, tc.model, "PROMPT"); !reflect.DeepEqual(got, tc.want) {
+		// A built-in probe's fixed prompt is an argument; nothing is on stdin.
+		if got, stdin := spec.Probe.Command(ProbeRequest{CLI: tc.kind, Model: tc.model, Prompt: "PROMPT"}); !reflect.DeepEqual(got, tc.want) || stdin != "" {
 			t.Errorf("%s probe (%q): %q", tc.kind, tc.model, got)
 		}
 	}
@@ -160,8 +162,7 @@ func TestRunnerActsOnAnyReading(t *testing.T) {
 	spec := &Spec{
 		Name:         "stand-in",
 		Capabilities: Capabilities{StructuredWaiting: true},
-		Settings:     func(config.Agent) (Settings, bool) { return Settings{CLI: "stand-in-cli"}, true },
-		Argv:         func(config.Agent, string) []string { return []string{"stand-in-cli"} },
+		Argv:         func(Settings, string, string) []string { return []string{"stand-in-cli"} },
 		Read:         func(Status) Reading { return reading },
 		Limits: &LimitLookup{EvidenceSource: "codex_rate_limits", EvidenceCode: "blocked", Read: func(_ context.Context, cli string, _ []string) (CodexLimits, error) {
 			lookups++
@@ -195,24 +196,38 @@ func TestRunnerActsOnAnyReading(t *testing.T) {
 	// Completed and exit 0: idle. Waiting on a person is passed through.
 	finish("0")
 	reading = Reading{Session: "sess-c", Completed: true, Waiting: true, Class: decide.ErrUnknown}
-	if obs := observe(); obs.State != decide.Idle || !obs.AwaitingInput || obs.Evidence.Source != "runner_exit" || h.dir.Session() != "sess-c" || lookups != 0 {
+	if obs := observe(); obs.State != decide.Idle || !obs.DeferredInteraction || obs.Evidence.Source != "runner_exit" || h.dir.Session() != "sess-c" || lookups != 0 {
 		t.Fatalf("%+v session=%q lookups=%d", obs, h.dir.Session(), lookups)
 	}
 	// An agent that does not declare structured waiting is not believed.
 	spec.Capabilities.StructuredWaiting = false
-	if obs := observe(); obs.AwaitingInput {
+	if obs := observe(); obs.DeferredInteraction {
 		t.Fatalf("undeclared waiting was passed on: %+v", obs)
 	}
 	if got := strings.Join(spec.ObservationInputs(), ","); got != "ErrorClass,Evidence,ResetsAt,State" {
 		t.Fatalf("inputs %s", got)
 	}
 	spec.Capabilities.StructuredWaiting = true
-	if got := strings.Join(spec.ObservationInputs(), ","); got != "AwaitingInput,ErrorClass,Evidence,ResetsAt,State" {
+	if got := strings.Join(spec.ObservationInputs(), ","); got != "DeferredInteraction,ErrorClass,Evidence,ResetsAt,State" {
 		t.Fatalf("inputs %s", got)
 	}
-	// Completed but a failing exit code is an error.
+	// Once the supervisor has saved the hold, the same turn stops raising it,
+	// and a later turn can raise it again.
+	if err := h.AdoptInteraction(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if obs := observe(); obs.DeferredInteraction || obs.State != decide.Idle {
+		t.Fatalf("an adopted wait was raised again: %+v", obs)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run.json"), []byte(`{"pid":1,"stopKey":"another-turn","startedAt":"2026-01-02T00:00:00Z","argv0":"stand-in-cli"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if obs := observe(); !obs.DeferredInteraction {
+		t.Fatalf("a later turn's wait was not raised: %+v", obs)
+	}
+	// A turn the reader does not call completed is an error with its class.
 	finish("3")
-	reading = Reading{Completed: true, Class: decide.ErrAuth, Evidence: evidence.Clean(evidence.Detail{Source: "claude_result"})}
+	reading = Reading{Class: decide.ErrAuth, Evidence: evidence.Clean(evidence.Detail{Source: "claude_result"})}
 	if obs := observe(); obs.State != decide.Error || obs.ErrorClass != decide.ErrAuth || obs.Evidence.Source != "claude_result" || lookups != 0 || h.dir.Session() != "sess-c" {
 		t.Fatalf("%+v lookups=%d", obs, lookups)
 	}
@@ -254,7 +269,7 @@ func TestDeclarationsMatchTheCodeTheyDescribe(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", s.Name, err)
 		}
-		set, ok := s.Settings(cfg.Loop.Agent)
+		_, set, ok := Resolve(cfg.Loop.Agent)
 		if !ok || cfg.Loop.Provider != s.Provider || set.CLI != s.DefaultCLI || set.Workdir != "/example/project" {
 			t.Errorf("%s: configuration defaults to provider %q and CLI %q; the specification says %q and %q", s.Name, cfg.Loop.Provider, set.CLI, s.Provider, s.DefaultCLI)
 		}
@@ -265,7 +280,7 @@ func TestDeclarationsMatchTheCodeTheyDescribe(t *testing.T) {
 
 		// ExactResume: the resume command carries the saved session, and a
 		// first turn carries none.
-		start, resume := strings.Join(s.Argv(cfg.Loop.Agent, ""), " "), strings.Join(s.Argv(cfg.Loop.Agent, session), " ")
+		start, resume := strings.Join(s.Argv(set, "", ""), " "), strings.Join(s.Argv(set, session, ""), " ")
 		if s.Capabilities.ExactResume != (strings.Contains(resume, session) && !strings.Contains(start, session) && start != resume) {
 			t.Errorf("%s: ExactResume=%v but start is %q and resume is %q", s.Name, s.Capabilities.ExactResume, start, resume)
 		}
@@ -291,12 +306,12 @@ func TestDeclarationsMatchTheCodeTheyDescribe(t *testing.T) {
 	// Stoppable: a turn of an agent that does not declare it is not stopped.
 	standIn := &Spec{
 		Name: "stand-in", Prompt: PromptStdin,
-		Settings: func(config.Agent) (Settings, bool) { return Settings{}, true },
-		Argv:     func(config.Agent, string) []string { return []string{"stand-in-cli"} },
-		Read:     func(Status) Reading { return Reading{} },
+		Argv: func(Settings, string, string) []string { return []string{"stand-in-cli"} },
+		Read: func(Status) Reading { return Reading{} },
 	}
 	specs = append(specs, standIn)
-	defer func() { specs = specs[:len(specs)-1] }()
+	builtinSettings["stand-in"] = func(config.Agent) (Settings, bool) { return Settings{}, true }
+	defer func() { specs = specs[:len(specs)-1]; delete(builtinSettings, "stand-in") }()
 	h, ok := New(config.Agent{Adapter: "stand-in"}, t.TempDir())
 	if !ok {
 		t.Fatal("no runner for a specification with the prompt on stdin")
