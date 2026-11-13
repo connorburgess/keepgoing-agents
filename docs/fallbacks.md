@@ -250,7 +250,7 @@ Unreleased source also keeps every reading a candidate's probes carried, so that
 
 **Projection.** For each window of the latest reading, keepgoing fits a rate through the recorded readings of the same instance and extends it from the newest reading to the reset. The rate is the least squares slope through every reading used, not just the first and last, so an early jump or a single rounding step does not decide it alone. The rate covers all use of the account over the readings' span, by any loop or by the person. The result says one of:
 
-- **Used up since a time:** the newest reading is at 100%, dated at the first of the latest run of readings at 100%. No rate is needed for this.
+- **Used up since a time:** the newest reading is at 100%, dated at the first of the latest run of readings at 100%, or at the latest reading when no history of the window is recorded. No rate is needed for this.
 - **A share at reset,** for example `seven_day 60% at reset (3 readings over 12h 0m)`. Shares are rounded down and shown up to 100%.
 - **Runs out before the reset,** for example `seven_day runs out about 24h 0m before it resets, at 2030-01-10 12:00Z (3 readings over 12h 0m)`, or `projected to have run out at …` when that time has already passed. This is said only when it holds for every rate the readings allow if each was off by one percentage point, since some providers report whole percents.
 - **May run out, within rounding:** the fitted rate reaches 100% before the reset, but a rate within the readings' rounding does not.
@@ -279,7 +279,7 @@ Where it is shown: after each `usage` line that has windows, `fallbacks list` pr
 - `readings`, `ignoredLaterReadings`, `spanSeconds` and `resetsInSeconds`;
 - the rules used: `minReadings`, `minSpanSeconds`, `maxAgeSeconds`, `maxAheadSpans` and `rounding`.
 
-Each `usage` object has `readingsFromProbesOnly`, true on every route today. The panel does not show projections yet.
+Each `usage` object has `readingsFromProbesOnly`, true on every route today. The note about probes is not added for a window that has reset, which needs no readings. The [panel](dock.md#what-the-page-shows) shows the same words under each window of a route card and in the allowances strip.
 
 How much a projection can say depends on how often the account is probed:
 - It needs three readings over at least six hours in one window instance, and readings covering at least a quarter of the time left to the reset.

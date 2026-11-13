@@ -252,6 +252,9 @@ type dockUsageTarget struct {
 	// first window that is used up.
 	ReadLine string   `json:"readLine"`
 	UsedUp   dockText `json:"usedUp,omitempty"`
+	// ReadingsNote is said once for the route when one of its windows could
+	// not be projected for want of readings: where its readings come from.
+	ReadingsNote string `json:"readingsNote,omitempty"`
 }
 
 type dockUsageWindow struct {
@@ -260,6 +263,10 @@ type dockUsageWindow struct {
 	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
 	Stale       bool       `json:"stale"`
 	Reset       dockText   `json:"reset,omitempty"`
+	// Projection is what the recorded readings say about the window at its
+	// reset, or why they cannot, in the words status uses. A window that
+	// has reset has none: Reset already says it ended.
+	Projection dockText `json:"projection,omitempty"`
 }
 
 type dockLimit struct {
@@ -738,6 +745,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
 			a.Usage = u
 			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
+			if u.ReadingsNote != "" {
+				a.Usage.ReadingsNote = accountReadingsNote
+			}
 		}
 		for _, d := range r.LeftBy {
 			if !d.atLimit() {
@@ -1678,6 +1688,12 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 	}
 	for _, w := range v.Windows {
 		win := dockUsageWindow{Name: dockWindowName(w.Key), UsedPercent: min(100, max(0, usagePercent(w.Used))), Stale: w.Stale}
+		if !w.Stale {
+			win.Projection = dockProjection(w.Projection, w.ResetsAt)
+			if w.Projection.needsReadings() && v.ProbesOnly {
+				t.ReadingsNote = readingsNote
+			}
+		}
 		far := w.ResetsAt != nil && !w.ResetsAt.IsZero() && !dockSaneReset(now, w.ResetsAt)
 		if dockSaneReset(now, w.ResetsAt) {
 			win.ResetsAt = w.ResetsAt
@@ -1710,6 +1726,24 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 		t.Windows = append(t.Windows, win)
 	}
 	return t
+}
+
+// accountReadingsNote is readingsNote for a line of the allowances strip,
+// which is an account, not a route.
+const accountReadingsNote = "Readings for this account come only from its routes' probes."
+
+// dockProjection words a window's projection as status does, with each
+// time as a part the page shows in its own time zone and each length of time
+// in the page's own style ("2 days 9 h", "25 h").
+func dockProjection(p projectionView, resetsAt *time.Time) dockText {
+	if p.State == "" {
+		return nil
+	}
+	parts := p.words(resetsAt, func(t time.Time) any { return tm(t, "datetime") }, dockSpan)
+	if first, ok := parts[0].(string); ok {
+		parts[0] = dockCapital(first)
+	}
+	return txt(parts...)
 }
 
 func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f dockFallbacks, now time.Time, identifiers bool) dockChain {
