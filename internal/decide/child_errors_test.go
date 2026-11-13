@@ -50,7 +50,7 @@ func TestErroredChildrenChangeTheDecisionInOneCaseOnly(t *testing.T) {
 						}
 						n := ChildErrorNote(in, got)
 						wantNote := 0
-						if got.Action == Wake && due {
+						if (got.Action == Wake || got.Action == Reprompt) && due {
 							wantNote = 3
 						}
 						if n != wantNote && failures < 5 {
@@ -103,7 +103,13 @@ func TestChildErrorNote(t *testing.T) {
 		{"background work running", func(i *Input) { i.Obs.Background = 1 }, 0, false},
 		{"parent active", func(i *Input) { i.Obs.State = Active }, 0, false},
 		{"parent active and stalled is nudged without the note", func(i *Input) { i.Obs.State, i.UnchangedFor = Active, 2*i.StallAfter }, 0, false},
-		{"parent errored is re-prompted without the note", func(i *Input) { i.Obs.State, i.Obs.ErrorClass = Error, ErrUnknown }, 0, false},
+		{"parent errored: the re-prompt carries the note", func(i *Input) { i.Obs.State, i.Obs.ErrorClass = Error, ErrUnknown }, 2, false},
+		{"parent errored and backing off: nothing is sent, so no note", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.Reprompts, i.SinceLastReprompt = Error, ErrUnknown, 1, time.Minute
+		}, 0, false},
+		{"parent errored, network down: nothing is sent, so no note", func(i *Input) {
+			i.Obs.State, i.Obs.ErrorClass, i.NetworkDown = Error, ErrUnknown, true
+		}, 0, false},
 		{"switch-back instead of a wake", func(i *Input) { i.SwitchBackReady = true }, 0, false},
 		{"parent gone", func(i *Input) { i.Obs.Gone = true }, 0, false},
 

@@ -260,6 +260,18 @@ The re-prompt budget resets when the session is seen idle, or when it is active 
 - A window span whose start equals its end is rejected.
 - The BB CLI is given 30 seconds per call.
 
+## network
+
+The connectivity check made before an error re-prompt, a handoff and fallback probes. See [network outages](operations.md#network-outages).
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
+| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
+| `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
+| `verify_after` | `1h` | Once the check has failed this long, ask the provider directly with one probe and attempt a `network_wait` report; then again after twice as long each time, up to a week. If the probe passes or is refused with `rate_limit` or `overloaded`, the check is set aside for that outage. At least `1m`. |
+
 ## report, yield, daemon
 
 See [operations.md](operations.md).
@@ -275,7 +287,7 @@ See [operations.md](operations.md).
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
-| `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. A check ends within this plus 90 seconds. Minimum `2m40s`; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
+| `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. A check ends within this plus 90 seconds. Minimum `2m40s`; the connectivity check needs `network.timeout` more than that to have its full time; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
 
 ## Tick output
 

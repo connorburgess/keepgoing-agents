@@ -58,7 +58,7 @@ Scenarios:
 - `TestScenarioHeadlessOutage`, for headless Claude Code and Codex at each outage length: the stand-in CLI's turns succeed, fail with the CLI's structured error, or print a captive portal's page, following the fake network. A broken turn, irregular checks, the portal and its clearing, then recovery by a re-prompt into the saved session (or, once held, by a person: `resume`, and when that holds again, `retarget primary` then `resume`, as today). Every turn after the first resumes exactly the saved session and carries the task. The harness waits for each detached turn to end before it records the step. It replaces `cmd/keepgoing/offline_scenario_test.go`.
 - `TestScenarioHeadlessFirstTurnFails`: a first turn that fails before the CLI reports a session saves nothing, so each of the three re-prompts starts a new conversation with the whole task, then the loop is held with one `await_user` report. Today's behaviour, listed as a gap in [adapters](adapters.md).
 
-**Known failures.** An assertion that fails on main because of open work is wrapped in `World.Known` with the work it waits on. It still runs on every build: while it fails the scenario passes and logs a line starting `KNOWN FAILURE [<work>]`; when it starts to pass the scenario fails with `FIXED KNOWN FAILURE`, so the change that fixes it must delete the marker and the assertion is enforced from then on. Nothing is skipped. List them with `go test ./internal/scenario -v -count=1 | grep 'KNOWN FAILURE'`. The work named today is network gating (#154), turn retry, child recovery, and two items with no open work: a captive portal is read as online, and the stall clock runs through an outage so a recovered turn is nudged at once.
+**Known failures.** An assertion that fails on main because of open work is wrapped in `World.Known` with the work it waits on. It still runs on every build: while it fails the scenario passes and logs a line starting `KNOWN FAILURE [<work>]`; when it starts to pass the scenario fails with `FIXED KNOWN FAILURE`, so the change that fixes it must delete the marker and the assertion is enforced from then on. Nothing is skipped. List them with `go test ./internal/scenario -v -count=1 | grep 'KNOWN FAILURE'`. The work named today is turn retry and child recovery: twelve assertions, three at each outage length. The network check closed the rest, including a captive portal read as online and the stall clock running through an outage.
 
 Each scenario was run against a deliberately broken build to show it fails. For the handoff scenarios: treating an uncertain creation as refused (`bb`: return `ErrSpawnRefused` for a server error) fails the not-found case, which then hands the loop to the other fallback; skipping the model switch (`bb`: `Activate` does nothing) fails the handoff; ignoring the primary's reset time (`supervise`: `switchBackReady` never waits) fails the switch-back journey before the reset. For the first two: a completed loop that still queries its agent (`supervise`: drop `gate.Completed` from the hold check) fails both scenarios; ignoring BB's own retry (`decide`: never honour `Retrying`) fails the outage scenario at the retrying check; waiting on every error (`decide`: return `none` for the error state) turns known failures into `FIXED KNOWN FAILURE`.
 
@@ -74,6 +74,54 @@ Four causes were found behind intermittent failures, each reproduced before it w
 - **A reader blocking a writer on Windows.** An ordinary open handle prevents a file from being replaced. A polling test per record (`Test…SnapshotSavesWhileReadersPoll` for state, the send and progress ledgers, health, the incident and delivery journals, the registry and the daemon endpoint, plus `TestStateSnapshotSaveReplacesFileHeldByReader` and `TestTransferRecordReadsDoNotBlockControlOrStateSaves`) runs natively in the Windows job. The fallback for an unsupported rename and the reader's short retry are covered by injected error codes there, not by a real exFAT or network volume; the retry was added after the health polling test failed a read with access denied in two of five runs. A program outside keepgoing that opens these files without delete sharing can still block a save; one such failure of a control save was seen in a hundred Windows iterations and is not explained. Local macOS execution and cross-compilation say nothing about these tests.
 
 Reproduce before changing anything: repeat the one test with `-count`, then add the pressure that matches the suspected cause (CPU, filesystem writes, or many first executions of new files). Record the failure rate before and after, and name what was not reproduced. Raising a timeout is a fix only when the deadline is shown to be the sole defect.
+
+## Live check: a long time offline
+
+`TestOfflineForAnyLengthThenRecoversOnce` covers this with a fake clock, a stand-in `bb` and a stand-in connectivity target. Nothing below has been run on a real machine; this is the procedure for doing so. It changes no scheduler or service: use whatever already runs your loop, and do not reconfigure it for the test.
+
+**The scenario.** Someone is working at home, disconnects, closes the lid, and hours later opens it on a different network that needs a sign-in, then signs in.
+
+**Before you start**
+
+1. Use a loop on a BB thread you can afford to interrupt, with the connectivity check on (`keepgoing validate` prints no `connectivity check` warning, and `keepgoing doctor` shows `network.check` as ok).
+2. Note the loop's check interval (the scheduler's, or `daemon.interval`).
+3. Save a reference: `keepgoing status > before.txt` and `keepgoing timeline --limit 20 > timeline-before.txt`.
+4. Have the thread mid-turn, ideally with a child thread working.
+
+**Do**
+
+1. Turn the network off (Wi-Fi off, or unplug). Wait until the thread shows an error in BB.
+2. Close the lid. Leave it for the length you want to test: start with 20 minutes, then try a few hours or overnight.
+3. Open the lid on a network with a captive portal if you have one (a phone hotspot with no data, a guest network before signing in). Leave it two or three check intervals. If you have no portal, skip this step.
+4. Sign in to the portal, or turn the normal network back on. Note the time.
+5. Wait two check intervals.
+
+**Then look at**
+
+```sh
+keepgoing status
+keepgoing timeline --since <when you disconnected> --limit 100
+keepgoing runs
+tail -n 40 <state_dir>/runs.jsonl
+```
+
+**Pass**
+
+- While offline and behind the portal, every recorded check has action `none` and the reason `network down; waiting for connectivity` (or `provider is retrying the turn` for the first minutes, or `active` for a turn that hung and never failed, before the outage was noticed). None is `reprompt`, `handoff`, `nudge` or `await_user`. In `runs.jsonl`, probes in those checks are `"skipped":"network_down"`, apart from the occasional `connectivity verification` probe (after one hour offline, then after twice as long each time).
+- `status` while offline shows `network: down at the last connectivity check, failing since <time>`.
+- The loop was not held: `status` does not say `awaiting user`, and `reprompts` is what it was in `before.txt`.
+- The first check after you signed in has `"network":"restored"` with `networkDownFor`, and action `reprompt` (or `wake`, or `none` for a turn that hung and is working again). There is exactly one recovery: for a BB thread the failed turn was retried with no new prompt (`"recovery":"turn_retry"`), followed by one short `[keepgoing:child-errors count=N]` message only if a child had failed; another adapter received one re-prompt, which ends with that line. The task prompt did not arrive again.
+- `timeline` shows the waiting checks as one entry with a first and last time, then the recovery.
+- Recovery started within one check interval of signing in. Note how long it took.
+
+**Fail, and worth reporting with the output above**
+
+- Any re-prompt, nudge or handoff while offline or behind the portal; more than one message after recovery.
+- An `awaiting user` hold with a reason about re-prompts, `auth error` or `no Git progress` that appeared during the outage.
+- `network: down` still shown by `status` long after recovery.
+- No check recorded at all after the lid was opened: that is the scheduler, not keepgoing. See [external schedulers can stop on their own](operations.md#external-schedulers-can-stop-on-their-own).
+
+**What this does not show.** A check target that is unreachable while the provider works (test that separately with `keepgoing doctor` from the environment your scheduler uses), an outage of weeks, or an expired provider login after a long gap.
 
 ## Run discovery tests (D1, D2)
 

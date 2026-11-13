@@ -90,3 +90,26 @@ func ObserveProgress(dir string, previous *Progress, sources, fingerprint string
 func (p Progress) Reached(now time.Time, timeout time.Duration) bool {
 	return timeout > 0 && !now.Before(p.ChangedAt.Add(timeout))
 }
+
+// CreditProgress moves the no-progress baseline forward by d, for time in
+// which nothing could have made progress: no check ran, or the network was
+// down. It never passes the latest observation.
+func CreditProgress(dir string, p Progress, d time.Duration, dryRun bool) (Progress, error) {
+	if d <= 0 {
+		return p, nil
+	}
+	p.ChangedAt = p.ChangedAt.Add(d)
+	if p.ChangedAt.After(p.ObservedAt) {
+		p.ChangedAt = p.ObservedAt
+	}
+	if !dryRun {
+		b, err := json.Marshal(p)
+		if err != nil {
+			return Progress{}, ErrProgressLedger
+		}
+		if err := saveAllowance(dir, ProgressName, b); err != nil {
+			return Progress{}, ErrProgressLedger
+		}
+	}
+	return p, nil
+}

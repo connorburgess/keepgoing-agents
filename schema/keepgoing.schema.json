@@ -225,6 +225,7 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "network_wait",
                   "child_error",
                   "test"
                 ]
@@ -247,6 +248,31 @@
             },
             "timeout": {
               "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "connectivity check made before an error re-prompt, a handoff and fallback probes",
+          "properties": {
+            "check": {
+              "enum": ["on", "off"],
+              "description": "default on"
+            },
+            "url": {
+              "type": "string",
+              "description": "answers an HTTP GET when the network is up; default https://api.github.com/zen"
+            },
+            "command": {
+              "$ref": "#/$defs/argv"
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            },
+            "verify_after": {
+              "$ref": "#/$defs/duration",
+              "description": "after the check has failed this long, test the provider with one probe and attempt a report, then again after twice as long each time up to a week; default 1h"
             }
           }
         },

@@ -22,6 +22,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/netretry"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -219,6 +220,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
 	doctorTickBudget(&r, cfg.Loop)
+	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
 }
@@ -251,6 +253,51 @@ func doctorTickBudget(r *doctorReport, l config.Loop) {
 		return
 	}
 	r.add("supervisor.tick_timeout", "ok", message, "")
+}
+
+// doctorNetworkCheck runs the loop's connectivity check once, so a target
+// that this machine cannot reach is found before it makes a loop wait.
+func doctorNetworkCheck(ctx context.Context, r *doctorReport, l config.Loop, st state.File, offline bool) {
+	timeout := l.NetworkCheckTimeout()
+	switch {
+	case !l.Network.Enabled():
+		r.add("network.check", "ok", "The connectivity check is off; re-prompts, handoffs and probes are attempted whatever the network is doing.", "")
+		return
+	case timeout == 0:
+		r.add("network.check", "warning", l.NetworkCheckWarning(), "")
+		return
+	}
+	if offline {
+		r.add("network.check", "unavailable", "The connectivity check was not tested because --offline was given.", "Run doctor without --offline to test it.")
+		return
+	}
+	target := "the default target"
+	switch {
+	case len(l.Network.Command) > 0:
+		target = "the configured command"
+	case l.Network.URL != "":
+		target = "the configured URL"
+	}
+	found := netretry.Probe{URL: l.Network.URL, Command: l.Network.Command, Timeout: timeout}.Check(ctx)
+	switch found {
+	case netretry.Reached:
+		r.add("network.check", "ok", fmt.Sprintf("The connectivity check reached %s from this process.", target), "")
+		return
+	case netretry.Redirected, netretry.SignInNeeded:
+		what := "a redirect"
+		if found == netretry.SignInNeeded {
+			what = "511 Network Authentication Required"
+		}
+		r.add("network.check", "warning", fmt.Sprintf("The connectivity check got %s from %s, which it reads as offline: a captive portal answers that way. While it does, re-prompts, handoffs, nudges and fallback probes wait.", what, target),
+			"If this network needs a sign-in, complete it. If the target itself always redirects, point loop.network.url at an address that answers directly (redirects are never followed), or set network: {check: \"off\"}.")
+		return
+	}
+	fix := "If the network is working, this machine or this environment cannot reach the check's target (a proxy, a DNS filter, a TLS-inspecting gateway). Point loop.network at a url or command that reflects your provider's reachability, or set network: {check: \"off\"}."
+	message := fmt.Sprintf("The connectivity check could not reach %s from this process; while it fails, re-prompts, handoffs and fallback probes wait.", target)
+	if st.NetworkDistrusted {
+		message = fmt.Sprintf("The connectivity check could not reach %s, while the provider answered a probe: the loop has stopped believing the check for the current outage.", target)
+	}
+	r.add("network.check", "warning", message, fix)
 }
 
 // doctorFailedChecks reports consecutive failed checks. A check that could

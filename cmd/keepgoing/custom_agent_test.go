@@ -35,7 +35,7 @@ func customAgentFixture(t *testing.T) string {
         blocked: {field: blocked, equals: ["true"]}
       capabilities: {structured_errors: true}
 `
-	write(t, filepath.Join(dir, "keepgoing.yaml"), `version: 1
+	writeCustom(t, filepath.Join(dir, "keepgoing.yaml"), `version: 1
 loop:
   name: example-loop
   state_dir: state
@@ -46,7 +46,7 @@ loop:
     name: example-agent
     workdir: project
     definition:`+definition, 0o600)
-	write(t, filepath.Join(dir, "fallbacks.yaml"), `version: 1
+	writeCustom(t, filepath.Join(dir, "fallbacks.yaml"), `version: 1
 candidates:
   - id: example-fallback
     adapter: custom
@@ -130,7 +130,7 @@ func TestDoctorOnADefinedAgent(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "bin", "example-agent"), "#!/bin/sh\necho ran >> "+filepath.Join(dir, "ran")+"\n", 0o755)
+	writeCustom(t, filepath.Join(dir, "bin", "example-agent"), "#!/bin/sh\necho ran >> "+filepath.Join(dir, "ran")+"\n", 0o755)
 	t.Chdir(t.TempDir())
 	if got := doctor()["agent.primary.cli"]; got.Status != "ok" {
 		t.Errorf("an executable beside the configuration: %+v", got)
@@ -162,5 +162,12 @@ func TestProbePlanDisclosesADefinedAgentsProbe(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "state", "health.json")); !os.IsNotExist(err) {
 		t.Error("a dry run recorded a probe")
+	}
+}
+
+func writeCustom(t *testing.T, path, content string, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -8,7 +8,8 @@ import (
 )
 
 // retrySilentFor tracks how long the active target has been observed with an
-// expired retry notice. Unverified observations keep the episode.
+// expired retry notice. Unverified observations keep the episode. Like the
+// stall clock, it does not count an outage or a gap in which no check ran.
 func (t *tick) retrySilentFor(obs decide.Observation, target string) time.Duration {
 	var s *state.SilentRetry
 	if old := t.st.SilentRetry; old != nil && old.Target == target {
@@ -18,8 +19,16 @@ func (t *tick) retrySilentFor(obs decide.Observation, target string) time.Durati
 	switch {
 	case obs.RetryUnverified || obs.State == decide.Unknown:
 	case obs.State == decide.Active && obs.RetryExpired:
-		if s == nil {
+		switch {
+		case s == nil || t.networkGated || t.outageKnown():
+			// With the network down the silence says nothing about the
+			// provider: the clock starts again when it is back.
 			s = &state.SilentRetry{Target: target, Since: t.now}
+		default:
+			// Time in which no check ran is not counted either.
+			if s.Since = s.Since.Add(t.missedTime()); s.Since.After(t.now) {
+				s.Since = t.now
+			}
 		}
 	default:
 		s = nil

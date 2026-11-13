@@ -138,17 +138,20 @@ func merge(maps ...map[string]Cell) map[string]Cell {
 }
 
 const (
-	bbTest       = "internal/adapter/bb/bb_test.go"
-	runnerTest   = "internal/adapter/runner/runner_test.go"
-	cursorTest   = "internal/adapter/runner/cursor_test.go"
-	processTest  = "internal/adapter/process/process_test.go"
-	superTest    = "internal/supervise/supervise_test.go"
-	graphTest    = "internal/supervise/graph_test.go"
-	offlineTest  = "internal/scenario/headless_outage_test.go"
-	providers    = "docs/integrations.md#agent-providers"
-	waitingLive  = "docs/run-discovery.md#live-check-waiting-on"
-	runsLive     = "docs/run-discovery.md#live-check"
-	fakeDecision = "The decision is the same for every adapter and is tested with a fake adapter, not with this one."
+	bbTest        = "internal/adapter/bb/bb_test.go"
+	runnerTest    = "internal/adapter/runner/runner_test.go"
+	cursorTest    = "internal/adapter/runner/cursor_test.go"
+	processTest   = "internal/adapter/process/process_test.go"
+	superTest     = "internal/supervise/supervise_test.go"
+	graphTest     = "internal/supervise/graph_test.go"
+	offlineTest   = "internal/scenario/headless_outage_test.go"
+	offlineBBTest = "internal/supervise/offline_scenario_unix_test.go"
+	networkTest   = "internal/supervise/network_test.go"
+	networkDoc    = "docs/operations.md#network-outages"
+	providers     = "docs/integrations.md#agent-providers"
+	waitingLive   = "docs/run-discovery.md#live-check-waiting-on"
+	runsLive      = "docs/run-discovery.md#live-check"
+	fakeDecision  = "The decision is the same for every adapter and is tested with a fake adapter, not with this one."
 )
 
 // Matrix is every behaviour in row order.
@@ -198,11 +201,11 @@ var Matrix = []Behaviour{
 			same(Cell{Missing, None, "The contract has a resume command only.", nil}, "process"))},
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
-			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"cursor":  {Missing, None, "Every failure is unknown.", nil},
-			"process": {Missing, None, "The status command may report network; it is handled like any other error.", nil},
+			"bb":      {Yes, Fixture, "The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb.", []Ref{t(offlineBBTest, "TestOfflineForAnyLengthThenRecoversOnce"), d(networkDoc)}},
+			"claude":  {Yes, Fixture, "As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
+			"codex":   {Yes, Fixture, "As for Claude Code.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
+			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
+			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
 	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold the parent while conversations it started are still working, and say which.",
 		Cells: merge(map[string]Cell{
@@ -302,7 +305,7 @@ var customCells = map[string]Cell{
 	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
 	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. Without it every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedReadTest, "TestDefinitionSessionFile")}},
 	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
-	"network":          {Missing, None, "An outage is unknown unless the definition maps a code or exit code to network, and that is handled like any other error.", nil},
+	"network":          {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
 	"child_notice":     {NA, None, "No child conversations.", nil},
 	"handoff_source":   {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
