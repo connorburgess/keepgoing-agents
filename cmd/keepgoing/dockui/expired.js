@@ -10,6 +10,8 @@
     if (!row || !button || !said || !command || !navigator.clipboard || !navigator.clipboard.writeText) return;
     row.hidden = false;
     button.addEventListener("click", function () {
+      // Emptied first, so a second press is announced again.
+      said.textContent = "";
       navigator.clipboard.writeText(command.textContent).then(function () {
         said.textContent = "Copied. Paste it in a terminal.";
       }, function () {
