@@ -193,10 +193,19 @@ type dockServed struct {
 	// IdleSeconds is how long the panel server runs with no page reading
 	// from it. Zero for dock, which has no such limit.
 	IdleSeconds int `json:"idleSeconds,omitempty"`
+	// Changes is set by the panel server only: "on" when it was started with
+	// --allow-changes, otherwise "off". keepgoing dock never allows them.
+	// ChangesText says so in the footer's words. Form is the session's
+	// anti-forgery value for preparing a change, only when changes are on.
+	Changes      string     `json:"changes,omitempty"`
+	ChangesSince *time.Time `json:"changesSince,omitempty"`
+	ChangesText  dockText   `json:"changesText,omitempty"`
+	Form         string     `json:"form,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
-	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock"}}
+	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
+		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
 }
 
 func (s *dockServer) url(token string) string {
