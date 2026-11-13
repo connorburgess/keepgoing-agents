@@ -17,5 +17,7 @@ func TestMain(m *testing.M) {
 	// a probe. Tests must not depend on the real network: this stand-in
 	// reports it up unless a test replaces it.
 	os.Setenv("KEEPGOING_NET_PROBE", "exit 0")
-	os.Exit(m.Run())
+	code := m.Run()
+	panelTestCleanup() // the binary and launcher the panel tests share
+	os.Exit(code)
 }

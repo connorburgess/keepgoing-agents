@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -28,16 +28,18 @@ import (
 // starts one, and opens the browser at a single-use address that the server
 // exchanges for a session cookie. The parts:
 //
-//   - panel.json, in a private directory that is never a loop's: the server's
-//     port, process ID, start time, idle limit and instance ID. It holds no
-//     secret. A record is trusted only when the server it names answers its
-//     health request with the same instance ID.
-//   - panel.sock, a local socket in the same directory that only this user
-//     can reach. Opening addresses, status and stop go through it, so nothing
-//     secret is ever placed in another program's arguments or environment.
-//   - two locks: panel-open serializes callers, so two concurrent commands
-//     end with one server; panel-server is held by the server for its
-//     lifetime, so a second server cannot start beside it.
+//   - panel-server.lock, held by the server for its whole life. It is the
+//     only evidence that a server is running: a crash releases it, and nothing
+//     else can hold it. A second server cannot start beside the first.
+//   - panel.sock, a local socket in the same private directory that only this
+//     user can reach. The server is found, asked for an opening, asked for its
+//     status and stopped through it, so nothing secret is ever placed in
+//     another program's arguments or environment.
+//   - panel.json: the server's port, process ID, start time, idle limit and
+//     instance ID, for a person to read. It holds no secret and is never
+//     relied on: the server rewrites it when it is missing or wrong.
+//   - panel-open.lock serializes callers, so two concurrent commands end with
+//     one server.
 //
 // Nothing here reads or writes a loop's files beyond the reads the page
 // already makes, and stopping the server never affects supervision.
@@ -54,7 +56,7 @@ const (
 	panelOpenTTL   = 30 * time.Second
 	panelStartWait = 10 * time.Second
 	// panelOpenerEnv names a program to run instead of the platform's browser
-	// launcher. It receives the opening address as its only argument.
+	// launcher. It receives the path of the launch page as its only argument.
 	panelOpenerEnv = "KEEPGOING_PANEL_OPENER"
 )
 
@@ -76,6 +78,8 @@ type panelRecord struct {
 var (
 	panelInstancePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	panelKeyPattern      = regexp.MustCompile(`^l[0-9a-f]{12}$`)
+	panelCodePattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	panelLaunchPattern   = regexp.MustCompile(`^open-[0-9a-f]{32}\.html$`)
 )
 
 // panelSupported is false where the background server has never been run.
@@ -122,6 +126,11 @@ func panelDirectory(path string) (string, error) {
 	if registry.CheckDirectory(dir) != nil {
 		return "", bad
 	}
+	// Checked before anything is created.
+	if n, limit := len(filepath.Join(dir, panelSocketName)), panelSocketLimit(); n > limit {
+		// Never fall back to anything weaker than the private socket.
+		return "", fmt.Errorf("the panel directory's path is too long for a local socket (%d characters, at most %d); pass a shorter --panel-directory", n, limit)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", bad
 	}
@@ -129,10 +138,6 @@ func panelDirectory(path string) (string, error) {
 	// one just created is private.
 	if registry.CheckDirectory(dir) != nil {
 		return "", bad
-	}
-	if n, limit := len(filepath.Join(dir, panelSocketName)), panelSocketLimit(); n > limit {
-		// Never fall back to anything weaker than the private socket.
-		return "", fmt.Errorf("the panel directory's path is too long for a local socket (%d characters, at most %d); pass a shorter --panel-directory", n, limit)
 	}
 	return dir, nil
 }
@@ -153,7 +158,7 @@ func readPanelRecord(dir string) (panelRecord, bool) {
 	if err != nil || len(b) > 4096 || json.Unmarshal(b, &rec) != nil {
 		return panelRecord{}, false
 	}
-	if rec.SchemaVersion != 1 || rec.PID <= 0 || rec.Port < 1 || rec.Port > 65535 || rec.StartedAt.IsZero() || rec.IdleSeconds <= 0 || !panelInstancePattern.MatchString(rec.Instance) {
+	if !validPanelRecord(rec) {
 		return panelRecord{}, false
 	}
 	return rec, true
@@ -181,53 +186,35 @@ func writePanelRecord(dir string, rec panelRecord) error {
 	return snapshot.Replace(f.Name(), filepath.Join(dir, panelRecordName))
 }
 
-// panelAnswers reports whether the server a record names is running: its
-// health request must return the record's instance ID. A reused process ID or
-// port cannot do that.
-func panelAnswers(ctx context.Context, rec panelRecord) bool {
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(rec.Port)+"/healthz", nil)
-	if err != nil {
-		return false
-	}
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	var reply struct {
-		Instance string `json:"instance"`
-	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 256)).Decode(&reply) != nil {
-		return false
-	}
-	return reply.Instance == rec.Instance
-}
-
-// panelLive returns the record of a running server, if there is one.
-func panelLive(ctx context.Context, dir string) (panelRecord, bool) {
-	rec, ok := readPanelRecord(dir)
-	if !ok || !panelAnswers(ctx, rec) {
-		return panelRecord{}, false
-	}
-	return rec, true
-}
-
 // panelRequest is one message on the private socket.
 type panelRequest struct {
 	Op string `json:"op"` // open, status or stop
 	// Key is the page key of the loop to open; empty opens the overview.
 	Key string `json:"key,omitempty"`
+	// File asks for the opening as a private file to hand to a browser
+	// launcher, so the opening address is in no program's arguments.
+	File bool `json:"file,omitempty"`
+	// At is when the request was made. The server ignores a request that
+	// reaches it late, so one that waited while the server was suspended is
+	// not carried out after the caller was told it had failed.
+	At time.Time `json:"at"`
 }
 
+// panelRequestMaxAge is how late a request may reach the server.
+const panelRequestMaxAge = 5 * time.Second
+
 type panelReply struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	// Address is the opening address; File is the name, in the panel's
+	// private directory, of a page that goes to it.
 	Address string `json:"address,omitempty"`
-	// Status fields.
-	IdleRemainingSeconds int `json:"idleRemainingSeconds,omitempty"`
+	File    string `json:"file,omitempty"`
+	// Status: the server's own account of itself.
+	Record               *panelRecord `json:"record,omitempty"`
+	IdleRemainingSeconds int          `json:"idleRemainingSeconds,omitempty"`
+	// SinceUseSeconds is how long ago a page last read from the server.
+	SinceUseSeconds int `json:"sinceUseSeconds,omitempty"`
 }
 
 func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply, error) {
@@ -241,6 +228,7 @@ func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply
 	defer c.Close()
 	deadline, _ := ctx.Deadline()
 	_ = c.SetDeadline(deadline)
+	req.At = time.Now()
 	if err := json.NewEncoder(c).Encode(req); err != nil {
 		return reply, errors.New("the panel server did not accept the request")
 	}
@@ -254,6 +242,56 @@ func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply
 		return reply, errors.New(reply.Error)
 	}
 	return reply, nil
+}
+
+// panelPresence is what is known about a panel server.
+type panelPresence int
+
+const (
+	// panelAbsent: nothing holds the server's lock, so no server is running,
+	// whatever files are left in the directory.
+	panelAbsent panelPresence = iota
+	// panelRunning: a server holds the lock and answered on its socket.
+	panelRunning
+	// panelNotAnswering: a server holds the lock and did not answer: it is
+	// starting, stopping, suspended or stuck.
+	panelNotAnswering
+)
+
+// panelServerHeld reports whether a server holds the lock. The operating
+// system releases the lock when its holder exits, so this cannot be left
+// behind by a crash or imitated by another program.
+func panelServerHeld(dir string) bool {
+	lk, err := lock.AcquireNamed(dir, panelServerLock)
+	if err == nil {
+		_ = lk.Release()
+		return false
+	}
+	return errors.Is(err, lock.ErrHeld)
+}
+
+func validPanelRecord(rec panelRecord) bool {
+	return rec.SchemaVersion == 1 && rec.PID > 0 && rec.Port >= 1 && rec.Port <= 65535 && !rec.StartedAt.IsZero() && rec.IdleSeconds > 0 && panelInstancePattern.MatchString(rec.Instance)
+}
+
+// panelFind says whether a server is running and, when it answers, returns
+// its own account of itself. The record file is not consulted: a missing,
+// stale or forged panel.json changes nothing here.
+func panelFind(ctx context.Context, dir string) (panelPresence, panelRecord) {
+	if !panelServerHeld(dir) {
+		return panelAbsent, panelRecord{}
+	}
+	reply, err := panelControl(ctx, dir, panelRequest{Op: "status"})
+	if err != nil || reply.Record == nil || !validPanelRecord(*reply.Record) {
+		return panelNotAnswering, panelRecord{}
+	}
+	return panelRunning, *reply.Record
+}
+
+// panelLive returns the running server's account of itself, if one answers.
+func panelLive(ctx context.Context, dir string) (panelRecord, bool) {
+	presence, rec := panelFind(ctx, dir)
+	return rec, presence == panelRunning
 }
 
 // acquirePanelOpenLock waits for the caller lock, so that of two concurrent
@@ -281,22 +319,54 @@ type panelOptions struct {
 	offline    bool
 }
 
-// panelEnsure returns a running server, starting one when none answers. The
-// caller holds the panel-open lock.
-func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error) {
-	if rec, ok := panelLive(ctx, o.dir); ok {
-		return rec, false, nil
+// panelServerEnvironment is everything the background server is given: where
+// the user's files are, a fixed search path, and the locale and time zone.
+// Nothing else the caller had in its environment reaches it.
+func panelServerEnvironment() []string {
+	env := []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	for _, name := range []string{"HOME", "USER", "LOGNAME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
 	}
-	// Whatever record is there names no running server. The new server
-	// replaces it; the socket file is replaced by the server too.
+	return env
+}
+
+const panelNotAnsweringText = "a panel server is running but not answering. Try again in a moment; keepgoing panel status says whether it has recovered"
+
+// panelEnsure returns a running server, starting one when none is running.
+// The caller holds the panel-open lock.
+func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error) {
+	// A server that holds the lock and does not answer may be starting or
+	// stopping: give it the time a start is given before saying so.
+	deadline := time.Now().Add(panelStartWait)
+	for {
+		presence, rec := panelFind(ctx, o.dir)
+		if presence == panelRunning {
+			return rec, false, nil
+		}
+		if presence == panelAbsent {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return panelRecord{}, false, errors.New(panelNotAnsweringText)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// No server holds the lock, so whatever record, socket or launch page is
+	// here belongs to nothing. They are removed, never left for a person.
+	panelRemoveLeftovers(o.dir)
 	exe, err := os.Executable()
 	if err != nil {
 		return panelRecord{}, false, errors.New("cannot find this executable to start the panel server")
 	}
-	args := []string{"__panel-server", "--panel-directory", o.dir, "--idle", o.idle.String(), "--refresh", o.refresh.String(), "--stale-after", o.staleAfter.String()}
-	if o.registry != "" {
-		args = append(args, "--directory", o.registry)
+	// The registry directory is passed resolved, so the server does not
+	// depend on the caller's environment or working directory to find it.
+	registryDir, err := registryDirectory(o.registry)
+	if err != nil {
+		return panelRecord{}, false, errors.New("registry directory unavailable")
 	}
+	args := []string{"__panel-server", "--panel-directory", o.dir, "--directory", registryDir, "--idle", o.idle.String(), "--refresh", o.refresh.String(), "--stale-after", o.staleAfter.String()}
 	if o.offline {
 		args = append(args, "--offline")
 	}
@@ -304,21 +374,26 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	if err := detachDaemon(cmd); err != nil {
 		return panelRecord{}, false, errors.New("cannot start a background process on this platform")
 	}
-	// Stdin, stdout and stderr are the null device: the server keeps no log.
+	// A fixed small environment, the private directory as its working
+	// directory, the null device for stdin, stdout and stderr (it keeps no
+	// log), and no other descriptor of this process.
+	cmd.Env = panelServerEnvironment()
+	cmd.Dir = o.dir
+	panelCloseInheritedOnExec()
 	if err := cmd.Start(); err != nil {
 		return panelRecord{}, false, errors.New("cannot start the panel server")
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
-	deadline := time.Now().Add(panelStartWait)
+	deadline = time.Now().Add(panelStartWait)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		if rec, ok := readPanelRecord(o.dir); ok && rec.PID == cmd.Process.Pid && panelAnswers(ctx, rec) {
-			return rec, true, nil
+		if presence, rec := panelFind(ctx, o.dir); presence == panelRunning {
+			// Another server may have won the lock at the same moment, for
+			// example one started by hand: then that one is reused.
+			return rec, rec.PID == cmd.Process.Pid, nil
 		}
 		select {
 		case <-exited:
-			// It may have lost to a server that was starting at the same
-			// moment outside this lock, for example one started by hand.
 			if rec, ok := panelLive(ctx, o.dir); ok {
 				return rec, false, nil
 			}
@@ -328,6 +403,48 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	}
 	_ = cmd.Process.Kill()
 	return panelRecord{}, false, errors.New("the panel server did not answer within 10 seconds")
+}
+
+// panelRemoveLeftovers deletes the runtime files of a server that is gone.
+// Called only when nothing holds the server's lock.
+func panelRemoveLeftovers(dir string) {
+	_ = os.Remove(filepath.Join(dir, panelRecordName))
+	_ = os.Remove(filepath.Join(dir, panelSocketName))
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if panelLaunchPattern.MatchString(e.Name()) {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
+}
+
+// panelRequestOpening asks the server for an opening and checks the answer before
+// anything is done with it: the socket is trusted to be the server, and its
+// reply is still only ever a loopback opening address for the server's own
+// port, or the name of a launch page inside the private directory.
+func panelRequestOpening(ctx context.Context, dir string, rec panelRecord, key string, asFile bool) (string, error) {
+	reply, err := panelControl(ctx, dir, panelRequest{Op: "open", Key: key, File: asFile})
+	if err != nil {
+		return "", err
+	}
+	bad := errors.New("the panel server's answer was not an opening for this panel")
+	if !asFile {
+		code, ok := strings.CutPrefix(reply.Address, "http://127.0.0.1:"+strconv.Itoa(rec.Port)+"/open/")
+		if !ok || !panelCodePattern.MatchString(code) || reply.File != "" {
+			return "", bad
+		}
+		return reply.Address, nil
+	}
+	if !panelLaunchPattern.MatchString(reply.File) || reply.Address != "" {
+		return "", bad
+	}
+	path := filepath.Join(dir, reply.File)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+		return "", bad
+	}
+	return path, nil
 }
 
 // panelLoopKey resolves --loop to the page's key for that loop. The value may
@@ -362,17 +479,19 @@ func panelLoopKey(registryDir, value string) (string, error) {
 	return "", errors.New("more than one registered loop has that name; pass its registration ID from keepgoing registry list")
 }
 
-func panelOpener(address string) *exec.Cmd {
+// panelOpener is the program that shows a page in the browser. It is given
+// the path of the private launch page and nothing else: no address, code or
+// session is in its arguments, where other users of the computer could read
+// them.
+func panelOpener(page string) *exec.Cmd {
 	if custom := os.Getenv(panelOpenerEnv); custom != "" {
-		return exec.Command(custom, address)
+		return exec.Command(custom, page)
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("open", address)
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", address)
+		return exec.Command("open", page)
 	default:
-		return exec.Command("xdg-open", address)
+		return exec.Command("xdg-open", page)
 	}
 }
 
@@ -458,19 +577,20 @@ func panelCommand(e env, args []string) int {
 			return exitFailed
 		}
 	}
-	reply, err := panelControl(e.ctx, dir, panelRequest{Op: "open", Key: key})
+	opening, err := panelRequestOpening(e.ctx, dir, rec, key, !*noOpen)
 	if err != nil {
 		e.errf("panel: %v", err)
 		return exitFailed
 	}
 	if *noOpen {
-		fmt.Fprintf(e.stdout, "Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nRun keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", reply.Address)
+		fmt.Fprintf(e.stdout, "Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", opening)
 		return exitOK
 	}
-	// The opening address is the only thing given to another program. It is
-	// single use and short lived; the session it becomes never leaves the
-	// server and the browser.
-	cmd := panelOpener(reply.Address)
+	// The launcher is given the path of a private page that goes to the
+	// opening address. The server deletes that page when the opening is used
+	// or after 30 seconds. Nothing that can open the panel is in any
+	// program's arguments.
+	cmd := panelOpener(opening)
 	if err := cmd.Start(); err != nil {
 		e.errf("panel: could not start a browser. Run keepgoing panel --no-open and open the address it prints.")
 		return exitFailed
@@ -480,17 +600,22 @@ func panelCommand(e env, args []string) int {
 	if started {
 		what = "Started the keepgoing panel and opened it in your browser."
 	}
-	fmt.Fprintf(e.stdout, "%s It stops by itself after %s without a request; supervision is not affected.\n", what, time.Duration(rec.IdleSeconds)*time.Second)
+	fmt.Fprintf(e.stdout, "%s It stops by itself %s after the last page stops reading from it; supervision is not affected.\n", what, time.Duration(rec.IdleSeconds)*time.Second)
 	return exitOK
 }
 
 type panelStatus struct {
-	SchemaVersion        int        `json:"schemaVersion"`
+	SchemaVersion int `json:"schemaVersion"`
+	// Running: a server holds the lock. Answering: it also answered.
 	Running              bool       `json:"running"`
+	Answering            bool       `json:"answering"`
 	StartedAt            *time.Time `json:"startedAt,omitempty"`
 	Port                 int        `json:"port,omitempty"`
 	IdleSeconds          int        `json:"idleSeconds,omitempty"`
 	IdleRemainingSeconds *int       `json:"idleRemainingSeconds,omitempty"`
+	// InUse: a page read from it within the last minute. A page left open
+	// and visible keeps reading, so the server does not go idle under it.
+	InUse bool `json:"inUse"`
 }
 
 func panelStatusCommand(e env, args []string) int {
@@ -512,30 +637,33 @@ func panelStatusCommand(e env, args []string) int {
 		return exitUsage
 	}
 	st := panelStatus{SchemaVersion: 1}
-	if rec, ok := panelLive(e.ctx, dir); ok {
-		started := rec.StartedAt.UTC()
-		st.Running, st.StartedAt, st.Port, st.IdleSeconds = true, &started, rec.Port, rec.IdleSeconds
-		if reply, err := panelControl(e.ctx, dir, panelRequest{Op: "status"}); err == nil {
-			remaining := reply.IdleRemainingSeconds
-			st.IdleRemainingSeconds = &remaining
+	if panelServerHeld(dir) {
+		st.Running = true
+		if reply, err := panelControl(e.ctx, dir, panelRequest{Op: "status"}); err == nil && reply.Record != nil && validPanelRecord(*reply.Record) {
+			started, remaining := reply.Record.StartedAt.UTC(), reply.IdleRemainingSeconds
+			st.Answering, st.StartedAt, st.Port, st.IdleSeconds, st.IdleRemainingSeconds = true, &started, reply.Record.Port, reply.Record.IdleSeconds, &remaining
+			st.InUse = reply.SinceUseSeconds < 60
 		}
 	}
 	if *asJSON {
 		_ = json.NewEncoder(e.stdout).Encode(st)
 		return exitOK
 	}
-	if !st.Running {
+	switch {
+	case !st.Running:
 		fmt.Fprintln(e.stdout, "The keepgoing panel is not running. Run keepgoing panel to start and open it.")
-		return exitOK
+	case !st.Answering:
+		fmt.Fprintln(e.stdout, "The keepgoing panel is running but not answering. It may be starting or stopping; if this does not change, it is stuck, and ending its process is the way out. Supervision is not affected.")
+	default:
+		fmt.Fprintf(e.stdout, "The keepgoing panel is running on this computer only, port %d, since %s.\n", st.Port, st.StartedAt.Local().Format("2006-01-02 15:04 MST"))
+		idle := time.Duration(st.IdleSeconds) * time.Second
+		if st.InUse {
+			fmt.Fprintf(e.stdout, "In use: a page read from it in the last minute. It stops by itself %s after the last page stops reading; a page left open and visible keeps it running.\n", idle)
+		} else {
+			fmt.Fprintf(e.stdout, "It stops by itself after %s without a page reading from it: in about %s if nothing does.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
+		}
+		fmt.Fprintln(e.stdout, "keepgoing panel opens it; keepgoing panel stop ends it. Supervision is not affected either way.")
 	}
-	fmt.Fprintf(e.stdout, "The keepgoing panel is running on this computer only, port %d, since %s.\n", st.Port, st.StartedAt.Local().Format("2006-01-02 15:04 MST"))
-	idle := time.Duration(st.IdleSeconds) * time.Second
-	if st.IdleRemainingSeconds != nil {
-		fmt.Fprintf(e.stdout, "It stops by itself after %s without a request: in about %s if nothing asks.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
-	} else {
-		fmt.Fprintf(e.stdout, "It stops by itself after %s without a request.\n", idle)
-	}
-	fmt.Fprintln(e.stdout, "keepgoing panel opens it; keepgoing panel stop ends it. Supervision is not affected either way.")
 	return exitOK
 }
 
@@ -562,23 +690,21 @@ func panelStopCommand(e env, args []string) int {
 		return exitFailed
 	}
 	defer lk.Release()
-	rec, ok := panelLive(e.ctx, dir)
-	if !ok {
+	presence, _ := panelFind(e.ctx, dir)
+	if presence == panelAbsent {
+		// Nothing is running; files a crash left behind are cleared.
+		panelRemoveLeftovers(dir)
 		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
 		return exitOK
 	}
 	if _, err := panelControl(e.ctx, dir, panelRequest{Op: "stop"}); err != nil {
-		e.errf("panel stop: %v", err)
+		e.errf("panel stop: %s", panelNotAnsweringText)
 		return exitFailed
 	}
+	// The server holds its lock until its record and socket are gone, so the
+	// lock being free proves it has finished, not only stopped answering.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if panelAnswers(e.ctx, rec) {
-			continue
-		}
-		// The server holds its lock until its record and socket are gone, so
-		// taking the lock proves it has finished, not only stopped answering.
-		if held, err := lock.AcquireNamed(dir, panelServerLock); err == nil {
-			_ = held.Release()
+		if !panelServerHeld(dir) {
 			fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
 			return exitOK
 		}

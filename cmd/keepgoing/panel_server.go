@@ -73,13 +73,60 @@ const panelExpiredPage = `<!doctype html>
 type panelOpening struct {
 	expires time.Time
 	key     string // the loop to show, or "" for the overview
+	file    string // the launch page that goes to this opening, if one was written
 }
+
+// panelLaunchPage is the private file handed to the browser launcher. Its
+// only job is to take the browser to the opening address, so that address is
+// never in a program's arguments. It is not served by the panel.
+const panelLaunchPage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="refresh" content="0; url=%[1]s">
+<title>Opening the keepgoing panel</title>
+</head>
+<body>
+<p>Opening the keepgoing panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
+</body>
+</html>
+`
+
+// panelOpenedPage is the answer to a good opening address. It sets the
+// session cookie and sends the browser on to the page. It is a page, not a
+// redirect, on purpose: the opening is reached from a local file, which the
+// browser treats as another site, and a strict cookie is not sent along a
+// redirect that began on another site. A navigation that this page starts is
+// same-site, so the cookie goes with it.
+const panelOpenedPage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="0; url=%[1]s">
+<title>keepgoing</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+<main class="notice">
+  <p>Opening the keepgoing panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
+</main>
+</body>
+</html>
+`
 
 // panelState is the server's secrets and clock. None of it is written to
 // disk, logged, or passed to another process.
 type panelState struct {
 	instance string
 	segment  string // the random path segment the page is served under
+	dir      string // the private directory, for launch pages
 	port     int
 	idle     time.Duration
 	now      func() time.Time
@@ -122,29 +169,79 @@ func (s *panelState) base() string { return fmt.Sprintf("http://127.0.0.1:%d", s
 
 func (s *panelState) pagePath() string { return "/s/" + s.segment + "/" }
 
-// mint creates an opening address. Only the private socket calls it.
-func (s *panelState) mint(key string) (string, error) {
+// mint creates an opening. Only the private socket calls it. With asFile it
+// also writes the launch page and returns that file's name; otherwise it
+// returns the opening address.
+func (s *panelState) mint(key string, asFile bool) (address, file string, err error) {
 	if key != "" && !panelKeyPattern.MatchString(key) {
-		return "", errors.New("not a loop key")
+		return "", "", errors.New("not a loop key")
 	}
 	code, err := panelRandom(32)
 	if err != nil {
-		return "", errors.New("no random source")
+		return "", "", errors.New("no random source")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeLocked()
+	if len(s.openings) >= panelMaxOpenings {
+		return "", "", errors.New("too many opening addresses are waiting; try again in 30 seconds")
+	}
+	address = s.base() + "/open/" + code
+	opening := panelOpening{expires: s.now().Add(panelOpenTTL), key: key}
+	if asFile {
+		name, err := panelRandom(16)
+		if err != nil || s.dir == "" {
+			return "", "", errors.New("no random source")
+		}
+		opening.file = "open-" + name + ".html"
+		// Created private and never replaced: O_EXCL refuses a name that
+		// already exists, a link included.
+		f, err := os.OpenFile(filepath.Join(s.dir, opening.file), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return "", "", errors.New("the launch page could not be written")
+		}
+		_, werr := fmt.Fprintf(f, panelLaunchPage, address)
+		if cerr := f.Close(); werr != nil || cerr != nil {
+			_ = os.Remove(filepath.Join(s.dir, opening.file))
+			return "", "", errors.New("the launch page could not be written")
+		}
+		// Gone after 30 seconds whether or not it was used.
+		file := opening.file
+		time.AfterFunc(panelOpenTTL, func() { _ = os.Remove(filepath.Join(s.dir, file)) })
+		s.openings[code] = opening
+		return "", opening.file, nil
+	}
+	s.openings[code] = opening
+	return address, "", nil
+}
+
+// purgeLocked forgets expired openings and deletes their launch pages.
+func (s *panelState) purgeLocked() {
 	now := s.now()
 	for c, o := range s.openings {
 		if !now.Before(o.expires) {
-			delete(s.openings, c)
+			s.dropLocked(c)
 		}
 	}
-	if len(s.openings) >= panelMaxOpenings {
-		return "", errors.New("too many opening addresses are waiting; try again in 30 seconds")
-	}
-	s.openings[code] = panelOpening{expires: now.Add(panelOpenTTL), key: key}
-	return s.base() + "/open/" + code, nil
 }
+
+func (s *panelState) dropLocked(code string) {
+	if o, ok := s.openings[code]; ok && o.file != "" && s.dir != "" {
+		_ = os.Remove(filepath.Join(s.dir, o.file))
+	}
+	delete(s.openings, code)
+}
+
+// removeLaunchPages deletes every launch page still on disk, at exit.
+func (s *panelState) removeLaunchPages() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.openings {
+		s.dropLocked(c)
+	}
+}
+
+func (s *panelState) sinceUse() time.Duration { return s.now().Sub(time.Unix(0, s.last.Load())) }
 
 // redeem uses an opening code once. Every stored code is compared in constant
 // time, and a code is deleted whether or not it had expired.
@@ -161,7 +258,7 @@ func (s *panelState) redeem(code string) (panelOpening, bool) {
 		return panelOpening{}, false
 	}
 	o := s.openings[found]
-	delete(s.openings, found)
+	s.dropLocked(found) // the launch page goes with the code
 	return o, s.now().Before(o.expires)
 }
 
@@ -200,14 +297,21 @@ func (s *panelState) authorize(r *http.Request) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	c, err := r.Cookie(panelCookieName)
-	if err != nil || !s.validSession(c.Value) {
+	// Exactly one session cookie: a request carrying two is refused, so a
+	// second cookie of the same name cannot stand in front of the real one.
+	var sessions []string
+	for _, c := range r.Cookies() {
+		if c.Name == panelCookieName {
+			sessions = append(sessions, c.Value)
+		}
+	}
+	if len(sessions) != 1 || !s.validSession(sessions[0]) {
 		return "", false
 	}
 	return rest, true
 }
 
-// panelHandler puts the health and opening endpoints in front of the page.
+// panelHandler puts the opening endpoint in front of the page.
 // Every request passes the same network guard first.
 type panelHandler struct {
 	state *panelState
@@ -215,27 +319,42 @@ type panelHandler struct {
 	page  *dockServer
 }
 
+// allowOpening is the guard for an opening address. It is the page guard
+// with one more accepted case: a top-level navigation that began on another
+// site, which is what a browser sends when the private launch page takes it
+// to the address. Such a request is a document navigation, a GET, and has no
+// Origin; anything else that began on another site is refused as before.
+func (h *panelHandler) allowOpening(r *http.Request) bool {
+	if h.guard.allow(r) {
+		return true
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if !h.guard.hosts[strings.ToLower(r.Host)] || r.Header.Get("Origin") != "" {
+		return false
+	}
+	return r.Header.Get("Sec-Fetch-Site") == "cross-site" && r.Header.Get("Sec-Fetch-Mode") == "navigate" && r.Header.Get("Sec-Fetch-Dest") == "document"
+}
+
 func (h *panelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dockSecurityHeaders(w.Header())
-	if !h.guard.allow(r) {
+	opening := strings.HasPrefix(r.URL.Path, "/open/")
+	if (opening && !h.allowOpening(r)) || (!opening && !h.guard.allow(r)) {
 		http.Error(w, "refused", http.StatusForbidden)
 		return
 	}
-	// Only a page load, a page request with a session or a new opening
-	// address counts as use. Health requests and refused requests do not
-	// keep the server alive.
+	// Only a page request with a session or a good opening address counts
+	// as use. The two static files and refused requests do not keep the
+	// server alive.
 	switch {
-	case r.URL.Path == "/healthz":
-		// Nothing but the instance ID: no version, time, port or count.
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"instance": h.state.instance})
 	case r.URL.Path == "/panel.css":
 		// The stylesheet holds nothing private; the expired page needs it
 		// without a session.
 		h.page.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
 	case r.URL.Path == "/expired.js":
 		h.page.asset(w, "dockui/expired.js", "text/javascript; charset=utf-8")
-	case strings.HasPrefix(r.URL.Path, "/open/"):
+	case opening:
 		h.open(w, r)
 	case strings.HasPrefix(r.URL.Path, "/s/"):
 		if _, ok := h.state.authorize(r); !ok {
@@ -279,13 +398,14 @@ func (h *panelHandler) open(w http.ResponseWriter, r *http.Request) {
 	if opening.key != "" {
 		target += "#/loop/" + opening.key
 	}
-	w.Header().Set("Location", target)
-	w.WriteHeader(http.StatusSeeOther)
+	// The target is this server's own path and a validated key.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, panelOpenedPage, target)
 }
 
 // panelControlServe answers the private socket: one request per connection,
 // bounded in size and time, served one at a time.
-func panelControlServe(l net.Listener, state *panelState, stop func()) {
+func panelControlServe(l net.Listener, state *panelState, record func() panelRecord, stop func()) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -296,19 +416,27 @@ func panelControlServe(l net.Listener, state *panelState, stop func()) {
 		reply := panelReply{}
 		if json.NewDecoder(io.LimitReader(c, 1024)).Decode(&req) != nil {
 			reply.Error = "the request could not be read"
+		} else if age := time.Since(req.At); req.At.IsZero() || age > panelRequestMaxAge || age < -panelRequestMaxAge {
+			// It waited too long to be what its sender still wants.
+			reply.Error = "the request reached the server too late"
+			req.Op = ""
 		} else {
 			switch req.Op {
 			case "open":
 				state.touch()
-				if address, err := state.mint(req.Key); err != nil {
+				if address, file, err := state.mint(req.Key, req.File); err != nil {
 					reply.Error = err.Error()
 				} else {
-					reply.OK, reply.Address = true, address
+					reply.OK, reply.Address, reply.File = true, address, file
 				}
 			case "status":
-				// Asking does not keep the server alive.
-				reply.OK = true
+				// Asking does not keep the server alive. The server gives its
+				// own account of itself and puts its record back if the file
+				// is missing or is not its own.
+				rec := record()
+				reply.OK, reply.Record = true, &rec
 				reply.IdleRemainingSeconds = max(0, int(state.idleRemaining()/time.Second))
+				reply.SinceUseSeconds = max(0, int(state.sinceUse()/time.Second))
 			case "stop":
 				reply.OK = true
 			default:
@@ -349,13 +477,16 @@ func panelServerCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "")
 	offline := fs.Bool("offline", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *panelDir == "" || *idle <= 0 || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 || !panelSupported() {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *panelDir == "" || *idle <= 0 || *idle > panelMaxIdle || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 || !panelSupported() {
 		return exitUsage
 	}
 	dir, err := panelDirectory(*panelDir)
 	if err != nil {
 		return exitUsage
 	}
+	// Everything this process creates, its socket included, is private from
+	// the moment it exists.
+	panelRestrictUmask()
 	return runPanelServer(e.ctx, panelServerConfig{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, now: time.Now})
 }
 
@@ -382,6 +513,8 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	if err != nil {
 		return exitFailed
 	}
+	state.dir = dir
+	defer state.removeLaunchPages()
 	// The lock proves no server owns a socket file left here.
 	socket := filepath.Join(dir, panelSocketName)
 	_ = os.Remove(socket)
@@ -396,7 +529,6 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	go panelControlServe(control, state, cancel)
 
 	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon}
 	if c.offline {
@@ -415,6 +547,14 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	if err := writePanelRecord(dir, rec); err != nil {
 		return exitFailed
 	}
+	// The record is for people; the server keeps it true. Asked for its
+	// status, it writes the file again if it is missing or names another.
+	go panelControlServe(control, state, func() panelRecord {
+		if cur, ok := readPanelRecord(dir); !ok || cur != rec {
+			_ = writePanelRecord(dir, rec)
+		}
+		return rec
+	}, cancel)
 	defer func() {
 		// Leave a record another server has since written.
 		if cur, ok := readPanelRecord(dir); ok && cur.Instance == state.instance {
