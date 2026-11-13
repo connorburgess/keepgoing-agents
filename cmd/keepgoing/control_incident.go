@@ -31,6 +31,7 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 	if err != nil {
 		return f, err // A rejected or failed save is not a persisted transition.
 	}
+	recordRunBoundary(dir, operation)
 	// This bounds observation of the successful save, not its exact timestamp.
 	// The control lock is released before acquiring the diagnostic lock.
 	r.ControlChange.SaveObservedAt = time.Now().UTC()
