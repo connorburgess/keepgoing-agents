@@ -18,7 +18,7 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 | macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
 | Panel page | `keepgoing dock`: a read-only local page for every registered loop, on 127.0.0.1 only | Unreleased; fixtures only. Controls, configuration, a menu-bar or tray item, installation and remote access are planned |
 | Cursor CLI | Unreleased primary-only adapter and guided setup | Offline fixtures; supported-version range, live acceptance and existing IDE-chat attachment remain open |
-| Antigravity | Internal headless parser and ACP exchange foundation only | Offline fixtures; no registered adapter, guided setup or verified existing IDE-chat attachment |
+| Antigravity | Internal parser, ACP exchange, saved hold and an unregistered detached runner | Offline fixtures with a stand-in agent; Antigravity itself has never been run. No registered adapter, guided setup or verified existing IDE-chat attachment |
 
 The v0.1.5 changes are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
 

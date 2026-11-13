@@ -41,7 +41,12 @@ func MaybeRunTurn() {
 	}
 	done := make(chan struct{})
 	go watchStop(Dir(dir), key, terminate, done)
-	code := runTurn(dir, argv)
+	var code int
+	if spec := os.Getenv(envTurnACP); spec != "" {
+		code = runAntigravityACPTurn(dir, argv, spec)
+	} else {
+		code = runTurn(dir, argv)
+	}
 	close(done)
 	os.Exit(code)
 }
@@ -65,13 +70,7 @@ func runTurn(dir string, argv []string) int {
 	defer stderr.Close()
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	// The wrapper must not pass its own selection variables to the agent.
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
+	cmd.Env = turnChildEnv()
 	code := 0
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -89,9 +88,27 @@ func runTurn(dir string, argv []string) int {
 	return code
 }
 
+// turnChildEnv is the agent's environment: the wrapper's own, without the
+// variables that select and configure the wrapper.
+func turnChildEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 // wrapperCommand builds the command that re-runs this executable as the
 // turn wrapper for argv.
-func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd, error) {
+//
+// acp selects the ACP worker and is the only way to do so. The variable that
+// carries it is removed from the inherited environment and from the loop's
+// own entries first, so a value set anywhere else can never divert a turn of
+// any runner into that worker.
+func wrapperCommand(argv []string, workdir, dir string, env []string, acp string) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -103,6 +120,14 @@ func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd
 	cmd := exec.Command(self)
 	configureWrapper(cmd)
 	cmd.Dir = workdir
-	cmd.Env = append(append(os.Environ(), env...), envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
+	for _, kv := range append(os.Environ(), env...) {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnACP) {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
+	if acp != "" {
+		cmd.Env = append(cmd.Env, envTurnACP+"="+acp)
+	}
 	return cmd, nil
 }
