@@ -8,6 +8,8 @@ keepgoing runs on one device, the **command center**: the machine where the agen
 
 ## The model
 
+Words used here. "Command center" names the idea of supervising on the device; it is a design term, not a product label, and a machine running keepgoing is otherwise shown by its own name among a user's devices. "Dock" is a working name for the local page plus a small native presence item; user-facing text says "keepgoing panel" until a name is settled, since the word collides with the macOS Dock. A **route** is a model on an account at an effort level; configuration and code still say target, candidate and fallback, and nothing is renamed here.
+
 ```mermaid
 flowchart LR
   subgraph CC["Command center: one machine (laptop, desktop, small always-on box, or an edge device)"]
@@ -195,7 +197,7 @@ What small models do on embedded-class hardware, from primary sources:
 
 **What this implies for keepgoing (planned direction).**
 
-- **Connectivity-aware routing** is a form of the [fallback chain](fallbacks.md) that already exists: an ordered list of targets, each confirmed before use. A remote model while online and a local one while offline, or the reverse, would be two targets chosen by connectivity as well as by limits. It would build on network-aware waiting (open pull request) and needs its own structured "offline" condition; today a handoff is triggered only by the structured error classes listed in `errors.failover_on`, never by connectivity.
+- **Connectivity-aware routing** is a form of the [fallback chain](fallbacks.md) that already exists: an ordered list of targets, each confirmed before use. The planned policy is preferred routes: a loop has an ordered list of routes, work does not stop while any route can take it, and it returns to the most preferred available route at a turn boundary. A remote model while online and a local one while offline, or the reverse, would be two routes chosen by connectivity as well as by limits. It would build on network-aware waiting (open pull request) and needs its own structured "offline" condition; today a handoff is triggered only by the structured error classes listed in `errors.failover_on`, never by connectivity.
 - **A local-model target** would need from the runner kit what any agent does: a way to start and resume a turn and to read structured state, session identity and error classes. Its probe would be a local health check, not a paid request: for example llama.cpp's server answers `GET /health` with 503 while loading and 200 when ready ([README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), 2026-11-13), and Ollama lists loaded models at `GET /api/ps` ([docs](https://docs.ollama.com/api/ps)). It has no quota, so its quota group means the device; its bound is a compute and battery budget, which keepgoing has no notion of yet. A model server is not an agent: something must still run the agent loop against it, and which agent CLIs support a local model server was not checked here.
 - **Where it does not fit.** Work that needs a capable model waits for a connection rather than falling back to a model that cannot do it. A fallback from a capable remote model to a small local one should be opt-in per task, never a default.
 

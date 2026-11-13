@@ -170,7 +170,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
-- [Command center](docs/command-center.md): why the supervisor runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
+- [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 
 ## Contributing
 
