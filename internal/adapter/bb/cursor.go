@@ -42,6 +42,11 @@ type Cursor struct {
 	// ScannedAt the local time of the last complete scan. See eventTime.
 	LastEventAt time.Time `json:"lastEventAt,omitempty"`
 	ScannedAt   time.Time `json:"scannedAt,omitempty"`
+	// AnsweringRequest is set by requested input and cleared by the next
+	// event that is thread activity. While it is set, the first
+	// provider/unhandled event is BB's answer to that request and is not
+	// activity. It is saved because a scan can end between the two.
+	AnsweringRequest bool `json:"answeringRequest,omitempty"`
 }
 
 // eventTime bounds BB's createdAt for an event by what this supervisor knows
@@ -110,11 +115,20 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	// BB's acknowledgement of it: every client/turn/requested is followed
 	// within milliseconds by a turn/input/accepted, which BB logs even into a
 	// turn that is dead or about to fail.
-	// A real thread logs a third event per request, provider/unhandled: BB
-	// could not interpret something the provider sent. An event nobody could
-	// read is not structured evidence of anything, so it does not count
-	// either; a turn that is alive logs events BB does understand.
-	if !strings.HasPrefix(e.Type, "client/") && e.Type != "turn/input/accepted" && e.Type != "provider/unhandled" {
+	// A real thread logs a third event per request, provider/unhandled. That
+	// one, the first to follow a request with no thread activity in between,
+	// does not count either. Any other provider/unhandled does, as before: an
+	// event BB could not interpret is still the thread doing something, and
+	// calling a live turn silent would queue a nudge into it. It never
+	// clears a notice: it is not evidence that the turn recovered.
+	switch {
+	case strings.HasPrefix(e.Type, "client/"):
+		c.AnsweringRequest = true
+	case e.Type == "turn/input/accepted":
+	case e.Type == "provider/unhandled" && c.AnsweringRequest:
+		c.AnsweringRequest = false
+	default:
+		c.AnsweringRequest = false
 		c.LastEventAt = when
 	}
 	if childOutcome(e, c.Thread) {

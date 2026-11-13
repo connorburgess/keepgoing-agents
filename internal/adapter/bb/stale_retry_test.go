@@ -142,7 +142,7 @@ func TestActiveThreadRetryNoticeStandsWhileLogIsNotSilent(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
 	events := `[` + at(turnStarted, start) + `,` + at(retryNotice, start.Add(time.Minute))
 	dir := t.TempDir()
-	kinds := []string{toolOutput, retryNotice, `{"type":"item/completed","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`}
+	kinds := []string{toolOutput, retryNotice, `{"type":"item/completed","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`}
 	for i := 1; i <= 280; i++ { // about 47 hours, one event every ten minutes
 		logged := start.Add(time.Duration(i) * 10 * time.Minute)
 		events += `,` + at(kinds[i%len(kinds)], logged)
@@ -212,6 +212,20 @@ func TestSilentActiveThreadRetryNoticeExpiresIntoStallHandling(t *testing.T) {
 		b.CheckAt(last.Add(time.Duration(minutes+1) * time.Minute))
 		if o, err := b.Observe(context.Background()); err != nil || o.Retrying || !o.RetryExpired {
 			t.Fatalf("acknowledged input %d re-armed the notice: %+v %v", i+1, o, err)
+		}
+	}
+	// A provider/unhandled event that is not the answer to a request is still
+	// thread activity, as before: an event BB could not interpret is the
+	// thread doing something, and a notice declared silent would let a nudge
+	// be queued into a live turn. Here one follows the request's own, and one
+	// arrives much later by itself.
+	unhandled := `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`
+	for name, extraAt := range map[string]time.Duration{"right after the request's own": 138*time.Minute + time.Second, "by itself, later": 150 * time.Minute} {
+		live := paired[:len(paired)-1] + `,` + at(unhandled, last.Add(extraAt)) + `]`
+		b, _ := newFake(`{"thread":{"status":"active","queuedMessageCount":3}}`, live, false)
+		b.CheckAt(last.Add(extraAt + time.Minute))
+		if o, err := b.Observe(context.Background()); err != nil || !o.Retrying || o.RetryExpired {
+			t.Fatalf("%s: an unhandled provider event was not counted as activity: %+v %v", name, o, err)
 		}
 	}
 	// A thread that has not stalled by its own progress rules is simply active.
