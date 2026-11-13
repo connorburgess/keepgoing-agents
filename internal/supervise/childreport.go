@@ -79,7 +79,7 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	// A report that cannot be sent in this check for lack of time must not use
 	// up its single attempt: nothing is recorded, so the next check sends it.
 	if !t.canReport(childErrorEvent) {
-		t.warn("report %s put off to the next check: no time left in this one (loop.tick_timeout)", childErrorEvent)
+		t.warn("report %s put off to the next check: the network is down or no time is left in this one", childErrorEvent)
 		return
 	}
 	// Intent first, as holds and completions are saved before their reports.
