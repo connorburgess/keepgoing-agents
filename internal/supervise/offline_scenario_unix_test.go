@@ -23,7 +23,8 @@ import (
 )
 
 // A stand-in bb with children: status per thread, a child list and a log
-// come from files the test edits; what is told to a thread is kept.
+// come from files the test edits; what is told to a thread is kept, and a
+// retry of its failed turn is accepted and counted.
 const offlineBBScript = `#!/bin/sh
 d="$FAKE_BB_DIR"
 case "$1 $2" in
@@ -32,6 +33,7 @@ case "$1 $2" in
 "thread log") cat "$d/log" ;;
 "thread interactions") echo '[]' ;;
 "thread tell") echo "tell $3" >> "$d/sends"; cat >> "$d/told"; echo >> "$d/told"; echo '{"ok":true}' ;;
+"thread retry") echo "retry $3" >> "$d/sends"; echo '{"ok":true,"delivery":"sent","attempt":2}' ;;
 *) echo '{"ok":true}' ;;
 esac
 `
@@ -111,6 +113,10 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 			sends := func() int {
 				b, _ := os.ReadFile(filepath.Join(dir, "sends"))
 				return strings.Count(string(b), "tell ")
+			}
+			retries := func() int {
+				b, _ := os.ReadFile(filepath.Join(dir, "sends"))
+				return strings.Count(string(b), "retry ")
 			}
 
 			online, fallbackProbes, verifications := true, 0, 0
@@ -203,7 +209,7 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 				default:
 					t.Fatalf("+%s: unexpected reason %q (%+v)", off, r.Reason, r)
 				}
-				if r.Action != "none" || r.Outcome != "succeeded" || ctl.AwaitingUser || sends() != 0 || fallbackProbes != 0 ||
+				if r.Action != "none" || r.Outcome != "succeeded" || ctl.AwaitingUser || sends() != 0 || retries() != 0 || fallbackProbes != 0 ||
 					st.Reprompts != 1 || st.Nudges != 0 || st.Target() != state.Primary || len(rep.types) != 0 {
 					t.Fatalf("+%s: spent or held while offline: %+v held=%t sends=%d fallbackProbes=%d reprompts=%d reports=%v",
 						off, r, ctl.AwaitingUser, sends(), fallbackProbes, st.Reprompts, rep.types)
@@ -226,25 +232,27 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 			}
 
 			// The portal is cleared. The first check takes exactly one recovery
-			// action: one re-prompt, which tells the parent about its children.
+			// action: the failed turn is retried once, with no new prompt, and
+			// because its children are still in error the parent is told so in
+			// one notice-only message.
 			online = true
 			back := start.Add(outage + 8*time.Minute)
 			r, st := check(back)
 			ctl, _ := control.Load(w.dir)
-			if r.Action != "reprompt" || sends() != 1 || st.Reprompts != 2 || ctl.AwaitingUser || r.Network != "restored" ||
+			if r.Action != "reprompt" || r.Recovery != "turn_retry" || retries() != 1 || sends() != 1 || st.Reprompts != 2 || ctl.AwaitingUser || r.Network != "restored" ||
 				r.NetworkDownFor != back.Sub(downSince).Truncate(time.Second).String() || !st.NetworkDownSince.IsZero() || !r.ChildErrorNote {
 				t.Fatalf("first check after connectivity: %+v reprompts=%d sends=%d held=%t (down since %v)", r, st.Reprompts, sends(), ctl.AwaitingUser, downSince)
 			}
 			told, _ := os.ReadFile(filepath.Join(dir, "told"))
-			if !strings.Contains(string(told), "[keepgoing:child-errors count=2]") {
-				t.Fatalf("the re-prompt did not mention the failed children: %q", told)
+			if !strings.HasPrefix(string(told), "[keepgoing:child-errors count=2 ") || strings.Contains(string(told), "keep going") {
+				t.Fatalf("not the notice-only message about the failed children: %q", told)
 			}
 			// The thread runs again; nothing more is sent.
 			add(back, "client/turn/requested", `{}`)
 			add(back.Add(time.Second), "turn/started", turn)
 			parent("active")
-			if r, _ := check(back.Add(10 * time.Minute)); r.Action != "none" || r.Reason != "active" || sends() != 1 {
-				t.Fatalf("after recovery: %+v sends=%d", r, sends())
+			if r, _ := check(back.Add(10 * time.Minute)); r.Action != "none" || r.Reason != "active" || sends() != 1 || retries() != 1 {
+				t.Fatalf("after recovery: %+v sends=%d retries=%d", r, sends(), retries())
 			}
 
 			// The fallbacks were not marked failed by the outage.

@@ -126,6 +126,7 @@ func NewWorld(t *testing.T, start time.Time) *World {
 	w.install("claude")
 	w.linkGit()
 	w.Net = newConnectivity(t)
+	w.Net.world = w.world
 	w.Hooks = newReceiver(t)
 	w.env = []string{
 		"PATH=" + w.bin,
@@ -853,9 +854,10 @@ func (w *World) writeJSON(name string, v any) {
 // KEEPGOING_NET_PROBE_URL; the stand-in agents use Reachable to decide
 // whether their provider can be reached.
 type Connectivity struct {
-	URL  string
-	mode atomic.Value // "online", "offline" or "portal"
-	hits atomic.Int64
+	URL   string
+	world string       // the stand-ins' state directory
+	mode  atomic.Value // "online", "offline" or "portal"
+	hits  atomic.Int64
 }
 
 func newConnectivity(t *testing.T) *Connectivity {
@@ -891,9 +893,21 @@ func newConnectivity(t *testing.T) *Connectivity {
 
 // Online, Offline and Portal set what the connectivity target and the
 // providers behind it do.
-func (c *Connectivity) Online()  { c.mode.Store("online") }
-func (c *Connectivity) Offline() { c.mode.Store("offline") }
-func (c *Connectivity) Portal()  { c.mode.Store("portal") }
+func (c *Connectivity) Online()  { c.set("online") }
+func (c *Connectivity) Offline() { c.set("offline") }
+func (c *Connectivity) Portal()  { c.set("portal") }
+
+// set also tells the stand-in claude, which is a separate process: a probe
+// of a provider that cannot be reached must not pass.
+func (c *Connectivity) set(mode string) {
+	c.mode.Store(mode)
+	marker := filepath.Join(c.world, "unreachable")
+	if mode == "online" {
+		os.Remove(marker)
+		return
+	}
+	os.WriteFile(marker, nil, 0o600)
+}
 
 // Reachable says whether a provider can be reached: not offline and not
 // behind a captive portal.

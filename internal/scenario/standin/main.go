@@ -16,6 +16,8 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	unreachable            if present, the provider cannot be reached: a claude
+//	                       probe fails without a structured answer
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every claude invocation
 //	sends.jsonl            everything an agent received: `thread tell` (thread,
@@ -145,13 +147,18 @@ func nextMode(path string) string {
 	return strings.TrimSpace(lines[0])
 }
 
-// claude answers a probe: a success, or a structured rate limit when
-// probe-limited.<model> exists.
+// claude answers a probe: a success, a structured rate limit when
+// probe-limited.<model> exists, or nothing structured when the provider is
+// unreachable.
 func claude(world string, args []string) int {
 	appendLine(filepath.Join(world, "probes.jsonl"), args)
 	model := flagValue(args, "--model")
 	if model == "" {
 		model = "default"
+	}
+	if _, err := os.Stat(filepath.Join(world, "unreachable")); err == nil {
+		fmt.Fprintln(os.Stderr, "fictional: could not connect")
+		return 1
 	}
 	if _, err := os.Stat(filepath.Join(world, "probe-limited."+model)); err == nil {
 		fmt.Println(`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"result":"fictional limit"}`)
