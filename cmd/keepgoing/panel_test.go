@@ -1459,3 +1459,107 @@ func TestPanelRefusesWhereItIsUnverified(t *testing.T) {
 		t.Fatalf("list: %d %s", code, errs.String())
 	}
 }
+
+// A command probes the server's lock by taking it for an instant. A server
+// that starts at that instant waits for it; it does not give up.
+func TestPanelServerStartsWhileItsLockIsBeingProbed(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	dir, err := panelDirectory(filepath.Join(panelShortDir(t), "panel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := lock.AcquireNamed(dir, panelServerLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+	}()
+	defer func() { cancel(); <-done }()
+	time.Sleep(400 * time.Millisecond)
+	select {
+	case code := <-done:
+		done <- code
+		t.Fatalf("the server gave up while its lock was being probed: %d", code)
+	default:
+	}
+	_ = probe.Release()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), dir); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start after the probe let go")
+		}
+	}
+}
+
+// A server removes only the socket it created, and exits when the lock it
+// holds is no longer the file at its path.
+func TestPanelServerRemovesOnlyItsOwnSocketAndExitsWithoutItsLock(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	dir, err := panelDirectory(filepath.Join(panelShortDir(t), "panel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticks := make(chan time.Time)
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now, ticks: ticks})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), dir); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start")
+		}
+	}
+	// A check with the lock in place changes nothing.
+	ticks <- time.Now()
+	select {
+	case code := <-done:
+		t.Fatalf("exited with its lock in place: %d", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Another server's files take the place of this one's: a new lock file,
+	// a socket and a record that are not its own.
+	lockPath, socket := filepath.Join(dir, panelServerLock+".lock"), filepath.Join(dir, panelSocketName)
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("another server's socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: 49152, StartedAt: time.Now().UTC().Truncate(time.Second), IdleSeconds: 1800, Instance: strings.Repeat("9", 32), Registry: registryDir, Version: "fixture"}
+	if err := writePanelRecord(dir, other); err != nil {
+		t.Fatal(err)
+	}
+	ticks <- time.Now()
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Fatalf("exit code %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running after its lock file was replaced")
+	}
+	if b, err := os.ReadFile(socket); err != nil || string(b) != "another server's socket" {
+		t.Fatalf("it removed a socket it did not create: %v %q", err, b)
+	}
+	if rec, ok := readPanelRecord(dir); !ok || rec != other {
+		t.Fatalf("it removed a record it did not write: %+v %v", rec, ok)
+	}
+}

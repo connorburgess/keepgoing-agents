@@ -103,6 +103,11 @@ func panelBrowser(ctx context.Context) (func(page string) []string, error) {
 	for _, dir := range panelDesktopDirectories() {
 		// Flatpak and others nest entries; the ID's dashes can be folders.
 		for _, name := range []string{id, strings.ReplaceAll(id, "-", "/")} {
+			// Turning dashes into folders must not leave the directory:
+			// "a-..-..-x.desktop" would.
+			if !filepath.IsLocal(name) || strings.Contains(name, "..") {
+				continue
+			}
 			b, err := os.ReadFile(filepath.Join(dir, name))
 			if err != nil || len(b) > 256<<10 {
 				continue

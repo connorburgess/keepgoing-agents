@@ -201,8 +201,14 @@ type panelRequest struct {
 	At time.Time `json:"at"`
 }
 
-// panelRequestMaxAge is how late a request may reach the server.
-const panelRequestMaxAge = 5 * time.Second
+// panelRequestMaxAge is how late a request may reach the server, and
+// panelControlWait how long a caller waits for the answer. The wait is the
+// longer of the two on purpose: by the time a caller gives up and reports a
+// failure, the request it sent is already too old to be carried out.
+const (
+	panelRequestMaxAge = 2 * time.Second
+	panelControlWait   = 3 * time.Second
+)
 
 type panelReply struct {
 	OK    bool   `json:"ok"`
@@ -220,7 +226,7 @@ type panelReply struct {
 
 func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply, error) {
 	var reply panelReply
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, panelControlWait)
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(dir, panelSocketName))
 	if err != nil {
@@ -279,14 +285,22 @@ func validPanelRecord(rec panelRecord) bool {
 // its own account of itself. The record file is not consulted: a missing,
 // stale or forged panel.json changes nothing here.
 func panelFind(ctx context.Context, dir string) (panelPresence, panelRecord) {
-	if !panelServerHeld(dir) {
-		return panelAbsent, panelRecord{}
+	// The lock is probed by taking it for an instant, so two commands
+	// probing at the same moment can each see the other's hold. A hold with
+	// no answer is therefore looked at again before it is believed.
+	for attempt := 0; ; attempt++ {
+		if !panelServerHeld(dir) {
+			return panelAbsent, panelRecord{}
+		}
+		reply, err := panelControl(ctx, dir, panelRequest{Op: "status"})
+		if err == nil && reply.Record != nil && validPanelRecord(*reply.Record) {
+			return panelRunning, *reply.Record
+		}
+		if attempt == 2 || ctx.Err() != nil {
+			return panelNotAnswering, panelRecord{}
+		}
+		time.Sleep(60 * time.Millisecond)
 	}
-	reply, err := panelControl(ctx, dir, panelRequest{Op: "status"})
-	if err != nil || reply.Record == nil || !validPanelRecord(*reply.Record) {
-		return panelNotAnswering, panelRecord{}
-	}
-	return panelRunning, *reply.Record
 }
 
 // panelLive returns the running server's account of itself, if one answers.

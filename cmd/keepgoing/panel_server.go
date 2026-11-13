@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -452,6 +453,30 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 	}
 }
 
+// panelListenPrivate binds the control socket so that it is private from the
+// instant it exists, not made private afterwards, and reports the file it
+// created. It refuses a socket that came out reachable by anyone else.
+func panelListenPrivate(path string) (net.Listener, os.FileInfo, error) {
+	restore := panelRestrictUmask()
+	l, err := net.Listen("unix", path)
+	restore()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Closing must not remove the file by name: by then it may be another
+	// server's. The caller removes it only if it is still this one.
+	if u, ok := l.(*net.UnixListener); ok {
+		u.SetUnlinkOnClose(false)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+		_ = l.Close()
+		_ = os.Remove(path)
+		return nil, nil, errors.New("the control socket was not created private")
+	}
+	return l, info, nil
+}
+
 // panelServerConfig is what one run of the background server needs. now and
 // ticks exist so a test can run the idle rule on its own clock: ticks, when
 // set, replaces the timer that asks whether the server has been idle too long.
@@ -484,9 +509,6 @@ func panelServerCommand(e env, args []string) int {
 	if err != nil {
 		return exitUsage
 	}
-	// Everything this process creates, its socket included, is private from
-	// the moment it exists.
-	panelRestrictUmask()
 	return runPanelServer(e.ctx, panelServerConfig{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, now: time.Now})
 }
 
@@ -497,12 +519,31 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		return exitUsage
 	}
 	// Held for the server's whole life: a second server cannot run beside it,
-	// and a crash releases it.
-	lk, err := lock.AcquireNamed(dir, panelServerLock)
+	// and a crash releases it. Commands probe this lock by taking it for an
+	// instant, so a first refusal may be a probe and is tried again briefly.
+	var lk *lock.Lock
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(40 * time.Millisecond) {
+		var err error
+		if lk, err = lock.AcquireNamed(dir, panelServerLock); err == nil {
+			break
+		}
+		if !errors.Is(err, lock.ErrHeld) || time.Now().After(deadline) {
+			return exitFailed
+		}
+	}
+	defer lk.Release()
+	// The lock is only worth something while it is the file at this path. If
+	// that file is deleted or replaced, another server can take a new one, so
+	// this server watches for it and exits.
+	lockPath := filepath.Join(dir, panelServerLock+".lock")
+	lockFile, err := os.Stat(lockPath)
 	if err != nil {
 		return exitFailed
 	}
-	defer lk.Release()
+	lockIsOurs := func() bool {
+		now, err := os.Stat(lockPath)
+		return err == nil && os.SameFile(lockFile, now)
+	}
 	ln, err := dockListen(0)
 	if err != nil {
 		return exitFailed
@@ -518,15 +559,18 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	// The lock proves no server owns a socket file left here.
 	socket := filepath.Join(dir, panelSocketName)
 	_ = os.Remove(socket)
-	control, err := net.Listen("unix", socket)
+	control, socketFile, err := panelListenPrivate(socket)
 	if err != nil {
 		return exitFailed
 	}
-	defer os.Remove(socket)
-	defer control.Close()
-	if err := os.Chmod(socket, 0o600); err != nil {
-		return exitFailed
-	}
+	// Only the socket this server created is ever removed: if another server
+	// has since put its own at this path, it is left alone.
+	defer func() {
+		_ = control.Close()
+		if now, err := os.Lstat(socket); err == nil && os.SameFile(socketFile, now) {
+			_ = os.Remove(socket)
+		}
+	}()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -574,7 +618,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 			case <-ctx.Done():
 				return
 			case <-ticks:
-				if state.idleRemaining() <= 0 {
+				if state.idleRemaining() <= 0 || !lockIsOurs() {
 					cancel()
 					return
 				}

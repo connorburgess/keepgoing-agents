@@ -116,7 +116,16 @@ func TestPanelOpensTheLaunchPageWithTheDefaultWebBrowserOnLinux(t *testing.T) {
 	if got := strings.Join(*asked, " | "); got != "xdg-settings get default-web-browser | xdg-mime query default x-scheme-handler/http" {
 		t.Fatalf("lookups: %s", got)
 	}
+	// An ID whose dashes, read as folders, would leave the applications
+	// directory is never followed there.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(applications), "x.desktop"), []byte("[Desktop Entry]\nExec=/private/example/outside %u\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(applications, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for name, answers := range map[string]map[string]string{
+		"an ID that maps outside":    {"xdg-settings": "a-..-..-x.desktop"},
 		"no lookup works":            nil,
 		"no desktop entry":           {"xdg-settings": "absent.desktop"},
 		"an entry that cannot parse": {"xdg-settings": "broken.desktop"},

@@ -56,44 +56,11 @@ The page's footer says which command is serving it and when that stops: `keepgoi
 
 **When it stops.** The background server stops by itself 30 minutes after the last page stopped reading from it (`--idle`, `1m` to `24h`). A page left open and visible reads every few seconds, so it keeps the server running for as long as it is shown; a hidden tab does not. `panel status` says "in use" when a page read within the last minute, and otherwise how long is left. Asking for status, the two static files of the expired-link page, and refused requests do not count as use. It also stops on `keepgoing panel stop`. It is never started at login or by any other command. **Starting it, using it, leaving it idle and stopping it never affect supervision**: it reads what the page reads and writes only its own runtime files.
 
-**How a running server is known.** The server holds a lock (`panel-server.lock`) for as long as it lives; the operating system releases it when the process ends, however it ends. That lock, and nothing else, says whether a server is running. `panel.json` is there for a person to read and is never relied on: if it is deleted, damaged or replaced while the server runs, the commands still find the server through its socket and the server writes its record back. Files a crash left behind are removed by the next command; nobody is asked to delete a file. A server that holds the lock and does not answer (starting, stopping, suspended or stuck) is reported as "running but not answering", never as "not running", and no second server is started beside it. A request that reaches the server more than five seconds late is ignored, so a stop that was reported as failed is not carried out later.
+**How a running server is known.** The server holds a lock (`panel-server.lock`) for as long as it lives; the operating system releases it when the process ends, however it ends. That lock, and nothing else, says whether a server is running. `panel.json` is there for a person to read and is never relied on: if it is deleted, damaged or replaced while the server runs, the commands still find the server through its socket and the server writes its record back. Files a crash left behind are removed by the next command; nobody is asked to delete a file. A server that holds the lock and does not answer (starting, stopping, suspended or stuck) is reported as "running but not answering", never as "not running", and no second server is started beside it. A command waits three seconds for the server's answer, and the server ignores a request that reaches it more than two seconds after it was sent, so a stop that was reported as failed is never carried out later.
+
+Two servers cannot persist. A server removes only the socket and the record it created itself, so one that is exiting cannot take another's away. A server also checks every few seconds that the lock it holds is still the file at that path; if the lock file was deleted or replaced, it exits, leaving whatever another server has put in the directory.
 
 **What the server is started with.** A small fixed environment (a fixed `PATH`, and only `HOME`, the user name, the temporary directory, locale, time zone and the XDG directories from the caller), its private directory as its working directory, the null device for its input and both outputs, and none of the caller's other open files. It keeps no log.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--port N` | `0` (a free port) | Loopback port to listen on. |
-| `--refresh 15s` | `15s` | How often the page reads again (`5s` to `10m`). The page states the interval and the time of the last read. A hidden tab does not poll; it reads again when shown. |
-| `--stale-after 30m` | `30m` | Age at which a check or lane listing is shown as stale. Set it above your scheduler interval. |
-| `--directory DIR` | the default registry | A non-default private registry, as for `registry` commands. |
-| `--offline` | off | Do not ask each loop's local daemon for its next check. |
-
-Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
-
-## Opening it with one command: `keepgoing panel`
-
-`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS. The same tests are meant to run on Linux in CI and have not yet.
-
-**Windows: unverified, so it refuses.** `keepgoing panel`, `panel status` and `panel stop` have never been run on Windows. Until they have, they stop there with a message that says so and points to `keepgoing dock`, which works as before. `keepgoing panel list` needs no server and works on every platform.
-
-```sh
-keepgoing panel                  # start the panel if needed, and open it
-keepgoing panel --loop NAME      # open one loop's page (a name, registration ID or key)
-keepgoing panel --no-open        # print a single-use address and start no browser
-keepgoing panel status           # running or not, since when, the port, the idle limit
-keepgoing panel stop             # stop the background server
-keepgoing panel list [--json]    # every loop and its state in the page's words; no server
-```
-
-What happens:
-
-1. If a panel server this user started is running and answers, it is reused. Otherwise one is started in the background and the command waits, up to ten seconds, until it answers. Two commands run at the same moment end with one server.
-2. The command asks that server, over a private local socket, for an opening address: `http://127.0.0.1:PORT/open/<code>`. The code works once and for 30 seconds. That address is the only thing handed to the browser launcher (`open`, `xdg-open` or the Windows URL handler; `KEEPGOING_PANEL_OPENER` names another program).
-3. The browser loads it. The server exchanges the code for a session cookie and redirects to the page. A used or expired address, or a page address whose session has ended, shows a short page that says to run `keepgoing panel` again.
-
-The page's footer says which command is serving it and when that stops: `keepgoing panel` and its idle limit, or `keepgoing dock` until Ctrl-C. The expired-link page has a button that copies the command.
-
-The background server stops by itself after 30 minutes without a page request (`--idle`, `1m` to `24h`; `panel status` states the limit and the time left). Health checks, `panel status` and refused requests do not count as use. It also stops on `keepgoing panel stop`. It is never started at login or by any other command. **Starting it, using it, leaving it idle and stopping it never affect supervision**: it reads what the page reads and writes only its own runtime files.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
