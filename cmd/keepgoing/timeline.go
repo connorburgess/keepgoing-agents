@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -136,6 +136,7 @@ type timelineSummary struct {
 	LastTargetMove       *timelineRef `json:"lastTargetMove,omitempty"`
 	LastLimitWait        *timelineRef `json:"lastLimitWait,omitempty"`
 	LastLimitWaitReport  *timelineRef `json:"lastLimitWaitReport,omitempty"`
+	LastTurnRetry        *timelineRef `json:"lastTurnRetry,omitempty"`
 	LimitWaitChecks      int          `json:"limitWaitChecks"`
 	RetainedChecks       int          `json:"retainedChecks"`
 	HeldChecks           int          `json:"heldChecks"`
@@ -358,6 +359,9 @@ func timelineKinds(r incident.Record) []string {
 		if r.LimitWaitReport != "none" {
 			kinds = append(kinds, "limit_wait_report")
 		}
+		if r.TurnRetry != "none" {
+			kinds = append(kinds, "turn_retry")
+		}
 	case "control":
 		kinds = append(kinds, "control")
 		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
@@ -392,7 +396,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 4, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 5, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -421,6 +425,8 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 				r.Summary.LastTargetMove = timelineReference(entry)
 			case "limit_wait_report":
 				r.Summary.LastLimitWaitReport = timelineReference(entry)
+			case "turn_retry":
+				r.Summary.LastTurnRetry = timelineReference(entry)
 			case "limit_wait":
 				r.Summary.LastLimitWait = timelineReference(entry)
 				r.Summary.LimitWaitChecks++
@@ -704,6 +710,22 @@ func describeIncident(r incident.Record) string {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
 		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; no prompt is sent while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
 	}
+	switch r.TurnRetry {
+	case "retried":
+		text += "; TURN RETRY: the failed turn was re-run by reference and no prompt was sent"
+	case "queued":
+		text += "; TURN RETRY: a retry of the failed turn was queued by reference and no prompt was sent"
+	case "nothing_to_retry":
+		text += "; TURN RETRY: the provider reported no failed turn, so the prompt was sent instead"
+	case "not_in_error":
+		text += "; TURN RETRY: the provider reported no failed turn and the session was no longer in error, so nothing was sent and no attempt was counted"
+	case "unsupported":
+		text += "; TURN RETRY: this provider version cannot retry a turn, so the prompt was sent instead"
+	case "already_queued":
+		text += "; TURN RETRY: a retry of the failed turn was already waiting, so nothing was sent and no attempt was counted"
+	case "refused":
+		text += "; TURN RETRY: the provider refused the retry or its result could not be read, so nothing was sent"
+	}
 	switch r.LimitWaitReport {
 	case "requested":
 		text += "; LONG LIMIT WAIT: the reset was further away than the configured threshold and no handoff was possible, so one report was requested for this wait (delivery is in the notification records; receipt unverified). The loop was not held"
@@ -752,7 +774,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue

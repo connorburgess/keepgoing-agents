@@ -28,6 +28,7 @@ case "$1 $2" in
 "thread log") cat "$d/log" ;;
 "thread interactions") echo '[]' ;;
 "thread tell") cat > /dev/null; echo '{"ok":true}' ;;
+"thread retry") echo '{"ok":true,"threadId":"thr_primary","delivery":"sent","turnRequestId":"req_example1","attempt":2}' ;;
 *) echo '{"ok":true}' ;;
 esac
 `
@@ -71,10 +72,16 @@ func TestIncidentRepromptedTurnGoesSilentWhileActive(t *testing.T) {
 			add(-20, "provider/error", notice)
 			show("error", 0)
 
-			sends := func() int {
+			// The re-prompt is a retry of the failed turn by reference; nudges are prompts.
+			tells := func() int {
 				b, _ := os.ReadFile(filepath.Join(dir, "calls"))
 				return strings.Count(string(b), "thread tell thr_primary ")
 			}
+			retries := func() int {
+				b, _ := os.ReadFile(filepath.Join(dir, "calls"))
+				return strings.Count(string(b), "thread retry thr_primary ")
+			}
+			sends := func() int { return tells() + retries() }
 			got := map[int]string{}
 			queued := 0
 			for minute := 0; minute <= 250; minute += 10 {
@@ -119,6 +126,15 @@ func TestIncidentRepromptedTurnGoesSilentWhileActive(t *testing.T) {
 			}
 			if fmt.Sprint(got) != fmt.Sprint(want) {
 				t.Fatalf("actions by minute\n got %v\nwant %v", got, want)
+			}
+			nudges := 0
+			for _, action := range got {
+				if action == "nudge" {
+					nudges++
+				}
+			}
+			if retries() != 1 || tells() != nudges {
+				t.Fatalf("%d turn retries and %d prompts for one re-prompt and %d nudges", retries(), tells(), nudges)
 			}
 			ctl, _ := control.Load(w.dir)
 			st, _ := state.Load(w.dir)
