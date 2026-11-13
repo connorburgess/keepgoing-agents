@@ -35,7 +35,11 @@ func TestNetworkDownWaitsInsteadOfSpendingRecovery(t *testing.T) {
 		{"send limit", func(i *Input) { i.SendLimitReached = true }, AwaitUser, ""},
 		{"child waiting on a person", func(i *Input) { i.Obs.AwaitingChildren = []string{"thr_example_a"} }, AwaitUser, ""},
 		{"pending interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None, "waiting on a person (pending interaction)"},
-		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None, "child work running"},
+		// Child work does not hold back a session in error, so it reaches the
+		// network gate and waits there.
+		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None, NetworkDownReason},
+		{"child status unverified", func(i *Input) { i.Obs.ChildrenUnverified = true }, None, NetworkDownReason},
+		{"idle session, active child", func(i *Input) { i.Obs.State, i.Obs.ActiveChildren = Idle, 1 }, None, "child work running"},
 		{"outside window", func(i *Input) { i.InWindow = false }, None, "outside window"},
 		{"idle session is not woken", func(i *Input) { i.Obs.State = Idle }, None, NetworkDownReason},
 		{"idle session, queued message", func(i *Input) { i.Obs.State, i.Obs.Queued = Idle, 1 }, None, "messages already queued"},
