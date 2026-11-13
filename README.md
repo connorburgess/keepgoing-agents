@@ -16,7 +16,7 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 | Headless Claude Code / Codex | New sessions, saved-session resume and configured account environments | Implemented; full live multi-turn, cancellation and separate-account handoff checks remain open |
 | BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
 | macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
-| Cursor CLI | Unreleased primary-only adapter, guided setup and doctor checks | Offline fixtures; one CLI version inspected read-only on macOS; no completed live turn; cannot be a fallback; existing IDE-chat attachment remains open |
+| Cursor CLI | Unreleased primary-only adapter, guided setup and doctor checks | Offline fixtures; one CLI version inspected on macOS, with one live walkthrough of first turn, resume and stop; cannot be a fallback; existing IDE-chat attachment remains open |
 | Antigravity | Internal headless parser and ACP exchange foundation only | Offline fixtures; no registered adapter, guided setup or verified existing IDE-chat attachment |
 
 The v0.1.5 changes are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.

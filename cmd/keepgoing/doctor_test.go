@@ -389,7 +389,7 @@ func TestDoctorCursorLoginVersionAndUnavailableCapabilities(t *testing.T) {
 				}
 			}
 			version := doctorCheckByID(t, r, "agent.primary.version")
-			if version.Status != "ok" || !strings.Contains(version.Message, "2026.09.18-9a7762b") || !strings.Contains(version.Message, "no live turn") {
+			if version.Status != "ok" || !strings.Contains(version.Message, "2026.09.18-9a7762b") || !strings.Contains(version.Message, "walked through live once") {
 				t.Fatalf("version %+v", version)
 			}
 			// Never guessed, whatever the login says.

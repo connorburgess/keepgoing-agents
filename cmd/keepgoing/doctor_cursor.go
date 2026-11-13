@@ -7,12 +7,12 @@ import (
 
 // cursorInspectedVersions lists the Cursor CLI versions whose help, status
 // command and print-mode stream were inspected read-only (see docs/cursor.md).
-// It is evidence of what was looked at, not a claim that a live turn was run.
+// One live walkthrough ran on the listed version on macOS only.
 var cursorInspectedVersions = map[string]bool{"2026.09.18-9a7762b": true}
 
 func doctorCursorVersion(r *doctorReport, id, version string) {
 	if cursorInspectedVersions[version] {
-		r.add(id, "ok", "CLI version: "+version+". Its status command and print-mode stream are the ones keepgoing's Cursor support was inspected against; no live turn has been verified.", "")
+		r.add(id, "ok", "CLI version: "+version+". Its status command and print-mode stream are the ones keepgoing's Cursor support was inspected against and walked through live once on macOS.", "")
 		return
 	}
 	r.add(id, "warning", "CLI version: "+version+". This is not a version keepgoing's Cursor support was inspected against, so its status and stream formats are unverified.", "Review docs/cursor.md for the inspected versions before unattended use.")
