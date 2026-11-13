@@ -2,6 +2,7 @@ package rundiscovery
 
 import (
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -145,4 +146,25 @@ func Register(s State, registration string, at time.Time) (Registration, error) 
 		return Registration{}, ErrInvalid
 	}
 	return Registration{LoopID: s.LoopID, RegistrationID: registration, RecordedAt: at}, nil
+}
+
+// ParseRoutine reads "source/routine" or "source/routine/invocation". Tokens
+// cannot contain "/", so the form is unambiguous. Anything else is refused,
+// not repaired.
+func ParseRoutine(s string) (RoutineRef, error) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 && len(parts) != 3 {
+		return RoutineRef{}, ErrInvalid
+	}
+	r := RoutineRef{Source: parts[0], Routine: parts[1]}
+	if len(parts) == 3 {
+		if parts[2] == "" {
+			return RoutineRef{}, ErrInvalid
+		}
+		r.Invocation = parts[2]
+	}
+	if !r.valid() {
+		return RoutineRef{}, ErrInvalid
+	}
+	return r, nil
 }
