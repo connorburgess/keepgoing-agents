@@ -785,12 +785,13 @@ var saveEpisodeState = state.Save
 // Loop-wide limits are never refunded. It runs inside the control update,
 // before the holds are cleared, with the tick lock held: if the counts
 // cannot be saved the resume fails and changes nothing.
-func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time, briefs ...control.Brief) error {
 	st, err := state.Load(stateDir)
 	if err != nil {
 		return err
 	}
 	before := st
+
 	if episodeHold {
 		// Sends recorded by a check that could not save what happened belong
 		// to the episode that is ending: settle them first, so the next
@@ -801,6 +802,30 @@ func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
 		st.NewEpisode(at)
 	} else {
 		st.RetryRepaired()
+	}
+	// After the counts are cleared, which clears rejected briefs too.
+	// A brief to another conversation, recorded and not confirmed, which
+	// a person has now looked at. The loop stays on its current target. A
+	// brief to another target is counted as one delivered and not taken, so
+	// that route is spaced like any rejected brief, and no route is briefed
+	// on the next check: the person resumed to keep the loop where it is.
+	for _, b := range briefs {
+		if b.Target == st.Target() {
+			continue
+		}
+		if b.Action == "switch_back" {
+			st.SwitchBackRejected++
+			st.LastSwitchBackTry = at
+		} else {
+			if st.HandoffBriefs == nil {
+				st.HandoffBriefs = map[string]state.BriefRecord{}
+			}
+			r := st.HandoffBriefs[b.Target]
+			st.HandoffBriefs[b.Target] = state.BriefRecord{Failed: r.Failed + 1, LastAt: at}
+		}
+	}
+	if len(briefs) > 0 {
+		st.SkipHandoffOnce = true
 	}
 	if reflect.DeepEqual(before, st) {
 		return nil
@@ -842,7 +867,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"pause":   func(f *control.File) { f.Paused = true },
 		"resume": func(f *control.File) {
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.EpisodeHold, f.OpenQuestion = false, nil
+			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
 		},
 		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
@@ -863,8 +888,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
 	newEpisode, openQuestion := false, false
+	var settledBriefs []control.Brief
 	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
-		newEpisode, openQuestion = false, false
+		newEpisode, openQuestion, settledBriefs = false, false, nil
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -876,10 +902,10 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
-			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC()); err != nil {
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), f.BriefHold...); err != nil {
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
-			newEpisode = f.EpisodeHold
+			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold
 		}
 		wasAwaiting := f.AwaitingUser
 		if !transfer {
@@ -933,6 +959,20 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	if openQuestion && f.OpenQuestion != nil {
 		// The note is not repeated here; status shows it, as it shows any note.
 		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+	}
+	if cmd == "resume" && len(settledBriefs) > 0 {
+		current := state.Primary
+		if st, err := state.Load(cfg.Loop.StateDir); err == nil {
+			current = st.Target()
+		}
+		for _, b := range settledBriefs {
+			if b.Target == current {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered: the loop is on %s\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, current)
+			} else {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered and not taken; %s is spaced like a rejected brief\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, b.Target)
+			}
+		}
+		fmt.Fprintf(e.stdout, "the loop continues on %s; no route is briefed on the next check\n", current)
 	}
 	if cmd == "resume" && newEpisode {
 		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")

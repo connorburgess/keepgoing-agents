@@ -117,6 +117,10 @@ type File struct {
 	// re-prompts of this episode that were recorded and then could not be
 	// confirmed as sent.
 	SendRecordUnreadable bool `json:"sendRecordUnreadable,omitempty"`
+	// SkipHandoffOnce: a person resumed a hold for a brief that may have
+	// been delivered, to keep the loop where it is. The next check that
+	// would hand off or switch back does not, once.
+	SkipHandoffOnce      bool `json:"skipHandoffOnce,omitempty"`
 	UnconfirmedReprompts int  `json:"unconfirmedReprompts,omitempty"`
 	// ResumeEpisodes counts the error episodes started by an explicit resume
 	// of a held loop, and LastResumeEpisodeAt is when the latest one was.

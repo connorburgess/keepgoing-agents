@@ -173,7 +173,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		// else is sent to either conversation.
 		w.Check(s, "the restart holds for a person and sends nothing", all(
 			action(s, "await_user"), holds(s, "awaitingUser"), nothingSent(s),
-			reasonIs(s, "a handoff brief to "+altCandidate+" may have been delivered; check that conversation before resuming"),
+			reasonHas(s, "a handoff brief to "+altCandidate+" may have been delivered. Check that conversation"),
 		))
 		w.Advance(10 * time.Minute)
 		s = w.Tick()
@@ -208,7 +208,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		// the primary again, could leave two conversations on it.
 		w.Check(s, "the restart holds for a person and sends nothing", all(
 			action(s, "await_user"), holds(s, "awaitingUser"), nothingSent(s),
-			reasonIs(s, "a switch-back brief to the primary may have been delivered; check that conversation before resuming"),
+			reasonHas(s, "a switch-back brief to primary may have been delivered. Check that conversation"),
 		))
 	})
 

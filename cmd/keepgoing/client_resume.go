@@ -283,12 +283,12 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			// Before the holds are cleared: if the counts cannot be reset the
 			// resume fails with the holds intact, like any failure after the
 			// ticket was consumed.
-			if resumeEpisode(entry.StateDir, f.EpisodeHold, at) != nil {
+			if resumeEpisode(entry.StateDir, f.EpisodeHold, at, f.BriefHold...) != nil {
 				return fail("new_episode_unconfirmed")
 			}
 			newEpisode = f.EpisodeHold
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.Note, f.EpisodeHold, f.OpenQuestion = "", false, nil
+			f.Note, f.EpisodeHold, f.OpenQuestion, f.BriefHold = "", false, nil, nil
 			r.ControlSave = "unconfirmed"
 			return nil
 		}, func(_ control.File, c *incident.ControlChange) {

@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -144,7 +145,7 @@ func TestSendAllowancePreflightAndStopPrecedence(t *testing.T) {
 		for _, hold := range []string{"none", "paused", "disabled", "completed", "awaiting", "stop", "dry-run"} {
 			w := newWorld(t, true, true)
 			w.cfg.Loop.Limits.MaxSends = 1
-			if err := state.SpendForTest(w.dir, 1); err != nil {
+			if err := spendSends(w.dir, 1); err != nil {
 				t.Fatal(err)
 			}
 			if bad {
@@ -288,4 +289,21 @@ func TestSendReservationFailureCannotDeliverOrTryAnotherTarget(t *testing.T) {
 			t.Fatal("continued recovery after accounting failure")
 		}
 	}
+}
+
+// spendSends counts n attempts against a send allowance without recording
+// an intended send, for tests that start from a spent allowance. It writes
+// sends.json as the ledger does.
+func spendSends(dir string, max int64) error {
+	l, err := state.LoadLedger(dir)
+	if err != nil {
+		return err
+	}
+	if max > 0 && *l.Used >= max {
+		return state.ErrSendLimit
+	}
+	used := *l.Used + 1
+	l.Used = &used
+	b, _ := json.Marshal(l)
+	return os.WriteFile(filepath.Join(dir, state.SendsName), b, 0o600)
 }

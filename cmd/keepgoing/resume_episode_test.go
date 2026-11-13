@@ -46,7 +46,7 @@ func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4; i++ {
-		if err := state.SpendForTest(dir, 10); err != nil {
+		if err := spendSends(dir, 10); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -347,5 +347,39 @@ func TestResumeSettlesUnsavedSendsIntoTheEndingEpisode(t *testing.T) {
 				t.Fatalf("the unsaved re-prompt was counted into the new episode: %v reprompts=%d unconfirmed=%d", got, st.Reprompts, st.UnconfirmedReprompts)
 			}
 		})
+	}
+}
+
+// Resuming a hold for a brief that may have been delivered says which brief
+// it settles and where the loop continues: on its current target, with the
+// briefed route spaced like a rejected brief and no route briefed on the
+// next check. After `retarget` to the briefed route, the loop continues
+// there instead.
+func TestResumeOfABriefHoldSaysWhereTheLoopContinues(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.AwaitingUser, c.Note = true, "a handoff brief to fallback-example may have been delivered"
+		c.BriefHold = []control.Brief{{Action: "handoff", Target: "fallback-example"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := f.run("resume")
+	if code != 0 || !strings.Contains(out, "the handoff brief to fallback-example is settled as delivered and not taken") || !strings.Contains(out, "the loop continues on primary; no route is briefed on the next check") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	st, _ := state.Load(dir)
+	if !st.SkipHandoffOnce || st.HandoffBriefs["fallback-example"].Failed != 1 {
+		t.Fatalf("%+v", st)
+	}
+	if ctl, _ := control.Load(dir); ctl.AwaitingUser || len(ctl.BriefHold) != 0 {
+		t.Fatalf("%+v", ctl)
 	}
 }

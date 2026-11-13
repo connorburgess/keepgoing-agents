@@ -3,6 +3,7 @@ package supervise
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -197,16 +198,17 @@ type tick struct {
 	budgetWarned        bool
 	networkChecked      bool // connectivity was checked in this check
 	reserveNetwork      time.Duration
-	networkOffline      bool          // the check failed
-	networkGated        bool          // and is still believed, so work that needs the network waits
-	progressCounted     time.Duration // time since the last check counted toward no_progress_timeout
-	probeSucceeded      bool          // a fallback probe passed in this check
-	sessionRecovered    bool          // the target was observed and is not in error
-	savedSends          int64         // the last intended send state.json recorded when this check began
-	unsettledBrief      string        // the hold for a brief an earlier check recorded, outcome unknown
-	quietFailure        bool          // a failure already reported by an earlier check
-	observeSpent        time.Duration // observation time used by a lookup for an unsettled thread creation
-	lateReports         int           // reports started after the budget was spent
+	networkOffline      bool            // the check failed
+	networkGated        bool            // and is still believed, so work that needs the network waits
+	progressCounted     time.Duration   // time since the last check counted toward no_progress_timeout
+	probeSucceeded      bool            // a fallback probe passed in this check
+	sessionRecovered    bool            // the target was observed and is not in error
+	savedSends          int64           // the last intended send state.json recorded when this check began
+	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
+	stBeforeRecords     state.File      // state before the records were handled, to undo them
+	quietFailure        bool            // a failure already reported by an earlier check
+	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
+	lateReports         int             // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -377,15 +379,9 @@ func (t *tick) run() error {
 		res.State, res.Window, res.Reason = "not observed", "not checked", "send record unreadable; no automatic provider work"
 		return t.record(err)
 	}
-	if reason := t.unsettledBrief; reason != "" {
-		d := decide.Decision{Action: decide.AwaitUser, Reason: reason}
-		res.Action, res.Reason = string(d.Action), d.Reason
+	if len(t.unsettledBriefs) > 0 {
 		res.State, res.Window = "not observed", "not checked"
-		var actErr error
-		if !t.opts.DryRun {
-			actErr = t.act(nil, d)
-		}
-		return t.record(actErr)
+		return t.record(t.holdForBriefs())
 	}
 	if err := t.sendAllowance(); err != nil {
 		res.State, res.Window = "not observed", "not checked"
@@ -689,6 +685,12 @@ func (t *tick) run() error {
 		t.decisionInput = in
 		d = t.decide("network_down", in)
 	}
+	if t.st.SkipHandoffOnce && !t.opts.DryRun {
+		t.st.SkipHandoffOnce = false
+		if d.Action == decide.Handoff || d.Action == decide.SwitchBack {
+			d = decide.Decision{Action: decide.None, Reason: "a person resumed after a brief that may have been delivered; no route is briefed on this check"}
+		}
+	}
 	handoffAttempted := d.Action == decide.Handoff
 	res.Action, res.Reason = string(d.Action), d.Reason
 	res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
@@ -835,17 +837,40 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if err := t.countUnrecordedSends(); err != nil {
 		t.warn("%v", err)
 	}
-	if reason := t.unsettledBrief; reason != "" {
-		// The task may be on another conversation now; stopping this one
-		// may stop nothing. A person looks first. The stop stays requested.
-		d := decide.Decision{Action: decide.AwaitUser, Reason: reason}
-		res.Action, res.Reason = string(d.Action), d.Reason
-		var actErr error
-		if !t.opts.DryRun {
-			actErr = t.act(nil, d)
-		}
+	if len(t.unsettledBriefs) > 0 {
+		// The task may be on another conversation now. A stop is asked for:
+		// stop every conversation that may have it, the current one and each
+		// one briefed (a second stop is harmless), then hold so a person
+		// sees which.
 		t.st.LastState = string(obs.State)
-		return t.record(actErr)
+		if t.opts.DryRun {
+			res.Action, res.Reason = string(decide.Stop), "stop requested; "+briefsReason(t.unsettledBriefs, t.st.Target())
+			return t.record(nil)
+		}
+		var errs []error
+		if err := a.Stop(t.ctx); err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
+			errs = append(errs, fmt.Errorf("stop %s: %w", target, err))
+		}
+		for _, b := range t.unsettledBriefs {
+			if b.Target == target {
+				continue
+			}
+			id, agent := t.resolve(b.Target)
+			ba, err := t.newAdapter(agent, t.loop.StateDir, id)
+			if err == nil {
+				err = ba.Stop(t.ctx)
+			}
+			if err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
+				errs = append(errs, fmt.Errorf("stop %s: %w", b.Target, err))
+			}
+		}
+		if len(errs) == 0 {
+			t.st.StopRequestedSent = true
+		}
+		if err := t.holdForBriefs(); err != nil {
+			errs = append(errs, err)
+		}
+		return t.record(errors.Join(errs...))
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
@@ -1451,6 +1476,54 @@ func (t *tick) reserveSend(action, target string, key ...string) (int64, error) 
 	return seq, nil
 }
 
+// holdForBriefs raises the hold for briefs to other conversations whose
+// outcome is unknown. They are settled only once the hold is saved: if it
+// cannot be, the records this check handled are put back as they were, and
+// the next check finds them again.
+func (t *tick) holdForBriefs() error {
+	reason := briefsReason(t.unsettledBriefs, t.st.Target())
+	if t.res.Action != string(decide.Stop) {
+		t.res.Action, t.res.Reason = string(decide.AwaitUser), reason
+	}
+	if t.opts.DryRun {
+		return nil
+	}
+	briefs := t.unsettledBriefs
+	if _, err := control.Update(t.loop.StateDir, func(f *control.File) {
+		f.AwaitingUser, f.Note = true, reason
+		f.BriefHold = append(f.BriefHold, briefs...)
+	}); err != nil {
+		t.st = t.stBeforeRecords
+		t.res.Action, t.res.Reason = string(decide.None), "a brief to another conversation may have been delivered, but the hold for it could not be saved; nothing was settled or sent"
+		return err
+	}
+	t.report("await_user", fmt.Sprintf("%s: needs a person: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target})
+	return nil
+}
+
+// briefsReason says which briefs may have been delivered and what to do.
+func briefsReason(briefs []control.Brief, current string) string {
+	var names []string
+	for _, b := range briefs {
+		kind := "a handoff brief to " + b.Target
+		if b.Action == "switch_back" {
+			kind = "a switch-back brief to " + b.Target
+		}
+		names = append(names, kind)
+	}
+	return strings.Join(names, " and ") + " may have been delivered. Check that conversation: if it took the task, run `keepgoing retarget <id>` and then `keepgoing resume`, so the loop follows it; if not, run `keepgoing resume`, and the loop stays on " + current + " and briefs no route on the next check"
+}
+
+// copyState copies a state record deeply enough to restore it.
+func copyState(f state.File) state.File {
+	b, _ := json.Marshal(f)
+	var c state.File
+	if json.Unmarshal(b, &c) != nil {
+		return f
+	}
+	return c
+}
+
 // reserveReport records a report that is sent once, whose record of having
 // been sent is otherwise only saved at the end of the check, before it is
 // delivered: a supervisor stopped while it is delivered does not send it
@@ -1478,12 +1551,10 @@ func (t *tick) countUnrecordedSends() error {
 	}
 	settled := max(t.st.SendsRecorded, l.Settled)
 	t.savedSends = settled
+	t.stBeforeRecords = copyState(t.st)
 	for _, p := range l.Unrecorded(settled) {
-		switch p.Action {
-		case "handoff":
-			t.unsettledBrief = "a handoff brief to " + p.Target + " may have been delivered; check that conversation before resuming"
-		case "switch_back":
-			t.unsettledBrief = "a switch-back brief to the primary may have been delivered; check that conversation before resuming"
+		if p.Action == "handoff" || p.Action == "switch_back" {
+			t.unsettledBriefs = append(t.unsettledBriefs, control.Brief{Action: p.Action, Target: p.Target})
 		}
 		if t.opts.DryRun {
 			continue // a dry run previews the hold and settles nothing

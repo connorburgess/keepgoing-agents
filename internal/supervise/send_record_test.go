@@ -10,6 +10,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -76,7 +77,7 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 		w, _, fallbacks := rejectingWorld(t, false)
 		unsaved(t, w, t0, "handoff", "claude-other")
 		r := runTick(t, w, t0.Add(time.Minute))
-		if r.Action != "await_user" || r.Reason != "a handoff brief to claude-other may have been delivered; check that conversation before resuming" {
+		if r.Action != "await_user" || !strings.HasPrefix(r.Reason, "a handoff brief to claude-other may have been delivered. Check that conversation: if it took the task, run `keepgoing retarget <id>`") {
 			t.Fatalf("%s (%s)", r.Action, r.Reason)
 		}
 		for id, f := range fallbacks {
@@ -96,7 +97,7 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 		after := t0.Add(2*time.Hour + time.Minute)
 		unsaved(t, w, after, "switch_back", state.Primary)
 		r := runTick(t, w, after.Add(time.Minute))
-		if r.Action != "await_user" || r.Reason != "a switch-back brief to the primary may have been delivered; check that conversation before resuming" || len(p.sent) != 0 || len(fb.sent) != sentBefore {
+		if r.Action != "await_user" || !strings.HasPrefix(r.Reason, "a switch-back brief to primary may have been delivered.") || len(p.sent) != 0 || len(fb.sent) != sentBefore {
 			t.Fatalf("%s (%s) primary=%d fallback=%d", r.Action, r.Reason, len(p.sent), len(fb.sent)-sentBefore)
 		}
 	})
@@ -115,17 +116,21 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 			}
 		}
 	})
-	t.Run("handoff, then a stop request: held, not consumed by the stop", func(t *testing.T) {
+	t.Run("handoff, then a stop request: both conversations stopped, and held", func(t *testing.T) {
 		w, p, fallbacks := rejectingWorld(t, false)
 		unsaved(t, w, t0, "handoff", "claude-other")
 		control.Update(w.dir, func(f *control.File) { f.Stop = true })
-		if r := runTick(t, w, t0.Add(time.Minute)); r.Action != "await_user" || p.stopped != 0 {
-			t.Fatalf("%s (%s) stopped=%d", r.Action, r.Reason, p.stopped)
+		r := runTick(t, w, t0.Add(time.Minute))
+		if p.stopped != 1 || fallbacks["claude-other"].stopped != 1 || fallbacks["codex-main"].stopped != 0 {
+			t.Fatalf("%s (%s) stopped primary=%d claude-other=%d codex-main=%d", r.Action, r.Reason, p.stopped, fallbacks["claude-other"].stopped, fallbacks["codex-main"].stopped)
 		}
 		for id, f := range fallbacks {
 			if len(f.sent) != 0 {
 				t.Fatalf("%s was briefed", id)
 			}
+		}
+		if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || !ctl.Stop {
+			t.Fatalf("%+v", ctl)
 		}
 	})
 	t.Run("handoff, then a dry run: previewed, not settled", func(t *testing.T) {
@@ -144,14 +149,106 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 		}
 	})
 	t.Run("a deleted sends.json does not reuse settled numbers", func(t *testing.T) {
-		w := newWorld(t, true, false)
-		w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
-		runTick(t, w, t0)
+		w := newWorld(t, true, false) // backoff 10m
+		p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+		runTick(t, w, t0) // re-prompt 1, record 1 settled
 		os.Remove(filepath.Join(w.dir, state.SendsName))
 		unsaved(t, w, t0.Add(11*time.Minute), "reprompt", state.Primary)
-		runTick(t, w, t0.Add(12*time.Minute))
-		if st, _ := state.Load(w.dir); st.Reprompts != 2 {
-			t.Fatalf("an interrupted re-prompt after the file was deleted was not counted: %d", st.Reprompts)
+		if l, _ := state.LoadLedger(w.dir); l.Seq != 2 {
+			t.Fatalf("numbering restarted: %+v", l)
+		}
+		// Counted, so the next check does not send (here it is the second
+		// of two allowed, so the loop holds); if it were taken as settled, a
+		// fresh re-prompt would be sent.
+		if r := runTick(t, w, t0.Add(12*time.Minute)); r.Action == "reprompt" || len(p.sent) != 1 {
+			t.Fatalf("an interrupted re-prompt after the file was deleted was not counted: %s (%s), sends %d", r.Action, r.Reason, len(p.sent))
+		}
+	})
+	t.Run("the deadline's hold settles nothing", func(t *testing.T) {
+		w := newWorld(t, true, false)
+		p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+		unsaved(t, w, t0, "reprompt", state.Primary)
+		w.cfg.Loop.Limits.Deadline = t0.Format(time.RFC3339)
+		if r := runTick(t, w, t0.Add(time.Minute)); r.Action != "await_user" {
+			t.Fatalf("%s (%s)", r.Action, r.Reason)
+		}
+		if st, _ := state.Load(w.dir); st.SendsRecorded != 0 || st.Reprompts != 0 {
+			t.Fatalf("the deadline's hold settled the record: %+v", st)
+		}
+		if l, _ := state.LoadLedger(w.dir); l.Settled != 0 {
+			t.Fatalf("%+v", l)
+		}
+		// The deadline is moved and the loop resumed: the record is counted.
+		w.cfg.Loop.Limits.Deadline = ""
+		control.Update(w.dir, func(f *control.File) { f.AwaitingUser = false })
+		if r := runTick(t, w, t0.Add(2*time.Minute)); r.Reason != "backing off after error" || len(p.sent) != 0 {
+			t.Fatalf("%s (%s)", r.Action, r.Reason)
+		}
+	})
+	t.Run("a stop with an unsettled switch-back stops both conversations", func(t *testing.T) {
+		w, p, fb := switchBackWorld(t) // the loop is on claude-other
+		after := t0.Add(2*time.Hour + time.Minute)
+		unsaved(t, w, after, "switch_back", state.Primary)
+		control.Update(w.dir, func(f *control.File) { f.Stop = true })
+		runTick(t, w, after.Add(time.Minute))
+		if fb.stopped != 1 || p.stopped != 1 {
+			t.Fatalf("stopped fallback %d, primary %d", fb.stopped, p.stopped)
+		}
+		if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || len(ctl.BriefHold) != 1 || !ctl.Stop {
+			t.Fatalf("%+v", ctl)
+		}
+	})
+	t.Run("two unsettled briefs are both named", func(t *testing.T) {
+		w, _, _ := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		unsaved(t, w, t0, "handoff", "codex-main")
+		r := runTick(t, w, t0.Add(time.Minute))
+		if !strings.Contains(r.Reason, "a handoff brief to claude-other and a handoff brief to codex-main may have been delivered") {
+			t.Fatalf("%s", r.Reason)
+		}
+	})
+	t.Run("a brief whose hold cannot be saved is not settled", func(t *testing.T) {
+		w, _, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		held, err := lock.AcquireNamed(w.dir, lock.Control)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Minute)))
+		held.Release()
+		if err == nil {
+			t.Fatal("the check succeeded without saving the hold")
+		}
+		if st, _ := state.Load(w.dir); st.SendsRecorded != 0 {
+			t.Fatalf("settled without a hold: %+v", st)
+		}
+		if r := runTick(t, w, t0.Add(2*time.Minute)); r.Action != "await_user" {
+			t.Fatalf("the next check did not hold: %s (%s)", r.Action, r.Reason)
+		}
+		for id, f := range fallbacks {
+			if len(f.sent) != 0 {
+				t.Fatalf("%s was briefed", id)
+			}
+		}
+	})
+	t.Run("after a brief hold is resumed, no route is briefed on the next check", func(t *testing.T) {
+		w, _, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		runTick(t, w, t0.Add(time.Minute)) // holds
+		// What resume does (cmd/keepgoing resumeEpisode): the brief counted
+		// as delivered and not taken, one handoff skipped, the hold cleared.
+		st, _ := state.Load(w.dir)
+		st.HandoffBriefs = map[string]state.BriefRecord{"claude-other": {Failed: 1, LastAt: t0.Add(2 * time.Minute)}}
+		st.SkipHandoffOnce = true
+		state.Save(w.dir, st)
+		control.Update(w.dir, func(f *control.File) { f.AwaitingUser, f.BriefHold = false, nil })
+		if r := runTick(t, w, t0.Add(3*time.Minute)); r.Action == "handoff" || !strings.Contains(r.Reason, "no route is briefed on this check") {
+			t.Fatalf("%s (%s)", r.Action, r.Reason)
+		}
+		for id, f := range fallbacks {
+			if len(f.sent) != 0 {
+				t.Fatalf("%s was briefed", id)
+			}
 		}
 	})
 	t.Run("the waiting-on-a-person report: not repeated", func(t *testing.T) {
