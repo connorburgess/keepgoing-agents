@@ -92,7 +92,7 @@ BB `transfer preview` is available in v0.1.4, with **Fakes** covering a single p
 | --- | --- | --- |
 | `gh` for `ci-wait` | **Fakes** | run it against a real pull request in this repository |
 | `net-retry` connectivity probe | **Fakes** | run it with the network cut on a VM |
-| GitHub Actions CI (`.github/workflows/checks.yml`) | runs on every push and pull request | none |
+| GitHub Actions CI (`.github/workflows/checks.yml`, `contributions.yml`) | runs on every push and pull request; a description edit re-runs only the metadata check | none |
 | Release workflow | **Live**: v0.1.2 published six archives after Go tests, checksum checks and an unpacked Linux amd64 provider-free smoke check. All published archives were downloaded and their checksums matched; the downloaded macOS arm64 executable passed the smoke check locally. See [release evidence](release-verification.md#v012-maintenance-release-evidence). | native release installation on remaining platforms; live provider walkthroughs remain separate |
 | Homebrew formula | **Live** installation on a fresh macOS 15 arm64 CI runner: v0.1.2 download verification, version and guided-setup help checks. Matching URLs/checksums are published for macOS/Linux. See [release evidence](release-verification.md#v012-maintenance-release-evidence). | native Linux and Intel macOS installs; full install-to-completion journey |
 
