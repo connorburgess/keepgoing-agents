@@ -510,6 +510,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
 		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
 		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.RetrySignal == "declined" {
+			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
+		}
 		if c.RetrySignal == "expired" {
 			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
 		}
