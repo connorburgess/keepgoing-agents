@@ -352,7 +352,7 @@ func TestFallbacksAddBBWizardWithoutLists(t *testing.T) {
 					t.Fatalf("unexpected bb command: %s", call)
 				}
 			}
-			for _, want := range []string{"! Enter a number from the list or a thread ID (thr_...).", "! Provider \"pi\" has no built-in check.", "it is not checked here.\n  Blank keeps the thread's own model.", "keepgoing cannot see which account BB uses for this thread.", "the thread's own (not changed)", "sets the thread's reasoning level (bb thread"} {
+			for _, want := range []string{"! Enter a number from the list, a thread ID (thr_...), or new.", "! Provider \"pi\" has no built-in check.", "it is not checked here.\n  Blank keeps the thread's own model.", "keepgoing cannot see which account BB uses for this thread.", "the thread's own (not changed)", "sets the thread's reasoning level (bb thread"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("output missing %q:\n%s", want, out)
 				}
