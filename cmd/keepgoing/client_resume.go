@@ -19,6 +19,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -81,7 +82,7 @@ func clientResumeCommand(e env, args []string) int {
 			// Preserve the same complete structured projection for review in text mode.
 			b, _ := json.MarshalIndent(r.Snapshot, "", "  ")
 			fmt.Fprintf(e.stdout, "Snapshot to review:\n%s\n", b)
-			fmt.Fprintln(e.stdout, "Resume explicitly clears pause, stop, awaiting-user and completion; it does not enable or start supervision.")
+			fmt.Fprintln(e.stdout, "Resume explicitly clears pause, stop, awaiting-user and completion, and when it clears one of them starts a new error episode: the re-prompt and nudge counts start over. Loop-wide limits are unchanged. It does not enable or start supervision.")
 		}
 		for _, issue := range r.Issues {
 			fmt.Fprintf(e.stdout, "issue: %s\n", issue)
@@ -244,7 +245,9 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		if readTransferRecord(entry.StateDir, control.FileName, &initial) != nil {
 			return fail("resume_evidence_unavailable")
 		}
-		f, err := updateControlWithHistory(entry.StateDir, "resume", func(f *control.File) error {
+		clearedHold := false
+		f, err := updateControlAnnotated(entry.StateDir, "resume", func(f *control.File) error {
+			clearedHold = held(*f)
 			current, checked, err := binding()
 			if err != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("resume_evidence_unavailable")
@@ -278,9 +281,11 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 				return fail("ticket_unavailable_or_expired")
 			}
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.Note = ""
+			f.Note, f.OpenQuestion = "", nil
 			r.ControlSave = "unconfirmed"
 			return nil
+		}, func(_ control.File, c *incident.ControlChange) {
+			c.Caller, c.NewEpisode = "client", clearedHold
 		})
 		if err == nil || errors.Is(err, errControlHistory) {
 			recordRegistration(entry.StateDir, entry.ID)
@@ -289,7 +294,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			return err
 		}
 		r.ControlSave = "confirmed"
-		if resumeNewEpisode(entry.StateDir) != nil {
+		if resumeEpisode(entry.StateDir, clearedHold, now().UTC()) != nil {
 			r.Issues = append(r.Issues, "new_episode_unconfirmed")
 		}
 		r.Controls = &clientControls{f.Enabled, f.Paused, f.Stop, f.AwaitingUser, f.Completed}

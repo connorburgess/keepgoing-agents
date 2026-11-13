@@ -166,7 +166,7 @@ Completion delivery makes one HTTP attempt without automatic retries or redirect
 
 On the next check, a completed loop skips observation, yield checks, progress reads, scheduled probes, wakes, retries, handoffs, and switch-back. The hold survives process restarts. A pass already in flight can finish before noticing the change. Completion does not terminate the current agent turn or cancel messages already queued by another caller; use `stop` when the running turn must end. Stop still wins even when completion is set.
 
-Declaring completion also ends a wait on a person: `awaiting-user` and a note that described that hold are cleared, since nothing is waiting once the task is done, and `status` shows the loop as completed. A pause or a stop is the operator's and stays.
+Declaring completion also ends a wait on a person, so `status` shows the loop as completed and not as awaiting user. What the person was being asked is not thrown away: the hold may have been raised by a check (a child waiting on a person, a spent cap), its note is stored nowhere else, and a completed loop stops observing. `complete` prints that a question was still open, `control.json` keeps the hold's note and the time as `openQuestion`, `status` shows it on an `open question:` line until a `resume`, and the `complete` entry in `timeline` records that an awaiting-user hold was outstanding. The incident history never stores notes, so the note itself is only in `control.json` and `status`. A pause or a stop is the operator's and stays.
 
 To reopen the task, or continue with a revised `prompt` or `prompt_file`, run `keepgoing resume`. Resume explicitly clears completion along with pause, stop, and awaiting-user, and clears the old note. It preserves the current target and session; it does not create a fresh conversation. It also does not enable a disabled loop: use `enable` separately in that case. `enable` alone never clears completion. Manual commands such as `fallbacks check` remain explicit operations and can still run while a task is completed.
 
@@ -188,20 +188,27 @@ Unreleased source makes that visible. `keepgoing validate` prints a `warning:` l
 
 #### What `resume` starts over
 
-An explicit `keepgoing resume`, from the command line or a registered client, is a person saying "try again". It clears the holds and starts a new error episode:
+An explicit `keepgoing resume` of a held loop, from the command line or a registered client, is a person saying "try again". It clears the holds and starts a new error episode:
 
-| Started over by `resume` | Never refunded by `resume` |
+| Started over by a `resume` that cleared a hold | Never refunded by `resume` |
 | --- | --- |
 | the re-prompt count and its `errors.backoff` clock | `loop.limits.max_sends`: sends used stay used |
 | the nudge count, and the silent-retry clock of a loop without Git tracking | `loop.limits.deadline`: an absolute time |
-| rejected handoff and switch-back brief counts, and handoffs put off for lack of time | `loop.limits.no_progress_timeout`: the ledger of the last Git change |
-| attempts of a child-error notice that was given up | the new-conversation cap (`loop.limits.max_new_threads`) and its spacing |
+| rejected handoff and switch-back brief counts, and handoffs put off for lack of time (these on every `resume`, held or not) | `loop.limits.no_progress_timeout`: the ledger of the last Git change |
+| attempts of a child-error notice that was given up (on every `resume`) | the new-conversation cap (`loop.limits.max_new_threads`) and its spacing |
+| | the count of turn retries the provider answered with nothing to do |
+
+**Only a `resume` that cleared a hold starts a new episode.** With nothing paused, stopped, awaiting a person or completed, `resume` leaves the re-prompt and nudge counts and the backoff alone. Otherwise it would refund the episode that is running: run before every check, by a person or by the owning agent, it re-prompted a session in error at every check with no backoff, cap or hold. Such a `resume` still gives a repaired fallback or primary fresh takeover briefs, as it always has.
+
+**It is recorded and counted.** The `resume` entry in `timeline` says who ran it, as a role and never an identity (the owning BB thread, another BB thread, a terminal with no BB thread identity, a registered local client), and says when it started a new episode. `status` prints `resumed episodes: N (last <time>)`, and `state.resumeEpisodes` in `status --json`, so a loop that has been resumed out of its cap many times shows it. Anyone allowed to run `resume` can hold the loop and resume it to get a new episode; that is the point of the command, and this count is how it stays visible. Only `loop.limits` bounds the total.
 
 The reasoning: the per-episode counts exist to stop keepgoing repeating itself unattended. Once a person has looked and resumed, they have served that purpose, and keeping them made `resume` do nothing: the next check found the same spent count and raised the same hold, and the only ways out were to raise `max_reprompts`, or to `retarget primary` and then resume. The loop-wide limits are the owner's budget for the whole task, set on purpose, so only editing the configuration moves them; a resume with one of them reached holds again on the next check, as before.
 
-A new episode is bounded like the first. If the session still fails, it is re-prompted up to `max_reprompts` times and held again, and every attempt still counts against `max_sends`. `resume` does not touch the time of the last send, so `min_wake_interval` still spaces the next nudge. `enable`, a restart and a configuration edit do not start a new episode; `retarget`, a handoff and a switch-back do, as before.
+A new episode is bounded like the first. If the session still fails, it is re-prompted up to `max_reprompts` times and held again, and every attempt still counts against `max_sends`. `resume` does not touch the time of the last send, so `min_wake_interval` still spaces the next nudge. It spaces nudges only: the first re-prompt of a new episode is sent by the next check, with no backoff, because the backoff belongs to the episode that ended. `enable`, a restart and a configuration edit do not start a new episode; `retarget`, a handoff and a switch-back do, as before.
 
-Covered by `TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit`, `TestResumeAfterASpentRepromptCapRecoversOnTheNextCheck`, `TestClientResumeStartsANewErrorEpisode` and, through the built binary, `TestScenarioHeadlessFirstTurnFails`. Offline fixtures only.
+If the counts cannot be saved, `resume` says that the holds were cleared and exits 1, and the registered resume reports `new_episode_unconfirmed` and exits 1: the loop is resumed and may hold again on a spent cap.
+
+Covered by `TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit`, `TestResumeWithNothingHeldDoesNotRefundTheRunningEpisode`, `TestResumeAfterASpentRepromptCapRecoversOnTheNextCheck`, `TestResumeExitsNonZeroWhenTheEpisodeCannotBeSaved`, `TestClientResumeStartsANewErrorEpisode` and, through the built binary, `TestScenarioHeadlessFirstTurnFails`. Offline fixtures only.
 
 Three optional limits apply across turns, targets, restarts and resume. Each persists an awaiting-user hold on the next ordinary check after it is reached:
 
@@ -273,7 +280,7 @@ When no fallback can be offered a brief on a check, the loop does what it alread
 
 **Switch-back.** Attempts were already spaced by `switch_back.retry_every`. After `errors.max_reprompts` rejected switch-back briefs, keepgoing stops trying and keeps the fallback working. No hold is raised, because the loop is still running on the fallback. When the cap is reached it sends one `switch_back` report whose data has `stopped: true`, so a subscriber must not read every `switch_back` report as a completed move. Each later check carries a warning, and `status` prints a `switch-back: stopped` line and sets `takeoverBriefs.switchBackStopped`. There is no time-based retry: it starts again only after `resume`, `retarget` or the next handoff.
 
-**Trying a repaired target again.** `keepgoing resume` [starts a new episode](#what-resume-starts-over): it clears all rejected-brief counts, for fallbacks and for switch-back, as well as the holds and the re-prompt and nudge counts. Use it after repairing a fallback that was capped while the primary is still in error, or after repairing the primary when switch-back has stopped. `keepgoing retarget <id>` clears them too and moves the loop without waiting for a brief. Pause, enable and the other controls leave the counts alone, and so does the registered `client resume`, which does not change `state.json`. `status` lists capped fallbacks on a `handoff briefs:` line and in `takeoverBriefs.capped`.
+**Trying a repaired target again.** `keepgoing resume` [starts a new episode](#what-resume-starts-over): it clears all rejected-brief counts, for fallbacks and for switch-back, as well as the holds and the re-prompt and nudge counts. Use it after repairing a fallback that was capped while the primary is still in error, or after repairing the primary when switch-back has stopped. `keepgoing retarget <id>` clears them too and moves the loop without waiting for a brief. Pause, enable and the other controls leave the counts alone. The registered `client resume` does what `resume` does. `status` lists capped fallbacks on a `handoff briefs:` line and in `takeoverBriefs.capped`.
 
 **A brief that arrived anyway.** A send reported as failed may still have been delivered. keepgoing then counts a rejection and keeps the loop pointed at the current target while that fallback starts working. It can be sent up to `errors.max_reprompts` briefs in total, and a later fallback may also be handed the loop, so two sessions can work on the task at once. This is the same uncertainty as a failed wake or re-prompt; check the fallback's session when a handoff brief is reported as failed.
 
