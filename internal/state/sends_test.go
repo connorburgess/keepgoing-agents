@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestSendLedgerPersistenceAndDisabledAccounting(t *testing.T) {
@@ -70,7 +71,7 @@ func TestSendLedgerWriteFailureAndOverflow(t *testing.T) {
 	if err := os.WriteFile(blocked, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReserveSend(blocked, 1); !errors.Is(err, ErrSendLedger) {
+	if err := ReserveSend(blocked, 1); !errors.Is(err, ErrSendLedger) && !errors.Is(err, ErrSendRecord) {
 		t.Fatal(err)
 	}
 }
@@ -79,7 +80,7 @@ func TestSendLedgerWriteFailureAndOverflow(t *testing.T) {
 // nothing when accounting is off or the ledger cannot be trusted.
 func TestRefundSend(t *testing.T) {
 	dir := t.TempDir()
-	if err := RefundSend(dir, 3); err != nil {
+	if err := RefundSend(dir, 3, 0); err != nil {
 		t.Fatal(err)
 	}
 	if used, err := LoadSends(dir); err != nil || used != 0 {
@@ -90,23 +91,23 @@ func TestRefundSend(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := RefundSend(dir, 3); err != nil {
+	if err := RefundSend(dir, 3, 0); err != nil {
 		t.Fatal(err)
 	}
 	if used, err := LoadSends(dir); err != nil || used != 1 {
 		t.Fatal(used, err)
 	}
 	// With accounting off an earlier ledger is left alone.
-	if err := RefundSend(dir, 0); err != nil {
+	if err := RefundSend(dir, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if used, _ := LoadSends(dir); used != 1 {
 		t.Fatal(used)
 	}
-	if err := RefundSend(dir, 3); err != nil {
+	if err := RefundSend(dir, 3, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefundSend(dir, 3); err != nil {
+	if err := RefundSend(dir, 3, 0); err != nil {
 		t.Fatal(err)
 	}
 	if used, err := LoadSends(dir); err != nil || used != 0 {
@@ -115,7 +116,78 @@ func TestRefundSend(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, SendsName), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefundSend(dir, 3); !errors.Is(err, ErrSendLedger) {
+	if err := RefundSend(dir, 3, 0); !errors.Is(err, ErrSendLedger) {
 		t.Fatal(err)
+	}
+}
+
+// Every reservation saves the intended send, with or without a limit. With
+// no limit nothing is counted against one. Intents whose outcome state.json
+// has recorded are dropped by the next reservation; the others are returned
+// as unrecorded. A refund drops its own intent.
+func TestReserveRecordsTheIntentWithOrWithoutALimit(t *testing.T) {
+	at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, max := range []int64{0, 5} {
+		dir := t.TempDir()
+		first, err := Reserve(dir, max, 0, SendIntent{At: at, Action: "reprompt", Target: "primary"})
+		if err != nil || first != 1 {
+			t.Fatal(first, err)
+		}
+		second, err := Reserve(dir, max, 0, SendIntent{At: at.Add(time.Minute), Action: "child_notice", Target: "primary"})
+		if err != nil || second != 2 {
+			t.Fatal(second, err)
+		}
+		l, err := LoadLedger(dir)
+		want := int64(0)
+		if max > 0 {
+			want = 2
+		}
+		if err != nil || *l.Used != want || len(l.Unrecorded(0)) != 2 || len(l.Unrecorded(1)) != 1 || l.Unrecorded(1)[0].Action != "child_notice" {
+			t.Fatalf("max %d: %+v %v", max, l, err)
+		}
+		// State recorded both; the next reservation drops them.
+		if _, err := Reserve(dir, max, 2, SendIntent{At: at.Add(time.Hour), Action: "wake", Target: "primary"}); err != nil {
+			t.Fatal(err)
+		}
+		if l, _ = LoadLedger(dir); len(l.Pending) != 1 || l.Pending[0].Seq != 3 {
+			t.Fatalf("%+v", l.Pending)
+		}
+		if err := RefundSend(dir, max, 3); err != nil {
+			t.Fatal(err)
+		}
+		if l, _ = LoadLedger(dir); len(l.Pending) != 0 || *l.Used != want {
+			t.Fatalf("max %d after refund: %+v", max, l)
+		}
+	}
+}
+
+// A reservation that cannot be saved is refused, limit or no limit, so the
+// caller sends nothing.
+func TestReserveFailsWhenTheRecordCannotBeSaved(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory this user cannot write")
+	}
+	for _, max := range []int64{0, 5} {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Reserve(dir, max, 0, SendIntent{Action: "reprompt"})
+		os.Chmod(dir, 0o700)
+		if !errors.Is(err, ErrSendRecord) || !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("max %d: %v", max, err)
+		}
+	}
+}
+
+// An older ledger, which has no intents, still loads.
+func TestLedgerWithoutIntentsLoads(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, SendsName), []byte(`{"version":1,"used":4}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := LoadLedger(dir)
+	if err != nil || *l.Used != 4 || l.Seq != 0 || len(l.Unrecorded(0)) != 0 {
+		t.Fatal(l, err)
 	}
 }

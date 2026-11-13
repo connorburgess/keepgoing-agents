@@ -108,6 +108,10 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// SendsRecorded is the sequence of the last intended send (sends.json)
+	// whose outcome this file records. An intent after it was made by a
+	// check that could not save what happened.
+	SendsRecorded int64 `json:"sendsRecorded,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`

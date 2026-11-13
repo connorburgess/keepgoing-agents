@@ -99,8 +99,8 @@ func TestFaultKilledCheck(t *testing.T) {
 		w.Advance(time.Minute)
 		s = w.Tick()
 		w.Check(s, "no hold is lost or invented", holds(s))
-		w.Known(s, Waits(WaitInterruptedSend), "the restart does not retry again inside the backoff", all(action(s, "none"), nothingSent(s)))
-		w.Known(s, Waits(WaitInterruptedSend), "the interrupted retry is counted", check(reprompts(s) >= 1 && len(s.Sent) == 0, "after the restart %d re-prompts are counted and it sent %s", reprompts(s), describeSends(s.Sent)))
+		w.Check(s, "the restart does not retry again inside the backoff", all(action(s, "none"), nothingSent(s)))
+		w.Check(s, "the interrupted retry is counted", check(reprompts(s) >= 1 && len(s.Sent) == 0, "after the restart %d re-prompts are counted and it sent %s", reprompts(s), describeSends(s.Sent)))
 	})
 
 	t.Run("after a stop, before the check is saved", func(t *testing.T) {
@@ -119,7 +119,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		w.Advance(time.Minute)
 		s = w.Tick()
 		w.Check(s, "the stop hold is kept", holds(s, "stop"))
-		w.Known(s, Waits(WaitInterruptedSend), "the stop is not sent twice", check(bbCommands(s, "stop") == 0, "the restart sent the stop again"))
+		w.Check(s, "the stop is not sent twice", check(bbCommands(s, "stop") == 0, "the restart sent the stop again"))
 		_ = th
 	})
 
@@ -208,7 +208,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		w.Advance(time.Minute)
 		s = w.Tick()
 		w.Check(s, "the restart sends nothing", all(action(s, "none"), nothingSent(s)))
-		w.Known(s, Waits(WaitInterruptedSend), "the report is not sent again", noReports(s))
+		w.Check(s, "the report is not sent again", noReports(s))
 	})
 }
 
@@ -222,12 +222,6 @@ func bbCommands(s *Step, command string) int {
 	}
 	return n
 }
-
-// WaitInterruptedSend: keepgoing saves what a check did only at its end. A
-// supervisor stopped between a send and that save has sent something the
-// restarted supervisor does not know about, and it sends it again. Reported
-// from the fault-injection suite; not assigned yet.
-const WaitInterruptedSend Waiting = "a send interrupted before its check is saved is repeated, unassigned"
 
 // TestFaultDamagedRecord empties, truncates or overwrites one record at a
 // time and runs a check, status and pause. A record that decides whether

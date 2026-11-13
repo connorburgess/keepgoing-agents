@@ -87,9 +87,9 @@ func unknownError(th *Thread) {
 // is in error. Checks run and exit 1, which says they could not be recorded.
 // A check that cannot save what it did must not do it: otherwise the
 // re-prompt it sends is never counted, the next check sends another, and the
-// cap that should end in a hold is never reached. With a send allowance
-// configured the allowance cannot be reserved and nothing is sent; without
-// one, which is the default, every check re-prompts.
+// cap that should end in a hold is never reached. The record of a send is
+// saved before the send, with or without a send allowance, so nothing is
+// sent.
 func TestScenarioUnwritableStateDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Fatal("this scenario needs an ordinary user: root can write a read-only directory")
@@ -131,11 +131,9 @@ func TestScenarioUnwritableStateDirectory(t *testing.T) {
 				))
 				sent = append(sent, stepErr(s, nothingSent(s)))
 			}
-			if tc.allowance {
-				w.Check(s, "a check that cannot reserve its send sends nothing", all(sent...))
-			} else {
-				w.Known(s, Waits(WaitUnsavedSend), "a check that cannot save its state sends nothing", all(sent...))
-			}
+			// The record of a send is saved before the send, limit or no
+			// limit, so nothing is sent either way.
+			w.Check(s, "a check that cannot save the record of its send sends nothing", all(sent...))
 
 			// What a person can do: status still reads the loop; a pause fails
 			// loudly and leaves the records as they were.
@@ -221,8 +219,3 @@ func TestScenarioNoRoomToWrite(t *testing.T) {
 		})
 	}
 }
-
-// WaitUnsavedSend: a check sends before it has saved anything, so when the
-// state directory cannot be written the send happens and is never counted.
-// Reported from this scenario; not assigned yet.
-const WaitUnsavedSend Waiting = "a check sends before it can save, unassigned"
