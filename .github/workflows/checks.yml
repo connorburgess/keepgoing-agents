@@ -99,6 +99,8 @@ jobs:
         run: go test -v ./cmd/keepgoing -run '^TestDaemonWait' -count=1
       - name: Verify control snapshots permit atomic replacement on Windows
         run: go test -race -v ./internal/control ./internal/snapshot ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
+      - name: Verify the adapter contract cases on Windows
+        run: go test -race -v ./internal/adapter/conformance -count=1
       - name: Verify the run reference graph store and replacement on Windows
         run: go test -race -v ./internal/rungraph -count=1
       - name: Verify offline run navigation on Windows

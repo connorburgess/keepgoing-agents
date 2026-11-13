@@ -147,6 +147,14 @@ Not exercised: a service-managed daemon restart, a host reboot, power loss (the 
 
 `go test ./cmd/keepgoing -run TestOffline` runs the offline scenario for headless Claude Code and Codex through the real commands with stand-in CLIs and a moved check clock. It is Unix-only. The stand-ins' failure output is an assumption about the real CLIs, not an observation.
 
+## Adapter contract suite (T1)
+
+`go test ./internal/adapter/conformance` runs the [adapter contract](adapters.md#the-adapter-contract) against the process, Claude Code and Codex adapters. The test binary is its own stand-in agent: it is started again as the status command, the wrapper or the CLI, and a file in a temporary directory tells it which situation to act out. No provider is contacted.
+
+A case an adapter is known not to meet is listed in `known` in `builtin_test.go` and printed as `KNOWN GAP`. When the adapter starts passing, the test fails with `FIXED KNOWN GAP` until the entry is deleted, in the same change. An adapter added to the factory needs a stand-in and an entry in that test; a case added to the kit needs a fault in `faults_test.go` that only it catches.
+
+`keepgoing adapter check` runs the part that is safe against a real agent. Its tests (`go test ./cmd/keepgoing -run TestAdapterCheck`, Unix-only) use a shell-script wrapper and check that the default reads status only, that `--send` is refused for a loop that would act on the turn, and that the report repeats neither the wrapper's output nor a path. It has not been run against a real agent.
+
 ## On a machine with Go
 
 ```sh

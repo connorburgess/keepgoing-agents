@@ -299,8 +299,54 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |
 | **A session the provider no longer has is not recognised.** It fails as `unknown` until the re-prompts are spent. | Headless Claude Code, Codex, Cursor | Reasoning from the code; not tested against a real expired session |
+| **Status and turn output is read without a size bound.** A status command or a finished turn that prints far more than any real result is read whole into memory. Found by the `bounded-output` contract case. | Generic process, headless Claude Code, Codex; BB and Cursor not checked | [`TestBuiltInAdaptersKeepTheContract`](../internal/adapter/conformance/builtin_test.go) |
 | **Cursor reports every failure as `unknown`**, so it has no limits, no handoff and no probes. | Cursor | Matrix |
 | **No live evidence for a headless loop** beyond probes and one Codex limit: no real multi-turn run, resume or stop. | Headless Claude Code, Codex, Cursor | [integrations](integrations.md#agent-providers) |
+
+## The adapter contract
+
+The matrix says what each adapter supports. The contract says what every adapter must do, whichever agent it drives, and is written as cases that run against any of them. `keepgoing adapter check --list` prints it:
+
+| Case | Contract |
+| --- | --- |
+| `one-state` | A status read returns exactly one of idle, active, error or unknown, inside the call limit. An error carries `rate_limit`, `auth`, `overloaded` or `network` only when something structured says so. |
+| `known-situations` | An idle agent reads as idle and a working agent as active. |
+| `never-guess` | Output that is not the agent's status format reads as unknown, never as idle, active or a specific error class. |
+| `waiting-on-person` | An agent blocked on a person is reported as awaiting input, so the supervisor holds and does not send to it. |
+| `structured-errors-only` | A failure is classified from a machine-readable code. Prose, even prose that names a limit, is `unknown`, so it can never cause a handoff. |
+| `send-once` | One send delivers the prompt exactly once, unchanged, on standard input or in a private file, never in a command's arguments. Reading status again or restarting the supervisor does not deliver it again. |
+| `exact-resume` | After the supervisor is stopped and started, the next send continues exactly the session the agent reported. |
+| `hang-is-cut` | A status read returns inside the call limit when the agent's command never returns, and does not report idle or a specific class. |
+| `stop-own-work` | Stop ends a turn this supervisor started and leaves alone anything it did not start. |
+| `bounded-output` | Output far larger than any real status is not read as healthy. |
+| `writes-stay-inside` | Nothing outside the loop's state directory is created, changed or removed. |
+| `declared-matches` | Every capability the adapter declares (exact resume, can be stopped, structured errors, structured waiting) passed its case. |
+| `live-send` | A prompt sent to the real agent is accepted, and its status afterwards is one valid state. Runs only with `--send`. |
+
+The cases live in `internal/adapter/conformance`. The test suite runs all of them against the process adapter and the headless Claude Code and Codex adapters, each built by the real factory and driven by a stand-in executable that is put into each situation in turn. A second test breaks an in-memory adapter in sixteen ways and requires each fault to fail its own case with a message that says what to change.
+
+Current results, with stand-ins only:
+
+| Adapter | Result |
+| --- | --- |
+| Generic process | Passes every case except `bounded-output`. `exact-resume` does not apply: the wrapper owns its session. |
+| Headless Claude Code | Passes every case except `bounded-output`. `waiting-on-person` does not apply: it has no such state. |
+| Headless Codex | The same as Claude Code. |
+| BB, Cursor | Not run. Neither has a stand-in for the kit yet; their own fixtures are the evidence in the matrix. |
+
+`bounded-output` is a known gap, listed below. The suite records it by name and fails when an adapter starts passing, so the record cannot go stale.
+
+The kit checks an adapter, not a check. These parts of the contract are decided above the adapter and are covered elsewhere, not by the kit: that a session awaiting input is never sent to and an unknown failure never causes a handoff (the decision tables in `internal/decide`), that a check ends inside its time limit (`internal/supervise`), and the offline scenario (`internal/scenario`). A send that times out is not exercised by the kit either. The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
+
+### Checking your own wrapper
+
+```sh
+keepgoing adapter check -c keepgoing.yaml
+```
+
+This builds the adapter the loop is configured with and reads the real agent's status once, the way a check does. It sends nothing and stops nothing, and takes no lock. It reports the state it read, so a wrapper that always answers unknown is visible, and fails when the read takes longer than `--limit` (default 30s) or returns something that is not one valid state. For a headless adapter the read can record, inside the state directory, the session ID a finished turn reported, as a check would. The cases that need the agent put into a situation are listed as skipped: they cannot be staged against a real agent.
+
+`--send` also sends one fixed prompt, which asks the agent to reply with a token and do nothing else, and reads status again. It uses the account the loop is configured with. It is refused unless the loop is paused, held, completed or disabled, so that supervision does not act on that turn, and it holds the check lock while it runs. `--target ID` checks a fallback candidate. `--json` prints a versioned report (`schemaVersion` 1). The exit code is 1 when a case fails. The report never prints the task prompt, a command, a path or the agent's output.
 
 ## Chats already open in an IDE
 
