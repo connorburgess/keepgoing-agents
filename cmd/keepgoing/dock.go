@@ -95,7 +95,7 @@ func dockCommand(e env, args []string) int {
 		}
 	}
 	srv := newDockServer(ln.Addr().(*net.TCPAddr).Port, dockTokenAuth{token: token}, reader)
-	fmt.Fprintf(e.stdout, "keepgoing dock is serving a read-only page for this computer only:\n\n  %s\n\nPress Ctrl-C to stop it. Stopping the page leaves supervision running.\n", srv.url(token))
+	fmt.Fprintf(e.stdout, "The keepgoing panel is being served, read-only, for this computer only:\n\n  %s\n\nPress Ctrl-C to stop it. Stopping the page leaves supervision running.\n", srv.url(token))
 	return srv.serve(e.ctx, ln, e.stderr)
 }
 

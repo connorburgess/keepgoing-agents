@@ -55,7 +55,7 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
-  dock                     Serve a read-only page about every registered loop on 127.0.0.1
+  dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata

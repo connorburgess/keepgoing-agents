@@ -60,17 +60,21 @@ candidates:
 `
 
 func dockConfigYAML(name string, withFallbacks bool, maxSends int) string {
+	model := "claude-opus-5-5"
+	if !withFallbacks {
+		model = "claude-haiku-5-5"
+	}
 	s := fmt.Sprintf(`version: 1
 loop:
   name: %s
   state_dir: state
   adapter: bb
   provider: claude-code
-  bb: {thread: thr_example0001, model: claude-opus-5-5, cli: nonexistent-provider-fixture}
+  bb: {thread: thr_example0001, model: %s, cli: nonexistent-provider-fixture}
   prompt: Continue the fictional example task.
   errors:
     failover_on: [rate_limit]
-`, name)
+`, name, model)
 	if maxSends > 0 {
 		s += fmt.Sprintf("  limits:\n    max_sends: %d\n", maxSends)
 	}

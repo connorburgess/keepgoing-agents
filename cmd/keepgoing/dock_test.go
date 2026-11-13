@@ -136,6 +136,32 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 		t.Errorf("%+v", e)
 	}
 
+	// The same data by route: one entry per configured model on an account.
+	if e := ch.Entries[1]; e.Route == "" || e.Route == ch.Entries[0].Route || e.Account != "second-account" {
+		t.Errorf("%+v", e)
+	}
+	var opus, sonnet *dockRoute
+	for i := range r.Routes {
+		switch r.Routes[i].Model {
+		case "claude-opus-5-5":
+			opus = &r.Routes[i]
+		case "claude-sonnet-5-5":
+			sonnet = &r.Routes[i]
+		}
+	}
+	if len(r.Routes) != 5 || opus == nil || sonnet == nil || opus.Key != ch.Entries[0].Route || len(opus.RunningNow) != 5 || len(opus.PreferredBy) != 0 || opus.ChildLanes != "unknown" {
+		t.Fatalf("routes %+v", r.Routes)
+	}
+	// The newest evidence any loop holds wins: search-indexer's readings.
+	if opus.Usage.Windows[0].UsedPercent != 100 || sonnet.Readiness != "not_ready" || sonnet.Phrase != "At its usage limit" || len(sonnet.PreferredBy) != 5 || len(sonnet.RunningNow) != 0 || sonnet.PreferredBy[0].Position != 1 {
+		t.Errorf("opus %+v sonnet %+v", opus.Usage, sonnet)
+	}
+	for _, x := range opus.RunningNow {
+		if x.Loop == "docs-site-refresh" && x.Working != 3 {
+			t.Errorf("%+v", x)
+		}
+	}
+
 	// Held: the child listing is the one verified by the check that held it.
 	if c := dockLoopNamed(t, r, "billing-api-migration").Children; c.Availability != "held" || c.Working != 1 || c.Stuck != 1 {
 		t.Errorf("%+v", c)
