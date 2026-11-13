@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // panelChangeWorld is a panel server started with --allow-changes over the
@@ -398,5 +399,58 @@ func TestPanelModeIsFixedAndStatusSaysIt(t *testing.T) {
 	errs.Reset()
 	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"--allow-changes", "--no-open", "--panel-directory", ro.dir, "--directory", filepath.Join(ro.root, "registry")}); code != exitFailed || !strings.Contains(errs.String(), "a read-only panel is already running") {
 		t.Fatalf("%d %s", code, errs.String())
+	}
+}
+
+// A panel resume of a hold keepgoing raised for a spent allowance starts a new
+// episode exactly as client resume does, and is recorded as from the panel.
+func TestPanelResumeOfASpentCapHoldStartsANewEpisode(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	now := time.Now()
+	c, err := newPanelChanges(context.Background(), d.directory, d, now, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := registry.Load(d.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e registry.Entry
+	for _, x := range f.Entries {
+		if x.Loop == "billing-api-migration" {
+			e = x
+		}
+	}
+	if _, err := control.Update(e.StateDir, func(f *control.File) { f.EpisodeHold = true }); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(e.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Reprompts, st.Nudges = 3, 2
+	if err := state.Save(e.StateDir, st); err != nil {
+		t.Fatal(err)
+	}
+	p := c.prepare("session-a", dockKey(e.ID), "resume")
+	if p.Preview == nil {
+		t.Fatalf("%+v", p.Result)
+	}
+	if r := c.confirm("session-a", dockKey(e.ID), "resume", p.Preview.Form); r.Result == nil || r.Result.Outcome != "done" {
+		t.Fatalf("%+v", r.Result)
+	}
+	after, err := state.Load(e.StateDir)
+	if err != nil || after.Reprompts != 0 || after.Nudges != 0 || after.ResumeEpisodes != 1 {
+		t.Fatalf("%+v %v", after, err)
+	}
+	j, err := incident.Load(e.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch := j.Records[len(j.Records)-1].ControlChange; ch == nil || ch.Operation != "panel_resume" || !ch.NewEpisode || ch.Caller != "client" {
+		t.Fatalf("%+v", ch)
+	}
+	if ctl := controlOf(t, e); ctl.EpisodeHold || ctl.AwaitingUser {
+		t.Fatalf("%+v", ctl)
 	}
 }
