@@ -103,10 +103,10 @@ export default async function plugin(bb: BbPluginApi) {
     newThreadStart: {
       type: "select",
       label: "Keep going from the New thread screen",
-      description: "What happens after a thread is created with Keep going on. Manual: a switched-off setup is created and you start it from the thread. Automatic: supervision starts once the thread exists. Both create the loop with a loop-wide limit.",
-      options: ["manual", "automatic"],
-      experimental_optionLabels: { manual: "Create switched off; I start it", automatic: "Start automatically" },
-      default: "manual",
+      description: "What happens after a thread is created with Send and keep going. Start automatically: supervision starts once the thread exists; if anything about the start is uncertain, the setup is left switched off with the reason. Review first: a switched-off setup is created and you start it from the thread. Both create the loop with a loop-wide limit.",
+      options: ["automatic", "manual"],
+      experimental_optionLabels: { automatic: "Start automatically", manual: "Review first; I start it" },
+      default: "automatic",
     },
   });
 
@@ -278,6 +278,7 @@ export default async function plugin(bb: BbPluginApi) {
   const newThread = createNewThreadController({
     now: () => Date.now(),
     id: () => randomUUID(),
+    // An unreadable setting falls back to the mode that starts nothing.
     mode: async () => startModeSchema.catch("manual").parse((await settings.get()).newThreadStart),
     unavailable: async () => {
       const { bin } = await configured();

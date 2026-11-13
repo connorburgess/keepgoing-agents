@@ -61,17 +61,19 @@ What happens after **Send and keep going**:
 
 1. The plugin asks its server for a single-use request (valid for two minutes, one per draft) and sends the message through BB's own composer with that request attached. BB creates the thread and delivers the message as usual.
 2. BB hands the request back to the plugin's `message.dispatch` hook together with the thread it created. That is the only link the plugin accepts. It never guesses from project, time or text. If the request is unknown, expired, already used, or does not describe a person's first message on a thread created after the switch was turned on, nothing is created, and the thread says so.
-3. Once the thread's environment and host are ready, the plugin runs the same setup as **Supervise this thread**: preview, then **create switched off**. The first message is the task (recorded as the loop's goal, on stdin), and the loop is named after the thread's title, or `bb-<thread id>` when the title gives no usable name or that name is taken.
-4. The thread's banner or card shows `keepgoing: ready, not started`, the loop's limit, and one button, **Start keeping this going**. Nothing starts before that click.
+3. Once the thread's environment and host are ready, the plugin runs the same setup as **Supervise this thread**: preview, then create. The first message is the task (recorded as the loop's goal, on stdin), and the loop is named after the thread's title, or `bb-<thread id>` when the title gives no usable name or that name is taken.
+4. Supervision starts, once, when setup's own diagnostics allow it. Pressing **Send and keep going** is the consent to that start. The thread's banner or card then shows `keepgoing: keeping this going`, the loop's limit, and **Pause** and **Stop**.
 
-Every loop created this way has a loop-wide limit: it stops for a person after a number of automatic sends, or after a time without a Git change. The defaults are 40 sends and 24 hours; they are placeholders, defined once in `new-thread-contract.ts`, and both can be changed under **Details** in the banner before sending (1 to 1000 sends; 2, 6, 12, 24 or 72 hours). The plugin refuses a setup whose CLI report does not carry the requested limits.
+If anything about the start is uncertain, the setup is left switched off and the thread shows `keepgoing: ready, not started`, the reason, and one button, **Start keeping this going**. That covers diagnostics that report an error, a start that could not be confirmed, and a hold or a responding supervisor already present. A start is never tried a second time by the plugin.
 
-The setting **Keep going from the New thread screen** has two values. *Create switched off; I start it* is the default and is described above. *Start automatically* starts supervision once the setup is created and its diagnostics allow a start; the banner says so before you send. Automatic start applies only if that mode was shown when the switch was turned on and is still set when the thread is ready.
+Every loop created this way has a loop-wide limit: it stops for a person after 40 automatic messages, or after 24 hours without progress, which keepgoing measures as a Git change. The numbers are defined once, in `new-thread-contract.ts`, and both can be changed under **Details** in the banner before sending (1 to 1000 messages; 2, 6, 12, 24 or 72 hours). The plugin refuses a setup whose CLI report does not carry the requested limits.
+
+The setting **Keep going from the New thread screen** has two values. *Start automatically* is the default and is described above. *Review first; I start it* always creates the setup switched off and leaves the start to the button on the thread; the banner says which applies before you send. Automatic start happens only if that mode was shown when the switch was turned on and is still set when the thread is ready.
 
 When it cannot go ahead, it says why and does nothing else:
 
 - The keepgoing program does not run on the BB server: the switch stays off and the banner explains. This check runs on the BB server, not on the host a new thread will use; a host without keepgoing is reported on the thread, after creation.
-- Another loop already supervises the thread, or that could not be checked: nothing is created.
+- Another loop already supervises the thread, or that could not be checked: nothing is created or started.
 - The thread does not work in a Git repository, or its environment is not ready within ten minutes: nothing is created.
 - The message has no text, or more than 256 KiB.
 

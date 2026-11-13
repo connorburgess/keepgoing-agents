@@ -38,7 +38,7 @@ test("off shows only the switch; on explains once, states the bound and the plai
     assert.equal(toggle.getAttribute("aria-checked"), "false");
     assert.equal(w.ui.queryByLabelText("Keep going"), null); assert.equal(w.calls.length, 0);
     fireEvent.click(toggle);
-    await w.ui.findByText(/keepgoing will supervise the thread this message creates\. It is created switched off; you start it from the thread\./);
+    await w.ui.findByText("keepgoing will set up supervision for the thread this message creates. It is created switched off; you start it from the thread.");
     assert.equal(toggle.getAttribute("aria-checked"), "true");
     assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     assert.ok(w.ui.getByText("A plain Enter sends without supervision."));
@@ -67,9 +67,9 @@ test("the bound is edited in Details and travels with the request", async () => 
   const w = world();
   try {
     fireEvent.click(w.ui.getByRole("switch"));
-    fireEvent.change(await w.ui.findByLabelText("Automatic sends before stopping"), { target: { value: "12" } });
+    fireEvent.change(await w.ui.findByLabelText("Automatic messages before stopping"), { target: { value: "12" } });
     fireEvent.change(w.ui.getByLabelText("Time without a Git change before stopping"), { target: { value: "6h" } });
-    assert.ok(w.ui.getByText("Stops for you after 12 automatic sends, or 6 hours without a Git change."));
+    assert.ok(w.ui.getByText("Stops for you after 12 automatic messages, or 6 hours without progress (a Git change)."));
     fireEvent.click(w.ui.getByRole("button", { name: "Send and keep going" }));
     await waitFor(() => assert.equal(w.submits.length, 1));
     assert.deepEqual(w.calls.find(c => c.action === "arm"), { action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: { maxSends: 12, noProgressTimeout: "6h" } });
@@ -80,18 +80,18 @@ test("a bound outside 1 to 1000 is refused in the control and nothing is sent", 
   const w = world();
   try {
     fireEvent.click(w.ui.getByRole("switch"));
-    fireEvent.change(await w.ui.findByLabelText("Automatic sends before stopping"), { target: { value: "0" } });
+    fireEvent.change(await w.ui.findByLabelText("Automatic messages before stopping"), { target: { value: "0" } });
     fireEvent.click(w.ui.getByRole("button", { name: "Send and keep going" }));
     assert.match((await w.ui.findByRole("alert")).textContent ?? "", /1 to 1000/);
     assert.ok(!w.calls.some(c => c.action === "arm")); assert.equal(w.submits.length, 0);
   } finally { w.done(); }
 });
 
-test("automatic mode says in the control that supervision starts by itself", async () => {
+test("automatic mode says in the control that supervision starts once the thread exists", async () => {
   const w = world({ mode: "automatic" });
   try {
     fireEvent.click(w.ui.getByRole("switch"));
-    await w.ui.findByText(/starts by itself once the thread exists/);
+    await w.ui.findByText("keepgoing will supervise the thread this message creates, starting once the thread exists.");
     assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
   } finally { w.done(); }
 });
@@ -159,6 +159,21 @@ test("the row in the menu beside Send turns the same switch on; nothing shows ou
   try { assert.equal(ui.container.textContent, ""); } finally { ui.unmount(); cleanup(); resetDrafts(); }
 });
 
+test("a thread that was started shows that it is running, with Pause and Stop beside it", async () => {
+  const actions: string[] = []; let changed = 0;
+  const ui = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "ready", message: "Started when this thread was created.", loop: "release-notes-for-2-4", bounds: DEFAULT_BOUNDS, startedAutomatically: true }} controlState="enabled" supervising={true}
+    start={async () => ({ ok: true, message: "" })} control={async action => { actions.push(action); return { ok: true, message: `${action} done` }; }} onChanged={() => changed++} />);
+  try {
+    assert.ok(ui.getByText("keepgoing: keeping this going"));
+    assert.deepEqual(ui.getAllByRole("button").map(b => b.textContent), ["Pause", "Stop"]);
+    fireEvent.click(ui.getByRole("button", { name: "Stop" }));
+    assert.equal((await ui.findByRole("status")).textContent, "stop done");
+    fireEvent.click(ui.getByRole("button", { name: "Pause" }));
+    await waitFor(() => assert.deepEqual(actions, ["stop", "pause"]));
+    assert.equal(changed, 2);
+  } finally { ui.unmount(); cleanup(); }
+});
+
 const ready = { state: "ready" as const, message: "Created from this thread's first message. It is switched off until you start it.", loop: "release-notes-for-2-4", bounds: DEFAULT_BOUNDS, cadence: "Checks every 5m0s.", startedAutomatically: false };
 
 test("a thread created with Keep going on shows one button that says what it starts, with the bound", async () => {
@@ -181,8 +196,10 @@ test("after it is started the same words are used and the button is gone; waitin
   const started = render(<NewThreadOutcome threadId="thr_example" outcome={{ ...ready, startedAutomatically: true }} controlState="enabled" supervising={true} start={start} onChanged={() => {}} />);
   try {
     assert.ok(started.getByText("keepgoing: keeping this going"));
-    assert.ok(started.getByText(/Started automatically when this thread was created\./));
-    assert.equal(started.queryByRole("button"), null);
+    assert.ok(started.getByText(/Started when this thread was created\./));
+    assert.ok(started.getByText(boundsPhrase(DEFAULT_BOUNDS)));
+    assert.equal(started.queryByRole("button", { name: "Start keeping this going" }), null);
+    assert.equal(started.queryByRole("button", { name: "Pause" }), null, "without a control route there are no control buttons");
   } finally { started.unmount(); cleanup(); }
   const waiting = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "waiting", message: "keepgoing is waiting for this thread's environment." }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
   try { assert.ok(waiting.getByText("keepgoing: setting up")); assert.match(waiting.getByRole("status").textContent ?? "", /waiting/); assert.equal(waiting.queryByRole("button"), null); }

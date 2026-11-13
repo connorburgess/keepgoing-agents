@@ -76,7 +76,7 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
       const projectId = composer.scope.projectId;
       if (!projectId) { setError("Choose a project first."); return; }
       const bounds = boundsSchema.safeParse(draft.bounds);
-      if (!bounds.success) { setError("Set a limit of 1 to 1000 automatic sends."); return; }
+      if (!bounds.success) { setError("Set a limit of 1 to 1000 automatic messages."); return; }
       const armed = await call({ action: "arm", draftKey: key, projectId, bounds: bounds.data });
       if (!armed.ok || !armed.intent) { setError(armed.message || "Keep going could not be turned on. The message was not sent."); return; }
       try {
@@ -93,8 +93,8 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
   const blocked = composer.isSubmittingBlocked;
   return <section aria-label="Keep going" style={card}>
     <span>{mode === "automatic"
-      ? "keepgoing will supervise the thread this message creates, and starts by itself once the thread exists."
-      : "keepgoing will supervise the thread this message creates. It is created switched off; you start it from the thread."}</span>
+      ? "keepgoing will supervise the thread this message creates, starting once the thread exists."
+      : "keepgoing will set up supervision for the thread this message creates. It is created switched off; you start it from the thread."}</span>
     <span>{boundsPhrase(draft.bounds)}</span>
     <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
       <button type="button" disabled={busy || blocked} title={blocked ? composer.submittingBlockedReason ?? "" : undefined} onClick={() => void send()} style={{ ...button, fontWeight: 600 }}>Send and keep going</button>
@@ -105,8 +105,8 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
       <summary>Details</summary>
       <div style={{ display: "grid", gap: 6, paddingTop: 6 }}>
         <span>Your first message is the task, recorded as the loop's goal. The loop is named after the thread's title. One thread, with the model and login it already has; no fallbacks.</span>
-        <label>Stop for me after this many automatic sends{" "}
-          <input type="number" aria-label="Automatic sends before stopping" min={1} max={1000} value={draft.bounds.maxSends} disabled={busy}
+        <label>Stop for me after this many automatic messages{" "}
+          <input type="number" aria-label="Automatic messages before stopping" min={1} max={1000} value={draft.bounds.maxSends} disabled={busy}
             onChange={e => setDraft(key, { bounds: { ...draft.bounds, maxSends: Number(e.target.value) } })} style={{ width: 72 }} /></label>
         <label>Stop for me after this long without a Git change{" "}
           <select aria-label="Time without a Git change before stopping" value={draft.bounds.noProgressTimeout} disabled={busy}

@@ -24,8 +24,9 @@ async function world(options: { mode?: "manual" | "automatic"; program?: "presen
   const agent = { adapter: "bb", provider: "example-provider", bbThread: thread.id };
   const state = { loop: "release-notes-for-2-4", target: "primary", controlState: "disabled", control: {}, window: "open", state: {}, primaryAgent: agent, targetAgent: agent, daemon: { state: "not_recorded" } };
   const hostCalls: { method: string; input: unknown }[] = [];
+  const flags = { failStart: false };
   const { bb, harness } = createFakePluginHost({
-    pluginId: "keepgoing", settings: { keepgoingPath: options.program === "missing" ? join(dir, "absent") : program, configs: "", newThreadStart: options.mode ?? "manual" },
+    pluginId: "keepgoing", settings: { keepgoingPath: options.program === "missing" ? join(dir, "absent") : program, configs: "", ...(options.mode ? { newThreadStart: options.mode } : {}) },
     sdk: { threads: { get: async () => thread }, environments: { get: async () => environment }, hosts: { get: async () => host } },
     experimental_callHostRpc: async ({ method, input, hostId }) => {
       assert.equal(hostId, host.id); hostCalls.push({ method, input });
@@ -35,6 +36,7 @@ async function world(options: { mode?: "manual" | "automatic"; program?: "presen
           limits: { interval: "5m0s", wakeEvery: "1h0m0s", stallAfter: "30m0s", backoff: "10m0s", maxNudges: 3, maxReprompts: 3, maxSends: p.bounds?.maxSends, noProgressTimeout: p.bounds ? "24h0m0s" : undefined } } };
       }
       const p = hostContract.command.input.parse(input);
+      if (p.operation === "start" && flags.failStart) return { code: 1, data: null };
       if (p.operation === "start") state.controlState = "enabled";
       return { code: 0, data: p.operation === "doctor" ? { schemaVersion: 1, targetAgent: agent, checks: [{ id: "agent.primary.target", status: "ok", message: "Fixture verified" }] } : p.operation === "status" ? state : null };
     },
@@ -53,11 +55,11 @@ async function world(options: { mode?: "manual" | "automatic"; program?: "presen
     }
   };
   const done = async () => { await harness.lifecycle.dispose(); await rm(dir, { recursive: true, force: true }); };
-  return { bb, harness, thread, environment, hostCalls, rpc, hook, settle, done, state };
+  return { bb, harness, thread, environment, hostCalls, rpc, hook, settle, done, state, set failStart(v: boolean) { flags.failStart = v; } };
 }
 
-test("a marked first message creates one bounded, switched-off setup for its thread once the environment is ready", async () => {
-  const w = await world();
+test("review-first mode: a marked first message creates one bounded, switched-off setup for its thread once the environment is ready", async () => {
+  const w = await world({ mode: "manual" });
   try {
     const armed = await w.rpc({ action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS });
     assert.equal(armed.ok, true); assert.equal(armed.mode, "manual");
@@ -90,8 +92,8 @@ test("a marked first message creates one bounded, switched-off setup for its thr
   } finally { await w.done(); }
 });
 
-test("automatic mode starts the bounded loop after creation; the setting is read on the server", async () => {
-  const w = await world({ mode: "automatic" });
+test("by default the bounded loop is started after creation, once; the mode is read on the server", async () => {
+  const w = await world();
   try {
     w.environment.status = "ready";
     const armed = await w.rpc({ action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: { maxSends: 12, noProgressTimeout: "6h" } });
@@ -103,6 +105,27 @@ test("automatic mode starts the bounded loop after creation; the setting is read
     const operations = w.hostCalls.filter(c => c.method === "command").map(c => hostContract.command.input.parse(c.input).operation);
     assert.equal(operations.filter(o => o === "start").length, 1);
     assert.equal((await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome?.startedAutomatically, true);
+    // Later lifecycle events and status reads never start it again.
+    await w.harness.behavior.emitThreadEvent("thread.idle", { thread: w.thread, lastAssistantText: null });
+    await w.rpc({ action: "outcome", threadId: "thr_new" }); await w.settle();
+    assert.equal(w.hostCalls.filter(c => c.method === "command" && hostContract.command.input.parse(c.input).operation === "start").length, 1);
+  } finally { await w.done(); }
+});
+
+test("an uncertain automatic start is not retried: the setup stays switched off with the reason", async () => {
+  const w = await world();
+  try {
+    w.environment.status = "ready"; w.failStart = true;
+    const armed = await w.rpc({ action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS });
+    await w.hook({ experimental_submission: { pluginId: "keepgoing", data: marker(armed.intent!) } });
+    await w.settle();
+    await w.harness.behavior.emitThreadEvent("thread.active", { thread: w.thread });
+    await w.harness.behavior.emitThreadEvent("thread.idle", { thread: w.thread, lastAssistantText: null });
+    const outcome = (await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome!;
+    await w.settle();
+    assert.equal(outcome.state, "ready"); assert.equal(outcome.startedAutomatically, false);
+    assert.match(outcome.message, /could not be confirmed and was not tried again/);
+    assert.equal(w.hostCalls.filter(c => c.method === "command" && hostContract.command.input.parse(c.input).operation === "start").length, 1);
   } finally { await w.done(); }
 });
 

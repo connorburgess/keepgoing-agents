@@ -3,7 +3,7 @@
 // hook: it never travels through this contract and is never stored.
 import { z } from "zod";
 
-/** Placeholder loop-wide bounds for a loop created from the New thread screen. Change them here only. */
+/** Loop-wide bounds for a loop created from the New thread screen, in both start modes. Change them here only. */
 export const DEFAULT_BOUNDS = { maxSends: 40, noProgressTimeout: "24h" } as const;
 export const TIMEOUT_CHOICES = ["2h", "6h", "12h", "24h", "72h"] as const;
 export const boundsSchema = z.object({
@@ -47,7 +47,7 @@ export const marker = (intent: string) => ({ v: 1 as const, intent });
 
 const HOURS: Record<(typeof TIMEOUT_CHOICES)[number], number> = { "2h": 2, "6h": 6, "12h": 12, "24h": 24, "72h": 72 };
 /** One short phrase for the loop-wide bound, used wherever the bound is stated. */
-export const boundsPhrase = (b: Bounds) => `Stops for you after ${b.maxSends} automatic sends, or ${HOURS[b.noProgressTimeout]} hours without a Git change.`;
+export const boundsPhrase = (b: Bounds) => `Stops for you after ${b.maxSends} automatic messages, or ${HOURS[b.noProgressTimeout]} hours without progress (a Git change).`;
 
 /** Go prints durations as 24h0m0s; compare them as milliseconds. Returns null when unreadable. */
 export function durationMs(text: string): number | null {

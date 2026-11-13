@@ -92,16 +92,18 @@ export function createNewThreadController(d: NewThreadDependencies) {
       job.outcome = {
         state: "ready", loop: created.record.loop, bounds: job.bounds,
         cadence: `Checks every ${l.interval}. Nudges a stalled turn after ${l.stallAfter}, at most ${l.maxNudges} times. Re-prompts an error at most ${l.maxReprompts} times, ${l.backoff} apart. No fallbacks.`,
-        message: created.canStart ? "Created from this thread's first message. It is switched off until you start it." : `Created from this thread's first message, switched off. ${created.message}`,
+        message: created.canStart ? "Created from this thread's first message. It is switched off until you start it." : `Created from this thread's first message and left switched off: ${created.message}`,
         startedAutomatically: false,
       };
       // Automatic start only when the person saw that mode when turning the
-      // control on, and it is still the setting now.
+      // control on, it is still the setting now, and setup's own diagnostics
+      // allow a start. One attempt: anything uncertain leaves the setup for
+      // the person to review and start, with the reason.
       if (job.mode === "automatic" && created.canStart && await d.mode() === "automatic") {
         const started = await d.setup({ action: "start", threadId }, job.bounds);
         job.outcome = started.ok
-          ? { ...job.outcome, startedAutomatically: true, message: "Started automatically when this thread was created." }
-          : { ...job.outcome, message: "Created from this thread's first message. Automatic start could not be confirmed, so it is switched off until you start it." };
+          ? { ...job.outcome, startedAutomatically: true, message: "Started when this thread was created." }
+          : { ...job.outcome, message: "Created from this thread's first message. The automatic start could not be confirmed and was not tried again. Check the status below, then start it here if it is not running." };
       }
     } catch { fail(job, "Setup could not complete. A switched-off setup may exist; check Supervise this thread before trying again."); }
     finally { job.task = ""; d.changed(); }

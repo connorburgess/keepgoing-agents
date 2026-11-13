@@ -24,14 +24,14 @@ test("the plugin adds its control to the New thread composer only", () => {
 test("in BB's composer the switch opens the banner and its send carries the request", async () => {
   const c = app.composerCustomizations[0]!;
   const calls: { action: string }[] = [];
-  const rpc = { newThread: (raw: unknown) => { const input = raw as { action: string }; calls.push(input); return input.action === "arm" ? { ok: true, message: "", mode: "manual", intent: "intent-example", expiresAt: 1 } : { ok: true, message: "", mode: "manual" }; } };
+  const rpc = { newThread: (raw: unknown) => { const input = raw as { action: string }; calls.push(input); return input.action === "arm" ? { ok: true, message: "", mode: "automatic", intent: "intent-example", expiresAt: 1 } : { ok: true, message: "", mode: "automatic" }; } };
   const composer = { text: "Fictional task", scope: { kind: "new-thread" as const, projectId: "proj_example" } };
   const banner = renderSlot({ component: c.banners![0]!.component }, {}, { rpc, composer });
   try {
     assert.equal(banner.container.textContent, "", "nothing is drawn while the switch is off");
     // The menu row beside Send reaches the same switch, including in the compact layout.
     await act(async () => { await c.sendMenu![0]!.run({ composer: { scope: banner.inspection.composer.scope, key: banner.inspection.composer.key } as never }); });
-    await banner.findByText(/keepgoing will supervise the thread this message creates/);
+    await banner.findByText("keepgoing will supervise the thread this message creates, starting once the thread exists.");
     assert.ok(banner.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     fireEvent.click(banner.getByRole("button", { name: "Send and keep going" }));
     await waitFor(() => assert.equal(banner.inspection.composer.submits.length, 1));
@@ -67,6 +67,25 @@ test("the created thread's card shows the bounded, switched-off loop and one but
     assert.equal(ui.getAllByRole("button", { name: /^Start/ }).length, 1);
     fireEvent.click(ui.getByRole("button", { name: "Start keeping this going" }));
     await waitFor(() => assert.deepEqual(starts.filter(s => (s as { action: string }).action === "start"), [{ action: "start", threadId: "thr_created" }]));
+  } finally { ui.lifecycle.unmount(); cleanup(); }
+});
+
+test("a started thread says it is running, with one Pause and one Stop that go to the loop's own configuration", async () => {
+  const controls: unknown[] = [];
+  // The plugin caches status per thread, so this thread has its own id.
+  const running = { ...loop, controlState: "enabled", managedThreadId: "thr_running" };
+  const ui = renderSlot(app.threadContextCardRows[0]!, { threadId: "thr_running", projectId: "proj_example", environment: null }, { rpc: {
+    forThread: () => ({ loops: [running], errors: [] }),
+    newThread: () => ({ ok: true, message: "", outcome: { ...ready, message: "Started when this thread was created.", startedAutomatically: true } }),
+    control: (input: unknown) => { controls.push(input); return { ok: true, message: "stop done" }; },
+  } });
+  try {
+    await waitFor(() => assert.equal(ui.getAllByText("keepgoing: keeping this going").length, 2), { timeout: 3000 });
+    assert.ok(ui.getByText(/Started when this thread was created\./)); assert.ok(ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
+    assert.equal(ui.getAllByRole("button", { name: "Pause" }).length, 1); assert.equal(ui.getAllByRole("button", { name: "Stop" }).length, 1);
+    assert.equal(ui.queryByRole("button", { name: /^Start/ }), null);
+    fireEvent.click(ui.getByRole("button", { name: "Stop" }));
+    await waitFor(() => assert.deepEqual(controls, [{ configPath: loop.configPath, action: "stop", managedId: "record-example", expectedThreadId: "thr_running" }]));
   } finally { ui.lifecycle.unmount(); cleanup(); }
 });
 
