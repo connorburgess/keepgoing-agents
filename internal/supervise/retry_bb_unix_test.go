@@ -14,6 +14,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // A stand-in bb executable: thread status and log come from files the test
@@ -48,9 +49,7 @@ func TestIncidentRepromptedTurnGoesSilentWhileActive(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("FAKE_BB_DIR", dir)
 			cli := filepath.Join(dir, "bb")
-			if err := os.WriteFile(cli, []byte(fakeBBScript), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			testexec.Shared(t, cli, fakeBBScript)
 			w.cfg.Loop.BB.CLI = cli
 			var events []string
 			add := func(minute int, typ, data string) {
@@ -144,9 +143,7 @@ func TestIncidentRetrySeriesAfterFailedCompletion(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FAKE_BB_DIR", dir)
 	cli := filepath.Join(dir, "bb")
-	if err := os.WriteFile(cli, []byte(fakeBBScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Shared(t, cli, fakeBBScript)
 	w.cfg.Loop.BB.CLI = cli
 	midnight := time.Date(2030, 3, 4, 0, 0, 0, 0, time.UTC)
 	clock := func(h, m, s int) time.Time {
