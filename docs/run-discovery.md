@@ -2,7 +2,7 @@
 
 Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
-This is a data and navigation model in progress. Two parts exist in source and are unreleased: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased) and the [persisted reference graph](#persisted-reference-graph-d2-unreleased) that records it in each loop's state directory. No command reads the graph yet: there are no graph commands, provider-link resolver or blocker lookup. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 is checked, D2 is partial and D3–D6 are planned. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
+This is a data and navigation model in progress. Three parts exist in source and are unreleased: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased), the [persisted reference graph](#persisted-reference-graph-d2-unreleased) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3-unreleased) that shows it. There is no provider-link resolver, blocker lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 is checked, D2 is partial, D3 is implemented and awaiting check-off, and D4–D6 are planned. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
@@ -62,7 +62,7 @@ The package keeps no history. Its caller must prevent reuse of discarded run and
 
 ## Persisted reference graph (D2, unreleased)
 
-Each loop's state directory holds one private record, `graph.json`, written by `internal/rungraph`. It stores the durable loop identity, runs, send attempts and the links from a run to provider chats/sessions, goal revisions and routine invocations. It is diagnostic history only. No decision, hold, allowance or send reads it, and no command prints it yet; D3 adds the CLI/JSON views.
+Each loop's state directory holds one private record, `graph.json`, written by `internal/rungraph`. It stores the durable loop identity, runs, send attempts and the links from a run to provider chats/sessions, goal revisions and routine invocations. It is diagnostic history only. No decision, hold, allowance or send reads it. [`keepgoing runs`](#cli-navigation-d3-unreleased) prints it.
 
 ### Where identity lives
 
@@ -120,6 +120,90 @@ The paths D2 requires resolve from recorded IDs: loop → current run → chat/s
 
 Older builds ignore the file. Copying or deleting runtime files is outside these guarantees.
 
+## CLI navigation (D3, unreleased)
+
+`keepgoing runs` shows what the graph recorded: the current run, earlier runs, their sends and the chat/session references they used. It is available in source builds only. It reads private files and nothing else:
+
+- It runs no adapter, provider command or `bb` command, and needs no provider installed.
+- It takes no lock, including the tick lock, so it works while a check, a daemon or another command is running.
+- It creates no file or directory and changes no control. It works the same for a paused, stopped, disabled, awaiting-user or completed loop.
+- Each file is read as its own snapshot. A check that finishes during a read can make the graph, control and saved target differ by one step.
+
+Everything it prints was recorded earlier. Nothing is a live observation, and a session reference does not show that the conversation exists or can be resumed.
+
+### Selecting a loop
+
+```sh
+keepgoing runs -c loop.yaml                       # one loop, by its configuration
+keepgoing runs --state-dir /private/state         # one loop, without loading configuration
+keepgoing runs --registry-id loop_0123456789abcdef0123456789abcdef
+keepgoing runs --all                              # every registered loop with its current run
+```
+
+Use exactly one selector; the default is `-c keepgoing.yaml`. `--directory` names a private registry directory for `--registry-id` and `--all`. Two registered loops can share a name: their registry references keep them apart, and each shows only its own records. With a registry selector the report also says whether the graph has recorded that reference (`recorded`) or not (`not_recorded`); see [where identity lives](#where-identity-lives).
+
+A registry selector checks the binding first, as registered status does: the registered configuration must still load and still name the same loop and runtime directory. If it does not, the entry shows `binding: unavailable`, nothing is read from the registered directory, and the command exits 1. A lookup through such an entry answers `unavailable`.
+
+Add `--json` for the versioned report and `--limit N` (1–256, default 10). The limit bounds earlier runs, each run's chat/session references and goal revisions, a reference's links, a chat's sends and registered loops. Omitted counts are always printed.
+
+### Following a reference
+
+```sh
+keepgoing runs -c loop.yaml --id run_0123456789abcdef0123456789abcdef
+keepgoing runs -c loop.yaml --id session:bb/thr_example
+```
+
+`--id` takes one exact reference from earlier output and prints that node with every reference it links to. Following them in turn walks registry reference → durable loop → runs → sends → chat/session, and back from a chat/session to every run that recorded it and the sends made to it. References are matched exactly. A loop name, a bare thread ID or a partial ID is not searched for; it reports `not_recorded`. `--id` accepts only the characters a recorded reference can contain (letters, digits and `. _ : @ / -`); anything else is a usage error. Text mode prints the same links as JSON, including each send's run and chat/session, so every path below can be followed without `--json`.
+
+| Reference | Links shown |
+| --- | --- |
+| `loop_…` (registry reference) | the durable loop |
+| `supervision_…` (durable loop) | current run, earlier runs, registry references |
+| `run_…` | sends, chats/sessions with their target alias, goal revisions, predecessor run, opening invocation |
+| `attempt_…` | its run, the goal revision composed into it, and its chat/session |
+| `session:<provider>/<id>` | every run that recorded it, and the sends recorded for it |
+| `<goal id>@<revision>` | every run that recorded it |
+
+A send's chat/session is derived from two recorded fields: the send's run and its target alias. If that alias named more than one chat during the run, for example because the configured chat was edited, the send's chat is `ambiguous` and no chat is picked. Each of those chats then reports how many sends could not be attributed (`ambiguousAttempts`).
+
+### Evidence labels
+
+| Label | Meaning |
+| --- | --- |
+| `configured` | The open run's link for the saved active target, and still the chat that target's configuration names. Configuration, not an observation. |
+| `observed` | The open run's link for the saved active target, and still the resume ID in the headless runner's saved file. Not a live session check. |
+| `historical` | Everything else that was recorded: a closed run, a target that is not the saved active target, a chat that configuration or the runner file no longer names, or any chat when no active target is saved. Never presented as current. |
+| `unavailable` | Nothing recorded: no session for the run, an identifier that could not be stored, a missing provider link, or no blocker relationship. |
+
+With `--state-dir` no configuration is loaded, so a configured chat cannot be compared with it. It is then labelled `configured` only when it is the single chat recorded for that target in the run; if the target has several, all are `historical`.
+
+A record file that does not exist is reported as `not_recorded`, never as the default it would be read as. With no `control.json` the control state is not printed as `disabled`, and with no `state.json` no active target is printed as `primary`.
+
+The saved active target is the alias the last check wrote to `state.json`. Target moves are shown by [`keepgoing timeline`](diagnostics.md#offline-incident-timeline). Every session's `link` is `unavailable`: no provider link format is validated yet. Every loop's `blocker` is `unavailable` until D4 records a validated blocked-by relationship.
+
+A lookup answers `found`, `not_recorded`, `not_recorded_or_expired` when retention has dropped records, or `unavailable` when the graph exists but cannot be read (corrupt or a newer schema): the reference may be in it, so it is not reported as unrecorded. A graph that is `missing` is an ordinary answer for a loop that has not recorded a run. A `conflict` line means saved control and the recorded run disagree until the next check records the boundary.
+
+### JSON report, schema 1
+
+| Field | Content |
+| --- | --- |
+| `schemaVersion`, `readAt`, `view` | `1`, the read time, and `loop`, `node` or `registry` |
+| `loops[]` | One entry per selected loop |
+| `loops[].registrationId`, `registration`, `binding`, `loop` | With a registry selector: the reference, its mapping state, and whether its configuration binding still holds; loop name when known |
+| `loops[].graph` | `availability` (`available`, `missing`, `unsupported`, `corrupt`), `loopId`, `updatedAt`, `dropped` counts |
+| `loops[].control`, `conflict`, `activeTarget` | Saved control summary, any boundary conflict, and the saved active target alias; each has `availability` `not_recorded` when its file does not exist |
+| `loops[].current`, `recent[]`, `omittedRuns` | The current run and earlier runs, newest first |
+| run fields | `id`, `state` (`open` or `completion_declared`), `origin`, `recordedAt`, `source`, `closedAt`, `reopens`, `invocation`, `sessionEvidence`, `sessions[]`, `omittedSessions`, `goalRevisions[]`, `omittedGoalRevisions`, `attempts`, `unrecorded[]` |
+| `sessions[]` | `ref`, `provider`, `id`, `target`, `evidence`, `source`, `recordedAt`, `link` |
+| `attempts` | `total`, `unconfirmed`, and the newest three in `latest[]` with `outcome` (`intent`, `adapter_returned`, `adapter_error`) and `session` |
+| `loops[].blocker` | Always `unavailable` in this schema |
+| `node` | With `--id`: `ref`, `status`, `type`, `recordedAt`, `source`, `edges[]`, `omittedEdges`, and the run or send detail; for a chat/session, its `attempts[]`, `omittedAttempts` and `ambiguousAttempts` |
+| `omitted`, `limitations[]` | Registered loops not shown, and fixed statements of what the report cannot establish |
+
+Output holds identifiers, target aliases, action names, sources and times. It holds no prompt, goal text, control note, path or URL. Chat and session IDs are the ones `status` and registered status already show.
+
+Exit codes: 0 for an answer, including a missing graph, a hold or a reference that is not recorded; 1 when a graph, control or state record exists but cannot be read, a registry binding no longer holds, or the registry or registration is unavailable, with whatever was readable still printed; 2 for usage or unreadable configuration.
+
 ## Record once, resolve by reference
 
 D2 should define versioned node and relationship types with stable local IDs, source identity, observation time and freshness. The minimum useful paths are loop → current run → provider chat/session, run → goal revision, and blocked run → blocking run. Routine → run is available when the caller or integration supplies a verifiable routine identity. Registration identity and durable loop identity need an explicit mapping; removing and re-adding today's registry entry must not silently claim the same run history.
@@ -128,7 +212,7 @@ Record start intent before launching work, then attach structured provider recei
 
 An indexed local resolver should find an ID and its recorded adjacent references directly. Lookup must not require scanning all history, Git commits, task files or provider conversation directories. This is an access-pattern requirement, not a latency or literal constant-time promise. Bound records, traversal and retention; define migrations, interrupted updates, missing nodes, unsupported schema versions, cycles and conflicting identities. Unknown remains explicit, and expired history is not silently recreated.
 
-D3 should deliver CLI/JSON views for active and recent runs and direct reference traversal before GUI work. A user should be able to follow current run → chat even with duplicate loop names. D3 reports blocker navigation as unavailable until D4 supplies a validated relationship; blocked run → blocker → chat is verified with D4, not a prerequisite for checking off D3. CLI names are intentionally undecided here. Current commands and output schemas remain those documented in [local clients](local-clients.md) and [operations](operations.md).
+D3 delivers CLI/JSON views for active and recent runs and direct reference traversal before GUI work; see [CLI navigation](#cli-navigation-d3-unreleased). Blocker navigation is reported as unavailable until D4 supplies a validated relationship.
 
 ## Links and blockers need evidence
 
@@ -148,6 +232,7 @@ Restart must retain the appropriate run reference while recording a new process/
 | Last automatic prompt provenance | The latest returned send's target, goal revision and outcome | Pre-send intent, complete attempt history or confirmed provider delivery |
 | Incident journal and `runs.jsonl` | Structured diagnostic observations and events | A durable run-episode ID merely because the file is called `runs.jsonl` |
 | Read-only native menu preview | A view of registered status | Current-run/chat traversal or open-thread support |
+| `keepgoing runs` (unreleased) | Recorded runs, sends and chat/session references by exact ID | Live session state, an openable link, a blocker, or which chat a send reached when its alias named several |
 
 D4–D6 must preserve these evidence boundaries. Local registration remains explicit; graph records live outside repositories. Separate identifiers and safe display labels from private task text, paths, credentials and URLs containing sensitive components. Private display is opt-in, and graph relationships or provider links must not silently extend webhook/report payloads or introduce central analytics. A future client uses the same versioned resolver; it must not infer more certainty than CLI output provides.
 
