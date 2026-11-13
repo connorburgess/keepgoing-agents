@@ -46,11 +46,11 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 <!-- capability-matrix:begin -->
 | Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent defined in configuration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
-| [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · fixture | missing · none | yes · fixture | partial · fixture |
+| [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
+| [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture |
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a | n/a |
-| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
-| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a | partial · fixture |
+| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
+| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a | partial · fixture |
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
@@ -62,7 +62,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none |
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
-| [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
+| [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
 
 ### Observe state
@@ -72,7 +72,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 - **BB thread:** yes, evidence live. Thread status, log events and the interaction list. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveIdle`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. The turn's process state, exit code and result object. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence fixture. The turn's process state, exit code and event stream. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
-- **Cursor headless:** yes, evidence fixture. The turn's process state, exit code and bounded event stream. [`TestCursorLifecycleOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
+- **Cursor headless:** yes, evidence live. The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS. [cursor.md](cursor.md) [`TestCursorLifecycleOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The JSON the status command prints. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentOutputBound`](../internal/adapter/runner/definition_unix_test.go)
@@ -84,7 +84,7 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 - **BB thread:** yes, evidence live. From real provider error and rate-limit events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveStructuredRateLimit`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence live. Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestCodexTurnLimitClassifiedFromAppServerNotProse`](../internal/adapter/runner/runner_test.go)
-- **Cursor headless:** missing, evidence fixture. Every failure is unknown: no structured error contract is mapped. [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go)
+- **Cursor headless:** missing, evidence live. Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only. [cursor.md](cursor.md) [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go) [`TestCursorConnectionRecordsAreDiagnosticOnly`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown. [`TestDefinedAgentErrorClassification`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionReadings`](../internal/adapter/runner/definition_test.go)
@@ -108,7 +108,7 @@ After an error, send the task prompt again, with backoff, up to errors.max_repro
 - **BB thread:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. A real retry exhaustion and explicit resume were observed once. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go) [integrations.md#agent-providers](integrations.md#agent-providers)
 - **Claude Code headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Codex headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
-- **Cursor headless:** yes, evidence fixture. A failed turn is re-prompted in its verified session. [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go)
+- **Cursor headless:** yes, evidence live. A failed turn is re-prompted in its verified session. Live once after a usage-limit failure and after a stop; connection loss is fixture-only. [cursor.md](cursor.md) [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go) [`TestCursorConnectionLossKeepsSessionAndStaysUnknown`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. Run end to end with a stand-in agent. [`TestDefinedAgentJourney`](../internal/scenario/defined_agent_test.go)
@@ -120,7 +120,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 - **BB thread:** n/a. The configured thread is the conversation; every message goes to that thread ID.
 - **Claude Code headless:** yes, evidence fixture. --resume with the saved session ID. If no turn ever reported one, the next turn starts a new session. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Codex headless:** yes, evidence fixture. exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session. [`TestCodexResumeArgs`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
-- **Cursor headless:** yes, evidence fixture. --resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified. [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go)
+- **Cursor headless:** yes, evidence live. --resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited 1 having written nothing on a CLI version whose start order is verified. [cursor.md](cursor.md) [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go) [`TestCursorFreshStartNeedsExactShapeAndVerifiedVersion`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command owns session identity.
 - **Agent defined in configuration:** partial, evidence fixture. With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionSessionFile`](../internal/adapter/runner/definition_test.go)
@@ -264,7 +264,7 @@ Stop a running turn on request, signalling only a process keepgoing itself start
 - **BB thread:** yes, evidence live. bb thread stop on the configured thread. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestSendStopActivate`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. The live turn wrapper stops its own process group on a private per-turn request. A saved PID never authorizes a signal. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go) [testing.md#lifecycle-and-platform-review](testing.md#lifecycle-and-platform-review)
 - **Codex headless:** yes, evidence fixture. The same wrapper as Claude Code. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go)
-- **Cursor headless:** yes, evidence fixture. The same wrapper. [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
+- **Cursor headless:** yes, evidence live. The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed. [cursor.md](cursor.md) [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
@@ -276,7 +276,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 - **BB thread:** yes, evidence live. From the interaction list; shapes come from real lifecycle events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestPendingInteractionMeansWaitingOnAPerson`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** missing, evidence none. permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state. [configuration.md](configuration.md)
 - **Codex headless:** missing, evidence none. The sandbox setting is passed to the CLI. No typed permission state is read. [configuration.md](configuration.md)
-- **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. [cursor.md](cursor.md)
+- **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. A rejection has not been observed live. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered. [`TestDefinedAgentWaitingRaisesOneHold`](../internal/adapter/runner/definition_unix_test.go)
