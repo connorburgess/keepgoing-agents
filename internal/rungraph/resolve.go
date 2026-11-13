@@ -17,6 +17,8 @@ const (
 	GoalRevisionNode = "goal_revision"
 	InvocationNode   = "invocation"
 	RoutineNode      = "routine"
+	// ChildNode is a direct child thread of a run's target, known by key only.
+	ChildNode = "child"
 )
 
 // Edge types. Every edge is a recorded relationship, not a live observation.
@@ -31,6 +33,12 @@ const (
 	EdgeGoalRevision = "goal_revision"
 	EdgeInvocation   = "invocation"
 	EdgeRoutine      = "routine"
+	// EdgeBlockedBy: the run's target had this child holding it at the check
+	// that recorded the waiting record. EdgeBlocks is the reverse.
+	EdgeBlockedBy = "blocked_by"
+	EdgeBlocks    = "blocks"
+	// EdgeChild: an errored child, listed but not holding the run.
+	EdgeChild = "child"
 )
 
 // Status of a lookup.
@@ -70,6 +78,10 @@ type Node struct {
 	// Unrecorded lists evidence that existed for a run but could not be stored.
 	Unrecorded []Unrecorded
 }
+
+// ChildRef is the stable reference of a child thread node. It carries the
+// key, not the thread ID.
+func ChildRef(key string) string { return "child:" + key }
 
 // SessionRef is the stable reference of a provider chat/session node. The
 // parts are joined with "/", which no recorded token can contain, so two
@@ -184,6 +196,20 @@ func (g *Graph) build() {
 	}
 	for _, u := range g.Unrecorded {
 		g.index[u.Run].Unrecorded = append(g.index[u.Run].Unrecorded, u)
+	}
+	// Blocked-by edges exist only for a complete listing. Whether that record
+	// is still current is the reader's check against the last recorded check.
+	if w := g.Waiting; w != nil && w.Listing == ListingComplete {
+		run := g.index[w.Run]
+		for _, c := range w.Children {
+			ref := ChildRef(c.Key)
+			forward, back := EdgeChild, EdgeChild
+			if Holds(c.Status) {
+				forward, back = EdgeBlockedBy, EdgeBlocks
+			}
+			edge(run, forward, ref, w.Target, w.Source, w.CheckedAt)
+			edge(node(ref, ChildNode, w.CheckedAt, w.Source), back, w.Run, w.Target, w.Source, w.CheckedAt)
+		}
 	}
 }
 

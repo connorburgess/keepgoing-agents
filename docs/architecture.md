@@ -82,7 +82,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
-| `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records (32 runs/128 attempts/256 links/256 KiB); independent lock and flushed atomic replacement; a failed write never fails a tick; never a decision input |
+| `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records and the last verified child listing (32 runs/128 attempts/256 links/200 children/256 KiB); independent lock and flushed atomic replacement; a failed write never fails a tick; never a decision input |
 | `incidents.json`, `incident.lock` | tick diagnostic writer | versioned rolling snapshots, capped at 256 records/512 KiB with reserved key/condition/activity/routine tiers and collapsed runs of identical checks; independent lock and atomic replacement; never a decision input |
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
@@ -235,4 +235,4 @@ There is no pre-send intent or complete attempt ledger: process termination or a
 
 `internal/rungraph` persists that contract as `graph.json` in the state directory and validates every stored record against it. The command layer records a run boundary after a saved control change. A tick records the boundary implied by saved control state before it runs, a send intent before each adapter send and its return afterwards, and the goal revision and chat/session reference known without a provider query. These calls sit beside the tick, not in it: they return nothing to the decision path, take only the graph lock, and a failure adds one warning. The decision engine never reads the graph. See [the persisted graph](run-discovery.md#persisted-reference-graph-d2-unreleased).
 
-CLI projection, current-target resolution after transfer, blocker links and routine identity input remain unimplemented. Graph records and adapter-return outcomes grant no authority or proof of delivery.
+Current-target resolution after transfer and lock-holder identification remain unimplemented. Graph records and adapter-return outcomes grant no authority or proof of delivery.
