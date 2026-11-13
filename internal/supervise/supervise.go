@@ -877,8 +877,16 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
-	if err := t.claimActive(agent); err != nil {
-		return err
+	// Stop wins over every other rule. It waits only while another loop's
+	// live check holds the session, which the claim proves; if the claim
+	// cannot be taken for any other reason, the stop goes ahead without it.
+	claimed, err := t.claimOther(agent)
+	if claimed != nil {
+		res.State, res.Reason = "not observed", "another loop is acting on this session"
+		return claimed
+	}
+	if err != nil {
+		t.warn("stop proceeds without the session claim: %v", err)
 	}
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
