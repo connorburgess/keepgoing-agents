@@ -141,7 +141,7 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 ### Optional macOS menu preview
 
-The [native preview](integrations/macos/README.md) reads explicitly registered local loops on menu open or refresh. It can show goal metadata privately and distinguish current holds from historical activity. It starts no supervisor or timer. It is an unreleased, read-only developer build; interactive controls and optional installation remain planned.
+The [native menu preview](integrations/macos/README.md) opens the keepgoing panel (`keepgoing panel`) and lists each registered loop as a row, with its state in the panel's words, that opens that loop's page. A count beside the icon says how many loops need a person, and a `?` says the loops could not be read. It reads `keepgoing panel list` when started, when the menu opens and once a minute, with no provider call; it starts no supervisor. It is an unreleased, read-only developer build; controls for loops and optional installation remain planned.
 
 ## Why
 
