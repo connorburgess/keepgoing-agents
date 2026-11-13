@@ -32,7 +32,7 @@ func TestCursorRecoversInitializedSessionAfterWrapperCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready := filepath.Join(root, "child-ready")
-	cmd, err := wrapperCommand([]string{self, "-p", "--output-format", "stream-json"}, root, string(dir), []string{envTurnKey + "=" + key, "KEEPGOING_TEST_HELPER=cursor-crash", "KEEPGOING_TEST_RESULT=" + ready})
+	cmd, err := wrapperCommand([]string{self, "-p", "--output-format", "stream-json"}, root, string(dir), []string{envTurnKey + "=" + key, "KEEPGOING_TEST_HELPER=cursor-crash", "KEEPGOING_TEST_RESULT=" + ready}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
