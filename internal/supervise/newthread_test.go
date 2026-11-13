@@ -38,10 +38,12 @@ type fakeThreads struct {
 	// unlisted makes a created thread missing from the title listing, as when
 	// it was renamed, retitled by BB, archived or is not visible yet.
 	unlisted bool
-	titles   map[string][]string
-	spawned  []bb.SpawnRequest
-	places   []string
-	lists    int
+	// extra, when set, is a second thread reported under every listed title.
+	extra   string
+	titles  map[string][]string
+	spawned []bb.SpawnRequest
+	places  []string
+	lists   int
 }
 
 func (f *fakeThreads) PlaceOf(_ context.Context, thread string) (bb.Place, error) {
@@ -54,7 +56,11 @@ func (f *fakeThreads) FindByTitle(_ context.Context, p bb.Place, title string) (
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return f.titles[title], nil
+	ids := f.titles[title]
+	if f.extra != "" && len(ids) > 0 {
+		ids = append(append([]string(nil), ids...), f.extra)
+	}
+	return ids, nil
 }
 
 func (f *fakeThreads) Spawn(_ context.Context, r bb.SpawnRequest) (string, error) {
@@ -313,8 +319,8 @@ func (d doubledTitle) FindByTitle(ctx context.Context, p bb.Place, title string)
 	return append(ids, "thr_unrelated_copy"), err
 }
 
-// The request provably never reached BB (the bb CLI rejected the invocation).
-// That alone is "nothing was created": it counts as a rejected brief for that
+// The bb CLI reported rejecting the invocation and no such thread is listed.
+// Together that is "nothing was created": it counts as a rejected brief for that
 // fallback, under its own cap and spacing, the attempt is not counted against
 // the thread cap, and the next fallback is tried.
 func TestFailedCreationCountsAsARejectedBriefAndFallsThrough(t *testing.T) {
@@ -322,7 +328,7 @@ func TestFailedCreationCountsAsARejectedBriefAndFallsThrough(t *testing.T) {
 	f.spawnErr = bb.ErrSpawnRefused
 	res := mustThreadTick(t, w, f, t0)
 	st, _ := state.Load(w.dir)
-	if res.Action != "handoff" || res.Target != "codex-main" || res.Handoff.NewThread != "" || st.HandoffBriefs != nil || st.NewThreadsCreated != 0 || !st.LastNewThreadAt.IsZero() || st.NewThreadIntent != nil || len(f.spawned) != 1 || f.lists != 0 {
+	if res.Action != "handoff" || res.Target != "codex-main" || res.Handoff.NewThread != "" || st.HandoffBriefs != nil || st.NewThreadsCreated != 0 || !st.LastNewThreadAt.IsZero() || st.NewThreadIntent != nil || len(f.spawned) != 1 || f.lists != 1 {
 		t.Fatalf("%+v state=%+v", res, st)
 	}
 	if !strings.Contains(strings.Join(res.Warnings, ";"), "new thread not created") || sentTo(w, "codex-main") != 1 || len(p.sent) != 0 {
@@ -689,5 +695,66 @@ func TestNewThreadStepsFitTheCheckTimeLimit(t *testing.T) {
 				t.Fatalf("reconciled: %+v took %s of %s (find %s, observation %s)", r, took, limit, h.spent["find"], o.observeLimit)
 			}
 		})
+	}
+}
+
+// A refusal is taken at its word only when the listing agrees. A thread that
+// exists despite it is adopted and counted; a listing that cannot be trusted
+// leaves the outcome unknown, so the attempt stays counted and the loop is
+// held. Nothing is refunded in either case.
+func TestRefusalIsCheckedAgainstTheListingBeforeTheRefund(t *testing.T) {
+	w, _, f := newThreadWorld(t)
+	f.spawnErr, f.createdAnyway = bb.ErrSpawnRefused, true
+	res := mustThreadTick(t, w, f, t0)
+	st, _ := state.Load(w.dir)
+	if res.Action != "handoff" || res.Target != "claude-other" || res.Handoff.NewThread != "thr_created_1" || st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || sentTo(w, "codex-main") != 0 {
+		t.Fatalf("created despite the refusal: %+v state=%+v", res, st)
+	}
+	for name, setup := range map[string]func(*fakeThreads){
+		"BB cannot be asked": func(f *fakeThreads) { f.listErr = errors.New("listing unavailable") },
+		"two threads carry the title": func(f *fakeThreads) {
+			f.createdAnyway = true
+			f.extra = "thr_unrelated_copy"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, _, f := newThreadWorld(t)
+			f.spawnErr = bb.ErrSpawnRefused
+			setup(f)
+			res := mustThreadTick(t, w, f, t0)
+			st, _ := state.Load(w.dir)
+			if res.Action != "await_user" || st.NewThreadsCreated != 1 || st.NewThreadIntent == nil || len(f.spawned) != 1 || sentTo(w, "codex-main") != 0 || st.Target() != state.Primary {
+				t.Fatalf("%+v state=%+v", res, st)
+			}
+		})
+	}
+}
+
+// A bb CLI that could not be started is held like any unknown outcome, and
+// the hold says what happened instead of that a thread may exist.
+func TestMissingBBHoldsWithItsOwnMessage(t *testing.T) {
+	w, _, f := newThreadWorld(t)
+	f.spawnErr, f.listErr = bb.ErrSpawnNotStarted, errors.New("bb could not be started")
+	res := mustThreadTick(t, w, f, t0)
+	st, _ := state.Load(w.dir)
+	ctl, _ := control.Load(w.dir)
+	if res.Action != "await_user" || st.NewThreadsCreated != 1 || st.NewThreadIntent == nil || !st.NewThreadIntent.NotStarted || sentTo(w, "codex-main") != 0 {
+		t.Fatalf("%+v state=%+v", res, st)
+	}
+	for _, want := range []string{"could not start the bb CLI", "most likely no thread was created", "bb.cli", "--discard-pending-thread", f.spawned[0].Title} {
+		if !strings.Contains(ctl.Note, want) {
+			t.Errorf("hold note missing %q: %s", want, ctl.Note)
+		}
+	}
+	if strings.Contains(ctl.Note, "cannot tell whether it exists") {
+		t.Errorf("hold note: %s", ctl.Note)
+	}
+	// bb is repaired and lists no such thread: still no proof, still held,
+	// with the same explanation, and nothing is created.
+	f.spawnErr, f.listErr = nil, nil
+	control.Update(w.dir, func(c *control.File) { c.AwaitingUser = false })
+	res = mustThreadTick(t, w, f, t0.Add(2*time.Hour))
+	if ctl, _ := control.Load(w.dir); res.Action != "await_user" || len(f.spawned) != 1 || !strings.Contains(ctl.Note, "could not start the bb CLI") {
+		t.Fatalf("%+v note=%s", res, ctl.Note)
 	}
 }

@@ -802,7 +802,7 @@ var retargetFind = func(ctx context.Context, cli string, p bb.Place, title strin
 
 // retarget points the loop at a candidate, or back at the primary, without
 // sending anything. The next tick supervises the new target.
-func retarget(e env, cfg *config.Config, id, note string) int {
+func retarget(e env, cfg *config.Config, id, note string, discardPending bool) int {
 	if id != state.Primary {
 		c, ok := cfg.FallbackSet.Find(id)
 		if !ok {
@@ -838,25 +838,37 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	// A thread creation whose outcome is unknown is looked for before the
 	// loop is pointed anywhere, so an existing thread is never orphaned
-	// unrecorded. It stays counted against the cap either way.
+	// unrecorded. Not finding it proves nothing, so giving up on it takes an
+	// explicit flag. It stays counted against the cap either way.
+	if st.NewThreadIntent == nil && discardPending {
+		e.errf("--discard-pending-thread: this loop has no BB thread creation with an unknown outcome")
+		return exitUsage
+	}
 	if in := st.NewThreadIntent; in != nil {
 		cli := config.DefaultBBCLI
 		if c, ok := cfg.FallbackSet.Find(in.Candidate); ok && c.BB != nil {
 			cli = c.BB.CLI
 		}
 		ids, err := retargetFind(e.ctx, cli, bb.Place{Project: in.Project, Environment: in.Environment}, in.Title)
+		const first = "Find it in BB and stop or archive it first: once discarded, keepgoing no longer knows about it, and a later handoff can start another conversation on the same task."
 		switch {
-		case err != nil || len(ids) > 1:
-			e.errf("a BB thread titled %q may have been created for a handoff, and BB could not say whether it exists; no retarget performed. Check BB and try again.", in.Title)
+		case err == nil && len(ids) == 1:
+		case !discardPending && err == nil && len(ids) == 0:
+			e.errf("no BB thread titled %q is listed, which does not prove none was created for the handoff: it may have been renamed or archived. No retarget performed. %s Then repeat with --discard-pending-thread.", in.Title, first)
 			return exitFailed
-		case len(ids) == 1:
+		case !discardPending:
+			e.errf("a BB thread titled %q may have been created for a handoff, and BB could not say whether exactly one exists; no retarget performed. Check BB and try again. If it cannot be settled that way: %s Then repeat with --discard-pending-thread.", in.Title, first)
+			return exitFailed
+		}
+		switch {
+		case err == nil && len(ids) == 1:
 			if st.NewThreads == nil {
 				st.NewThreads = map[string]state.CreatedThread{}
 			}
 			st.NewThreads[in.Candidate] = state.CreatedThread{Thread: ids[0], Title: in.Title, CreatedAt: time.Now().UTC(), From: in.From, Continues: in.Continues}
 			fmt.Fprintf(e.stdout, "%s: found the BB thread created earlier for %s; it is now on record\n", cfg.Loop.Name, in.Candidate)
 		default:
-			fmt.Fprintf(e.stdout, "%s: no BB thread titled %q is listed; the pending creation is dropped and stays counted\n", cfg.Loop.Name, in.Title)
+			fmt.Fprintf(e.stdout, "%s: the pending creation of a BB thread titled %q is discarded and stays counted. keepgoing no longer knows about that thread: if it exists and was not stopped or archived, a later handoff can start another conversation on the same task\n", cfg.Loop.Name, in.Title)
 		}
 		st.NewThreadIntent = nil
 	}

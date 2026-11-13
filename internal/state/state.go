@@ -167,6 +167,9 @@ type NewThreadIntent struct {
 	Continues   string    `json:"continues,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	RequestedAt time.Time `json:"requestedAt"`
+	// NotStarted records that the bb CLI could not be started for the spawn,
+	// so the hold can say so. The outcome is still treated as unknown.
+	NotStarted bool `json:"notStarted,omitempty"`
 }
 
 // CreatedThreadFor returns the thread created for a candidate, or "".

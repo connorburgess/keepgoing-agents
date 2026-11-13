@@ -3,9 +3,15 @@ package bb
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
 func TestSpawnRunsOneCommandWithThePromptOnStdin(t *testing.T) {
@@ -167,5 +173,42 @@ func TestFindByTitleMatchesTheWholeTitleOnly(t *testing.T) {
 	}
 	if _, err := a.FindByTitle(context.Background(), place, ""); err == nil {
 		t.Error("empty title accepted")
+	}
+}
+
+// A refusal is believed only from a bb that ended on its own. The same
+// invocation-mistake envelope from a command that was killed, timed out or
+// cancelled is an unknown outcome, and so is a bb that could not be started.
+func TestSpawnRefusalNeedsACommandThatEndedOnItsOwn(t *testing.T) {
+	req := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Permission: "accept-edits", Title: "t", Prompt: "p"}
+	const refusal = `{"ok":false,"error":{"code":"invalid_value"}}`
+	expired, cancel := context.WithTimeout(context.Background(), -time.Second)
+	defer cancel()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		out  string
+		err  error
+		want error
+	}{
+		{"exit 1", context.Background(), refusal, errors.New("exit status 1"), ErrSpawnRefused},
+		{"exit 0", context.Background(), refusal, nil, ErrSpawnRefused},
+		{"stopped at the command's limit", context.Background(), refusal, fmt.Errorf("%w: %w", errStopped, errors.New("signal: killed")), ErrSpawnUncertain},
+		{"deadline exceeded", context.Background(), refusal, context.DeadlineExceeded, ErrSpawnUncertain},
+		{"the check's own limit passed", expired, refusal, errors.New("exit status 1"), ErrSpawnUncertain},
+		{"not started, with an envelope", context.Background(), refusal, &exec.Error{Name: "bb", Err: exec.ErrNotFound}, ErrSpawnUncertain},
+		{"not started", context.Background(), ``, &exec.Error{Name: "bb", Err: exec.ErrNotFound}, ErrSpawnNotStarted},
+	} {
+		a, _ := newFake(`{}`, `[]`, false)
+		a.run = func(context.Context, string, ...string) ([]byte, error) { return []byte(tc.out), tc.err }
+		_, err := a.Spawn(tc.ctx, req)
+		if !errors.Is(err, tc.want) || (tc.want != ErrSpawnRefused && errors.Is(err, ErrSpawnRefused)) || !errors.Is(tc.want, ErrSpawnUncertain) == errors.Is(err, ErrSpawnUncertain) {
+			t.Errorf("%s: %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	// The real runner with a bb that does not exist.
+	missing := New(config.BB{CLI: filepath.Join(t.TempDir(), "no-such-bb")})
+	if _, err := missing.Spawn(context.Background(), req); !errors.Is(err, ErrSpawnNotStarted) || !errors.Is(err, ErrSpawnUncertain) {
+		t.Fatalf("missing bb: %v", err)
 	}
 }

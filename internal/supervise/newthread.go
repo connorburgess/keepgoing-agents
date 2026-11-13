@@ -100,10 +100,11 @@ func ownershipNote(loop string) string {
 }
 
 // createThread creates the thread for a handoff to c, with the brief as its
-// first prompt. The intent is on disk, and counted, before bb is asked. Only
-// an answer that proves the request never reached BB is treated as "nothing
-// was created". After any other failure the thread is looked for by its
-// title: found, it is the thread; not found, errNewThreadUnsettled.
+// first prompt. The intent is on disk, and counted, before bb is asked. After
+// any failure the thread is looked for by its title: found, it is the thread.
+// Not found, the attempt is treated as "nothing was created" only when the bb
+// CLI also reported rejecting the invocation and ended on its own; otherwise
+// errNewThreadUnsettled.
 func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candidate, brief prompt.Message, reason string) (string, error) {
 	creator := t.opts.Threads(c.BB.CLI)
 	place := bb.Place{Project: c.BB.Project, Environment: c.BB.Environment}
@@ -161,21 +162,24 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{Version: 1, CheckAt: t.now, Target: c.ID, Action: "handoff", Mode: string(adapter.ModeAuto), Outcome: outcome,
 		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision}
-	switch {
-	case err == nil:
+	if err == nil {
 		t.adoptThread(intent, thread)
 		return thread, nil
-	case errors.Is(err, bb.ErrSpawnRefused):
-		t.refundNewThread(previous)
-		return "", err
 	}
-	// No proof either way: BB may have created the thread and failed after.
+	// Whatever bb reported, the thread is looked for before anything is
+	// concluded: BB may have created it and failed after, and a refusal is
+	// taken at its word only when the listing agrees.
+	intent.NotStarted = errors.Is(err, bb.ErrSpawnNotStarted)
 	ctx, cancel = context.WithTimeout(t.ctx, newThreadFindTime)
 	ids, findErr := creator.FindByTitle(ctx, place, title)
 	cancel()
-	if findErr == nil && len(ids) == 1 {
+	switch {
+	case findErr == nil && len(ids) == 1:
 		t.adoptThread(intent, ids[0]) // created, whatever bb went on to report
 		return ids[0], nil
+	case findErr == nil && len(ids) == 0 && errors.Is(err, bb.ErrSpawnRefused):
+		t.refundNewThread(previous) // refused, and no such thread is listed
+		return "", err
 	}
 	return "", errNewThreadUnsettled
 }
@@ -208,8 +212,13 @@ func (t *tick) moveToCreated(in *state.NewThreadIntent, thread string, note *Han
 // unsettledReason is the hold raised when a thread may exist and cannot be
 // found. It names the title so a person can look for it.
 func unsettledReason(in *state.NewThreadIntent) string {
-	return fmt.Sprintf("keepgoing asked BB to create a thread titled %q for a handoff and cannot tell whether it exists (it may have been renamed or archived, or BB could not be asked). "+
-		"Nothing else was created or handed off. Look for it in BB, then choose where the loop continues with retarget, and resume", in.Title)
+	const settle = "Nothing else was created or handed off. Look for it in BB; if it exists under another title, stop or archive it. " +
+		"Then resume to look again, or choose where the loop continues with retarget (add --discard-pending-thread when BB does not list the thread) and resume"
+	if in.NotStarted {
+		return fmt.Sprintf("keepgoing could not start the bb CLI to create a thread titled %q for a handoff, so most likely no thread was created, but that could not be confirmed with BB. "+
+			"Check the bb CLI this fallback uses (bb.cli). "+settle, in.Title)
+	}
+	return fmt.Sprintf("keepgoing asked BB to create a thread titled %q for a handoff and cannot tell whether it exists (it may have been renamed or archived, or BB could not be asked). "+settle, in.Title)
 }
 
 // holdForNewThread asks a person. The pending creation stays on record and

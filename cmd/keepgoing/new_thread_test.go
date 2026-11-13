@@ -18,7 +18,8 @@ import (
 // then reports it. spawn.refuse answers as the bb CLI does when it rejects the
 // invocation before sending anything; spawn.lost creates the thread and gives
 // no answer; spawn.servererror creates it and answers with a server error;
-// spawn.unlisted keeps the created thread out of the listing.
+// spawn.unlisted keeps the created thread out of the listing;
+// spawn.refusecreated creates the thread and then answers as a refusal.
 const fakeBBWithSpawn = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
@@ -38,6 +39,7 @@ case "$1 $2" in
   n=$(( $(cat "$d/spawn.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/spawn.count"
   if [ ! -f "$d/spawn.unlisted" ]; then printf '[{"id":"thr_spawned_%s","title":"%s"}]' "$n" "$title" > "$d/listing"; fi
   if [ -f "$d/spawn.lost" ]; then exit 1; fi
+  if [ -f "$d/spawn.refusecreated" ]; then echo '{"ok":false,"error":{"code":"invalid_value"}}'; exit 1; fi
   if [ -f "$d/spawn.servererror" ]; then echo '{"ok":false,"error":{"code":"provider_unavailable"}}'; exit 1; fi
   printf '{"id":"thr_spawned_%s","status":"active","projectId":"proj_example","environmentId":"env_example"}\n' "$n" ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
@@ -155,7 +157,8 @@ func TestEndToEndHandoffToANewThread(t *testing.T) {
 // it in the same check, and the handoff completes; a second thread is never
 // created.
 func TestEndToEndUnprovenSpawnIsLookedUp(t *testing.T) {
-	for _, how := range []string{"spawn.lost", "spawn.servererror"} {
+	// spawn.refusecreated: a refusal is not believed over a thread that exists.
+	for _, how := range []string{"spawn.lost", "spawn.servererror", "spawn.refusecreated"} {
 		t.Run(how, func(t *testing.T) {
 			f := newThreadFixture(t)
 			write(t, filepath.Join(f.bbDir, how), "", 0o600)
@@ -210,10 +213,18 @@ func TestEndToEndCreatedButUnlistedThreadHoldsAndCounts(t *testing.T) {
 			if f.read("spawn.count") != "1\n" || f.read("thr_codex.told") != "" {
 				t.Fatalf("spawns %q codex told %q", f.read("spawn.count"), f.read("thr_codex.told"))
 			}
-			// A person settles it: the pending creation is dropped, still counted.
-			code, out, errs := f.run("retarget", "codex-main")
+			// Not being listed proves nothing, so retarget alone refuses and
+			// says to deal with the thread first.
+			code, _, errs := f.run("retarget", "codex-main")
 			st, _ = state.Load(filepath.Join(f.dir, "state"))
-			if code != exitOK || !strings.Contains(out, "the pending creation is dropped and stays counted") || st.NewThreadIntent != nil || st.NewThreadsCreated != 1 || st.Target() != "codex-main" || len(st.NewThreads) != 0 {
+			if code != exitFailed || !strings.Contains(errs, "does not prove none was created") || !strings.Contains(errs, "stop or archive it first") || !strings.Contains(errs, "--discard-pending-thread") ||
+				st.NewThreadIntent == nil || st.Target() != state.Primary {
+				t.Fatalf("retarget without the flag: %d %s %+v", code, errs, st)
+			}
+			// A person who has looked says so: discarded, still counted.
+			code, out, errs := f.run("retarget", "codex-main", "--discard-pending-thread")
+			st, _ = state.Load(filepath.Join(f.dir, "state"))
+			if code != exitOK || !strings.Contains(out, "is discarded and stays counted") || !strings.Contains(out, "a later handoff can start another conversation on the same task") || st.NewThreadIntent != nil || st.NewThreadsCreated != 1 || st.Target() != "codex-main" || len(st.NewThreads) != 0 {
 				t.Fatalf("retarget: %d %s %s %+v", code, out, errs, st)
 			}
 		})
@@ -241,6 +252,13 @@ func TestRetargetReconcilesAnUnsettledCreation(t *testing.T) {
 		if code != exitOK || !strings.Contains(out, "found the BB thread created earlier for claude-other-account") || st.NewThreadIntent != nil || st.NewThreads["claude-other-account"].Thread != "thr_spawned_1" || st.NewThreadsCreated != 1 || st.Target() != "codex-main" {
 			t.Fatalf("%d %s %s %+v", code, out, errs, st)
 		}
+		// Nothing is pending any more, so there is nothing to discard.
+		if code, _, errs := f.run("retarget", "primary", "--discard-pending-thread"); code != exitUsage || !strings.Contains(errs, "no BB thread creation with an unknown outcome") {
+			t.Fatalf("discard with nothing pending: %d %s", code, errs)
+		}
+		if code, _, errs := f.run("resume", "--discard-pending-thread"); code != exitUsage || !strings.Contains(errs, "only supported by retarget") {
+			t.Fatalf("discard on resume: %d %s", code, errs)
+		}
 		// The recorded thread can now be chosen by hand; nothing is created.
 		if code, _, errs := f.run("retarget", "claude-other-account"); code != exitOK {
 			t.Fatal(errs)
@@ -262,8 +280,14 @@ func TestRetargetReconcilesAnUnsettledCreation(t *testing.T) {
 			write(t, filepath.Join(f.bbDir, "listing"), listing, 0o600)
 			code, _, errs := f.run("retarget", "codex-main")
 			st, _ := state.Load(filepath.Join(f.dir, "state"))
-			if code != exitFailed || !strings.Contains(errs, "no retarget performed") || st.NewThreadIntent == nil || st.Target() != state.Primary || st.NewThreadsCreated != 1 {
+			if code != exitFailed || !strings.Contains(errs, "no retarget performed") || !strings.Contains(errs, "--discard-pending-thread") || st.NewThreadIntent == nil || st.Target() != state.Primary || st.NewThreadsCreated != 1 {
 				t.Fatalf("%d %s %+v", code, errs, st)
+			}
+			// The way out when BB can never settle it: the same explicit flag.
+			code, out, errs := f.run("retarget", "codex-main", "--discard-pending-thread")
+			st, _ = state.Load(filepath.Join(f.dir, "state"))
+			if code != exitOK || !strings.Contains(out, "is discarded and stays counted") || st.NewThreadIntent != nil || st.Target() != "codex-main" || st.NewThreadsCreated != 1 || len(st.NewThreads) != 0 {
+				t.Fatalf("discard: %d %s %s %+v", code, out, errs, st)
 			}
 		})
 	}

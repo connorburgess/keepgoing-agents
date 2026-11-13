@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
+	"os/exec"
 	"regexp"
 	"sort"
 )
@@ -20,12 +23,42 @@ var placeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 // for it by title before trying again.
 var ErrSpawnUncertain = errors.New("bb thread spawn: outcome unknown")
 
-// ErrSpawnRefused means the request was proven never to have reached BB: it
-// was invalid before bb was run, or the bb CLI itself rejected the invocation
-// with one of its documented invocation-mistake codes. No thread was created.
-// Every other failure, including a structured server error, is uncertain: BB
-// may have created the thread and failed afterwards.
+// ErrSpawnRefused means the bb CLI said it rejected the invocation, with one
+// of its documented invocation-mistake codes, and ended on its own; or the
+// request was invalid and bb was never run. It is evidence that nothing was
+// created, not proof: the caller still looks for the thread before treating
+// the attempt as never made. A command that was killed or timed out is never
+// a refusal, whatever it printed, and every other failure, including a
+// structured server error, is uncertain: BB may have created the thread and
+// failed afterwards.
 var ErrSpawnRefused = errors.New("bb thread spawn: refused before creation")
+
+// ErrSpawnNotStarted is an uncertain outcome in which the bb CLI could not be
+// started at all (it is missing or not executable). Most likely nothing was
+// created, but nothing confirmed it.
+var ErrSpawnNotStarted = fmt.Errorf("%w: the bb CLI could not be started", ErrSpawnUncertain)
+
+// endedOnItsOwn reports whether a bb command ran to its own exit: it was not
+// killed, did not time out and was started.
+func endedOnItsOwn(ctx context.Context, err error) bool {
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil || errors.Is(err, errStopped) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || notStarted(err) {
+		return false
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ProcessState != nil && !exit.Exited() {
+		return false // ended by a signal
+	}
+	return true
+}
+
+func notStarted(err error) bool {
+	var start *exec.Error
+	var path *fs.PathError
+	return errors.As(err, &start) || errors.As(err, &path) || errors.Is(err, exec.ErrNotFound)
+}
 
 // invocationMistakes are the bb CLI's own codes for a command it did not
 // send (bb guide json). They are the only answers that prove nothing exists.
@@ -124,8 +157,8 @@ func (a *Adapter) FindByTitle(ctx context.Context, p Place, title string) ([]str
 }
 
 // Spawn creates one thread with `bb thread spawn`, the prompt on stdin. It
-// returns the new thread's ID. ErrSpawnRefused means the request provably
-// never reached BB; ErrSpawnUncertain means a thread may exist.
+// returns the new thread's ID. ErrSpawnRefused means the bb CLI reported
+// rejecting the invocation; ErrSpawnUncertain means a thread may exist.
 func (a *Adapter) Spawn(ctx context.Context, r SpawnRequest) (string, error) {
 	permitted := false
 	for _, m := range PermissionModes {
@@ -143,10 +176,13 @@ func (a *Adapter) Spawn(ctx context.Context, r SpawnRequest) (string, error) {
 	}
 	out, err := a.run(ctx, r.Prompt, args...)
 	if code, ok := envelopeError(out); ok {
-		if invocationMistakes[code] {
+		if invocationMistakes[code] && endedOnItsOwn(ctx, err) {
 			return "", ErrSpawnRefused
 		}
-		return "", ErrSpawnUncertain // a server error: the thread may exist
+		return "", ErrSpawnUncertain // a server error or a killed command: the thread may exist
+	}
+	if err != nil && notStarted(err) {
+		return "", ErrSpawnNotStarted
 	}
 	var created struct {
 		ID          string `json:"id"`
