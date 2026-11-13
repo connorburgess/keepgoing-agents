@@ -41,10 +41,11 @@ import (
 // different directories do not see each other's claims.
 const DirEnv = "KEEPGOING_SESSION_DIR"
 
-// stateHome is the user's state directory: $XDG_STATE_HOME or ~/.local/state
-// on Linux and other Unix systems, Application Support on macOS, and the
-// local application data folder on Windows.
-func stateHome() (string, error) {
+// StateHome is the user's state directory, where keepgoing keeps runtime
+// files that belong to no single loop: $XDG_STATE_HOME or ~/.local/state on
+// Linux and other Unix systems, Application Support on macOS, and the local
+// application data folder on Windows.
+func StateHome() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return os.UserConfigDir() // ~/Library/Application Support
@@ -64,28 +65,84 @@ func stateHome() (string, error) {
 	return filepath.Join(home, ".local", "state"), nil
 }
 
+// UndeterminedError: there is no user state directory to keep claims in
+// (no HOME and no XDG_STATE_HOME). Checks go ahead unprotected.
+type UndeterminedError struct{ Reason string }
+
+func (e *UndeterminedError) Error() string { return e.Reason }
+
+// Fix says what a person can do.
+func (e *UndeterminedError) Fix() string {
+	return "set HOME, or KEEPGOING_SESSION_DIR to a private directory"
+}
+
+// UnsafeError: the claim directory, or a file in it, is in a state that
+// cannot be repaired safely: owned by another user, not a directory, a
+// symbolic link, or a directory planted where a claim file belongs. A check
+// acts on nothing until it is fixed; a requested stop still goes ahead.
+type UnsafeError struct {
+	Path    string
+	Problem string
+}
+
+func (e *UnsafeError) Error() string { return e.Path + " " + e.Problem }
+
+// Fix says what a person can do.
+func (e *UnsafeError) Fix() string {
+	return "remove " + e.Path + " if it is not keepgoing's, or set KEEPGOING_SESSION_DIR to a private directory of your own"
+}
+
 // Dir returns the private directory for claims and records, creating it.
-// It refuses a directory that others can read or write.
-func Dir() (string, error) {
-	dir := os.Getenv(DirEnv)
+// A directory of this user's that is merely too open, or not writable, is
+// made 0700 when repair is set, and tightened is then true; status and doctor
+// look without repairing. Anything that cannot be repaired safely is an
+// *UnsafeError, and no user state directory at all an *UndeterminedError.
+func Dir(repair ...bool) (dir string, tightened bool, err error) {
+	dir = os.Getenv(DirEnv)
 	if dir == "" {
-		base, err := stateHome()
-		if err != nil {
-			return "", errors.New("the user state directory is unavailable")
+		base, err := StateHome()
+		if err != nil || base == "" {
+			return "", false, &UndeterminedError{Reason: "no user state directory: HOME and XDG_STATE_HOME are not set"}
 		}
 		dir = filepath.Join(base, "keepgoing", "sessions")
 	}
 	if !filepath.IsAbs(dir) {
-		return "", errors.New("the session directory must be an absolute path")
+		return "", false, &UnsafeError{Path: dir, Problem: "is not an absolute path"}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", errors.New("the session directory could not be created")
+		if info, lerr := os.Lstat(dir); lerr == nil && !info.IsDir() {
+			return "", false, &UnsafeError{Path: dir, Problem: "is not a directory"}
+		}
+		return "", false, &UnsafeError{Path: dir, Problem: "cannot be created"}
 	}
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
-		return "", errors.New("the session directory must be a private directory")
+	switch {
+	case err != nil:
+		return "", false, &UnsafeError{Path: dir, Problem: "cannot be read"}
+	case info.Mode()&os.ModeSymlink != 0:
+		return "", false, &UnsafeError{Path: dir, Problem: "is a symbolic link"}
+	case !info.IsDir():
+		return "", false, &UnsafeError{Path: dir, Problem: "is not a directory"}
+	case !ownedByMe(info):
+		return "", false, &UnsafeError{Path: dir, Problem: "belongs to another user"}
 	}
-	return dir, nil
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		if len(repair) == 0 || !repair[0] {
+			return dir, false, nil // status and doctor say so; the next check repairs it
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", false, &UnsafeError{Path: dir, Problem: "is not private and cannot be made private"}
+		}
+		return dir, true, nil
+	}
+	return dir, false, nil
+}
+
+// Private reports whether dir is exactly 0700, so status can say a check
+// will tighten it.
+func Private(dir string) bool {
+	info, err := os.Lstat(dir)
+	return err == nil && (runtime.GOOS == "windows" || info.Mode().Perm() == 0o700)
 }
 
 // Identity is one session. ID is the raw identity: never written to a file
@@ -146,7 +203,9 @@ func CleanPath(p string) string {
 		return ""
 	}
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		return real
+		// On a case-insensitive file system two spellings of one directory
+		// resolve to the same files: use the file system's own name for it.
+		return canonical(real)
 	}
 	return filepath.Clean(abs)
 }
@@ -163,7 +222,7 @@ func (i Identity) Describe() string {
 	case "bb":
 		return "BB thread " + i.ID
 	case "process":
-		return "process session " + i.ID
+		return "the process session this loop's resume command continues"
 	}
 	return i.Kind + " session in " + i.ID
 }
@@ -216,6 +275,12 @@ type Claim struct {
 // another process holds it.
 func Take(dir string, id Identity, me Holder) (*Claim, error) {
 	key := id.Key()
+	// The claim file must be a regular file of this user's: anything else
+	// at that name was put there by someone else.
+	lockPath := filepath.Join(dir, key+".lock")
+	if info, err := os.Lstat(lockPath); err == nil && (!info.Mode().IsRegular() || !ownedByMe(info)) {
+		return nil, &UnsafeError{Path: lockPath, Problem: "is not a claim file of this user's"}
+	}
 	lk, err := lock.AcquireNamed(dir, key)
 	if errors.Is(err, lock.ErrHeld) {
 		e := &ClaimedError{Session: id, Now: time.Now()}
@@ -226,7 +291,7 @@ func Take(dir string, id Identity, me Holder) (*Claim, error) {
 		return nil, e
 	}
 	if err != nil {
-		return nil, err
+		return nil, &UnsafeError{Path: lockPath, Problem: "cannot be opened as a claim file"}
 	}
 	c := &Claim{lk: lk, holder: filepath.Join(dir, key+".holder")}
 	_ = writeJSON(dir, c.holder, me)
@@ -258,15 +323,16 @@ const (
 )
 
 // Note adds or refreshes a loop in the session's record. It is best effort:
-// the claim, not the record, is what prevents a double send.
-func Note(dir string, id Identity, s Supervisor) error {
+// the claim, not the record, is what prevents a double send. It waits at
+// most wait for another writer of the same record.
+func Note(dir string, id Identity, s Supervisor, wait time.Duration) error {
 	s.Config, s.StateDir = CleanPath(s.Config), CleanPath(s.StateDir)
 	if s.StateDir == "" || s.Config == "" {
 		return errors.New("a supervisor needs its configuration and state paths")
 	}
 	key := id.Key()
 	var lk *lock.Lock
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(wait); ; time.Sleep(20 * time.Millisecond) {
 		var err error
 		if lk, err = lock.AcquireNamed(dir, key+"-record"); err == nil {
 			break
@@ -387,6 +453,12 @@ func writeJSON(dir, path string, v any) error {
 func Peek(dir string, id Identity) *Holder {
 	var h Holder
 	if readJSON(filepath.Join(dir, id.Key()+".holder"), 4096, &h) != nil || h.PID <= 0 || !alive(h.PID) {
+		return nil
+	}
+	// A holder file left by a process that died, whose pid has since been
+	// reused, is not believed: the claim itself must be held. A shared,
+	// non-blocking probe answers that without holding anything.
+	if !heldByOther(filepath.Join(dir, id.Key()+".lock")) {
 		return nil
 	}
 	return &h

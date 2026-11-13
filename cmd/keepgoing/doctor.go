@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"io"
 	"os"
 	"os/exec"
@@ -100,12 +99,10 @@ func doctor(e env, args []string, run doctorRun) int {
 	if dir := os.Getenv(registryDirEnv); dir != "" {
 		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
 	}
-	// A check acts on its session only after claiming it; without a usable
-	// claim directory every check fails without acting.
-	if _, err := session.Dir(); err != nil {
-		r.add("session.directory", "error", "Session claims cannot be kept: "+err.Error()+". Checks still run, but are not protected against another loop acting on the same session at the same moment.", "Run keepgoing with HOME set, or set KEEPGOING_SESSION_DIR to a private directory.")
-	} else if dir := os.Getenv(session.DirEnv); dir != "" {
-		r.add("session.directory", "ok", "KEEPGOING_SESSION_DIR is set: session claims are kept in "+dir+". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory.")
+	// A check claims its session before acting on it. Doctor says what is
+	// wrong with the claim directory, in terms of its real cause.
+	if status, message, fix := sessionDirectoryCheck(); status != "" {
+		r.add("session.directory", status, message, fix)
 	}
 	doctorFile(&r, "config.permissions", *path, false)
 	if cfg.Loop.Fallbacks != "" {

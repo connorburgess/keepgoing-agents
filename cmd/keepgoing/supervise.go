@@ -190,13 +190,40 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
+		}
+		// Stop wins: a stop that was skipped (another loop's check held the
+		// session, or another tick held the lock) is tried again at the next
+		// control poll, not after a whole interval.
+		if code == exitSkipped && stopRequested(cfg.Loop.StateDir) {
+			if !sleepContext(e.ctx, cfg.Loop.Daemon.ControlPoll.Duration) {
+				return exitOK
+			}
+			continue
 		}
 		if !waitForNext(e.ctx, cfg, sig, monitor, lease) {
 			return exitOK
 		}
+	}
+}
+
+// stopRequested reports whether the loop's control record asks for a stop.
+func stopRequested(stateDir string) bool {
+	f, err := control.Load(stateDir)
+	return err == nil && f.Stop
+}
+
+// sleepContext waits d, and reports false when ctx ended first.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
