@@ -101,10 +101,15 @@ type tick struct {
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
 	incidentLimitWait   decide.LimitWait // from the last engine decision, which sets the tick's reason
-	progress            *state.Progress
-	observedTarget      string
-	awaitingInput       bool
-	awaitingChildren    []string
+	// incidentLimitWaitReport is set only by the check that detects a long limit wait.
+	incidentLimitWaitReport string
+	// handoffAvailable is the last engine input's view of whether a confirmed
+	// fallback could take the loop.
+	handoffAvailable bool
+	progress         *state.Progress
+	observedTarget   string
+	awaitingInput    bool
+	awaitingChildren []string
 	// decisionInput is the input of the latest ordinary decision, and
 	// erroredChildHashes the errored children it saw; act uses both to decide
 	// whether a wake carries the child-error notice and what to record.
@@ -502,6 +507,7 @@ func (t *tick) run() error {
 			actErr = err
 		}
 	}
+	t.reportLongLimitWait(target, obs)
 	t.st.LastState = string(obs.State)
 	res.Reprompts = t.st.Reprompts
 	return t.record(actErr)

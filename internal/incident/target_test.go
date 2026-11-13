@@ -119,7 +119,7 @@ func TestSchemaFourUpgradeLeavesTargetMovesUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	j, err = Load(dir)
-	if err != nil || j.SchemaVersion != 6 || len(j.Records) != 2 || j.Records[0].TargetKeyAfter != "unavailable" || j.Records[0].Probes.Availability != "unavailable" || j.Records[1].Kind != "retarget" {
+	if err != nil || j.SchemaVersion != SchemaVersion || len(j.Records) != 2 || j.Records[0].TargetKeyAfter != "unavailable" || j.Records[0].Probes.Availability != "unavailable" || j.Records[1].Kind != "retarget" {
 		t.Fatal(j, err)
 	}
 	// A legacy file cannot claim a retarget it had no way to record.
@@ -132,7 +132,7 @@ func TestSchemaFourUpgradeLeavesTargetMovesUnavailable(t *testing.T) {
 		t.Fatal(j, err)
 	}
 	// A future schema is refused, not downgraded.
-	b, _ = json.Marshal(Journal{SchemaVersion: 7, NextSequence: 1, Records: []Record{}})
+	b, _ = json.Marshal(Journal{SchemaVersion: SchemaVersion + 1, NextSequence: 1, Records: []Record{}})
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)
 	}

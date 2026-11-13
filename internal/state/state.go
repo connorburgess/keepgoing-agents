@@ -60,6 +60,28 @@ type File struct {
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
+	// LimitWaitReport is set while a long limit wait is in progress, so its
+	// single report is not repeated by later checks or after a restart.
+	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+}
+
+// LimitWaitReport outcomes.
+const (
+	LimitWaitRequested     = "requested"       // saved before sending; the send was started or returned without error, receipt unverified
+	LimitWaitFailed        = "delivery_failed" // the one attempt failed and is not retried
+	LimitWaitNotSubscribed = "not_subscribed"  // report.events does not include limit_wait
+)
+
+// LimitWaitReport describes the one report attempt for a wait on a provider
+// limit whose reset is further away than errors.report_wait_after. Target is
+// the configured alias, as elsewhere in this private file.
+type LimitWaitReport struct {
+	Target     string    `json:"target"`
+	ResetsAt   time.Time `json:"resetsAt"`
+	DetectedAt time.Time `json:"detectedAt"`
+	Outcome    string    `json:"outcome"`
+	// Reports counts report attempts in this wait, including this one.
+	Reports int `json:"reports,omitempty"`
 }
 
 // BriefRecord is one target's rejected takeover briefs.

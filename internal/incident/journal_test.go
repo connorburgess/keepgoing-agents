@@ -196,7 +196,7 @@ func TestSchemaOneUpgradePreservesHistoryAndUnavailableEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = Load(dir)
-	if err != nil || loaded.SchemaVersion != 6 || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
+	if err != nil || loaded.SchemaVersion != SchemaVersion || len(loaded.Records) != 2 || loaded.Records[0].Sequence != 1 || loaded.NextSequence != 3 {
 		t.Fatal(loaded, err)
 	}
 	if loaded.Records[0].Observation.ProviderCode != "unavailable" {

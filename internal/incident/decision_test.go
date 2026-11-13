@@ -68,7 +68,7 @@ func TestLegacyDecisionHistoryUnavailableUntilNextTick(t *testing.T) {
 			t.Fatal(err)
 		}
 		loaded, err = Load(dir)
-		if err != nil || loaded.SchemaVersion != 6 || loaded.Dropped != 3 || loaded.NextSequence != 6 || loaded.Records[0].Decisions.Availability != "unavailable" || loaded.Records[1].Decisions.Availability != "captured" {
+		if err != nil || loaded.SchemaVersion != SchemaVersion || loaded.Dropped != 3 || loaded.NextSequence != 6 || loaded.Records[0].Decisions.Availability != "unavailable" || loaded.Records[1].Decisions.Availability != "captured" {
 			t.Fatal(loaded, err)
 		}
 	}
