@@ -425,7 +425,9 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		workdir, extraArgs = a.Codex.Workdir, a.Codex.ExtraArgs
 	case a.Cursor != nil:
 		cli, workdir, env = a.Cursor.CLI, a.Cursor.Workdir, a.Cursor.Env
-		r.add(prefix+".account", "unavailable", "Cursor account identity and quota state are not verified; existing CLI configuration and environment are inherited.", "")
+		r.add(prefix+".account", "unavailable", "Cursor quota, usage windows and reset times have no structured interface and are not checked. Account identity is never displayed; existing CLI configuration and environment are inherited.", "")
+		r.add(prefix+".models", "unavailable", doctorCursorModels(a.Cursor.Model), "Check the model with Cursor's own model listing; doctor does not parse it.")
+		r.add(prefix+".workspace", "unavailable", "Whether Cursor trusts the configured project directory cannot be checked. In a directory it does not trust, every turn exits with an error before it starts; keepgoing never passes a trust or approval flag.", "Open the project once with Cursor's own CLI and answer its trust question before starting supervision.")
 		r.add(prefix+".capabilities", "unavailable", initCursorNotice, "Review the Cursor integration limits before starting supervision.")
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
@@ -479,7 +481,9 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	out, err := call("--version")
 	if err != nil {
 		r.add(prefix+".version", "unavailable", "CLI version command failed, timed out, or exceeded its output limit.", "Check the executable and supported --version interface; raw output is withheld.")
-	} else if v := doctorAgentVersion(a.Adapter, out); v != "" {
+	} else if v := doctorAgentVersion(a.Adapter, out); v != "" && a.Cursor != nil {
+		doctorCursorVersion(r, prefix+".version", v)
+	} else if v != "" {
 		r.add(prefix+".version", "ok", "CLI version: "+v+". Compatibility is not inferred from the version alone.", "")
 	} else {
 		r.add(prefix+".version", "unavailable", "CLI returned an unrecognized version format; raw output is withheld.", "Check the installed CLI version manually.")
@@ -499,7 +503,12 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		out, err := call("auth", "status", "--json")
 		doctorClaudeLogin(r, prefix+".login", out, err)
 	} else if a.Cursor != nil {
-		r.add(prefix+".login", "unavailable", "Cursor has no verified structured login-status contract; human-readable status is not parsed.", "Check authentication through Cursor; doctor does not change logins.")
+		if doctorCursorEnvCredential(env) {
+			r.add(prefix+".login", "unavailable", "A Cursor API key or token is supplied through the environment. The status command describes the stored login, which may not be the credential a turn uses, so it was not queried.", "Verify the key with Cursor; doctor does not read or test it.")
+		} else {
+			out, err := call("status", "--format", "json")
+			doctorCursorLogin(r, prefix+".login", out, err)
+		}
 	} else if a.Codex != nil {
 		_, err := call("login", "status")
 		doctorCodexLogin(r, prefix+".login", err)
@@ -592,12 +601,10 @@ func (b *doctorBuffer) Write(p []byte) (int, error) {
 
 func (b *doctorBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
-var doctorCursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
-
 func doctorAgentVersion(adapter string, raw []byte) string {
 	if adapter == "cursor" {
 		v := strings.TrimSpace(string(raw))
-		if doctorCursorVersionPattern.MatchString(v) {
+		if config.CursorVersionPattern.MatchString(v) {
 			return v
 		}
 		return ""
