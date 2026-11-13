@@ -13,6 +13,9 @@ import (
 // in a binary exactly when something there calls it, and the flag it sets has
 // no other writer.
 func TestBuiltBinaryCannotSkipTheFlush(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("not run: reading the binary's symbols needs the Go toolchain, which is not on PATH")
+	}
 	out, err := exec.Command("go", "tool", "nm", keepgoingBin).Output()
 	if err != nil {
 		t.Fatalf("go tool nm: %v", err)

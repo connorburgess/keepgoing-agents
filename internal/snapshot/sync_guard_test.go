@@ -35,6 +35,12 @@ func TestOnlyNamedTestFilesSkipTheFlush(t *testing.T) {
 	for _, f := range skipsTheFlush {
 		allowed[f] = true
 	}
+	flagFiles := map[string]bool{
+		"internal/snapshot/sync.go":              true,
+		"internal/snapshot/sync_test.go":         true,
+		"internal/snapshot/sync_guard_test.go":   true,
+		"internal/scenario/built_binary_test.go": true,
+	}
 	var found []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -43,6 +49,14 @@ func TestOnlyNamedTestFilesSkipTheFlush(t *testing.T) {
 		if d.IsDir() {
 			if name := d.Name(); name == ".git" || name == "node_modules" {
 				return filepath.SkipDir
+			}
+			// Another copy of the source, such as a test bundle unpacked
+			// inside the checkout, is a module of its own and is not built
+			// from here.
+			if path != root {
+				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -53,9 +67,15 @@ func TestOnlyNamedTestFilesSkipTheFlush(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
 		if strings.Contains(string(body), "SkipSyncInTests") {
-			rel, _ := filepath.Rel(root, path)
-			found = append(found, filepath.ToSlash(rel))
+			found = append(found, rel)
+		}
+		// The flag itself has one writer. Naming it anywhere else, for
+		// example in a go:linkname directive, is a way round the function.
+		if strings.Contains(string(body), "skipSync") && !flagFiles[rel] {
+			t.Errorf("%s names the skipSync flag. Only internal/snapshot/sync.go may read or set it.", rel)
 		}
 		return nil
 	})
@@ -89,6 +109,9 @@ func TestFlushCannotBeSkippedOutsideATestBinary(t *testing.T) {
 		exe = ".exe"
 	}
 	bin := filepath.Join(t.TempDir(), "flushprobe"+exe)
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("not run: building an ordinary program needs the Go toolchain, which is not on PATH (as in the test bundle for machines without Go)")
+	}
 	if out, err := exec.Command("go", "build", "-o", bin, "./testdata/flushprobe").CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

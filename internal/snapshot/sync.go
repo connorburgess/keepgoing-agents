@@ -9,7 +9,10 @@ import (
 var skipSync atomic.Bool
 
 // Sync flushes a record to the device before it is published by a rename.
-// Every runtime record that is flushed goes through it.
+// It covers the records a check saves: state.json, the send ledger,
+// control.json, the incident journal and the delivery journal. Other writers
+// flush with File.Sync directly, and some records are not flushed at all;
+// "Slow test packages" in docs/testing.md lists both.
 func Sync(f *os.File) error {
 	if skipSync.Load() {
 		return nil
