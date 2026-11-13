@@ -304,6 +304,19 @@ Cursor and Antigravity are concurrent implementation tracks alongside the shared
 
 CLI sessions and existing graphical IDE chats are separate capabilities. Official CLI or ACP support does not establish attachment to a conversation already running in an IDE. No support claim precedes its implementation and evidence.
 
+#### Gaps across adapters
+
+The [adapter capability matrix](adapters.md) states what each adapter supports and is checked against the code. Running the offline scenario on headless Claude Code and Codex with stand-in CLIs [exposed these gaps](adapters.md#gaps-this-exposed). None is fixed yet:
+
+- [ ] G1: Make `resume` able to recover an error hold on a headless loop. Today the spent re-prompts are kept and the session cannot change state without a send, so the loop holds again at once; the way out is `retarget primary`, then `resume`.
+- [ ] G2: Judge a turn record by something the wrapper owns, not by whether its saved PID exists, so a reboot followed by PID reuse cannot read as a running turn.
+- [ ] G3: Do not start a new conversation on every re-prompt when the first turn failed before reporting a session.
+- [ ] G4: Wait out a network outage without spending re-prompts, and act when it returns. This is the "network-aware sending" item under the reliability priority, and it applies to every adapter.
+- [ ] G5: Recognise a session the provider no longer has, from structured evidence, and decide what a loop should do then.
+- [ ] G6: A typed permission-wait state for headless turns, or a documented refusal of unattended modes that need approval.
+- [ ] G7: One real multi-turn run, resume and stop for each headless adapter.
+- [ ] G8: An adapter conformance suite any adapter or process wrapper can be run against, a declaration of what a supervised app already does for itself (its own retries, failover or scheduler) so keepgoing defers instead of doubling up, and a worked integration for an agent keepgoing has never supported.
+
 #### Cursor track
 
 - [x] C1: Implement a primary-only CLI runner. [Unreleased Cursor source](cursor.md) uses private stdin, exact initialized session reuse, matching terminal/exit evidence and owned cancellation. Missing/conflicting identity blocks fresh-session retries and active turns reject duplicate sends. YAML configuration, factory, schema, status and limited doctor support are implemented; guided init is recorded in C3 below. Provider permission bridging, fallback probes and live acceptance remain unfinished.

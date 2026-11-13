@@ -1,0 +1,330 @@
+# Adapter capabilities
+
+keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It is unreleased documentation of source on `main`; see [integrations](integrations.md) for what is in a published release.
+
+An adapter is how the supervisor talks to one kind of agent. The decision engine is the same for all of them, but it can only act on what an adapter reports and can only do what an adapter can carry out.
+
+## How to read the matrix
+
+Each cell is a status and an evidence level:
+
+| Status | Meaning |
+| --- | --- |
+| `yes` | Implemented. |
+| `partial` | Implemented in part; the detail says which part. |
+| `missing` | Not implemented. |
+| `n/a` | Cannot apply to this kind of agent; the detail says why. |
+
+| Evidence | Meaning |
+| --- | --- |
+| `live` | Observed at least once with the real provider. It is not a claim about every version or platform. |
+| `fixture` | Tests with stand-in executables or fake adapters only. |
+| `none` | Nothing exercises it. |
+
+Antigravity has internal protocol code and no registered adapter, so a loop cannot use it and every row is `missing`.
+
+## How the matrix is kept true
+
+The matrix below is generated from one Go table, [`internal/adapter/capability`](../internal/adapter/capability/capability.go). `go test ./internal/adapter/capability` fails when:
+
+- `decide.Observation` gains a field the table does not list. A new decision input cannot be introduced silently.
+- An adapter's source refers to an Observation field the table does not list for it, or stops referring to one it lists. An adapter cannot start reporting a new input without its column changing.
+- The adapter factory builds an adapter the table does not register, or the other way round.
+- An adapter gains or loses the optional activate or wake-poll interface, or a check records a session reference for a different set of adapters than the table says.
+- A cell is empty, an implemented cell has no evidence or no reference, or a reference names a file or test that does not exist.
+- This document's matrix differs from the table.
+
+What the test cannot check is whether a cell's status is true where no code difference would show it, such as `live` evidence or a behaviour that is the same code for every adapter. Those rest on the linked tests and records.
+
+To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go test ./internal/adapter/capability -run TestDocumentMatchesTheTable`.
+
+## Matrix
+
+<!-- capability-matrix:begin -->
+| Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process |
+| --- | --- | --- | --- | --- | --- | --- |
+| [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
+| [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · fixture | missing · none | yes · fixture |
+| [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a |
+| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
+| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
+| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Connection loss and the network check](#connection-loss-and-the-network-check) | missing · none | missing · fixture | missing · fixture | missing · none | missing · none | missing · none |
+| [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
+| [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
+| [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
+| [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
+| [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
+| [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture |
+| [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none |
+| [Handoff into a new conversation](#handoff-into-a-new-conversation) | missing · none | yes · fixture | yes · fixture | missing · none | missing · none | n/a |
+| [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture |
+| [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture |
+| [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture |
+
+### Observe state
+
+Report idle, active, error or unknown from structured status, never from transcript text.
+
+- **BB thread:** yes, evidence live. Thread status, log events and the interaction list. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveIdle`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** yes, evidence fixture. The turn's process state, exit code and result object. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
+- **Codex headless:** yes, evidence fixture. The turn's process state, exit code and event stream. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
+- **Cursor headless:** yes, evidence fixture. The turn's process state, exit code and bounded event stream. [`TestCursorLifecycleOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. The JSON the status command prints. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
+
+### Structured error classes
+
+Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
+
+- **BB thread:** yes, evidence live. From real provider error and rate-limit events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveStructuredRateLimit`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
+- **Codex headless:** yes, evidence live. Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestCodexTurnLimitClassifiedFromAppServerNotProse`](../internal/adapter/runner/runner_test.go)
+- **Cursor headless:** missing, evidence fixture. Every failure is unknown: no structured error contract is mapped. [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
+
+### Stale retry-notice expiry
+
+Stop honouring a provider's "retrying" notice when nothing fresh stands behind it.
+
+- **BB thread:** yes, evidence live. Running on one live loop. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go)
+- **Claude Code headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
+- **Codex headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
+- **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. The status contract has no retry notice.
+
+### Recover a failed turn: re-prompt
+
+After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.
+
+- **BB thread:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. A real retry exhaustion and explicit resume were observed once. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go) [integrations.md#agent-providers](integrations.md#agent-providers)
+- **Claude Code headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Codex headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Cursor headless:** yes, evidence fixture. A failed turn is re-prompted in its verified session. [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go)
+
+### Recover a failed turn: exact session resume
+
+Continue the same conversation by its saved identifier, never "the most recent".
+
+- **BB thread:** n/a. The configured thread is the conversation; every message goes to that thread ID.
+- **Claude Code headless:** yes, evidence fixture. --resume with the saved session ID. If no turn ever reported one, the next turn starts a new session. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go) [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Codex headless:** yes, evidence fixture. exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session. [`TestCodexResumeArgs`](../internal/adapter/runner/runner_test.go) [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Cursor headless:** yes, evidence fixture. --resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified. [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. The resume command owns session identity.
+
+### Recover a failed turn: retry the turn
+
+Ask the provider to retry the failed turn itself, instead of sending a new prompt.
+
+- **BB thread:** missing, evidence none. The provider's own scheduled retry is waited for. keepgoing never asks for one.
+- **Claude Code headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
+- **Codex headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
+- **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. The contract has a resume command only.
+
+### Connection loss and the network check
+
+Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
+
+- **BB thread:** missing, evidence none. A structured network class is recognised, but it is handled like any other error: re-prompts are spent into the outage and the loop ends on an awaiting-user hold. [`TestObserveStreamDisconnectIsNetworkAndRetrying`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** missing, evidence fixture. An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Codex headless:** missing, evidence fixture. As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Cursor headless:** missing, evidence none. Every failure is unknown.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. The status command may report network; it is handled like any other error.
+
+### Child-work awareness
+
+Hold the parent while conversations it started are still working, and say which.
+
+- **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
+- **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
+- **Codex headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
+- **Cursor headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
+
+### Child failure notice and report
+
+Tell the parent conversation, and optionally the owner, when a child fails.
+
+- **BB thread:** yes, evidence fixture. Running on one live loop; a notice has not been captured there. [`TestChildWorkListsErroredChildren`](../internal/adapter/bb/children_test.go) [operations.md](operations.md)
+- **Claude Code headless:** n/a. No child conversations.
+- **Codex headless:** n/a. No child conversations.
+- **Cursor headless:** n/a. No child conversations.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. No child identities are reported.
+
+### Handoff away from it
+
+When it is the active target and hits a configured error class, move the loop to a confirmed fallback.
+
+- **BB thread:** yes, evidence live. A rate-limited primary handed off on a live loop. [run-discovery.md#live-check](run-discovery.md#live-check) [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+- **Claude Code headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+- **Codex headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+- **Cursor headless:** missing, evidence none. Configuration refuses fallbacks for a Cursor loop, and every Cursor failure is unknown, which never fails over. [cursor.md](cursor.md)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+
+### Handoff to it
+
+Be a fallback candidate that takes the work over after an exact probe.
+
+- **BB thread:** yes, evidence live. An existing thread; its model can be switched before the brief. [run-discovery.md#live-check](run-discovery.md#live-check) [`TestSendStopActivate`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** yes, evidence fixture. Guided setup creates it; run only against stand-in CLIs. [fallbacks.md](fallbacks.md)
+- **Codex headless:** yes, evidence fixture. Guided setup creates it; run only against stand-in CLIs. [fallbacks.md](fallbacks.md)
+- **Cursor headless:** missing, evidence none. Cursor fallback candidates are refused: there is no account and model probe contract. [cursor.md](cursor.md)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+
+### Switch-back
+
+Return to the primary once its limit has lifted, when enabled.
+
+- **BB thread:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
+- **Claude Code headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
+- **Codex headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
+- **Cursor headless:** missing, evidence none. Refused with fallbacks. [cursor.md](cursor.md)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
+
+### Probes
+
+Check a candidate's account and model with a small real request before relying on it.
+
+- **BB thread:** yes, evidence live. A BB candidate is probed through its provider's CLI (Claude Code or Codex), not through BB. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbe`](../internal/probe/probe_test.go)
+- **Claude Code headless:** yes, evidence live. One real healthy probe. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbe`](../internal/probe/probe_test.go)
+- **Codex headless:** yes, evidence live. A real probe, and a real probe on a limited account. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestCodexProbe`](../internal/probe/probe_test.go)
+- **Cursor headless:** missing, evidence none. No probe contract. [cursor.md](cursor.md)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. A command probe. [`TestCommandProbe`](../internal/probe/probe_test.go)
+
+### Quota readings
+
+Record how much of a usage window is used, from structured fields a probe already returns.
+
+- **BB thread:** partial, evidence live. Readings come from the candidate's provider probe. BB's own rate-limit events supply reset times only. [fallbacks.md](fallbacks.md) [integrations.md#agent-providers](integrations.md#agent-providers)
+- **Claude Code headless:** yes, evidence live. One real manual probe recorded a reading. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestClaudeProbeJudgesStreamAndPlainOutputAlike`](../internal/probe/probe_test.go)
+- **Codex headless:** partial, evidence live. A reading only when the existing limit read runs; none on a healthy probe. [`TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead`](../internal/probe/probe_test.go)
+- **Cursor headless:** missing, evidence none. No probe contract.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. A command probe reports health only.
+
+### Handoff into a new conversation
+
+Take the work over in a conversation that did not exist before the handoff.
+
+- **BB thread:** missing, evidence none. A fallback must name a thread that already exists. [roadmap.md](roadmap.md)
+- **Claude Code headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
+- **Codex headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
+- **Cursor headless:** missing, evidence none. Not a fallback candidate.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. The resume command decides which conversation receives the brief.
+
+### Run graph and keepgoing runs
+
+Record runs, sends and the conversation reference, and show them offline.
+
+- **BB thread:** yes, evidence live. The configured thread, labelled configured. [run-discovery.md#live-check](run-discovery.md#live-check) [`TestTickRecordsRunIntentBeforeSendSessionAndGoal`](../internal/supervise/graph_test.go)
+- **Claude Code headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
+- **Codex headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
+- **Cursor headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** partial, evidence fixture. Runs and sends are recorded. No conversation reference exists to record. [`TestHeadlessTargetRecordsNoChildListing`](../internal/supervise/graph_test.go)
+
+### Stop and owned cancellation
+
+Stop a running turn on request, signalling only a process keepgoing itself started and still owns.
+
+- **BB thread:** yes, evidence live. bb thread stop on the configured thread. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestSendStopActivate`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** yes, evidence fixture. The live turn wrapper stops its own process group on a private per-turn request. A saved PID never authorizes a signal. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go) [testing.md#lifecycle-and-platform-review](testing.md#lifecycle-and-platform-review)
+- **Codex headless:** yes, evidence fixture. The same wrapper as Claude Code. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go)
+- **Cursor headless:** yes, evidence fixture. The same wrapper. [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
+
+### Permission prompts
+
+Notice that the agent is waiting for a person to approve something, hold, and report it once.
+
+- **BB thread:** yes, evidence live. From the interaction list; shapes come from real lifecycle events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestPendingInteractionMeansWaitingOnAPerson`](../internal/adapter/bb/bb_test.go)
+- **Claude Code headless:** missing, evidence none. permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state. [configuration.md](configuration.md)
+- **Codex headless:** missing, evidence none. The sandbox setting is passed to the CLI. No typed permission state is read. [configuration.md](configuration.md)
+- **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. [cursor.md](cursor.md)
+- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
+<!-- capability-matrix:end -->
+
+## The offline scenario on headless Claude Code and Codex
+
+The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
+
+What happens, with default settings:
+
+| Moment | What keepgoing does |
+| --- | --- |
+| The CLI exits on the network failure | The runner records the exit code and the CLI's output for that turn. The saved session ID is not changed. |
+| Next check | The turn is an error. Claude Code's is `unknown`; Codex's stream-disconnect code is `network`, which changes nothing unless `failover_on` includes it. A re-prompt is sent at once. |
+| Still offline | Each re-prompt fails. They are spaced by `errors.backoff` (10 minutes) and capped by `errors.max_reprompts` (3). |
+| About 20 to 30 minutes after the drop | The third re-prompt has failed. The loop goes on an awaiting-user hold: `error persisted after re-prompts`. |
+| Four hours, three days, three weeks | Nothing. Checks run and report `awaiting user`. Nothing is sent. |
+| The network returns, behind a captive portal or not | Nothing. keepgoing does not notice and does not come back by itself. |
+| A person runs `resume` | The hold clears, but the spent re-prompts do not, and a headless session cannot change state without a send. The next check holds again at once, without trying. |
+| A person runs `retarget primary`, then `resume` | A new error episode starts and the loop re-prompts. Behind a captive portal the three re-prompts fail again and it holds again. With the network really back, the first re-prompt succeeds in the same session. |
+
+The four questions:
+
+- **What does the runner record when the CLI exits on a network failure?** The exit code, standard output and standard error of that turn, in the target's private directory. No network state is recorded: an outage is not told apart from any other failure unless the CLI prints a recognised code.
+- **Is the saved session ID reused exactly?** Yes. Every send after the first passed the saved ID (`--resume <id>` for Claude Code, `exec resume … <id>` for Codex), including after `retarget primary` and three weeks later. A failed turn does not change it.
+- **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestOfflineFirstTurnStartsANewSessionOnEveryReprompt`](../cmd/keepgoing/offline_scenario_test.go)). Files the earlier turns changed are still on disk either way.
+- **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
+
+Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test. A reboot is different: see the stale turn record below.
+
+## Gaps this exposed
+
+None of these is fixed here. Each needs a decision or is not small.
+
+| Gap | Affects | Evidence |
+| --- | --- | --- |
+| **An outage ends in a hold that needs a person.** Re-prompts are spent into a dead network, and nothing acts when it returns. | Every adapter | The scenario above; [roadmap](roadmap.md) "network-aware sending" |
+| **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. | Headless Claude Code, Codex, Cursor | The scenario above |
+| **A stale turn record with a reused PID reads as a running turn.** After a reboot, a turn that never wrote its exit code is judged by whether its saved PID exists. If an unrelated process has that PID, the loop sees an active session and sends nothing for as long as that process lives. | Headless Claude Code, Codex, Cursor | [`TestTurnRecordAfterTheWrapperIsGone`](../internal/adapter/runner/reboot_gap_test.go) |
+| **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestOfflineFirstTurnStartsANewSessionOnEveryReprompt`](../cmd/keepgoing/offline_scenario_test.go) |
+| **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
+| **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |
+| **A session the provider no longer has is not recognised.** It fails as `unknown` until the re-prompts are spent. | Headless Claude Code, Codex, Cursor | Reasoning from the code; not tested against a real expired session |
+| **Cursor reports every failure as `unknown`**, so it has no limits, no handoff and no probes. | Cursor | Matrix |
+| **No live evidence for a headless loop** beyond probes and one Codex limit: no real multi-turn run, resume or stop. | Headless Claude Code, Codex, Cursor | [integrations](integrations.md#agent-providers) |
+
+## Chats already open in an IDE
+
+A different question from the adapters above: can an outside process observe and continue a chat that is already open in an IDE window, through a documented interface? The answers below come only from the vendors' published documentation, read on 2026-11-13. Nothing was reverse engineered and no application storage was read. The pages were read through a fetching tool that summarises long pages; the sentences quoted were each checked a second time against the page, except where marked.
+
+**Short answer: no, for all five.** No vendor documents an interface that lets a separate program attach to the chat open in a local window, read its state on demand and send it a message at a time of the program's choosing. Three vendors document hooks, which the IDE itself runs at fixed points; one documents an open protocol that reaches a different host process, not the open window.
+
+| IDE | Observe an open chat from outside | Continue it from outside | What is documented instead |
+| --- | --- | --- | --- |
+| Cursor | No documented interface. Hooks only. | No documented interface. Hooks only. | CLI, ACP, SDK and Cloud Agents API, each for its own sessions |
+| Antigravity | No documented interface. Hooks only. | No documented interface. Hooks only. | Headless CLI and SDK for their own sessions; a browser remote control for people |
+| VS Code agent chat | Not for the open window. | Not for the open window. | An open protocol for a standalone or remote Agent Host |
+| Windsurf (now Devin Desktop) | No documented interface. Hooks only. | No documented interface. Hooks only. | Devin CLI and ACP server for their own sessions |
+| Zed | No documented interface. | No documented interface. | Zed runs other agents over ACP; nothing drives Zed's own thread |
+
+**Cursor.** The [hooks reference](https://cursor.com/docs/hooks) says "Hooks are spawned processes that communicate over stdio using JSON in both directions." They are started by Cursor, from a `hooks.json` file, at points such as session start, before a tool runs and when the agent stops. The `stop` hook's input has a `status` of `completed`, `aborted` or `error`, and the page says an optional `followup_message` is submitted as the next user message (this last sentence was read through the summarising tool only). So a script Cursor runs can learn that a turn ended and add one message at that moment. That is not an interface a supervisor can query or send through at another time, and no "waiting for approval" event is documented. The [CLI](https://cursor.com/docs/cli/overview), [ACP mode](https://cursor.com/docs/cli/acp), [SDK](https://cursor.com/docs/sdk/typescript) and [Cloud Agents API](https://cursor.com/docs/cloud-agent/api/endpoints) each start or resume their own sessions; no page says an editor chat's ID can be passed to them. [Deeplinks](https://cursor.com/docs/reference/deeplinks) need the user to confirm. A [remote control](https://cursor.com/docs/cloud-agent/mobile) for local agents exists as a phone app for a person, with no documented programmatic access.
+
+**Antigravity.** The [hooks page](https://antigravity.google/docs/hooks/) says "Hooks allow you to run custom scripts or shell commands at specific points during Antigravity's execution loop" and lists the App, the CLI and the IDE under "Available on". A hook can return `injectSteps`, a "List of steps to inject into the conversation trajectory", including a user message. As with Cursor, this runs only at hook time, inside Antigravity's own loop. The [headless CLI](https://antigravity.google/docs/cli/headless/) and the [SDK](https://antigravity.google/docs/sdk/overview/) run their own conversations; no page says an IDE conversation is reachable from them. [Remote control](https://antigravity.google/docs/remote-control/) is a browser interface for a person and lists the App and CLI, not the IDE. The ACP pages for the CLI and IDE extensions were not read.
+
+**VS Code agent chat.** VS Code documents the most. The [Agent Host page](https://code.visualstudio.com/docs/agents/concepts/agent-host) says "The Agent Host is a dedicated process that runs agent harnesses and manages their sessions" and "multiple clients can observe and control the same session, staying in sync." The [Agent Host Protocol](https://microsoft.github.io/agent-host-protocol/) is published with client libraries, and says "A client sends a message by issuing `chat/turnStarted` as a `dispatchAction`". But the documented way in for another client is a host you start yourself: "To run your own standalone Agent Host, use `code agent host`. By default, the command starts a server on localhost and protects it with a connection token." The page does not say that a third-party client can connect to the host behind an editor window that is already open, and gives no address or token for one. So a supervisor could, on the documentation, run and drive its own Agent Host session; it could not attach to the chat a person already has open. The [extension API](https://code.visualstudio.com/api/references/vscode-api) gives an extension only its own participant's messages in the current session (the part of the reference that was read), and [`code chat`](https://code.visualstudio.com/docs/configure/command-line) opens a new session.
+
+**Windsurf.** The Windsurf documentation now redirects to Devin Desktop, whose [Cascade page](https://docs.devin.ai/desktop/cascade.md) says "Cascade is the legacy agent in Devin Desktop. Devin Desktop no longer starts new Cascade conversations and no longer opens old ones." For Devin Desktop's current agent, [lifecycle hooks](https://docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks.md) fire in the desktop app, the CLI and cloud sessions, including a permission-request event and a stop event that can block with a reason. They are hooks, as above. The [Devin CLI](https://docs.devin.ai/cli/reference/commands.md) has print mode, `--resume` and an ACP server for its own sessions; no page says it can resume a desktop session. The hooks and CLI pages were read through the summarising tool only.
+
+**Zed.** [External agents](https://zed.dev/docs/ai/external-agents) "run as separate processes that communicate with Zed over ACP": Zed drives other agents, and nothing documented drives Zed. The [CLI reference](https://zed.dev/docs/reference/cli) lists only file and window flags; none concerns the agent panel, a thread or a prompt. Zed's extension API was not read, so "an extension cannot reach a thread" is unverified.
+
+What this means for keepgoing: supervising the chat a person has open in one of these IDEs is not possible today through a documented interface. What is possible is supervising a session keepgoing starts itself through each vendor's CLI or protocol, which is what the headless adapters do, and, for the three vendors with hooks, a hook the user installs that reports turn ends to keepgoing. The second is a design option, not something implemented or tested.

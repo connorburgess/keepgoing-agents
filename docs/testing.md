@@ -72,6 +72,12 @@ Blockers are covered at each layer: the waiting record and its schema upgrade in
 
 Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity (only the flag was exercised), and any GUI reader. `keepgoing runs` has one [live check](run-discovery.md#live-check) on a BB target and one of [what a loop is waiting on](run-discovery.md#live-check-waiting-on), which showed a working child and the owner but not a failed, stuck or registered child; its headless, duplicate-name, registry and send traversal paths are fixture-only. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
+## Adapter capability checks
+
+`go test ./internal/adapter/capability` compares the [adapter capability matrix](adapters.md) with the code: the decision inputs each adapter's source refers to, the adapters the factory builds, the optional interfaces each implements, which adapters a check records a session for, and that every reference in the matrix names a file and test that exist. It also fails when `docs/adapters.md` differs from the table it is generated from. It reads source files and runs no provider.
+
+`go test ./cmd/keepgoing -run TestOffline` runs the offline scenario for headless Claude Code and Codex through the real commands with stand-in CLIs and a moved check clock. It is Unix-only. The stand-ins' failure output is an assumption about the real CLIs, not an observation.
+
 ## On a machine with Go
 
 ```sh

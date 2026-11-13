@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an [adapter capability matrix](docs/adapters.md): what BB threads, headless Claude Code, Codex and Cursor, Antigravity and the generic process adapter each support, with the evidence level for every cell. It is generated from one table that tests compare with the code. The page also records what a network outage does to a headless loop today, the gaps that exposed, and that no IDE documents a way to supervise a chat already open in its window. No behaviour changes.
+
 - A check now has a tested hard limit of `loop.tick_timeout` plus 90 seconds (4m30s at the defaults). The yield command, the observation, the Git fingerprint, the model switch and send, and three brief essential reports each have a reserved maximum; scheduled probes, exact probes and routine reports run only in time none of those has reserved. Before, a quick observation followed by a hung probe, slow reports, a slow fingerprint and a slow send could run to 4m40s at the defaults and past five minutes with a longer probe timeout. The minimum `tick_timeout` is now `2m40s`, and `status`, `doctor` and `validate` warn above `3m15s`, including when an omitted `tick_timeout` was raised to fit `probe.timeout`. Offline fixtures only. See [check time budget](docs/operations.md#check-time-budget).
 
 - A due handoff now runs its exact probes before any scheduled probe, relying on the other fallbacks' results while they are inside `probe.ttl` (see [fallbacks](docs/fallbacks.md#redundancy)). If no fallback takes over, the held-back probes run before a re-prompt is spent, and the redundancy picture is brought up to date afterwards.
