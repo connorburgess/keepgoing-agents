@@ -153,7 +153,15 @@ func CheckControlPath(stateDir string) error {
 	return nil
 }
 
+// writeAtomic syncs before publishing, as the send ledger does: a hold must not
+// be replaced by an empty file after a crash. Not a power-loss guarantee.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeAtomicSync(path, data, mode, true)
+}
+
+// writeAtomicSync optionally flushes the temporary file before it replaces the
+// target, so a power loss cannot leave the target name on unwritten data.
+func writeAtomicSync(path string, data []byte, mode os.FileMode, sync bool) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
@@ -168,11 +176,11 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	// Sync before publishing, as the send ledger does: a hold must not be
-	// replaced by an empty file after a crash. Not a power-loss guarantee.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
+	if sync {
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return err
