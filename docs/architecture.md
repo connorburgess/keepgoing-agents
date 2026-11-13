@@ -38,7 +38,7 @@ internal/control            control.json and goal.json: holds, BB ownership/tran
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
-internal/snapshot           read-only opens and atomic replacement that do not block each other on Windows; used for the records in the state directory that one command replaces while another reads
+internal/snapshot           read-only opens and atomic replacement that do not block each other on Windows; used for the records in the state directory that one command replaces while another reads; also the one place a record is flushed to the device before it is published, which only a test binary can turn off
 internal/testexec           test-only installer for shell stand-in CLIs; see testing.md
 internal/scenario           test-only scenario suite that drives the built binary, and its stand-in bb; see testing.md
 internal/daemoninfo         private loopback diagnostics for a running daemon

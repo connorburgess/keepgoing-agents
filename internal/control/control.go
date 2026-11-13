@@ -177,7 +177,7 @@ func writeAtomicSync(path string, data []byte, mode os.FileMode, sync bool) erro
 		return err
 	}
 	if sync {
-		if err := tmp.Sync(); err != nil {
+		if err := snapshot.Sync(tmp); err != nil {
 			tmp.Close()
 			return err
 		}
