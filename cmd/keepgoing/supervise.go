@@ -86,8 +86,8 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	return exitOK
 }
 
-// daemonStartedKey carries the start time of the daemon running a pass.
-type daemonStartedKey struct{}
+// daemonKey carries what is known of the daemon running a pass.
+type daemonKey struct{}
 
 // tickOnce runs one pass under the tick lock.
 func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
@@ -112,8 +112,8 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitSkipped
 	}
 	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx), RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil}
-	if started, ok := e.ctx.Value(daemonStartedKey{}).(time.Time); ok {
-		opts.DaemonStartedAt = started
+	if d, ok := e.ctx.Value(daemonKey{}).(supervise.DaemonInfo); ok {
+		opts.Daemon = d
 	}
 	if fixedNow {
 		opts.Now = now
@@ -201,7 +201,7 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		monitor.Update("checking", nil)
 		pass := e
 		if started := monitor.StartedAt(); !started.IsZero() {
-			pass.ctx = context.WithValue(e.ctx, daemonStartedKey{}, started)
+			pass.ctx = context.WithValue(e.ctx, daemonKey{}, supervise.DaemonInfo{StartedAt: started, LastPassAt: monitor.LastPassAt()})
 		}
 		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {

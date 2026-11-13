@@ -31,3 +31,31 @@ func TestOverlapCountsOnlyTimeInsideTheWindow(t *testing.T) {
 		})
 	}
 }
+
+// Overlapping spans (one past midnight running into the next day's) are
+// counted once, and Overlap agrees with Inside minute by minute, across
+// midnight and a daylight-saving change.
+func TestOverlapAgreesWithInside(t *testing.T) {
+	for _, w := range []*config.Window{
+		{TZ: "UTC", Days: map[string][]string{"Mon": {"22:00", "10:00"}, "Tue": {"09:00", "17:00"}}},
+		{TZ: "Europe/London", Days: map[string][]string{"Sat": {"23:00", "03:00"}, "Sun": {"01:00", "02:30"}, "Mon": {"09:00", "17:00"}}},
+	} {
+		// From a Monday, and across the March 2030 clock change in London.
+		for _, from := range []time.Time{time.Date(2030, 1, 7, 0, 0, 0, 0, time.UTC), time.Date(2030, 3, 30, 12, 0, 0, 0, time.UTC)} {
+			to := from.Add(3 * 24 * time.Hour)
+			got, err := Overlap(w, from, to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want time.Duration
+			for at := from; at.Before(to); at = at.Add(time.Minute) {
+				if in, _, _ := Inside(w, at); in {
+					want += time.Minute
+				}
+			}
+			if got != want {
+				t.Fatalf("%s from %s: %s, minute by minute %s", w.TZ, from, got, want)
+			}
+		}
+	}
+}

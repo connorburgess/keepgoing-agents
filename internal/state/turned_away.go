@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // TurnedAwayName records the latest check that exited without running
@@ -43,13 +45,13 @@ func NoteTurnedAway(stateDir string, at time.Time) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, filepath.Join(stateDir, TurnedAwayName))
+	return snapshot.Replace(name, filepath.Join(stateDir, TurnedAwayName))
 }
 
 // TurnedAwayAt is the latest recorded turned-away check; zero when there is
 // none or the record cannot be read.
 func TurnedAwayAt(stateDir string) time.Time {
-	b, err := os.ReadFile(filepath.Join(stateDir, TurnedAwayName))
+	b, err := snapshot.ReadFile(filepath.Join(stateDir, TurnedAwayName))
 	if err != nil {
 		return time.Time{}
 	}

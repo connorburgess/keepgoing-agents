@@ -50,7 +50,7 @@ func TestCheckGapIsReportedOncePerGap(t *testing.T) {
 			e = r
 		}
 	}
-	if !strings.Contains(e.Text, "no check ran from") || !strings.Contains(e.Text, "auto_example1") {
+	if !strings.Contains(e.Text, "no check was recorded from") || !strings.Contains(e.Text, "auto_example1") {
 		t.Fatalf("%q", e.Text)
 	}
 	// A second gap is a new one.

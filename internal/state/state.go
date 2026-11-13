@@ -50,6 +50,9 @@ type File struct {
 	// capped as RecentCheckGaps are. CheckGapPending is a gap a dry run saw,
 	// for the next real check to report. A reported gap needs no record: the
 	// check that reports it saves its own time first, which ends the gap.
+	// CheckFinishedAt is when the last check finished: CheckedAt is when it
+	// began.
+	CheckFinishedAt time.Time       `json:"checkFinishedAt,omitempty"`
 	StartedBy       *Routine        `json:"startedBy,omitempty"`
 	ScheduleGaps    []time.Duration `json:"scheduleGapsNs,omitempty"`
 	CheckGapPending *Gap            `json:"checkGapPending,omitempty"`

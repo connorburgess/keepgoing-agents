@@ -32,6 +32,9 @@ type scheduleStatus struct {
 	// Blocked: checks were started after the last one but found an earlier
 	// check still running.
 	Blocked bool `json:"blocked,omitempty"`
+	// NotRecorded: the daemon has finished passes since the last recorded
+	// check, so checks are running but not being recorded.
+	NotRecorded bool `json:"notRecorded,omitempty"`
 	// StartedBy is the scheduler identity the last check was started with,
 	// when one was supplied (tick --routine source/routine).
 	StartedBy *state.Routine `json:"startedBy,omitempty"`
@@ -42,13 +45,19 @@ type scheduleStatus struct {
 // describeSchedule applies the overdue rule as the supervisor does. d is
 // the daemon as just queried, or nil when it was not.
 func describeSchedule(l *config.Loop, st state.File, ctl control.File, d *daemonStatus, now time.Time) scheduleStatus {
-	var started time.Time
+	var info supervise.DaemonInfo
 	if d != nil && d.State == "responsive" && d.StartedAt != nil {
-		started = *d.StartedAt
+		info.StartedAt = *d.StartedAt
+		if d.LastPassAt != nil {
+			info.LastPassAt = *d.LastPassAt
+		}
+		if d.NextCheckAt != nil {
+			info.NextCheckAt = *d.NextCheckAt
+		}
 	}
-	s := state.ScheduleOf(st, supervise.ScheduleInput(l, ctl, started), now)
+	s := state.ScheduleOf(st, supervise.ScheduleInput(l, ctl, info), now)
 	out := scheduleStatus{Overdue: s.Overdue, Judging: s.NotJudged == "", NotJudged: s.NotJudged, Basis: s.Basis, GapsSeen: s.GapsSeen,
-		Slept: s.Slept, Blocked: s.Blocked, StartedBy: s.StartedBy, sch: s}
+		Slept: s.Slept, Blocked: s.Blocked, NotRecorded: s.NotRecorded, StartedBy: s.StartedBy, sch: s}
 	if !s.LastCheckAt.IsZero() {
 		at := s.LastCheckAt
 		out.LastCheckAt = &at
@@ -76,6 +85,9 @@ func overdueSentence(s state.Schedule) string {
 	if s.Blocked {
 		return fmt.Sprintf("no check has finished for %s (%s): checks are being started, but each finds an earlier check still running, which may be hung", state.ShortDuration(s.For), measure)
 	}
+	if s.NotRecorded {
+		return fmt.Sprintf("no check has been recorded for %s (%s): checks are running but not being recorded", state.ShortDuration(s.For), measure)
+	}
 	text := fmt.Sprintf("no check has run for %s (%s): the computer may have slept, or ", state.ShortDuration(s.For), measure)
 	if r := s.StartedBy; r != nil && r.Source == state.RoutineBBAutomation && r.Routine != "" {
 		return text + "the BB automation that runs this loop (" + r.Routine + ") may have disabled itself; check it in BB's Automations"
@@ -88,6 +100,8 @@ func overdueSentence(s state.Schedule) string {
 func scheduleDoctorLine(s scheduleStatus) (level, text, fix string, ok bool) {
 	sch := s.sch
 	switch {
+	case s.Overdue && sch.NotRecorded:
+		return "warning", "Checks are not being recorded: " + s.Message + ".", "The daemon is running passes that end without recording a check. Its error output (the terminal running keepgoing start, or the service's log) says why: an unwritable state directory, a held lock or a failed source check.", true
 	case s.Overdue && sch.Blocked:
 		return "warning", "Checks are not finishing: " + s.Message + ".", "Look for a keepgoing tick that has been running for a long time and end it; the next check then runs.", true
 	case s.Overdue:

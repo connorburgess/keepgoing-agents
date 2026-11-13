@@ -33,9 +33,10 @@ type ScheduleInput struct {
 	DaemonInterval time.Duration
 	// Enabled, and Held: paused, waiting for a person, or declared complete.
 	// Neither a disabled nor a held loop is judged: its scheduler may have
-	// been stopped on purpose. A requested stop is not a hold: it needs a
-	// check to be carried out.
-	Enabled, Held bool
+	// been stopped on purpose. A requested stop is not a hold while it needs
+	// a check to carry it out; once a check has (stopSent in state.json), it
+	// is. StopRequested says a stop is requested.
+	Enabled, Held, StopRequested bool
 	// ControlChangedAt is when control.json last changed. The time without a
 	// check is measured from it when it is later than the last check, so
 	// resuming or enabling a loop starts the clock again.
@@ -45,9 +46,12 @@ type ScheduleInput struct {
 	InWindow func(from, to time.Time) time.Duration
 	// DaemonStartedAt is when a daemon running this loop now started, when
 	// that was verified; zero otherwise. A daemon that started before the
-	// last check and is still running means the computer slept: it is not
-	// a stopped scheduler.
-	DaemonStartedAt time.Time
+	// last check and is still running means the computer slept, unless
+	// there is evidence it was awake: a check turned away, or a daemon pass
+	// that finished after the last recorded check (DaemonLastPassAt), or,
+	// from a daemon that does not say when its last pass ended, a next check
+	// it set for after one (DaemonNextCheckAt).
+	DaemonStartedAt, DaemonLastPassAt, DaemonNextCheckAt time.Time
 	// TurnedAwayAt is the latest check that exited without running because
 	// an earlier check still held the tick lock; zero if none is recorded.
 	TurnedAwayAt time.Time
@@ -72,9 +76,13 @@ type Schedule struct {
 	// Usual is the usual interval (Basis usual only); Threshold the time
 	// without a check after which the loop is overdue.
 	Usual, Threshold time.Duration
-	// Slept: the daemon that ran the last check is still running, so the
-	// time without a check is the computer sleeping. Never overdue.
+	// Slept: the daemon that ran the last check is still running and there
+	// is no sign the computer was awake, so the time without a check is the
+	// computer sleeping. Never overdue.
 	Slept bool
+	// NotRecorded: the daemon has finished a pass since the last recorded
+	// check: checks are running but not being recorded.
+	NotRecorded bool
 	// Blocked: checks were started after the last one but found an earlier
 	// check still running. The scheduler is running; a check may be hung.
 	Blocked bool
@@ -89,8 +97,12 @@ type Gap struct {
 	To        time.Time     `json:"to"`
 	For       time.Duration `json:"forNs"`
 	Usual     time.Duration `json:"usualNs,omitempty"`
-	StartedBy *Routine      `json:"startedBy,omitempty"`
-	Blocked   bool          `json:"blocked,omitempty"`
+	Threshold time.Duration `json:"thresholdNs,omitempty"`
+	// Windowed: For counts only time inside the operating window.
+	Windowed    bool     `json:"windowed,omitempty"`
+	StartedBy   *Routine `json:"startedBy,omitempty"`
+	Blocked     bool     `json:"blocked,omitempty"`
+	NotRecorded bool     `json:"notRecorded,omitempty"`
 }
 
 // ScheduleOf applies the overdue rule.
@@ -107,7 +119,7 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 	case !in.Enabled:
 		s.NotJudged = "disabled"
 		return s
-	case in.Held:
+	case in.Held, in.StopRequested && f.StopRequestedSent:
 		s.NotJudged = "held"
 		return s
 	}
@@ -118,15 +130,31 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 		s.Basis, s.Usual = "usual", max(in.DaemonInterval, usualGap(f.ScheduleGaps))
 		s.Threshold = max(MinOverdue, OverdueFactor*s.Usual)
 	}
-	s.Slept = !in.DaemonStartedAt.IsZero() && !in.DaemonStartedAt.After(f.CheckedAt)
-	s.Blocked = in.TurnedAwayAt.After(f.CheckedAt)
+	// Evidence of being awake is dated against when the last check
+	// finished, not when it began: a check turned away while it ran is
+	// not one turned away after it. A time after now is a moved clock.
+	finished := f.CheckedAt
+	if f.CheckFinishedAt.After(finished) {
+		finished = f.CheckFinishedAt
+	}
+	after := func(at time.Time) bool { return at.After(finished.Add(passSlack)) && !at.After(now) }
+	s.Blocked = after(in.TurnedAwayAt)
+	daemon := !in.DaemonStartedAt.IsZero() && !in.DaemonStartedAt.After(f.CheckedAt)
+	if daemon {
+		passed := after(in.DaemonLastPassAt)
+		if in.DaemonLastPassAt.IsZero() && !in.DaemonNextCheckAt.IsZero() && in.DaemonInterval > 0 {
+			passed = after(in.DaemonNextCheckAt.Add(-in.DaemonInterval))
+		}
+		s.NotRecorded = passed && !s.Blocked
+	}
+	s.Slept = daemon && !s.Blocked && !s.NotRecorded
 	s.Overdue = !s.Slept && s.For > s.Threshold
 	return s
 }
 
 // NoteScheduleGap records, for the rule, the time from the last check (or a
-// later control change) to this one. It is called by each check before it
-// records itself.
+// later control change) to this one, when it lies wholly inside the
+// operating window. It is called by each check before it records itself.
 func NoteScheduleGap(f *File, in ScheduleInput, now time.Time) {
 	if f.CheckedAt.IsZero() || !now.After(f.CheckedAt) {
 		return
@@ -135,9 +163,20 @@ func NoteScheduleGap(f *File, in ScheduleInput, now time.Time) {
 	if in.ControlChangedAt.After(from) && in.ControlChangedAt.Before(now) {
 		from = in.ControlChangedAt
 	}
-	gaps := append(f.ScheduleGaps, gapLength(in, from, now))
+	// Only a gap wholly inside the operating window says how often checks
+	// run. One that crosses time outside it (a night, a weekend) is not
+	// recorded: its in-window part is not an interval between checks.
+	raw := now.Sub(from)
+	if in.InWindow != nil && in.InWindow(from, now) < raw {
+		return
+	}
+	gaps := append(f.ScheduleGaps, raw)
 	f.ScheduleGaps = gaps[max(0, len(gaps)-ScheduleWindow):]
 }
+
+// passSlack is how long after a check finishes the daemon may still be
+// finishing the same pass.
+const passSlack = time.Minute
 
 // usualGap is the second longest of the recent gaps. One outage among them
 // is the longest and is passed over, so it does not raise the threshold for

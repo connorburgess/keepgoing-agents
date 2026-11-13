@@ -4,6 +4,7 @@ package window
 
 import (
 	"fmt"
+	"slices"
 	"time"
 	// Windows has no system zoneinfo; embed it so configured windows load everywhere.
 	_ "time/tzdata"
@@ -74,28 +75,51 @@ func Overlap(w *config.Window, from, to time.Time) (time.Duration, error) {
 	if limit := from.AddDate(0, 0, maxOverlapDays); to.After(limit) {
 		to = limit
 	}
-	var total time.Duration
+	// The spans, which may overlap (one past midnight and the next day's),
+	// are merged first so no time is counted twice.
+	type span struct{ start, end time.Time }
+	var spans []span
 	// Yesterday's span may run past midnight into the first day.
 	day := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -1)
 	for ; day.Before(to); day = day.AddDate(0, 0, 1) {
-		span, ok := w.Days[day.Format("Mon")]
-		if !ok || len(span) != 2 {
+		hours, ok := w.Days[day.Format("Mon")]
+		if !ok || len(hours) != 2 {
 			continue
 		}
-		start, err := at(day, span[0])
+		start, err := at(day, hours[0])
 		if err != nil {
 			return 0, err
 		}
-		end, err := at(day, span[1])
+		end, err := at(day, hours[1])
 		if err != nil {
 			return 0, err
 		}
 		if !end.After(start) {
 			end = end.AddDate(0, 0, 1)
 		}
-		if s, e := maxTime(start, from), minTime(end, to); e.After(s) {
+		spans = append(spans, span{start, end})
+	}
+	slices.SortFunc(spans, func(a, b span) int { return a.start.Compare(b.start) })
+	var total time.Duration
+	var cur *span
+	add := func(sp span) {
+		if s, e := maxTime(sp.start, from), minTime(sp.end, to); e.After(s) {
 			total += e.Sub(s)
 		}
+	}
+	for i := range spans {
+		switch {
+		case cur == nil:
+			cur = &spans[i]
+		case !spans[i].start.After(cur.end):
+			cur.end = maxTime(cur.end, spans[i].end)
+		default:
+			add(*cur)
+			cur = &spans[i]
+		}
+	}
+	if cur != nil {
+		add(*cur)
 	}
 	return total, nil
 }

@@ -43,7 +43,10 @@ type Snapshot struct {
 	ObservedAt   time.Time  `json:"observedAt"`
 	Phase        string     `json:"phase"`
 	NextCheckAt  *time.Time `json:"nextCheckAt,omitempty"`
-	DryRun       bool       `json:"dryRun"`
+	// LastPassAt is when the daemon's latest pass ended, whether or not it
+	// recorded a check.
+	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
+	DryRun     bool       `json:"dryRun"`
 }
 
 type response struct {
@@ -111,12 +114,30 @@ func (s *Server) StartedAt() time.Time {
 	return s.snapshot.StartedAt
 }
 
+// LastPassAt is when this daemon's latest pass ended; zero before the first
+// or for a nil server.
+func (s *Server) LastPassAt() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshot.LastPassAt == nil {
+		return time.Time{}
+	}
+	return *s.snapshot.LastPassAt
+}
+
 func (s *Server) Update(phase string, next *time.Time) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.snapshot.Phase == "checking" && phase == "waiting" {
+		ended := time.Now().UTC()
+		s.snapshot.LastPassAt = &ended // a pass has just ended
+	}
 	s.snapshot.Phase, s.snapshot.NextCheckAt = phase, nil
 	if next != nil {
 		v := next.UTC()

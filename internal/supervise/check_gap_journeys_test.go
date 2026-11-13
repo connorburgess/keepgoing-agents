@@ -261,7 +261,7 @@ func TestCheckGapIsNotReportedWhenTheSameDaemonSlept(t *testing.T) {
 	w.primary(decide.Observation{State: decide.Active})
 	lastCheckBeforeAGap(t, w, t0, nil)
 	opts := w.opts(t0.Add(4 * time.Hour))
-	opts.DaemonStartedAt = t0.Add(-time.Hour)
+	opts.Daemon = DaemonInfo{StartedAt: t0.Add(-time.Hour)}
 	if _, err := Tick(context.Background(), w.cfg, opts); err != nil {
 		t.Fatal(err)
 	}

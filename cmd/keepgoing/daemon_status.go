@@ -19,6 +19,7 @@ type daemonStatus struct {
 	StartedAt        *time.Time `json:"startedAt,omitempty"`
 	ObservedAt       *time.Time `json:"observedAt,omitempty"`
 	NextCheckAt      *time.Time `json:"nextCheckAt,omitempty"`
+	LastPassAt       *time.Time `json:"lastPassAt,omitempty"`
 	NextCheck        string     `json:"nextCheck"`
 	BinaryComparison string     `json:"binaryComparison"`
 	DryRun           bool       `json:"dryRun"`
@@ -40,7 +41,7 @@ func inspectDaemon(ctx context.Context, dir, current string, offline bool) daemo
 	}
 	d.processID, d.invocationID = s.ProcessID, s.InvocationID
 	d.State, d.Message = "responsive", "A keepgoing daemon answered a fresh local challenge. This does not establish agent health or future execution."
-	d.Phase, d.StartedAt, d.ObservedAt, d.NextCheckAt, d.DryRun = s.Phase, &s.StartedAt, &s.ObservedAt, s.NextCheckAt, s.DryRun
+	d.Phase, d.StartedAt, d.ObservedAt, d.NextCheckAt, d.LastPassAt, d.DryRun = s.Phase, &s.StartedAt, &s.ObservedAt, s.NextCheckAt, s.LastPassAt, s.DryRun
 	d.BinaryComparison = compareCheckVersion(&state.Check{Version: s.Version}, current)
 	d.NextCheck = "check in progress; the next interval starts after this pass finishes"
 	if s.Phase == "waiting" && s.NextCheckAt != nil {
