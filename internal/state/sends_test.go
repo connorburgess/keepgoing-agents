@@ -12,14 +12,14 @@ import (
 func TestSendLedgerPersistenceAndDisabledAccounting(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 2; i++ {
-		if err := ReserveSend(dir, 2); err != nil {
+		if err := reserve(dir, 2); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := ReserveSend(dir, 2); !errors.Is(err, ErrSendLimit) {
+	if err := reserve(dir, 2); !errors.Is(err, ErrSendLimit) {
 		t.Fatal(err)
 	}
-	if err := ReserveSend(dir, 0); err != nil {
+	if err := reserve(dir, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dir, File{}); err != nil {
@@ -29,7 +29,7 @@ func TestSendLedgerPersistenceAndDisabledAccounting(t *testing.T) {
 	if err != nil || used != 2 {
 		t.Fatalf("%d %v", used, err)
 	}
-	if err := ReserveSend(dir, 3); err != nil {
+	if err := reserve(dir, 3); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, SendsName))
@@ -50,7 +50,7 @@ func TestSendLedgerRejectsCorruption(t *testing.T) {
 		if _, err := LoadSends(dir); !errors.Is(err, ErrSendLedger) {
 			t.Fatalf("accepted %q", data)
 		}
-		if err := ReserveSend(dir, 5); !errors.Is(err, ErrSendLedger) {
+		if err := reserve(dir, 5); !errors.Is(err, ErrSendLedger) {
 			t.Fatalf("reserved %q", data)
 		}
 		after, _ := os.ReadFile(path)
@@ -64,14 +64,14 @@ func TestSendLedgerWriteFailureAndOverflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, SendsName), []byte(`{"version":1,"used":9223372036854775807}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReserveSend(dir, 9223372036854775807); !errors.Is(err, ErrSendLimit) {
+	if err := reserve(dir, 9223372036854775807); !errors.Is(err, ErrSendLimit) {
 		t.Fatal(err)
 	}
 	blocked := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(blocked, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ReserveSend(blocked, 1); !errors.Is(err, ErrSendLedger) && !errors.Is(err, ErrSendRecord) {
+	if err := reserve(blocked, 1); !errors.Is(err, ErrSendLedger) && !errors.Is(err, ErrSendRecord) {
 		t.Fatal(err)
 	}
 }
@@ -87,7 +87,7 @@ func TestRefundSend(t *testing.T) {
 		t.Fatal(used, err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := ReserveSend(dir, 3); err != nil {
+		if err := reserve(dir, 3); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,4 +190,10 @@ func TestLedgerWithoutIntentsLoads(t *testing.T) {
 	if err != nil || *l.Used != 4 || l.Seq != 0 || len(l.Unrecorded(0)) != 0 {
 		t.Fatal(l, err)
 	}
+}
+
+// reserve records a blank intent, as the removed ReserveSend did.
+func reserve(dir string, max int64) error {
+	_, err := Reserve(dir, max, 0, SendIntent{})
+	return err
 }

@@ -203,6 +203,8 @@ type tick struct {
 	probeSucceeded      bool          // a fallback probe passed in this check
 	sessionRecovered    bool          // the target was observed and is not in error
 	savedSends          int64         // the last intended send state.json recorded when this check began
+	unsettledHandoff    string        // a handoff brief recorded by an earlier check, outcome unknown
+	quietFailure        bool          // a failure already reported by an earlier check
 	observeSpent        time.Duration // observation time used by a lookup for an unsettled thread creation
 	lateReports         int           // reports started after the budget was spent
 	lateProbed          bool
@@ -372,8 +374,18 @@ func (t *tick) run() error {
 	// anything that may, sends an earlier check made without recording them
 	// are counted.
 	if err := t.countUnrecordedSends(); err != nil {
-		res.State, res.Window, res.Reason = "not observed", "not checked", "send record unavailable; no automatic provider work"
+		res.State, res.Window, res.Reason = "not observed", "not checked", "send record unreadable; no automatic provider work"
 		return t.record(err)
+	}
+	if id := t.unsettledHandoff; id != "" {
+		d := decide.Decision{Action: decide.AwaitUser, Reason: "a handoff brief to " + id + " may have been delivered; check that conversation before resuming"}
+		res.Action, res.Reason = string(d.Action), d.Reason
+		res.State, res.Window = "not observed", "not checked"
+		var actErr error
+		if !t.opts.DryRun {
+			actErr = t.act(nil, d)
+		}
+		return t.record(actErr)
 	}
 	if err := t.sendAllowance(); err != nil {
 		res.State, res.Window = "not observed", "not checked"
@@ -646,6 +658,12 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
+	if d.Action == decide.AwaitUser && obs.State == decide.Error && in.Reprompts >= in.MaxReprompts && t.st.UnconfirmedReprompts > 0 {
+		// The cap was reached by attempts some of which were recorded and
+		// then could not be confirmed as sent (the check that made them
+		// could not save what happened). Say so, not that they all failed.
+		d.Reason = fmt.Sprintf("error persisted after re-prompts; %d of them were recorded but could not be confirmed as sent", t.st.UnconfirmedReprompts)
+	}
 	// A re-prompt, a handoff or a nudge needs the network, and a hold raised
 	// for an errored session (a spent re-prompt cap, an auth error) or for a
 	// stalled one (the nudges are spent, a retry went silent) may only be the
@@ -764,6 +782,9 @@ func (t *tick) run() error {
 	if errors.Is(actErr, state.ErrSendLimit) || errors.Is(actErr, state.ErrSendLedger) {
 		actErr = t.sendAllowanceFailure(actErr)
 	}
+	if errors.Is(actErr, state.ErrSendRecord) {
+		res.Action, res.Reason = string(decide.None), state.ErrSendRecord.Error()
+	}
 	t.reserve = reserveReports + t.reserveNetwork // the action, if any, has been taken
 	if handoffFirst && !handoffAttempted && inWindow && !t.opts.DryRun && t.reg != nil {
 		// The handoff did not happen after all (a limit wait, a hold): the
@@ -804,7 +825,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	res.State = string(obs.State)
 	if err := t.countUnrecordedSends(); err != nil {
-		t.warn("the record of earlier sends could not be read: %v", err)
+		t.warn("%v", err)
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
@@ -963,7 +984,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 			// activate and nothing more to send.
 			thread, err := t.createThread(from, fromAgent, c, brief, string(class))
 			switch {
-			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger):
+			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger) || errors.Is(err, state.ErrSendRecord):
 				return false, err
 			case errors.Is(err, errNewThreadUnsettled):
 				// A thread may exist and was not found. Creating another, or
@@ -1033,7 +1054,7 @@ func (t *tick) rejectHandoffBrief(id string) {
 // passing its probe, and reports once when that ends further attempts.
 func (t *tick) rejectSwitchBack(from string) {
 	t.st.SwitchBackRejected++
-	if t.st.SwitchBackRejected == t.loop.Errors.MaxReprompts {
+	if t.st.SwitchBackRejected == t.loop.Errors.MaxReprompts && t.reserveReport("switch_back_stopped") {
 		t.report("switch_back", fmt.Sprintf("%s: switch-back stopped after the primary rejected %d briefs; staying on %s until resume, retarget or the next handoff", t.loop.Name, t.st.SwitchBackRejected, from),
 			map[string]any{"from": from, "to": state.Primary, "stopped": true, "rejected": t.st.SwitchBackRejected})
 	}
@@ -1299,8 +1320,13 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if t.st.UnconfirmedReprompts > t.st.Reprompts {
+		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
+	}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
-		return err
+		// Say what the check did as well as why it could not be saved: a
+		// send it refused to make is the cause, and the save its symptom.
+		return errors.Join(actErr, err)
 	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
@@ -1309,7 +1335,9 @@ func (t *tick) record(actErr error) error {
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
-		t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		if !t.quietFailure {
+			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		}
 	}
 	if t.res.DryRun {
 		extra["dryRun"] = true
@@ -1372,13 +1400,16 @@ func contains(list []string, s string) bool {
 // SendsRecorded set to the newest intent. If that save fails, the next check
 // finds the intent unrecorded and counts the send as made; see
 // countUnrecordedSends.
-func (t *tick) reserveSend(action, target string) (int64, error) {
+func (t *tick) reserveSend(action, target string, key ...string) (int64, error) {
 	max := t.loop.Limits.MaxSends
 	if action == "stop" || strings.HasPrefix(action, "report:") {
 		max = 0 // recorded, but not a send against the allowance
 	}
-	seq, err := state.Reserve(t.loop.StateDir, max, t.savedSends,
-		state.SendIntent{At: t.now, Action: action, Target: target})
+	intent := state.SendIntent{At: t.now, Action: action, Target: target}
+	if len(key) > 0 {
+		intent.Key = key[0]
+	}
+	seq, err := state.Reserve(t.loop.StateDir, max, t.savedSends, intent)
 	if err != nil {
 		return 0, err
 	}
@@ -1406,40 +1437,79 @@ func (t *tick) reserveReport(key string) bool {
 func (t *tick) countUnrecordedSends() error {
 	l, err := state.LoadLedger(t.loop.StateDir)
 	if err != nil {
-		return err
+		return t.sendRecordUnreadable(err)
 	}
+	t.st.SendRecordUnreadable = false
 	for _, p := range l.Unrecorded(t.st.SendsRecorded) {
+		t.st.SendsRecorded = p.Seq
+		// A check that saved its state at or after the send's time recorded
+		// its outcome. This covers a state.json written by an older binary,
+		// which does not keep SendsRecorded.
+		if !t.st.CheckedAt.IsZero() && !t.st.CheckedAt.Before(p.At) {
+			continue
+		}
+		agentSend := true
 		switch decide.Action(p.Action) {
 		case decide.Wake, decide.Nudge, decide.Reprompt:
 			c := decide.Attempted(decide.Action(p.Action), decide.Counters{
 				Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
 			}, p.At)
 			t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
-		case "handoff":
-			// Whether the fallback took the loop is unknown: count the brief
-			// against that fallback, so it is spaced and capped.
-			a := decide.BriefRejected(t.handoffBriefs(p.Target), p.At)
-			if t.st.HandoffBriefs == nil {
-				t.st.HandoffBriefs = map[string]state.BriefRecord{}
+			if p.Action == string(decide.Reprompt) {
+				t.st.UnconfirmedReprompts++
 			}
-			t.st.HandoffBriefs[p.Target] = state.BriefRecord{Failed: a.Failed, LastAt: a.LastAt}
+		case "handoff":
+			// The fallback may have the task. Briefing another one, or the
+			// same one again, could put two conversations on it: a person
+			// looks first, as for a new conversation whose outcome is unknown.
+			t.unsettledHandoff = p.Target
 		case "switch_back":
+			// An attempt: spaced by retry_every and counted toward the cap.
 			t.st.SwitchBackRejected++
+			t.st.LastSwitchBackTry = p.At
 		case "child_notice":
+			if t.st.ChildErrorNoticeFor != p.Key {
+				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
+			}
 			t.st.ChildErrorNoticeAttempts++
 		case "stop":
-			t.st.StopRequestedSent = true
+			// Never taken as made: a stop recorded and then not sent must be
+			// sent, and a second stop is harmless. Only a confirmed stop sets
+			// StopRequestedSent.
+			agentSend = false
 		case "report:awaiting_input":
-			t.st.AwaitingReported = true
+			t.st.AwaitingReported, agentSend = true, false
+		case "report:degraded", "report:recovered":
+			t.st.Degraded, agentSend = p.Action == "report:degraded", false
+		case "report:switch_back_stopped":
+			t.st.SwitchBackRejected, agentSend = max(t.st.SwitchBackRejected, t.loop.Errors.MaxReprompts), false
 		}
-		if p.At.After(t.st.LastWakeAt) {
+		if agentSend && p.At.After(t.st.LastWakeAt) {
 			t.st.LastWakeAt = p.At
 		}
-		t.st.SendsRecorded = p.Seq
-		t.warn("a %s sent to %s at %s was not recorded, because that check could not save its state; it is counted as made", p.Action, p.Target, p.At.Format(time.RFC3339))
+		if agentSend || p.Action == "stop" {
+			t.warn("a %s to %s was recorded at %s but that check could not save what happened, so it may have been sent; it is counted as sent", p.Action, p.Target, p.At.Format(time.RFC3339))
+		}
 	}
 	return nil
 }
+
+// sendRecordUnreadable is a check that cannot read sends.json. Nothing is
+// sent. The error report goes once, when this begins, not at every check.
+func (t *tick) sendRecordUnreadable(err error) error {
+	if t.st.SendRecordUnreadable {
+		t.quietFailure = true
+	}
+	if !t.opts.DryRun {
+		t.st.SendRecordUnreadable = true
+	}
+	if t.loop.Limits.MaxSends == 0 {
+		return fmt.Errorf("%w: restore it from a copy; deleting it loses the record of sends not yet counted", errSendRecordUnreadable)
+	}
+	return err
+}
+
+var errSendRecordUnreadable = errors.New("the send record sends.json cannot be read, so nothing is sent")
 
 // sendAllowance is checked before automatic provider work and each candidate.
 // Reservations also re-read under the caller's tick lock immediately before Send.
@@ -1926,7 +1996,11 @@ func (t *tick) reportContext(typ, text string) (context.Context, context.CancelF
 func (t *tick) noteRedundancy(target, group string) health.Summary {
 	summary := health.Evaluate(t.fb, t.reg, t.now, target, group)
 	t.res.Redundancy = &summary
-	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun {
+	key := "recovered"
+	if !summary.Meets {
+		key = "degraded"
+	}
+	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && t.reserveReport(key) {
 		t.st.Degraded = degraded
 		if degraded {
 			t.report("degraded", fmt.Sprintf("%s: only %d of the required %d distinct healthy fallbacks; handoffs are refused", t.loop.Name, summary.Distinct, summary.Min), map[string]any{"redundancy": summary})

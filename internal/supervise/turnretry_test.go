@@ -398,7 +398,7 @@ func TestStopHoldsDryRunAndSendLimitWinOverTurnRetry(t *testing.T) {
 	// A spent send allowance holds the loop before any retry.
 	w = newRetryWorld(t, decide.ErrNetwork)
 	w.cfg.Loop.Limits.MaxSends = 1
-	if err := state.ReserveSend(w.dir, 1); err != nil {
+	if err := state.SpendForTest(w.dir, 1); err != nil {
 		t.Fatal(err)
 	}
 	if res := w.mustTick(t, t0); res.Action != "await_user" || w.a.retries != 0 || len(w.a.sent) != 0 {

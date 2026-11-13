@@ -119,7 +119,10 @@ func TestFaultKilledCheck(t *testing.T) {
 		w.Advance(time.Minute)
 		s = w.Tick()
 		w.Check(s, "the stop hold is kept", holds(s, "stop"))
-		w.Check(s, "the stop is not sent twice", check(bbCommands(s, "stop") == 0, "the restart sent the stop again"))
+		// The restart cannot tell a stop made from one recorded and then not
+		// made, so it sends the stop again, once: a second stop is harmless,
+		// and taking an unmade stop as made would break "stop wins".
+		w.Check(s, "the stop is sent again at most once", check(bbCommands(s, "stop") <= 1, "the restart sent the stop %d times", bbCommands(s, "stop")))
 		_ = th
 	})
 

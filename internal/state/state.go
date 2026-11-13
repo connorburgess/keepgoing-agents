@@ -112,6 +112,12 @@ type File struct {
 	// whose outcome this file records. An intent after it was made by a
 	// check that could not save what happened.
 	SendsRecorded int64 `json:"sendsRecorded,omitempty"`
+	// SendRecordUnreadable says sends.json could not be read at the last
+	// check, so its error is reported once. UnconfirmedReprompts counts the
+	// re-prompts of this episode that were recorded and then could not be
+	// confirmed as sent.
+	SendRecordUnreadable bool `json:"sendRecordUnreadable,omitempty"`
+	UnconfirmedReprompts int  `json:"unconfirmedReprompts,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`

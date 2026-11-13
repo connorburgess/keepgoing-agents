@@ -5,10 +5,12 @@ package supervise
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -74,7 +76,7 @@ func TestSendWithoutARecordedOutcomeIsCountedByTheNextCheck(t *testing.T) {
 	if r.Action != "none" || r.Reason != "backing off after error" || len(p.sent) != 1 || st.Reprompts != 1 || !st.LastRepromptAt.Equal(t0) || !st.LastWakeAt.Equal(t0) {
 		t.Fatalf("%s (%s) sends=%d %+v", r.Action, r.Reason, len(p.sent), st)
 	}
-	if !strings.Contains(strings.Join(r.Warnings, "\n"), "was not recorded, because that check could not save its state; it is counted as made") {
+	if !strings.Contains(strings.Join(r.Warnings, "\n"), "but that check could not save what happened, so it may have been sent; it is counted as sent") {
 		t.Fatalf("no warning: %v", r.Warnings)
 	}
 	// Counted once: the next check does not count it again.
@@ -89,5 +91,44 @@ func TestSendWithoutARecordedOutcomeIsCountedByTheNextCheck(t *testing.T) {
 	}
 	if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || len(p.sent) != 2 {
 		t.Fatalf("held=%t sends=%d", ctl.AwaitingUser, len(p.sent))
+	}
+}
+
+// A check that refuses to send because the record cannot be saved says so:
+// the result shows no action and the reason, and the error names it as well
+// as the save that failed.
+func TestARefusedSendIsReportedAsNoAction(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only directory")
+	}
+	w := newWorld(t, true, false)
+	w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+	runTick(t, w, t0.Add(-time.Hour))
+	os.Chmod(w.dir, 0o500)
+	t.Cleanup(func() { os.Chmod(w.dir, 0o700) })
+	r, err := Tick(context.Background(), w.cfg, w.opts(t0))
+	if r.Action != "none" || r.Reason != state.ErrSendRecord.Error() || err == nil || !strings.Contains(err.Error(), "nothing was sent") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("%s (%s): %v", r.Action, r.Reason, err)
+	}
+}
+
+// An unreadable sends.json stops every send, limit or no limit. Its error
+// report is sent once, when it begins, not at every check, and the message
+// names the file.
+func TestUnreadableSendRecordIsReportedOnce(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"error"}}
+	p := w.primary(decide.Observation{State: decide.Idle})
+	if err := os.WriteFile(filepath.Join(w.dir, state.SendsName), []byte("fictional broken record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		_, err := Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(i)*10*time.Minute)))
+		if err == nil || !strings.Contains(err.Error(), "the send record sends.json cannot be read") {
+			t.Fatalf("check %d: %v", i, err)
+		}
+	}
+	if len(p.sent) != 0 || strings.Count(w.reportTypes(), "error") != 1 {
+		t.Fatalf("sends %d, reports %s", len(p.sent), w.reportTypes())
 	}
 }

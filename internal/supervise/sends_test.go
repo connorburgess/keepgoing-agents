@@ -144,7 +144,7 @@ func TestSendAllowancePreflightAndStopPrecedence(t *testing.T) {
 		for _, hold := range []string{"none", "paused", "disabled", "completed", "awaiting", "stop", "dry-run"} {
 			w := newWorld(t, true, true)
 			w.cfg.Loop.Limits.MaxSends = 1
-			if err := state.ReserveSend(w.dir, 1); err != nil {
+			if err := state.SpendForTest(w.dir, 1); err != nil {
 				t.Fatal(err)
 			}
 			if bad {

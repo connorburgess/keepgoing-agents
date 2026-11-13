@@ -297,15 +297,18 @@ type statusOut struct {
 	Notifications     report.DeliveryStatus    `json:"notifications"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
-	Loop              string                   `json:"loop"`
-	Primary           string                   `json:"primary"`
-	Target            string                   `json:"target"`
-	Control           control.File             `json:"control"`
-	ControlState      string                   `json:"controlState"`
-	Deadline          string                   `json:"deadline,omitempty"`
-	DeadlineReached   bool                     `json:"deadlineReached"`
-	WorkBounds        workBoundsStatus         `json:"workBounds"`
-	TickBudget        tickBudgetStatus         `json:"tickBudget"`
+	// SendRecord is set when sends.json, the record every send is made
+	// through, cannot be read: nothing is sent until it is restored.
+	SendRecord      string           `json:"sendRecord,omitempty"`
+	Loop            string           `json:"loop"`
+	Primary         string           `json:"primary"`
+	Target          string           `json:"target"`
+	Control         control.File     `json:"control"`
+	ControlState    string           `json:"controlState"`
+	Deadline        string           `json:"deadline,omitempty"`
+	DeadlineReached bool             `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus `json:"workBounds"`
+	TickBudget      tickBudgetStatus `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -379,6 +382,11 @@ type progressAllowanceStatus struct {
 	Error           string     `json:"error,omitempty"`
 	BaselinePending bool       `json:"baselinePending,omitempty"`
 }
+
+// sendRecordProblem is what status and doctor say when sends.json cannot be
+// read. Deleting it would lose the record of sends not yet counted and reset
+// the count against max_sends.
+const sendRecordProblem = "sends.json cannot be read, so no check sends anything; restore it from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends"
 
 // sendAllowanceStatus omits unknown counts when accounting cannot be read.
 type sendAllowanceStatus struct {
@@ -505,6 +513,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
 	} else {
 		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
+	}
+	if out.SendRecord != "" {
+		fmt.Fprintf(w, "send record: %s\n", out.SendRecord)
 	}
 	if a := out.SendAllowance; a != nil {
 		if a.Error != "" {
@@ -641,6 +652,9 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
+	if _, err := state.LoadLedger(l.StateDir); err != nil {
+		out.SendRecord = sendRecordProblem
+	}
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)

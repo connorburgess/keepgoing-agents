@@ -219,6 +219,11 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	if _, err := state.LoadLedger(cfg.Loop.StateDir); err != nil {
+		r.add("supervisor.send_record", "error", "The send record sends.json cannot be read, so no check sends anything.", "Restore sends.json from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends.")
+	} else {
+		r.add("supervisor.send_record", "ok", "The send record sends.json is readable.", "")
+	}
 	doctorTickBudget(&r, cfg.Loop)
 	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")

@@ -35,6 +35,8 @@ type SendIntent struct {
 	At     time.Time `json:"at"`
 	Action string    `json:"action"`
 	Target string    `json:"target"`
+	// Key, for a child-error notice, is the set of children it announced.
+	Key string `json:"key,omitempty"`
 }
 
 // Ledger is the whole of sends.json.
@@ -129,13 +131,6 @@ func Reserve(dir string, max, recorded int64, intent SendIntent) (int64, error) 
 		return 0, fmt.Errorf("%w: %w", ErrSendRecord, err)
 	}
 	return intent.Seq, nil
-}
-
-// ReserveSend reserves a send with no intent recorded. It is kept for
-// callers outside the supervisor; the supervisor uses Reserve.
-func ReserveSend(dir string, max int64) error {
-	_, err := Reserve(dir, max, 0, SendIntent{})
-	return err
 }
 
 // RefundSend gives back the reservation seq. It is only for an attempt the

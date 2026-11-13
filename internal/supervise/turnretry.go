@@ -172,7 +172,7 @@ func (t *tick) childNoticeAfterRetry(a adapter.Adapter, d decide.Decision) error
 	if childErrors == 0 {
 		return nil
 	}
-	if _, err := t.reserveSend("child_notice", t.res.Target); err != nil {
+	if _, err := t.reserveSend("child_notice", t.res.Target, t.st.ChildErrorNoticeFor); err != nil {
 		// No allowance for it: the notice stays unannounced for a later wake.
 		t.warn("errored-children notice not sent after the turn retry: %v", err)
 		return nil
