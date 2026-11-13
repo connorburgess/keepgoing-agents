@@ -1,0 +1,297 @@
+//go:build unix
+
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
+)
+
+// An explicit resume is a person saying "try again", so it starts a new error
+// episode: everything counted per episode or per stalled turn starts over.
+// What is counted across the whole loop is never refunded.
+func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	earlier := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	spent := state.File{
+		Reprompts: 3, LastRepromptAt: earlier, Nudges: 3, LastWakeAt: earlier,
+		SilentRetry:              &state.SilentRetry{Target: state.Primary, Since: earlier},
+		HandoffBriefs:            map[string]state.BriefRecord{"fallback-example": {Failed: 3, LastAt: earlier}},
+		SwitchBackRejected:       2,
+		HandoffDeferrals:         3,
+		ExactCut:                 map[string]int{"fallback-example": 2},
+		ChildErrorNoticeAttempts: 3,
+		NewThreadsCreated:        2, LastNewThreadAt: earlier,
+		TurnRetryNoOps: 2,
+	}
+	if err := state.Save(dir, spent); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := state.ReserveSend(dir, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ledger := filepath.Join(dir, state.ProgressName)
+	write(t, ledger, `{"version":1,"fingerprint":"fictional","changedAt":"2030-01-01T00:00:00Z","observedAt":"2030-01-01T01:00:00Z"}`, 0600)
+	progress, _ := os.ReadFile(ledger)
+	// The hold a check raises when the re-prompt cap is spent.
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.AwaitingUser, c.EpisodeHold, c.Note = true, true, "error persisted after re-prompts"
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, errs := f.run("resume"); code != 0 {
+		t.Fatal(errs)
+	}
+	st, err := state.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Reprompts != 0 || !st.LastRepromptAt.IsZero() || st.Nudges != 0 || st.SilentRetry != nil || len(st.HandoffBriefs) != 0 ||
+		st.SwitchBackRejected != 0 || st.HandoffDeferrals != 0 || len(st.ExactCut) != 0 || st.ChildErrorNoticeAttempts != 0 {
+		t.Fatalf("per-episode counts kept after resume: %+v", st)
+	}
+	// A provider that keeps answering a turn retry with nothing to do is
+	// counted whoever resumed.
+	if st.TurnRetryNoOps != 2 {
+		t.Fatalf("the turn-retry no-op count was cleared: %d", st.TurnRetryNoOps)
+	}
+	if st.ResumeEpisodes != 1 || st.LastResumeEpisodeAt.IsZero() {
+		t.Fatalf("the episode started by resume was not counted: %d at %v", st.ResumeEpisodes, st.LastResumeEpisodeAt)
+	}
+	if st.NewThreadsCreated != 2 || !st.LastNewThreadAt.Equal(earlier) {
+		t.Fatalf("the new-thread cap was refunded: %d at %v", st.NewThreadsCreated, st.LastNewThreadAt)
+	}
+	if !st.LastWakeAt.Equal(earlier) {
+		t.Fatalf("the time of the last send was lost: %v", st.LastWakeAt)
+	}
+	if used, err := state.LoadSends(dir); err != nil || used != 4 {
+		t.Fatalf("sends used %d after resume, want 4 (%v)", used, err)
+	}
+	if after, _ := os.ReadFile(ledger); !bytes.Equal(after, progress) {
+		t.Fatalf("the no-progress ledger changed on resume: %s", after)
+	}
+	if ctl, _ := control.Load(dir); ctl.AwaitingUser || ctl.EpisodeHold || ctl.Note != "" {
+		t.Fatalf("%+v", ctl)
+	}
+	// The reset is in the history with who ran it, and status counts it.
+	j, err := incident.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := j.Records[len(j.Records)-1]
+	if c := last.ControlChange; c == nil || c.Operation != "resume" || !c.NewEpisode || c.Caller != "terminal" || last.Tier != incident.TierKey {
+		t.Fatalf("%+v", last.ControlChange)
+	}
+	_, out, _ := f.run("timeline")
+	if !strings.Contains(out, "a new error episode started") || !strings.Contains(out, "run by a terminal with no BB thread identity") {
+		t.Fatalf("timeline does not show the reset:\n%s", out)
+	}
+	if _, out, _ = f.run("status"); !strings.Contains(out, "resumed episodes: 1 (last ") {
+		t.Fatalf("status does not count the episode:\n%s", out)
+	}
+}
+
+// Only a hold that keepgoing raised for a spent per-episode allowance starts
+// a new episode. A resume with nothing held, or of a hold that a command
+// created, starts none. Run before every check, by a person or by the owning
+// agent, each of these cycles used to refund the running episode: a session
+// in error was re-prompted at every check with no backoff, no cap and no
+// hold. Now each gives one re-prompt in eight checks, as if resume had not
+// been run.
+func TestHoldingAndResumingByHandDoesNotRefundTheRunningEpisode(t *testing.T) {
+	for _, hold := range []string{"", "pause", "await-user", "stop", "complete"} {
+		name := hold
+		if name == "" {
+			name = "nothing held"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
+			if code, _, errs := f.run("enable"); code != 0 {
+				t.Fatal(errs)
+			}
+			cfg, err := config.Load(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := cfg.Loop.StateDir
+			var actions []string
+			for i := 0; i < 8; i++ {
+				if hold != "" {
+					if code, _, errs := f.run(hold); code != 0 {
+						t.Fatalf("%s %d: %s", hold, i, errs)
+					}
+				}
+				if code, out, errs := f.run("resume"); code != 0 || strings.Contains(out, "new error episode") {
+					t.Fatalf("resume %d: %d %s %s", i, code, out, errs)
+				}
+				actions = append(actions, fmt.Sprint(f.tick()["action"]))
+			}
+			if got := strings.Join(actions, ","); got != "reprompt,none,none,none,none,none,none,none" {
+				t.Fatalf("%s then resume before each check: %s", name, got)
+			}
+			st, _ := state.Load(dir)
+			if st.Reprompts != 1 || st.LastRepromptAt.IsZero() || st.ResumeEpisodes != 0 {
+				t.Fatalf("reprompts=%d last=%v episodes=%d", st.Reprompts, st.LastRepromptAt, st.ResumeEpisodes)
+			}
+			j, err := incident.Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range j.Records {
+				if c := r.ControlChange; c != nil && c.Operation == "resume" && (c.NewEpisode || c.Caller != "terminal") {
+					t.Fatalf("%+v", c)
+				}
+			}
+			if _, out, _ := f.run("status"); strings.Contains(out, "resumed episodes") {
+				t.Fatalf("status counts an episode that was not started:\n%s", out)
+			}
+		})
+	}
+}
+
+// A resume that starts no episode still gives a repaired fallback fresh
+// takeover briefs, as before.
+func TestResumeWithNothingHeldStillClearsRejectedBriefs(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	st := state.File{Reprompts: 1, LastRepromptAt: time.Now().UTC(), SwitchBackRejected: 2,
+		HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 3, LastAt: time.Now().UTC()}}}
+	if err := state.Save(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := f.run("resume"); code != 0 {
+		t.Fatal(errs)
+	}
+	if st, _ = state.Load(dir); len(st.HandoffBriefs) != 0 || st.SwitchBackRejected != 0 || st.Reprompts != 1 || st.ResumeEpisodes != 0 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// When the counts cannot be reset, resume changes nothing and says so: the
+// loop stays held, nothing is written to the history, and the exit code is
+// not zero.
+func TestResumeChangesNothingWhenTheEpisodeCannotBeSaved(t *testing.T) {
+	f := newFixture(t)
+	for _, cmd := range []string{"enable", "pause"} {
+		if code, _, errs := f.run(cmd); code != 0 {
+			t.Fatal(errs)
+		}
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	if _, err := control.Update(dir, func(c *control.File) { c.AwaitingUser, c.EpisodeHold = true, true }); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := incident.Load(dir)
+	write(t, filepath.Join(dir, state.FileName), "fictional broken record", 0600)
+	code, out, errs := f.run("resume")
+	if code == 0 || !strings.Contains(errs, "could not be reset, so nothing was changed and the loop is still paused") || strings.Contains(out, "new error episode") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	if ctl, _ := control.Load(dir); !ctl.AwaitingUser || !ctl.Paused || !ctl.EpisodeHold {
+		t.Fatalf("a failed resume changed the holds: %+v", ctl)
+	}
+	if after, _ := incident.Load(dir); len(after.Records) != len(before.Records) {
+		t.Fatal("a failed resume was recorded as a saved control")
+	}
+}
+
+// Declaring the task complete ends a wait on a person: the loop shows
+// completed, not awaiting user. What the person was being asked is not
+// thrown away: the hold may have been raised by a check, its note is stored
+// nowhere else, and a completed loop stops observing. The completion says a
+// question was open, status keeps it until a resume, and the history records
+// that the hold was outstanding. A stop or pause stays.
+func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
+	f := newFixture(t)
+	for _, cmd := range [][]string{{"enable"}, {"await-user", "--note", "fictional question"}, {"pause"}} {
+		if code, _, errs := f.run(cmd...); code != 0 {
+			t.Fatal(cmd, errs)
+		}
+	}
+	// The completion says a question was open without repeating its note.
+	code, out, errs := f.run("complete")
+	if code != 0 || !strings.Contains(out, "a question to a person was still open when completion was declared") || strings.Contains(out, "fictional question") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	ctl, err := control.Load(dir)
+	if err != nil || !ctl.Completed || ctl.AwaitingUser || !ctl.Paused || ctl.Note != "" || ctl.OpenQuestion == nil || ctl.OpenQuestion.Note != "fictional question" {
+		t.Fatalf("%+v %v", ctl, err)
+	}
+	if _, out, _ = f.run("status"); !strings.Contains(out, "open question: the loop was awaiting a person when completion was declared") || !strings.Contains(out, "fictional question") {
+		t.Fatalf("status lost the question:\n%s", out)
+	}
+	// The history has no note, by design; it records that the hold was open.
+	_, out, _ = f.run("timeline")
+	if !strings.Contains(out, "an awaiting-user hold was outstanding and ended with the completion") || strings.Contains(out, "fictional question") {
+		t.Fatalf("timeline:\n%s", out)
+	}
+	// A second complete does not replace the question, and a new note for
+	// the completion does not either.
+	if code, out, _ = f.run("complete", "--note", "fictional summary"); code != 0 || strings.Contains(out, "still open") {
+		t.Fatalf("%d %s", code, out)
+	}
+	if ctl, _ = control.Load(dir); ctl.OpenQuestion == nil || ctl.OpenQuestion.Note != "fictional question" || ctl.Note != "fictional summary" {
+		t.Fatalf("%+v", ctl)
+	}
+	// Resume reopens the task and the question goes with the completion.
+	for _, cmd := range []string{"resume"} {
+		if code, _, errs := f.run(cmd); code != 0 {
+			t.Fatal(errs)
+		}
+	}
+	if ctl, _ = control.Load(dir); ctl.OpenQuestion != nil || ctl.Completed {
+		t.Fatalf("%+v", ctl)
+	}
+}
+
+// A completion with no hold outstanding records no open question.
+func TestCompleteWithNothingHeldRecordsNoOpenQuestion(t *testing.T) {
+	f := newFixture(t)
+	for _, cmd := range []string{"enable", "complete"} {
+		if code, out, errs := f.run(cmd); code != 0 || strings.Contains(out, "still open") {
+			t.Fatal(cmd, out, errs)
+		}
+	}
+	cfg, _ := config.Load(f.cfg)
+	if ctl, _ := control.Load(cfg.Loop.StateDir); ctl.OpenQuestion != nil || !ctl.Completed {
+		t.Fatalf("%+v", ctl)
+	}
+}

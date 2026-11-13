@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -491,6 +492,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if q := ctl.OpenQuestion; q != nil {
+		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
+	}
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
 	tickBudget := out.TickBudget.Timeout
@@ -584,6 +588,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
+	}
+	if st.ResumeEpisodes > 0 {
+		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
 	}
 	if r := out.Redundancy; r != nil {
 		verdict := "handoffs allowed"
@@ -745,6 +752,58 @@ func when(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// saveEpisodeState is swapped in tests to make the save fail.
+var saveEpisodeState = state.Save
+
+// resumeEpisode is the state half of an explicit resume. A person resuming a
+// loop that keepgoing held because a per-episode allowance was spent is
+// saying "try again", so those counts start over: otherwise the next check
+// finds the same spent count and raises the same hold, and resume does
+// nothing.
+//
+// Only that hold starts a new episode. A resume with nothing held, or of a
+// hold a command created (pause, stop, await-user, complete), would
+// otherwise refund the running episode: hold and resume before every check,
+// by anyone who can run the commands, and a session in error is re-prompted
+// at every check with no backoff, cap or hold. Such a resume still gives a
+// repaired fallback or primary fresh takeover briefs, as it always has.
+//
+// Loop-wide limits are never refunded. It runs inside the control update,
+// before the holds are cleared, with the tick lock held: if the counts
+// cannot be saved the resume fails and changes nothing.
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return err
+	}
+	before := st
+	if episodeHold {
+		st.NewEpisode(at)
+	} else {
+		st.RetryRepaired()
+	}
+	if reflect.DeepEqual(before, st) {
+		return nil
+	}
+	return saveEpisodeState(stateDir, st)
+}
+
+// errEpisodeState marks a resume refused because the saved counts could not
+// be reset.
+var errEpisodeState = errors.New("the saved re-prompt and nudge counts could not be reset")
+
+// controlCaller is who is running a control command, as a role.
+func controlCaller(f control.File) string {
+	caller := os.Getenv("BB_THREAD_ID")
+	switch {
+	case caller == "":
+		return "terminal"
+	case f.Ownership != nil && f.Ownership.ThreadID == caller:
+		return "owner_thread"
+	}
+	return "other_thread"
+}
+
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
 		l, err := lock.Acquire(cfg.Loop.StateDir)
@@ -761,17 +820,31 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"enable":  func(f *control.File) { f.Enabled = true },
 		"disable": func(f *control.File) { f.Enabled = false },
 		"pause":   func(f *control.File) { f.Paused = true },
-		"resume":  func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
-		"stop":    func(f *control.File) { f.Stop = true },
+		"resume": func(f *control.File) {
+			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+			f.EpisodeHold, f.OpenQuestion = false, nil
+		},
+		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
 			if !f.Completed {
 				completionDeclaredAt = time.Now().UTC()
 			}
 			f.Completed = true
+			// The task is done, so the loop is shown as completed and not as
+			// waiting on a person. What the person was being asked is kept:
+			// the hold may have been raised by a check, for a child waiting
+			// on a person, and its note is stored nowhere else. A stop or
+			// pause is the operator's and stays.
+			if f.AwaitingUser {
+				f.OpenQuestion = &control.OpenQuestion{Note: f.Note, At: time.Now().UTC()}
+			}
+			f.AwaitingUser = false
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	f, err := updateControlWithHistory(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+	newEpisode, openQuestion := false, false
+	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+		newEpisode, openQuestion = false, false
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -783,16 +856,24 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC()); err != nil {
+				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
+			}
+			newEpisode = f.EpisodeHold
 		}
+		wasAwaiting := f.AwaitingUser
 		if !transfer {
 			fn(f)
 		} // Transferring ownership preserves disabled too.
+		openQuestion = cmd == "complete" && wasAwaiting
 		if note != "" {
 			f.Note = note
-		} else if cmd == "resume" {
-			f.Note = ""
+		} else if cmd == "resume" || openQuestion {
+			f.Note = "" // the note described the hold that has just ended
 		}
 		return nil
+	}, func(f control.File, c *incident.ControlChange) {
+		c.Caller, c.NewEpisode = controlCaller(f), newEpisode
 	}, suppliedRoutine(e.ctx))
 	historyFailed := errors.Is(err, errControlHistory)
 	if historyFailed {
@@ -804,19 +885,6 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
-	}
-	if cmd == "resume" {
-		// Resume is the operator saying "try again": a fallback or primary
-		// that was repaired gets fresh takeover briefs. The tick lock is held.
-		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
-			e.errf("warning: could not clear rejected takeover briefs: %v", err)
-		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 || st.ChildErrorNoticeAttempts > 0 {
-			st.ClearBriefs()
-			st.ChildErrorNoticeAttempts = 0 // a child-error notice that was given up is tried again
-			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
-				e.errf("warning: could not clear rejected takeover briefs: %v", err)
-			}
-		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
@@ -842,6 +910,13 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
+	if openQuestion && f.OpenQuestion != nil {
+		// The note is not repeated here; status shows it, as it shows any note.
+		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+	}
+	if cmd == "resume" && newEpisode {
+		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")
+	}
 	if cmd == "enable" && f.Ownership != nil {
 		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
 	}
@@ -849,6 +924,14 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// noteSuffix renders an optional note.
+func noteSuffix(note string) string {
+	if note == "" {
+		return ""
+	}
+	return ": " + note
 }
 
 // retargetFind looks a created thread up by its generated title. Swapped in tests.

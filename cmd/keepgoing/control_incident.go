@@ -14,7 +14,14 @@ import (
 var errControlHistory = errors.New("control saved; incident history write failed; diagnostic evidence is incomplete")
 
 func updateControlWithHistory(dir, operation string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
-	return updateControlFrom(dir, operation, "", fn, routine...)
+	return updateControlFromAnnotated(dir, operation, "", fn, nil, routine...)
+}
+
+// updateControlAnnotated is updateControlWithHistory for a command that
+// records who ran it and what else the save did. annotate runs after fn has
+// succeeded, inside the control update.
+func updateControlAnnotated(dir, operation string, fn func(*control.File) error, annotate func(control.File, *incident.ControlChange), routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFromAnnotated(dir, operation, "", fn, annotate, routine...)
 }
 
 // controlOrigins are where a control change can come from besides a command:
@@ -26,8 +33,14 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 var controlOrigins = map[string]bool{"panel": true}
 
 // updateControlFrom is updateControlWithHistory for a change from origin
-// ("" for a command). The run graph is given the plain operation.
+// ("" for a command).
 func updateControlFrom(dir, operation, origin string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFromAnnotated(dir, operation, origin, fn, nil, routine...)
+}
+
+// updateControlFromAnnotated is the one implementation: the history records
+// the operation with its origin, the run graph is given the plain operation.
+func updateControlFromAnnotated(dir, operation, origin string, fn func(*control.File) error, annotate func(control.File, *incident.ControlChange), routine ...rd.RoutineRef) (control.File, error) {
 	recorded := operation
 	if controlOrigins[origin] {
 		recorded = origin + "_" + operation
@@ -45,6 +58,9 @@ func updateControlFrom(dir, operation, origin string, fn func(*control.File) err
 		r.ControlAfter = incident.Gate(f.Gate())
 		r.ControlChange.OwnerPresentAfter = f.Ownership != nil
 		r.ControlChange.OwnershipChanged = owner != nextOwner || generation != nextGeneration
+		if annotate != nil {
+			annotate(*f, r.ControlChange)
+		}
 		return nil
 	})
 	if err != nil {
