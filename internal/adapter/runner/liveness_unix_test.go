@@ -336,3 +336,73 @@ func TestStartRefusedPartWayLeavesThePreviousTurnIntact(t *testing.T) {
 		}
 	}
 }
+
+// A start that fails after the previous turn's files were set aside puts
+// them back: a finished turn stays finished. Here the working directory does
+// not exist, so no process can be started.
+func TestAStartThatFailsLaterPutsThePreviousTurnBack(t *testing.T) {
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	work := filepath.Dir(string(d))
+	if err := d.Start([]string{fakeCLI(t, "echo first; exit 7")}, work, "first prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := waitPhase(t, d, Finished)
+	contents := func() string {
+		var b strings.Builder
+		entries, _ := os.ReadDir(string(d))
+		for _, e := range entries {
+			if e.Name() != "turn.lock" {
+				body, _ := os.ReadFile(d.path(e.Name()))
+				b.WriteString(e.Name() + "=" + string(body) + ";")
+			}
+		}
+		return b.String()
+	}
+	before := contents()
+	err := d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Join(work, "absent-directory"), "second prompt", nil)
+	var none notSpawned
+	if !errors.As(err, &none) {
+		t.Fatalf("Start in a directory that does not exist returned %v", err)
+	}
+	if after := contents(); after != before {
+		t.Fatalf("the previous turn's files changed\n before: %s\n after:  %s", before, after)
+	}
+	if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 7 || st.Incomplete || string(st.Stdout) != "first\n" || st.Record.StopKey != first.Record.StopKey {
+		t.Fatalf("the earlier turn reads as %+v %v", st, err)
+	}
+
+	// When a file cannot be put back, the start says which, and the turn is
+	// never presented as finished with the output missing: it reads as
+	// crashed and its result is marked incomplete.
+	renameFile = func(from, to string) error {
+		if filepath.Base(from) == "stdout.old" {
+			return syscall.EPERM
+		}
+		return os.Rename(from, to)
+	}
+	err = d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Join(work, "absent-directory"), "second prompt", nil)
+	renameFile = os.Rename
+	if !errors.As(err, &none) || !strings.Contains(err.Error(), "could not all be put back (stdout") || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("Start whose put-back failed returned %v", err)
+	}
+	if strings.Contains(err.Error(), work) {
+		t.Fatalf("the error names a path: %v", err)
+	}
+	st, err := d.Status()
+	if err != nil || st.Phase != Crashed || !st.Incomplete || len(st.Stdout) != 0 {
+		t.Fatalf("a turn whose output was not restored reads as %+v %v", st, err)
+	}
+	// The next start that works clears what was left aside.
+	if err := d.Start([]string{fakeCLI(t, "exit 0")}, work, "third prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if st := waitPhase(t, d, Finished); st.ExitCode != 0 || st.Incomplete {
+		t.Fatalf("%+v", st)
+	}
+	entries, _ := os.ReadDir(string(d))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".old") {
+			t.Errorf("%s was left behind", e.Name())
+		}
+	}
+}

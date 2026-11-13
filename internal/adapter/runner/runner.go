@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
@@ -238,6 +239,10 @@ type Status struct {
 	ExitCode      int
 	Stdout        []byte
 	Record        Record
+	// Incomplete: a start that failed set this turn's files aside and could
+	// not put them all back. The turn reads as crashed, and whatever output
+	// is left is not its whole result.
+	Incomplete bool
 }
 
 // Dir is one target's runner directory.
@@ -285,6 +290,9 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	}
 	crashed := func() (Status, error) {
 		st.Phase = Crashed
+		if _, err := os.Stat(d.aside("exit")); err == nil {
+			st.Incomplete = true
+		}
 		var err error
 		st.Stdout, err = d.readOutput(limit)
 		return st, err
@@ -360,23 +368,23 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 }
 
 // turnFiles are what one turn leaves, the exit code last: it is what makes a
-// turn read as finished, so it is the last to go.
-var turnFiles = []string{"exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, "exit"}
+// turn read as finished, so it is the last to go and the last to come back.
+var turnFiles = []string{"prompt", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, "exit"}
 
 // renameFile is os.Rename. Tests replace it to make one file immovable.
 var renameFile = os.Rename
 
-// clearTurn removes the previous turn's files, all of them or none. A stale
-// exit code would make the new turn read as finished before it ran, and an
-// exit code removed while another file stayed would make a finished turn read
-// as crashed. So each file is first moved aside; if one cannot be, the ones
-// already moved are put back and the start is refused with the previous
-// turn's record as it was. Only then are they deleted.
-func (d Dir) clearTurn() error {
-	aside := func(name string) string { return d.path(name + ".old") }
+func (d Dir) aside(name string) string { return d.path(name + ".old") }
+
+// setAside moves the previous turn's files out of the way, all of them or
+// none. A stale exit code would make the new turn read as finished before it
+// ran, and an exit code removed while another file stayed would make a
+// finished turn read as crashed. The files are only deleted once the new
+// turn's record is saved; until then a start that fails puts them back.
+func (d Dir) setAside() ([]string, error) {
 	var moved []string
 	for _, name := range turnFiles {
-		err := renameFile(d.path(name), aside(name))
+		err := renameFile(d.path(name), d.aside(name))
 		if err == nil {
 			moved = append(moved, name)
 			continue
@@ -384,34 +392,74 @@ func (d Dir) clearTurn() error {
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		for i := len(moved) - 1; i >= 0; i-- {
-			_ = renameFile(aside(moved[i]), d.path(moved[i]))
+		err = errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))
+		if back := d.putBack(moved); back != nil {
+			err = fmt.Errorf("%v; %v", err, back)
 		}
-		return errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))
+		return nil, err
 	}
-	for _, name := range moved {
-		_ = os.Remove(aside(name)) // a leftover is replaced by the next start
-	}
-	return nil
+	return moved, nil
 }
 
-// turnProtocol is what a binary of this build answers when asked which
-// wrapper it is. A binary that answers anything else, or nothing, is another
-// build: started as a wrapper it would run the agent without the turn lock.
+// putBack restores what setAside moved, after a start that failed. The exit
+// code comes back last, and only when everything else did: a turn whose
+// output could not be restored must not read as finished with empty output.
+// It then reads as crashed, and Status says its result is incomplete.
+func (d Dir) putBack(moved []string) error {
+	var lost []string
+	for _, name := range moved {
+		if name == "exit" && len(lost) > 0 {
+			lost = append(lost, name)
+			continue
+		}
+		os.Remove(d.path(name)) // what the failed start wrote in its place
+		if err := renameFile(d.aside(name), d.path(name)); err != nil {
+			lost = append(lost, name+errnoText(err))
+		}
+	}
+	if len(lost) == 0 {
+		return nil
+	}
+	return errors.New("runner: the previous turn's files could not all be put back (" + strings.Join(lost, ", ") + "), so its result is incomplete and it now reads as failed")
+}
+
+// discardAside deletes everything set aside, including what an earlier start
+// left when it could not put a file back.
+func (d Dir) discardAside() {
+	for _, name := range turnFiles {
+		os.Remove(d.aside(name))
+	}
+}
+
+// turnProtocol is what a binary answers when asked which turn wrapper it
+// is. It names the contract between Start and the wrapper: what the wrapper
+// locks, checks and writes. It changes only when that contract changes, not
+// with every release, so two builds with the same label can be mixed. A
+// binary that answers anything else, or nothing, would not keep the contract:
+// started as a wrapper it could run the agent without the turn lock.
 const (
 	turnProtocol = "keepgoing-turn-wrapper 2"
 	envTurnProbe = "KEEPGOING_RUN_TURN_PROBE"
 )
 
+// The two reasons a start is refused over the binary on disk. They are fixed
+// texts: the check reports them and status and doctor repeat them.
+const (
+	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process (it is another build): stop the daemon, then start it again"
+	ReasonWrapperSilent  = "the keepgoing binary on disk could not be asked which turn wrapper it is (it did not run, or did not answer in time): check that it is in place and executable, then restart the daemon"
+)
+
+// wrapperAskTimeout bounds the question. Tests shorten it.
+var wrapperAskTimeout = 10 * time.Second
+
 var agreed struct {
 	sync.Mutex
-	path string
-	size int64
-	mod  time.Time
+	info os.FileInfo
 }
 
 // wrapperAgrees asks the binary on disk which wrapper it is, once per binary:
-// the answer is kept until the file changes. It starts no turn.
+// the answer is kept until the file is replaced or changes. It starts no turn.
+// A refusal is an adapter.ErrNotStarted: nothing was sent.
 func wrapperAgrees(env []string) error {
 	// A process that was itself started to answer the question starts no
 	// turn. This only matters for a program that does not call MaybeRunTurn
@@ -421,28 +469,36 @@ func wrapperAgrees(env []string) error {
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return errors.New("runner: this program's own path could not be found")
+		return adapter.ErrNotStarted{Reason: ReasonWrapperSilent}
 	}
 	info, err := os.Stat(self)
 	if err != nil {
-		return errors.New("runner: the keepgoing binary is no longer where this process was started from; restart the daemon" + errnoText(err))
+		return adapter.ErrNotStarted{Reason: ReasonWrapperSilent}
 	}
 	agreed.Lock()
 	defer agreed.Unlock()
-	if agreed.path == self && agreed.size == info.Size() && agreed.mod.Equal(info.ModTime()) {
+	// The same file, by the platform's own identity where it has one, with
+	// the same size and modification time.
+	if agreed.info != nil && os.SameFile(agreed.info, info) && agreed.info.Size() == info.Size() && agreed.info.ModTime().Equal(info.ModTime()) {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), wrapperAskTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self)
 	cmd.Env = append(append(os.Environ(), env...), envTurnProbe+"=1")
 	cmd.WaitDelay = time.Second
 	var out bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &out, left: 256}
-	if err := cmd.Run(); err != nil || strings.TrimSpace(out.String()) != turnProtocol {
-		return errors.New("runner: the keepgoing binary on disk is not the build this process is running, so it cannot be trusted to run a turn; stop the daemon before replacing or restoring a binary, then start it again")
+	runErr := cmd.Run()
+	var exited *exec.ExitError
+	switch {
+	case ctx.Err() != nil, runErr != nil && !errors.As(runErr, &exited):
+		// It was not started, or it was cut off: no answer either way.
+		return adapter.ErrNotStarted{Reason: ReasonWrapperSilent}
+	case runErr != nil, strings.TrimSpace(out.String()) != turnProtocol:
+		return adapter.ErrNotStarted{Reason: ReasonWrapperDiffers}
 	}
-	agreed.path, agreed.size, agreed.mod = self, info.Size(), info.ModTime()
+	agreed.info = info
 	return nil
 }
 
@@ -473,8 +529,9 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 	if len(argv) == 0 {
 		return "", notSpawned{errors.New("runner: empty command")}
 	}
-	// The binary on disk is the wrapper. If it is not this build, it would run
-	// the agent without taking the turn lock: refuse before anything changes.
+	// The binary on disk is the wrapper. If it does not keep this process's
+	// wrapper contract it could run the agent without taking the turn lock:
+	// refuse before anything changes.
 	if err := wrapperAgrees(env); err != nil {
 		return "", notSpawned{err}
 	}
@@ -490,26 +547,37 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 		return "", notSpawned{err}
 	}
 	defer setup.Release()
-	if err := d.clearTurn(); err != nil {
+	moved, err := d.setAside()
+	if err != nil {
+		return "", notSpawned{err}
+	}
+	// Until the new turn's record is saved, a failure puts the previous turn
+	// back as it was: a start that could not happen must not turn a finished
+	// turn into a crashed one.
+	fail := func(err error) (string, error) {
+		if back := d.putBack(moved); back != nil {
+			err = fmt.Errorf("%v; %v", err, back)
+		}
 		return "", notSpawned{err}
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
-		return "", notSpawned{err}
+		return fail(errors.New("runner: the prompt could not be written" + errnoText(err)))
 	}
 	key, err := randomStopID()
 	if err != nil {
-		return "", notSpawned{err}
+		return fail(err)
 	}
 	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key), acp)
 	if err != nil {
-		return "", notSpawned{err}
+		return fail(err)
 	}
 	rec := Record{StopKey: key, PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0]), Liveness: livenessLock}
 	if err := d.saveRecord(rec); err != nil {
 		// The previous record stands. The wrapper that was started takes the
 		// lock, finds that no record names it, and runs nothing.
-		return "", notSpawned{errors.New("runner: the turn record could not be saved" + errnoText(err))}
+		return fail(errors.New("runner: the turn record could not be saved" + errnoText(err)))
 	}
+	d.discardAside()
 	// A release that failed shows up as a wrapper that cannot start.
 	_ = setup.Release()
 	switch err := d.awaitWrapper(key, wrapperStartTimeout); err {

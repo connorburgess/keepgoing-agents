@@ -99,6 +99,15 @@ type ErrUnsupported struct{ Op string }
 
 func (e ErrUnsupported) Error() string { return e.Op + " is not supported by this adapter" }
 
+// ErrNotStarted marks a send the adapter refused before anything could reach
+// the agent: nothing was sent and nothing was started, for a reason outside
+// the agent and the provider that a person has to put right. Reason is a
+// fixed text with no path, command or agent output in it. A check does not
+// count such a send against any limit.
+type ErrNotStarted struct{ Reason string }
+
+func (e ErrNotStarted) Error() string { return "nothing was sent: " + e.Reason }
+
 // ClassifyCode maps a structured error code (a string token or an HTTP or
 // exit status) to an error class. It is deliberately strict: only well-known
 // codes classify, anything else is unknown. Callers must pass codes, not

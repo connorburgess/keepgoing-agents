@@ -216,54 +216,64 @@ func TestLegacyRecordFromBeforeTheMachineStartedIsCrashed(t *testing.T) {
 	}
 }
 
-// A binary on disk that is not this build would run the agent as a wrapper
-// without taking the turn lock, so the daemon would see no turn and start
-// another. Start asks the binary which wrapper it is first, and refuses,
-// changing nothing and running nothing, when the answer is not its own.
-func TestStartRefusesABinaryFromAnotherBuild(t *testing.T) {
+// A binary on disk that does not keep this process's wrapper contract would
+// run the agent without taking the turn lock, so the daemon would see no turn
+// and start another. Start asks the binary which wrapper it is first, and
+// refuses, changing nothing and running nothing, unless the answer is its own.
+// The refusal says nothing was sent, and tells a binary that answered
+// differently from one that could not be asked.
+func TestStartRefusesABinaryThatIsNotItsOwnWrapper(t *testing.T) {
 	forget := func() {
 		agreed.Lock()
-		agreed.path = ""
+		agreed.info = nil
 		agreed.Unlock()
 	}
 	forget()
 	t.Cleanup(forget)
+	previous := wrapperAskTimeout
+	t.Cleanup(func() { wrapperAskTimeout = previous })
 	d := Dir(filepath.Join(t.TempDir(), "target"))
 	cli := helperCLI(t, "{}", 0, 0)
-	err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"})
-	var none notSpawned
-	if !errors.As(err, &none) || !strings.Contains(err.Error(), "stop the daemon before replacing or restoring a binary") {
-		t.Fatalf("Start with another build's binary on disk returned %v", err)
+	for fault, reason := range map[string]string{"other-build": ReasonWrapperDiffers, "silent": ReasonWrapperSilent} {
+		wrapperAskTimeout = previous
+		if fault == "silent" {
+			wrapperAskTimeout = 500 * time.Millisecond
+		}
+		err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=" + fault})
+		var refused adapter.ErrNotStarted
+		var none notSpawned
+		if !errors.As(err, &refused) || refused.Reason != reason || !errors.As(err, &none) {
+			t.Fatalf("%s: Start returned %v", fault, err)
+		}
+		time.Sleep(300 * time.Millisecond)
+		if _, statErr := os.Stat(string(d)); !os.IsNotExist(statErr) || ranAgent(cli) {
+			t.Fatalf("%s: a refused start created the turn directory or ran the agent", fault)
+		}
+		if strings.Contains(err.Error(), filepath.Dir(string(d))) || strings.Contains(err.Error(), filepath.Base(os.Args[0])) {
+			t.Fatalf("%s: the refusal names a path: %v", fault, err)
+		}
 	}
-	time.Sleep(300 * time.Millisecond)
-	if _, statErr := os.Stat(string(d)); !os.IsNotExist(statErr) || ranAgent(cli) {
-		t.Fatal("a refused start created the turn directory or ran the agent")
-	}
-	if strings.Contains(err.Error(), filepath.Dir(string(d))) {
-		t.Fatalf("the refusal names a path: %v", err)
-	}
-	// This build's own binary answers, once: a second start does not ask again.
+	wrapperAskTimeout = previous
+	// This binary answers, and the answer is kept: a later start does not ask
+	// again, even one whose environment would make the binary answer wrongly.
 	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, d, Finished)
-	agreed.Lock()
-	remembered := agreed.path != ""
-	agreed.Unlock()
-	if !remembered {
-		t.Fatal("the answer was not kept")
-	}
-	// Kept answers are not asked for again, even by a turn whose environment
-	// would make the binary answer wrongly; a changed file is asked again.
 	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"}); err != nil {
 		t.Fatalf("a kept answer was asked for again: %v", err)
 	}
 	waitFor(t, d, Finished)
+	// A different file where the binary was is asked again.
+	other, err := os.Stat(cli)
+	if err != nil {
+		t.Fatal(err)
+	}
 	agreed.Lock()
-	agreed.size++
+	agreed.info = other
 	agreed.Unlock()
 	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"}); err == nil {
-		t.Fatal("a binary that changed on disk was not asked again")
+		t.Fatal("a replaced binary was not asked again")
 	}
 }
 

@@ -107,6 +107,11 @@ func runTurn(dir string, argv []string) int {
 			code = 127
 		}
 	}
+	// Close the output files before the exit code is published. Once a reader
+	// can see the code, the next start may move these files, and on Windows
+	// a file that is still open cannot be moved.
+	stdout.Close()
+	stderr.Close()
 	tmp := filepath.Join(dir, "exit.tmp")
 	if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
 		publishExit(dir, tmp)

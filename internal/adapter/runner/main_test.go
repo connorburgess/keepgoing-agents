@@ -16,9 +16,15 @@ func TestMain(m *testing.M) {
 	// Faults for a process started as a turn wrapper. The agent it starts does
 	// not get the wrapper's variables, so these never apply to the agent.
 	// A binary from another build does not know the question a start asks.
-	if os.Getenv(envTurnProbe) != "" && os.Getenv("KEEPGOING_TEST_WRAPPER") == "other-build" {
-		os.Stdout.WriteString("usage: keepgoing <command>\n")
-		os.Exit(2)
+	if os.Getenv(envTurnProbe) != "" {
+		switch os.Getenv("KEEPGOING_TEST_WRAPPER") {
+		case "other-build":
+			os.Stdout.WriteString("usage: keepgoing <command>\n")
+			os.Exit(2)
+		case "silent": // never answers
+			time.Sleep(20 * time.Second)
+			os.Exit(0)
+		}
 	}
 	if os.Getenv(envTurnDir) != "" {
 		switch fault := os.Getenv("KEEPGOING_TEST_WRAPPER"); fault {
