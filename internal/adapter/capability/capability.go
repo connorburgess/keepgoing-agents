@@ -54,6 +54,8 @@ type Adapter struct {
 	// of which decision inputs it can produce.
 	Files []string
 	// Inputs are the decide.Observation fields the adapter's code refers to.
+	// For an agent on the runner contract the shared runner (spec.go) sets
+	// the fields, so its Inputs are what its specification can produce.
 	// The decision engine can only act on what an adapter can report.
 	Inputs []string
 	// Activator and WakePoller say the adapter implements those optional
@@ -81,16 +83,17 @@ var Adapters = []Adapter{
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/claude.go"},
+		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "codex", Title: "Codex headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/codex.go"},
+		Files:  []string{"internal/adapter/runner/codex.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "ResetsAt", "State"}},
 	{ID: "cursor", Title: "Cursor headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/cursor.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "antigravity", Title: "Antigravity", Registered: false,
-		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go"}},
+		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go",
+			"internal/adapter/runner/antigravity_runner.go", "internal/adapter/runner/antigravity_worker.go"}},
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
@@ -276,7 +279,7 @@ var Matrix = []Behaviour{
 			"codex":   {Missing, None, "The sandbox setting is passed to the CLI. No typed permission state is read.", []Ref{d("docs/configuration.md")}},
 			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
-		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
 }
 
 // Render returns the generated part of docs/adapters.md.

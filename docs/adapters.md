@@ -257,7 +257,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 - **Claude Code headless:** missing, evidence none. permission_mode is passed to the CLI. A headless turn cannot wait for approval and reports no typed permission state. [configuration.md](configuration.md)
 - **Codex headless:** missing, evidence none. The sandbox setting is passed to the CLI. No typed permission state is read. [configuration.md](configuration.md)
 - **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. [cursor.md](cursor.md)
-- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered. [antigravity.md](antigravity.md)
+- **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
 <!-- capability-matrix:end -->
 
