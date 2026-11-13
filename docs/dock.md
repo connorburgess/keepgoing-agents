@@ -153,6 +153,48 @@ Throughout:
 
 The page follows the browser's light or dark setting and text size, works with a keyboard, and reflows to a phone-width window. When it reads again, the keyboard focus, the scroll position and any text being selected stay where they were. A screen reader is told when what needs you changes and when a read fails, not the time of every read.
 
+### The no-progress flag
+
+A loop that keeps being prompted without results is flagged. The flag is built only from recorded facts: the transcript is never read, and no quality is judged. It informs a person and does nothing else. It is never "needs you", never stops "nothing needs you" being said, is never sent in a report or webhook, and never pauses, moves or stops anything.
+
+**Where it shows.**
+- The picker: a flagged loop's row says "no progress", and it is listed under "Worth knowing" with the fact that raised the flag.
+- The loop's page: a Progress card, and a Progress line under "Checks and limits".
+- `keepgoing panel list --json` and the macOS menu carry the same sentence.
+- `status` prints it after the label "progress flag:" (a neutral label, since the line may say "Not available"), and `status --json` carries it as `noProgress`. Both come from the same function as the panel, so they cannot disagree.
+
+It is shown only for a loop that is on. An off, stopped or finished loop reads "Not shown: the loop is stopped" (or off, or finished).
+
+**The window** starts when a check last saw the repositories' fingerprint change. This time is recorded in the loop's state as `progressChangedAt` and is never moved by `no_progress_timeout`'s credits for sleep or an outage. When no change has been seen since a check first recorded the repositories, that first record starts the window as a baseline, and the flag says "in at least 3 h". A loop whose state predates this field starts a baseline at its next check. A message or check made by the check that recorded the change counts as after it.
+
+**The facts**, counted in the window:
+
+- **Messages:** each send in the loop's run graph that the adapter returned from. That covers wakes, nudges, re-prompts sent as a prompt, notices to a parent about failed lanes, and the brief sent when the loop moves to another route or back to its first.
+  - **Turn retries** count only when the provider accepted them (`retried` or `queued`), and that is read from the check's recorded answer. The run graph records every turn retry as returned, whatever the provider answered, so those attempts are not counted from it.
+  - **Not counted:** a send the adapter refused, and a turn retry that sent nothing (`already_queued`, `not_in_error`, `refused`). A turn retry that fell back to a prompt (`nothing_to_retry`, `unsupported`) counts once, as the prompt.
+  - **"At least":** a check that recorded a send with no matching attempt in the run graph (its write failed), a send whose result was never saved (`intent`), or a retry whose queueing was unconfirmed makes the count "at least".
+
+  Six raise the flag by default (`progress.flag_after_sends`).
+- **Errors and retries:** checks that found the session in error, or whose turn retry the provider accepted. Four raise the flag by default (`progress.flag_after_errors`).
+- **Held for a person:** how long the loop was held waiting for a person in the time its history covers, worded "Held for a person for 2 h 10 min of the last 6 h". It raises nothing. No "working" time is given, because keepgoing sees a session only at its checks.
+
+**When the records are short.** The run graph keeps its newest 128 attempts, and the incident history prunes each tier and records the newest pruned time. When either no longer covers the whole window for a fact, that count is "at least N". A lower bound that has reached its threshold still raises the flag. One below it cannot say "clear", so the flag reads "Not enough history to tell: the retained history covers only the last 40 min". Held time is counted only over the covered part, and then says "of the last 40 min, which is as far back as its history covers". A run of identical checks that the history folded into one record counts each check when the whole run is in the window, and is "at least" otherwise.
+
+**Other cases.**
+- Without `progress.repositories`: "Not available: no progress source is configured".
+- Before any check has recorded the repositories: "Not available: no check has recorded its progress repositories yet".
+- With the change time ahead of the computer's clock: "Not available: the progress time is ahead of this computer's clock".
+- With any record it reads dated after the clock (the clock stepped back): "Not available: some of its records are dated after this computer's clock". No count or span measured to now could be exact then.
+- A window under a minute reads "in the last minute".
+- With both thresholds at 0, the flag is off.
+- Thresholds must be whole numbers from 0 to 1000; `2.5` or `"6"` is refused.
+- The flag reads the run graph, then the history, then the loop's state, without a lock, so it is not one snapshot. The state that sets the window is read last. A read made while a check is writing can therefore leave that check's own records out for one refresh, but it cannot make a change look like no change.
+- **Rolling back** to a binary from before this flag: it drops `progressChangedAt` when it saves the loop's state, which only means the flag starts a new baseline after upgrading again. It also refuses a configuration that sets `progress.flag_after_sends` or `progress.flag_after_errors` as unknown fields, so remove them first. `examples/keepgoing.bb.yaml` sets both.
+
+Not in this flag:
+- **Lanes:** keepgoing records a loop's lanes only as counts and hashed keys, with no sends or progress of their own, so a lane cannot be flagged until lanes have their own records.
+- **Allowance used:** only the newest usage reading is kept, with no history, so "used since the last change" cannot be computed.
+
 ## What it reads, and what it never does
 
 Each read goes through the code paths of commands that already exist, and adds no evidence of its own:
