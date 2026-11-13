@@ -416,3 +416,38 @@ func TestResumeKeepStopSettlesABriefHoldAndKeepsTheStop(t *testing.T) {
 		t.Fatal("--keep-stop accepted by pause")
 	}
 }
+
+// With max_reprompts 1, a resume of a brief hold must not cap the briefed
+// fallback: a cap of one would leave the loop with no fallback, waiting out
+// a limit with no hold. The fallback is not spaced either; the next check
+// briefs no route. A switch-back brief is spaced by retry_every and never
+// counted toward its cap, so the resume cannot end switch-back by itself.
+func TestResumeOfABriefHoldNeverCapsTheRoute(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := state.Save(dir, state.File{SwitchBackRejected: 0}); err != nil {
+		t.Fatal(err)
+	}
+	briefs := []control.Brief{{Action: "handoff", Target: "fallback-example"}, {Action: "switch_back", Target: "fallback-example-2"}}
+	if err := resumeEpisode(dir, false, at, 1, briefs...); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := state.Load(dir)
+	r := st.HandoffBriefs["fallback-example"]
+	if r.Failed != 0 || !r.LastAt.Equal(at) || st.SwitchBackRejected != 0 || !st.LastSwitchBackTry.Equal(at) || !st.SkipHandoffOnce || len(st.ResumedBriefs) != 2 {
+		t.Fatalf("cap 1: %+v", st)
+	}
+	// With a larger cap the fallback is spaced like a rejected brief. Every
+	// resume clears earlier rejected briefs (a repaired fallback gets fresh
+	// ones), so this one counts from zero.
+	dir = t.TempDir()
+	if err := state.Save(dir, state.File{HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 2, LastAt: at.Add(-time.Hour)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumeEpisode(dir, false, at, 3, briefs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = state.Load(dir); st.HandoffBriefs["fallback-example"].Failed != 1 || !st.HandoffBriefs["fallback-example"].LastAt.Equal(at) {
+		t.Fatalf("cap 3: %+v", st.HandoffBriefs)
+	}
+}
