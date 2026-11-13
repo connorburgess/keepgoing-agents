@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 		os.Exit(code)
 	case "environment":
 		input, _ := io.ReadAll(os.Stdin)
-		value := os.Getenv(envTurnDir) + "|" + os.Getenv(envTurnArgv) + "|" + os.Getenv(envTurnKey) + "|" + string(input)
+		value := os.Getenv(envTurnDir) + os.Getenv(envTurnACP) + "|" + os.Getenv(envTurnArgv) + "|" + os.Getenv(envTurnKey) + "|" + string(input)
 		if os.WriteFile(os.Getenv("KEEPGOING_TEST_RESULT"), []byte(value), 0600) != nil {
 			os.Exit(2)
 		}

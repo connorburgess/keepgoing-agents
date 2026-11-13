@@ -103,7 +103,12 @@ func turnChildEnv() []string {
 
 // wrapperCommand builds the command that re-runs this executable as the
 // turn wrapper for argv.
-func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd, error) {
+//
+// acp selects the ACP worker and is the only way to do so. The variable that
+// carries it is removed from the inherited environment and from the loop's
+// own entries first, so a value set anywhere else can never divert a turn of
+// any runner into that worker.
+func wrapperCommand(argv []string, workdir, dir string, env []string, acp string) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -115,6 +120,14 @@ func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd
 	cmd := exec.Command(self)
 	configureWrapper(cmd)
 	cmd.Dir = workdir
-	cmd.Env = append(append(os.Environ(), env...), envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
+	for _, kv := range append(os.Environ(), env...) {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnACP) {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
+	if acp != "" {
+		cmd.Env = append(cmd.Env, envTurnACP+"="+acp)
+	}
 	return cmd, nil
 }

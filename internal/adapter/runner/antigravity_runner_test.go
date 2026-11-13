@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
@@ -46,9 +47,16 @@ func antigravityStandIn() {
 		b, _ := json.Marshal(v)
 		_, _ = os.Stdout.Write(append(b, '\n'))
 	}
+	awaitRelease := func() {
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(release); err == nil {
+				return
+			}
+		}
+	}
 	_, _ = os.Stderr.WriteString("fictional rate limit 429 authentication network failure; permission denied\n")
 	cwd, _ := os.Getwd()
-	note(map[string]any{"event": "start", "args": os.Args[1:], "cwd": cwd, "value": os.Getenv("KEEPGOING_AGY_VALUE"),
+	note(map[string]any{"event": "start", "pid": os.Getpid(), "args": os.Args[1:], "cwd": cwd, "value": os.Getenv("KEEPGOING_AGY_VALUE"),
 		"wrapperEnv": os.Getenv(envTurnDir) + os.Getenv(envTurnArgv) + os.Getenv(envTurnKey) + os.Getenv(envTurnACP)})
 	if mode == "garbage" {
 		_, _ = os.Stdout.WriteString("rate limit 429: this is not a protocol frame\n")
@@ -92,6 +100,9 @@ func antigravityStandIn() {
 			send(map[string]any{"id": f.ID, "result": map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{"sessionCapabilities": map[string]any{"resume": map[string]any{}}}}})
 		case "session/new":
 			note(map[string]any{"event": "new", "cwd": text(f.Params["cwd"])})
+			if mode == "slow-setup" {
+				awaitRelease()
+			}
 			send(map[string]any{"id": f.ID, "result": map[string]any{"sessionId": antigravitySession}})
 		case "session/resume":
 			note(map[string]any{"event": "resume", "session": text(f.Params["sessionId"])})
@@ -101,14 +112,17 @@ func antigravityStandIn() {
 			_ = json.Unmarshal(f.Params["prompt"], &parts)
 			session := text(f.Params["sessionId"])
 			note(map[string]any{"event": "prompt", "text": parts[0].Text, "session": session, "reservedOnDisk": onDisk(antigravityACPReservedName)})
-			if release != "" {
-				for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-					if _, err := os.Stat(release); err == nil {
-						break
-					}
-				}
+			if release != "" && mode != "slow-setup" {
+				awaitRelease()
 			}
 			switch mode {
+			case "kill-worker":
+				// The agent's parent is the worker: end it abruptly, as a crash
+				// would, through this live parent relationship.
+				if parent, err := os.FindProcess(os.Getppid()); err != nil || parent.Kill() != nil {
+					os.Exit(6)
+				}
+				os.Exit(0)
 			case "exit-early":
 				os.Exit(3)
 			case "permission":
@@ -532,9 +546,16 @@ func TestAntigravityRunnerOwnedStopOnThisPlatform(t *testing.T) {
 	if obs := w.observe(t); !unknownError(obs) {
 		t.Fatalf("stopped turn %+v", obs)
 	}
-	if len(w.named(t, "eof")) != 0 {
-		// The stand-in ends with its group or job; it must not have run on.
-		t.Fatalf("agent outlived the stop: %v", w.events(t))
+	// The agent ends with the worker's group or job. It must actually be gone:
+	// it never saw its stdin close, and its process no longer exists.
+	agent := int(w.named(t, "start")[0]["pid"].(float64))
+	for deadline := time.Now().Add(15 * time.Second); alive(agent); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("agent process %d survived the stop", agent)
+		}
+	}
+	if len(w.named(t, "eof")) != 0 || len(w.named(t, "prompt")) != 1 {
+		t.Fatalf("agent ran on after the stop: %v", w.events(t))
 	}
 	// The prompt had been reserved, so the next turn resumes that conversation.
 	if err := os.WriteFile(w.release, nil, 0o600); err != nil {
@@ -554,28 +575,26 @@ func TestAntigravityRunnerOwnedStopOnThisPlatform(t *testing.T) {
 	}
 }
 
-// A worker that died after reserving its prompt leaves a reservation with no
-// outcome. Whether the prompt was delivered is unknown; the conversation is not.
+// A worker that dies after reserving its prompt leaves a reservation with no
+// outcome and no exit record. Whether the prompt was delivered is unknown; the
+// conversation is not. Here the stand-in agent kills its own parent, the
+// worker, right after the prompt arrives.
 func TestAntigravityRunnerReconcilesAnUnconfirmedReservation(t *testing.T) {
-	w := newAntigravityWorld(t, "ok", false)
-	turn, err := randomStopID()
-	if err != nil {
+	w := newAntigravityWorld(t, "kill-worker", false)
+	w.send(t, "fictional task")
+	w.await(t, "prompt", 1)
+	waitFor(t, w.a.dir, Crashed)
+	turn, ok, err := w.a.dir.antigravityTurn()
+	if err != nil || !ok {
 		t.Fatal(err)
 	}
 	turnDir := w.a.dir.antigravityTurnDir(turn)
-	if err := os.MkdirAll(string(turnDir), 0o700); err != nil {
-		t.Fatal(err)
+	if _, has, _ := turnDir.antigravityOutcome(); has {
+		t.Fatal("fixture: the worker was meant to die before saving an outcome")
 	}
-	if err := w.a.dir.saveAntigravityTurn(turn); err != nil {
-		t.Fatal(err)
-	}
-	if err := turnDir.AntigravityACPHoldCheckpoint(turn)(context.Background(), AntigravityACPCheckpoint{SessionID: antigravitySession, BeforePrompt: true}); err != nil {
-		t.Fatal(err)
-	}
-	// A process ID that is not running, and no exit record: the worker is gone.
-	dead, _ := json.Marshal(Record{PID: 1 << 30, StartedAt: time.Now().UTC(), Argv0: "fictional"})
-	if err := os.WriteFile(w.a.dir.path("run.json"), dead, 0o600); err != nil {
-		t.Fatal(err)
+	before, err := os.ReadFile(turnDir.path(antigravityACPReservedName))
+	if err != nil {
+		t.Fatalf("the reservation must have been saved before the prompt: %v", err)
 	}
 	for i := 0; i < 2; i++ {
 		if obs := w.observe(t); !unknownError(obs) {
@@ -585,15 +604,15 @@ func TestAntigravityRunnerReconcilesAnUnconfirmedReservation(t *testing.T) {
 	if session, err := w.a.dir.antigravitySession(); err != nil || session != antigravitySession {
 		t.Fatalf("conversation from the reservation: %q %v", session, err)
 	}
-	// Nothing is replayed by observing. A later send is a new turn that resumes
-	// exactly the reserved conversation and leaves the old records untouched.
-	if len(w.events(t)) != 0 {
+	// Observing replays nothing. A later send is a new turn that resumes exactly
+	// the reserved conversation and leaves the old records untouched.
+	if len(w.named(t, "prompt")) != 1 || len(w.named(t, "start")) != 1 {
 		t.Fatalf("observation started an agent: %v", w.events(t))
 	}
-	before, _ := os.ReadFile(turnDir.path(antigravityACPReservedName))
+	w.a.cfg.Env["KEEPGOING_AGY_MODE"] = "ok"
 	w.send(t, "fictional recovery prompt")
 	waitFor(t, w.a.dir, Finished)
-	if resumes := w.await(t, "resume", 1); resumes[0]["session"] != antigravitySession || len(w.named(t, "new")) != 0 {
+	if resumes := w.await(t, "resume", 1); resumes[0]["session"] != antigravitySession || len(w.named(t, "new")) != 1 {
 		t.Fatalf("%v", w.events(t))
 	}
 	if after, _ := os.ReadFile(turnDir.path(antigravityACPReservedName)); string(after) != string(before) || len(w.turns(t)) != 2 {
@@ -601,6 +620,160 @@ func TestAntigravityRunnerReconcilesAnUnconfirmedReservation(t *testing.T) {
 	}
 	if obs := w.observe(t); obs.State != decide.Idle {
 		t.Fatalf("%+v", obs)
+	}
+}
+
+// If the supervisor dies between starting a worker and recording which worker
+// it started, that worker is alive but no record identifies it. Nothing may be
+// sent beside it, whatever an older run record says.
+func TestAntigravityRunnerFailsClosedOnAnUnconfirmedWorker(t *testing.T) {
+	unconfirmed := func(t *testing.T, w *antigravityWorld) {
+		t.Helper()
+		turn, err := randomStopID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(string(w.a.dir.antigravityTurnDir(turn)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.a.dir.saveAntigravityTurn(turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(t *testing.T, w *antigravityWorld, prompts int) {
+		t.Helper()
+		for i := 0; i < 2; i++ {
+			obs, err := w.rebuilt().Observe(context.Background())
+			if !errors.Is(err, errAntigravityUnconfirmed) || obs.State != decide.Unknown || obs.ErrorClass != decide.ErrUnknown {
+				t.Fatalf("observe %+v %v", obs, err)
+			}
+			if err := w.rebuilt().Send(context.Background(), "must not be sent", adapter.ModeAuto); !errors.Is(err, errAntigravityUnconfirmed) {
+				t.Fatalf("send beside an unconfirmed worker: %v", err)
+			}
+		}
+		if len(w.named(t, "prompt")) != prompts {
+			t.Fatalf("a refused send reached an agent: %v", w.events(t))
+		}
+	}
+	t.Run("first turn, no run record", func(t *testing.T) {
+		w := newAntigravityWorld(t, "ok", false)
+		unconfirmed(t, w)
+		refused(t, w, 0)
+	})
+	t.Run("an earlier turn's run record is not this turn's", func(t *testing.T) {
+		w := newAntigravityWorld(t, "ok", false)
+		w.send(t, "fictional task")
+		waitFor(t, w.a.dir, Finished)
+		if obs := w.observe(t); obs.State != decide.Idle {
+			t.Fatalf("%+v", obs)
+		}
+		unconfirmed(t, w)
+		refused(t, w, 1)
+	})
+	t.Run("a start that created no process is not unconfirmed", func(t *testing.T) {
+		w := newAntigravityWorld(t, "ok", false)
+		good := w.a.cfg.Workdir
+		w.a.cfg.Workdir = filepath.Join(good, "absent-directory")
+		if err := w.a.Send(context.Background(), "fictional task", adapter.ModeAuto); err == nil {
+			t.Fatal("started a worker in a directory that does not exist")
+		}
+		// Nothing was started, so the failure is an ordinary unknown error and a
+		// later send may proceed, as a new conversation.
+		if obs := w.observe(t); !unknownError(obs) {
+			t.Fatalf("%+v", obs)
+		}
+		w.a.cfg.Workdir = good
+		w.send(t, "fictional retry")
+		waitFor(t, w.a.dir, Finished)
+		if obs := w.observe(t); obs.State != decide.Idle || len(w.named(t, "new")) != 1 || len(w.named(t, "prompt")) != 1 {
+			t.Fatalf("%+v %v", obs, w.events(t))
+		}
+	})
+}
+
+// A worker that is no longer the current turn's must neither write a prompt
+// nor touch the target's shared exit record.
+func TestAntigravityRunnerOvertakenWorkerStaysSilent(t *testing.T) {
+	overtake := func(t *testing.T, w *antigravityWorld) {
+		t.Helper()
+		turn, _ := randomStopID()
+		if err := w.a.dir.saveAntigravityTurn(turn); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(w.release, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w.await(t, "eof", 1) // the worker has closed the agent's stdin
+		time.Sleep(300 * time.Millisecond)
+		if _, err := os.Stat(w.a.dir.path("exit")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("an overtaken worker wrote the shared exit record: %v", err)
+		}
+	}
+	t.Run("overtaken during setup", func(t *testing.T) {
+		w := newAntigravityWorld(t, "slow-setup", true)
+		w.send(t, "fictional task")
+		w.await(t, "new", 1)
+		overtake(t, w)
+		if len(w.named(t, "prompt")) != 0 {
+			t.Fatalf("an overtaken worker wrote its prompt: %v", w.events(t))
+		}
+		if found, _ := filepath.Glob(filepath.Join(string(w.a.dir), antigravityTurnsDir, "*", antigravityACPReservedName)); len(found) != 0 {
+			t.Fatalf("an overtaken worker reserved a prompt: %v", found)
+		}
+	})
+	t.Run("overtaken after its prompt", func(t *testing.T) {
+		w := newAntigravityWorld(t, "ok", true)
+		w.send(t, "fictional task")
+		w.await(t, "prompt", 1)
+		overtake(t, w)
+	})
+}
+
+// The variable that selects the ACP worker means something only when the
+// Antigravity runner sets it. Inherited from the supervisor's environment or
+// set in a loop's own env, it must not change any other runner's turn.
+func TestInheritedACPSelectorCannotDivertOtherRunners(t *testing.T) {
+	hostile := `{"turn":"` + strings.Repeat("a", 64) + `","handshakeMs":1,"exitMs":1}`
+	t.Setenv(envTurnACP, hostile)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for name, start := range map[string]func(root, result string, env map[string]string) (Dir, error){
+		"claude": func(root, result string, env map[string]string) (Dir, error) {
+			c := NewClaude(config.Claude{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+			return c.dir, c.Send(ctx, "fictional prompt", adapter.ModeAuto)
+		},
+		"codex": func(root, result string, env map[string]string) (Dir, error) {
+			c := NewCodex(config.Codex{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+			return c.dir, c.Send(ctx, "fictional prompt", adapter.ModeAuto)
+		},
+		"cursor": func(root, result string, env map[string]string) (Dir, error) {
+			c := NewCursor(config.Cursor{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+			return c.dir, c.Send(ctx, "fictional prompt", adapter.ModeAuto)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			result := filepath.Join(root, "result")
+			dir, err := start(root, result, map[string]string{"KEEPGOING_TEST_HELPER": "environment", "KEEPGOING_TEST_RESULT": result, envTurnACP: hostile})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, dir, Finished)
+			st, err := dir.Status()
+			if err != nil || !st.ExitCodeKnown || st.ExitCode != 0 {
+				t.Fatalf("the turn did not run as an ordinary turn: %+v %v", st, err)
+			}
+			got, err := os.ReadFile(result)
+			if err != nil || !strings.HasSuffix(string(got), "|fictional prompt") || strings.Contains(string(got), "handshakeMs") {
+				t.Fatalf("agent input or environment: %q %v", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(string(dir), antigravityTurnsDir)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("an ordinary turn created ACP records")
+			}
+		})
 	}
 }
 
@@ -662,6 +835,14 @@ func TestAntigravityRunnerRefusesInconsistentRecords(t *testing.T) {
 		},
 		"hold record is unreadable": func(t *testing.T, w *antigravityWorld) {
 			write(t, current(t, w).path(antigravityACPReservedName), `not json`)
+		},
+		"start confirmation names another worker": func(t *testing.T, w *antigravityWorld) {
+			turn, _, _ := w.a.dir.antigravityTurn()
+			write(t, current(t, w).path(antigravityStartedName), `{"version":1,"turn":"`+turn+`","stopKey":"`+other+`"}`)
+		},
+		"start both confirmed and denied": func(t *testing.T, w *antigravityWorld) {
+			turn, _, _ := w.a.dir.antigravityTurn()
+			write(t, current(t, w).path(antigravityNotStartedName), `{"version":1,"turn":"`+turn+`"}`)
 		},
 		"unexpected protocol output file": func(t *testing.T, w *antigravityWorld) {
 			write(t, w.a.dir.path("stdout"), strings.Repeat("x", antigravityStdoutLimit+1))

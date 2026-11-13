@@ -33,25 +33,37 @@ type antigravityTurnSpec struct {
 // Three waits are bounded: session setup, by killing the agent this process
 // started; the agent's exit after its turn, likewise; and a stop request,
 // which the wrapper's own stop channel handles by ending this process group
-// or job. The turn itself has no time limit, as for the other runners.
+// or job. The turn has no time limit, but the exchange ends it after the
+// gate's frame and byte bounds, which count every streamed update.
 func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 	d := Dir(dir)
-	record := func(code int) int {
-		tmp := d.path("exit.tmp")
-		if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
-			os.Rename(tmp, d.path("exit"))
-		}
-		return code
-	}
 	var spec antigravityTurnSpec
 	if json.Unmarshal([]byte(raw), &spec) != nil || !validStopID(spec.Turn) || spec.HandshakeMs <= 0 || spec.ExitMs <= 0 {
-		return record(2)
+		return 2 // not a turn Send started: touch nothing
+	}
+	current := func() bool {
+		turn, ok, err := d.antigravityTurn()
+		return err == nil && ok && turn == spec.Turn
+	}
+	// The exit record is shared by the target. Only the current turn's worker
+	// may write it; a worker overtaken by a later turn leaves it alone.
+	record := func(code int) int {
+		if !current() {
+			return code
+		}
+		tmp := d.path("exit.tmp-" + spec.Turn)
+		if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
+			if !current() || os.Rename(tmp, d.path("exit")) != nil {
+				os.Remove(tmp)
+			}
+		}
+		return code
 	}
 	turnDir := d.antigravityTurnDir(spec.Turn)
 	out := antigravityOutcome{turn: spec.Turn, failed: true}
 	// Refuse to run for anything but the turn Send recorded last.
-	if current, ok, err := d.antigravityTurn(); err != nil || !ok || current != spec.Turn {
-		return record(2)
+	if !current() {
+		return 2
 	}
 	fail := func(code int) int {
 		_ = turnDir.saveAntigravityOutcome(out)
@@ -118,6 +130,11 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 	checkpoint := func(ctx context.Context, c AntigravityACPCheckpoint) error {
 		if c.BeforePrompt {
 			setup.Do(func() { close(setupDone) })
+			// Setup can take long enough for a later turn to be recorded. A
+			// worker that is no longer current must not write its prompt.
+			if !current() {
+				return errAntigravityRecords
+			}
 		}
 		return hold(ctx, c)
 	}

@@ -73,7 +73,8 @@ Only fixtures reach this path: a real stream exchange writing the real records, 
 Each send starts one detached worker through the same wrapper the other runners use, and returns without waiting. The worker starts the agent with private pipes for stdin and stdout, drives one `ExchangeAntigravityACP`, and exits:
 
 - **Private structured stdin.** The prompt is written to the private prompt file, then framed as one ACP message on the agent's stdin. It is never an argument. The protocol stream is not stored; the agent's stderr goes to a file that nothing reads.
-- **One turn per send, each in its own directory.** Send records a random turn identity in `acp-turn.json` and creates `acp-turns/<turn>/`. The saved hold records live there, so they stay create-once while later turns roll over to new directories. The worker refuses to run for any turn but the one recorded last.
+- **One turn per send, each in its own directory.** Send records a random turn identity in `acp-turn.json` and creates `acp-turns/<turn>/`. The saved hold records live there, so they stay create-once while later turns roll over to new directories. The worker refuses to run for any turn but the one recorded last, and checks again before it writes its prompt and before it writes the target's shared exit record, so a worker overtaken by a later turn does neither.
+- **Confirmed worker.** After starting the worker, Send publishes `acp-started.json` with that worker's stop key, or `acp-not-started.json` when no process could be created. The run record must carry the confirmed key. A turn with neither record is unconfirmed, for example because the supervisor died between starting the worker and recording it: a worker may be alive that nothing identifies, so the observation is unknown and every send is refused until a person inspects the target directory. No command clears that state yet.
 - **Checkpointed prompt attempt.** The hold checkpoint publishes `acp-prompt-reserved.json` before the prompt frame is written and `acp-needs-user.json` before any permission cancellation. After the exchange the worker publishes `acp-outcome.json` (turn, conversation and three booleans: returned, needs a person, failed) and then the agent's exit status.
 - **Exact conversation resume.** The conversation identity is opaque and kept byte for byte in `acp-session.json`, written once from the first reservation. Every later turn resumes it; a turn that names another conversation is refused, and a saved conversation never falls back to a new one. If no prompt was ever reserved, nothing left the worker, and the next send may start a new conversation.
 - **No duplicate sends.** A running turn refuses a send. An earlier turn whose worker is gone is rolled over, never replayed: a reservation without an outcome means delivery is unknown, the observation is an unknown error, and a later send is a new prompt in the same conversation.
@@ -83,7 +84,7 @@ Each send starts one detached worker through the same wrapper the other runners 
 
 An observation is idle only when the worker recorded exit 0, the reservation exists without human-input evidence, and the outcome says the turn returned. Everything else that is not running is an error of class `unknown`: other stop reasons, protocol failures, a killed or failed agent, a missing outcome. No structured field in this path classifies a failure, so none is classified; stderr and message text are never read.
 
-Time limits: observing, sending and stopping inside a check do bounded file work and return; stop waits at most three seconds for the worker's acknowledgement, as for the other runners, and each honours a cancelled check. Inside the worker, session setup is limited to two minutes and the agent's exit after its turn to ten seconds (both configurable up to ten minutes); past either, the worker kills the agent it started and records an unknown exit. The turn itself has no time limit, as for the other runners.
+Time limits: observing, sending and stopping inside a check do bounded file work and return; stop waits at most three seconds for the worker's acknowledgement, as for the other runners, and each honours a cancelled check. Inside the worker, session setup is limited to two minutes and the agent's exit after its turn to ten seconds (both configurable up to ten minutes); past either, the worker kills the agent it started and records an unknown exit. A turn has no time limit, but it is not unbounded: the exchange ends after 4096 protocol frames or 4 MiB of protocol data, counted over the whole connection, which here is one turn. Every streamed update counts. A long turn that streams its progress is therefore cut off mid-work, the agent is ended, and the turn is reported as an unknown error. These are the gate's bounds, unchanged; whether they should apply per message instead is open and listed below.
 
 ### What blocks registration
 
@@ -92,6 +93,16 @@ The runner is implemented up to the A2 boundary. It is not registered because an
 1. **Questions asked in chat.** The gate advertises no elicitation, so an agent that needs an answer may ask in its message text and end the turn normally. That is indistinguishable from a returned turn, and a loop would wake it again instead of holding for a person. No typed evidence for this exists, and message text is never read.
 2. **Permission rules that apply without a request.** Existing rules can allow or deny a tool with no permission request. The absence of a request therefore proves nothing about what ran, and only a request can raise the hold.
 3. **Nothing verified against a real CLI.** The ACP command and flags, whether the agent advertises exact resume, what it does when stdin closes, and its exit status afterwards are all assumptions of the stand-in. The runner treats a nonzero or unknown exit after a returned turn as an unknown error, which may be wrong in either direction for the real agent.
+
+### Known gaps to close before registration
+
+- **Turn bounds.** The 4096-frame and 4 MiB limits apply to a whole turn, so ordinary long streaming turns fail. The likely fix is to bound each message and the number of permission requests, not the turn's total.
+- **A cancelled permission turn has no drain bound.** It is reported as running until the worker exits, which hides the saved hold for as long as the agent takes to answer the cancellation.
+- **The worker's time limits end only the agent process**, not its process group or job. Descendants can survive, and the agent can run on after a limit while a new send is allowed. Stop does end the whole group or job.
+- **An unconfirmed worker cannot be stopped or cleared by command**, because no record holds its stop key.
+- **Per-turn directories are never removed**, so `acp-turns/` grows by one directory per send.
+- **The agent's stderr is stored without a size limit** for the length of the turn.
+- **A prompt larger than the pipe buffer blocks forever** if the agent is not reading, since the write has no deadline.
 
 ## Remaining acceptance gates
 

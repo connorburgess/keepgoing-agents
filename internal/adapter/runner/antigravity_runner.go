@@ -58,7 +58,11 @@ const (
 	antigravityTurnName    = "acp-turn.json"
 	antigravitySessionName = "acp-session.json"
 	antigravityOutcomeName = "acp-outcome.json"
-	antigravityTurnsDir    = "acp-turns"
+	// Published by Send once the worker it started is recorded, with that
+	// worker's stop key; or instead, when no process could be created.
+	antigravityStartedName    = "acp-started.json"
+	antigravityNotStartedName = "acp-not-started.json"
+	antigravityTurnsDir       = "acp-turns"
 	// The worker stores no protocol output. A stdout file here is not ours.
 	antigravityStdoutLimit = 1024
 
@@ -68,6 +72,11 @@ const (
 )
 
 var errAntigravityRecords = errors.New("antigravity: saved turn records are unavailable or inconsistent; inspect the private target directory")
+
+// A turn was recorded but Send never confirmed the worker it started, for
+// example because the supervisor died in between. A worker may be running
+// that no record identifies, so nothing may be sent beside it.
+var errAntigravityUnconfirmed = errors.New("antigravity: a turn was recorded without a confirmed worker, which may still be running; inspect the private target directory")
 
 // antigravityOutcome is what the worker saw the exchange end with. It holds
 // identities and three facts, never prompt, response or error text.
@@ -228,17 +237,48 @@ func (d Dir) saveAntigravityOutcome(out antigravityOutcome) error {
 	return err
 }
 
+// antigravityStart reads how the current turn's start ended: confirmed with
+// the worker's stop key, known not to have created a process, or neither.
+func (d Dir) antigravityStart(turn string) (key string, started, notStarted bool, err error) {
+	fields, err := d.readAntigravityObject(antigravityStartedName, 3)
+	if err != nil {
+		return "", false, false, err
+	}
+	if fields != nil {
+		var recorded string
+		if !acpString(fields, "turn", &recorded) || recorded != turn || !acpString(fields, "stopKey", &key) || !validStopID(key) {
+			return "", false, false, errAntigravityRecords
+		}
+		started = true
+	}
+	fields, err = d.readAntigravityObject(antigravityNotStartedName, 2)
+	if err != nil {
+		return "", false, false, err
+	}
+	if fields != nil {
+		var recorded string
+		if !acpString(fields, "turn", &recorded) || recorded != turn || started {
+			return "", false, false, errAntigravityRecords
+		}
+		notStarted = true
+	}
+	return key, started, notStarted, nil
+}
+
 // antigravityView is everything saved about the latest turn, already checked
 // for agreement between the records.
 type antigravityView struct {
-	st      Status
-	turn    string
-	turnDir Dir
-	hasTurn bool
-	hold    AntigravityACPHold
-	hasHold bool
-	out     antigravityOutcome
-	hasOut  bool
+	// noWorker means the current turn is known never to have had a process;
+	// st then describes an earlier turn and is not this turn's status.
+	noWorker bool
+	st       Status
+	turn     string
+	turnDir  Dir
+	hasTurn  bool
+	hold     AntigravityACPHold
+	hasHold  bool
+	out      antigravityOutcome
+	hasOut   bool
 }
 
 // view reads the saved records and refuses any disagreement between them, so
@@ -263,6 +303,20 @@ func (a *Antigravity) view() (antigravityView, error) {
 		return v, nil
 	}
 	v.turnDir = a.dir.antigravityTurnDir(v.turn)
+	// The run record must be this turn's. Without Send's confirmation it could
+	// be an earlier turn's, or missing, while this turn's worker is alive.
+	key, started, notStarted, err := v.turnDir.antigravityStart(v.turn)
+	if err != nil {
+		return v, err
+	}
+	switch {
+	case notStarted:
+		v.noWorker = true
+	case !started:
+		return v, errAntigravityUnconfirmed
+	case v.st.Phase == NeverRun || v.st.Record.StopKey != key:
+		return v, errAntigravityRecords
+	}
 	if v.hold, v.hasHold, err = v.turnDir.AntigravityACPHold(); err != nil {
 		return v, errAntigravityRecords
 	}
@@ -306,11 +360,15 @@ func (a *Antigravity) Observe(ctx context.Context) (decide.Observation, error) {
 		return unknown, err
 	}
 	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Evidence: detail}
-	switch v.st.Phase {
-	case NeverRun:
-		if v.hasHold {
-			return failed, nil // a reservation without a worker record: not a clean start
+	if v.noWorker {
+		// The send failed before any process existed; nothing left this machine.
+		if v.hasHold || v.hasOut {
+			return unknown, errAntigravityRecords
 		}
+		return failed, nil
+	}
+	switch v.st.Phase {
+	case NeverRun: // no turn has ever been recorded
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: detail}, nil
 	case Running:
 		// Also while a cancelled turn drains: its evidence is reported once the
@@ -359,7 +417,10 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 	if err != nil {
 		return err
 	}
-	if v.st.Phase == Running {
+	if v.noWorker && (v.hasHold || v.hasOut) {
+		return errAntigravityRecords
+	}
+	if !v.noWorker && v.st.Phase == Running {
 		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running Antigravity turn (%s mode)", mode)}
 	}
 	if v.hasHold && v.hold.Deferred() {
@@ -396,7 +457,33 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 	}
 	handshake, exit := a.limits()
 	spec, _ := json.Marshal(antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds()})
-	return a.dir.Start(a.cfg.Command, workdir, prompt, append(envList(a.cfg.Env), envTurnACP+"="+string(spec)))
+	turnDir := a.dir.antigravityTurnDir(turn)
+	record := func(name string, v any) error {
+		b, _ := json.Marshal(v)
+		if created, err := turnDir.publishAntigravityOnce(name, b); err != nil || !created {
+			return errAntigravityUnconfirmed
+		}
+		return nil
+	}
+	key, err := a.dir.start(a.cfg.Command, workdir, prompt, envList(a.cfg.Env), string(spec))
+	if err != nil {
+		var none notSpawned
+		if errors.As(err, &none) {
+			// No process exists for this turn, so a later send need not fear one.
+			_ = record(antigravityNotStartedName, struct {
+				Version int    `json:"version"`
+				Turn    string `json:"turn"`
+			}{1, turn})
+		}
+		return err
+	}
+	// Confirm which worker belongs to this turn. Until this record exists the
+	// turn is unconfirmed and everything fails closed.
+	return record(antigravityStartedName, struct {
+		Version int    `json:"version"`
+		Turn    string `json:"turn"`
+		StopKey string `json:"stopKey"`
+	}{1, turn, key})
 }
 
 // Stop asks the live worker to end its own turn through the owned channel.
