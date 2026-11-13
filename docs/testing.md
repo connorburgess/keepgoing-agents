@@ -35,6 +35,8 @@ Apply these checks when changing runners, stop commands, service integrations, i
 
 The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
+Whether a headless turn is running is decided by a lock, not a PID. The turn wrapper holds `turn.lock` for its whole life and `Start` returns only once it does, so "running" means the lock is held. Fixtures cover a three-week-old record whose PID belongs to a live unrelated process (crashed), a held lock with no usable PID (running), a recorded exit code (finished), a real wrapper killed with SIGKILL and its record then pointed at a live PID (crashed, Unix only), and a record from an older build, which is still judged by its PID. The Windows job runs the cross-platform cases natively. A real reboot was not run.
+
 ## Stand-in executables in tests
 
 Install any shell script a test executes with `internal/testexec`, not `os.WriteFile`: `testexec.Script(t, path, content)` for a script used by one test, `testexec.Shared` for content that many fixtures install unchanged. The content must begin with `#!/bin/sh`. In `cmd/keepgoing`, the `write` helper already does this for executable shell scripts.

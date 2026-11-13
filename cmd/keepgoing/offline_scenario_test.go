@@ -67,6 +67,9 @@ esac
 	provider := map[string]string{"claude": "claude-code", "codex": "codex"}[kind]
 	write(t, cfg, fmt.Sprintf("version: 1\nloop:\n  name: example-headless\n  state_dir: state\n  adapter: %s\n  provider: %s\n  %s: {cli: %s, workdir: %s}\n  prompt: %s\n", kind, provider, kind, cli, dir, offlinePrompt), 0o600)
 	l := &offlineLoop{t: t, kind: kind, dir: dir, cfg: cfg, clock: time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)}
+	// The last check may leave a turn running. Let it end before the
+	// temporary directory is removed under it.
+	t.Cleanup(l.settle)
 	l.mode("online")
 	if code, _, errs := l.run("enable"); code != exitOK {
 		t.Fatal(errs)

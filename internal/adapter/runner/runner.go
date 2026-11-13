@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
 // Phase is what the runner knows about the latest turn.
@@ -32,6 +34,73 @@ type Record struct {
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"startedAt"`
 	Argv0     string    `json:"argv0"`
+	// Liveness says how to tell that this turn's wrapper is still running.
+	// "lock" means the wrapper holds turn.lock for its whole life, so the
+	// operating system releases it when the wrapper ends, however it ends.
+	// A record without it was written by an older build, whose wrapper holds
+	// no lock; only for those is the saved PID still consulted.
+	Liveness string `json:"liveness,omitempty"`
+}
+
+const (
+	livenessLock = "lock"
+	turnLock     = "turn"
+)
+
+// wrapperStartTimeout bounds how long Start waits for a new wrapper to take
+// its lock. Tests shorten it.
+var wrapperStartTimeout = 10 * time.Second
+
+// wrapperLive reports whether the wrapper of the recorded turn is running.
+// For a current record that means its lock is held, never that a PID exists:
+// after a reboot the saved PID can belong to an unrelated process.
+func (d Dir) wrapperLive(rec Record) (bool, error) {
+	if rec.Liveness != livenessLock {
+		return alive(rec.PID), nil
+	}
+	held, err := lock.AcquireNamed(string(d), turnLock)
+	if err == nil {
+		return false, held.Release()
+	}
+	if errors.Is(err, lock.ErrHeld) {
+		return true, nil
+	}
+	return false, errors.New("runner: the turn lock could not be checked")
+}
+
+// acquireTurnLock takes the turn lock, waiting for a wrapper that is still
+// exiting to let go of it.
+func acquireTurnLock(dir string) (*lock.Lock, error) {
+	for deadline := time.Now().Add(wrapperStartTimeout); ; time.Sleep(5 * time.Millisecond) {
+		held, err := lock.AcquireNamed(dir, turnLock)
+		if err == nil {
+			return held, nil
+		}
+		if !errors.Is(err, lock.ErrHeld) || time.Now().After(deadline) {
+			return nil, errors.New("runner: the turn lock is not available")
+		}
+	}
+}
+
+// startedName is the file a wrapper writes, holding its turn key, once it
+// holds the turn lock.
+const startedName = "turn.started"
+
+// awaitWrapper returns once this turn's own wrapper has taken the lock, or
+// the turn has already finished. It matches the turn key, so the previous
+// turn's wrapper still letting go of the lock is never mistaken for it.
+func (d Dir) awaitWrapper(key string) error {
+	for deadline := time.Now().Add(wrapperStartTimeout); ; time.Sleep(5 * time.Millisecond) {
+		if _, err := os.Stat(d.path("exit")); err == nil {
+			return nil
+		}
+		if b, err := os.ReadFile(d.path(startedName)); err == nil && string(b) == key {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("runner: the turn wrapper did not start")
+		}
+	}
 }
 
 // Status is the latest turn's outcome.
@@ -74,7 +143,11 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 		st.Stdout, err = d.readOutput(limit)
 		return st, err
 	}
-	if alive(st.Record.PID) {
+	live, err := d.wrapperLive(st.Record)
+	if err != nil {
+		return st, err
+	}
+	if live {
 		st.Phase = Running
 		return st, nil
 	}
@@ -109,7 +182,16 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
 		return err
 	}
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json"} {
+	// Hold the turn lock while the new turn is set up. This waits for the
+	// previous turn's wrapper to finish exiting, so its lock can never stand
+	// in for the new wrapper's, and it is released only after the new record
+	// is written. The new wrapper then takes it and says so.
+	setup, err := acquireTurnLock(string(d))
+	if err != nil {
+		return err
+	}
+	defer setup.Release()
+	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
@@ -123,10 +205,18 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 	if err != nil {
 		return err
 	}
-	rec := Record{StopKey: key, PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0])}
+	rec := Record{StopKey: key, PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0]), Liveness: livenessLock}
 	b, _ := json.Marshal(rec)
 	if err := os.WriteFile(d.path("run.json"), append(b, '\n'), 0o600); err != nil {
 		// The wrapper owns cancellation even when its record could not be saved.
+		_ = d.requestStop(key)
+		return err
+	}
+	if err := setup.Release(); err != nil {
+		return err
+	}
+	if err := d.awaitWrapper(key); err != nil {
+		// A wrapper that starts late still finds this request and stops.
 		_ = d.requestStop(key)
 		return err
 	}

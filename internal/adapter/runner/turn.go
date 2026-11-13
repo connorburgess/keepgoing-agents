@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
 // Every turn runs through a detached copy of the executable. The live wrapper
@@ -37,6 +39,12 @@ func MaybeRunTurn() {
 	}
 	terminate, err := ownedTerminator()
 	if err != nil {
+		os.Exit(2)
+	}
+	// Hold the turn lock for the wrapper's whole life. The operating system
+	// releases it when this process ends, so a reader never has to trust a
+	// saved PID. Start may be probing the lock at this moment, so wait briefly.
+	if !holdTurnLock(dir) || os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
 	done := make(chan struct{})
@@ -105,4 +113,13 @@ func wrapperCommand(argv []string, workdir, dir string, env []string) (*exec.Cmd
 	cmd.Dir = workdir
 	cmd.Env = append(append(os.Environ(), env...), envTurnDir+"="+dir, envTurnArgv+"="+string(encoded))
 	return cmd, nil
+}
+
+// turnLockHeld keeps the lock referenced for the life of the process.
+var turnLockHeld *lock.Lock
+
+func holdTurnLock(dir string) bool {
+	held, err := acquireTurnLock(dir)
+	turnLockHeld = held
+	return err == nil
 }
