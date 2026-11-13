@@ -302,6 +302,25 @@ To continue, revise or remove the deadline under the task's existing authorizati
 
 Available in v0.1.3 or newer. Verification uses decision tables, CLI and supervisor fixtures; no live provider or service deadline was exercised.
 
+## Upgrading and rolling back
+
+**Upgrading keeps the loop where it was.** A newer build reads the state directory of every released version, v0.1.0 to v0.1.5. A loop held for a person stays held with its note, the first check sends nothing and runs no agent command, the saved re-prompt count and last send time are kept, and after `resume` the loop carries on from the saved session without repeating a send. Records are upgraded in place the first time the new build writes them: an incident journal from v0.1.3 to v0.1.5 keeps its earlier records, and a state directory from before the journal or the run graph gets them from the first check and control command on. This is fixture evidence, from each release's own binary and the scenario suite (see [testing](testing.md#scenario-suite-t2)); no live loop was upgraded for it.
+
+**Rolling back is not supported once a newer build has written to the state directory.** An older build does not read formats newer than itself, and it does not fail safely enough to rely on. What v0.1.5 does with a state directory today's source has written to:
+
+| Command | What happens | Exit |
+| --- | --- | --- |
+| `tick` | The check still observes and acts (it sent a re-prompt), then prints `tick: incident history unavailable; check private state storage`. Its line carries the warning `incident history write failed; diagnostic evidence is incomplete`. | 1, on every check |
+| `resume`, `pause` and the other control commands | The control change is saved, with `warning: control saved; incident history write failed; diagnostic evidence is incomplete`. | 1 |
+| `status` | Works, from `state.json` and `control.json`. | 0 |
+| `timeline` | `source incidents.json: unavailable; schema 0; retained 0; dropped 0`. | 1 |
+
+Three consequences. A scheduler that disables a job after a few failing exits stops calling the older build, although every one of those checks ran and may have sent. The older build rewrites `state.json` without the fields it does not know, so what the newer build had saved there is lost: the count of failed checks, the last turn retry, the child-error episode and the like. And nothing is recorded in the journal while the older build runs. An older build also refuses a configuration that names something newer than itself, before doing anything: v0.1.2 answers `loop.report.events: unknown event "complete"` and exits 2.
+
+The run graph (unreleased) behaves differently from the journal. A build that meets a graph holding a record kind it does not know carries on: the check does the same work, exits 0, and has the warning `run reference record unavailable; discovery evidence is incomplete`. But `keepgoing runs` exits 1 and shows `graph: corrupt`, with nothing read from it. The build cannot tell a record kind it does not know from damage, so after a rollback "corrupt" may only mean "written by a newer build". Neither file is rewritten or reset by the older build.
+
+If you must go back to an older build: stop the supervisor, move the state directory aside, and start the older build on a state directory it wrote itself or a new one. A new state directory starts the loop's counters and history again, and holds have to be set again. Do not point an older build at the newer state directory.
+
 ## Yielding to other work
 
 ```yaml
