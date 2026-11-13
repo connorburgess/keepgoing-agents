@@ -784,6 +784,9 @@ type panelListLoop struct {
 	State    string `json:"state"`
 	Phrase   string `json:"phrase"`
 	NeedsYou bool   `json:"needsYou"`
+	// NoProgress is the no-progress flag's sentence when it is raised, in
+	// the page's words; empty otherwise. It is never a need.
+	NoProgress string `json:"noProgress,omitempty"`
 	// Can is which changes fit the loop's control flags as read, as the
 	// page offers them: pause, stop and resume. Empty when the flags could
 	// not be read. client review and client apply take them.
@@ -798,7 +801,11 @@ func buildPanelList(r dockReport) panelList {
 		needs[n.Key] = true
 	}
 	for _, l := range r.Loops {
-		out.Loops = append(out.Loops, panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can})
+		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can}
+		if np := l.NoProgress; np != nil && np.Availability == "flagged" {
+			row.NoProgress = np.Text
+		}
+		out.Loops = append(out.Loops, row)
 	}
 	return out
 }

@@ -111,6 +111,20 @@
               "minimum": 1,
               "default": 3,
               "description": "nudges a stalled session gets before the loop asks a person"
+            },
+            "flag_after_sends": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 6,
+              "description": "sends with no recorded change to the repositories that raise the panel's no-progress flag; 0 is off"
+            },
+            "flag_after_errors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 4,
+              "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
             }
           }
         },
