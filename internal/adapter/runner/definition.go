@@ -278,11 +278,16 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 	if codeKnown {
 		detail.ExitCode = evidence.Number(code)
 	}
+	// The declared code decides first, then the HTTP status, then the exit
+	// code, as before; except that a restriction or a refusal in any of the
+	// three outranks whatever the others say, so no mapping of one field can
+	// turn a declined turn into a limit.
+	byCode, byStatus, byExit := decide.ErrUnknown, decide.ErrUnknown, decide.ErrUnknown
 	if e.Field != "" {
 		if v, ok := fieldCode(result, e.Field); ok {
 			detail.Code = v
 			if class, mapped := e.Classes[v]; mapped {
-				r.Class = decide.ErrorClass(class)
+				byCode = decide.ErrorClass(class)
 			}
 		}
 	}
@@ -290,15 +295,14 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 		if v, ok := fieldCode(result, e.HTTPStatusField); ok {
 			if n, err := strconv.Atoi(v); err == nil && n >= 100 && n <= 599 {
 				detail.HTTPStatus = evidence.Number(n)
-				if r.Class == decide.ErrUnknown {
-					r.Class = adapter.ClassifyCode(v)
-				}
+				byStatus = adapter.ClassifyCode(v)
 			}
 		}
 	}
-	if class, mapped := e.ExitCodes[code]; mapped && codeKnown && r.Class == decide.ErrUnknown {
-		r.Class = decide.ErrorClass(class)
+	if class, mapped := e.ExitCodes[code]; mapped && codeKnown {
+		byExit = decide.ErrorClass(class)
 	}
+	r.Class = adapter.Prefer(byCode, byStatus, byExit)
 	r.Evidence = evidence.Clean(detail)
 	return r
 }

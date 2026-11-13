@@ -535,7 +535,7 @@ func (c *Config) Validate() error {
 		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
-		if class == "restricted" || class == "refused" {
+		if DeclinedClass(class) {
 			add("loop.errors.failover_on: %q is not allowed: a provider refusal or restriction is not a limit and never causes a handoff", class)
 		} else if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
@@ -630,6 +630,30 @@ func (c *Config) Validate() error {
 
 // ErrorClasses lists the structured error classes an adapter may report.
 var ErrorClasses = []string{"none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown"}
+
+// DeclinedCode says which structured codes keepgoing itself reads as a
+// provider denying permission ("restricted") or a model or provider declining
+// the turn ("refused"), and "" for every other code. It is the one list both
+// the classifier and the validation of agent definitions use, so a
+// definition cannot relabel such a code as a limit.
+//
+// "policy" is BB's typed category for a provider's policy block, and the two
+// Codex identifiers are what BB's Codex provider maps to it.
+// "oauth_org_not_allowed" is Claude Code's code for an organisation that may
+// not use the login.
+func DeclinedCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "403", "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
+		return "restricted"
+	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
+		return "refused"
+	}
+	return ""
+}
+
+// DeclinedClass reports whether a class is a restriction or a refusal: a
+// decision against the request, which never causes a handoff.
+func DeclinedClass(class string) bool { return class == "restricted" || class == "refused" }
 
 // ValidErrorClass reports whether s is a known error class.
 func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }

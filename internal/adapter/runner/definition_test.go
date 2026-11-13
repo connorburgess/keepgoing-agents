@@ -196,6 +196,12 @@ func TestDefinitionReadings(t *testing.T) {
 		{"an undeclared code with a status the code table knows", turn(exampleResult("failed", `,"error":{"code":"internal","status":429}`), 1), exampleSessionToken, false, false, decide.ErrRateLimit},
 		{"an undeclared code", turn(exampleResult("failed", `,"error":{"code":"internal"}`), 1), exampleSessionToken, false, false, decide.ErrUnknown},
 		{"a declared exit code", turn(``, 75), "", false, false, decide.ErrNetwork},
+		// A restriction or a refusal in any field outranks what the others say.
+		{"HTTP 403 is a restriction, not a login", turn(exampleResult("failed", `,"error":{"code":"internal","status":403}`), 1), exampleSessionToken, false, false, decide.ErrRestricted},
+		{"HTTP 401 is still a login", turn(exampleResult("failed", `,"error":{"code":"internal","status":401}`), 1), exampleSessionToken, false, false, decide.ErrAuth},
+		{"a declared limit code beside HTTP 403", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded","status":403}`), 1), exampleSessionToken, false, false, decide.ErrRestricted},
+		{"a declared login code beside HTTP 403", turn(exampleResult("failed", `,"error":{"code":"unauthorized","status":403}`), 1), exampleSessionToken, false, false, decide.ErrRestricted},
+		{"HTTP 403 beside a declared exit code", turn(exampleResult("failed", `,"error":{"status":403}`), 75), exampleSessionToken, false, false, decide.ErrRestricted},
 		// Prose that says what happened, in every place prose could be.
 		{"prose in the code field", turn(exampleResult("failed", `,"error":{"code":"quota exceeded: rate limit reached, try again later"}`), 1), exampleSessionToken, false, false, decide.ErrUnknown},
 		{"prose in another field", turn(exampleResult("failed", `,"message":"quota_exceeded rate_limit 429 unauthorized"`), 1), exampleSessionToken, false, false, decide.ErrUnknown},
@@ -280,6 +286,39 @@ func TestDefinitionReadings(t *testing.T) {
 
 // The session identity may come from a file the agent writes under its
 // working directory: one small token in a regular file.
+// A definition can declare its agent's own refusal and restriction codes.
+// Either wins over a limit reported in another field of the same result.
+func TestDefinitionDeclaredRefusalsAndRestrictions(t *testing.T) {
+	spec, _ := exampleSpec(t, func(c *config.Custom) {
+		c.Definition.Errors.Classes["content_blocked"] = "refused"
+		c.Definition.Errors.Classes["account_suspended"] = "restricted"
+		c.Definition.Errors.ExitCodes[78] = "restricted"
+		c.Definition.Errors.ExitCodes[79] = "refused"
+	})
+	turn := func(out string, code int) Status {
+		return Status{Phase: Finished, ExitCode: code, ExitCodeKnown: true, Stdout: []byte(out)}
+	}
+	for _, tc := range []struct {
+		name  string
+		turn  Status
+		class decide.ErrorClass
+	}{
+		{"a declared refusal", turn(exampleResult("failed", `,"error":{"code":"content_blocked"}`), 1), decide.ErrRefused},
+		{"a declared restriction", turn(exampleResult("failed", `,"error":{"code":"account_suspended"}`), 1), decide.ErrRestricted},
+		{"a declared refusal with a rate-limit status", turn(exampleResult("failed", `,"error":{"code":"content_blocked","status":429}`), 1), decide.ErrRefused},
+		{"a declared limit with a refusing exit code", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded"}`), 79), decide.ErrRefused},
+		{"a declared limit with a restricting exit code", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded","status":429}`), 78), decide.ErrRestricted},
+		{"a refusal outranks a restriction", turn(exampleResult("failed", `,"error":{"code":"content_blocked","status":403}`), 78), decide.ErrRefused},
+		{"an exit code alone", turn(``, 78), decide.ErrRestricted},
+		{"a declared limit alone is still a limit", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded"}`), 1), decide.ErrRateLimit},
+		{"prose about a refusal is not one", turn(exampleResult("failed", `,"message":"content_blocked: I cannot help with that"`), 1), decide.ErrUnknown},
+	} {
+		if r := spec.Read(tc.turn); r.Class != tc.class || r.Completed {
+			t.Errorf("%s: %+v, want %s", tc.name, r, tc.class)
+		}
+	}
+}
+
 func TestDefinitionSessionFile(t *testing.T) {
 	work := t.TempDir()
 	agent := exampleAgent(t, "example-agent", work, func(c *config.Custom) {

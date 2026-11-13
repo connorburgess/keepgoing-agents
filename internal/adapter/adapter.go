@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
@@ -108,14 +109,16 @@ func ClassifyCode(code string) decide.ErrorClass {
 	if c == "" {
 		return decide.ErrUnknown
 	}
+	// One list, shared with the validation of agent definitions.
+	if declined := config.DeclinedCode(c); declined != "" {
+		return decide.ErrorClass(declined)
+	}
 	if n, err := strconv.Atoi(c); err == nil {
 		switch n {
 		case 429:
 			return decide.ErrRateLimit
 		case 401:
 			return decide.ErrAuth
-		case 403:
-			return decide.ErrRestricted
 		case 503, 529:
 			return decide.ErrOverloaded
 		}
@@ -126,12 +129,6 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrRateLimit
 	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
-	case "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
-		return decide.ErrRestricted
-	// "policy" is BB's typed category for a provider's policy block; the two
-	// Codex identifiers are what BB's Codex provider maps to it.
-	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
-		return decide.ErrRefused
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
 	case "network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error", "stream-disconnected", "stream_disconnected", "responsestreamdisconnected":
@@ -147,14 +144,24 @@ func ClassifyCode(code string) decide.ErrorClass {
 // must never read as a login or a limit a loop may fail over on. Otherwise
 // the first field that maps to a known class decides.
 func Classify(codes ...string) decide.ErrorClass {
+	classes := make([]decide.ErrorClass, len(codes))
+	for i, c := range codes {
+		classes[i] = ClassifyCode(c)
+	}
+	return Prefer(classes...)
+}
+
+// Prefer chooses among the classes several fields of one error gave, by the
+// same rule: a refusal wins, then a restriction, then the first known class.
+func Prefer(classes ...decide.ErrorClass) decide.ErrorClass {
 	first, restricted := decide.ErrUnknown, false
-	for _, c := range codes {
-		switch cl := ClassifyCode(c); {
+	for _, cl := range classes {
+		switch {
 		case cl == decide.ErrRefused:
 			return cl
 		case cl == decide.ErrRestricted:
 			restricted = true
-		case first == decide.ErrUnknown:
+		case first == decide.ErrUnknown && cl != "" && cl != decide.ErrNone:
 			first = cl
 		}
 	}

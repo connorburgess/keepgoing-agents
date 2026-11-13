@@ -602,6 +602,8 @@
                     "enum": [
                       "rate_limit",
                       "auth",
+                      "restricted",
+                      "refused",
                       "overloaded",
                       "network",
                       "unknown"
@@ -621,6 +623,8 @@
                       "enum": [
                         "rate_limit",
                         "auth",
+                        "restricted",
+                        "refused",
                         "overloaded",
                         "network",
                         "unknown"
