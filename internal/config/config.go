@@ -42,7 +42,10 @@ type Config struct {
 
 	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
 	FallbackSet *Fallbacks `yaml:"-"`
-	source      sourceSnapshot
+	// RouteList says where the loop's other routes came from. Load derives it.
+	RouteList    RouteStatus `yaml:"-"`
+	routesSource sourceSnapshot
+	source       sourceSnapshot
 }
 
 // Loop describes one supervised agent loop.
@@ -60,10 +63,16 @@ type Loop struct {
 	Window    *Window    `yaml:"window,omitempty"`
 	Errors    ErrorRules `yaml:"errors"`
 	Fallbacks string     `yaml:"fallbacks,omitempty"`
-	Report    *Report    `yaml:"report,omitempty"`
-	Yield     *Yield     `yaml:"yield,omitempty"`
-	Daemon    Daemon     `yaml:"daemon"`
-	Network   Network    `yaml:"network,omitempty"`
+	// Routes is "standard" for a loop that follows the person's standard
+	// route list. It excludes Fallbacks, which is a list of the loop's own.
+	Routes string `yaml:"routes,omitempty"`
+	// RoutesAllow opts the loop in to kinds of standard route that are off by
+	// default. The only value is new_conversation.
+	RoutesAllow []string `yaml:"routes_allow,omitempty"`
+	Report      *Report  `yaml:"report,omitempty"`
+	Yield       *Yield   `yaml:"yield,omitempty"`
+	Daemon      Daemon   `yaml:"daemon"`
+	Network     Network  `yaml:"network,omitempty"`
 	// TickTimeout bounds the optional work of one check (fallback probes), so
 	// a check records its result and exits well inside an external
 	// scheduler's own timeout.
@@ -331,9 +340,12 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 		cfg.FallbackSet = fb
+		cfg.RouteList = RouteStatus{Source: "own"}
 		if err := cfg.Loop.fitTickTimeout(fb.Probe.Timeout.Duration); err != nil {
 			return nil, err
 		}
+	} else if l.FollowsStandard() {
+		cfg.loadStandardRoutes()
 	}
 	return cfg, nil
 }
@@ -579,7 +591,27 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if l.Adapter == "cursor" && (l.Fallbacks != "" || l.SwitchBack.Enabled) {
+	switch l.Routes {
+	case "":
+	case RoutesStandard:
+		if l.Fallbacks != "" {
+			add("loop.routes: a loop follows the standard list or has its own loop.fallbacks, not both")
+		}
+		if l.Adapter != "bb" && l.Adapter != "claude" && l.Adapter != "codex" {
+			add("loop.routes: the standard list covers bb, claude and codex loops; give a %s loop its own list", l.Adapter)
+		}
+	default:
+		add("loop.routes must be %q or absent", RoutesStandard)
+	}
+	for _, kind := range l.RoutesAllow {
+		if kind != EnterNewConversation {
+			add("loop.routes_allow: the only value is %s", EnterNewConversation)
+		}
+	}
+	if len(l.RoutesAllow) > 0 && !l.FollowsStandard() {
+		add("loop.routes_allow applies only with loop.routes: %s", RoutesStandard)
+	}
+	if l.Adapter == "cursor" && (l.HasRouteList() || l.SwitchBack.Enabled) {
 		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
 	}
 	if l.SwitchBack.Enabled {
@@ -594,7 +626,7 @@ func (c *Config) Validate() error {
 		default:
 			add("loop.probe.kind must be claude, codex, or command")
 		}
-		if l.Fallbacks == "" {
+		if !l.HasRouteList() {
 			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
 		}
 	}
