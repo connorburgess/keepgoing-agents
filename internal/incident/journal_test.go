@@ -245,3 +245,34 @@ func TestJournalBuildLabelsSurviveRestartWithoutPrivateSuffixes(t *testing.T) {
 		}
 	}
 }
+
+// Only the count of errored children is stored, never their IDs. It is
+// omitted when zero, so journals written before it existed still load, and a
+// change in the count is a different check, never folded into the previous one.
+func TestErroredChildrenCountIsStoredWithoutIDs(t *testing.T) {
+	ids := []string{"thr_private_child_a", "thr_private_child_b", "thr_private_child_c"}
+	o := Observed(decide.Observation{State: decide.Idle, ErroredChildren: ids}, "bb", false)
+	if o.ErroredChildren != 3 {
+		t.Fatalf("%+v", o)
+	}
+	withChildren, _ := json.Marshal(clean(Record{Kind: "tick", Observation: o}))
+	if !strings.Contains(string(withChildren), `"erroredChildren":3`) || strings.Contains(string(withChildren), "thr_private_child") {
+		t.Fatal(string(withChildren))
+	}
+	without, _ := json.Marshal(clean(Record{Kind: "tick", Observation: Observed(decide.Observation{State: decide.Idle}, "bb", false)}))
+	if strings.Contains(string(without), "erroredChildren") {
+		t.Fatal(string(without))
+	}
+	for stored, want := range map[int]int{-4: 0, 5000: 200, 7: 7} {
+		o := Observed(decide.Observation{State: decide.Idle}, "bb", false)
+		o.ErroredChildren = stored
+		if n := clean(Record{Kind: "tick", Observation: o}).Observation.ErroredChildren; n != want {
+			t.Fatalf("stored %d kept as %d, want %d", stored, n, want)
+		}
+	}
+	a, b := sample(), sample()
+	b.Observation.ErroredChildren = 2
+	if sameBase(clean(a), clean(b)) {
+		t.Fatal("a change in errored children was treated as the same check")
+	}
+}

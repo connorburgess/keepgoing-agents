@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
@@ -62,24 +63,33 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
-	At           time.Time       `json:"at"`
-	Loop         string          `json:"loop"`
-	Target       string          `json:"target"`
-	Control      string          `json:"control"`
-	State        string          `json:"state"`
-	ErrorClass   string          `json:"errorClass,omitempty"`
-	ResetsAt     *time.Time      `json:"resetsAt,omitempty"`
-	Action       string          `json:"action"`
-	Reason       string          `json:"reason"`
-	Window       string          `json:"window"`
-	UnchangedFor string          `json:"unchangedFor,omitempty"`
-	Reprompts    int             `json:"reprompts,omitempty"`
-	Handoff      *HandoffNote    `json:"handoff,omitempty"`
-	Redundancy   *health.Summary `json:"redundancy,omitempty"`
-	Probes       []ProbeNote     `json:"probes,omitempty"`
-	Yielded      bool            `json:"yielded,omitempty"`
-	DryRun       bool            `json:"dryRun,omitempty"`
-	Warnings     []string        `json:"warnings,omitempty"`
+	At           time.Time  `json:"at"`
+	Loop         string     `json:"loop"`
+	Target       string     `json:"target"`
+	Control      string     `json:"control"`
+	State        string     `json:"state"`
+	ErrorClass   string     `json:"errorClass,omitempty"`
+	ResetsAt     *time.Time `json:"resetsAt,omitempty"`
+	Action       string     `json:"action"`
+	Reason       string     `json:"reason"`
+	Window       string     `json:"window"`
+	UnchangedFor string     `json:"unchangedFor,omitempty"`
+	Reprompts    int        `json:"reprompts,omitempty"`
+	// ErroredChildren is how many direct child threads were in error.
+	// ErroredChildrenPartial: child discovery was incomplete, so the count is
+	// a lower bound. ChildErrorNote is set when this check's wake announces
+	// them. ChildErrorNoticeStopped: the notice was given up after repeated
+	// rejected sends.
+	ErroredChildren         int             `json:"erroredChildren,omitempty"`
+	ErroredChildrenPartial  bool            `json:"erroredChildrenPartial,omitempty"`
+	ChildErrorNote          bool            `json:"childErrorNote,omitempty"`
+	ChildErrorNoticeStopped bool            `json:"childErrorNoticeStopped,omitempty"`
+	Handoff                 *HandoffNote    `json:"handoff,omitempty"`
+	Redundancy              *health.Summary `json:"redundancy,omitempty"`
+	Probes                  []ProbeNote     `json:"probes,omitempty"`
+	Yielded                 bool            `json:"yielded,omitempty"`
+	DryRun                  bool            `json:"dryRun,omitempty"`
+	Warnings                []string        `json:"warnings,omitempty"`
 }
 
 type tick struct {
@@ -95,11 +105,16 @@ type tick struct {
 	incidentLimitWaitReport string
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
-	handoffAvailable    bool
-	progress            *state.Progress
-	observedTarget      string
-	awaitingInput       bool
-	awaitingChildren    []string
+	handoffAvailable bool
+	progress         *state.Progress
+	observedTarget   string
+	awaitingInput    bool
+	awaitingChildren []string
+	// decisionInput is the input of the latest ordinary decision, and
+	// erroredChildHashes the errored children it saw; act uses both to decide
+	// whether a wake carries the child-error notice and what to record.
+	decisionInput       decide.Input
+	erroredChildHashes  []string
 	deferredInteraction bool
 	ctx                 context.Context
 	cfg                 *config.Config
@@ -419,8 +434,29 @@ func (t *tick) run() error {
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
+	// An errored child is not running work. The session is told when a child
+	// newly enters error: the record keeps hashes of children already announced
+	// and still in error, so a set that only shrinks announces nothing and a
+	// child that recovers and fails again is announced again. An incomplete
+	// listing changes no record.
+	t.erroredChildHashes = decide.ChildHashes(obs.ErroredChildren)
+	kept, unannounced := decide.ChildAnnouncements(t.erroredChildHashes, t.st.ChildErrorsAnnounced)
+	if !obs.ChildrenUnverified {
+		t.st.ChildErrorsAnnounced = kept
+		// Rejected sends are counted per announcement: a newly errored child
+		// is a new one.
+		if pending := strings.Join(unannounced, ","); pending != t.st.ChildErrorNoticeFor {
+			t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = pending, 0
+		}
+	}
+	res.ErroredChildren, res.ErroredChildrenPartial = len(obs.ErroredChildren), obs.ChildrenUnverified && len(obs.ErroredChildren) > 0
+	in.UnannouncedErroredChildren = len(unannounced)
+	in.ChildErrorNoticeAttempts, in.MaxChildErrorNotices = t.st.ChildErrorNoticeAttempts, loop.Errors.MaxReprompts
+	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
+	t.decisionInput = in
 	d := t.decide("normal", in)
 	res.Action, res.Reason = string(d.Action), d.Reason
+	res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
 
 	var actErr error
 	if d.Action == decide.SwitchBack {
@@ -431,7 +467,9 @@ func (t *tick) run() error {
 		} else if !moved {
 			// The primary is not ready yet: keep the fallback working.
 			in.SwitchBackReady = false
+			t.decisionInput = in
 			d = t.decide("switch_back_failed", in)
+			res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
 			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
 			actErr = t.act(a, d)
 		}
@@ -595,6 +633,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			continue
 		}
 		t.st.ClearBriefs() // a new target, a new episode
+		t.st.ClearChildErrors()
 		note.To = id
 		t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = id, t.now, t.now
 		t.st.Handoffs++
@@ -703,6 +742,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
 	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
 	t.st.ClearBriefs()
+	t.st.ClearChildErrors()
 	t.st.Reprompts, t.st.LastRepromptAt, t.st.Nudges = 0, time.Time{}, 0
 	t.report("switch_back", fmt.Sprintf("%s: switched back from %s to the primary", t.loop.Name, from), map[string]any{"from": from, "to": state.Primary})
 	return true, nil
@@ -728,10 +768,28 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if d.Action == decide.Nudge {
 			mode = adapter.ModeQueue
 		}
+		childErrors := decide.ChildErrorNote(t.decisionInput, d)
+		if d.ChildErrorWake {
+			// Notice only: the parent is waiting on other children on purpose.
+			text = prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren)
+		} else {
+			text = prompt.WithChildErrors(text, childErrors)
+		}
 		if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
 			return err
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
+		switch {
+		case childErrors == 0:
+		case err == nil:
+			// Announced: every child now in error is recorded as told.
+			t.st.ChildErrorsAnnounced, t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = t.erroredChildHashes, "", 0
+		default:
+			// Rejected (failed or unsupported): try again on a later wake, up
+			// to the cap. It may have been delivered, so it must not repeat
+			// without bound.
+			t.st.ChildErrorNoticeAttempts++
+		}
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
 		// per-episode caps and spacing.
@@ -804,7 +862,7 @@ func (t *tick) record(actErr error) error {
 		outcome = "failed"
 	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
-		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput,
+		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err
