@@ -129,3 +129,92 @@ func TestIncidentRepromptedTurnGoesSilentWhileActive(t *testing.T) {
 		})
 	}
 }
+
+// A provider retry series as observed during a short outage: ten notices
+// about 145 seconds apart in total (gaps 1, 1, 2, 4, 9, 18, 36, 37, 36 s),
+// then one error without retry intent and a failed completion. The second
+// turn fails the same way, and ten more notices arrive after its failed
+// completion, the last at 00:28:30; then nothing. Checks run every ten
+// minutes from 00:30. At the defaults the notice expires at 00:43:30, so the
+// 00:30 and 00:40 checks wait and the 00:50 check sends the first re-prompt.
+// Before the fix every check up to 01:40 recorded "provider is retrying the
+// turn". Here each re-prompt fails at once, so the hold follows the cap.
+func TestIncidentRetrySeriesAfterFailedCompletion(t *testing.T) {
+	w := newWorld(t, true, false)
+	dir := t.TempDir()
+	t.Setenv("FAKE_BB_DIR", dir)
+	cli := filepath.Join(dir, "bb")
+	if err := os.WriteFile(cli, []byte(fakeBBScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.cfg.Loop.BB.CLI = cli
+	midnight := time.Date(2030, 3, 4, 0, 0, 0, 0, time.UTC)
+	clock := func(h, m, s int) time.Time {
+		return midnight.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second)
+	}
+	var events []string
+	add := func(at time.Time, typ, data string) {
+		events = append(events, fmt.Sprintf(`{"seq":%d,"createdAt":%d,"type":%q,"data":%s}`, len(events)+1, at.UnixMilli(), typ, data))
+		if err := os.WriteFile(filepath.Join(dir, "log"), []byte("["+strings.Join(events, ",")+"]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const turn = `{"providerThreadId":"p1"}`
+	const notice = `{"willRetry":true,"errorInfo":{"category":"unknown","providerCode":"unknown"}}`
+	const gaveUp = `{"errorInfo":{"category":"unknown","providerCode":"unknown"}}`
+	const failed = `{"providerThreadId":"p1","status":"failed"}`
+	series := func(first time.Time) time.Time {
+		at := first
+		add(at, "provider/error", notice)
+		for _, gap := range []int{1, 1, 2, 4, 9, 18, 36, 37, 36} {
+			at = at.Add(time.Duration(gap) * time.Second)
+			add(at, "provider/error", notice)
+		}
+		return at
+	}
+	add(clock(0, 10, 0), "turn/started", turn)
+	end := series(clock(0, 12, 0))
+	add(end.Add(5*time.Second), "provider/error", gaveUp)
+	add(end.Add(6*time.Second), "turn/completed", failed)
+	add(clock(0, 23, 0), "turn/started", turn)
+	end = series(clock(0, 23, 20))
+	add(end.Add(5*time.Second), "provider/error", gaveUp)
+	add(clock(0, 26, 0), "turn/completed", failed)
+	if last := series(clock(0, 26, 6)); !last.Equal(clock(0, 28, 30)) {
+		t.Fatalf("fixture: last notice at %s", last)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "show"), []byte(`{"thread":{"status":"error","queuedMessageCount":0}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for at := clock(0, 30, 0); !at.After(clock(1, 40, 0)); at = at.Add(10 * time.Minute) {
+		opts := w.opts(at)
+		opts.NewAdapter = factory.New
+		r, err := Tick(context.Background(), w.cfg, opts)
+		if err != nil {
+			t.Fatalf("%s: %v", at.Format("15:04"), err)
+		}
+		if r.State != "error" && r.Reason != "awaiting user" || r.Handoff != nil {
+			t.Fatalf("%s: %+v", at.Format("15:04"), r)
+		}
+		got[at.Format("15:04")] = r.Action + ": " + r.Reason
+		if r.Action == "reprompt" { // The network is still down: the new turn fails at once.
+			add(at, "client/turn/requested", `{}`)
+			add(at.Add(time.Second), "turn/started", turn)
+			add(at.Add(2*time.Second), "provider/error", gaveUp)
+			add(at.Add(3*time.Second), "turn/completed", failed)
+		}
+	}
+	want := map[string]string{
+		"00:30": "none: provider is retrying the turn",
+		"00:40": "none: provider is retrying the turn",
+		"00:50": "reprompt: error: unknown", // first re-prompt: 00:28:30 + 15m = 00:43:30 has passed
+		"01:00": "reprompt: error: unknown", // errors.backoff 10m; max_reprompts is 2 in this fixture
+		"01:10": "await_user: error persisted after re-prompts",
+		"01:20": "none: awaiting user", "01:30": "none: awaiting user", "01:40": "none: awaiting user",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("checks\n got %v\nwant %v", got, want)
+	}
+}
