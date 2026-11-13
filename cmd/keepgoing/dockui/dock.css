@@ -271,7 +271,37 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .lanes a { color: var(--ink); font-weight: 550; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 0.2em; }
 .lanes a:hover { text-decoration-color: currentColor; }
 
+/* One loop: last decision, hold and device; each lane; recent history */
+.now { margin: 1.25rem 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+.now > div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 0.8rem 0.95rem 0.85rem; box-shadow: var(--shadow); }
+.now dt { font-size: 0.75rem; font-weight: 600; color: var(--ink-2); }
+.now dd { margin: 0.2rem 0 0; font-size: 0.925rem; font-weight: 560; overflow-wrap: anywhere; }
+.now dd .sub { display: block; font-weight: 400; font-size: 0.8125rem; margin-top: 0.1rem; }
+.lanes.is-wide { max-width: none; }
+.lane-list { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+.lane { display: grid; grid-template-columns: 0.6rem 10rem minmax(0, 1fr); gap: 0.6rem; align-items: baseline; padding: 0.35rem 0; font-size: 0.875rem; }
+.lane + .lane { border-top: 1px solid var(--line); }
+.lane .dot { align-self: center; }
+.lane-state { font-weight: 560; }
+.lane-what { color: var(--ink-2); overflow-wrap: anywhere; }
+.lane-title { color: var(--ink); }
+.lane-what code { font-size: 0.8rem; }
+.more { margin: 0.55rem 0 0; font-size: 0.8125rem; color: var(--ink-2); }
+.events { list-style: none; margin: 0.6rem 0 0; padding: 0; }
+.event { display: grid; grid-template-columns: 6.75rem 1.1rem minmax(0, 1fr); gap: 0.5rem; padding: 0.5rem 0; font-size: 0.9rem; }
+.event + .event { border-top: 1px dashed var(--line); }
+.event time { color: var(--ink-2); font-size: 0.8125rem; padding-top: 0.1rem; }
+.event .mark { width: 0.55rem; height: 0.55rem; margin: 0.4rem auto 0; border-radius: 50%; background: var(--line-2); }
+.event.is-key .mark { background: var(--limit); }
+.event.is-hold .mark { background: var(--attn); }
+.event.is-problem .mark { background: var(--warn); }
+.event .sub { display: block; font-size: 0.8125rem; }
+
 @media (max-width: 52rem) {
+  .now { grid-template-columns: minmax(0, 1fr); }
+  .lane { grid-template-columns: 0.6rem minmax(0, 1fr); }
+  .lane-what { grid-column: 2; }
+  .event { grid-template-columns: 4.75rem 0.9rem minmax(0, 1fr); }
   .layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; padding: 1.1rem 1rem 1rem; }
   .picker { position: static; max-height: none; overflow: visible; }
   .layout[data-view="home"] .pane { order: -1; }

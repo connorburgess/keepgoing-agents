@@ -20,8 +20,10 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -550,7 +552,7 @@ func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	// thr_example0002 is the thread payments-reconciler is on, which its
 	// registered status prints; a thread that is only on standby
 	// (thr_example0003) and lane threads are never included.
-	for _, want := range []string{billing.ID, "thr_example0001", "thr_example0002", "ask in thr_private0001"} {
+	for _, want := range []string{billing.ID, dockLoopThread("billing-api-migration"), "thr_example0002", "ask in thr_private0001"} {
 		if !bytes.Contains(withIDs, []byte(want)) {
 			t.Errorf("identifier view lacks %s", want)
 		}
@@ -657,6 +659,203 @@ func TestDockReadIsNotTiedToARequestAndIncompleteReadsAreNotCached(t *testing.T)
 	d.ctx, d.cache = ctx, nil
 	if _, err := d.json(false); err == nil || len(d.cache) != 0 {
 		t.Fatal("a read during exit returned a report")
+	}
+}
+
+// The loop page beyond its routes: last decision, hold, device, each lane and
+// recent history, from the fixture loops.
+func TestDockLoopPageDecisionHoldDeviceLanesAndHistory(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	r := d.read(context.Background(), false)
+	docs := dockLoopNamed(t, r, "docs-site-refresh")
+	// The last decision, and when the unbroken run of that result began.
+	if dec := docs.Decision; dec.Availability != "known" || dec.Phrase != "Sent nothing: lanes are working" || dec.Cause != "child_busy" || *dec.AgeSeconds != 180 ||
+		dec.Since == nil || !dec.Since.Equal(dockNow.Add(-57*time.Minute)) {
+		t.Errorf("%+v", dec)
+	}
+	if docs.Hold != (dockHoldState{State: "none", Phrase: "None"}) {
+		t.Errorf("%+v", docs.Hold)
+	}
+	// One device, named only as this computer by default.
+	if docs.Device != (dockDevice{Name: "This computer", Role: "Runs this loop's checks"}) {
+		t.Errorf("%+v", docs.Device)
+	}
+	// Each lane, the ones that need a person first; a lane that is itself a
+	// registered loop is named and linked. No title is recorded, and no key
+	// is shown by default.
+	lanes := docs.Lanes
+	if lanes.Availability != "current" || len(lanes.Lanes) != 4 || lanes.Omitted != 0 {
+		t.Fatalf("%+v", lanes)
+	}
+	named := 0
+	for i, want := range []string{"failed", "working", "working", "working"} {
+		l := lanes.Lanes[i]
+		if l.Number != i+1 || l.State != want || l.Title != "" || l.TitleEvidence != "not_recorded" || l.Key != "" {
+			t.Errorf("lane %d: %+v", i, l)
+		}
+		if l.Loop != "" {
+			named++
+			if l.Loop != "mobile-onboarding" || l.LoopKey != dockLoopNamed(t, r, "mobile-onboarding").Key {
+				t.Errorf("%+v", l)
+			}
+		}
+	}
+	if named != 1 {
+		t.Errorf("%d lanes named as registered loops", named)
+	}
+	// Effort comes from the configured reasoning value, and is unrecorded
+	// where none is configured.
+	if e := docs.Chain.Entries; e[0].Effort != "medium" || e[1].Effort != "" {
+		t.Errorf("%q %q", e[0].Effort, e[1].Effort)
+	}
+	// Recent history, newest first, with a run of identical checks as one line.
+	ev := docs.Events
+	if ev.Availability != "known" || len(ev.Events) != 5 || ev.Pruned {
+		t.Fatalf("%+v", ev)
+	}
+	for i, want := range []struct{ tone, phrase, detail string }{
+		{"routine", "Sent nothing: lanes are working", ""},
+		{"routine", "Sent a wake: the session was idle", "The send returned; receipt is not verified."},
+		{"key", "Returned to the first route", "to claude-opus-5-5 on claude-code"},
+		{"key", "Moved to another route", "to claude-sonnet-5-5 on second-account"},
+		{"key", "Hold for a person cleared by a control command", ""},
+	} {
+		if e := ev.Events[i]; e.Tone != want.tone || e.Phrase != want.phrase || e.Detail != want.detail {
+			t.Errorf("event %d: %+v", i, e)
+		}
+	}
+	if e := ev.Events[0]; e.Folded != 9 || e.FoldedSince == nil || !e.FoldedSince.Equal(dockNow.Add(-57*time.Minute)) || e.AgeSeconds != 180 {
+		t.Errorf("%+v", e)
+	}
+
+	// A held loop: the hold in force, since the record of it starting.
+	billing := dockLoopNamed(t, r, "billing-api-migration")
+	if h := billing.Hold; h.State != "held" || h.Phrase != "Held for a person" || h.SinceEvidence != "hold_recorded" || *h.SinceSeconds != 8040 {
+		t.Errorf("%+v", h)
+	}
+	if billing.Decision.Phrase != "Sent nothing: the loop is held for a person" || billing.Decision.Since != nil {
+		t.Errorf("%+v", billing.Decision)
+	}
+	if e := billing.Events.Events; len(e) != 1 || e[0].Tone != "hold" || e[0].Phrase != "Held the loop for a person: a lane is waiting for an answer" {
+		t.Errorf("%+v", e)
+	}
+	if l := billing.Lanes; l.Availability != "held" || len(l.Lanes) != 2 || l.Lanes[0].State != "waiting" {
+		t.Errorf("%+v", l)
+	}
+	// Paused without a history record of the pause: the wait is a lower bound.
+	if h := dockLoopNamed(t, r, "mobile-onboarding").Hold; h.State != "held" || h.Phrase != "Paused" || h.SinceEvidence != "control_changed" {
+		t.Errorf("%+v", h)
+	}
+	// Nothing recorded is said, not filled in.
+	off := dockLoopNamed(t, r, "data-export-cleanup")
+	if off.Decision.Availability != "unknown" || off.Decision.Phrase != "No check recorded" || off.Events.Availability != "none_recorded" || len(off.Lanes.Lanes) != 0 ||
+		off.Device.Role != "Holds this loop's records; no check is recorded here" {
+		t.Errorf("%+v %+v %+v", off.Decision, off.Events, off.Device)
+	}
+
+	// The hostname and lane keys are identifiers: in the JSON only on request.
+	host, _ := os.Hostname()
+	body, err := d.json(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"hostname"`) || strings.Contains(string(body), `"key":"`+childKeyOf("thr_child0001")) || (len(host) > 3 && bytes.Contains(body, []byte(host))) {
+		t.Error("hostname or a lane key in the default report")
+	}
+	d.cache = nil
+	withIDs := d.read(context.Background(), true)
+	docs = dockLoopNamed(t, withIDs, "docs-site-refresh")
+	if docs.Device.Hostname != clip(host, dockMaxText) || docs.Lanes.Lanes[1].Key == "" || len(docs.Lanes.Lanes[1].Key) != 24 {
+		t.Errorf("%+v %+v", docs.Device, docs.Lanes.Lanes[1])
+	}
+}
+
+// Each record of the loop page's new parts, mapped to the exact words shown.
+func TestDockLoopPagePhrasesFollowEvidence(t *testing.T) {
+	// Every cause the history can record has words, except the two that
+	// mean there is no cause to give.
+	for _, cause := range []string{"disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "deadline", "send_limit",
+		"git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled"} {
+		if dockReason(cause) == "" {
+			t.Errorf("no words for cause %s", cause)
+		}
+	}
+	for _, c := range []struct {
+		action, outcome, cause, want string
+		dryRun                       bool
+	}{
+		{"none", "succeeded", "child_busy", "Sent nothing: lanes are working", false},
+		{"none", "succeeded", "other", "Sent nothing", false},
+		{"none", "succeeded", "unavailable", "Sent nothing", false},
+		{"none", "failed", "active", "The check failed: the session was working", false},
+		{"wake", "succeeded", "idle", "Sent a wake: the session was idle", false},
+		{"nudge", "succeeded", "stall", "Sent a nudge: no progress for a while", false},
+		{"await_user", "succeeded", "input", "Held the loop for a person: the agent is waiting on a person", false},
+		{"none", "succeeded", "limit_no_fallback", "Sent nothing: a usage limit with no other route able to take over", false},
+		{"wake", "dry_run", "idle", "Sent a wake (dry run: nothing was sent): the session was idle", true},
+	} {
+		if got := dockDecisionPhrase(c.action, c.outcome, c.dryRun, c.cause); got != c.want {
+			t.Errorf("%+v: %q", c, got)
+		}
+	}
+	// A control change is worded from the flags before and after it.
+	on := incident.Controls{Enabled: true}
+	for _, c := range []struct {
+		before, after incident.Controls
+		want          string
+	}{
+		{incident.Controls{}, on, "Turned on by a control command"},
+		{on, incident.Controls{}, "Turned off by a control command"},
+		{on, incident.Controls{Enabled: true, Paused: true}, "Paused by a control command"},
+		{incident.Controls{Enabled: true, Paused: true, AwaitingUser: true}, on, "Pause cleared, hold for a person cleared by a control command"},
+		{on, incident.Controls{Enabled: true, Stop: true}, "Stop requested by a control command"},
+		{on, incident.Controls{Enabled: true, Completed: true}, "Marked finished by a control command"},
+		{on, incident.Controls{Enabled: true, AwaitingUser: true}, "Held for a person by a control command"},
+		{on, on, "A control change was saved; no hold changed"},
+	} {
+		b, a := c.before, c.after
+		if got := dockControlPhrase(incident.Record{Kind: "control", ControlBefore: &b, ControlAfter: &a}); got != c.want {
+			t.Errorf("%+v -> %+v: %q", c.before, c.after, got)
+		}
+	}
+	if got := dockControlPhrase(incident.Record{Kind: "control"}); got != "A control change was saved" {
+		t.Errorf("%q", got)
+	}
+	// A report's recorded outcome; acceptance is not a person seeing it.
+	for _, c := range []struct{ outcome, tone, phrase string }{
+		{"http_accepted", "routine", "Report sent: limit wait"}, {"not_sent", "routine", "Report not sent for lack of time: limit wait"}, {"http_failed", "problem", "Report not confirmed: limit wait"},
+	} {
+		ev := dockEvent{Tone: "routine"}
+		dockWordDelivery(&ev, report.Delivery{Event: "limit_wait", Outcome: c.outcome})
+		if ev.Tone != c.tone || ev.Phrase != c.phrase {
+			t.Errorf("%s: %+v", c.outcome, ev)
+		}
+	}
+	// The hold in force, from the control flags.
+	for _, c := range []struct {
+		controls *clientControls
+		state    string
+		phrase   string
+	}{
+		{nil, "unknown", "Unknown"}, {&clientControls{Enabled: true}, "none", "None"}, {&clientControls{}, "none", "None"},
+		{&clientControls{Enabled: true, Paused: true}, "held", "Paused"}, {&clientControls{Enabled: true, Stop: true, Paused: true}, "held", "Stop requested, paused"},
+		{&clientControls{Enabled: true, Completed: true}, "held", "Finished"}, {&clientControls{Enabled: true, AwaitingUser: true}, "held", "Held for a person"},
+	} {
+		if h := dockCurrentHold(c.controls, time.Time{}, nil, dockNow); h.State != c.state || h.Phrase != c.phrase || h.Since != nil {
+			t.Errorf("%+v: %+v", c.controls, h)
+		}
+	}
+	// The device's role rests on a recorded check, or says there is none.
+	if d := dockDeviceOf(nil, "example-host", false); d.Role != "Holds this loop's registration; its records could not be read" || d.Hostname != "" {
+		t.Errorf("%+v", d)
+	}
+	// An unreadable history is unknown, not empty.
+	if ev := dockRecentEvents(nil, nil, dockNow); ev.Availability != "unknown" {
+		t.Errorf("%+v", ev)
+	}
+	unreadable := &timelineReport{Sources: []timelineSource{{Source: incident.FileName, Availability: "unavailable"}}}
+	if ev := dockRecentEvents(unreadable, nil, dockNow); ev.Availability != "unknown" || len(ev.Events) != 0 {
+		t.Errorf("%+v", ev)
 	}
 }
 

@@ -61,6 +61,17 @@ candidates:
     disabled: true
 `
 
+// dockLoopThread is the fictional BB thread a fixture loop supervises. Each
+// loop has its own, so a lane can be recognised as a registered loop.
+func dockLoopThread(name string) string {
+	for i, loop := range dockLoops {
+		if loop == name {
+			return fmt.Sprintf("thr_example1%03d", i)
+		}
+	}
+	return "thr_example1999"
+}
+
 func dockConfigYAML(name string, withFallbacks bool, maxSends int) string {
 	model := "claude-opus-5-5"
 	if !withFallbacks {
@@ -72,11 +83,11 @@ loop:
   state_dir: state
   adapter: bb
   provider: claude-code
-  bb: {thread: thr_example0001, model: %s, cli: nonexistent-provider-fixture}
+  bb: {thread: %s, model: %s, reasoning: medium, cli: nonexistent-provider-fixture}
   prompt: Continue the fictional example task.
   errors:
     failover_on: [rate_limit]
-`, name, model)
+`, name, dockLoopThread(name), model)
 	if maxSends > 0 {
 		s += fmt.Sprintf("  limits:\n    max_sends: %d\n", maxSends)
 	}
@@ -150,8 +161,30 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		switch name {
 		case "docs-site-refresh":
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "child work running")
-			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0002"), Status: rungraph.ChildActive},
+			// One lane is itself a registered loop: mobile-onboarding's thread.
+			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf(dockLoopThread("mobile-onboarding")), Status: rungraph.ChildActive},
 				{Key: childKeyOf("thr_child0003"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0004"), Status: rungraph.ChildErrored}}
+			// Its retained history: resumed yesterday, moved to another route
+			// on a limit, returned, woke the session, then an unbroken run of
+			// checks that sent nothing because lanes were working.
+			on := &incident.Controls{Enabled: true}
+			primaryKey, secondKey := incident.TargetKey(state.Primary), incident.TargetKey("claude-second-account")
+			history := []incident.Record{
+				{Kind: "control", CheckStartedAt: now.Add(-26 * time.Hour), ControlBefore: &incident.Controls{Enabled: true, AwaitingUser: true}, ControlAfter: on,
+					ControlChange: &incident.ControlChange{Operation: "resume", SaveObservedAt: now.Add(-26 * time.Hour)}},
+				{Kind: "tick", CheckStartedAt: now.Add(-(7*time.Hour + 39*time.Minute)), Action: "handoff", Outcome: "succeeded", Cause: "other", TargetKey: primaryKey, TargetKeyAfter: secondKey, ControlBefore: on, ControlAfter: on},
+				{Kind: "tick", CheckStartedAt: now.Add(-(2*time.Hour + 26*time.Minute)), Action: "switch_back", Outcome: "succeeded", Cause: "other", TargetKey: secondKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on},
+				{Kind: "tick", CheckStartedAt: now.Add(-time.Hour), Action: "wake", Outcome: "succeeded", Cause: "idle", TargetKey: primaryKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on},
+			}
+			for m := 57; m >= 3; m -= 6 {
+				history = append(history, incident.Record{Kind: "tick", CheckStartedAt: now.Add(-time.Duration(m) * time.Minute), Action: "none", Outcome: "succeeded", Cause: "child_busy",
+					TargetKey: primaryKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on, LimitWaitReport: "none", TurnRetry: "none"})
+			}
+			for _, r := range history {
+				if err := incident.Append(sd, r); err != nil {
+					t.Fatal(err)
+				}
+			}
 			run = 1
 		case "billing-api-migration":
 			// Held 2h14m ago by a check that found a child waiting on a

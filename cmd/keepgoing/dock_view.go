@@ -101,16 +101,24 @@ type dockLoop struct {
 	Evidence string `json:"evidence"` // available, partial or unavailable
 	// CurrentRoute is the target the loop's records name as current. It says
 	// nothing about activity: see InUse on the chain entry.
-	CurrentRoute dockTarget       `json:"currentRoute"`
-	Children     dockChildren     `json:"children"`
-	LastCheck    dockCheck        `json:"lastCheck"`
-	NextCheck    dockNext         `json:"nextCheck"`
-	Fallbacks    dockFallbacks    `json:"fallbacks"`
-	Chain        dockChain        `json:"chain"`
-	Limits       []dockLimit      `json:"limits"`
-	LimitWait    *dockLimitWait   `json:"limitWait,omitempty"`
-	Issues       []string         `json:"issues"`
-	Identifiers  *dockIdentifiers `json:"identifiers,omitempty"`
+	CurrentRoute dockTarget `json:"currentRoute"`
+	// Decision is the last recorded check's action and fixed cause; Hold the
+	// hold in force; Device this computer; Lanes each lane of the last
+	// verified listing; Events the newest retained history entries.
+	Decision    dockDecision     `json:"decision"`
+	Hold        dockHoldState    `json:"hold"`
+	Device      dockDevice       `json:"device"`
+	Lanes       dockLanes        `json:"lanes"`
+	Events      dockEvents       `json:"events"`
+	Children    dockChildren     `json:"children"`
+	LastCheck   dockCheck        `json:"lastCheck"`
+	NextCheck   dockNext         `json:"nextCheck"`
+	Fallbacks   dockFallbacks    `json:"fallbacks"`
+	Chain       dockChain        `json:"chain"`
+	Limits      []dockLimit      `json:"limits"`
+	LimitWait   *dockLimitWait   `json:"limitWait,omitempty"`
+	Issues      []string         `json:"issues"`
+	Identifiers *dockIdentifiers `json:"identifiers,omitempty"`
 }
 
 type dockTarget struct {
@@ -223,6 +231,8 @@ type dockChainEntry struct {
 	Tool     string `json:"tool,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
+	// Effort is the configured effort level; empty when none is configured.
+	Effort string `json:"effort,omitempty"`
 	// Current: the loop's records name this entry as its current target.
 	// InUse: also the loop is on with no hold, its last check is recent, and
 	// that check recorded this target. Use says which, in plain words.
@@ -249,6 +259,7 @@ type dockRoute struct {
 	Provider string `json:"provider,omitempty"`
 	Account  string `json:"account,omitempty"`
 	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 	Tool     string `json:"tool,omitempty"`
 	// Readiness is ready, not_ready, not_probed, disabled, current or
 	// unknown: the newest probe result any loop holds for this route. A
@@ -280,11 +291,12 @@ type dockRouteLoop struct {
 	Working  int    `json:"lanesWorking"`
 }
 
-// dockRouteKey includes the probe's usage identity (a hash of what selects
+// dockRouteKey includes the effort level, as a route is a model on an account
+// at an effort level, and the probe's usage identity (a hash of what selects
 // the account a probe reads), so two accounts configured under one group are
 // two routes and never share a reading.
-func dockRouteKey(provider, account, model, tool, usageIdentity string) string {
-	h := sha256.Sum256([]byte(strings.Join([]string{"keepgoing-dock-route", provider, account, model, tool, usageIdentity}, "\x00")))
+func dockRouteKey(provider, account, model, effort, tool, usageIdentity string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{"keepgoing-dock-route", provider, account, model, effort, tool, usageIdentity}, "\x00")))
 	return "r" + hex.EncodeToString(h[:6])
 }
 
@@ -301,7 +313,7 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 				}
 				i = len(routes)
 				index[e.Route] = i
-				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Tool: e.Tool, Readiness: "unknown", Phrase: "Unknown",
+				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Effort: e.Effort, Tool: e.Tool, Readiness: "unknown", Phrase: "Unknown",
 					Usage:      dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}},
 					RunningNow: []dockRouteLoop{}, RecordedFor: []dockRouteLoop{}, StandbyFor: []dockRouteLoop{}, UnknownFor: []dockRouteLoop{}, Lanes: "unknown"})
 			}
@@ -360,6 +372,10 @@ type dockInput struct {
 	RunsKnown bool
 	Chain     *dockChainInput // nil when the configuration could not be read
 	Hold      *dockHold       // nil when the retained history does not show the hold starting
+	// Timeline is the retained history as timeline reads it; nil when it was
+	// not read. Hostname is this computer's name, shown only with identifiers.
+	Timeline *timelineReport
+	Hostname string
 }
 
 // dockHold is the retained history record of an awaiting-user hold starting.
@@ -369,33 +385,6 @@ type dockHold struct {
 	// Marked: the await-user command set it. Other control operations that
 	// set the flag stay unexplained.
 	Marked bool
-}
-
-// dockHoldFrom finds the newest record in which the awaiting-user flag was
-// entered and has not been cleared since. It returns nil when retention or a
-// missing journal leaves that unknown.
-func dockHoldFrom(j incident.Journal) *dockHold {
-	for i := len(j.Records) - 1; i >= 0; i-- {
-		r := j.Records[i]
-		if r.ControlAfter == nil {
-			continue
-		}
-		if !r.ControlAfter.AwaitingUser {
-			return nil
-		}
-		if r.ControlBefore == nil || r.ControlBefore.AwaitingUser {
-			continue
-		}
-		h := &dockHold{At: r.CheckStartedAt, Cause: r.Cause}
-		if c := r.ControlChange; c != nil {
-			h.Cause, h.Marked = "", c.Operation == "await-user"
-			if !c.SaveObservedAt.IsZero() {
-				h.At = c.SaveObservedAt
-			}
-		}
-		return h
-	}
-	return nil
 }
 
 func dockKey(id string) string {
@@ -505,6 +494,18 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	}
 
 	l.Children = dockChildWork(in.Runs, in.RunsKnown)
+	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers)
+	l.Decision = dockLastDecision(st, in.Timeline, now)
+	l.Device = dockDeviceOf(st, in.Hostname, identifiers)
+	l.Events = dockRecentEvents(in.Timeline, dockRouteNamesOf(in.Chain), now)
+	l.Hold = dockHoldState{State: "unknown", Phrase: "Unknown"}
+	if snap != nil {
+		var updated time.Time
+		if st != nil {
+			updated = st.Control.UpdatedAt
+		}
+		l.Hold = dockCurrentHold(snap.Controls, updated, in.Timeline, now)
+	}
 	l.LastCheck = dockLastCheck(st, now, staleAfter)
 	l.NextCheck = dockNextCheck(snap)
 	l.Fallbacks = dockFallbackReadiness(st, in.Chain)
@@ -972,8 +973,9 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, now time.Time) dockC
 	entry := func(pos int, cand config.Candidate) dockChainEntry {
 		ref := refOf(cand.Agent)
 		e := dockChainEntry{Position: pos, ID: clip(cand.ID, dockMaxText), Tool: dockTool(ref.Adapter), Provider: clip(ref.Provider, dockMaxText),
-			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, ref.Adapter, probe.UsageIdentity(cand)), Account: clip(ref.Group, dockMaxText),
-			Model: clip(ref.Model, dockMaxText), Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown",
+			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, dockEffort(cand.Agent), ref.Adapter, probe.UsageIdentity(cand)), Account: clip(ref.Group, dockMaxText),
+			Effort: dockEffort(cand.Agent),
+			Model:  clip(ref.Model, dockMaxText), Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown",
 			Usage: dockUsageTarget{Name: clip(cand.ID, dockMaxText), Availability: "unavailable", Windows: []dockUsageWindow{}}}
 		if use.Target != "" && cand.ID == use.Target {
 			e.Current, e.InUse, e.Use = true, use.InUse, use.Phrase

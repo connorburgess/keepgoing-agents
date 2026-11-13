@@ -241,7 +241,7 @@
     return box;
   }
   function routeName(e) { return e.model || (e.tool === "BB thread" ? "The thread's own model" : e.tool || "Unknown model"); }
-  function routeMeta(e) { return [e.model ? e.tool : "", e.provider !== e.account ? e.provider : ""]; }
+  function routeMeta(e) { return [e.model ? e.tool : "", e.provider !== e.account ? e.provider : "", e.effort ? "effort " + e.effort : "effort not recorded"]; }
 
   function needCard(n, link) {
     var li = el("li", "need");
@@ -402,6 +402,97 @@
     pane.appendChild(box);
   }
 
+  // Last decision, hold and device: three short answers under the loop's name.
+  function nowRow(l) {
+    var dl = el("dl", "now");
+    function card(label, value, sub) {
+      var d = el("div");
+      d.appendChild(el("dt", null, label));
+      var dd = el("dd");
+      if (typeof value === "string") dd.textContent = value; else dd.appendChild(value);
+      if (sub) dd.appendChild(el("span", "sub", sub));
+      d.appendChild(dd);
+      dl.appendChild(d);
+    }
+    var dec = l.decision;
+    if (dec.availability !== "known") card("Last decision", unknown(dec.phrase));
+    else card("Last decision", dec.phrase, ago(dec.ageSeconds) + (dec.since ? " \u00B7 this result since " + clock(dec.since) : ""));
+    var h = l.hold;
+    if (h.state === "unknown") card("Hold", unknown());
+    else if (h.state === "none") card("Hold", "None");
+    else card("Hold", h.phrase, h.sinceSeconds == null ? "since an unknown time" : (h.sinceEvidence === "hold_recorded" ? "for " : "for at least ") + span(h.sinceSeconds));
+    card("Device", l.device.hostname || l.device.name, (l.device.hostname ? l.device.name + " \u00B7 " : "") + l.device.role);
+    return dl;
+  }
+
+  // Each lane of the last verified listing. A lane row leads with its state,
+  // then what it is: its title when one is recorded, otherwise its number.
+  function laneBox(l, label) {
+    var box = el("div", "lanes is-wide");
+    var c = l.children, list = l.lanes;
+    var head = el("span", "lanes-label", label);
+    box.appendChild(head);
+    if (!list.lanes.length) {
+      box.appendChild(children(c));
+      return box;
+    }
+    var counts = [[c.working, "working"], [c.stuck, "waiting for an answer"], [c.failed, "failed"]]
+      .filter(function (x) { return x[0]; }).map(function (x) { return x[0] + " " + x[1]; }).join(", ");
+    head.textContent = label + " \u00B7 " + counts + " \u00B7 " + (c.availability === "held" ? "as of the check that held it, " : "listed ") + ago(c.ageSeconds);
+    var ul = el("ul", "lane-list");
+    list.lanes.forEach(function (x) {
+      var li = el("li", "lane");
+      li.appendChild(el("span", "dot " + (x.state === "working" ? "dot-good" : x.state === "waiting" ? "dot-attn" : x.state === "failed" ? "dot-warn" : "dot-unknown")));
+      li.appendChild(el("span", "lane-state", x.phrase));
+      var what = el("span", "lane-what");
+      what.appendChild(el("span", "lane-title", x.title || "Lane " + x.number));
+      if (x.loop) {
+        what.appendChild(document.createTextNode(" \u00B7 also a registered loop: "));
+        var a = el("a", null, x.loop);
+        a.href = "#/loop/" + x.loopKey;
+        what.appendChild(a);
+      } else if (!x.title) {
+        what.appendChild(el("span", "sub", " \u00B7 title not recorded"));
+      }
+      if (x.key) {
+        what.appendChild(document.createTextNode(" \u00B7 "));
+        what.appendChild(el("code", null, x.key));
+      }
+      li.appendChild(what);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+    if (list.omitted) box.appendChild(el("p", "more", list.omitted + " more not listed"));
+    box.appendChild(el("p", "more", "keepgoing records each lane's state, not its title or which route it is on."));
+    return box;
+  }
+
+  // The newest retained history entries, newest first.
+  function eventsPanel(ev) {
+    var p = panel("Recent activity", [el("span", "sub", "from the retained history; newest first")]);
+    if (ev.availability === "unknown") { p.appendChild(unknown("Unknown: the history could not be read.")); return p; }
+    if (!ev.events.length) { p.appendChild(el("p", "sub chain-how", "Nothing is recorded yet.")); return p; }
+    var ol = el("ol", "events");
+    ev.events.forEach(function (x) {
+      var li = el("li", "event is-" + x.tone);
+      var t = el("time", null, clock(x.at));
+      t.dateTime = x.at;
+      li.appendChild(t);
+      li.appendChild(el("span", "mark"));
+      var body = el("div", null, x.phrase);
+      if (x.detail) body.appendChild(el("span", "sub", x.detail));
+      if (x.folded) body.appendChild(el("span", "sub", x.folded + (x.folded === 1 ? " more check" : " more checks") + " with this result since " + clock(x.foldedSince)));
+      li.appendChild(body);
+      ol.appendChild(li);
+    });
+    p.appendChild(ol);
+    var more = el("p", "more", ev.events.length + " of " + ev.retained + " retained entries." + (ev.pruned ? " Older history has been pruned." : "") + " More with ");
+    more.appendChild(el("code", null, "keepgoing timeline"));
+    more.appendChild(document.createTextNode("."));
+    p.appendChild(more);
+    return p;
+  }
+
   // Level 2: one loop, shown through its routes.
   function renderLoop(d, pane, key) {
     pane.appendChild(back());
@@ -425,6 +516,8 @@
       pane.appendChild(nb);
     }
 
+    pane.appendChild(nowRow(l));
+
     // The ordered preferred routes are the main structure.
     var c = l.chain, f = l.fallbacks;
     var brief = null;
@@ -441,7 +534,7 @@
     var ol = el("ol", "route-list is-ordered");
     c.entries.forEach(function (e) {
       var lanes = [];
-      if (e.current) lanes.push(lanesBox(e.inUse ? "Lanes on this route" : "Lanes, as last listed", children(l.children)));
+      if (e.current) lanes.push(laneBox(l, e.inUse ? "Lanes on this route" : "Lanes, as last listed"));
       var item = routeItem({
         id: e.id, position: e.position, badge: String(e.position + 1), name: routeName(e), account: e.account, active: e.inUse, use: e.use, off: e.disabled,
         readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase,
@@ -453,9 +546,11 @@
     routing.appendChild(ol);
     if (c.omitted) routing.appendChild(el("p", "sub", c.omitted + " more not shown"));
     if (!c.entries.length || !c.entries.some(function (e) { return e.current; })) {
-      routing.appendChild(lanesBox("Lanes", children(l.children)));
+      routing.appendChild(laneBox(l, "Lanes"));
     }
     pane.appendChild(routing);
+
+    pane.appendChild(eventsPanel(l.events));
 
     var checks = panel("Checks and limits");
     var dl = el("dl", "facts");

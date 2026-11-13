@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,8 @@ const (
 	// dockReadParallel bounds how many loops are read at once.
 	dockReadParallel = 4
 	dockAPIPath      = "api/v1/dock"
+	// dockMaxDeliveries is the report delivery history's own record bound.
+	dockMaxDeliveries = 64
 )
 
 func dockCommand(e env, args []string) int {
@@ -267,6 +270,9 @@ type dockReader struct {
 	now        func() time.Time
 	timeout    time.Duration // zero means dockReadTimeout
 
+	hostOnce sync.Once
+	host     string
+
 	mu    sync.Mutex
 	cache map[bool]dockCached
 }
@@ -274,6 +280,13 @@ type dockReader struct {
 type dockCached struct {
 	at   time.Time
 	body []byte
+}
+
+// hostname is this computer's name, read once. It is an identifier and
+// leaves the reader only in the view with identifiers.
+func (d *dockReader) hostname() string {
+	d.hostOnce.Do(func() { d.host, _ = os.Hostname() })
+	return d.host
 }
 
 func (d *dockReader) clock() time.Time {
@@ -376,7 +389,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 }
 
 func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
-	in := dockInput{Entry: entry}
+	in := dockInput{Entry: entry, Hostname: d.hostname()}
 	if ctx.Err() != nil {
 		in.Client = clientStatusReport{SchemaVersion: 1, RegistrationID: entry.ID, ReadAt: now, Outcome: "unavailable", Issues: []string{"cancelled"}}
 		return in
@@ -408,11 +421,12 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 			in.Status = &out
 		}
 	}
+	// The retained history, read as timeline reads it: recent entries, when
+	// and why a hold began, and how long the last result has repeated.
+	tl := readTimeline(entry.StateDir, now, d.staleAfter, incident.MaxRecords+dockMaxDeliveries, timelineFilter{})
+	in.Timeline = &tl
 	if c := in.Client.Snapshot.Controls; c != nil && c.AwaitingUser {
-		// The retained history timeline reads, for when and why the hold began.
-		if j, err := incident.Load(entry.StateDir); err == nil {
-			in.Hold = dockHoldFrom(j)
-		}
+		in.Hold = dockHoldFromTimeline(in.Timeline)
 	}
 	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable
