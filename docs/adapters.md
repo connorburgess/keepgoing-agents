@@ -46,15 +46,9 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture |
 | [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture |
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a |
-<<<<<<< HEAD
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a |
-| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
-=======
-| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
-| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none |
->>>>>>> origin/main
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | missing · none | missing · fixture | missing · fixture | missing · none | missing · none | missing · none |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
