@@ -56,10 +56,14 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
-	// ChildErrorsAnnounced holds decide.ChildHashes of the errored children
-	// the session has been told about and that are still in error. It holds no
-	// child ID and is bounded by the adapter's child limit.
-	ChildErrorsAnnounced []string `json:"childErrorsAnnounced,omitempty"`
+	// ChildErrorsAnnounced covers the errored children the session has been
+	// told about, by hash, never by ID. A child is dropped once it has stayed
+	// out of error for min_wake_interval; the record is bounded.
+	ChildErrorsAnnounced []decide.CoveredChild `json:"childErrorsNoticed,omitempty"`
+	// ChildErrorsAnnouncedV1 is the record an earlier unreleased build wrote: a
+	// plain list of hashes with no recovery time. It is read once, converted,
+	// and never written again.
+	ChildErrorsAnnouncedV1 []string `json:"childErrorsAnnounced,omitempty"`
 	// ChildErrorNoticeFor identifies the pending announcement (the hashes not
 	// yet announced) that ChildErrorNoticeAttempts rejected sends belong to.
 	ChildErrorNoticeFor      string `json:"childErrorNoticeFor,omitempty"`
@@ -88,10 +92,10 @@ const (
 // been out of error long enough to be forgotten. Children holds hashes, never
 // child IDs, and is bounded.
 type ChildErrorReport struct {
-	Children   []decide.ReportedChild `json:"children,omitempty"`
-	Reports    int                    `json:"reports,omitempty"` // report attempts in this episode
-	Outcome    string                 `json:"outcome"`
-	DetectedAt time.Time              `json:"detectedAt"`
+	Children   []decide.CoveredChild `json:"children,omitempty"`
+	Reports    int                   `json:"reports,omitempty"` // report attempts in this episode
+	Outcome    string                `json:"outcome"`
+	DetectedAt time.Time             `json:"detectedAt"`
 	// What the detecting check saw. Complete is false when the child listing
 	// was incomplete, so the counts are lower bounds.
 	Errored  int  `json:"errored"`
@@ -127,7 +131,7 @@ type BriefRecord struct {
 // ClearChildErrors forgets what was announced about errored children. They
 // belong to one thread, so it is called whenever the loop's target changes.
 func (f *File) ClearChildErrors() {
-	f.ChildErrorsAnnounced, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, "", 0
+	f.ChildErrorsAnnounced, f.ChildErrorsAnnouncedV1, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, nil, "", 0
 	f.ChildErrorReport = nil
 }
 

@@ -449,27 +449,6 @@ func ChildHashes(ids []string) []string {
 	return hashes
 }
 
-// ChildAnnouncements compares the children now in error with those already
-// announced. kept is the announced record pruned to children still in error,
-// so one that recovers and errors again is announced again. unannounced lists
-// errored children not in the record: only growth announces, never a set that
-// merely shrank.
-func ChildAnnouncements(errored, announced []string) (kept, unannounced []string) {
-	was := map[string]bool{}
-	for _, h := range announced {
-		was[h] = true
-	}
-	kept, unannounced = []string{}, []string{}
-	for _, h := range errored {
-		if was[h] {
-			kept = append(kept, h)
-		} else {
-			unannounced = append(unannounced, h)
-		}
-	}
-	return kept, unannounced
-}
-
 // ChildReport says what to do about telling the owner that children are in
 // error. It is separate from the notice to the parent session: the owner is
 // told when a failure is first seen, the parent when it is next woken.
@@ -483,28 +462,30 @@ const (
 	ChildReportCapped        ChildReport = "capped"         // this episode has sent its maximum
 )
 
-// ReportedChild is one child covered by the current episode of owner reports.
-// Hash is its ChildHashes value, never the ID. RecoveredAt is zero while the
-// child was in error when last seen.
-type ReportedChild struct {
+// CoveredChild is one child the parent session or the owner has been told
+// about. Hash is its ChildHashes value, never the ID. RecoveredAt is zero
+// while the child was in error when last seen.
+type CoveredChild struct {
 	Hash        string    `json:"hash"`
 	ErroredAt   time.Time `json:"erroredAt"`             // when it was last seen in error
 	RecoveredAt time.Time `json:"recoveredAt,omitempty"` // when it was first seen out of error since then
 }
 
-// ChildReportRecord compares the children now in error with those covered by
-// the episode. Like ChildAnnouncements for the parent notice it uses per-child
-// hashes and reports only growth: unreported lists errored children the
-// episode does not cover.
+// CoveredChildren is the one rule for "which children in error are new". The
+// notice to the parent session and the report to the owner keep separate
+// records, because they are told at different times, but both records are
+// advanced by this function, so they cannot disagree about what counts as a
+// new failure. unreported lists errored children the record does not cover:
+// only growth is new, never a set that merely shrank.
 //
 // A covered child is forgotten only after it has been seen out of error for
 // forgetAfter. Until then a child that fails again is the same failure, so one
-// that flaps between error and a provider retry is not reported each time and
-// does not spend the episode's reports. A child counts as out of error when
-// the listing is complete and does not show it in error, or when it is in
-// healthy. An incomplete listing that simply does not show a child proves
-// nothing about it, so that child is kept unchanged.
-func ChildReportRecord(errored, healthy []string, covered []ReportedChild, complete bool, now time.Time, forgetAfter time.Duration) (kept []ReportedChild, unreported []string) {
+// that flaps between error and a provider retry is not told again each time.
+// A child counts as out of error when the listing is complete and does not
+// show it in error, or when it is in healthy. An incomplete listing that
+// simply does not show a child proves nothing about it, so that child is kept
+// unchanged.
+func CoveredChildren(errored, healthy []string, covered []CoveredChild, complete bool, now time.Time, forgetAfter time.Duration) (kept []CoveredChild, unreported []string) {
 	inError, out := map[string]bool{}, map[string]bool{}
 	for _, h := range errored {
 		inError[h] = true
@@ -513,9 +494,14 @@ func ChildReportRecord(errored, healthy []string, covered []ReportedChild, compl
 		out[h] = true
 	}
 	known := map[string]bool{}
-	kept, unreported = []ReportedChild{}, []string{}
+	kept, unreported = []CoveredChild{}, []string{}
 	for _, c := range covered {
 		if known[c.Hash] {
+			continue
+		}
+		if inError[c.Hash] && !c.RecoveredAt.IsZero() && now.Sub(c.RecoveredAt) >= forgetAfter {
+			// Out of error for the floor and now failing again, with no check
+			// in between to forget it: a new failure all the same.
 			continue
 		}
 		known[c.Hash] = true
@@ -541,12 +527,12 @@ func ChildReportRecord(errored, healthy []string, covered []ReportedChild, compl
 	return kept, unreported
 }
 
-// CoverChildren adds newly reported children to the episode. The record is
-// bounded: past max entries, the ones seen in error longest ago are dropped.
-func CoverChildren(kept []ReportedChild, unreported []string, now time.Time, max int) []ReportedChild {
-	out := append([]ReportedChild{}, kept...)
+// CoverChildren adds newly told children to a record. The record is bounded:
+// past max entries, the ones seen in error longest ago are dropped.
+func CoverChildren(kept []CoveredChild, unreported []string, now time.Time, max int) []CoveredChild {
+	out := append([]CoveredChild{}, kept...)
 	for _, h := range unreported {
-		out = append(out, ReportedChild{Hash: h, ErroredAt: now})
+		out = append(out, CoveredChild{Hash: h, ErroredAt: now})
 	}
 	if len(out) > max {
 		sort.SliceStable(out, func(i, j int) bool { return out[i].ErroredAt.After(out[j].ErroredAt) })
