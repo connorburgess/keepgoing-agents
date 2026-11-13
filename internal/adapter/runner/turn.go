@@ -17,6 +17,9 @@ const (
 	envTurnDir  = "KEEPGOING_RUN_TURN_DIR"
 	envTurnArgv = "KEEPGOING_RUN_TURN_ARGV"
 	envTurnKey  = "KEEPGOING_RUN_TURN_KEY"
+	// envTurnStdin set to "none" gives the agent an empty standard input:
+	// its prompt is in the private file it was pointed at.
+	envTurnStdin = "KEEPGOING_RUN_TURN_STDIN"
 )
 
 // MaybeRunTurn runs the turn wrapper and exits when this process was started
@@ -53,7 +56,11 @@ func MaybeRunTurn() {
 
 // runTurn executes argv with the prompt on stdin and records the exit code.
 func runTurn(dir string, argv []string) int {
-	stdin, err := os.Open(filepath.Join(dir, "prompt"))
+	source := filepath.Join(dir, "prompt")
+	if os.Getenv(envTurnStdin) == "none" {
+		source = os.DevNull
+	}
+	stdin, err := os.Open(source)
 	if err != nil {
 		return 2
 	}
@@ -94,7 +101,7 @@ func turnChildEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) {
+		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) && !strings.EqualFold(name, envTurnStdin) {
 			env = append(env, kv)
 		}
 	}

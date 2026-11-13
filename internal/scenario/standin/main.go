@@ -39,6 +39,19 @@
 // thread's show file says "error" and answers like BB otherwise: an error
 // envelope with no_failed_turn and exit status 1.
 //
+// As example-agent it plays a fictional agent that keepgoing has no built-in
+// runner for, with this documented interface:
+//
+//	example-agent run --json [--session ID]
+//	    Reads the prompt on standard input and prints one JSON line of type
+//	    "result" with "status" (ok, failed or needs_input) and "session".
+//	    Exits 0 when ok, 1 when failed, 2 when it needs input.
+//
+// What each successive turn does comes from example-agent.turns, one outcome
+// per line consumed in order (default ok). Every turn is recorded in
+// sends.jsonl like the other headless stand-ins: kind "turn", the agent's name,
+// the session it resumed as the mode, and its prompt.
+//
 // Any command it does not know is recorded and answered with {"ok":true}.
 // It never contacts a network or a real agent.
 package main
@@ -93,6 +106,9 @@ func play(world, name string, args []string) int {
 			return codexProbe(world, args)
 		}
 		return turn(world, name, args)
+	}
+	if name == "example-agent" {
+		return exampleAgent(world, args)
 	}
 	return run(world, args)
 }
@@ -311,6 +327,42 @@ func retry(world, thread string) int {
 	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "retry", "thread": thread})
 	fmt.Println(`{"ok":true,"delivery":"sent","attempt":1}`)
 	return 0
+}
+
+// exampleSession is the session the fictional agent reports.
+const exampleSession = "sess_example_0001"
+
+func exampleAgent(world string, args []string) int {
+	if len(args) < 2 || args[0] != "run" || args[1] != "--json" {
+		fmt.Fprintln(os.Stderr, "example-agent: usage: run --json [--session ID]")
+		return 64
+	}
+	prompt, _ := io.ReadAll(os.Stdin)
+	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{
+		"kind": "turn", "thread": "example-agent", "mode": flagValue(args, "--session"), "message": string(prompt),
+	})
+	outcome := "ok"
+	path := filepath.Join(world, "example-agent.turns")
+	if b, err := os.ReadFile(path); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+		if len(lines) > 0 && lines[0] != "" {
+			outcome = lines[0]
+			os.WriteFile(path, []byte(strings.Join(lines[1:], "\n")+"\n"), 0o600)
+		}
+	}
+	// With the network down the agent's turn fails with nothing structured.
+	if outcome == "ok" && readMode(filepath.Join(world, "net.mode"), "online") != "online" {
+		outcome = "failed"
+	}
+	status, code := "ok", 0
+	switch outcome {
+	case "failed":
+		status, code = "failed", 1
+	case "needs_input":
+		status, code = "needs_input", 2
+	}
+	fmt.Printf(`{"type":"result","status":%q,"session":%q}`+"\n", status, exampleSession)
+	return code
 }
 
 // HeadlessSession is the session every stand-in headless turn reports.
