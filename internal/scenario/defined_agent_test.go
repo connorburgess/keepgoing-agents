@@ -1,7 +1,6 @@
 package scenario
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,35 +36,6 @@ loop:
 
 const exampleSession = "sess_example_0001"
 
-// tickTurn runs one check and, when it started a turn, waits for the
-// detached turn to end before the step is recorded, so the step shows what
-// the agent received.
-func (w *World) tickTurn() *Step {
-	w.t.Helper()
-	r := w.Run("tick", "-c", w.Config, "--now", w.stamp())
-	var line map[string]any
-	if r.Code == 0 {
-		if err := json.Unmarshal([]byte(strings.TrimSpace(r.Stdout)), &line); err != nil {
-			w.t.Fatalf("tick output is not one JSON line: %v\n%s", err, r.Stdout)
-		}
-	}
-	switch line["action"] {
-	case "wake", "nudge", "reprompt":
-		exit := filepath.Join(filepath.Dir(w.Config), "state", "targets", "primary", "exit")
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			if _, err := os.Stat(exit); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				w.t.Fatalf("the turn started by %v never ended", line["action"])
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	return w.record("tick", r, line)
-}
-
 func (w *World) nextTurns(outcomes ...string) {
 	w.t.Helper()
 	if err := os.WriteFile(filepath.Join(w.world, "example-agent.turns"), []byte(strings.Join(outcomes, "\n")+"\n"), 0o600); err != nil {
@@ -82,6 +52,7 @@ func TestDefinedAgentJourney(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
 	w.install("example-agent")
+	w.Headless = "example-agent" // steps wait for its detached turns to end
 	dir := filepath.Join(w.Root, "setup")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -106,33 +77,33 @@ func TestDefinedAgentJourney(t *testing.T) {
 
 	// The first turn starts a new session with the task on standard input.
 	w.Advance(time.Minute)
-	s = w.tickTurn()
-	w.Check(s, "first turn", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "", Mode: "auto"}), sentContains(s, scenarioTask), holds(s), noReports(s), noCalls(s)))
+	s = w.Tick()
+	w.Check(s, "first turn", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: ""}), sentContains(s, scenarioTask), holds(s), noReports(s), noCalls(s)))
 
 	// It ended healthy, so the next check continues exactly that session.
 	w.Commit("feat: fictional first step")
 	w.Advance(5 * time.Minute)
-	s = w.tickTurn()
-	w.Check(s, "second turn resumes the session", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: exampleSession, Mode: "auto"}), holds(s), noReports(s)))
+	s = w.Tick()
+	w.Check(s, "second turn resumes the session", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
 
 	// A turn fails with nothing the definition declares: an unknown error,
 	// re-prompted in the same session.
 	w.nextTurns("failed", "needs_input")
 	w.Advance(5 * time.Minute)
-	s = w.tickTurn()
-	w.Check(s, "the turn that will fail", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: exampleSession, Mode: "auto"})))
+	s = w.Tick()
+	w.Check(s, "the turn that will fail", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession})))
 	w.Advance(time.Minute)
-	s = w.tickTurn()
-	w.Check(s, "re-prompt after a failed turn", all(action(s, "reprompt"), reasonIs(s, "error: unknown"), sentExactly(s, Send{Kind: "turn", Thread: exampleSession, Mode: "auto"}), holds(s), noReports(s)))
+	s = w.Tick()
+	w.Check(s, "re-prompt after a failed turn", all(action(s, "reprompt"), reasonIs(s, "error: unknown"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
 
 	// That turn ended waiting on a person: one hold, one report, nothing sent,
 	// however many checks follow.
 	w.Advance(5 * time.Minute)
-	s = w.tickTurn()
+	s = w.Tick()
 	w.Check(s, "waiting on a person", all(action(s, "await_user"), nothingSent(s), holds(s, "awaitingUser"), reported(s, "keepgoing.await_user")))
 	for i := 0; i < 3; i++ {
 		w.Advance(10 * time.Minute)
-		s = w.tickTurn()
+		s = w.Tick()
 		w.Check(s, "held for a person", all(action(s, "none"), nothingSent(s), holds(s, "awaitingUser"), noReports(s)))
 	}
 
@@ -141,8 +112,8 @@ func TestDefinedAgentJourney(t *testing.T) {
 	s = w.Control("resume")
 	w.Check(s, "resume", all(exit(s, 0), holds(s), nothingSent(s)))
 	w.Advance(15 * time.Minute)
-	s = w.tickTurn()
-	w.Check(s, "continues after resume", all(sentExactly(s, Send{Kind: "turn", Thread: exampleSession, Mode: "auto"}), holds(s), noReports(s)))
+	s = w.Tick()
+	w.Check(s, "continues after resume", all(sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
 	if a := s.action(); a != "reprompt" && a != "wake" {
 		w.Failf(s, "action %q after resume", a)
 	}
@@ -151,6 +122,6 @@ func TestDefinedAgentJourney(t *testing.T) {
 	s = w.Control("complete")
 	w.Check(s, "complete", all(exit(s, 0), holds(s, "completed"), nothingSent(s)))
 	w.Advance(time.Hour)
-	s = w.tickTurn()
+	s = w.Tick()
 	w.Check(s, "after completion", all(action(s, "none"), nothingSent(s), holds(s, "completed")))
 }

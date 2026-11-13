@@ -144,7 +144,7 @@ const (
 	processTest  = "internal/adapter/process/process_test.go"
 	superTest    = "internal/supervise/supervise_test.go"
 	graphTest    = "internal/supervise/graph_test.go"
-	offlineTest  = "cmd/keepgoing/offline_scenario_test.go"
+	offlineTest  = "internal/scenario/headless_outage_test.go"
 	providers    = "docs/integrations.md#agent-providers"
 	waitingLive  = "docs/run-discovery.md#live-check-waiting-on"
 	runsLive     = "docs/run-discovery.md#live-check"
@@ -177,16 +177,16 @@ var Matrix = []Behaviour{
 	{ID: "reprompt", Title: "Recover a failed turn: re-prompt", What: "After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, fakeDecision + " A real retry exhaustion and explicit resume were observed once.", []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser"), d(providers)}},
-			"claude":  {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"codex":   {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
+			"claude":  {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
+			"codex":   {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"cursor":  {Yes, Fixture, "A failed turn is re-prompted in its verified session.", []Ref{t("internal/adapter/runner/cursor_recovery_test.go", "TestCursorRecoversInitializedSessionAfterWrapperCrash")}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser")}},
 		})},
 	{ID: "session_resume", Title: "Recover a failed turn: exact session resume", What: "Continue the same conversation by its saved identifier, never \"the most recent\".",
 		Cells: merge(map[string]Cell{
 			"bb":      {NA, None, "The configured thread is the conversation; every message goes to that thread ID.", nil},
-			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestOfflineScenarioHeadless")}},
+			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestScenarioHeadlessOutage")}},
+			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"cursor":  {Yes, Fixture, "--resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified.", []Ref{t(cursorTest, "TestCursorSessionSafety")}},
 			"process": {NA, None, "The resume command owns session identity.", nil},
 		})},
@@ -199,8 +199,8 @@ var Matrix = []Behaviour{
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
-			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
+			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
+			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"cursor":  {Missing, None, "Every failure is unknown.", nil},
 			"process": {Missing, None, "The status command may report network; it is handled like any other error.", nil},
 		})},
