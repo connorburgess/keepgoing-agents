@@ -15,6 +15,8 @@ import (
 func TestMain(m *testing.M) {
 	MaybeRunTurn()
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
+	case "antigravity-acp":
+		antigravityStandIn()
 	case "cursor-crash":
 		// The fixture exits on release or its own deadline even if the wrapper
 		// dies. No surviving child writes to a later turn's stdout file.
@@ -54,7 +56,7 @@ func TestMain(m *testing.M) {
 		os.Exit(code)
 	case "environment":
 		input, _ := io.ReadAll(os.Stdin)
-		value := os.Getenv(envTurnDir) + "|" + os.Getenv(envTurnArgv) + "|" + os.Getenv(envTurnKey) + "|" + string(input)
+		value := os.Getenv(envTurnDir) + os.Getenv(envTurnACP) + "|" + os.Getenv(envTurnArgv) + "|" + os.Getenv(envTurnKey) + "|" + string(input)
 		if os.WriteFile(os.Getenv("KEEPGOING_TEST_RESULT"), []byte(value), 0600) != nil {
 			os.Exit(2)
 		}

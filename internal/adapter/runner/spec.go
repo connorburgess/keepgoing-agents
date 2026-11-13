@@ -398,11 +398,10 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	if st.Phase == Finished {
 		h.dir.SaveSession(h.spec.Read(st).Session)
 	}
-	env := envList(h.set.Env)
 	if h.spec.Prompt == PromptFile {
-		env = append(env, envTurnStdin+"=none")
+		return h.dir.StartWithPromptFile(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
 	}
-	return h.dir.Start(h.Args(), h.set.Workdir, prompt, env)
+	return h.dir.Start(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
 }
 
 // AdoptInteraction implements adapter.InteractionAdopter: the hold for the

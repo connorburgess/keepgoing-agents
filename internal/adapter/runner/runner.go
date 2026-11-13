@@ -103,34 +103,72 @@ func (d Dir) SaveSession(id string) error {
 // Start launches argv in workdir with prompt on stdin, detached from the
 // calling process so it survives the tick.
 func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
+	_, err := d.start(argv, workdir, prompt, env, "")
+	return err
+}
+
+// notSpawned marks a start that created no process, so nothing can be running
+// for it. Its text is the underlying error's.
+type notSpawned struct{ error }
+
+func (e notSpawned) Unwrap() error { return e.error }
+
+// start is Start with an optional ACP worker specification. It returns the
+// new turn's stop key, which identifies the worker that was started.
+func (d Dir) start(argv []string, workdir, prompt string, env []string, acp string) (string, error) {
+	return d.startTurn(argv, workdir, prompt, env, acp, false)
+}
+
+// StartWithPromptFile is Start for an agent that reads its prompt from the
+// private prompt file it was pointed at: its standard input is empty.
+func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []string) error {
+	_, err := d.startTurn(argv, workdir, prompt, env, "", true)
+	return err
+}
+
+// startTurn says explicitly what the turn's standard input is, after removing
+// the variable that carries it from the loop's own entries, so a value set
+// anywhere else can never take a prompt away from a turn.
+func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
+	kept := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnStdin) {
+			kept = append(kept, kv)
+		}
+	}
+	stdin := "prompt"
+	if emptyStdin {
+		stdin = "none"
+	}
+	env = append(kept, envTurnStdin+"="+stdin)
 	if len(argv) == 0 {
-		return errors.New("runner: empty command")
+		return "", notSpawned{errors.New("runner: empty command")}
 	}
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
-		return err
+		return "", notSpawned{err}
 	}
 	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", waitAdoptedFile} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
-		return err
+		return "", notSpawned{err}
 	}
 	key, err := randomStopID()
 	if err != nil {
-		return err
+		return "", notSpawned{err}
 	}
-	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key))
+	pid, err := spawn(argv, workdir, string(d), append(env, envTurnKey+"="+key), acp)
 	if err != nil {
-		return err
+		return "", notSpawned{err}
 	}
 	rec := Record{StopKey: key, PID: pid, StartedAt: time.Now().UTC(), Argv0: filepath.Base(argv[0])}
 	b, _ := json.Marshal(rec)
 	if err := os.WriteFile(d.path("run.json"), append(b, '\n'), 0o600); err != nil {
 		// The wrapper owns cancellation even when its record could not be saved.
 		_ = d.requestStop(key)
-		return err
+		return "", err
 	}
-	return nil
+	return key, nil
 }
 
 // Stop asks the live wrapper to stop its own turn. Saved PIDs never authorize signals.
