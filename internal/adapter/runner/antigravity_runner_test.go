@@ -319,7 +319,8 @@ func TestAntigravityRunnerTwoTurnsResumeExactlyOnThisPlatform(t *testing.T) {
 	for _, turn := range w.turns(t) {
 		for _, name := range []string{antigravityACPReservedName, antigravityOutcomeName} {
 			raw, err := os.ReadFile(filepath.Join(string(w.a.dir), antigravityTurnsDir, turn, name))
-			if err != nil || strings.Contains(string(raw), "task") || strings.Contains(string(raw), "429") {
+			// Turn identities are random hex, so look for words, not digits.
+			if err != nil || strings.Contains(string(raw), "task") || strings.Contains(string(raw), "quotes") || strings.Contains(string(raw), "rate limit") || strings.Contains(string(raw), "permission") {
 				t.Fatalf("%s: %v %s", name, err, raw)
 			}
 		}
