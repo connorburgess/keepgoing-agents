@@ -32,7 +32,8 @@ internal/report             signed webhook reports and diagnostic delivery histo
 internal/incident           bounded typed tick/control/retarget history; diagnostic only
 internal/evidence           pure, allowlisted diagnostic source/code metadata
 internal/registry           explicit private local loop references; independent of loop controls
-internal/rundiscovery       internal pure run identity/boundary contract; no runtime callers or storage
+internal/rundiscovery       pure run identity/boundary contract; no IO
+internal/rungraph           graph.json: persisted run references, attempts and links; diagnostic only
 internal/control            control.json and goal.json: holds, BB ownership/transfer fences, private goal revisions, serialized updates
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
@@ -79,6 +80,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `health.json` | the tool | probe evidence per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
+| `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records (32 runs/128 attempts/256 links/256 KiB); independent lock and flushed atomic replacement; a failed write never fails a tick; never a decision input |
 | `incidents.json`, `incident.lock` | tick diagnostic writer | versioned rolling snapshots, capped at 256 records/512 KiB with reserved key/condition/activity/routine tiers and collapsed runs of identical checks; independent lock and atomic replacement; never a decision input |
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
@@ -225,8 +227,10 @@ Prompt and handoff composition return a private message plus the ID/revision of 
 
 There is no pre-send intent or complete attempt ledger: process termination or a failed final state write can leave an older record, and multiple candidate attempts retain only the last returned call. Adapter nil/error outcomes neither confirm delivery nor establish no side effects. Ordinary status compares recorded ID/revision to the independently read current goal, never to transcript text. Invalid/unsupported provenance is withheld without invalidating other state fields. Primary transfer clears the record with thread observations to avoid attributing old-primary sends to the destination. Other target aliases describe configuration at the historical check; arbitrary config edits are not tracked. Registered client status and incident journals do not yet project this evidence. See [recorded send provenance](goals.md#recorded-send-provenance).
 
-## Run discovery identity contract (internal, unreleased)
+## Run discovery (unreleased)
 
-`internal/rundiscovery` defines a pure value contract separate from the decision engine and controls. It distinguishes an external routine invocation, a registry reference, a durable loop, a goal revision, an execution run, a send attempt and a provider chat/session. Explicit transition types and caller-supplied IDs/timestamps keep checks, wakes, retries, restarts, holds, goal revisions, transfers and scheduled triggers from opening or closing a run. Run-to-session, run-to-goal and run-to-invocation links are validated values with no parent edge. It performs no IO and is not used by runtime commands or adapters. The [contract tables](run-discovery.md#identity-and-run-boundary-contract-d1-internal-unreleased) describe boundaries and validation.
+`internal/rundiscovery` defines a pure value contract separate from the decision engine and controls. It distinguishes an external routine invocation, a registry reference, a durable loop, a goal revision, an execution run, a send attempt and a provider chat/session. Explicit transition types and caller-supplied IDs/timestamps keep checks, wakes, retries, restarts, holds, goal revisions, transfers and scheduled triggers from opening or closing a run. It performs no IO. The [contract tables](run-discovery.md#identity-and-run-boundary-contract-d1-internal-unreleased) describe boundaries and validation.
 
-Persisted identity, enrollment/control transactions, history, indexes, current-target resolution and CLI projection remain unimplemented. A future caller must retain restrictive control precedence, serialize changes, prevent historical ID reuse, validate target/ownership evidence and persist intent before sending. Reducer results and adapter-return records grant no authority or proof of delivery. No package or file ownership shown above otherwise changes.
+`internal/rungraph` persists that contract as `graph.json` in the state directory and validates every stored record against it. The command layer records a run boundary after a saved control change. A tick records the boundary implied by saved control state before it runs, a send intent before each adapter send and its return afterwards, and the goal revision and chat/session reference known without a provider query. These calls sit beside the tick, not in it: they return nothing to the decision path, take only the graph lock, and a failure adds one warning. The decision engine never reads the graph. See [the persisted graph](run-discovery.md#persisted-reference-graph-d2-unreleased).
+
+CLI projection, current-target resolution after transfer, blocker links and routine identity input remain unimplemented. Graph records and adapter-return outcomes grant no authority or proof of delivery.
