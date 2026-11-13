@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
@@ -80,14 +81,14 @@ const (
 )
 
 // ChildErrorReport describes the owner reports for one episode of errored
-// children: from the first child seen in error until none is. Reported holds
-// decide.ChildHashes of the children covered so far and still in error; it
-// holds no child ID.
+// children: from the first child seen in error until every covered child has
+// been out of error long enough to be forgotten. Children holds hashes, never
+// child IDs, and is bounded.
 type ChildErrorReport struct {
-	Reported   []string  `json:"reported,omitempty"`
-	Reports    int       `json:"reports,omitempty"` // report attempts in this episode
-	Outcome    string    `json:"outcome"`
-	DetectedAt time.Time `json:"detectedAt"`
+	Children   []decide.ReportedChild `json:"children,omitempty"`
+	Reports    int                    `json:"reports,omitempty"` // report attempts in this episode
+	Outcome    string                 `json:"outcome"`
+	DetectedAt time.Time              `json:"detectedAt"`
 	// What the detecting check saw. Complete is false when the child listing
 	// was incomplete, so the counts are lower bounds.
 	Errored  int  `json:"errored"`

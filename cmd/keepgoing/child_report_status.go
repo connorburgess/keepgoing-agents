@@ -20,13 +20,15 @@ type childReportStatus struct {
 	RunningChildren int  `json:"runningChildren,omitempty"`
 	ListingComplete bool `json:"listingComplete"`
 	Subscribed      bool `json:"subscribed"`
+	// ReportConfigured is false when the loop has no report section at all.
+	ReportConfigured bool `json:"reportConfigured"`
 	// Reports counts report attempts in this episode; at most three are made.
 	Reports int    `json:"reports,omitempty"`
 	Receipt string `json:"receipt,omitempty"`
 }
 
 func describeChildReport(r *state.ChildErrorReport, loop config.Loop) childReportStatus {
-	out := childReportStatus{State: "none", ListingComplete: true, Subscribed: loop.Report.ReportsEvent("child_error")}
+	out := childReportStatus{State: "none", ListingComplete: true, Subscribed: loop.Report.ReportsEvent("child_error"), ReportConfigured: loop.Report != nil}
 	if r == nil || r.DetectedAt.IsZero() {
 		return out
 	}
@@ -55,12 +57,21 @@ func printChildReport(w io.Writer, s childReportStatus) {
 	fmt.Fprintf(w, "child errors: %d direct child thread(s) in error and %d still running at the check of %s%s\n", s.ErroredChildren, s.RunningChildren, when(*s.DetectedAt), bound)
 	switch s.State {
 	case "reported":
-		fmt.Fprintf(w, "  a child_error report was requested (report %d of at most 3 while any child stays in error); receipt unverified, see notifications. The loop is not held.\n", max(1, s.Reports))
+		fmt.Fprintf(w, "  a child_error report was requested (report %d of at most 3 in this episode); receipt unverified, see notifications. The loop is not held.\n", max(1, s.Reports))
 	case "report_failed":
 		fmt.Fprintln(w, "  the child_error report FAILED and is not retried; see notifications. The loop is not held.")
 	case "capped":
 		fmt.Fprintf(w, "  more children failed after %d reports; no further child_error report is sent until every child has recovered. The loop is not held.\n", s.Reports)
 	default:
-		fmt.Fprintln(w, "  nothing was sent: report.events does not include child_error. The loop is not held.")
+		why := "report.events does not include child_error"
+		if !s.ReportConfigured {
+			why = "this loop has no report section"
+		}
+		if s.Reports > 0 {
+			// Unsubscribed part-way through: earlier reports of this episode went out.
+			fmt.Fprintf(w, "  %d child_error report(s) were requested earlier in this episode; the latest failure was not sent: %s. The loop is not held.\n", s.Reports, why)
+		} else {
+			fmt.Fprintf(w, "  nothing was sent: %s. The loop is not held.\n", why)
+		}
 	}
 }

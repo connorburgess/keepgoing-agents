@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // Through the real CLI, BB adapter and signed webhook against a fake bb and a
@@ -57,7 +60,7 @@ func TestEndToEndChildErrorReport(t *testing.T) {
 			}
 
 			code, out, errs := f.run("status")
-			wantLine := "  a child_error report was requested (report 1 of at most 3 while any child stays in error); receipt unverified, see notifications. The loop is not held.\n"
+			wantLine := "  a child_error report was requested (report 1 of at most 3 in this episode); receipt unverified, see notifications. The loop is not held.\n"
 			if wantSent == 0 {
 				wantLine = "  nothing was sent: report.events does not include child_error. The loop is not held.\n"
 			}
@@ -75,17 +78,74 @@ func TestEndToEndChildErrorReport(t *testing.T) {
 				t.Fatalf("%+v", r)
 			}
 
-			// Every child recovers: the record clears and status says nothing.
+			// Every child recovers. The episode is kept until they have stayed out
+			// of error for min_wake_interval, then the record clears.
 			child("thr_child_a", "idle")
 			child("thr_child_b", "idle")
 			child("thr_child_c", "idle")
 			f.tick()
+			// With nothing reported there is no episode to keep.
+			if _, out, _ := f.run("status"); strings.Contains(out, "child errors:") != (wantSent == 1) {
+				t.Fatalf("status right after recovery: %s", out)
+			}
+			later := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+			if code, _, errs := f.run("tick", "-now", later); code != exitOK {
+				t.Fatalf("tick -now: %s", errs)
+			}
 			if _, out, _ := f.run("status"); strings.Contains(out, "child errors:") {
 				t.Fatalf("status after recovery: %s", out)
 			}
 			_, out, _ = f.run("status", "--json")
 			if err := json.Unmarshal([]byte(out), &status); err != nil || status.ChildErrorReport.State != "none" {
 				t.Fatalf("%v %+v", err, status.ChildErrorReport)
+			}
+		})
+	}
+}
+
+// Status says why nothing was sent without pointing at a setting the loop
+// does not have, and does not claim nothing was sent when earlier reports of
+// the same episode went out.
+func TestChildErrorReportStatusWording(t *testing.T) {
+	at := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name   string
+		report string // replaces the fixture's report line
+		rec    state.ChildErrorReport
+		want   string
+	}{
+		{"no report section", "", state.ChildErrorReport{Outcome: state.ChildReportNotSubscribed},
+			"  nothing was sent: this loop has no report section. The loop is not held.\n"},
+		{"not subscribed", "  report: {events: [await_user]}\n", state.ChildErrorReport{Outcome: state.ChildReportNotSubscribed},
+			"  nothing was sent: report.events does not include child_error. The loop is not held.\n"},
+		{"unsubscribed part-way through an episode", "  report: {events: [await_user]}\n", state.ChildErrorReport{Outcome: state.ChildReportNotSubscribed, Reports: 2},
+			"  2 child_error report(s) were requested earlier in this episode; the latest failure was not sent: report.events does not include child_error. The loop is not held.\n"},
+		{"capped", "  report: {events: [child_error]}\n", state.ChildErrorReport{Outcome: state.ChildReportCapped, Reports: 3},
+			"  more children failed after 3 reports; no further child_error report is sent until every child has recovered. The loop is not held.\n"},
+		{"failed", "  report: {events: [child_error]}\n", state.ChildErrorReport{Outcome: state.ChildReportFailed, Reports: 1},
+			"  the child_error report FAILED and is not retried; see notifications. The loop is not held.\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			cfg, _ := os.ReadFile(f.cfg)
+			old := "  report: {events: [handoff, degraded, recovered, stop, await_user]}\n"
+			if !strings.Contains(string(cfg), old) {
+				t.Fatal("fixture config changed")
+			}
+			write(t, f.cfg, strings.Replace(string(cfg), old, tc.report, 1), 0o600)
+			f.run("enable")
+			dir := filepath.Join(f.dir, "state")
+			st, _ := state.Load(dir)
+			rec := tc.rec
+			rec.DetectedAt, rec.Errored, rec.Running, rec.Complete = at, 2, 1, true
+			st.ChildErrorReport = &rec
+			if err := state.Save(dir, st); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errs := f.run("status")
+			if code != exitOK || !strings.Contains(out, "child errors: 2 direct child thread(s) in error and 1 still running at the check of ") || !strings.Contains(out, tc.want) {
+				t.Fatalf("%d %s %s", code, out, errs)
 			}
 		})
 	}

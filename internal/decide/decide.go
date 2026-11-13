@@ -80,6 +80,10 @@ type Observation struct {
 	// in one case only, childErrorWake; ChildErrorNote says when a wake should
 	// mention them.
 	ErroredChildren []string
+	// HealthyChildren contains verified direct child IDs with a known status
+	// other than error. Decide never reads it; the owner report uses it to
+	// tell a child that recovered from one an incomplete listing did not show.
+	HealthyChildren []string
 }
 
 // Control is the operator's gate.
@@ -443,17 +447,77 @@ const (
 	ChildReportCapped        ChildReport = "capped"         // this episode has sent its maximum
 )
 
-// ChildReportRecord compares the children now in error with those already
-// reported, as ChildAnnouncements does for the parent notice, so both agree
-// on which children are new: only growth reports, and a child that leaves
-// error is forgotten so a later failure is reported again. An incomplete
-// listing cannot show that a child recovered, so it prunes nothing.
-func ChildReportRecord(errored, reported []string, complete bool) (kept, unreported []string) {
-	kept, unreported = ChildAnnouncements(errored, reported)
-	if !complete {
-		kept = append([]string{}, reported...)
+// ReportedChild is one child covered by the current episode of owner reports.
+// Hash is its ChildHashes value, never the ID. RecoveredAt is zero while the
+// child was in error when last seen.
+type ReportedChild struct {
+	Hash        string    `json:"hash"`
+	ErroredAt   time.Time `json:"erroredAt"`             // when it was last seen in error
+	RecoveredAt time.Time `json:"recoveredAt,omitempty"` // when it was first seen out of error since then
+}
+
+// ChildReportRecord compares the children now in error with those covered by
+// the episode. Like ChildAnnouncements for the parent notice it uses per-child
+// hashes and reports only growth: unreported lists errored children the
+// episode does not cover.
+//
+// A covered child is forgotten only after it has been seen out of error for
+// forgetAfter. Until then a child that fails again is the same failure, so one
+// that flaps between error and a provider retry is not reported each time and
+// does not spend the episode's reports. A child counts as out of error when
+// the listing is complete and does not show it in error, or when it is in
+// healthy. An incomplete listing that simply does not show a child proves
+// nothing about it, so that child is kept unchanged.
+func ChildReportRecord(errored, healthy []string, covered []ReportedChild, complete bool, now time.Time, forgetAfter time.Duration) (kept []ReportedChild, unreported []string) {
+	inError, out := map[string]bool{}, map[string]bool{}
+	for _, h := range errored {
+		inError[h] = true
+	}
+	for _, h := range healthy {
+		out[h] = true
+	}
+	known := map[string]bool{}
+	kept, unreported = []ReportedChild{}, []string{}
+	for _, c := range covered {
+		if known[c.Hash] {
+			continue
+		}
+		known[c.Hash] = true
+		switch {
+		case inError[c.Hash]:
+			c.ErroredAt, c.RecoveredAt = now, time.Time{}
+		case complete || out[c.Hash]:
+			if c.RecoveredAt.IsZero() {
+				c.RecoveredAt = now
+			}
+			if now.Sub(c.RecoveredAt) >= forgetAfter {
+				continue // recovered for long enough: forgotten
+			}
+		}
+		kept = append(kept, c)
+	}
+	for _, h := range errored {
+		if !known[h] {
+			known[h] = true
+			unreported = append(unreported, h)
+		}
 	}
 	return kept, unreported
+}
+
+// CoverChildren adds newly reported children to the episode. The record is
+// bounded: past max entries, the ones seen in error longest ago are dropped.
+func CoverChildren(kept []ReportedChild, unreported []string, now time.Time, max int) []ReportedChild {
+	out := append([]ReportedChild{}, kept...)
+	for _, h := range unreported {
+		out = append(out, ReportedChild{Hash: h, ErroredAt: now})
+	}
+	if len(out) > max {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].ErroredAt.After(out[j].ErroredAt) })
+		out = out[:max]
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
+	return out
 }
 
 // ChildErrorReport decides whether newly errored children are reported to the

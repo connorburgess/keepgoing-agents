@@ -11,52 +11,59 @@ import (
 // childErrorEvent is the report event for child threads in error.
 const childErrorEvent = "child_error"
 
-// childErrorMaxReports bounds the reports of one episode, which lasts while
-// any child stays in error. Children failing one after another therefore
-// cannot produce a stream.
+// childErrorMaxReports bounds the reports of one episode, which lasts until
+// every covered child has been out of error long enough to be forgotten.
+// Children failing one after another therefore cannot produce a stream.
 const childErrorMaxReports = 3
+
+// childErrorMaxCovered bounds the episode's record. It matches the adapter's
+// limit on children inspected in one listing.
+const childErrorMaxCovered = 200
 
 // reportChildErrors runs after the decision and its action, on the path where
 // the target was observed. It never changes the decision, the action or a
 // control. It tells the owner when child threads of the supervised thread are
 // first seen in error, and again only when a child newly fails. The notice to
-// the parent session is separate and waits for the parent's next wake.
+// the parent session is separate.
 //
 // The episode is saved to state.json before the send, so a crash or a restart
 // cannot repeat it: a report is sent at most once, and an interrupted one is
 // lost, like any other single-attempt delivery.
 func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	// A dry run records nothing. After a handoff or switch-back the children
-	// seen belong to the thread the loop has just left.
-	if t.opts.DryRun || t.res.Target != target {
+	// seen belong to the thread the loop has just left. A parent that is gone
+	// was not scanned for children at all, so it is no evidence of recovery.
+	if t.opts.DryRun || t.res.Target != target || obs.Gone {
 		return
 	}
 	complete := !obs.ChildrenUnverified
-	errored := decide.ChildHashes(obs.ErroredChildren)
 	prev := t.st.ChildErrorReport
-	var reported []string
+	var covered []decide.ReportedChild
 	reports := 0
 	if prev != nil {
-		reported, reports = prev.Reported, prev.Reports
+		covered, reports = prev.Children, prev.Reports
 	}
-	kept, unreported := decide.ChildReportRecord(errored, reported, complete)
-	if len(errored) == 0 && complete {
-		t.st.ChildErrorReport = nil // every child recovered: the episode is over
+	// A covered child is forgotten only after it has stayed out of error for
+	// min_wake_interval, so a child flapping between error and a provider
+	// retry is one failure, not a report per flap.
+	kept, unreported := decide.ChildReportRecord(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren), covered, complete, t.now, t.loop.Progress.MinWakeInterval.Duration)
+	if len(kept) == 0 && len(unreported) == 0 {
+		t.st.ChildErrorReport = nil // every covered child recovered: the episode is over
 		return
 	}
 	subscribed := t.loop.Report.ReportsEvent(childErrorEvent)
 	outcome := decide.ChildErrorReport(len(unreported), reports, childErrorMaxReports, subscribed)
 	if outcome == decide.ChildReportNone {
 		if prev != nil {
-			prev.Reported = kept
+			prev.Children = kept
 		}
 		return
 	}
-	rec := &state.ChildErrorReport{Reported: kept, Reports: reports, Outcome: string(outcome), DetectedAt: t.now,
+	rec := &state.ChildErrorReport{Children: kept, Reports: reports, Outcome: string(outcome), DetectedAt: t.now,
 		Errored: len(obs.ErroredChildren), Running: obs.ActiveChildren, Complete: complete}
 	switch outcome {
 	case decide.ChildReportNotSubscribed:
-		// Not recorded as reported, so subscribing later sends the report.
+		// Not covered, so subscribing later sends the report.
 		if prev != nil && prev.Outcome == state.ChildReportNotSubscribed {
 			rec.DetectedAt = prev.DetectedAt
 		}
@@ -64,11 +71,11 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 		return
 	case decide.ChildReportCapped:
 		// Covered without a report, so later checks stay quiet too.
-		rec.Reported = append(kept, unreported...)
+		rec.Children = decide.CoverChildren(kept, unreported, t.now, childErrorMaxCovered)
 		t.st.ChildErrorReport = rec
 		return
 	}
-	rec.Reported, rec.Reports = append(kept, unreported...), reports+1
+	rec.Children, rec.Reports = decide.CoverChildren(kept, unreported, t.now, childErrorMaxCovered), reports+1
 	// Intent first, as holds and completions are saved before their reports.
 	// If it cannot be saved nothing is sent, so an unwritable state directory
 	// cannot turn into a report on every check.
@@ -86,7 +93,7 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	if !complete {
 		listing = "The child listing was incomplete, so both counts are lower bounds."
 	}
-	text := fmt.Sprintf("%s: %d direct child thread(s) of the supervised thread are in error and %d are still running. %s keepgoing does not retry, message or stop child threads; the supervised session is told when it is next woken, and decides whether to retry or replace that work.",
+	text := fmt.Sprintf("%s: %d direct child thread(s) of the supervised thread are in error and %d are still running. %s keepgoing does not retry, message or stop child threads; whether that work is retried or replaced is up to the supervised session or a person.",
 		t.loop.Name, rec.Errored, rec.Running, listing)
 	if rec.Reports > 1 {
 		text += " More children have failed since the last report for this episode."
