@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,24 @@ func TestErroredParentIsRecoveredWhileChildrenWork(t *testing.T) {
 			}
 			if ctl, err := control.Load(w.dir); err != nil || ctl.AwaitingUser || !ctl.Enabled {
 				t.Fatalf("the loop was held: %+v %v", ctl, err)
+			}
+		})
+		t.Run("waits while the network is down/"+name, func(t *testing.T) {
+			// Recovery includes the network gate: nothing is probed, sent or
+			// moved while offline, with or without children.
+			w := newWorld(t, true, true)
+			obs := limited
+			kids(&obs)
+			p := w.primary(obs)
+			healthy(w)
+			opts := w.opts(t0)
+			opts.Online = func(context.Context) bool { return false }
+			res, err := Tick(context.Background(), w.cfg, opts)
+			if err != nil || res.Action != "none" || res.Reason != decide.NetworkDownReason || res.Target != state.Primary || len(p.sent) != 0 {
+				t.Fatalf("children %s: %+v %v", name, res, err)
+			}
+			if fb := w.adapters["claude-other"]; fb != nil && len(fb.sent) != 0 {
+				t.Fatalf("children %s: a brief was sent while offline", name)
 			}
 		})
 		t.Run("limit wait is reported/"+name, func(t *testing.T) {
