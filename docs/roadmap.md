@@ -399,6 +399,24 @@ Acceptance: a new installation can complete the documented walkthrough on suppor
 
 The runner continues to own process/session mechanics. The supervisor stores explicit goal/control state and enforces structured bounds. An executor or external coordinator supplies next actions and review artifacts; keepgoing does not autonomously choose roadmap work or spawn reviewers. Private goal metadata commands and same-environment/provider BB transfer are released in v0.1.4 with offline fixtures. Revision-bound completion, acceptance policies and stage results remain unfinished; transfer still needs model/account validation and live verification.
 
+#### Preferred routes (planned)
+
+A route is a model on an account at an effort level ([glossary](glossary.md)). Today a loop has a primary and an ordered list of fallbacks, moves down on a structured usage limit, and can return to the primary after the reported reset. The intended rule is simpler and stronger: **work does not stop while any route can take it, and the loop prefers the best route available.** Routing is decided from facts about resources only; it never judges the content of the work. Every move is recorded with a one-sentence reason, can be previewed in advance, and a move to a weaker route is always visible.
+
+- [ ] **P1 — A limit on the supervised session is handled even while its lanes are working.** Observed twice: a rate-limited session with a healthy fallback was left alone because the check stopped at "child work running". Error rules apply to an errored session regardless of its lanes.
+- [ ] **P2 — Move before the limit.** The switch threshold in Q4 below: at a configured share of a quota window, move at the end of a turn so no turn fails.
+- [ ] **P3 — Return to the most preferred available route.** Generalise switch-back from "the primary, after the reported reset" to "the highest route in the list that is available now", checked on an interval that backs off, so a limit lifted early is noticed. Guards: a minimum time on a route before moving again, movement only at a turn boundary, and cheaper returns within one conversation than between conversations.
+- [ ] **P4 — Spread lanes across allowances.** Lanes of one loop should not all draw on one allowance when another has room. Needs lanes to be first-class (P6).
+- [ ] **P5 — Connectivity-aware routes.** A route may be usable only online or only offline (a local model); the list is filtered by what is reachable.
+- [ ] **P6 — Lanes as first-class members of a loop.** Today a loop's lanes are known by count and state only. Give a loop a group of members so each lane can have routes of its own, be moved or have its effort changed, and be recovered; either by supervising each lane as a small loop or by extending the parent's loop. Decide after trying the first on one lane.
+- [ ] **P7 — Owner limits on routing.** A floor ("hold instead of going below this route"), a spend ceiling, and no move to a metered route unless allowed.
+- [ ] **P8 — Refusals and restrictions hold, they never route.** Where an agent or provider reports a refusal, a policy block or an account restriction in a structured form, classify it as its own state that holds for a person and can never trigger a handoff, a new conversation or a retry on another route. Until a structured signal exists for an adapter, such a turn stays `unknown`, which already never triggers failover; record per adapter what is and is not detectable. Also bound repeated wakes of a session whose turns keep ending without progress, so a loop does not press an agent that has declined.
+- [ ] **P9 — Fleet safety before fleet features.** Before any multi-device work: devices are enrolled by a person and can refuse; a device pulls the loops it may run rather than receiving pushed commands; each device has its own stop that the root cannot override; a default bound on new loops; and one control that stops every loop on a device.
+
+There is no "ask first" or grace mode: turning handoff off entirely (an empty `failover_on`) remains the way to make a loop wait.
+
+Work that moves to wherever it can continue must not be able to spread by itself. The bounds are stated in the [glossary](glossary.md#what-moves-and-what-never-does) and in AGENTS.md, and each item above is implemented inside them: only configured routes, accounts and devices; no self-installation; one owner per loop; capped and spaced creation; every move recorded.
+
 #### Quota monitoring (planned)
 
 The owner wants keepgoing to move to another target at a usage threshold, for example 80%, instead of only after a turn fails on a limit. Deliver it in four steps. Throughout, an unavailable reading never triggers a switch, readings come only from structured provider fields, and keepgoing never reads stored credentials or calls a provider usage endpoint.
