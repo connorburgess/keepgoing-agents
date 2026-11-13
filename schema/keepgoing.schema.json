@@ -63,6 +63,12 @@
           "properties": {
             "no_progress_timeout": {"$ref": "#/$defs/duration"},
             "max_sends": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+            "max_new_threads": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10,
+              "description": "most BB threads this loop may create for handoffs to candidates with bb.new_thread; 0 or absent means 3; never more than 10, and never more than one an hour"
+            },
             "deadline": {
               "type": "string",
               "anyOf": [{"format": "date-time"}, {"const": ""}],
@@ -383,6 +389,13 @@
           "type": "string",
           "description": "BB thread id"
         },
+        "new_thread": {
+          "const": false,
+          "description": "fallback candidates only; the primary needs an existing thread"
+        },
+        "project": false,
+        "environment": false,
+        "permission_mode": false,
         "cli": {
           "type": "string",
           "default": "bb"

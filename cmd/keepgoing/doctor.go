@@ -145,8 +145,11 @@ func doctor(e env, args []string, run doctorRun) int {
 			if !ok || candidate.Disabled {
 				valid = false
 				r.add("target", "error", "Recorded active target is missing or disabled in the fallback configuration.", "Review the intended target and use retarget explicitly before resuming.")
+			} else if created, known := st.CandidateAgent(candidate); !known {
+				valid = false
+				r.add("target", "error", "Recorded active target starts a new BB thread at handoff, and no created thread is recorded for it.", "Retarget to the primary or another fallback before resuming.")
 			} else {
-				a = candidate.Agent
+				a = created
 			}
 		}
 		if valid {
@@ -436,8 +439,13 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 	}
 	if a.BB != nil {
 		r.add(prefix+".login", "unavailable", "BB-managed provider authentication is not queried by doctor.", "Verify the selected account through BB's provider controls.")
-		out, err := call("thread", "show", a.BB.Thread, "--json")
-		doctorBB(r, prefix+".target", a.BB.Thread, out, err)
+		if a.BB.NewThread && a.BB.Thread == "" {
+			// Nothing exists to inspect, and doctor never creates a thread.
+			r.add(prefix+".target", "unavailable", "This fallback starts a new BB thread at handoff; there is no thread to inspect until then.", "")
+		} else {
+			out, err := call("thread", "show", a.BB.Thread, "--json")
+			doctorBB(r, prefix+".target", a.BB.Thread, out, err)
+		}
 	} else if len(extraArgs) > 0 {
 		r.add(prefix+".login", "unavailable", "Login status skipped because extra_args may change the turn's authentication configuration.", "Verify the effective account with the provider's controls; doctor does not replay arbitrary turn arguments.")
 	} else if a.Claude != nil {

@@ -34,6 +34,10 @@ type outage struct {
 	// activateTime and yieldTime model a slow model switch and yield command.
 	activateTime time.Duration
 	yieldTime    time.Duration
+	// threads, when set, creates and finds BB threads for new-thread handoffs.
+	threads ThreadCreator
+	// observeLimit is the time the latest observation was allowed.
+	observeLimit time.Duration
 }
 
 // reportTime is a webhook that fails slowly: two attempts of report.timeout.
@@ -70,6 +74,10 @@ type slowAdapter struct {
 }
 
 func (s slowAdapter) Observe(ctx context.Context) (decide.Observation, error) {
+	if d, ok := ctx.Deadline(); ok {
+		// The deadline is on the real clock; only its length matters.
+		s.o.observeLimit = time.Until(d).Round(time.Second)
+	}
 	s.o.clock = s.o.clock.Add(s.o.observeTime)
 	return s.Adapter.Observe(ctx)
 }
@@ -96,6 +104,9 @@ func (o *outage) tick(t *testing.T, at time.Time) (Result, time.Duration, error)
 		return slowAdapter{ad, o}, err
 	}
 	opts.Reporter = o
+	if o.threads != nil {
+		opts.Threads = func(string) ThreadCreator { return o.threads }
+	}
 	opts.Clock = func() time.Time { return o.clock }
 	opts.Busy = func(context.Context, config.Yield) (bool, error) {
 		o.clock = o.clock.Add(o.yieldTime)
