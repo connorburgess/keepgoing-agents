@@ -55,7 +55,9 @@ func cursorJourneyHelper() {
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if mode, err := os.ReadFile(filepath.Join(turn, "release")); err == nil {
+		// The release file is created before its content is written; an empty
+		// read is not yet an instruction.
+		if mode, err := os.ReadFile(filepath.Join(turn, "release")); err == nil && len(mode) > 0 {
 			reconnecting := fmt.Sprintf("{\"type\":\"connection\",\"subtype\":\"reconnecting\",\"session_id\":%q,\"attempt\":1}\n", journeyCursorSession)
 			switch string(mode) {
 			case "success":
