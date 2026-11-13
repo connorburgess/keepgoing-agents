@@ -54,6 +54,8 @@ type Adapter struct {
 	// of which decision inputs it can produce.
 	Files []string
 	// Inputs are the decide.Observation fields the adapter's code refers to.
+	// For an agent on the runner contract the shared runner (spec.go) sets
+	// the fields, so its Inputs are what its specification can produce.
 	// The decision engine can only act on what an adapter can report.
 	Inputs []string
 	// Activator and WakePoller say the adapter implements those optional
@@ -81,10 +83,10 @@ var Adapters = []Adapter{
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/claude.go"},
+		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "codex", Title: "Codex headless", Registered: true, SessionEvidence: true,
-		Files:  []string{"internal/adapter/runner/codex.go"},
+		Files:  []string{"internal/adapter/runner/codex.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "ResetsAt", "State"}},
 	{ID: "cursor", Title: "Cursor headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/cursor.go"},
