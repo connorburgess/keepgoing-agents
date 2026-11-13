@@ -251,12 +251,12 @@
     else head.appendChild(el("span", "waited", n.waitedSeconds == null ? "Waiting time unknown" : (n.sinceEvidence === "hold_recorded" ? "Waiting " : "Waiting at least ") + span(n.waitedSeconds)));
     li.appendChild(head);
     li.appendChild(el("p", "reason", n.reason));
-    if (n.note) {
+    if (n.note && state.identifiers) {
       var note = el("div", "note");
       note.appendChild(el("span", "note-label", "Note left with the hold"));
       note.appendChild(document.createTextNode("\u201C" + n.note + "\u201D"));
       li.appendChild(note);
-    } else if (n.noteWithheld) {
+    } else if (n.noteWithheld || n.note) {
       li.appendChild(el("p", "sub", "A note was left with the hold. It is shown with identifiers and notes."));
     }
     var todo = el("p", "todo");
@@ -609,6 +609,7 @@
       .then(function () {
         state.busy = false;
         btn.removeAttribute("aria-busy");
+        if (state.again) { state.again = false; load(); return; }
         schedule();
       });
   }
@@ -620,8 +621,16 @@
       this.setAttribute("aria-pressed", String(state.identifiers));
       this.querySelector("span").textContent = state.identifiers ? "Hide identifiers and notes" : "Show identifiers and notes";
       this.title = this.querySelector("span").textContent;
+      // Hide (or keep hidden) at once from the data in hand: identifiers and
+      // notes never stay on screen waiting for a read that is slow or failing.
+      render(false);
       clearTimeout(state.timer);
-      load();
+      if (state.busy) state.again = true; else load();
+    });
+    // The skip link moves focus to the details without changing the view.
+    document.querySelector("a.skip").addEventListener("click", function (ev) {
+      ev.preventDefault();
+      $("pane").focus();
     });
     window.addEventListener("hashchange", function () { render(true); });
     document.addEventListener("visibilitychange", function () {
