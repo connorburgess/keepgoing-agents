@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,7 +360,7 @@ func TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother(t *testing.T) {
 	for _, bad := range []string{"--dangerous-flag", "two words", "{"} {
 		damage(h, bad)
 		obs, err := h.Observe(ctx)
-		if err != nil || !obs.Gone {
+		if err != nil || !obs.SessionLost {
 			t.Fatalf("saved %q: %+v %v", bad, obs, err)
 		}
 		if args := strings.Join(h.Args(), "\n"); strings.Contains(args, bad) || strings.Contains(args, "--session") {
@@ -374,11 +375,11 @@ func TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother(t *testing.T) {
 	}
 	// A person restores it (or removes the file to start over on purpose).
 	damage(h, exampleSessionToken)
-	if obs, _ := h.Observe(ctx); obs.Gone || !strings.Contains(strings.Join(h.Args(), "\n"), exampleSessionToken) {
+	if obs, _ := h.Observe(ctx); obs.SessionLost || !strings.Contains(strings.Join(h.Args(), "\n"), exampleSessionToken) {
 		t.Fatalf("restored: %+v %q", obs, h.Args())
 	}
 	os.Remove(filepath.Join(string(h.dir), "session"))
-	if obs, _ := h.Observe(ctx); obs.Gone || strings.Contains(strings.Join(h.Args(), "\n"), "--session") {
+	if obs, _ := h.Observe(ctx); obs.SessionLost || strings.Contains(strings.Join(h.Args(), "\n"), "--session") {
 		t.Fatalf("removed: %+v %q", obs, h.Args())
 	}
 
@@ -389,7 +390,7 @@ func TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother(t *testing.T) {
 	}
 	waitPhase(t, h.dir, Finished)
 	damage(h, "--dangerous-flag")
-	if obs, err := h.Observe(ctx); err != nil || obs.Gone || obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
+	if obs, err := h.Observe(ctx); err != nil || obs.SessionLost || obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
 		t.Fatalf("%+v %v session %q", obs, err, h.dir.Session())
 	}
 
@@ -402,13 +403,85 @@ func TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother(t *testing.T) {
 	})
 	os.MkdirAll(string(bare.dir), 0o700)
 	damage(bare, "--dangerous-flag")
-	if obs, _ := bare.Observe(ctx); obs.Gone || strings.Contains(strings.Join(bare.Args(), " "), "--dangerous-flag") {
+	if obs, _ := bare.Observe(ctx); obs.SessionLost || strings.Contains(strings.Join(bare.Args(), " "), "--dangerous-flag") {
 		t.Fatalf("bare: %+v %q", obs, bare.Args())
 	}
 	claudeDir := t.TempDir()
 	c := NewClaude(config.Claude{CLI: "claude", Workdir: claudeDir}, filepath.Join(claudeDir, "target"))
 	c.dir.SaveSession("sess-1")
-	if obs, _ := c.Observe(ctx); obs.Gone || !strings.Contains(strings.Join(c.Args(), " "), "--resume sess-1") {
+	if obs, _ := c.Observe(ctx); obs.SessionLost || !strings.Contains(strings.Join(c.Args(), " "), "--resume sess-1") {
 		t.Errorf("claude: %+v %q", obs, c.Args())
 	}
+}
+
+// A person resets the session on purpose: the saved session is forgotten,
+// the turn that reported it cannot bring it back, and the next turn starts a
+// new conversation. Nothing is reset while a turn is running.
+func TestSessionResetStartsANewConversationOnPurpose(t *testing.T) {
+	ctx := context.Background()
+	h, dir := exampleRunner(t, `cat > /dev/null; printf '%s\n' "$@" > "$PWD/args"; echo '`+exampleLine("ok", "")+`'`, nil)
+	if had, err := h.ResetSession(); had || err != nil {
+		t.Fatalf("never run: had=%v %v", had, err)
+	}
+	if err := h.Send(ctx, "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, h.dir, Finished)
+	if obs, _ := h.Observe(ctx); obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
+		t.Fatalf("%+v session %q", obs, h.dir.Session())
+	}
+	had, err := h.ResetSession()
+	if !had || err != nil || h.dir.Session() != "" {
+		t.Fatalf("had=%v %v session %q", had, err, h.dir.Session())
+	}
+	// The finished turn still says which session it was; observing it, any
+	// number of times, does not save it again.
+	for i := 0; i < 3; i++ {
+		if obs, err := h.Observe(ctx); err != nil || obs.State != decide.Idle || obs.SessionLost || h.dir.Session() != "" {
+			t.Fatalf("check %d: %+v %v session %q", i, obs, err, h.dir.Session())
+		}
+	}
+	if err := h.Send(ctx, "start over", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, h.dir, Finished)
+	if args, _ := os.ReadFile(filepath.Join(dir, "args")); strings.Contains(string(args), "--session") {
+		t.Fatalf("the reset session was resumed: %q", args)
+	}
+	// The new turn's session is saved as usual, and the one after resumes it.
+	if obs, _ := h.Observe(ctx); obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
+		t.Fatalf("after the new turn: %+v session %q", obs, h.dir.Session())
+	}
+
+	// It is the way out of a lost session.
+	if err := os.WriteFile(filepath.Join(string(h.dir), "session"), []byte("--not-a-session\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(string(h.dir), "stdout"), []byte(`{"type":"result","status":"failed"}`), 0o600)
+	os.WriteFile(filepath.Join(string(h.dir), "exit"), []byte("1\n"), 0o600)
+	if obs, _ := h.Observe(ctx); !obs.SessionLost {
+		t.Fatalf("not lost: %+v", obs)
+	}
+	if had, err := h.ResetSession(); !had || err != nil {
+		t.Fatalf("had=%v %v", had, err)
+	}
+	if obs, _ := h.Observe(ctx); obs.SessionLost || obs.State != decide.Error {
+		t.Fatalf("after reset: %+v", obs)
+	}
+	if err := h.Send(ctx, "start over", adapter.ModeAuto); err != nil {
+		t.Fatalf("a send after the reset: %v", err)
+	}
+	waitPhase(t, h.dir, Finished)
+
+	// While a turn runs, nothing is reset.
+	running, _ := exampleRunner(t, "sleep 30", nil)
+	running.dir.SaveSession(exampleSessionToken)
+	if err := running.Send(ctx, "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, running.dir, Running)
+	if had, err := running.ResetSession(); had || !errors.Is(err, ErrTurnRunning) || running.dir.Session() != exampleSessionToken {
+		t.Fatalf("had=%v %v session %q", had, err, running.dir.Session())
+	}
+	running.Stop(ctx)
 }

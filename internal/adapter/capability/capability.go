@@ -101,13 +101,13 @@ var Adapters = []Adapter{
 	// definition can produce; a definition that declares less produces less.
 	{ID: "custom", Title: "Agent defined in configuration", Registered: true,
 		Files:  []string{"internal/adapter/runner/definition.go", "internal/adapter/runner/spec.go"},
-		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}},
+		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "SessionLost", "State"}},
 }
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
 var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
+	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "SessionLost", "State"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -303,7 +303,7 @@ var customCells = map[string]Cell{
 	"error_classes":    {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
 	"retry_expiry":     {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
 	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
-	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
+	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place until someone runs keepgoing session reset. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
 	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
 	"network":          {Yes, Fixture, "As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentOutage"), d(networkDoc)}},
 	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},

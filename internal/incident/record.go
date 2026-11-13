@@ -175,7 +175,9 @@ func tierOf(r Record) string {
 		return TierKey
 	case "control":
 		c := r.ControlChange
-		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
+		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" ||
+			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal")) {
+			// A session reset changes which conversation has the loop.
 			return TierKey
 		}
 		return TierActivity
@@ -441,7 +443,7 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish")
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "session_reset_by_thread", "session_reset_by_terminal")
 			r.ControlChange = &c
 		}
 	} else {

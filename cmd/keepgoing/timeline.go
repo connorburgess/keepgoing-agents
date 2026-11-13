@@ -644,6 +644,13 @@ func readTimelineControl(dir string) timelineControl {
 }
 
 func describeIncident(r incident.Record) string {
+	if r.Kind == "control" && r.ControlChange != nil && (r.ControlChange.Operation == sessionResetByThread || r.ControlChange.Operation == sessionResetByTerminal) {
+		who := "from a terminal or scheduler (no BB thread identity)"
+		if r.ControlChange.Operation == sessionResetByThread {
+			who = "by a BB thread (the loop's owner where it has one; identity withheld)"
+		}
+		return fmt.Sprintf("session reset %s: a target's saved session was forgotten on purpose, so its next turn starts a new conversation; controls %s unchanged; recorded build %s", who, timelineGate(r.ControlBefore), r.Build)
+	}
 	if r.Kind == "control" && r.ControlChange != nil {
 		text := fmt.Sprintf("control %s saved: %s -> %s; recorded build %s; this is not provider or delivery evidence", r.ControlChange.Operation, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter), r.Build)
 		if r.ControlChange.OwnershipChanged {

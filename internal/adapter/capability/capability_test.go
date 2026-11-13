@@ -340,7 +340,7 @@ func TestSharedRunnerInputsAreAllDeclarable(t *testing.T) {
 		}
 		return true
 	})
-	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "SessionLost", "State"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the shared runner refers to Observation fields %v, want %v", got, want)
 	}
 }
@@ -552,7 +552,7 @@ func TestDefinedAgentsSetOnlyWhatTheyDeclare(t *testing.T) {
 		}
 		return sorted(set)
 	}
-	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "SessionLost", "State"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("a full definition's runner set %v, want %v", got, want)
 	}
 	if got, want := observed(""), []string{"ErrorClass", "Evidence", "State"}; !reflect.DeepEqual(got, want) {

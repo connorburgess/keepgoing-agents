@@ -45,7 +45,8 @@
 //	    Exits 0 when ok, 1 when failed, 2 when it needs input.
 //
 // What each successive turn does comes from example-agent.turns, one outcome
-// per line consumed in order (default ok). Every turn is recorded in
+// per line consumed in order (default ok; failed_no_session fails without
+// reporting a session). Every turn is recorded in
 // sends.jsonl like the other headless stand-ins: kind "turn", the agent's name,
 // the session it resumed as the mode, and its prompt.
 //
@@ -333,6 +334,11 @@ func exampleAgent(world string, args []string) int {
 		status, code = "failed", 1
 	case "needs_input":
 		status, code = "needs_input", 2
+	}
+	if outcome == "failed_no_session" {
+		// A failure before the agent could say which session it was in.
+		fmt.Println(`{"type":"result","status":"failed"}`)
+		return 1
 	}
 	fmt.Printf(`{"type":"result","status":%q,"session":%q}`+"\n", status, exampleSession)
 	return code

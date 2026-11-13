@@ -175,3 +175,67 @@ func TestDefinedAgentOutage(t *testing.T) {
 	s = w.Tick()
 	w.Check(s, "back to normal", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
 }
+
+// TestDefinedAgentLostSession: the saved session becomes unusable and the
+// last turn did not report one, so keepgoing cannot tell which conversation
+// to continue. It does not start another by itself: it holds, and the hold
+// names the way out. A person runs `session reset`, resumes, and the next
+// turn starts a new conversation on purpose, recorded in the timeline.
+func TestDefinedAgentLostSession(t *testing.T) {
+	t.Parallel()
+	w := NewWorld(t, scenarioStart)
+	w.install("example-agent")
+	w.Headless = "example-agent"
+	dir := filepath.Join(w.Root, "setup")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	if err := os.WriteFile(w.Config, []byte(fmt.Sprintf(definedAgentConfig, w.BinPath("example-agent"), w.Project, scenarioTask)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.Control("enable")
+	w.Advance(time.Minute)
+	s := w.Tick()
+	w.Check(s, "first turn", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent"})))
+
+	// The next turn fails before reporting a session, and the saved
+	// identifier is damaged.
+	w.nextTurns("failed_no_session")
+	w.Advance(5 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "the turn that fails", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession})))
+	session := filepath.Join(dir, "state", "targets", "primary", "session")
+	if err := os.WriteFile(session, []byte("--not-a-session\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w.Advance(time.Minute)
+	s = w.Tick()
+	w.Check(s, "held instead of starting another conversation", all(action(s, "await_user"), reasonHas(s, "run keepgoing session reset"), nothingSent(s), holds(s, "awaitingUser"), reported(s, "keepgoing.await_user")))
+	// Resuming without resetting holds again; still nothing is sent.
+	s = w.Control("resume")
+	w.Advance(15 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "resume alone holds again", all(action(s, "await_user"), nothingSent(s), holds(s, "awaitingUser")))
+
+	// The way out, on purpose.
+	s = w.record("session reset", w.Run("session", "reset", "-c", w.Config), nil)
+	w.Check(s, "session reset", all(exit(s, 0), nothingSent(s), holds(s, "awaitingUser")))
+	if !strings.Contains(s.Result.Stdout, "starts a new conversation") || !strings.Contains(s.Timeline.Raw, "session reset from a terminal or scheduler") {
+		w.Failf(s, "reset output %q; timeline does not record it", s.Result.Stdout)
+	}
+	if _, err := os.Stat(session); !os.IsNotExist(err) {
+		w.Failf(s, "the session file is still there: %v", err)
+	}
+	s = w.Control("resume")
+	w.Check(s, "resume", all(exit(s, 0), holds(s), nothingSent(s)))
+	w.Advance(15 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "a new conversation", all(sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: ""}), holds(s), noReports(s)))
+	// And it is continued from then on.
+	w.Commit("feat: fictional step in the new conversation")
+	w.Advance(5 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "the new conversation is resumed", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession})))
+}

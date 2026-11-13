@@ -44,6 +44,8 @@ func TestDecide(t *testing.T) {
 		{"stop wins over completion", func(i *Input) { i.Control.Stop, i.Control.Completed = true, true; i.Obs.State = Active }, Stop},
 		{"awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None},
 		{"target gone needs a person", func(i *Input) { i.Obs.Gone = true }, AwaitUser},
+		{"a lost session needs a person", func(i *Input) { i.Obs.SessionLost = true }, AwaitUser},
+		{"a lost session needs a person even in an error", func(i *Input) { i.Obs.SessionLost, i.Obs.State, i.Obs.ErrorClass = true, Error, ErrRateLimit }, AwaitUser},
 		{"outside window", func(i *Input) { i.InWindow = false }, None},
 		{"idle with background work", func(i *Input) { i.Obs.Background = 1 }, None},
 		{"idle with queued messages", func(i *Input) { i.Obs.Queued = 2 }, None},

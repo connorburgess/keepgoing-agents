@@ -41,6 +41,7 @@ func TestChildrenDoNotOverrideControlsOrPermitWakes(t *testing.T) {
 		{"awaiting_user", func(i *Input) { i.Control.AwaitingUser = true }, None, "awaiting user"},
 		{"parent_interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None, "waiting on a person (pending interaction)"},
 		{"gone", func(i *Input) { i.Obs.Gone = true }, AwaitUser, "target gone (archived, deleted, or not found)"},
+		{"session lost", func(i *Input) { i.Obs.SessionLost = true }, AwaitUser, SessionLostReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := base()

@@ -49,6 +49,10 @@ type Observation struct {
 	Queued     int  // messages already waiting for the session
 	Background int  // background workers still running
 	Gone       bool // target deleted or archived
+	// SessionLost means the session the loop was continuing can no longer
+	// be named (its saved identifier is unusable), so continuing would mean
+	// starting a new conversation that nobody chose.
+	SessionLost bool
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
@@ -219,6 +223,10 @@ type Decision struct {
 	DeferredInteraction bool
 }
 
+// SessionLostReason is fixed text. It names the way out: a person decides to
+// start a new conversation, with a command, or restores the identifier.
+const SessionLostReason = "the saved session cannot be used, so keepgoing cannot tell which conversation to continue and will not start a new one by itself; run keepgoing session reset to start a new conversation on purpose, then resume"
+
 // DeferredInteractionReason is fixed text; it carries no provider content.
 const DeferredInteractionReason = "agent interaction was cancelled and needs a person; nothing was approved"
 
@@ -267,6 +275,9 @@ func Decide(in Input) Decision {
 	}
 	if o.Gone {
 		return Decision{Action: AwaitUser, Reason: "target gone (archived, deleted, or not found)"}
+	}
+	if o.SessionLost {
+		return Decision{Action: AwaitUser, Reason: SessionLostReason}
 	}
 	if len(o.AwaitingChildren) > 0 {
 		return Decision{Action: AwaitUser, Reason: "children waiting on a person (pending interaction): " + strings.Join(o.AwaitingChildren, ", ")}

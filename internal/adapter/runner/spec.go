@@ -223,7 +223,7 @@ func (s *Spec) ObservationInputs() []string {
 		in = append(in, "ResetsAt")
 	}
 	if s.ValidSession != nil {
-		in = append(in, "Gone")
+		in = append(in, "SessionLost")
 	}
 	sort.Strings(in)
 	return in
@@ -376,6 +376,26 @@ func (h *Headless) session() (session string, lost bool) {
 	return s, false
 }
 
+// ResetSession forgets the saved session, so that the next turn starts a new
+// conversation. It is for a person's deliberate decision only: nothing in a
+// check calls it. had says whether a session was saved. It refuses while a
+// turn is running, and it stops the latest finished turn from saving its
+// session again.
+func (h *Headless) ResetSession() (had bool, err error) {
+	st, _, err := h.status()
+	if err != nil {
+		return false, err
+	}
+	if st.Phase == Running {
+		return false, ErrTurnRunning
+	}
+	return h.dir.resetSession(st)
+}
+
+// ErrTurnRunning refuses a change that would pull a session out from under a
+// turn that is using it.
+var ErrTurnRunning = errors.New("a turn is running")
+
 // errSessionLost refuses a send that would silently start a new conversation.
 var errSessionLost = errors.New("the saved session is not usable; refusing to start a new conversation in its place")
 
@@ -394,7 +414,7 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 		// without anyone deciding to, so a person is asked instead. A
 		// finished turn that reported its session has saved it again by now.
 		if _, lost := h.session(); lost && err == nil && st.Phase != Running {
-			obs.Gone = true
+			obs.SessionLost = true
 		}
 	}()
 	switch st.Phase {
@@ -411,7 +431,11 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
 	}
 	r := h.spec.Read(st)
-	h.dir.SaveSession(r.Session)
+	if !h.dir.sessionWasReset(st.Record) {
+		// After a person reset the session, the turn that reported the old
+		// one must not bring it back.
+		h.dir.SaveSession(r.Session)
+	}
 	// A turn that ended waiting on a person raises a hold once: it is
 	// reported until the supervisor has saved the hold (AdoptInteraction).
 	waiting := h.waiting(r) && !h.dir.waitAdopted(st.Record)
@@ -445,7 +469,7 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	if st.Phase == Running {
 		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running headless turn (%s mode)", mode)}
 	}
-	if st.Phase == Finished && !unread {
+	if st.Phase == Finished && !unread && !h.dir.sessionWasReset(st.Record) {
 		h.dir.SaveSession(h.spec.Read(st).Session)
 	}
 	if _, lost := h.session(); lost {

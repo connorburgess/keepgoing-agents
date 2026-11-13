@@ -101,7 +101,7 @@ func TestDefinitionBecomesASpecification(t *testing.T) {
 	if want := (Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true, StructuredWaiting: true}); spec.Capabilities != want {
 		t.Fatalf("%+v", spec.Capabilities)
 	}
-	if got := strings.Join(spec.ObservationInputs(), ","); got != "DeferredInteraction,ErrorClass,Evidence,Gone,ResetsAt,State" {
+	if got := strings.Join(spec.ObservationInputs(), ","); got != "DeferredInteraction,ErrorClass,Evidence,ResetsAt,SessionLost,State" {
 		t.Fatalf("inputs %s", got)
 	}
 	if spec.Limits == nil || spec.Probe.Command == nil || spec.Probe.Judge == nil {
