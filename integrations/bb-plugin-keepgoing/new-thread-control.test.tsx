@@ -14,10 +14,11 @@ const { DEFAULT_BOUNDS, boundsPhrase } = await import("./new-thread-contract.ts"
 function world(over: { mode?: "manual" | "automatic"; unavailable?: string; armFails?: string; submitFails?: string; blocked?: string; projectId?: string | null } = {}) {
   const calls: NewThreadInput[] = [];
   const submits: unknown[] = [];
+  const submitted = new Set<() => void>();
   const state = { ...over };
   const call = async (input: NewThreadInput): Promise<NewThreadResult> => {
     calls.push(input);
-    if (input.action === "check") return state.unavailable ? { ok: false, message: state.unavailable } : { ok: true, message: "", mode: state.mode ?? "manual" };
+    if (input.action === "check") return state.unavailable ? { ok: false, message: state.unavailable } : { ok: true, message: "", mode: state.mode ?? "manual", setups: { used: 5, max: 32 } };
     if (input.action === "arm") return state.armFails ? { ok: false, message: state.armFails } : { ok: true, message: "", mode: state.mode ?? "manual", intent: `intent-${calls.length}`, expiresAt: 1 };
     return { ok: true, message: "" };
   };
@@ -25,10 +26,13 @@ function world(over: { mode?: "manual" | "automatic"; unavailable?: string; armF
     scope: { kind: "new-thread", projectId: over.projectId === undefined ? "proj_example" : over.projectId }, key: "draft-example",
     isSubmittingBlocked: !!over.blocked, submittingBlockedReason: over.blocked ?? null,
     submit: async (options?: unknown) => { if (state.submitFails) throw new Error(state.submitFails); submits.push(options); },
+    onSubmitted: (listener: () => void) => { submitted.add(listener); return () => { submitted.delete(listener); }; },
   };
+  // What BB does after any successful send from this composer, such as a plain Enter.
+  const plainSend = () => { for (const l of submitted) l(); };
   const ui = render(<><KeepGoingBanner composer={composer} call={call} /><KeepGoingSwitch composer={composer} /></>);
   const done = () => { ui.unmount(); cleanup(); resetDrafts(); };
-  return { ui, calls, submits, state, done };
+  return { ui, calls, submits, state, done, plainSend };
 }
 
 test("off shows only the switch; on explains once, states the bound and the plain-Enter rule, and keeps numbers behind Details", async () => {
@@ -56,7 +60,7 @@ test("Send and keep going asks for a single-use request, then sends the message 
     fireEvent.click(w.ui.getByRole("switch"));
     fireEvent.click(await w.ui.findByRole("button", { name: "Send and keep going" }));
     await waitFor(() => assert.equal(w.submits.length, 1));
-    assert.deepEqual(w.calls[1], { action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS });
+    assert.deepEqual(w.calls[1], { action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS, shownMode: "manual" });
     assert.deepEqual(w.submits[0], { experimental_data: { v: 1, intent: "intent-2" } });
     await waitFor(() => assert.equal(w.ui.getByRole("switch").getAttribute("aria-checked"), "false"));
     assert.ok(!JSON.stringify(w.calls).includes("task"), "no message text goes through the plugin's own requests");
@@ -72,7 +76,12 @@ test("the bound is edited in Details and travels with the request", async () => 
     assert.ok(w.ui.getByText("Stops for you after 12 automatic messages, or 6 hours without progress (a Git change)."));
     fireEvent.click(w.ui.getByRole("button", { name: "Send and keep going" }));
     await waitFor(() => assert.equal(w.submits.length, 1));
-    assert.deepEqual(w.calls.find(c => c.action === "arm"), { action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: { maxSends: 12, noProgressTimeout: "6h" } });
+    assert.deepEqual(w.calls.find(c => c.action === "arm"), { action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: { maxSends: 12, noProgressTimeout: "6h" }, shownMode: "manual" });
+    // Edited limits belong to that send: the next draft starts from the defaults.
+    await waitFor(() => assert.equal(w.ui.getByRole("switch").getAttribute("aria-checked"), "false"));
+    fireEvent.click(w.ui.getByRole("switch"));
+    assert.equal((await w.ui.findByLabelText("Automatic messages before stopping") as HTMLInputElement).value, "40");
+    assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
   } finally { w.done(); }
 });
 
@@ -93,7 +102,45 @@ test("automatic mode says in the control that supervision starts once the thread
     fireEvent.click(w.ui.getByRole("switch"));
     await w.ui.findByText("keepgoing will supervise the thread this message creates, starting once the thread exists.");
     assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
+    // The mode on screen at the press is what the request carries.
+    fireEvent.click(w.ui.getByRole("button", { name: "Send and keep going" }));
+    await waitFor(() => assert.equal(w.submits.length, 1));
+    assert.equal((w.calls.find(c => c.action === "arm") as { shownMode?: string }).shownMode, "automatic");
   } finally { w.done(); }
+});
+
+test("a plain Enter turns the switch off and resets the limits, so neither carries into the next draft", async () => {
+  const w = world();
+  try {
+    fireEvent.click(w.ui.getByRole("switch"));
+    fireEvent.change(await w.ui.findByLabelText("Automatic messages before stopping"), { target: { value: "7" } });
+    const { act } = await import("@testing-library/react");
+    await act(async () => { w.plainSend(); });
+    assert.equal(w.ui.getByRole("switch").getAttribute("aria-checked"), "false");
+    assert.equal(w.ui.queryByRole("button", { name: "Send and keep going" }), null);
+    assert.ok(!w.calls.some(c => c.action === "arm")); assert.equal(w.submits.length, 0);
+    fireEvent.click(w.ui.getByRole("switch"));
+    assert.equal((await w.ui.findByLabelText("Automatic messages before stopping") as HTMLInputElement).value, "40");
+  } finally { w.done(); }
+});
+
+test("the banner is announced politely and says how many setups the plugin holds", async () => {
+  const w = world();
+  try {
+    fireEvent.click(w.ui.getByRole("switch"));
+    await w.ui.findByRole("button", { name: "Send and keep going" });
+    assert.equal(w.ui.getByLabelText("Keep going").getAttribute("aria-live"), "polite");
+    assert.ok(w.ui.getByText("This plugin holds 5 of 32 setups and cannot remove one yet."));
+    assert.ok(w.ui.getByText(/it does not use the message or the thread's title/));
+    assert.ok(w.ui.getByText(/the first message is not sent again/));
+  } finally { w.done(); }
+  const full = world({ unavailable: "This plugin already holds 32 of 32 setups, which is the most it can hold, and it has no way to remove one yet. Keep going cannot create another." });
+  try {
+    fireEvent.click(full.ui.getByRole("switch"));
+    assert.match((await full.ui.findByRole("alert")).textContent ?? "", /32 of 32 setups/);
+    assert.equal(full.ui.getByRole("switch").getAttribute("aria-checked"), "false");
+    assert.equal(full.ui.getByLabelText("Keep going").getAttribute("aria-live"), "polite");
+  } finally { full.done(); }
 });
 
 test("a missing program is explained, the switch stays off, and Check again retries", async () => {
@@ -154,6 +201,7 @@ test("the row in the menu beside Send turns the same switch on; nothing shows ou
     assert.equal(w.ui.getByRole("switch").getAttribute("aria-checked"), "true");
   } finally { w.done(); }
   const thread = { scope: { kind: "thread" }, key: "thread-draft", isSubmittingBlocked: false, submittingBlockedReason: null, submit: async () => {} };
+  // (A thread's own composer never shows the control.)
   turnOn("thread-draft");
   const ui = render(<><KeepGoingBanner composer={thread} call={async () => ({ ok: true, message: "", mode: "manual" as const })} /><KeepGoingSwitch composer={thread} /></>);
   try { assert.equal(ui.container.textContent, ""); } finally { ui.unmount(); cleanup(); resetDrafts(); }
@@ -207,6 +255,9 @@ test("after it is started the same words are used and the button is gone; waitin
   const failed = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "failed", message: "Another loop already supervises this thread. Nothing was created or started." }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
   try { assert.match(failed.getByRole("alert").textContent ?? "", /already supervises/); assert.equal(failed.queryByRole("button"), null); }
   finally { failed.unmount(); cleanup(); }
+  const orphan = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "failed", message: "Setup result changed. A switched-off setup named example-app-k3f9 may exist on this thread's host and was not started.", loop: "example-app-k3f9", configPath: "/private/example-app-k3f9/keepgoing.yaml" }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
+  try { assert.match(orphan.getByRole("alert").textContent ?? "", /example-app-k3f9 may exist/); assert.ok(orphan.getByText("Configuration: /private/example-app-k3f9/keepgoing.yaml")); }
+  finally { orphan.unmount(); cleanup(); }
   const none = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "none", message: "" }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
   try { assert.equal(none.container.textContent, ""); } finally { none.unmount(); cleanup(); }
   assert.equal(outcomeLabel({ state: "none", message: "" }, "enabled", true), null);

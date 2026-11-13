@@ -17,19 +17,25 @@ export type StartMode = z.infer<typeof startModeSchema>;
 const id = z.string().min(1).max(200);
 export const newThreadInput = z.discriminatedUnion("action", [
   z.object({ action: z.literal("check") }),
-  z.object({ action: z.literal("arm"), draftKey: id, projectId: id, bounds: boundsSchema }),
+  // `shownMode` is the start mode the banner displayed when the button was pressed.
+  z.object({ action: z.literal("arm"), draftKey: id, projectId: id, bounds: boundsSchema, shownMode: startModeSchema }),
   z.object({ action: z.literal("cancel"), intent: id }),
   z.object({ action: z.literal("outcome"), threadId: id }),
 ]);
 export type NewThreadInput = z.infer<typeof newThreadInput>;
 
-/** What the person is told about the loop created for a thread. Holds no task text and no path. */
+/**
+ * What the person is told about the loop created for a thread. It never holds
+ * task text. `configPath` is set only when creation was attempted and could
+ * not be confirmed, so that what may exist on the host can be found.
+ */
 export const outcomeSchema = z.object({
   state: z.enum(["none", "waiting", "ready", "failed"]),
   message: z.string().max(1000),
   loop: z.string().max(100).optional(),
   bounds: boundsSchema.optional(),
   cadence: z.string().max(400).optional(),
+  configPath: z.string().max(4096).optional(),
   startedAutomatically: z.boolean().optional(),
 });
 export type Outcome = z.infer<typeof outcomeSchema>;
@@ -38,6 +44,8 @@ export const newThreadResult = z.object({
   mode: startModeSchema.optional(),
   intent: z.string().max(200).optional(), expiresAt: z.number().optional(),
   outcome: outcomeSchema.optional(),
+  /** Setups this plugin holds, of the most it can hold. */
+  setups: z.object({ used: z.number().int().min(0), max: z.number().int().positive() }).optional(),
 });
 export type NewThreadResult = z.infer<typeof newThreadResult>;
 
@@ -56,8 +64,21 @@ export function durationMs(text: string): number | null {
   return ((Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)) * 60 + Number(m[3] ?? 0)) * 1000;
 }
 
-/** A loop name from a thread title: lowercase letters, digits and hyphens. Empty when the title has none. */
-export function loopName(title: string | null | undefined): string {
-  return (title ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
+/** Lowercase letters, digits and hyphens only. Empty when the text has none. */
+export function slug(text: string | null | undefined): string {
+  return (text ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
 }
-export const fallbackName = (threadId: string) => `bb-${threadId.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 50)}`.replace(/-+$/, "");
+/**
+ * A loop name that says where the work is and nothing about what it is: the
+ * project directory's name and a short random suffix, such as example-app-k3f9.
+ * The first message, and a thread title made from it, are task text; a loop
+ * name reaches command arguments, plugin storage and a directory name, so it
+ * is never derived from either.
+ */
+export function loopName(projectPath: string, random: string): string {
+  const project = slug(projectPath.split(/[\\/]/).filter(Boolean).pop()) || "loop";
+  const suffix = random.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4) || "0000";
+  return `${project}-${suffix}`;
+}
+/** The stricter of two start modes: review-first wins. */
+export const stricter = (a: StartMode, b: StartMode): StartMode => (a === "automatic" && b === "automatic" ? "automatic" : "manual");

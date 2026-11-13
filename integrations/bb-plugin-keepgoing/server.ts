@@ -9,7 +9,7 @@ import { hostContract } from "./host-contract.ts";
 import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
-import { createSetupController } from "./setup-controller.ts";
+import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
 import { createNewThreadController } from "./new-thread-controller.ts";
 import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
 import { randomUUID } from "node:crypto";
@@ -275,12 +275,17 @@ export default async function plugin(bb: BbPluginApi) {
     if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
     return setup.call(input, bounds);
   });
+  let hookAvailable = false;
   const newThread = createNewThreadController({
     now: () => Date.now(),
     id: () => randomUUID(),
     // An unreadable setting falls back to the mode that starts nothing.
-    mode: async () => startModeSchema.catch("manual").parse((await settings.get()).newThreadStart),
+    mode: async () => {
+      try { return startModeSchema.catch("manual").parse((await settings.get()).newThreadStart); }
+      catch { return "manual"; }
+    },
     unavailable: async () => {
+      if (!hookAvailable) return "This version of BB does not offer the hook Keep going needs to learn which thread a message created, so it is unavailable here. Supervise this thread still works on an existing thread.";
       const { bin } = await configured();
       const result = await run(bin, ["version"]);
       return result.code === 0 ? null : "The keepgoing program was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";
@@ -290,14 +295,17 @@ export default async function plugin(bb: BbPluginApi) {
         const signal = AbortSignal.timeout(10_000);
         const t = await bb.sdk.threads.get({ threadId, signal });
         if (t.archivedAt !== null || t.deletedAt !== null) return { reason: "This thread was archived or deleted before keepgoing could set it up. Nothing was created." };
-        if (!t.environmentId) return null;
+        // A thread still pending has not started its first turn: BB has not
+        // delivered the message, and may never.
+        if (t.status === "pending" || !t.environmentId) return null;
         const e = await bb.sdk.environments.get({ environmentId: t.environmentId, signal });
         if (e.status !== "ready") return null;
         if (!e.isGitRepo || !e.path) return { reason: "This thread does not work in a Git repository, which keepgoing needs to tell whether work is progressing. Nothing was created." };
-        await resolveTarget(threadId);
-        return { title: t.title ?? t.titleFallback };
+        const target = await resolveTarget(threadId);
+        return { project: target.project };
       } catch { return null; }
     },
+    capacity: async () => ({ used: (await records()).length, max: MAX_SETUPS }),
     supervision: async threadId => {
       const result = await allLoops(threadId);
       return result.errors.length ? "unverified" : result.loops.length ? "supervised" : "none";
@@ -307,23 +315,29 @@ export default async function plugin(bb: BbPluginApi) {
   });
   // The dispatch hook is how BB reports which thread a marked message
   // created. It never waits for anything and always lets the send proceed.
-  bb.experimental_hooks.on("message.dispatch", ctx => {
-    try {
-      const s = ctx.experimental_submission;
-      if (s && s.pluginId === bb.pluginId) {
+  // The hook is an experimental BB API: if this BB does not have it, or
+  // refuses the registration, only the New thread control is lost. Status,
+  // Pause, Stop and setup on existing threads do not depend on it.
+  try {
+    bb.experimental_hooks.on("message.dispatch", ctx => {
+      try {
+        const s = ctx.experimental_submission;
         newThread.dispatched({
-          data: s.data, threadId: ctx.thread.id, projectId: ctx.thread.projectId, threadCreatedAt: ctx.thread.createdAt,
+          data: s && s.pluginId === bb.pluginId ? s.data : null,
+          threadId: ctx.thread.id, projectId: ctx.thread.projectId, threadCreatedAt: ctx.thread.createdAt,
           attempt: ctx.attempt, initiator: ctx.initiator, senderThreadId: ctx.senderThreadId, parentThreadId: ctx.thread.parentThreadId, sourceThreadId: ctx.thread.sourceThreadId,
-          queued: ctx.queuedMessages.length, text: ctx.input.text,
+          queued: ctx.queuedMessages.length, text: s && s.pluginId === bb.pluginId ? ctx.input.text : "",
         });
-        void newThread.advance(ctx.thread.id);
-      }
-    } catch { /* a send is never delayed or failed by this plugin */ }
-    return { action: "proceed" };
-  });
-  // A thread's environment exists by the time its first turn is running.
+      } catch { /* a send is never delayed or failed by this plugin */ }
+      return { action: "proceed" };
+    });
+    hookAvailable = true;
+  } catch { hookAvailable = false; }
+  // Setup waits for the first turn: a running or finished turn is what shows
+  // that BB delivered the message.
   bb.events.on("thread.active", ({ thread }) => { void newThread.advance(thread.id); });
   bb.events.on("thread.idle", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.failed", ({ thread }) => { void newThread.advance(thread.id); });
   bb.events.on("thread.archived", ({ thread }) => { newThread.forget(thread.id); });
   bb.events.on("thread.deleted", ({ thread }) => { newThread.forget(thread.id); });
   bb.onDispose(() => { setup.dispose(); transfer.dispose(); newThread.dispose(); });

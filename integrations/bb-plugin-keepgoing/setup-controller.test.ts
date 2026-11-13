@@ -33,7 +33,11 @@ test("preview, disabled create, diagnostics, and explicit start remain separate"
   assert.equal(created.ok, true); assert.equal(created.canStart, true); assert.equal(f.records().length, 1);
   assert.ok(!f.calls.includes("start"));
   const started = await f.controller.call({ action: "start", threadId: "thr_example" });
-  assert.equal(started.ok, true); assert.equal(started.canStart, false); assert.equal(f.calls.filter(x => x === "start").length, 1);
+  assert.equal(started.ok, true); assert.equal(started.started, true); assert.equal(started.canStart, false); assert.equal(f.calls.filter(x => x === "start").length, 1);
+  // A second start is declined by the re-check: ok, and explicitly not a start.
+  f.state.controlState = "paused";
+  const declined = await f.controller.call({ action: "start", threadId: "thr_example" });
+  assert.equal(declined.ok, true); assert.notEqual(declined.started, true); assert.equal(f.calls.filter(x => x === "start").length, 1);
   assert.equal((await f.create(p.ticket)).ok, false);
 });
 

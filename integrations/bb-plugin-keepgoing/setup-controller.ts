@@ -25,6 +25,9 @@ const doctorSchema = z.object({ schemaVersion: z.literal(1), targetAgent: agent,
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** The most setups the plugin keeps a reference to. There is no removal yet. */
+export const MAX_SETUPS = 32;
+
 export function createSetupController(d: SetupDependencies) {
   const previews = new Map<string, { target: SetupTarget; name: string; taskHash: string; withGoal: boolean; bounds?: Bounds; bin: string; plan: SetupPlan; expires: number }>();
   let queue: Promise<unknown> = Promise.resolve();
@@ -66,7 +69,7 @@ export function createSetupController(d: SetupDependencies) {
       await sameTarget(existing);
       const start = await d.command(bin, existing, "start");
       d.changed();
-      return { ...result, canStart: false, ok: start.code === 0, message: start.code === 0 ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
+      return { ...result, canStart: false, ok: start.code === 0, started: start.code === 0, message: start.code === 0 ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
     }
     if (existing) throw new SetupPolicyError("This thread already has a saved setup. Use its diagnostics and controls.");
     await d.guard(input.threadId);
@@ -86,7 +89,7 @@ export function createSetupController(d: SetupDependencies) {
     const preview = previews.get(input.ticket ?? "");
     previews.delete(input.ticket ?? ""); // one attempt, including failure; never replay a creation
     if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || !equal(preview.bounds, bounds) || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, target, or binary changed. Preview again.");
-    if (records.length >= 32) throw new SetupPolicyError("The plugin already has 32 saved setups; manage existing loops before adding another.");
+    if (records.length >= MAX_SETUPS) throw new SetupPolicyError(`The plugin already has ${MAX_SETUPS} saved setups; manage existing loops before adding another.`);
     const fresh = await d.init(bin, target, preview.name, task, true, withGoal, bounds);
     if (!equal(fresh.plan, preview.plan)) throw new SetupPolicyError("The resolved setup changed. Preview again before creating it.");
     const created = await d.init(bin, target, preview.name, task, false, withGoal, bounds);

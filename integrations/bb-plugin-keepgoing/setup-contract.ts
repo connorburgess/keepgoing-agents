@@ -25,5 +25,7 @@ export const checkSchema = z.object({ id: text, status: z.enum(["ok", "warning",
 export const setupResult = z.object({
   ok: z.boolean(), message: z.string(), ticket: z.string().optional(), plan: planSchema.optional(),
   record: recordSchema.optional(), goal: goalSummarySchema.nullable().optional(), goalState: goalStateSchema.optional(), checks: z.array(checkSchema).optional(), canStart: z.boolean().optional(),
+  // True only when this call ran the start command and it reported success.
+  started: z.boolean().optional(),
 });
 export type SetupResult = z.infer<typeof setupResult>;

@@ -44,9 +44,12 @@ export function NewThreadOutcome({ threadId, outcome, controlState, supervising,
   const [result, setResult] = useState<{ ok: boolean; message: string }>();
   if (outcome.state === "none") return null;
   const box = { display: "grid", gap: 6, padding: "6px 12px", fontSize: 12 } as const;
-  if (outcome.state === "waiting") return <section aria-label="Keep going for this thread" style={box}><strong>keepgoing: setting up</strong><span role="status">{outcome.message}</span></section>;
+  if (outcome.state === "waiting") return <section aria-label="Keep going for this thread" aria-live="polite" style={box}><strong>keepgoing: setting up</strong><span role="status">{outcome.message}</span></section>;
   // Once a loop exists for the thread, the ordinary status row speaks for it.
-  if (outcome.state === "failed") return controlState ? null : <section aria-label="Keep going for this thread" style={box}><strong>keepgoing could not set this thread up</strong><span role="alert">{outcome.message}</span></section>;
+  if (outcome.state === "failed") return controlState ? null : <section aria-label="Keep going for this thread" style={box}>
+    <strong>keepgoing could not set this thread up</strong><span role="alert">{outcome.message}</span>
+    {outcome.configPath && <span>Configuration: {outcome.configPath}</span>}
+  </section>;
   const label = outcomeLabel(outcome, controlState, supervising);
   if (!label) return null;
   const act = () => {
