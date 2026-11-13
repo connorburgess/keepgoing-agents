@@ -29,7 +29,9 @@ Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
 ## Opening it with one command: `keepgoing panel`
 
-`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS, not run on Windows.
+`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS, and with fixtures and real processes on Linux in CI.
+
+**Windows: unverified, so it refuses.** `keepgoing panel`, `panel status` and `panel stop` have never been run on Windows. Until they have, they stop there with a message that says so and points to `keepgoing dock`, which works as before. `keepgoing panel list` needs no server and works on every platform.
 
 ```sh
 keepgoing panel                  # start the panel if needed, and open it
@@ -45,6 +47,8 @@ What happens:
 1. If a panel server this user started is running and answers, it is reused. Otherwise one is started in the background and the command waits, up to ten seconds, until it answers. Two commands run at the same moment end with one server.
 2. The command asks that server, over a private local socket, for an opening address: `http://127.0.0.1:PORT/open/<code>`. The code works once and for 30 seconds. That address is the only thing handed to the browser launcher (`open`, `xdg-open` or the Windows URL handler; `KEEPGOING_PANEL_OPENER` names another program).
 3. The browser loads it. The server exchanges the code for a session cookie and redirects to the page. A used or expired address, or a page address whose session has ended, shows a short page that says to run `keepgoing panel` again.
+
+The page's footer says which command is serving it and when that stops: `keepgoing panel` and its idle limit, or `keepgoing dock` until Ctrl-C. The expired-link page has a button that copies the command.
 
 The background server stops by itself after 30 minutes without a page request (`--idle`, `1m` to `24h`; `panel status` states the limit and the time left). Health checks, `panel status` and refused requests do not count as use. It also stops on `keepgoing panel stop`. It is never started at login or by any other command. **Starting it, using it, leaving it idle and stopping it never affect supervision**: it reads what the page reads and writes only its own runtime files.
 
@@ -71,7 +75,8 @@ Everything under [Access](#access) holds for this server too, with a session in 
 - An opening address can only be created through the private socket, which only this user can reach.
 - The session is a cookie with 256 random bits: `HttpOnly`, `SameSite=Strict`, no expiry (it ends with the browser session, or with the server), scoped to the path `/s/<random segment>/`. Cookies are not separated by port, so the random segment is what keeps a browser from sending it to another local server; the segment alone grants nothing. At most 16 sessions exist; the oldest is dropped.
 - The session value is never in an address, an argument, the environment, a file or a log. The server keeps no log. The only secret that another program's arguments ever contain is the opening code.
-- Without a valid cookie nothing under `/s/` is served, and nothing is served at any other path except the health request, an opening address, and the stylesheet (`/panel.css`, which the expired-link page needs and which holds nothing private).
+- Without a valid cookie nothing under `/s/` is served, and nothing is served at any other path except the health request, an opening address, and two static files the expired-link page needs and which hold nothing private: the stylesheet (`/panel.css`) and its copy-button script (`/expired.js`).
+- With a session, `api/v1/server` returns which command serves the page and its idle limit, and nothing about any loop.
 - There is still no write endpoint.
 
 As with the token, this keeps other local web pages and other users of the computer out. It is not protection against another program running as you.

@@ -36,8 +36,10 @@ const (
 // panelExpiredPage is shown for an opening address that was used or has
 // expired, and for a page address whose session is gone. It has no script,
 // and its only stylesheet is the panel's own, served without a session at
-// /panel.css, so it looks like the page it stands in for and needs nothing
-// the content policy forbids.
+// /panel.css, so it looks like the page it stands in for. Its one script,
+// /expired.js, shows a button that copies the command; the page reads the
+// same without it. Both are files of this server, as the content policy
+// requires.
 const panelExpiredPage = `<!doctype html>
 <html lang="en">
 <head>
@@ -49,6 +51,7 @@ const panelExpiredPage = `<!doctype html>
 <title>keepgoing: this link has expired</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/panel.css">
+<script src="/expired.js" defer></script>
 </head>
 <body>
 <header class="bar">
@@ -58,7 +61,8 @@ const panelExpiredPage = `<!doctype html>
 </header>
 <main class="notice">
   <h1>This link to the keepgoing panel has expired</h1>
-  <p class="lede">Run <code class="command">keepgoing panel</code> in a terminal to open the panel again.</p>
+  <p class="lede">Run <code class="command" id="command">keepgoing panel</code> in a terminal to open the panel again.</p>
+  <p class="copy" id="copy-row" hidden><button type="button" class="btn" id="copy">Copy the command</button> <span id="copied" role="status" aria-live="polite"></span></p>
   <p>Each link opens the panel once, within 30 seconds. An open panel stops working when the browser session ends or the panel server stops.</p>
   <p>Your loops are not affected. The panel only shows them.</p>
 </main>
@@ -229,6 +233,8 @@ func (h *panelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The stylesheet holds nothing private; the expired page needs it
 		// without a session.
 		h.page.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
+	case r.URL.Path == "/expired.js":
+		h.page.asset(w, "dockui/expired.js", "text/javascript; charset=utf-8")
 	case strings.HasPrefix(r.URL.Path, "/open/"):
 		h.open(w, r)
 	case strings.HasPrefix(r.URL.Path, "/s/"):
@@ -318,6 +324,20 @@ func panelControlServe(l net.Listener, state *panelState, stop func()) {
 	}
 }
 
+// panelServerConfig is what one run of the background server needs. now and
+// ticks exist so a test can run the idle rule on its own clock: ticks, when
+// set, replaces the timer that asks whether the server has been idle too long.
+type panelServerConfig struct {
+	dir        string // the panel's private directory, already resolved
+	registry   string // the --directory value, as given
+	idle       time.Duration
+	refresh    time.Duration
+	staleAfter time.Duration
+	offline    bool
+	now        func() time.Time
+	ticks      <-chan time.Time
+}
+
 // panelServerCommand is the background server, run by keepgoing panel as
 // "__panel-server". It is not started at login or by any other command.
 func panelServerCommand(e env, args []string) int {
@@ -329,14 +349,19 @@ func panelServerCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "")
 	offline := fs.Bool("offline", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *panelDir == "" || *idle <= 0 || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *panelDir == "" || *idle <= 0 || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 || !panelSupported() {
 		return exitUsage
 	}
 	dir, err := panelDirectory(*panelDir)
 	if err != nil {
 		return exitUsage
 	}
-	registryDir, err := registryDirectory(*directory)
+	return runPanelServer(e.ctx, panelServerConfig{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, now: time.Now})
+}
+
+func runPanelServer(parent context.Context, c panelServerConfig) int {
+	dir := c.dir
+	registryDir, err := registryDirectory(c.registry)
 	if err != nil {
 		return exitUsage
 	}
@@ -353,7 +378,7 @@ func panelServerCommand(e env, args []string) int {
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
-	state, err := newPanelState(port, *idle, time.Now)
+	state, err := newPanelState(port, c.idle, c.now)
 	if err != nil {
 		return exitFailed
 	}
@@ -369,18 +394,20 @@ func panelServerCommand(e env, args []string) int {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return exitFailed
 	}
-	ctx, cancel := context.WithCancel(e.ctx)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	go panelControlServe(control, state, cancel)
 
-	reader := &dockReader{ctx: ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon}
-	if *offline {
+	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon}
+	if c.offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)
 		}
 	}
-	handler := &panelHandler{state: state, guard: newDockGuard(port), page: newDockServer(port, state, reader)}
-	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: time.Now().UTC().Truncate(time.Second), IdleSeconds: int(*idle / time.Second),
+	page := newDockServer(port, state, reader)
+	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second))}
+	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
+	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
 		Instance: state.instance, Registry: registryDir, Version: version}
 	if rec.IdleSeconds < 1 {
 		rec.IdleSeconds = 1
@@ -395,14 +422,18 @@ func panelServerCommand(e env, args []string) int {
 		}
 	}()
 	go func() {
-		tick := min(max(*idle/4, 20*time.Millisecond), 5*time.Second)
-		t := time.NewTicker(tick)
-		defer t.Stop()
+		// Asked a few times per idle period, and at least every five seconds.
+		ticks := c.ticks
+		if ticks == nil {
+			t := time.NewTicker(min(max(c.idle/4, 20*time.Millisecond), 5*time.Second))
+			defer t.Stop()
+			ticks = t.C
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
+			case <-ticks:
 				if state.idleRemaining() <= 0 {
 					cancel()
 					return

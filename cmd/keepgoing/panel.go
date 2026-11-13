@@ -78,6 +78,13 @@ var (
 	panelKeyPattern      = regexp.MustCompile(`^l[0-9a-f]{12}$`)
 )
 
+// panelSupported is false where the background server has never been run.
+// keepgoing panel refuses there and says so; keepgoing dock and panel list
+// work everywhere. A test replaces it.
+var panelSupported = func() bool { return runtime.GOOS != "windows" }
+
+const panelUnsupported = "keepgoing panel has not been verified on Windows yet, so it does not start there. Run keepgoing dock and open the address it prints."
+
 // panelSocketLimit is the longest socket path the platform accepts.
 func panelSocketLimit() int {
 	switch runtime.GOOS {
@@ -390,6 +397,10 @@ func panelCommand(e env, args []string) int {
 			return panelListCommand(e, args[1:])
 		}
 	}
+	if !panelSupported() {
+		e.errf("panel: %s", panelUnsupported)
+		return exitFailed
+	}
 	fs := flag.NewFlagSet("panel", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	loop := fs.String("loop", "", "open this loop's page: its name, registration ID or key")
@@ -483,6 +494,10 @@ type panelStatus struct {
 }
 
 func panelStatusCommand(e env, args []string) int {
+	if !panelSupported() {
+		e.errf("panel status: %s", panelUnsupported)
+		return exitFailed
+	}
 	fs := flag.NewFlagSet("panel status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	asJSON := fs.Bool("json", false, "print JSON")
@@ -525,6 +540,10 @@ func panelStatusCommand(e env, args []string) int {
 }
 
 func panelStopCommand(e env, args []string) int {
+	if !panelSupported() {
+		e.errf("panel stop: %s", panelUnsupported)
+		return exitFailed
+	}
 	fs := flag.NewFlagSet("panel stop", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	panelDir := fs.String("panel-directory", "", "private directory for the panel's runtime record and socket")
@@ -553,12 +572,18 @@ func panelStopCommand(e env, args []string) int {
 		return exitFailed
 	}
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if !panelAnswers(e.ctx, rec) {
+		if panelAnswers(e.ctx, rec) {
+			continue
+		}
+		// The server holds its lock until its record and socket are gone, so
+		// taking the lock proves it has finished, not only stopped answering.
+		if held, err := lock.AcquireNamed(dir, panelServerLock); err == nil {
+			_ = held.Release()
 			fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
 			return exitOK
 		}
 	}
-	e.errf("panel stop: the panel server was asked to stop and is still answering")
+	e.errf("panel stop: the panel server was asked to stop and has not finished")
 	return exitFailed
 }
 

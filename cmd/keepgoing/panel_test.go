@@ -133,7 +133,7 @@ func TestPanelOpeningAddressWorksOnceAndBecomesASessionCookie(t *testing.T) {
 	// A second use, and a code that never existed, get the plain page.
 	for _, used := range []string{address, "http://127.0.0.1:" + strconv.Itoa(rec.Port) + "/open/" + strings.Repeat("0", 64), "http://127.0.0.1:" + strconv.Itoa(rec.Port) + "/open/"} {
 		resp, body := dockRequest(t, http.MethodGet, used, nil)
-		if resp.StatusCode != http.StatusGone || len(resp.Cookies()) != 0 || !strings.Contains(body, `Run <code class="command">keepgoing panel</code>`) || strings.Contains(body, "style=") || strings.Contains(body, "<script") {
+		if resp.StatusCode != http.StatusGone || len(resp.Cookies()) != 0 || !strings.Contains(body, `id="command">keepgoing panel</code>`) || strings.Contains(body, "style=") || strings.Contains(body, "<script>") || strings.Count(body, "<script") != 1 {
 			t.Fatalf("reused address: %d %q", resp.StatusCode, body)
 		}
 	}
@@ -828,5 +828,172 @@ func TestPanelServerExitsWhenIdleAndLeavesLoopsAlone(t *testing.T) {
 				t.Fatal("still running 8 seconds after its last request")
 			}
 		}
+	}
+}
+
+// The 30-minute rule on the server's own clock: it exits 30 minutes after the
+// last use, use resets the count, health and status requests do not, and on
+// exit the record and the socket are gone and no loop file has changed.
+func TestPanelIdleRuleOnAFakeClock(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	before := treeDigest(t, root)
+	dir, err := panelDirectory(filepath.Join(panelShortDir(t), "panel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	now := time.Date(2030, 3, 4, 9, 0, 0, 0, time.UTC)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	ticks := make(chan time.Time)
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: panelDefaultIdle, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: clock, ticks: ticks})
+	}()
+	var rec panelRecord
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var ok bool
+		if rec, ok = panelLive(context.Background(), dir); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start")
+		}
+	}
+	if rec.IdleSeconds != 1800 || !rec.StartedAt.Equal(now) {
+		t.Fatalf("record: %+v", rec)
+	}
+	// tick asks the idle question once and reports whether the server exited.
+	tick := func() bool {
+		t.Helper()
+		select {
+		case ticks <- clock():
+		case code := <-done:
+			done <- code
+			return true
+		case <-time.After(5 * time.Second):
+			t.Fatal("the idle check is not running")
+		}
+		select {
+		case code := <-done:
+			done <- code
+			return true
+		case <-time.After(150 * time.Millisecond):
+			return false
+		}
+	}
+	remaining := func() int {
+		t.Helper()
+		reply, err := panelControl(context.Background(), dir, panelRequest{Op: "status"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reply.IdleRemainingSeconds
+	}
+	page, c := panelSession(t, dir, rec) // use, at 09:00
+	advance(29*time.Minute + 59*time.Second)
+	if tick() {
+		t.Fatal("exited one second before 30 minutes without use")
+	}
+	if left := remaining(); left != 1 {
+		t.Fatalf("status says %d seconds left, want 1", left)
+	}
+	// Reading the page is use: the 30 minutes start again.
+	if resp, _ := dockRequest(t, http.MethodGet, page+dockAPIPath, func(r *http.Request) { r.AddCookie(c) }); resp.StatusCode != http.StatusOK {
+		t.Fatalf("page read: %d", resp.StatusCode)
+	}
+	if left := remaining(); left != 1800 {
+		t.Fatalf("after use, status says %d seconds left", left)
+	}
+	advance(29 * time.Minute)
+	// Health, status, a refused request and a wrong opening address are not use.
+	panelAnswers(context.Background(), rec)
+	dockRequest(t, http.MethodGet, page+dockAPIPath, nil)
+	dockRequest(t, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/open/%s", rec.Port, strings.Repeat("0", 64)), nil)
+	dockRequest(t, http.MethodGet, page, func(r *http.Request) { r.AddCookie(c); r.Host = "evil.example.com" })
+	if left := remaining(); left != 60 {
+		t.Fatalf("requests that are not use changed the time left to %d", left)
+	}
+	if tick() {
+		t.Fatal("exited 29 minutes after the last use")
+	}
+	// A new opening address is use too.
+	panelOpenAddress(t, dir, "")
+	advance(29*time.Minute + 59*time.Second)
+	if tick() {
+		t.Fatal("exited before 30 minutes after an opening address was made")
+	}
+	advance(time.Second)
+	if !tick() {
+		t.Fatal("still running 30 minutes after the last use")
+	}
+	if code := <-done; code != exitOK {
+		t.Fatalf("idle exit code %d", code)
+	}
+	for _, name := range []string{panelRecordName, panelSocketName} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was left behind: %v", name, err)
+		}
+	}
+	if _, ok := panelLive(context.Background(), dir); ok {
+		t.Fatal("still answering after the idle exit")
+	}
+	if treeDigest(t, root) != before {
+		t.Fatal("a file in the registry or a loop's directory changed across start, use and idle exit")
+	}
+}
+
+// The page is told which command serves it, and nothing else.
+func TestPanelAndDockSayWhichCommandServesThePage(t *testing.T) {
+	dir, rec, _ := panelServeInProcess(t, 45*time.Minute)
+	page, c := panelSession(t, dir, rec)
+	resp, body := dockRequest(t, http.MethodGet, page+dockServerPath, func(r *http.Request) { r.AddCookie(c) })
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"panel","idleSeconds":2700}` {
+		t.Fatalf("panel: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := dockRequest(t, http.MethodGet, page+dockServerPath, nil); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("without a session: %d", resp.StatusCode)
+	}
+	base, _, _ := dockServe(t)
+	if resp, body := dockRequest(t, http.MethodGet, base+dockServerPath, nil); resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"dock"}` {
+		t.Fatalf("dock: %d %s", resp.StatusCode, body)
+	}
+	// The expired page's script is the server's own file, served without a
+	// session, and the page shows no button until that script runs.
+	js, jsBody := dockRequest(t, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/expired.js", rec.Port), nil)
+	own, _ := dockUI.ReadFile("dockui/expired.js")
+	if js.StatusCode != http.StatusOK || jsBody != string(own) || !strings.HasPrefix(js.Header.Get("Content-Type"), "text/javascript") {
+		t.Fatalf("expired.js: %d", js.StatusCode)
+	}
+	if !strings.Contains(panelExpiredPage, `id="copy-row" hidden`) || !strings.Contains(panelExpiredPage, `<script src="/expired.js" defer></script>`) || strings.Contains(panelExpiredPage, "onclick") {
+		t.Fatal("the expired page's copy button is not hidden by default or uses inline script")
+	}
+	for _, banned := range []string{"http://", "https://", "eval(", "innerHTML", "document.cookie", "localStorage", "fetch("} {
+		if strings.Contains(string(own), banned) {
+			t.Fatalf("expired.js contains %q", banned)
+		}
+	}
+}
+
+func TestPanelRefusesWhereItIsUnverified(t *testing.T) {
+	previous := panelSupported
+	panelSupported = func() bool { return false }
+	t.Cleanup(func() { panelSupported = previous })
+	d, _ := dockFixtureReader(t)
+	for _, args := range [][]string{{}, {"--no-open"}, {"status"}, {"stop"}} {
+		var out, errs bytes.Buffer
+		if code := panelCommand(env{context.Background(), &out, &errs}, args); code != exitFailed || !strings.Contains(errs.String(), "has not been verified on Windows yet") || !strings.Contains(errs.String(), "keepgoing dock") || out.Len() != 0 {
+			t.Fatalf("%v: %d %s", args, code, errs.String())
+		}
+	}
+	if code := panelServerCommand(env{context.Background(), io.Discard, io.Discard}, []string{"--panel-directory", t.TempDir()}); code != exitUsage {
+		t.Fatalf("the server started: %d", code)
+	}
+	// Listing needs no server and works everywhere.
+	var out, errs bytes.Buffer
+	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"list", "--directory", d.directory, "--offline"}); code != exitOK {
+		t.Fatalf("list: %d %s", code, errs.String())
 	}
 }

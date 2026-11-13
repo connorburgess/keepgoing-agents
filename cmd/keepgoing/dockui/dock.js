@@ -6,6 +6,7 @@
 (function () {
   var SCHEMA = 1;
   var API = "api/v1/dock";
+  var SERVER = "api/v1/server";
   var state = { data: null, identifiers: false, timer: 0, busy: false, lastOk: null, failed: false, route: "" };
 
   var TONES = {
@@ -577,6 +578,39 @@
     b.textContent = text || "";
   }
 
+  // Which command serves this page: "dock" until the server says otherwise.
+  function served() { return state.server && state.server.servedBy === "panel" ? "panel" : "dock"; }
+
+  function span(seconds) {
+    if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : seconds / 3600 + " hours";
+    if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : seconds / 60 + " minutes";
+    return seconds + " seconds";
+  }
+
+  function put(node, parts) {
+    parts.forEach(function (part) { node.appendChild(typeof part === "string" ? document.createTextNode(part) : part); });
+  }
+
+  // One sentence under the footer: what serves the page and when it stops.
+  function renderServed() {
+    var p = $("served");
+    if (!p) return;
+    p.textContent = "";
+    if (!state.server) return;
+    if (served() === "panel") {
+      put(p, ["Served to this computer only by ", el("code", null, "keepgoing panel"), ", which stops by itself after " + span(state.server.idleSeconds || 1800) + " with no page reading from it. ", el("code", null, "keepgoing panel stop"), " ends it now."]);
+    } else {
+      put(p, ["Served to this computer only by ", el("code", null, "keepgoing dock"), ", until Ctrl-C in its terminal."]);
+    }
+  }
+
+  function loadServer() {
+    fetch(SERVER, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+      .then(function (d) { if (d && d.schemaVersion === 1) { state.server = d; renderServed(); } })
+      .catch(function () { /* the page works without it */ });
+  }
+
   function schedule() {
     clearTimeout(state.timer);
     var every = state.data ? state.data.refreshSeconds : 15;
@@ -601,9 +635,10 @@
       .catch(function (err) {
         state.failed = true;
         var schema = err && err.message === "schema";
-        banner(schema ? "This page does not understand the reply it was sent. Reload the page, or restart keepgoing dock." :
-          state.data ? "The last read failed, so what you see may be out of date. keepgoing dock may have stopped; it tries again shortly." :
-          "Could not read from keepgoing dock. It may have stopped; start it again and open the new address it prints.");
+        var again = served() === "panel" ? "run keepgoing panel again." : "start it again and open the new address it prints.";
+        banner(schema ? "This page does not understand the reply it was sent. Reload the page, or restart keepgoing " + served() + "." :
+          state.data ? "The last read failed, so what you see may be out of date. keepgoing " + served() + " may have stopped; it tries again shortly." :
+          "Could not read from keepgoing " + served() + ". It may have stopped; " + again);
         renderReadline();
       })
       .then(function () {
@@ -636,6 +671,7 @@
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && state.lastOk && Date.now() - state.lastOk > 5000) { clearTimeout(state.timer); load(); }
     });
+    loadServer();
     load();
   });
 })();
