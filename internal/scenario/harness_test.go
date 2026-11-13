@@ -26,8 +26,10 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 )
 
-// keepgoingBin and standinBin are built once for the whole suite.
-var keepgoingBin, standinBin string
+// keepgoingBin is built once for the whole suite. standinDir holds the
+// stand-ins (bb, claude, codex, example-agent) and a link to git: one directory shared by
+// every scenario, and the whole PATH each scenario's commands see.
+var keepgoingBin, standinDir string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "keepgoing-scenario-build-")
@@ -48,8 +50,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "KEEPGOING_TEST_BINARY must be an absolute path")
 			return 2
 		}
-		standinBin = filepath.Join(dir, "standin"+exe)
-		if err := goBuild(standinBin, "./standin"); err != nil {
+		if err := installStandins(filepath.Join(dir, "bin"), filepath.Join(dir, "warm")); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
@@ -59,6 +60,80 @@ func TestMain(m *testing.M) {
 }
 
 var exe = map[bool]string{true: ".exe"}[runtime.GOOS == "windows"]
+
+// installStandins builds the stand-in once, gives it the names it
+// plays in one shared directory, links git beside them, and runs each
+// executable once before any scenario starts.
+//
+// The first run is the point. macOS checks an executable the first time it
+// is run from a path, and on a busy machine that check can refuse instead of
+// only being slow: the kernel logs "Security policy would not allow process"
+// and the process is killed as it starts. When every scenario had its own
+// copy of the stand-ins, each scenario presented three paths that had never
+// been run, and about one run in a few dozen lost a stand-in that way. Here
+// the check is passed once, outside any scenario, and retried if it refuses.
+func installStandins(bin, scratch string) error {
+	for _, d := range []string{bin, scratch} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	bb := filepath.Join(bin, "bb"+exe)
+	if err := goBuild(bb, "./standin"); err != nil {
+		return err
+	}
+	for _, name := range []string{"claude", "codex", "example-agent"} {
+		dst := filepath.Join(bin, name+exe)
+		if err := os.Link(bb, dst); err != nil {
+			body, err := os.ReadFile(bb)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, body, 0o700); err != nil {
+				return err
+			}
+		}
+	}
+	// Only git comes from the host, so a real agent CLI that happens to sit
+	// beside it on the host PATH can never be found.
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return fmt.Errorf("scenario tests need git: %w", err)
+	}
+	if err := os.Symlink(git, filepath.Join(bin, "git"+exe)); err != nil {
+		return err
+	}
+	standinDir = bin
+	env := []string{"SCENARIO_WORLD=" + scratch}
+	for _, run := range [][]string{
+		{keepgoingBin, "version"},
+		{bb, "thread", "show", "thr_example_warm", "--json"},
+		{filepath.Join(bin, "claude"+exe), "-p", "warm"},
+		{filepath.Join(bin, "codex"+exe), "app-server"},
+		{filepath.Join(bin, "example-agent"+exe), "warm"},
+	} {
+		if err := runOnce(env, run...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runOnce runs a command until it ends on its own, whatever its exit code.
+// A run ended by a signal is the host refusing it; it is tried again.
+func runOnce(env []string, argv ...string) error {
+	var last error
+	for attempt := 0; attempt < 20; attempt++ {
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Env = env
+		last = cmd.Run()
+		var exit *exec.ExitError
+		if last == nil || (errors.As(last, &exit) && exit.Exited()) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s could not be run before the scenarios: %v", argv[0], last)
+}
 
 func goBuild(out, pkg string) error {
 	gobin, err := exec.LookPath("go")
@@ -124,17 +199,13 @@ func NewWorld(t *testing.T, start time.Time) *World {
 		t.Fatal(err)
 	}
 	w := &World{t: t, Name: t.Name(), Root: root, Now: start.UTC(), Threads: map[string]*Thread{},
-		bin: filepath.Join(root, "bin"), world: filepath.Join(root, "world"), home: filepath.Join(root, "home"),
+		bin: standinDir, world: filepath.Join(root, "world"), home: filepath.Join(root, "home"),
 		Project: filepath.Join(root, "project")}
-	for _, d := range []string{w.bin, w.world, w.home, w.Project, filepath.Join(root, "tmp")} {
+	for _, d := range []string{w.world, w.home, w.Project, filepath.Join(root, "tmp")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	w.install("bb")
-	w.install("claude")
-	w.install("codex")
-	w.linkGit()
 	w.Net = newConnectivity(t)
 	w.Net.world = w.world
 	w.Hooks = newReceiver(t)
@@ -166,33 +237,6 @@ func NewWorld(t *testing.T, start time.Time) *World {
 		}
 	})
 	return w
-}
-
-func (w *World) install(name string) {
-	w.t.Helper()
-	dst := filepath.Join(w.bin, name+exe)
-	if err := os.Link(standinBin, dst); err != nil {
-		b, err := os.ReadFile(standinBin)
-		if err != nil {
-			w.t.Fatal(err)
-		}
-		if err := os.WriteFile(dst, b, 0o700); err != nil {
-			w.t.Fatal(err)
-		}
-	}
-}
-
-// linkGit exposes only git from the host, so a real agent CLI that happens to
-// sit beside it on the host PATH can never be found.
-func (w *World) linkGit() {
-	w.t.Helper()
-	git, err := exec.LookPath("git")
-	if err != nil {
-		w.t.Fatal("scenario tests need git: ", err)
-	}
-	if err := os.Symlink(git, filepath.Join(w.bin, "git"+exe)); err != nil {
-		w.t.Fatal(err)
-	}
 }
 
 func (w *World) git(args ...string) {
