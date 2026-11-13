@@ -1,37 +1,32 @@
 name: Checks
 
+# Build and test jobs depend only on the commit, so they run for a new pull
+# request, a push to it, or a reopen. They do not run on `edited`: editing a
+# title or description changes no code, and re-running them there repeated
+# about ten minutes of work on an unchanged commit. The one job that reads the
+# title and body is in contributions.yml.
+#
+# `edited` also fires when a pull request's base branch is changed. That no
+# longer starts these jobs by itself. Branch protection requires the branch to
+# be up to date with its base, so merging the new base in pushes a commit and
+# runs them; otherwise close and reopen the pull request.
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer head supersedes an older run of this workflow. An edit to the pull
+# request does not start this workflow, so it cannot cancel a run in progress.
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  contributions:
-    name: Contribution metadata
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check sign-offs and attribution
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_TEXT: ${{ github.event.pull_request.title }}${{ '\n' }}${{ github.event.pull_request.body }}
-        run: ./scripts/check-contributions.sh "$BASE" "$HEAD"
-
   bb-plugin:
     name: BB plugin typecheck
     runs-on: ubuntu-24.04
