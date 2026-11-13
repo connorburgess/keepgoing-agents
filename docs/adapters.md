@@ -141,7 +141,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 
 ### Child-work awareness
 
-Hold the parent while conversations it started are still working, and say which.
+Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
