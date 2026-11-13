@@ -28,7 +28,9 @@ import (
 // events do); tell, update, and stop are recorded. retry answers from
 // <thread>.retry when present, first replacing <thread>.show with
 // <thread>.show-after-retry if that exists, and otherwise as BB does for a failed turn it
-// dispatched again.
+// dispatched again. provider-retry explain and status answer from
+// <thread>.retry-decision and <thread>.retries, and otherwise as BB's retry
+// plugin does with no decision recorded and nothing pending.
 const fakeBB = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
@@ -38,6 +40,8 @@ case "$1 $2" in
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
 "thread tell") cat >> "$d/$t.told"; echo >> "$d/$t.told"; echo '{"ok":true}' ;;
+"provider-retry explain") if [ -f "$d/$t.retry-decision" ]; then cat "$d/$t.retry-decision"; else echo '{"threadId":"'"$t"'","diagnostic":null}'; fi ;;
+"provider-retry status") if [ -f "$d/$t.retries" ]; then cat "$d/$t.retries"; else echo '{"retries":[]}'; fi ;;
 "thread retry") if [ -f "$d/$t.show-after-retry" ]; then cp "$d/$t.show-after-retry" "$d/$t.show"; fi; if [ -f "$d/$t.retry" ]; then cat "$d/$t.retry"; else echo '{"ok":true,"threadId":"'"$t"'","delivery":"sent","turnRequestId":"req_example1","attempt":2}'; fi ;;
 *) echo '{"ok":true}' ;;
 esac

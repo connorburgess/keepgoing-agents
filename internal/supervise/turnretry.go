@@ -22,7 +22,20 @@ const (
 	// turnRetryNotInError: the provider reported no failed turn and the session
 	// was no longer in error, or its status could not be re-read.
 	turnRetryNotInError = "not_in_error"
+	// turnRetryQueueUnconfirmed: the provider kept answering that a retry was
+	// already queued while reporting nothing queued; see turnRetryMaxNoOps.
+	turnRetryQueueUnconfirmed = "queue_unconfirmed"
 )
+
+// turnRetryMaxNoOps is how many consecutive checks may be answered "a retry
+// is already queued" while the session reports nothing queued. Consecutive
+// means with no other check between them: the count is cleared by every
+// check that does not end in that answer. That pair
+// contradicts itself: a retry that is waiting is a queued message, and a
+// session in error with queued messages is not re-prompted at all. Beyond
+// this the answer is treated as unknown and the ordinary error rules apply,
+// so an inconsistent provider cannot be asked on every check for ever.
+const turnRetryMaxNoOps = 3
 
 // turnRetryMode is the send-graph mode of a turn retry: it has no prompt.
 const turnRetryMode = "turn_retry"
@@ -83,6 +96,25 @@ func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Deci
 			fallBack = true
 		} else {
 			outcome = turnRetryNotInError
+		}
+	}
+	if outcome == string(adapter.TurnRetryAlreadyQueued) {
+		// record clears the count on every check that does not set this.
+		t.turnRetryAlreadyQueued = true
+		t.st.TurnRetryNoOps++
+		if t.st.TurnRetryNoOps > turnRetryMaxNoOps {
+			// Unknown, not "queued". The prompt is the recovery, but only for a
+			// session still in error with nothing queued, as for "no failed
+			// turn": otherwise it would steer a live turn or sit beside a
+			// retry that really is waiting.
+			ctx, cancel := context.WithTimeout(t.ctx, turnRecheckTimeout)
+			failed, checkErr := r.StillFailed(ctx)
+			cancel()
+			if checkErr == nil && failed {
+				// This check ends in a prompt, not in "already queued", so the
+				// count starts again from it.
+				outcome, fallBack, t.turnRetryAlreadyQueued = turnRetryQueueUnconfirmed, true, false
+			}
 		}
 	}
 	t.incidentTurnRetry = outcome
