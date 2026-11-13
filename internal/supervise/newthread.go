@@ -139,7 +139,7 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	if err := t.beginNewThread(intent); err != nil {
 		return "", errors.New("could not record the intent to create a thread; nothing was created")
 	}
-	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+	if _, err := t.reserveSend("new_thread", c.ID); err != nil {
 		t.refundNewThread(previous) // nothing was asked of bb
 		return "", err
 	}

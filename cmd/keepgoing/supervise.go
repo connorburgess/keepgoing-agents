@@ -334,15 +334,18 @@ type statusOut struct {
 	Notifications     report.DeliveryStatus    `json:"notifications"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
-	Loop              string                   `json:"loop"`
-	Primary           string                   `json:"primary"`
-	Target            string                   `json:"target"`
-	Control           control.File             `json:"control"`
-	ControlState      string                   `json:"controlState"`
-	Deadline          string                   `json:"deadline,omitempty"`
-	DeadlineReached   bool                     `json:"deadlineReached"`
-	WorkBounds        workBoundsStatus         `json:"workBounds"`
-	TickBudget        tickBudgetStatus         `json:"tickBudget"`
+	// SendRecord is set when sends.json, the record every send is made
+	// through, cannot be read: nothing is sent until it is restored.
+	SendRecord      string           `json:"sendRecord,omitempty"`
+	Loop            string           `json:"loop"`
+	Primary         string           `json:"primary"`
+	Target          string           `json:"target"`
+	Control         control.File     `json:"control"`
+	ControlState    string           `json:"controlState"`
+	Deadline        string           `json:"deadline,omitempty"`
+	DeadlineReached bool             `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus `json:"workBounds"`
+	TickBudget      tickBudgetStatus `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -416,6 +419,11 @@ type progressAllowanceStatus struct {
 	Error           string     `json:"error,omitempty"`
 	BaselinePending bool       `json:"baselinePending,omitempty"`
 }
+
+// sendRecordProblem is what status and doctor say when sends.json cannot be
+// read. Deleting it would lose the record of sends not yet counted and reset
+// the count against max_sends.
+const sendRecordProblem = "sends.json cannot be read, so no check sends anything; restore it from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends"
 
 // sendAllowanceStatus omits unknown counts when accounting cannot be read.
 type sendAllowanceStatus struct {
@@ -553,6 +561,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
 	} else {
 		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
+	}
+	if out.SendRecord != "" {
+		fmt.Fprintf(w, "send record: %s\n", out.SendRecord)
 	}
 	if a := out.SendAllowance; a != nil {
 		if a.Error != "" {
@@ -692,6 +703,9 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
+	if _, err := state.LoadLedger(l.StateDir); err != nil {
+		out.SendRecord = sendRecordProblem
+	}
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -815,16 +829,54 @@ var saveEpisodeState = state.Save
 // Loop-wide limits are never refunded. It runs inside the control update,
 // before the holds are cleared, with the tick lock held: if the counts
 // cannot be saved the resume fails and changes nothing.
-func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time, maxBriefs int, briefs ...control.Brief) error {
 	st, err := state.Load(stateDir)
 	if err != nil {
 		return err
 	}
 	before := st
+
 	if episodeHold {
+		// Sends recorded by a check that could not save what happened belong
+		// to the episode that is ending: settle them first, so the next
+		// check does not count them into the new one.
+		if err := state.SettleIntoEpisode(stateDir, &st); err != nil {
+			return err
+		}
 		st.NewEpisode(at)
 	} else {
 		st.RetryRepaired()
+	}
+	// After the counts are cleared, which clears rejected briefs too.
+	// A brief to another conversation, recorded and not confirmed, which
+	// a person has now looked at. The loop stays on its current target. A
+	// brief to another target is counted as one delivered and not taken, so
+	// that route is spaced like any rejected brief, and no route is briefed
+	// on the next check: the person resumed to keep the loop where it is.
+	for _, b := range briefs {
+		// The record of the brief is settled by the next check, from this.
+		st.ResumedBriefs = append(st.ResumedBriefs, state.Brief(b))
+		if b.Target == st.Target() {
+			continue
+		}
+		if b.Action == "switch_back" {
+			// Spaced by switch_back.retry_every; not counted toward its cap,
+			// so the person's resume cannot by itself end switch-back.
+			st.LastSwitchBackTry = at
+			continue
+		}
+		// Spaced like a rejected brief, but never capped by the resume: with
+		// a cap of one, that would leave the loop with no fallback. With a
+		// cap of one it is not spaced either; the next check still briefs
+		// no route.
+		if st.HandoffBriefs == nil {
+			st.HandoffBriefs = map[string]state.BriefRecord{}
+		}
+		r := st.HandoffBriefs[b.Target]
+		st.HandoffBriefs[b.Target] = state.BriefRecord{Failed: max(0, min(r.Failed+1, maxBriefs-1)), LastAt: at}
+	}
+	if len(briefs) > 0 {
+		st.SkipHandoffOnce = true
 	}
 	if reflect.DeepEqual(before, st) {
 		return nil
@@ -865,8 +917,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"disable": func(f *control.File) { f.Enabled = false },
 		"pause":   func(f *control.File) { f.Paused = true },
 		"resume": func(f *control.File) {
-			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.EpisodeHold, f.OpenQuestion = false, nil
+			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
+			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
+			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
 		},
 		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
@@ -887,8 +940,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
 	newEpisode, openQuestion := false, false
+	var settledBriefs []control.Brief
 	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
-		newEpisode, openQuestion = false, false
+		newEpisode, openQuestion, settledBriefs = false, false, nil
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -900,10 +954,10 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
-			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC()); err != nil {
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
-			newEpisode = f.EpisodeHold
+			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold
 		}
 		wasAwaiting := f.AwaitingUser
 		if !transfer {
@@ -957,6 +1011,20 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	if openQuestion && f.OpenQuestion != nil {
 		// The note is not repeated here; status shows it, as it shows any note.
 		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+	}
+	if cmd == "resume" && len(settledBriefs) > 0 {
+		current := state.Primary
+		if st, err := state.Load(cfg.Loop.StateDir); err == nil {
+			current = st.Target()
+		}
+		for _, b := range settledBriefs {
+			if b.Target == current {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered: the loop is on %s\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, current)
+			} else {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered and not taken; %s is spaced like a rejected brief\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, b.Target)
+			}
+		}
+		fmt.Fprintf(e.stdout, "the loop continues on %s; no route is briefed on the next check\n", current)
 	}
 	if cmd == "resume" && newEpisode {
 		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")

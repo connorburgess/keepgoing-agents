@@ -252,7 +252,7 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "error", "none", "rate limited; waiting for the reset")
 			st.LimitWaitReport = &state.LimitWaitReport{Target: state.Primary, ResetsAt: now.Add(2*time.Hour + 20*time.Minute), DetectedAt: now.Add(-50 * time.Minute), Outcome: state.LimitWaitRequested, Reports: 1}
 			for range 41 {
-				if err := state.ReserveSend(sd, 60); err != nil {
+				if err := spendSends(sd, 60); err != nil {
 					t.Fatal(err)
 				}
 			}

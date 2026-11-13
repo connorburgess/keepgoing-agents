@@ -22,6 +22,10 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
 //	show.gate              if present, holds a number N: each `thread show`
 //	                       records its arrival in show.arrived and waits until N
 //	                       have arrived or show.open exists, then answers
@@ -68,6 +72,11 @@ import (
 )
 
 func main() {
+	// A scenario may run keepgoing with no room to write (a zero file-size
+	// limit, which is how a full disk looks to a program). The stand-in
+	// is not the program under test: it lifts its own limit, so it can
+	// still record what it was sent.
+	liftFileSizeLimit()
 	world := os.Getenv("SCENARIO_WORLD")
 	if world == "" {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
@@ -92,7 +101,25 @@ func main() {
 	if name == "example-agent" {
 		os.Exit(exampleAgent(world, os.Args[1:]))
 	}
-	os.Exit(run(world, os.Args[1:]))
+	args := os.Args[1:]
+	// killbefore.<command>: the stand-in kills the keepgoing process that
+	// runs `thread <command>` before doing anything, as a crash just before
+	// the call would. The command is not recorded or done. The file is used up.
+	if len(args) > 1 && args[0] == "thread" && os.Remove(filepath.Join(world, "killbefore."+args[1])) == nil {
+		killParent()
+		os.Exit(1)
+	}
+	code := run(world, args)
+	// kill.<command>: once the command has done its work and answered, the
+	// stand-in kills the keepgoing process that ran it, as a crash or a
+	// power cut would at that moment. The file is used up.
+	if len(args) > 1 && args[0] == "thread" {
+		if os.Remove(filepath.Join(world, "kill."+args[1])) == nil {
+			os.Stdout.Sync()
+			killParent()
+		}
+	}
+	os.Exit(code)
 }
 
 func run(world string, args []string) int {

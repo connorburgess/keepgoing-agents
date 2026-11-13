@@ -91,7 +91,7 @@ func TestRetryHardBoundsAndHoldsRemainAuthoritative(t *testing.T) {
 				w.cfg.Loop.Limits.Deadline = t0.Format(time.RFC3339)
 			case "sends":
 				w.cfg.Loop.Limits.MaxSends = 1
-				if err := state.ReserveSend(w.dir, 1); err != nil {
+				if err := spendSends(w.dir, 1); err != nil {
 					t.Fatal(err)
 				}
 			case "progress":

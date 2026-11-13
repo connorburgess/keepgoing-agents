@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -174,7 +175,7 @@ func TestPanelChangeRequestsPassEveryCheck(t *testing.T) {
 	if resp, _ := dockRequest(t, http.MethodGet, w.page+"api/v1/loops/"+key+"/confirm", withCookie(w.cookie)); resp.StatusCode == http.StatusOK {
 		t.Errorf("GET confirm: %d", resp.StatusCode)
 	}
-	if after := controlOf(t, e); after != before {
+	if after := controlOf(t, e); !reflect.DeepEqual(after, before) {
 		t.Fatal("a refused request changed the loop")
 	}
 	// The page's own request is answered with a review, not a change.
@@ -182,7 +183,7 @@ func TestPanelChangeRequestsPassEveryCheck(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || reply.Preview == nil || reply.Preview.Form == "" || reply.Preview.Form == w.form {
 		t.Fatalf("%d %+v", resp.StatusCode, reply)
 	}
-	if after := controlOf(t, e); after != before {
+	if after := controlOf(t, e); !reflect.DeepEqual(after, before) {
 		t.Fatal("preparing a pause changed the loop")
 	}
 	// Its confirmation value is bound to this session: another session's
@@ -495,7 +496,7 @@ func TestPanelConfirmRefusesAChangedRecord(t *testing.T) {
 		if r.Result == nil || r.Result.Outcome != "review_again" || !r.Result.Retry {
 			t.Errorf("%s %s after a %s: %+v", x.loop, x.action, x.between, r.Result)
 		}
-		if after := controlOf(t, e); after != before {
+		if after := controlOf(t, e); !reflect.DeepEqual(after, before) {
 			t.Errorf("%s: the panel changed a record it had not reviewed: %+v -> %+v", x.loop, before, after)
 		}
 	}

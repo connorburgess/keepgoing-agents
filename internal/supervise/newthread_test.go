@@ -557,7 +557,7 @@ func TestNewThreadSendAllowanceDryRunAndMissingRecord(t *testing.T) {
 	// The send limit is reached before creation: nothing is asked of BB.
 	w, _, f = newThreadWorld(t)
 	w.cfg.Loop.Limits.MaxSends = 1
-	if err := state.ReserveSend(w.dir, 1); err != nil {
+	if err := spendSends(w.dir, 1); err != nil {
 		t.Fatal(err)
 	}
 	if res := mustThreadTick(t, w, f, t0); res.Action != "await_user" || len(f.spawned) != 0 {
