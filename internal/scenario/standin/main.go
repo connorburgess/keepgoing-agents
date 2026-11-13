@@ -22,6 +22,9 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	show.gate              if present, holds a number N: each `thread show`
+//	                       records its arrival in show.arrived and waits until N
+//	                       have arrived or show.open exists, then answers
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -61,6 +64,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -110,6 +114,10 @@ func run(world string, args []string) int {
 	}
 	switch args[1] {
 	case "show":
+		if !gate(world) {
+			fmt.Fprintln(os.Stderr, "standin: the show gate was never opened")
+			return 1
+		}
 		return emit(world, arg(args, 2)+".show", `{"thread":{"status":"idle"}}`)
 	case "list":
 		if p := flagValue(args, "--parent-thread"); p != "" {
@@ -417,4 +425,32 @@ func readMode(path, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// gate holds `thread show` while show.gate exists, until as many calls as
+// it names have arrived or show.open is created. It lets a test put two
+// checks in the same moment, or keep one check in the middle of its work
+// while another starts. It gives up after 30 seconds.
+func gate(world string) bool {
+	b, err := os.ReadFile(filepath.Join(world, "show.gate"))
+	if err != nil {
+		return true
+	}
+	want, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	f, err := os.OpenFile(filepath.Join(world, "show.arrived"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err == nil {
+		f.Write([]byte{'.'})
+		f.Close()
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(world, "show.open")); err == nil {
+			return true
+		}
+		if info, err := os.Stat(filepath.Join(world, "show.arrived")); err == nil && want > 0 && info.Size() >= int64(want) {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }

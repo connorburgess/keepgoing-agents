@@ -193,7 +193,7 @@ func TestStartHistoryFailureKeepsSavedControlButDoesNotStart(t *testing.T) {
 	}
 	defer l.Release()
 	var errs bytes.Buffer
-	code := startForeground(env{context.Background(), io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("acknowledged startup"); return nil })
+	code := startForeground(env{context.Background(), io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("acknowledged startup"); return nil }, false)
 	if code != exitFailed || !strings.Contains(errs.String(), "control saved") || !strings.Contains(errs.String(), "daemon was not started") {
 		t.Fatal(code, &errs)
 	}
