@@ -64,6 +64,10 @@ Each scenario was run against a deliberately broken build to show it fails. For 
 
 Not covered yet: child failure reports, scheduler death, state upgrades, two supervisors, a full or unwritable state directory, fault injection (T3). The suite runs in the macOS and Linux CI jobs as part of the full suite; it is not yet run on Windows (T4), where the link to `git` and the environment need work.
 
+## Standard route list
+
+Offline fixtures only; see [what is verified](routes.md#what-is-verified). Config tests resolve one fictional list for a conversation loop, a loop that allows new conversations, and headless loops, and check every reason a route is left out, file validation, and that a missing or invalid list never fails a load and is picked up when repaired. Supervisor tests cover no handoff and a single pair of reports while the list is unreadable, a dry run and a hold recording nothing, and staying on a removed or switched-off route through a stop. Command tests drive `routes list`, `validate`, `status` and real checks, and assert that the JSON carries no conversation ID or path. Not exercised: a live provider, the editing commands (not built), and two processes changing the list at once.
+
 ## Timing-sensitive tests
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.

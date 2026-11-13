@@ -171,6 +171,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
+- [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Unreleased source; reading it is built, editing it is not yet.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing
