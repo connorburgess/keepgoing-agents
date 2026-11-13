@@ -37,6 +37,9 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// StopOnly: the check is run by a command that carries out a stop at once
+	// (keepgoing stop --now). It does nothing unless a stop is requested.
+	StopOnly bool
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
 	SessionDir  string
@@ -124,6 +127,9 @@ type Result struct {
 	// a lower bound. ChildErrorNote is set when this check's wake announces
 	// them. ChildErrorNoticeStopped: the notice was given up after repeated
 	// rejected sends.
+	// LaneStop is what a stop that covers the lanes did on this check, by
+	// count (keepgoing stop --lanes).
+	LaneStop                *state.LaneStop `json:"laneStop,omitempty"`
 	ErroredChildren         int             `json:"erroredChildren,omitempty"`
 	ErroredChildrenPartial  bool            `json:"erroredChildrenPartial,omitempty"`
 	ChildErrorNote          bool            `json:"childErrorNote,omitempty"`
@@ -217,15 +223,24 @@ type tick struct {
 	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
 	briefHold           []control.Brief // briefs named by a hold already raised for them
 	stopRequested       bool            // a stop is requested in control.json
-	stopsMade           []string        // targets this check sent a stop to
-	stBeforeRecords     state.File      // state before the records were handled, to undo them
-	quietFailure        bool            // a failure already reported by an earlier check
-	failure             *failureReport  // wording for the one error report of a failed check
-	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
-	lateReports         int             // reports started after the budget was spent
-	lateProbed          bool
-	graphFailed         bool
-	graphClosed         bool
+	// stopLanesFor is the request, in control.json, for the stop to cover
+	// the lanes; zero when none. laneStopsRecorded are the lanes an earlier
+	// check recorded a stop of, for this request, without saving whether it
+	// was made; laneStopReportRecorded says its report was recorded so.
+	stopLanesFor           time.Time
+	laneStopsRecorded      map[string]bool
+	laneStopReportRecorded bool
+	// parentStopped: this check stopped the supervised conversation.
+	parentStopped   bool
+	stopsMade       []string       // targets this check sent a stop to
+	stBeforeRecords state.File     // state before the records were handled, to undo them
+	quietFailure    bool           // a failure already reported by an earlier check
+	failure         *failureReport // wording for the one error report of a failed check
+	observeSpent    time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports     int            // reports started after the budget was spent
+	lateProbed      bool
+	graphFailed     bool
+	graphClosed     bool
 	// waiting is the child picture this check observed, for the run graph.
 	waiting *graphWaiting
 }
@@ -522,6 +537,9 @@ func (t *tick) run() error {
 	}
 	res.Control = ctl.Summary()
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
+	if ctl.Stop && ctl.StopLanesAt != nil {
+		t.stopLanesFor = ctl.StopLanesAt.UTC()
+	}
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
@@ -542,6 +560,12 @@ func (t *tick) run() error {
 	gate := ctl.Gate()
 	if gate.Stop {
 		return t.stop(target, agent, gate)
+	}
+	if t.opts.StopOnly {
+		// A command asked for a stop and carries it out itself; a resume
+		// has lifted it since. Nothing else is done in its name.
+		res.State, res.Action, res.Reason, res.Window = "not observed", string(decide.None), "stop no longer requested; nothing done", "not checked"
+		return t.record(nil)
 	}
 	if !gate.Enabled || gate.Paused || gate.AwaitingUser || gate.Completed {
 		switch {
@@ -1050,6 +1074,8 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
+		// The lanes are found and stopped on their own: stop wins.
+		t.stopLanes(a, false)
 		return t.record(err)
 	}
 	res.State = string(obs.State)
@@ -1118,6 +1144,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			stopOne(b.Target, ba)
 		}
 		t.stopsMade = stopped
+		t.stopLanes(a, slices.Contains(stopped, target))
 		if len(errs) == 0 && !waiting {
 			t.st.StopRequestedSent = true // otherwise the next check stops them all again
 		}
@@ -1131,6 +1158,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if len(t.unsettledBriefs) > 0 {
 		// Already stopped for this request: hold for the new briefs.
 		t.st.LastState = string(obs.State)
+		t.stopLanes(a, false)
 		return t.record(t.holdForBriefs())
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
@@ -1143,6 +1171,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 		actErr = t.act(a, d)
 	}
 	t.st.LastState = string(obs.State)
+	t.stopLanes(a, t.parentStopped)
 	return t.record(actErr)
 }
 
@@ -1591,7 +1620,10 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			return err
 		}
 		t.st.StopRequestedSent = true
-		t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		t.parentStopped = true
+		if t.stopLanesFor.IsZero() {
+			t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		} // otherwise the lanes' stop report says it, once
 	}
 	return nil
 }
@@ -1763,7 +1795,7 @@ func contains(list []string, s string) bool {
 // countUnrecordedSends.
 func (t *tick) reserveSend(action, target string, key ...string) (int64, error) {
 	max := t.loop.Limits.MaxSends
-	if action == "stop" || strings.HasPrefix(action, "report:") {
+	if action == "stop" || strings.HasPrefix(action, "stop:") || strings.HasPrefix(action, "report:") {
 		max = 0 // recorded, but not a send against the allowance
 	}
 	intent := state.SendIntent{At: t.now, Action: action, Target: target}
@@ -1913,6 +1945,10 @@ func (t *tick) countUnrecordedSends() error {
 			// StopRequestedSent.
 			agentSend = false
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
+		case laneStopAction, "report:" + laneStopReport:
+			// Read by stopLanes, which looks at the lane again (see
+			// laneStopRecords). Not a send to the agent.
+			agentSend = false
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
 		case "report:degraded", "report:recovered":

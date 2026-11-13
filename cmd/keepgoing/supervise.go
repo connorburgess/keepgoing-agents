@@ -547,6 +547,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
+	if ctl.Stop && ctl.StopLanesAt != nil {
+		if l := out.State.LaneStop; l != nil && l.For.Equal(*ctl.StopLanesAt) {
+			fmt.Fprintf(w, "lane stop: at the check of %s, %s\n", when(l.At), describeLaneStop(*l))
+		} else {
+			fmt.Fprintf(w, "lane stop: requested at %s; the check that carries out the stop also stops the lanes\n", when(*ctl.StopLanesAt))
+		}
+	}
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
 	tickBudget := out.TickBudget.Timeout
@@ -901,6 +908,12 @@ func controlCaller(f control.File) string {
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
+	return controlCmdLanes(e, cfg, cmd, note, false, takeOver...)
+}
+
+// controlCmdLanes is controlCmd, where for stop lanes asks for the stop to
+// cover the lanes as well.
+func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes bool, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
 		l, err := lock.Acquire(cfg.Loop.StateDir)
 		if err != nil {
@@ -920,8 +933,19 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
+			if !f.Stop {
+				f.StopLanesAt = nil // the stop it belonged to has ended
+			}
 		},
-		"stop": func(f *control.File) { f.Stop = true },
+		"stop": func(f *control.File) {
+			f.Stop = true
+			if lanes {
+				// A new request each time, so asking again walks the lanes
+				// again.
+				at := time.Now().UTC()
+				f.StopLanesAt = &at
+			}
+		},
 		"complete": func(f *control.File) {
 			if !f.Completed {
 				completionDeclaredAt = time.Now().UTC()

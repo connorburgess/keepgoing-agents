@@ -27,9 +27,14 @@ type File struct {
 	Enabled         bool               `json:"enabled"`
 	Paused          bool               `json:"paused"`
 	Stop            bool               `json:"stop"`
-	AwaitingUser    bool               `json:"awaitingUser"`
-	Completed       bool               `json:"completed,omitempty"`
-	Note            string             `json:"note,omitempty"`
+	// StopLanesAt is when a person asked for the stop to cover the lanes as
+	// well (keepgoing stop --lanes): the conversations the supervised one
+	// started, and theirs. Each such request is carried out once; asking
+	// again makes a new one. A resume clears it with the stop.
+	StopLanesAt  *time.Time `json:"stopLanesAt,omitempty"`
+	AwaitingUser bool       `json:"awaitingUser"`
+	Completed    bool       `json:"completed,omitempty"`
+	Note         string     `json:"note,omitempty"`
 	// EpisodeHold says a check raised the awaiting-user hold because a
 	// per-episode allowance was spent (re-prompts, nudges, the patience for a
 	// silent provider retry). Only a resume of such a hold starts a new
