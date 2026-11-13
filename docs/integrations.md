@@ -15,6 +15,8 @@ This lists everything keepgoing talks to and how far each has been checked. Each
 
 ## Agent providers
 
+The [adapter capability matrix](adapters.md) lists, behaviour by behaviour, what each adapter supports and with what evidence, and records whether a chat already open in an IDE can be supervised from outside (today: no).
+
 | Integration | Used for | Status | Next check |
 | --- | --- | --- | --- |
 | BB threads (`bb` CLI) | primary loops and fallbacks | **Live** for reading status, log events, and the interaction list, with dry-run ticks against a real chat of about 4,100 events: the first tick paged through it in about 2 seconds, and later ticks read only new events. **Live** for waking a scratch thread, switching its model through retarget and back, and stopping a running turn. Interaction lifecycle shapes come from real `system/interaction/lifecycle` events. Event shapes come from real `provider/error`, `provider/rateLimits/updated`, and `system/error` events. A naturally occurring blocked window and explicit-resume recovery were also observed; see the partial recovery evidence below. | Observe the corrected cooldown rule through a naturally occurring limit; do not exhaust quota deliberately. |
