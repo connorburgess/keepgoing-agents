@@ -3,10 +3,12 @@ package supervise
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
 )
@@ -33,7 +36,10 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
-	Version     string // build label of the caller, for historical diagnostics
+	Version string // build label of the caller, for historical diagnostics
+	// SessionDir is the private directory of session claims shared by every
+	// loop this user runs; empty means session.Dir().
+	SessionDir  string
 	Now         time.Time
 	DryRun      bool // decide and record; send nothing and run no probes
 	Fingerprint func([]string) (string, error)
@@ -145,6 +151,11 @@ type Result struct {
 }
 
 type tick struct {
+	// claims are the session claims this check holds, by key. A check holds
+	// its active session's claim from before it first observes it until it
+	// ends, and a fallback's or the primary's before it probes or sends there.
+	claims              map[string]*session.Claim
+	sessionDir          string
 	incidentDecisions   incident.Decisions
 	incidentStateLoaded bool
 	incidentAdapter     string
@@ -197,13 +208,20 @@ type tick struct {
 	budgetWarned        bool
 	networkChecked      bool // connectivity was checked in this check
 	reserveNetwork      time.Duration
-	networkOffline      bool          // the check failed
-	networkGated        bool          // and is still believed, so work that needs the network waits
-	progressCounted     time.Duration // time since the last check counted toward no_progress_timeout
-	probeSucceeded      bool          // a fallback probe passed in this check
-	sessionRecovered    bool          // the target was observed and is not in error
-	observeSpent        time.Duration // observation time used by a lookup for an unsettled thread creation
-	lateReports         int           // reports started after the budget was spent
+	networkOffline      bool            // the check failed
+	networkGated        bool            // and is still believed, so work that needs the network waits
+	progressCounted     time.Duration   // time since the last check counted toward no_progress_timeout
+	probeSucceeded      bool            // a fallback probe passed in this check
+	sessionRecovered    bool            // the target was observed and is not in error
+	savedSends          int64           // the last intended send state.json recorded when this check began
+	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
+	briefHold           []control.Brief // briefs named by a hold already raised for them
+	stopRequested       bool            // a stop is requested in control.json
+	stopsMade           []string        // targets this check sent a stop to
+	stBeforeRecords     state.File      // state before the records were handled, to undo them
+	quietFailure        bool            // a failure already reported by an earlier check
+	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
+	lateReports         int             // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -216,17 +234,41 @@ func (t *tick) warn(format string, a ...any) {
 }
 
 func (t *tick) report(typ, text string, data map[string]any) {
+	_ = t.reportSent(typ, text, data)
+}
+
+// reportSent sends a report and says whether it was delivered.
+func (t *tick) reportSent(typ, text string, data map[string]any) bool {
 	if t.opts.DryRun {
-		return
+		return false
 	}
 	ctx, cancel, ok := t.reportContext(typ, text)
 	if !ok {
-		return
+		return false
 	}
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
+		return false
 	}
+	return true
+}
+
+// reportOnce sends the report of an episode, named by key, until it has been
+// delivered, at most state.MaxOnceAttempts times. A new key starts again.
+func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data map[string]any) {
+	if t.opts.DryRun {
+		return
+	}
+	if *slot == nil || (*slot).Key != key {
+		*slot = &state.OnceReport{Key: key}
+	}
+	r := *slot
+	if r.Sent || r.Attempts >= state.MaxOnceAttempts {
+		return
+	}
+	r.Attempts++
+	r.Sent = t.reportSent(typ, text, data)
 }
 
 // Tick performs one supervision pass. The caller holds the lock.
@@ -278,6 +320,7 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	}
 	t.graphSync()
 	err := t.run()
+	t.releaseClaims()
 	t.graphClose()
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
@@ -285,6 +328,161 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 		res.Recorded = false
 	}
 	return res, err
+}
+
+// sessionDirectory resolves the shared claim directory once per check. A
+// directory of this user's that is not exactly private is made so, and the
+// check says it once.
+func (t *tick) sessionDirectory() (string, error) {
+	if t.sessionDir != "" {
+		return t.sessionDir, nil
+	}
+	dir := t.opts.SessionDir
+	if dir == "" {
+		d, tightened, err := session.Dir(true)
+		if err != nil {
+			return "", err
+		}
+		if tightened {
+			t.warn("the session claim directory %s was not private; it is now 0700", d)
+		}
+		dir = d
+	}
+	t.sessionDir = dir
+	return dir, nil
+}
+
+// claim takes a session's claim for the rest of this check. It returns the
+// *session.ClaimedError of another loop's claim; an agent with no fixed
+// session needs none.
+func (t *tick) claim(a config.Agent) error {
+	id, ok := session.Of(a)
+	if !ok {
+		return nil
+	}
+	if t.claims[id.Key()] != nil {
+		return nil // this check already holds it
+	}
+	dir, err := t.sessionDirectory()
+	if err != nil {
+		return err
+	}
+	c, err := session.Take(dir, id, session.Holder{Loop: t.loop.Name, PID: os.Getpid(), Since: t.opts.Clock().UTC(), Until: t.deadline.UTC()})
+	if err != nil {
+		return err
+	}
+	if t.claims == nil {
+		t.claims = map[string]*session.Claim{}
+	}
+	t.claims[id.Key()] = c
+	return nil
+}
+
+// claimActive claims the session this check is about to observe.
+//
+//   - Another loop's live claim ends the check: nothing is observed, decided,
+//     sent or recorded, and the caller skips it as a busy check. A holder past
+//     its own time limit is stuck: that is recorded and reported once.
+//   - No user state directory at all (no HOME and no XDG_STATE_HOME): the
+//     check goes ahead unprotected and says so; the start and end of such a
+//     stretch are reported once each. A check that failed on every run would
+//     get an external scheduler to switch itself off.
+//   - A claim directory or claim file that cannot be repaired safely (another
+//     user's, not a directory, a link, something planted): the check acts on
+//     nothing and fails, naming the path and the fix.
+func (t *tick) claimActive(a config.Agent) error {
+	id, ok := session.Of(a)
+	if !ok {
+		return nil // no fixed session, nothing to claim
+	}
+	err := t.claim(a)
+	var claimed *session.ClaimedError
+	var undetermined *session.UndeterminedError
+	var unsafe *session.UnsafeError
+	switch {
+	case errors.As(err, &claimed):
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "another loop is acting on this session"
+		if claimed.Stuck() {
+			t.reportStuckClaim(claimed)
+			t.res.Reason = "another loop's stuck check holds this session"
+			return t.record(err)
+		}
+		return err
+	case errors.As(err, &unsafe):
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unsafe; no action taken"
+		return t.record(fmt.Errorf("session claim: %v; no action taken: %s", unsafe, unsafe.Fix()))
+	case errors.As(err, &undetermined):
+		t.warn("session claim unavailable (%v); this check is not protected against another loop acting on the same session at the same moment", err)
+	case err != nil:
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unsafe; no action taken"
+		return t.record(fmt.Errorf("session claim: %v; no action taken", err))
+	default:
+		if !t.opts.DryRun && t.cfg.Path() != "" {
+			// Best effort, and never more than a moment of the check's time:
+			// lets enable and status name this loop to others.
+			_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now}, 100*time.Millisecond)
+		}
+	}
+	t.noteClaimEpisode(undetermined)
+	return nil
+}
+
+// noteClaimEpisode keeps the record of a stretch without claims and sends
+// its start and end once each, retrying a failed delivery.
+func (t *tick) noteClaimEpisode(undetermined *session.UndeterminedError) {
+	if t.opts.DryRun {
+		return
+	}
+	unavailable := undetermined != nil
+	if unavailable != t.st.ClaimUnavailable {
+		t.st.ClaimUnavailable = unavailable
+		kind := "recovered"
+		if unavailable {
+			kind = "degraded"
+		}
+		t.st.ClaimReport = &state.OnceReport{Key: fmt.Sprintf("%s:%s", kind, t.now.UTC().Format(time.RFC3339))}
+	}
+	if t.st.ClaimReport == nil {
+		return
+	}
+	if strings.HasPrefix(t.st.ClaimReport.Key, "degraded:") {
+		t.reportOnce(&t.st.ClaimReport, t.st.ClaimReport.Key, "degraded", fmt.Sprintf("%s: session claims are unavailable (%s); checks are not protected against another loop acting on the same session at the same moment", t.loop.Name, claimReason(undetermined)), map[string]any{"sessionClaim": "unavailable"})
+	} else {
+		t.reportOnce(&t.st.ClaimReport, t.st.ClaimReport.Key, "recovered", fmt.Sprintf("%s: session claims are available again", t.loop.Name), map[string]any{"sessionClaim": "available"})
+	}
+}
+
+func claimReason(e *session.UndeterminedError) string {
+	if e == nil {
+		return "no user state directory"
+	}
+	return e.Error()
+}
+
+// reportStuckClaim reports, once per stuck holder, that another loop's check
+// has held this session past its own time limit, and what to do.
+func (t *tick) reportStuckClaim(c *session.ClaimedError) {
+	t.warn("%v", c)
+	key := fmt.Sprintf("%d:%s", c.Holder.PID, c.Holder.Since.UTC().Format(time.RFC3339Nano))
+	t.reportOnce(&t.st.StuckClaimReport, key, "error", fmt.Sprintf("%s: %v", t.loop.Name, c), map[string]any{"sessionClaim": "stuck", "holderLoop": c.Holder.Loop, "holderPid": c.Holder.PID})
+}
+
+// claimOther claims a session this check may move to. It returns another
+// loop's claim as the first value; the second is any other failure.
+func (t *tick) claimOther(a config.Agent) (*session.ClaimedError, error) {
+	err := t.claim(a)
+	var claimed *session.ClaimedError
+	if errors.As(err, &claimed) {
+		return claimed, nil
+	}
+	return nil, err
+}
+
+func (t *tick) releaseClaims() {
+	for _, c := range t.claims {
+		c.Release()
+	}
+	t.claims = nil
 }
 
 // resolve returns the agent for a target id, reverting to primary when a
@@ -322,11 +520,13 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
 	t.incidentStateLoaded = true
+	t.savedSends = t.st.SendsRecorded
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -365,6 +565,17 @@ func (t *tick) run() error {
 			actErr = t.act(nil, d)
 		}
 		return t.record(actErr)
+	}
+	// Holds, a stop and the deadline come first: none of them sends. Before
+	// anything that may, sends an earlier check made without recording them
+	// are counted.
+	if err := t.countUnrecordedSends(); err != nil {
+		res.State, res.Window, res.Reason = "not observed", "not checked", "send record unreadable; no automatic provider work"
+		return t.record(err)
+	}
+	if len(t.unsettledBriefs) > 0 {
+		res.State, res.Window = "not observed", "not checked"
+		return t.record(t.holdForBriefs())
 	}
 	if err := t.sendAllowance(); err != nil {
 		res.State, res.Window = "not observed", "not checked"
@@ -419,6 +630,12 @@ func (t *tick) run() error {
 	if moved {
 		target, agent = t.resolve(t.st.Target())
 		res.Target, t.incidentTarget, t.incidentAdapter = target, target, agent.Adapter
+	}
+	// No two loops act on one session at the same moment: another loop's
+	// check of this session ends this one before anything is observed or
+	// sent.
+	if err := t.claimActive(agent); err != nil {
+		return err
 	}
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
@@ -477,7 +694,7 @@ func (t *tick) run() error {
 		}
 		return t.record(actErr)
 	}
-	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun {
+	if obs.AwaitingInput && !t.st.AwaitingReported && !t.opts.DryRun && t.reserveReport("awaiting_input") {
 		t.st.AwaitingReported = true
 		t.report("await_user", fmt.Sprintf("%s: %s is waiting on a person (pending interaction)", loop.Name, target), map[string]any{"target": target, "pendingInteraction": true})
 	} else if !obs.AwaitingInput {
@@ -647,6 +864,12 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
+	if d.Action == decide.AwaitUser && obs.State == decide.Error && in.Reprompts >= in.MaxReprompts && t.st.UnconfirmedReprompts > 0 {
+		// The cap was reached by attempts some of which were recorded and
+		// then could not be confirmed as sent (the check that made them
+		// could not save what happened). Say so, not that they all failed.
+		d.Reason = fmt.Sprintf("error persisted after re-prompts; %d of them were recorded but could not be confirmed as sent", t.st.UnconfirmedReprompts)
+	}
 	// A re-prompt, a handoff or a nudge needs the network, and a hold raised
 	// for an errored session (a spent re-prompt cap, an auth error) or for a
 	// stalled one (the nudges are spent, a retry went silent) may only be the
@@ -663,6 +886,12 @@ func (t *tick) run() error {
 		in.NetworkDown = true
 		t.decisionInput = in
 		d = t.decide("network_down", in)
+	}
+	if t.st.SkipHandoffOnce && !t.opts.DryRun {
+		t.st.SkipHandoffOnce = false
+		if d.Action == decide.Handoff || d.Action == decide.SwitchBack {
+			d = decide.Decision{Action: decide.None, Reason: "a person resumed after a brief that may have been delivered; no route is briefed on this check"}
+		}
 	}
 	handoffAttempted := d.Action == decide.Handoff
 	res.Action, res.Reason = string(d.Action), d.Reason
@@ -765,6 +994,9 @@ func (t *tick) run() error {
 	if errors.Is(actErr, state.ErrSendLimit) || errors.Is(actErr, state.ErrSendLedger) {
 		actErr = t.sendAllowanceFailure(actErr)
 	}
+	if errors.Is(actErr, state.ErrSendRecord) {
+		res.Action, res.Reason = string(decide.None), state.ErrSendRecord.Error()
+	}
 	t.reserve = reserveReports + t.reserveNetwork // the action, if any, has been taken
 	if handoffFirst && !handoffAttempted && inWindow && !t.opts.DryRun && t.reg != nil {
 		// The handoff did not happen after all (a limit wait, a hold): the
@@ -789,6 +1021,22 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
+	// Stop wins over every other rule. It waits only while another loop's
+	// live check holds the session, which the claim proves; if the claim
+	// cannot be taken for any other reason, the stop goes ahead without it.
+	claimed, err := t.claimOther(agent)
+	switch {
+	case claimed != nil && claimed.Stuck():
+		// A holder past its own hard limit is stuck; a second stop is
+		// harmless, so the stop does not wait for it.
+		t.reportStuckClaim(claimed)
+		t.warn("stop proceeds past a stuck session claim")
+	case claimed != nil:
+		res.State, res.Reason = "not observed", "another loop is acting on this session"
+		return claimed
+	case err != nil:
+		t.warn("stop proceeds without the session claim: %v", err)
+	}
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
 		res.State, res.Reason = "not observed", "stop requested; could not build the target's adapter"
@@ -804,6 +1052,86 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	if err := t.countUnrecordedSends(); err != nil {
+		t.warn("%v", err)
+	}
+	// The briefs that may have put the task on another conversation: those
+	// found unsettled now, and those named by a hold already raised for them.
+	briefs := append(append([]control.Brief(nil), t.briefHold...), t.unsettledBriefs...)
+	if len(briefs) > 0 && !t.st.StopRequestedSent {
+		// A stop is asked for: stop every conversation that may have the
+		// task, the current one and each one briefed (a second stop is
+		// harmless). Each stop is recorded first, like any send.
+		t.st.LastState = string(obs.State)
+		res.Action, res.Reason = string(decide.Stop), "stop requested; stopping every conversation that may have the task"
+		if t.opts.DryRun {
+			return t.record(nil)
+		}
+		var errs []error
+		var stopped []string
+		waiting := false // a briefed session's stop waits for another loop's live check
+		stopOne := func(id string, a adapter.Adapter) {
+			if _, err := t.reserveSend("stop", id); err != nil {
+				t.warn("the stop to %s could not be recorded before it was made: %v", id, err)
+			}
+			if err := a.Stop(t.ctx); err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
+				errs = append(errs, fmt.Errorf("stop %s: %w", id, err))
+				return
+			}
+			stopped = append(stopped, id)
+		}
+		stopOne(target, a)
+		seen := map[string]bool{target: true}
+		for _, b := range briefs {
+			if seen[b.Target] {
+				continue
+			}
+			seen[b.Target] = true
+			if b.Target != state.Primary {
+				if _, ok := t.fb.Find(b.Target); t.fb == nil || !ok {
+					t.warn("a brief went to %s, which is no longer configured, so keepgoing cannot stop it: stop that conversation by hand", b.Target)
+					continue
+				}
+			}
+			id, agent := t.resolve(b.Target)
+			// The same claim rule as the loop's own stop: wait only while
+			// another loop's live check holds that session; go ahead past a
+			// stuck holder, and without the claim if it cannot be taken.
+			claimed, err := t.claimOther(agent)
+			switch {
+			case claimed != nil && claimed.Stuck():
+				t.reportStuckClaim(claimed)
+				t.warn("stop of %s proceeds past a stuck session claim", b.Target)
+			case claimed != nil:
+				t.warn("stop of %s waits: another loop's check is acting on that session; the next check stops it", b.Target)
+				waiting = true
+				continue
+			case err != nil:
+				t.warn("stop of %s proceeds without the session claim: %v", b.Target, err)
+			}
+			ba, err := t.newAdapter(agent, t.loop.StateDir, id)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("stop %s: %w", b.Target, err))
+				continue
+			}
+			stopOne(b.Target, ba)
+		}
+		t.stopsMade = stopped
+		if len(errs) == 0 && !waiting {
+			t.st.StopRequestedSent = true // otherwise the next check stops them all again
+		}
+		if len(t.unsettledBriefs) > 0 {
+			if err := t.holdForBriefs(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return t.record(errors.Join(errs...))
+	}
+	if len(t.unsettledBriefs) > 0 {
+		// Already stopped for this request: hold for the new briefs.
+		t.st.LastState = string(obs.State)
+		return t.record(t.holdForBriefs())
+	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
 		d = decide.Decision{Action: decide.None, Reason: "stop already requested"}
@@ -961,7 +1289,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 			// activate and nothing more to send.
 			thread, err := t.createThread(from, fromAgent, c, brief, string(class))
 			switch {
-			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger):
+			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger) || errors.Is(err, state.ErrSendRecord):
 				return false, err
 			case errors.Is(err, errNewThreadUnsettled):
 				// A thread may exist and was not found. Creating another, or
@@ -979,6 +1307,21 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 			t.moveToCreated(&state.NewThreadIntent{Candidate: id, From: from, Continues: t.st.NewThreads[id].Continues, Reason: string(class)}, thread, note)
 			return true, nil
 		}
+		// The probe asked the account, not the session. Before anything is
+		// sent to the session, it is claimed: a fallback whose session
+		// another loop is acting on right now is not sent a brief. A claim
+		// that cannot be taken at all does not stop the handoff, as it does
+		// not stop the check.
+		var undetermined *session.UndeterminedError
+		if claimed, err := t.claimOther(c.Agent); claimed != nil {
+			note.Skipped = append(note.Skipped, id+": another loop is acting on its session")
+			continue
+		} else if errors.As(err, &undetermined) {
+			t.warn("handoff to %s is not protected by a session claim: %v", id, err)
+		} else if err != nil {
+			note.Skipped = append(note.Skipped, id+": its session claim is unsafe ("+err.Error()+")")
+			continue
+		}
 		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
 			t.warn("handoff to %s: %v", id, err)
@@ -992,7 +1335,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 				continue
 			}
 		}
-		if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+		if _, err := t.reserveSend("handoff", id); err != nil {
 			return false, err
 		}
 		if err := t.send(ta, brief, adapter.ModeAuto, id, "handoff"); err != nil {
@@ -1031,7 +1374,7 @@ func (t *tick) rejectHandoffBrief(id string) {
 // passing its probe, and reports once when that ends further attempts.
 func (t *tick) rejectSwitchBack(from string) {
 	t.st.SwitchBackRejected++
-	if t.st.SwitchBackRejected == t.loop.Errors.MaxReprompts {
+	if t.st.SwitchBackRejected == t.loop.Errors.MaxReprompts && t.reserveReport("switch_back_stopped") {
 		t.report("switch_back", fmt.Sprintf("%s: switch-back stopped after the primary rejected %d briefs; staying on %s until resume, retarget or the next handoff", t.loop.Name, t.st.SwitchBackRejected, from),
 			map[string]any{"from": from, "to": state.Primary, "stopped": true, "rejected": t.st.SwitchBackRejected})
 	}
@@ -1099,6 +1442,20 @@ func (t *tick) switchBack(from string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("switch-back brief: %w", err)
 	}
+	// The primary's session is not sent to while another loop is acting on
+	// it; the switch-back waits for a later check.
+	var undetermined *session.UndeterminedError
+	if claimed, err := t.claimOther(t.loop.Agent); claimed != nil {
+		t.warn("switch-back waits: %v", claimed)
+		t.switchBackDeferred = true
+		return false, nil
+	} else if errors.As(err, &undetermined) {
+		t.warn("switch-back is not protected by a session claim: %v", err)
+	} else if err != nil {
+		t.warn("switch-back waits: its session claim is unsafe (%v)", err)
+		t.switchBackDeferred = true
+		return false, nil
+	}
 	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {
 		t.rejectSwitchBack(from)
@@ -1111,7 +1468,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 			return false, nil
 		}
 	}
-	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+	if _, err := t.reserveSend("switch_back", state.Primary); err != nil {
 		return false, err
 	}
 	if err := t.send(pa, brief, adapter.ModeAuto, state.Primary, "switch_back"); err != nil {
@@ -1170,7 +1527,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			text = prompt.WithChildErrors(text, childErrors)
 		}
 		if !reserved {
-			if err := state.ReserveSend(loop.StateDir, loop.Limits.MaxSends); err != nil {
+			if _, err := t.reserveSend(string(d.Action), t.res.Target); err != nil {
 				return err
 			}
 		}
@@ -1198,7 +1555,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
-		if _, err := control.Update(loop.StateDir, func(f *control.File) { f.AwaitingUser, f.Note = true, d.Reason }); err != nil {
+		if _, err := control.Update(loop.StateDir, func(f *control.File) {
+			f.AwaitingUser, f.Note = true, d.Reason
+			// Kept if already set: a later hold for another reason does not
+			// make the spent allowance any less spent.
+			f.EpisodeHold = f.EpisodeHold || d.EpisodeSpent
+		}); err != nil {
 			return err
 		}
 		data := map[string]any{"target": t.res.Target}
@@ -1211,6 +1573,13 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), data)
 	case decide.Stop:
+		// Recorded first, like a send, so a supervisor stopped right after it
+		// does not stop the turn again. If the record cannot be saved the stop
+		// is still made: stopping again is harmless, and not stopping when
+		// asked is the worse failure.
+		if _, err := t.reserveSend("stop", t.res.Target); err != nil {
+			t.warn("the stop could not be recorded before it was made, so a later check may make it again: %v", err)
+		}
 		err := a.Stop(t.ctx)
 		var unsupported adapter.ErrUnsupported
 		if errors.As(err, &unsupported) {
@@ -1290,8 +1659,22 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if t.st.UnconfirmedReprompts > t.st.Reprompts {
+		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
+	}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
-		return err
+		// Say what the check did as well as why it could not be saved: a
+		// send it refused to make is the cause, and the save its symptom.
+		return errors.Join(actErr, err)
+	}
+	// The outcomes are recorded: settle them beside the records too, so an
+	// older binary that rewrites state.json cannot unsettle them. Only a
+	// check that read the records, or made sends of its own, has moved
+	// SendsRecorded past the point it started from.
+	if !t.opts.DryRun && t.st.SendsRecorded > t.savedSends {
+		if err := state.Settle(t.loop.StateDir, t.st.SendsRecorded); err != nil {
+			t.warn("the send records were recorded in state.json but could not be marked settled in sends.json: %v", err)
+		}
 	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
@@ -1300,7 +1683,9 @@ func (t *tick) record(actErr error) error {
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
-		t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		if !t.quietFailure {
+			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		}
 	}
 	if t.res.DryRun {
 		extra["dryRun"] = true
@@ -1350,6 +1735,204 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// reserveSend is the one way to send: every automatic send (a wake, nudge or
+// re-prompt, a turn retry, a handoff or switch-back brief, a new thread's
+// first prompt, a child-error notice) is preceded by it. It saves the record
+// of the intended send in sends.json, limit or no limit, and with max_sends
+// set it also counts the attempt; a stop and a report are recorded the same
+// way but never counted against the allowance. If the record cannot be saved it returns
+// an error and the caller sends nothing.
+//
+// The outcome is recorded by state.json, saved at the end of the check with
+// SendsRecorded set to the newest intent. If that save fails, the next check
+// finds the intent unrecorded and counts the send as made; see
+// countUnrecordedSends.
+func (t *tick) reserveSend(action, target string, key ...string) (int64, error) {
+	max := t.loop.Limits.MaxSends
+	if action == "stop" || strings.HasPrefix(action, "report:") {
+		max = 0 // recorded, but not a send against the allowance
+	}
+	intent := state.SendIntent{At: t.now, Action: action, Target: target}
+	if len(key) > 0 {
+		intent.Key = key[0]
+	}
+	seq, err := state.Reserve(t.loop.StateDir, max, t.savedSends, intent)
+	if err != nil {
+		return 0, err
+	}
+	t.st.SendsRecorded = seq
+	return seq, nil
+}
+
+// holdForBriefs raises the hold for briefs to other conversations whose
+// outcome is unknown. They are settled only once the hold is saved: if it
+// cannot be, the records this check handled are put back as they were, and
+// the next check finds them again.
+func (t *tick) holdForBriefs() error {
+	reason := briefsReason(t.unsettledBriefs, t.st.Target(), t.stopRequested)
+	if t.res.Action == string(decide.Stop) {
+		t.res.Reason += "; then held: " + reason
+	} else {
+		t.res.Action, t.res.Reason = string(decide.AwaitUser), reason
+	}
+	if t.opts.DryRun {
+		return nil
+	}
+	briefs := t.unsettledBriefs
+	if _, err := control.Update(t.loop.StateDir, func(f *control.File) {
+		f.AwaitingUser, f.Note = true, reason
+		f.BriefHold = append(f.BriefHold, briefs...)
+	}); err != nil {
+		t.st = t.stBeforeRecords
+		what := "nothing was sent"
+		if len(t.stopsMade) > 0 {
+			what = "stops were sent to " + strings.Join(t.stopsMade, " and ")
+		}
+		t.res.Reason = "a brief to another conversation may have been delivered, but the hold for it could not be saved; nothing was settled, and " + what
+		if len(t.stopsMade) == 0 {
+			t.res.Action = string(decide.None)
+		}
+		return err
+	}
+	t.report("await_user", fmt.Sprintf("%s: needs a person: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target})
+	return nil
+}
+
+// briefsReason says which briefs may have been delivered and what to do.
+// With a stop requested it does not send the person to a plain resume,
+// which would cancel the stop.
+func briefsReason(briefs []control.Brief, current string, stopRequested bool) string {
+	var names []string
+	for _, b := range briefs {
+		kind := "a handoff brief to " + b.Target
+		if b.Action == "switch_back" {
+			kind = "a switch-back brief to " + b.Target
+		}
+		names = append(names, kind)
+	}
+	resume := "`keepgoing resume`"
+	if stopRequested {
+		resume = "`keepgoing resume --keep-stop` (a stop is requested, and a plain `keepgoing resume` would cancel it)"
+	}
+	return strings.Join(names, " and ") + " may have been delivered. Check that conversation: if it took the task, run `keepgoing retarget <id>` and then " + resume + ", so the loop follows it; if not, run " + resume + ", and the loop stays on " + current + " and briefs no route on the next check"
+}
+
+// copyState copies a state record deeply enough to restore it.
+func copyState(f state.File) state.File {
+	b, _ := json.Marshal(f)
+	var c state.File
+	if json.Unmarshal(b, &c) != nil {
+		return f
+	}
+	return c
+}
+
+// reserveReport records a report that is sent once, whose record of having
+// been sent is otherwise only saved at the end of the check, before it is
+// delivered: a supervisor stopped while it is delivered does not send it
+// again. If the record cannot be saved the report is not sent this time.
+func (t *tick) reserveReport(key string) bool {
+	if _, err := t.reserveSend("report:"+key, t.res.Target); err != nil {
+		t.warn("report not sent, because the record of sending it could not be saved: %v", err)
+		return false
+	}
+	return true
+}
+
+// countUnrecordedSends finds sends that an earlier check made, or may have
+// made, without saving what happened: it saved the intent and then could not
+// save state.json. Each is counted as made, exactly as an attempt whose
+// outcome is unknown is counted: it spends the per-episode cap and starts the
+// spacing, so it is never repeated blindly.
+func (t *tick) countUnrecordedSends() error {
+	l, err := state.LoadLedger(t.loop.StateDir)
+	if err != nil {
+		return t.sendRecordUnreadable(err)
+	}
+	if !t.opts.DryRun {
+		t.st.SendRecordUnreadable = false
+	}
+	settled := max(t.st.SendsRecorded, l.Settled)
+	t.savedSends = settled
+	t.stBeforeRecords = copyState(t.st)
+	if !t.opts.DryRun {
+		defer func() { t.st.ResumedBriefs = nil }()
+	}
+	for _, p := range l.Unrecorded(settled) {
+		if p.Action == "handoff" || p.Action == "switch_back" {
+			b := control.Brief{Action: p.Action, Target: p.Target}
+			// A person has already looked at this brief and resumed: its
+			// hold was saved, but the check that raised it could not save
+			// that it had settled the record. It is settled now.
+			if !slices.Contains(t.st.ResumedBriefs, state.Brief(b)) {
+				t.unsettledBriefs = append(t.unsettledBriefs, b)
+			}
+		}
+		if t.opts.DryRun {
+			continue // a dry run previews the hold and settles nothing
+		}
+		t.st.SendsRecorded = max(t.st.SendsRecorded, p.Seq)
+		agentSend := true
+		switch decide.Action(p.Action) {
+		case decide.Wake, decide.Nudge, decide.Reprompt:
+			c := decide.Attempted(decide.Action(p.Action), decide.Counters{
+				Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+			}, p.At)
+			t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+			if p.Action == string(decide.Reprompt) {
+				t.st.UnconfirmedReprompts++
+			}
+		case "handoff", "switch_back":
+			// Settled by the hold this check raises: a person looks first.
+		case "new_thread":
+			// Settled by its own record in state.json, saved before the
+			// conversation was created (see createThread).
+			agentSend = false
+		case "child_notice":
+			if t.st.ChildErrorNoticeFor != p.Key {
+				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
+			}
+			t.st.ChildErrorNoticeAttempts++
+		case "stop":
+			// Never taken as made: a stop recorded and then not sent must be
+			// sent, and a second stop is harmless. Only a confirmed stop sets
+			// StopRequestedSent.
+			agentSend = false
+			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
+		case "report:awaiting_input":
+			t.st.AwaitingReported, agentSend = true, false
+		case "report:degraded", "report:recovered":
+			t.st.Degraded, agentSend = p.Action == "report:degraded", false
+		case "report:switch_back_stopped":
+			t.st.SwitchBackRejected, agentSend = max(t.st.SwitchBackRejected, t.loop.Errors.MaxReprompts), false
+		}
+		if agentSend && p.At.After(t.st.LastWakeAt) {
+			t.st.LastWakeAt = p.At
+		}
+		if agentSend {
+			t.warn("a %s to %s was recorded at %s but that check could not save what happened, so it may have been sent; it is counted as sent", p.Action, p.Target, p.At.Format(time.RFC3339))
+		}
+	}
+	return nil
+}
+
+// sendRecordUnreadable is a check that cannot read sends.json. Nothing is
+// sent. The error report goes once, when this begins, not at every check.
+func (t *tick) sendRecordUnreadable(err error) error {
+	if t.st.SendRecordUnreadable {
+		t.quietFailure = true
+	}
+	if !t.opts.DryRun {
+		t.st.SendRecordUnreadable = true
+	}
+	if t.loop.Limits.MaxSends == 0 {
+		return fmt.Errorf("%w: restore it from a copy; deleting it loses the record of sends not yet counted", errSendRecordUnreadable)
+	}
+	return err
+}
+
+var errSendRecordUnreadable = errors.New("the send record sends.json cannot be read, so nothing is sent")
 
 // sendAllowance is checked before automatic provider work and each candidate.
 // Reservations also re-read under the caller's tick lock immediately before Send.
@@ -1836,7 +2419,11 @@ func (t *tick) reportContext(typ, text string) (context.Context, context.CancelF
 func (t *tick) noteRedundancy(target, group string) health.Summary {
 	summary := health.Evaluate(t.fb, t.reg, t.now, target, group)
 	t.res.Redundancy = &summary
-	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun {
+	key := "recovered"
+	if !summary.Meets {
+		key = "degraded"
+	}
+	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && t.reserveReport(key) {
 		t.st.Degraded = degraded
 		if degraded {
 			t.report("degraded", fmt.Sprintf("%s: only %d of the required %d distinct healthy fallbacks; handoffs are refused", t.loop.Name, summary.Distinct, summary.Min), map[string]any{"redundancy": summary})

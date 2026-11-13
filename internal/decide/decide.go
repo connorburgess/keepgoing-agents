@@ -239,6 +239,11 @@ type Decision struct {
 	// DeferredInteraction is set only when the deferred-interaction rule itself
 	// produced an AwaitUser, so a caller never matches on Reason text.
 	DeferredInteraction bool
+	// EpisodeSpent is set only when an AwaitUser was raised because a
+	// per-episode allowance ran out: the re-prompt cap, the nudge cap, or the
+	// patience for a silent provider retry. An explicit resume of such a hold,
+	// and of no other, starts a new episode.
+	EpisodeSpent bool
 }
 
 // DeferredInteractionReason is fixed text; it carries no provider content.
@@ -378,7 +383,7 @@ func Decide(in Input) Decision {
 			if in.NetworkDown {
 				return none(NetworkDownReason)
 			}
-			return Decision{Action: AwaitUser, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+			return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
 		}
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
 			if in.NetworkDown {
@@ -386,7 +391,7 @@ func Decide(in Input) Decision {
 				return none(NetworkDownReason)
 			}
 			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
-				return Decision{Action: AwaitUser, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
+				return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
 			}
 			return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
 		}
@@ -452,7 +457,7 @@ func decideError(in Input) Decision {
 		return Decision{Action: AwaitUser, Reason: "auth error"}
 	}
 	if in.Reprompts >= in.MaxReprompts {
-		return Decision{Action: AwaitUser, Reason: "error persisted after re-prompts"}
+		return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "error persisted after re-prompts"}
 	}
 	if in.Reprompts > 0 && in.SinceLastReprompt < in.Backoff {
 		return none("backing off after error")
