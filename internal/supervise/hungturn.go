@@ -91,7 +91,7 @@ func (t *tick) hungTurn(obs decide.Observation, progressed bool) (bool, time.Dur
 	}
 	if w.Since.IsZero() {
 		w.Since = t.now
-		if !w.Reported {
+		if !w.Reported && (t.opts.DryRun || t.reserveReport(hungTurnEvent)) {
 			w.Reported = true
 			t.report(hungTurnEvent, fmt.Sprintf("%s: the turn on %s has logged nothing since %s, before a network outage, and may be hung. keepgoing is waiting on it, not nudging it, and has not stopped it; it asks a person if it is still silent after %s.",
 				t.loop.Name, t.res.Target, last.UTC().Format(time.RFC3339), t.hungTurnPatience()),

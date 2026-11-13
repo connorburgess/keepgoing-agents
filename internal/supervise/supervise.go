@@ -1902,6 +1902,11 @@ func (t *tick) countUnrecordedSends() error {
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
+		case "report:hung_turn":
+			if t.st.HungTurn != nil {
+				t.st.HungTurn.Reported = true
+			}
+			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
