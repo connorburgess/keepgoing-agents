@@ -15,9 +15,10 @@ import (
 
 // Bounds on a stored history.
 const (
-	// MaxSamples is how many readings of one window are kept. At a probe every
-	// four hours that is eight days, enough for a seven-day window.
-	MaxSamples = 48
+	// MaxSamples is how many readings of one window are kept: four days at a
+	// probe every four hours, twelve at one every twelve hours. A projection
+	// fits a rate through them, so older readings add little.
+	MaxSamples = 24
 	// MaxWindows matches the number of windows one reading may hold.
 	MaxWindows = 8
 	// SameReset is how far two reported reset times may differ and still
@@ -71,22 +72,43 @@ func (h *History) For(identity string) bool {
 //
 //   - No reading leaves the history as it is.
 //   - A reading of another identity starts a new history.
+//   - Readings stamped after this one are dropped first. Only a clock that
+//     was ahead and has been set back leaves them, so the current clock wins
+//     and new readings are never refused because of old ones.
 //   - A series whose reset time is at or before the reading's time has reset
-//     and is dropped.
-//   - A reading at or before the series' newest one is ignored, so the same
-//     reading recorded twice, or a clock set back, adds nothing.
-//   - A later window whose reset time differs from its series' by more than
+//     and is dropped, unless the reading itself reports a window whose reset
+//     is at or before its own time: then this machine's clock may be ahead,
+//     and nothing is dropped for it, so a clock far ahead cannot wipe the
+//     history. Such a window is not recorded.
+//   - The same reading recorded twice adds nothing.
+//   - A window whose reset time differs from its series' by more than
 //     SameReset starts a new instance.
 //   - Each series keeps its newest MaxSamples readings.
 func Add(h *History, u *probe.Usage) *History {
 	if !u.Available() {
 		return h
 	}
+	clockAhead := false
+	for _, w := range u.Windows {
+		if w.ResetsAt != nil && !w.ResetsAt.After(u.At) {
+			clockAhead = true
+		}
+	}
 	out := &History{Identity: u.Identity}
 	if h != nil && h.Identity == u.Identity {
 		for _, s := range h.Windows {
-			if s.ResetsAt.After(u.At) {
-				out.Windows = append(out.Windows, s.clone())
+			if !clockAhead && !s.ResetsAt.After(u.At) {
+				continue
+			}
+			c := s.clone()
+			kept := c.Samples[:0]
+			for _, x := range c.Samples {
+				if !x.At.After(u.At) {
+					kept = append(kept, x)
+				}
+			}
+			if c.Samples = kept; len(c.Samples) > 0 {
+				out.Windows = append(out.Windows, c)
 			}
 		}
 	}
@@ -96,14 +118,13 @@ func Add(h *History, u *probe.Usage) *History {
 		}
 		sample := Sample{At: u.At.UTC(), Used: w.Used}
 		s := out.Find(w.Key)
-		if s == nil {
+		switch {
+		case s == nil:
 			out.Windows = append(out.Windows, Series{Key: w.Key, ResetsAt: w.ResetsAt.UTC(), Samples: []Sample{sample}})
 			continue
-		}
-		if !sample.At.After(s.Samples[len(s.Samples)-1].At) {
+		case !sample.At.After(s.Samples[len(s.Samples)-1].At):
 			continue
-		}
-		if absDuration(s.ResetsAt.Sub(*w.ResetsAt)) > SameReset {
+		case absDuration(s.ResetsAt.Sub(*w.ResetsAt)) > SameReset:
 			*s = Series{Key: w.Key, ResetsAt: w.ResetsAt.UTC(), Samples: []Sample{sample}}
 			continue
 		}

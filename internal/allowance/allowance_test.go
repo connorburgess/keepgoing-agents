@@ -34,9 +34,8 @@ func TestAddBuildsOneSeriesPerWindowInstance(t *testing.T) {
 	}
 	h = Add(h, reading("account-a", 0, win("seven_day", 0.1, &reset), win("no_reset", 0.3, nil)))
 	h = Add(h, reading("account-a", 6, win("seven_day", 0.2, ptr(reset.Add(time.Minute)))))
-	// The same reading again, and one from a clock set back, add nothing.
+	// The same reading again adds nothing.
 	h = Add(h, reading("account-a", 6, win("seven_day", 0.2, &reset)))
-	h = Add(h, reading("account-a", 3, win("seven_day", 0.15, &reset)))
 	s := h.Find("seven_day")
 	if !h.For("account-a") || h.For("account-b") || s == nil || len(s.Samples) != 2 || !s.ResetsAt.Equal(reset.Add(time.Minute)) {
 		t.Fatalf("history: %+v", h)
@@ -58,9 +57,11 @@ func TestAddBuildsOneSeriesPerWindowInstance(t *testing.T) {
 	if len(h.Find("seven_day").Samples) != 2 {
 		t.Fatal("Add changed the history it was given")
 	}
-	// An earlier reading of another instance does not replace a later one.
-	if s := Add(h2, reading("account-a", 6.5, win("seven_day", 0.9, &reset))).Find("seven_day"); len(s.Samples) != 1 || !s.ResetsAt.Equal(next) {
-		t.Fatalf("older instance replaced the newer: %+v", s)
+	// After a clock that was ahead is set back, readings stamped later than
+	// the new one are dropped and the new one is kept: the current clock wins.
+	set := Add(h, reading("account-a", 3, win("seven_day", 0.15, &reset)))
+	if s := set.Find("seven_day"); len(s.Samples) != 2 || !s.Samples[1].At.Equal(at(3)) || s.Samples[1].Used != 0.15 {
+		t.Fatalf("after the clock was set back: %+v", s)
 	}
 
 	// Another identity starts over.
@@ -79,9 +80,20 @@ func TestAddDropsWindowsThatHaveReset(t *testing.T) {
 	if h.Find("five_hour") != nil || len(h.Find("seven_day").Samples) != 2 {
 		t.Fatalf("history: %+v", h)
 	}
+	// A reading that reports a window whose reset is at or before its own
+	// time comes from a clock that may be ahead: nothing is recorded and
+	// nothing dropped, so a clock a year ahead cannot wipe the history.
+	if got := Add(h, reading("account-a", 24*365, win("seven_day", 0.3, &reset))); got.Find("seven_day") == nil || len(got.Find("seven_day").Samples) != 2 {
+		t.Fatalf("a clock far ahead changed the history: %+v", got)
+	}
+	// A reading after the reset that reports the next instance replaces it.
+	next := reset.Add(7 * 24 * time.Hour)
+	if s := Add(h, reading("account-a", 24*5, win("seven_day", 0.01, &next))).Find("seven_day"); len(s.Samples) != 1 || !s.ResetsAt.Equal(next) {
+		t.Fatalf("next instance: %+v", s)
+	}
 	// When every series has reset there is no history.
-	if h = Add(h, reading("account-a", 24*5, win("seven_day", 0.3, ptr(at(24*5))))); h != nil {
-		t.Fatalf("history kept after every window reset: %+v", h)
+	if got := Add(h, reading("account-a", 24*5, win("other", 0.3, nil))); got != nil {
+		t.Fatalf("history kept after every window reset: %+v", got)
 	}
 }
 
@@ -138,56 +150,88 @@ func TestStoredHistoryLoadsDefensively(t *testing.T) {
 	}
 }
 
-func series(samples ...Sample) *Series {
+func series(reset time.Time, samples ...Sample) *Series {
 	return &Series{Key: "seven_day", ResetsAt: reset, Samples: samples}
 }
 
 func s(hour, used float64) Sample { return Sample{At: at(hour), Used: used} }
 
+// fitted is the least squares slope per hour through the given points.
+func fitted(points ...Sample) float64 {
+	slope, _ := fit(points)
+	return slope * 3600
+}
+
 func TestProjectTable(t *testing.T) {
-	rules := Rules{MinSpan: DefaultMinSpan, MaxAge: 6 * time.Hour}
+	rules := DisplayRules(6 * time.Hour)
+	r60, r96 := at(60), at(96)
 	for name, tc := range map[string]struct {
-		s       *Series
-		now     float64
-		reason  string
-		atReset float64
-		runsOut *time.Time
+		s        *Series
+		now      float64
+		reason   string
+		atReset  float64
+		runsOut  *time.Time
+		rounding bool
+		usedUp   *time.Time
+		ignored  int
 	}{
-		"no history":                 {nil, 10, NoHistory, 0, nil},
-		"window reset":               {series(s(0, 0.1), s(12, 0.2)), 24 * 4, WindowReset, 0, nil},
-		"one reading":                {series(s(0, 0.1)), 1, OneReading, 0, nil},
-		"clock behind":               {series(s(0, 0.1), s(12, 0.2)), 11, ClockBehind, 0, nil},
-		"newest too old":             {series(s(0, 0.1), s(12, 0.2)), 18.5, NewestTooOld, 0, nil},
-		"newest just within the age": {series(s(0, 0.1), s(12, 0.2)), 18, "", 0.2 + 0.1/12*84, nil},
-		"span too short":             {series(s(0, 0.1), s(5.5, 0.2)), 6, SpanTooShort, 0, nil},
-		"used went down":             {series(s(0, 0.3), s(3, 0.2), s(12, 0.4)), 12, UsedWentDown, 0, nil},
-		// 10% in 12 h, 84 h left after the newest reading: 0.2 + 0.7 = 0.9.
-		"stays inside": {series(s(0, 0.1), s(6, 0.12), s(12, 0.2)), 13, "", 0.9, nil},
-		// 30% in 12 h: full 12 h after the newest reading, long before the reset.
-		"runs out before the reset": {series(s(0, 0.1), s(12, 0.4)), 12, "", 0.4 + 0.3/12*84, ptr(at(36))},
-		"already used up":           {series(s(0, 0.6), s(12, 1)), 12, "", 1 + 0.4/12*84, ptr(at(12))},
-		"flat":                      {series(s(0, 0.5), s(12, 0.5)), 12, "", 0.5, nil},
+		"no history":   {s: nil, now: 10, reason: NoHistory},
+		"window reset": {s: series(r60, s(0, 0.1), s(6, 0.15), s(12, 0.2)), now: 60, reason: WindowReset},
+		"one reading":  {s: series(r60, s(0, 0.1)), now: 1, reason: TooFewReadings},
+		// Reviewer case 1: one pair at the minimum span, 75% to 77%, would be
+		// extrapolated about 27 times its span; a pair is too few readings.
+		"a pair is too few": {s: series(at(168), s(0, 0.75), s(6, 0.77)), now: 6, reason: TooFewReadings},
+		// The same with a third reading is still too early: 162 h ahead of 6 h of readings.
+		"too early to project": {s: series(at(168), s(0, 0.75), s(3, 0.76), s(6, 0.77)), now: 6, reason: TooEarly},
+		"newest too old":       {s: series(r60, s(0, 0.1), s(6, 0.15), s(12, 0.2)), now: 18.5, reason: NewestTooOld},
+		"span too short":       {s: series(r60, s(0, 0.1), s(2, 0.15), s(5.5, 0.2)), now: 6, reason: SpanTooShort},
+		"used went down":       {s: series(r60, s(0, 0.3), s(3, 0.2), s(12, 0.4)), now: 12, reason: UsedWentDown},
+		"four spans ahead":     {s: series(r96, s(0, 0.1), s(6, 0.15), s(12, 0.2)), now: 12, reason: TooEarly},
+		// 10% in 12 h, 48 h left after the newest reading: 0.2 + 0.4 = 0.6.
+		"stays inside":           {s: series(r60, s(0, 0.1), s(6, 0.15), s(12, 0.2)), now: 13, atReset: 0.6},
+		"newest just within age": {s: series(r60, s(0, 0.1), s(6, 0.15), s(12, 0.2)), now: 18, atReset: 0.6},
+		// Reviewer case 2: a jump in the first hour, then flat for 23 h. The
+		// first and last readings alone said it runs out at the reset; the fit
+		// through all four does not.
+		"jump then flat": {s: series(at(72), s(0, 0.1), s(1, 0.4), s(12, 0.4), s(24, 0.4)), now: 24,
+			atReset: 0.4 + 48*fitted(s(0, 0.1), s(1, 0.4), s(12, 0.4), s(24, 0.4))},
+		// 2.5% an hour: full 24 h after the newest reading, 24 h before the reset.
+		"runs out before the reset": {s: series(r60, s(0, 0.1), s(6, 0.25), s(12, 0.4)), now: 12, atReset: 0.4 + 0.025*48, runsOut: ptr(at(36))},
+		// Item 3: the fitted rate reached 100% two hours ago, after the newest reading.
+		"ran out after the newest reading": {s: series(at(30), s(0, 0.4), s(3, 0.6), s(6, 0.8)), now: 11, atReset: 0.8 + 0.2/3*24, runsOut: ptr(at(9))},
+		// The fit reaches 105% at the reset, but readings off by one percent allow 96%.
+		"within rounding": {s: series(r60, s(0, 0.8), s(6, 0.825), s(12, 0.85)), now: 12, atReset: 0.85 + 0.025/6*48, rounding: true},
+		// Reviewer case 3: used up is dated at the first of the latest readings at 100%.
+		"used up":              {s: series(r60, s(0, 0.6), s(6, 1), s(12, 1)), now: 12, atReset: 1, usedUp: ptr(at(6))},
+		"used up, one reading": {s: series(r60, s(5, 1)), now: 12, atReset: 1, usedUp: ptr(at(5))},
+		"flat":                 {s: series(r60, s(0, 0.5), s(6, 0.5), s(12, 0.5)), now: 12, atReset: 0.5},
+		// Readings stamped after now, left by a clock set back, are ignored.
+		"later-stamped readings ignored": {s: series(r60, s(0, 0.1), s(6, 0.15), s(12, 0.2), s(30, 0.9)), now: 13, atReset: 0.6, ignored: 1},
 	} {
 		p := Project(tc.s, at(tc.now), rules)
-		if p.Reason != tc.reason || p.Projected != (tc.reason == "") {
-			t.Errorf("%s: reason %q projected %v, want %q", name, p.Reason, p.Projected, tc.reason)
+		if p.Reason != tc.reason || p.Projected != (tc.reason == "") || p.Ignored != tc.ignored {
+			t.Errorf("%s: reason %q projected %v ignored %d, want %q", name, p.Reason, p.Projected, p.Ignored, tc.reason)
 			continue
 		}
 		if !p.Projected {
 			continue
 		}
-		if math.Abs(p.UsedAtReset-tc.atReset) > 1e-9 {
-			t.Errorf("%s: at reset %v, want %v", name, p.UsedAtReset, tc.atReset)
+		if math.Abs(p.UsedAtReset-tc.atReset) > 1e-9 || p.WithinRounding != tc.rounding {
+			t.Errorf("%s: at reset %v within rounding %v, want %v %v", name, p.UsedAtReset, p.WithinRounding, tc.atReset, tc.rounding)
 		}
 		if (p.RunsOutAt == nil) != (tc.runsOut == nil) || (p.RunsOutAt != nil && !p.RunsOutAt.Equal(*tc.runsOut)) {
 			t.Errorf("%s: runs out %v, want %v", name, p.RunsOutAt, tc.runsOut)
 		}
-		if p.Readings != len(tc.s.Samples) || p.Span != tc.s.Samples[len(tc.s.Samples)-1].At.Sub(tc.s.Samples[0].At) || !p.ResetsAt.Equal(reset) {
+		if (p.UsedUpSince == nil) != (tc.usedUp == nil) || (p.UsedUpSince != nil && !p.UsedUpSince.Equal(*tc.usedUp)) {
+			t.Errorf("%s: used up since %v, want %v", name, p.UsedUpSince, tc.usedUp)
+		}
+		if p.Readings != len(tc.s.Samples)-tc.ignored || !p.ResetsAt.Equal(tc.s.ResetsAt) {
 			t.Errorf("%s: %+v", name, p)
 		}
 	}
-	// No age limit when MaxAge is zero.
-	if p := Project(series(s(0, 0.1), s(12, 0.2)), at(80), Rules{MinSpan: DefaultMinSpan}); !p.Projected {
-		t.Fatalf("no age limit: %+v", p)
+	// No age limit when MaxAge is zero, and no limit ahead when MaxAhead is zero.
+	open := Rules{MinSpan: DefaultMinSpan, MinReadings: 3}
+	if p := Project(series(r96, s(0, 0.1), s(6, 0.15), s(12, 0.2)), at(80), open); !p.Projected {
+		t.Fatalf("no limits: %+v", p)
 	}
 }

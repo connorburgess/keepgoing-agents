@@ -27,9 +27,11 @@ type usageView struct {
 	AgeSeconds *int64            `json:"ageSeconds,omitempty"`
 	Source     string            `json:"source,omitempty"`
 	Windows    []usageWindowView `json:"windows"`
-	// ProbesOnly is set for a BB route: BB does not pass the provider's
-	// rate-limit events through, so its readings come only from its probes.
-	ProbesOnly bool `json:"readingsFromProbesOnly,omitempty"`
+	// ProbesOnly says the route's readings come only from its probes. Today
+	// that holds for every route: only probes record readings. BB does not
+	// pass the provider's rate-limit events through, and headless turns do
+	// not record them yet (roadmap Q3); when they do, this narrows per adapter.
+	ProbesOnly bool `json:"readingsFromProbesOnly"`
 }
 
 // usageWindowView adds Stale: the window's reset time is at or before now, so
@@ -43,34 +45,47 @@ type usageWindowView struct {
 
 // projectionView is allowance.Project for display. State is "projected" or
 // "unavailable"; Reason is one of the allowance reason codes when unavailable.
-// UsedAtReset may exceed 1. RunsOutAt is set when the window is projected to
-// be fully used before it resets.
+// UsedAtReset may exceed 1. UsedUpSince is set when the window was already
+// used up. RunsOutAt is set when the fitted rate reaches 100% before the reset
+// for every rate within the readings' rounding; it may be before now.
+// WithinRounding is set when the fit reaches 100% but that rounding allows less.
 type projectionView struct {
-	State       string     `json:"state"`
-	Reason      string     `json:"reason,omitempty"`
-	UsedAtReset *float64   `json:"usedAtReset,omitempty"`
-	RunsOutAt   *time.Time `json:"runsOutAt,omitempty"`
-	Readings    int        `json:"readings"`
-	SpanSeconds int64      `json:"spanSeconds"`
-	// MinSpanSeconds and MaxAgeSeconds are the rules the projection used.
-	MinSpanSeconds int64 `json:"minSpanSeconds"`
-	MaxAgeSeconds  int64 `json:"maxAgeSeconds"`
+	State          string     `json:"state"`
+	Reason         string     `json:"reason,omitempty"`
+	UsedAtReset    *float64   `json:"usedAtReset,omitempty"`
+	UsedUpSince    *time.Time `json:"usedUpSince,omitempty"`
+	RunsOutAt      *time.Time `json:"runsOutAt,omitempty"`
+	WithinRounding bool       `json:"withinRounding,omitempty"`
+	Readings       int        `json:"readings"`
+	// Ignored counts readings stamped after this clock's time.
+	Ignored         int   `json:"ignoredLaterReadings,omitempty"`
+	SpanSeconds     int64 `json:"spanSeconds"`
+	ResetsInSeconds int64 `json:"resetsInSeconds,omitempty"`
+	// The rules the projection used.
+	MinReadings    int     `json:"minReadings"`
+	MinSpanSeconds int64   `json:"minSpanSeconds"`
+	MaxAgeSeconds  int64   `json:"maxAgeSeconds"`
+	MaxAhead       float64 `json:"maxAheadSpans"`
+	Rounding       float64 `json:"rounding"`
+	// now is when the projection was made, for wording a run-out time that
+	// has already passed.
+	now time.Time
 }
 
-// projectionRules are the display rules: readings at least six hours apart,
-// the newest no older than the probe TTL.
+// projectionRules are the display rules, with the newest reading no older
+// than the probe TTL.
 func projectionRules(fb *config.Fallbacks) allowance.Rules {
-	r := allowance.Rules{MinSpan: allowance.DefaultMinSpan}
+	var ttl time.Duration
 	if fb != nil {
-		r.MaxAge = fb.Probe.TTL.Duration
+		ttl = fb.Probe.TTL.Duration
 	}
-	return r
+	return allowance.DisplayRules(ttl)
 }
 
 // usageOf reads the candidate's recorded reading. A reading taken for another
 // account identity (the candidate was repointed) is not shown.
 func usageOf(reg *health.Registry, c config.Candidate, now time.Time, rules allowance.Rules) usageView {
-	v := usageView{ID: c.ID, State: "unavailable", Windows: []usageWindowView{}, ProbesOnly: c.Adapter == "bb"}
+	v := usageView{ID: c.ID, State: "unavailable", Windows: []usageWindowView{}, ProbesOnly: true}
 	if reg == nil {
 		return v
 	}
@@ -98,10 +113,14 @@ func usageOf(reg *health.Registry, c config.Candidate, now time.Time, rules allo
 // projectionOf projects the window from the recorded readings of the same
 // window instance: the series with its key whose reset time matches.
 func projectionOf(h *allowance.History, w probe.UsageWindow, now time.Time, rules allowance.Rules) projectionView {
-	pv := projectionView{State: "unavailable", MinSpanSeconds: int64(rules.MinSpan / time.Second), MaxAgeSeconds: int64(rules.MaxAge / time.Second)}
+	pv := projectionView{State: "unavailable", MinReadings: rules.MinReadings, MinSpanSeconds: int64(rules.MinSpan / time.Second),
+		MaxAgeSeconds: int64(rules.MaxAge / time.Second), MaxAhead: rules.MaxAhead, Rounding: rules.Rounding, now: now}
 	if w.ResetsAt == nil {
 		pv.Reason = allowance.NoResetTime
 		return pv
+	}
+	if d := w.ResetsAt.Sub(now); d > 0 {
+		pv.ResetsInSeconds = int64(d / time.Second)
 	}
 	s := h.Find(w.Key)
 	if s != nil {
@@ -114,26 +133,25 @@ func projectionOf(h *allowance.History, w probe.UsageWindow, now time.Time, rule
 		return pv
 	}
 	p := allowance.Project(s, now, rules)
-	pv.Reason, pv.Readings, pv.SpanSeconds = p.Reason, p.Readings, int64(p.Span/time.Second)
+	pv.Reason, pv.Readings, pv.Ignored, pv.SpanSeconds = p.Reason, p.Readings, p.Ignored, int64(p.Span/time.Second)
 	if p.Projected {
 		pv.State = "projected"
 		used := p.UsedAtReset
-		pv.UsedAtReset = &used
-		pv.RunsOutAt = p.RunsOutAt
+		pv.UsedAtReset, pv.UsedUpSince, pv.RunsOutAt, pv.WithinRounding = &used, p.UsedUpSince, p.RunsOutAt, p.WithinRounding
 	}
 	return pv
 }
 
 // projectionReasons says why there is no projection, in words.
 var projectionReasons = map[string]string{
-	allowance.NoHistory:    "no earlier reading of this window is recorded",
-	allowance.NoResetTime:  "no reset time was reported",
-	allowance.WindowReset:  "the window has reset",
-	allowance.OneReading:   "one reading in this window",
-	allowance.ClockBehind:  "the newest reading is after this clock's time (check the host clock)",
-	allowance.NewestTooOld: "the newest reading is older than %s",
-	allowance.SpanTooShort: "the readings cover less than %s",
-	allowance.UsedWentDown: "a reading is lower than an earlier one",
+	allowance.NoHistory:      "no earlier reading of this window is recorded",
+	allowance.NoResetTime:    "no reset time was reported",
+	allowance.WindowReset:    "the window has reset",
+	allowance.TooFewReadings: "%d of the %d readings needed in this window",
+	allowance.NewestTooOld:   "the newest reading is older than %s",
+	allowance.SpanTooShort:   "the readings cover less than %s",
+	allowance.TooEarly:       "too early to project: %s of readings for a window that resets in %s",
+	allowance.UsedWentDown:   "a reading is lower than an earlier one",
 }
 
 // usageSpan prints a duration in the largest two useful units.
@@ -147,34 +165,61 @@ func usageSpan(d time.Duration) string {
 	return fmt.Sprintf("%dd %dh", int(d/(24*time.Hour)), int(d%(24*time.Hour)/time.Hour))
 }
 
+// text words one window's projection.
+func (p projectionView) text(key string, resetsAt *time.Time) string {
+	span := func(n int64) string { return usageSpan(time.Duration(n) * time.Second) }
+	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04Z") }
+	over := fmt.Sprintf("%d readings over %s", p.Readings, span(p.SpanSeconds))
+	if p.Ignored > 0 {
+		over += fmt.Sprintf(", %d stamped after this clock's time ignored", p.Ignored)
+	}
+	switch {
+	case p.State != "projected":
+		reason := projectionReasons[p.Reason]
+		switch p.Reason {
+		case "":
+			reason = "unknown"
+		case allowance.TooFewReadings:
+			reason = fmt.Sprintf(reason, p.Readings, p.MinReadings)
+		case allowance.NewestTooOld:
+			reason = fmt.Sprintf(reason, span(p.MaxAgeSeconds))
+		case allowance.SpanTooShort:
+			reason = fmt.Sprintf(reason, span(p.MinSpanSeconds))
+		case allowance.TooEarly:
+			reason = fmt.Sprintf(reason, span(p.SpanSeconds), span(p.ResetsInSeconds))
+		}
+		if reason == "" {
+			reason = p.Reason
+		}
+		return key + " can't project: " + reason
+	case p.UsedUpSince != nil:
+		return key + " used up since " + stamp(*p.UsedUpSince)
+	case p.RunsOutAt != nil && resetsAt != nil && !p.RunsOutAt.After(p.now):
+		return fmt.Sprintf("%s projected to have run out at %s, %s before it resets (%s)", key, stamp(*p.RunsOutAt), usageSpan(resetsAt.Sub(*p.RunsOutAt)), over)
+	case p.RunsOutAt != nil && resetsAt != nil:
+		return fmt.Sprintf("%s runs out about %s before it resets, at %s (%s)", key, usageSpan(resetsAt.Sub(*p.RunsOutAt)), stamp(*p.RunsOutAt), over)
+	case p.WithinRounding:
+		return fmt.Sprintf("%s may run out before it resets, within the readings' rounding (%s)", key, over)
+	case p.UsedAtReset == nil:
+		return key + " can't project: unknown"
+	}
+	return fmt.Sprintf("%s %d%% at reset (%s)", key, usagePercent(min(1, *p.UsedAtReset)), over)
+}
+
+// projectionText is one route's projected line. When a window cannot be
+// projected, it ends by saying once where the route's readings come from.
 func (v usageView) projectionText() string {
 	parts := make([]string, 0, len(v.Windows))
+	cannot := false
 	for _, w := range v.Windows {
-		p := w.Projection
-		over := fmt.Sprintf("%d readings over %s", p.Readings, usageSpan(time.Duration(p.SpanSeconds)*time.Second))
-		switch {
-		case p.State != "projected":
-			reason := projectionReasons[p.Reason]
-			switch p.Reason {
-			case allowance.NewestTooOld:
-				reason = fmt.Sprintf(reason, usageSpan(time.Duration(p.MaxAgeSeconds)*time.Second))
-			case allowance.SpanTooShort:
-				reason = fmt.Sprintf(reason, usageSpan(time.Duration(p.MinSpanSeconds)*time.Second))
-			}
-			if reason == "" {
-				reason = p.Reason
-			}
-			if v.ProbesOnly {
-				reason += "; readings for a BB thread come only from its probes"
-			}
-			parts = append(parts, w.Key+" can't project: "+reason)
-		case p.RunsOutAt != nil && w.ResetsAt != nil:
-			parts = append(parts, fmt.Sprintf("%s runs out about %s before it resets, at %s (%s)", w.Key, usageSpan(w.ResetsAt.Sub(*p.RunsOutAt)), p.RunsOutAt.UTC().Format("2006-01-02 15:04Z"), over))
-		default:
-			parts = append(parts, fmt.Sprintf("%s %d%% at reset (%s)", w.Key, usagePercent(min(1, *p.UsedAtReset)), over))
-		}
+		parts = append(parts, w.Projection.text(w.Key, w.ResetsAt))
+		cannot = cannot || w.Projection.State != "projected"
 	}
-	return strings.Join(parts, "; ")
+	out := strings.Join(parts, "; ")
+	if cannot && v.ProbesOnly {
+		out += ". Readings for this route come only from its probes."
+	}
+	return out
 }
 
 // usagePercent rounds down, so only a full window prints as 100%.
