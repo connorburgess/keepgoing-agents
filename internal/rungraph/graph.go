@@ -52,6 +52,7 @@ const (
 	SourceAdapter     Source = "adapter_call"        // a send intent and its returned call
 	SourceConfigured  Source = "configured_target"   // the target's configured chat ID
 	SourceRunnerFile  Source = "runner_session_file" // a headless runner's saved resume ID
+	SourceCreated     Source = "created_thread"      // a BB thread keepgoing created for a handoff
 	SourceGoal        Source = "goal_record"         // the loop's goal.json
 	SourceRegistered  Source = "registered_control"  // a control operation made through a registry reference
 	SourceRegistryAdd Source = "registry_add"        // registry add found an existing graph; no control operation used the reference
@@ -61,7 +62,7 @@ const (
 
 func (s Source) valid() bool {
 	switch s {
-	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceGoal, SourceRegistered, SourceRegistryAdd, SourceExternal, SourceChildren:
+	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceCreated, SourceGoal, SourceRegistered, SourceRegistryAdd, SourceExternal, SourceChildren:
 		return true
 	}
 	return false

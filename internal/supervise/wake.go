@@ -54,7 +54,10 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 		if !ok || c.Disabled {
 			return false // Let the next ordinary tick resolve removed targets.
 		}
-		agent = c.Agent
+		var known bool
+		if agent, known = st.CandidateAgent(c); !known {
+			return false // No created thread on record; the next tick resolves it.
+		}
 	}
 	if newAdapter == nil {
 		newAdapter = factory.New

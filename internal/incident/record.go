@@ -18,8 +18,11 @@ import (
 // Timestamps describe local operations, not provider event time. Unsupported
 // source details are explicitly unavailable.
 type Record struct {
-	Kind                 string         `json:"kind"`
-	LimitWaitReport      string         `json:"limitWaitReport"`
+	Kind            string `json:"kind"`
+	LimitWaitReport string `json:"limitWaitReport"`
+	// NewThread says this check recorded a BB thread keepgoing created for a
+	// handoff. The thread ID is in the run graph, not here.
+	NewThread            bool           `json:"newThread,omitempty"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -147,7 +150,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none"
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && !r.NewThread
 }
 
 func limitWaitCause(cause string) bool {
