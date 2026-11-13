@@ -33,6 +33,18 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(3)
 	case "cursor":
+		// The version query is not a turn: it records nothing and reads no prompt.
+		if len(os.Args) == 2 && os.Args[1] == "--version" {
+			switch v := os.Getenv("KEEPGOING_CURSOR_FIXTURE_VERSION"); v {
+			case "":
+				_, _ = os.Stdout.WriteString("2026.09.18-9a7762b\n")
+			case "fail":
+				os.Exit(1)
+			default:
+				_, _ = os.Stdout.WriteString(v + "\n")
+			}
+			os.Exit(0)
+		}
 		input, _ := io.ReadAll(os.Stdin)
 		cwd, _ := os.Getwd()
 		capture, _ := json.Marshal(map[string]any{"args": os.Args[1:], "prompt": string(input), "cwd": cwd, "value": os.Getenv("KEEPGOING_CURSOR_FIXTURE_VALUE")})

@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"strings"
+	"time"
 )
 
 // Cursor runs one print-mode turn per send. Only provider lifecycle fields and
@@ -252,25 +255,70 @@ func (c *Cursor) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 	if err != nil {
 		return err
 	}
-	if st.Phase != NeverRun && session == "" && !c.exitedBeforeStarting(st) {
-		return errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
+	if st.Phase != NeverRun && session == "" {
+		if err := c.freshStartAllowed(ctx, st); err != nil {
+			return err
+		}
 	}
 	return c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env))
 }
 
-// cursorExitedBeforeStarting recognises the one earlier turn that provably
-// began no conversation: it finished with a known nonzero exit and wrote
-// nothing at all to stdout. The CLI writes its initialization and the user
-// record before it makes a request, so an empty stream means none was made.
-// A live run showed this is how an untrusted workspace fails. A crashed
-// wrapper, an unknown exit, any output, or an output file that is missing
-// rather than empty keeps the refusal.
-func (c *Cursor) exitedBeforeStarting(st Status) bool {
-	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode == 0 || len(st.Stdout) != 0 {
-		return false
+// CursorInspectedVersions lists the CLI versions whose source was read to
+// confirm that the stream's initialization and user records are written before
+// the prompt is submitted, and on which that was then seen in a live run.
+var CursorInspectedVersions = map[string]bool{"2026.09.18-9a7762b": true}
+
+var errCursorNoSession = errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
+
+// freshStartAllowed decides whether a turn that left no session may be followed
+// by a new conversation. That is allowed for one observed shape only: the turn
+// finished with exit code 1, its output file exists and is empty, and the CLI
+// is a version known to write its first records before it submits the prompt.
+// A live untrusted-workspace refusal had this shape.
+//
+// The evidence is keepgoing's own record of the turn, not a statement from
+// Cursor that no conversation began: the CLI offers none. A wrapper that
+// discards output and exits 1 is indistinguishable, which is why the shape is
+// this narrow. Any other exit code (including signal-style codes), any output,
+// a missing output file, a crashed wrapper or an unverified version keeps the
+// refusal, and the loop ends in its ordinary hold for a person.
+func (c *Cursor) freshStartAllowed(ctx context.Context, st Status) error {
+	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode != 1 || len(st.Stdout) != 0 {
+		return errCursorNoSession
 	}
-	info, err := os.Lstat(c.dir.path("stdout"))
-	return err == nil && info.Mode().IsRegular() && info.Size() == 0
+	if info, err := os.Lstat(c.dir.path("stdout")); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		return errCursorNoSession
+	}
+	version := c.version(ctx)
+	if CursorInspectedVersions[version] {
+		return nil
+	}
+	for _, v := range c.cfg.FreshStartVersions {
+		if version != "" && v == version {
+			return nil
+		}
+	}
+	return errors.New("cursor: the previous turn exited with an error before writing any output, but the installed CLI is not a version whose start order has been verified, so a new conversation is refused; see docs/cursor.md before listing the version in cursor.fresh_start_versions")
+}
+
+// version runs only the CLI's version command, bounded in time and output, and
+// returns the token when it has exactly the expected shape.
+func (c *Cursor) version(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.cfg.CLI, "--version")
+	cmd.Dir = c.cfg.Workdir
+	cmd.Env = append(os.Environ(), envList(c.cfg.Env)...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil || len(out) > 128 {
+		return ""
+	}
+	v := strings.TrimSpace(string(out))
+	if !config.CursorVersionPattern.MatchString(v) {
+		return ""
+	}
+	return v
 }
 
 func (c *Cursor) Stop(ctx context.Context) error {

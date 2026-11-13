@@ -102,7 +102,7 @@ A running headless turn cannot be steered or queued into. A nudge to a stalled h
 
 ## cursor (unreleased)
 
-The Cursor CLI adapter is available in source only, not v0.1.5. It accepts `cli` (default `agent`), required `workdir`, optional `model`, and optional `env`. There is no `extra_args` or automatic approval flag. Configure YAML directly; guided `init` support is unfinished.
+The Cursor CLI adapter is available in source only, not v0.1.5. It accepts `cli` (default `agent`), required `workdir`, optional `model`, optional `env`, and optional `fresh_start_versions`: up to 16 further CLI versions, written as the CLI prints them, for which you have confirmed that it writes its first stream records before submitting a prompt. That list only widens [when a new conversation may follow a turn that failed before starting](cursor.md#turns-identity-and-controls); leave it out unless you have checked. There is no `extra_args` or automatic approval flag. Use guided `init --agent cursor` or write the YAML directly.
 
 Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back`, or Cursor fallback candidates. Failures remain unknown because the reviewed print schema lacks structured error classes/reset times. See [Cursor supervision](cursor.md) for stdin transport, exact identity, output bounds, permission behavior and unverified live acceptance.
 

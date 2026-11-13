@@ -342,27 +342,43 @@ func TestCursorMissingOutputIsUnknown(t *testing.T) {
 	}
 }
 
-// Only a turn that provably wrote nothing may be followed by a fresh
-// conversation. An output file that is absent, or a wrapper that died without
-// recording an exit, proves nothing.
-func TestCursorFreshStartNeedsEmptyOutputAndKnownFailure(t *testing.T) {
+// A fresh conversation after a turn with no session is allowed for one shape
+// only: exit code 1, an existing empty output file, and a CLI version whose
+// start order is verified. Everything else keeps the refusal, including a
+// stand-in that swallowed the prompt and exited with another code.
+func TestCursorFreshStartNeedsExactShapeAndVerifiedVersion(t *testing.T) {
+	const other = "2030.01.02-abcdef0"
 	for _, tc := range []struct {
-		name   string
-		files  map[string]string
-		retry  bool
-		resume bool
+		name     string
+		files    map[string]string
+		version  string
+		extra    []string
+		retry    bool
+		resume   bool
+		explains bool
 	}{
-		{"empty_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, true, false},
-		{"empty_output_exit_2", map[string]string{"run.json": "{}", "exit": "2", "stdout": ""}, true, false},
-		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1"}, false, false},
-		{"empty_output_exit_0", map[string]string{"run.json": "{}", "exit": "0", "stdout": ""}, false, false},
-		{"empty_output_unreadable_exit", map[string]string{"run.json": "{}", "exit": "not-a-number", "stdout": ""}, false, false},
-		{"empty_output_no_exit_record", map[string]string{"run.json": "{}", "stdout": ""}, false, false},
-		{"some_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": "rate limit\n"}, false, false},
-		{"initialized_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": cursorInit + "\n"}, true, true},
+		{"empty_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "", nil, true, false, false},
+		{"empty_output_exit_2", map[string]string{"run.json": "{}", "exit": "2", "stdout": ""}, "", nil, false, false, false},
+		{"empty_output_exit_127", map[string]string{"run.json": "{}", "exit": "127", "stdout": ""}, "", nil, false, false, false},
+		{"empty_output_exit_130", map[string]string{"run.json": "{}", "exit": "130", "stdout": ""}, "", nil, false, false, false},
+		{"empty_output_exit_143", map[string]string{"run.json": "{}", "exit": "143", "stdout": ""}, "", nil, false, false, false},
+		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1"}, "", nil, false, false, false},
+		{"empty_output_exit_0", map[string]string{"run.json": "{}", "exit": "0", "stdout": ""}, "", nil, false, false, false},
+		{"empty_output_unreadable_exit", map[string]string{"run.json": "{}", "exit": "not-a-number", "stdout": ""}, "", nil, false, false, false},
+		{"empty_output_no_exit_record", map[string]string{"run.json": "{}", "stdout": ""}, "", nil, false, false, false},
+		{"some_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": "rate limit\n"}, "", nil, false, false, false},
+		{"unverified_version", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, nil, false, false, true},
+		{"unverified_version_listed", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, []string{"2031.01.01-0000000", other}, true, false, false},
+		{"another_version_listed", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, []string{"2031.01.01-0000000"}, false, false, true},
+		{"version_command_fails", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "fail", []string{other}, false, false, true},
+		{"version_not_a_token", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "2026.09.18-9a7762b extra", nil, false, false, true},
+		// A verified session never needs the exception, whatever the version.
+		{"initialized_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": cursorInit + "\n"}, other, nil, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
+			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = tc.version
+			c.cfg.FreshStartVersions = tc.extra
 			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -377,7 +393,12 @@ func TestCursorFreshStartNeedsEmptyOutputAndKnownFailure(t *testing.T) {
 			}
 			if !tc.retry {
 				if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
-					t.Fatal("refused send still started the CLI")
+					t.Fatal("refused send still started a turn")
+				}
+				// The reason names the version rule only when that is what refused it,
+				// and never the version, the path or the prompt.
+				if strings.Contains(err.Error(), "fresh_start_versions") != tc.explains || strings.Contains(err.Error(), other) || strings.Contains(err.Error(), "fixture") {
+					t.Fatalf("refusal reason: %v", err)
 				}
 				return
 			}

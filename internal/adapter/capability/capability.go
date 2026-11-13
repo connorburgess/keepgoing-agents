@@ -176,7 +176,7 @@ var Matrix = []Behaviour{
 			"bb":      {NA, None, "The configured thread is the conversation; every message goes to that thread ID.", nil},
 			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestOfflineScenarioHeadless")}},
 			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"cursor":  {Yes, Live, "--resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited with an error having written nothing.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorSessionSafety"), t(cursorTest, "TestCursorFreshStartNeedsEmptyOutputAndKnownFailure")}},
+			"cursor":  {Yes, Live, "--resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited 1 having written nothing on a CLI version whose start order is verified.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorSessionSafety"), t(cursorTest, "TestCursorFreshStartNeedsExactShapeAndVerifiedVersion")}},
 			"process": {NA, None, "The resume command owns session identity.", nil},
 		})},
 	{ID: "turn_retry", Title: "Recover a failed turn: retry the turn", What: "Ask the provider to retry the failed turn itself, instead of sending a new prompt.",

@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +28,15 @@ func cursorJourneyHelper() {
 	root := os.Getenv("KEEPGOING_CURSOR_JOURNEY")
 	if root == "" {
 		return
+	}
+	// The version query is not a turn: it creates no turn directory.
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		version := "2026.09.18-9a7762b"
+		if b, err := os.ReadFile(filepath.Join(root, "cli-version")); err == nil {
+			version = string(b)
+		}
+		fmt.Println(version)
+		os.Exit(0)
 	}
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -48,6 +59,15 @@ func cursorJourneyHelper() {
 	}{os.Args[1:], string(input)})
 	if os.WriteFile(filepath.Join(turn, "capture"), capture, 0600) != nil {
 		os.Exit(2)
+	}
+	// The live shape of a refusal before startup, such as an untrusted
+	// workspace: nothing on stdout, a notice on stderr, exit 1.
+	if _, err := os.Stat(filepath.Join(root, "refuse-before-start")); err == nil {
+		if os.WriteFile(filepath.Join(turn, "ready"), nil, 0600) != nil {
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stderr, "fictional workspace trust notice")
+		os.Exit(1)
 	}
 	fmt.Printf("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":%q}\n", journeyCursorSession)
 	if os.WriteFile(filepath.Join(turn, "ready"), nil, 0600) != nil {
@@ -316,6 +336,11 @@ func TestCursorCommandConnectionLossResumesExactSessionOnce(t *testing.T) {
 	}
 	j.capture(2, true)
 	j.count(2)
+	// The failed turn's record carries the connection evidence, as a
+	// diagnostic category beside an unknown class.
+	if obs := j.lastObservation(); obs.Category != "connection_error" || obs.ErrorClass != "unknown" || obs.Source != "cursor_events" {
+		t.Fatalf("recorded observation: %+v", obs)
+	}
 	// The recovery turn is running: repeated checks send nothing more.
 	j.expectAction("none")
 	j.expectAction("none")
@@ -343,4 +368,144 @@ func TestCursorCommandConnectionLossResumesExactSessionOnce(t *testing.T) {
 		t.Fatalf("session %q %v", id, err)
 	}
 	j.release(4, "success")
+}
+
+func (j *cursorJourney) lastObservation() incident.Observation {
+	j.t.Helper()
+	journal, err := incident.Load(filepath.Join(j.root, "state"))
+	if err != nil || len(journal.Records) == 0 {
+		j.t.Fatalf("incident journal: %v", err)
+	}
+	return journal.Records[len(journal.Records)-1].Observation
+}
+
+func (j *cursorJourney) mark(name, content string, present bool) {
+	j.t.Helper()
+	path := filepath.Join(j.root, name)
+	if !present {
+		if err := os.Remove(path); err != nil {
+			j.t.Fatal(err)
+		}
+		return
+	}
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		j.t.Fatal(err)
+	}
+}
+
+// A CLI that refuses before it starts, as it does in a directory it does not
+// trust: each bounded re-prompt starts a new conversation attempt, the budget
+// ends in a hold for a person, and after the cause is fixed and the loop is
+// resumed the first real conversation begins. Nothing is resumed, because no
+// session ever existed.
+func TestCursorCommandRefusalBeforeStartIsRetriedWithinBoundsThenHeld(t *testing.T) {
+	j := newCursorJourney(t)
+	j.mark("refuse-before-start", "", true)
+	j.expectAction("wake")
+	j.capture(1, false)
+	j.waitPhase(runner.Finished)
+	got := j.expectAction("reprompt")
+	if got.ErrorClass != "unknown" || got.Handoff != nil || len(got.Probes) != 0 {
+		t.Fatalf("refusal classified, probed or failed over: %+v", got)
+	}
+	j.capture(2, false)
+	j.waitPhase(runner.Finished)
+	if obs := j.lastObservation(); obs.Category == "connection_error" || obs.ErrorClass != "unknown" {
+		t.Fatalf("recorded observation: %+v", obs)
+	}
+	if got := j.expectAction("none"); got.Reason != "backing off after error" {
+		t.Fatalf("backoff: %+v", got)
+	}
+	j.count(2)
+	j.now = j.now.Add(time.Minute)
+	j.expectAction("reprompt")
+	j.capture(3, false)
+	j.waitPhase(runner.Finished)
+	// The re-prompt budget is spent: the loop holds and sends nothing more.
+	if got := j.expectAction("await_user"); got.ErrorClass != "unknown" {
+		t.Fatalf("hold: %+v", got)
+	}
+	j.now = j.now.Add(time.Hour)
+	j.expectAction("none")
+	j.expectAction("none")
+	j.count(3)
+	if id, err := j.target.InspectSession(); err != nil || id != "" {
+		t.Fatalf("a session was recorded: %q %v", id, err)
+	}
+	// Resuming alone holds again: the error episode has not ended, so its
+	// re-prompt count stands. This is the supervisor's rule for every adapter.
+	j.resume()
+	j.expectAction("await_user")
+	j.count(3)
+	// The directory is trusted, and the operator allows one more re-prompt and
+	// resumes: a new conversation starts, and later turns resume it.
+	j.mark("refuse-before-start", "", false)
+	j.editConfig(func(c *config.Config) { c.Loop.Errors.MaxReprompts = 3 })
+	j.resume()
+	j.expectAction("reprompt")
+	j.capture(4, false)
+	j.release(4, "success")
+	j.expectAction("wake")
+	j.capture(5, true)
+	j.count(5)
+	j.release(5, "success")
+}
+
+// The same refusal on a CLI version whose start order has not been verified:
+// keepgoing does not start a new conversation, says why, and holds for a
+// person. Listing the version in the configuration allows it.
+func TestCursorCommandRefusalBeforeStartOnUnverifiedVersionHolds(t *testing.T) {
+	j := newCursorJourney(t)
+	j.mark("refuse-before-start", "", true)
+	j.mark("cli-version", "2030.01.02-abcdef0", true)
+	j.expectAction("wake")
+	j.capture(1, false)
+	j.waitPhase(runner.Finished)
+	for attempt := 0; attempt < 2; attempt++ {
+		var out, errOut bytes.Buffer
+		args := []string{"tick", "-c", j.cfg, "--now", j.now.Format(time.RFC3339)}
+		code := run(context.Background(), args, &out, &errOut)
+		var got supervise.Result
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("tick JSON: %v %s", err, &out)
+		}
+		if got.Action != "reprompt" || !strings.Contains(errOut.String(), "not a version whose start order has been verified") || strings.Contains(errOut.String(), "2030.01.02") {
+			t.Fatalf("attempt %d: exit %d %+v %s", attempt, code, got, &errOut)
+		}
+		j.count(1)
+		j.now = j.now.Add(time.Minute)
+	}
+	j.expectAction("await_user")
+	j.count(1)
+	// The operator checks that version, lists it and allows one more re-prompt.
+	j.editConfig(func(c *config.Config) {
+		c.Loop.Agent.Cursor.FreshStartVersions = []string{"2030.01.02-abcdef0"}
+		c.Loop.Errors.MaxReprompts = 3
+	})
+	j.mark("refuse-before-start", "", false)
+	j.resume()
+	j.expectAction("reprompt")
+	j.capture(2, false)
+	j.count(2)
+	j.release(2, "success")
+}
+
+func (j *cursorJourney) editConfig(edit func(*config.Config)) {
+	j.t.Helper()
+	raw, err := os.ReadFile(j.cfg)
+	if err != nil {
+		j.t.Fatal(err)
+	}
+	var cfg config.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		j.t.Fatal(err)
+	}
+	edit(&cfg)
+	body, err := yaml.Marshal(cfg)
+	if err != nil {
+		j.t.Fatal(err)
+	}
+	if err := os.WriteFile(j.cfg, body, 0600); err != nil {
+		j.t.Fatal(err)
+	}
 }

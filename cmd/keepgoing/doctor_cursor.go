@@ -3,15 +3,12 @@ package main
 import (
 	"encoding/json"
 	"os"
+
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 )
 
-// cursorInspectedVersions lists the Cursor CLI versions whose help, status
-// command and print-mode stream were inspected read-only (see docs/cursor.md).
-// One live walkthrough ran on the listed version on macOS only.
-var cursorInspectedVersions = map[string]bool{"2026.09.18-9a7762b": true}
-
 func doctorCursorVersion(r *doctorReport, id, version string) {
-	if cursorInspectedVersions[version] {
+	if runner.CursorInspectedVersions[version] {
 		r.add(id, "ok", "CLI version: "+version+". Its status command and print-mode stream are the ones keepgoing's Cursor support was inspected against and walked through live once on macOS.", "")
 		return
 	}
@@ -59,13 +56,22 @@ func doctorCursorLogin(r *doctorReport, id string, raw []byte, cmdErr error) {
 		r.add(id, "unavailable", loginUnverified, fix)
 		return
 	}
-	present := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" && string(v) != `""` }
+	// An identity is an email that is a non-empty string or a user ID that is
+	// a number. Anything else, such as {} or false, is not one.
+	identity := false
+	if result.UserInfo != nil {
+		var email string
+		var userID json.Number
+		identity = (json.Unmarshal(result.UserInfo.Email, &email) == nil && email != "") ||
+			(len(result.UserInfo.UserID) > 0 && result.UserInfo.UserID[0] != '"' && json.Unmarshal(result.UserInfo.UserID, &userID) == nil && userID.String() != "")
+	}
+	if cmdErr != nil {
+		r.add(id, "unavailable", loginUnverified, fix)
+		return
+	}
 	switch {
 	case *result.Status == "authenticated" && *result.IsAuthenticated && *result.HasAccessToken && *result.HasRefreshToken:
-		if cmdErr != nil {
-			break
-		}
-		if result.UserInfo != nil && (present(result.UserInfo.Email) || present(result.UserInfo.UserID)) {
+		if identity {
 			r.add(id, "ok", "Cursor reports a signed-in account and returned its identity, which is not displayed. Model access, quota and whether a turn will be accepted were not tested.", "")
 			return
 		}
@@ -74,7 +80,9 @@ func doctorCursorLogin(r *doctorReport, id string, raw []byte, cmdErr error) {
 		r.add(id, "unavailable", "Cursor has stored credentials but did not return an account identity, so the login is not confirmed.", fix)
 		return
 	case (*result.Status == "unauthenticated" || *result.Status == "partially-authenticated") && !*result.IsAuthenticated:
-		r.add(id, "warning", "Cursor reports no usable stored login for this environment and working directory.", fix)
+		// These replies were read in the CLI's source and never observed, so
+		// they are reported without being treated as a finding.
+		r.add(id, "unavailable", "Cursor's status reply indicates no usable stored login for this environment and working directory. This reply shape has not been observed from a real CLI, so it is not confirmed.", fix)
 		return
 	}
 	r.add(id, "unavailable", loginUnverified, fix)
