@@ -18,8 +18,11 @@ public struct PanelLoop: Decodable, Equatable {
     /// Which changes fit the loop's control flags, as the page offers them:
     /// pause, stop, resume. Absent from a CLI that has no client review.
     public var can: [String]? = nil
+    /// The time of the loop's last check, when it needs a person because its
+    /// checks have stopped. See OverdueNotices.
+    public let overdueSince: String?
 
-    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil, can: [String]? = nil) {
+    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil, can: [String]? = nil, overdueSince: String? = nil) {
         self.key = key
         self.name = name
         self.state = state
@@ -27,6 +30,7 @@ public struct PanelLoop: Decodable, Equatable {
         self.needsYou = needsYou
         self.noProgress = noProgress
         self.can = can
+        self.overdueSince = overdueSince
     }
 }
 
