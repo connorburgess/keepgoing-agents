@@ -162,6 +162,8 @@ A BB candidate may name the same thread as the primary with a different `model`.
 
 In unreleased source a BB candidate may instead set `bb: {new_thread: true, ...}` and name no thread. See [hand off to a new conversation](#hand-off-to-a-new-conversation).
 
+Also in unreleased source, a candidate may be an [agent defined in configuration](configuration.md#an-agent-defined-in-configuration) (`adapter: custom`). It needs a `probe` in its definition, or a `command` probe, and is written by hand: guided setup does not create it.
+
 ## Probes
 
 A probe is one tiny real request: "Reply with exactly: OK", with no tools, one turn, and a hard timeout. It proves the CLI is installed, logged in, and online, that the model is available, and that the account is not rate limited.

@@ -23,6 +23,8 @@ Each cell is a status and an evidence level:
 
 Antigravity has internal protocol code and no registered adapter, so a loop cannot use it and every row is `missing`.
 
+The last column is every [agent defined in configuration](configuration.md#an-agent-defined-in-configuration). What such an agent can do depends on what its definition declares, so most of its cells are `partial` and say which declaration the behaviour needs. All of its evidence is `fixture`: no real agent has been run from a definition.
+
 ## How the matrix is kept true
 
 The matrix below is generated from one Go table, [`internal/adapter/capability`](../internal/adapter/capability/capability.go). `go test ./internal/adapter/capability` fails when:
@@ -32,6 +34,7 @@ The matrix below is generated from one Go table, [`internal/adapter/capability`]
 - The adapter factory builds an adapter the table does not register, or the other way round.
 - An adapter gains or loses the optional activate or wake-poll interface, or a check records a session reference for a different set of adapters than the table says.
 - A cell is empty, an implemented cell has no evidence or no reference, or a reference names a file or test that does not exist.
+- An agent on the runner contract, built in or defined in configuration, sets a field the table does not list for it: its real runner is run over sample turns and the fields it set are compared with the table. For defined agents a definition that declares everything must produce exactly the column's inputs, and one that declares nothing must produce only state, error class and evidence.
 - This document's matrix differs from the table.
 
 What the test cannot check is whether a cell's status is true where no code difference would show it, such as `live` evidence or a behaviour that is the same code for every adapter. Those rest on the linked tests and records.

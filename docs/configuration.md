@@ -106,6 +106,76 @@ The Cursor CLI adapter is available in source only, not v0.1.5. It accepts `cli`
 
 Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back`, or Cursor fallback candidates. Failures remain unknown because the reviewed print schema lacks structured error classes/reset times. See [Cursor supervision](cursor.md) for stdin transport, exact identity, output bounds, permission behavior and unverified live acceptance.
 
+## An agent defined in configuration
+
+Unreleased source (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+
+Three rules hold for every definition:
+
+- **No shell.** Every command is an argv list. A setting's value is always exactly one argument.
+- **The prompt is never an argument.** It is passed on standard input, or in a private file the command is pointed at.
+- **No text is matched.** A JSON field is compared for equality with codes you declare. A value that is not shaped like a code (letters, digits, `_ . : -`, at most 64) is treated as absent. Anything you do not declare is `unknown` to keepgoing.
+
+```yaml
+loop:
+  adapter: custom
+  custom:
+    name: example-agent              # label; the provider when none is set
+    workdir: /example/project
+    env: {EXAMPLE_HOME: /example/account-a}
+    values: {model: example-model}   # this loop's values for the settings
+    definition:
+      settings: [model]              # names the commands may use as {name}
+      start: [example-agent, run, --json, [--model, "{model}"]]
+      resume: [example-agent, run, --json, [--model, "{model}"], --session, "{session}"]
+      prompt: stdin                  # or file, with {prompt_file} in the commands
+      output:
+        format: jsonl                # or json: one object
+        max_bytes: 1048576
+        select: {field: type, equals: result}
+      session: {field: session}      # or {file: .example/session}
+      finished: {exit_codes: [0], field: status, equals: [ok]}
+      waiting: {exit_codes: [2], field: status, equals: [needs_input]}
+      errors:
+        field: error.code
+        classes: {quota_exceeded: rate_limit, unauthorized: auth}
+        http_status_field: error.status
+        exit_codes: {75: network}
+      probe:
+        argv: [example-agent, check, --json, [--model, "{model}"]]
+      limits:
+        argv: [example-agent, limits, --json]
+        blocked: {field: blocked, equals: ["true"]}
+        resets_at_field: resets_at
+      capabilities: {exact_resume: true, can_be_stopped: true, structured_errors: true, structured_waiting: true}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `name`, `workdir`, `env` | A label (lower-case letters, digits, hyphens), where turns run, and extra environment for turns, the probe and the limit lookup. |
+| `values` | Values for the definition's `settings`. One line each. |
+| `settings` | The names the commands may refer to as `{name}`. `model` is also what `status` and probes call the model. |
+| `start`, `resume` | Argv. The first argument is the executable, written out. An item is one argument, or a list of arguments left out together when a setting they refer to has no value. `resume` is used when a session is saved and may refer to `{session}`. |
+| `prompt` | `stdin` (default) or `file`. With `file` the commands must refer to `{prompt_file}`, the private file holding the prompt, and standard input is empty. |
+| `output` | `format` is `json` (one object) or `jsonl` (one object per line; lines that are not objects are skipped). `max_bytes` (default 1 MiB, 1 KiB to 16 MiB) bounds what is read: larger output is not read at all, the state is unknown and nothing is sent. `select` picks the object every rule reads: the last one whose field has that value, or the last object without it. |
+| `session` | Where the session identity comes from: a `field` of the output (with its own optional `select`), or a `file` under the working directory (one token, at most 256 bytes, a regular file). An identity must be a token that does not begin with a hyphen; anything else is not saved. |
+| `finished` | The turn ended healthy: the exit code is one of `exit_codes`, when given, **and** `field` has one of `equals`, when given. Defaults to exit code 0. |
+| `waiting` | The turn ended waiting on a person, with the same form. It raises one awaiting-user hold and one report; nothing is approved or answered. After you `resume`, the same turn no longer raises it and the next send continues the session. |
+| `errors` | Classifies a failed turn. `classes` maps the agent's codes in `field` to `rate_limit`, `auth`, `overloaded`, `network` or `unknown`; `http_status_field` is read as an HTTP status; `exit_codes` maps failing exit codes. Anything unmatched is `unknown`. |
+| `probe` | A small real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Without it a candidate needs a `command` probe. |
+| `limits` | One command printing one JSON object, run only when a failed turn or probe is unclassified, in the same environment. `blocked` (a field and its values) says the account is blocked by a usage limit; `resets_at_field` is an RFC 3339 time or Unix seconds. |
+| `capabilities` | `exact_resume`, `can_be_stopped`, `structured_errors`, `structured_waiting`. |
+
+**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than keepgoing can check or carry rules that are silently ignored:
+
+- `exact_resume` needs `session` and a `resume` command that refers to `{session}`. Without it every turn starts a new session.
+- `structured_errors` needs `errors`. Without it every failure is `unknown`.
+- `structured_waiting` needs `waiting`.
+- `can_be_stopped` needs nothing: the turn runs under keepgoing's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
+- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let keepgoing observe them.
+
+`keepgoing doctor` resolves the executable without running it and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+
 ## progress
 
 | Field | Default | Meaning |
