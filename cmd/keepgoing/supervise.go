@@ -302,10 +302,13 @@ type statusOut struct {
 	Target            string                   `json:"target"`
 	Control           control.File             `json:"control"`
 	ControlState      string                   `json:"controlState"`
-	Deadline          string                   `json:"deadline,omitempty"`
-	DeadlineReached   bool                     `json:"deadlineReached"`
-	WorkBounds        workBoundsStatus         `json:"workBounds"`
-	TickBudget        tickBudgetStatus         `json:"tickBudget"`
+	// Unreadable lists the records status could not read. The rest of the
+	// output is what it could; the command still exits 1.
+	Unreadable      []unreadableRecord `json:"unreadable,omitempty"`
+	Deadline        string             `json:"deadline,omitempty"`
+	DeadlineReached bool               `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus   `json:"workBounds"`
+	TickBudget      tickBudgetStatus   `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -416,15 +419,27 @@ func refOf(a config.Agent) agentRef {
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
 	out, err := readStatus(e.ctx, cfg, now, staleAfter, inspectDaemon)
-	if err != nil {
+	if err != nil && len(out.Unreadable) == 0 {
 		e.errf("%v", err)
 		return exitFailed
 	}
+	code := exitOK
+	if err != nil {
+		code = exitFailed
+		for _, u := range out.Unreadable {
+			e.errf("%s could not be read (%s). %s", u.File, u.Problem, u.Remedy)
+		}
+	}
+	defer func() {
+		if code != exitOK && !asJSON {
+			fmt.Fprintf(e.stdout, "unreadable records: %d; the lines above show what could still be read\n", len(out.Unreadable))
+		}
+	}()
 	ctl, st := out.Control, out.State
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
-		return exitOK
+		return code
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
@@ -600,20 +615,26 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	printUsage(w, "usage:     ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
-	return exitOK
+	return code
 }
 
 // readStatus builds the status report. It reads local records and the existing
 // daemon endpoint through query; it never queries a provider or writes.
 func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAfter time.Duration, query clientDaemonQuery) (statusOut, error) {
 	l := cfg.Loop
+	// An unreadable control or state record does not stop status: it says
+	// which, and what to do, and shows what it can. The error is still
+	// returned, so callers that need both records (the dock) skip the loop.
+	var unreadable []unreadableRecord
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
-		return statusOut{}, err
+		unreadable = append(unreadable, unreadableControl(err))
+		ctl = control.File{}
 	}
-	st, err := state.Load(l.StateDir)
-	if err != nil {
-		return statusOut{}, err
+	st, stateErr := state.Load(l.StateDir)
+	if stateErr != nil {
+		unreadable = append(unreadable, unreadableState(stateErr))
+		st = state.File{}
 	}
 	in, why, err := window.Inside(l.Window, now)
 	if err != nil {
@@ -630,7 +651,15 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		p.Before, p.After = "", ""
 		ctl.PendingTransfer = &p
 	}
-	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version, Unreadable: unreadable}
+	for _, u := range unreadable {
+		switch u.File {
+		case control.FileName:
+			out.ControlState = "unavailable"
+		case state.FileName:
+			out.Target = "unavailable"
+		}
+	}
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {
@@ -709,6 +738,14 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	for _, u := range unreadable {
+		// What the loop is doing cannot be known without its controls, and
+		// an empty record would read as "disabled".
+		if u.File == control.FileName {
+			out.Runtime.State, out.Runtime.Source = "unavailable", "unavailable"
+			out.Runtime.Reason = "control.json could not be read"
+		}
+	}
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
@@ -735,7 +772,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			out.Redundancy = &s
 		}
 	}
-	return out, nil
+	return out, unreadableError(out.Unreadable)
 }
 
 func when(t time.Time) string {
@@ -968,4 +1005,37 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// unreadableRecord is a record status could not read, and what to do.
+type unreadableRecord struct {
+	File    string `json:"file"`
+	Problem string `json:"problem"`
+	Remedy  string `json:"remedy"`
+}
+
+func unreadableControl(err error) unreadableRecord {
+	return unreadableRecord{File: control.FileName, Problem: recordProblem(err, control.FileName),
+		Remedy: "Checks send nothing, and pause, stop and resume cannot be saved, until it is repaired. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory, or move it aside: a loop with no control.json is disabled, and the next enable, pause or stop writes a new one, without the earlier holds, note and owner."}
+}
+
+func unreadableState(err error) unreadableRecord {
+	return unreadableRecord{File: state.FileName, Problem: recordProblem(err, state.FileName),
+		Remedy: "Checks fail and send nothing until it is repaired. Stop the daemon, service or scheduler, then restore state.json from a copy of the state directory, or move it aside: the next check starts a new one, without the re-prompt and nudge counts, the active target or the record of the last check and send."}
+}
+
+// recordProblem is the error without the file name it usually begins with.
+func recordProblem(err error, file string) string {
+	return strings.TrimPrefix(err.Error(), file+": ")
+}
+
+func unreadableError(u []unreadableRecord) error {
+	if len(u) == 0 {
+		return nil
+	}
+	names := make([]string, len(u))
+	for i, r := range u {
+		names[i] = r.File
+	}
+	return fmt.Errorf("unreadable records: %s", strings.Join(names, ", "))
 }

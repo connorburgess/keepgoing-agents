@@ -148,6 +148,14 @@ New ticks persist `state.lastCheck` with:
 
 Existing `control.note` output is retained for compatibility; status is a private operational report. Doctor continues to withhold control notes, task text, environment values, and raw errors. This feature is implemented on `main`, not in v0.1.1, and is covered by offline fixtures for control precedence, failures, dry runs, handoffs, version comparisons, and legacy state.
 
+### When a record cannot be read
+
+If `control.json` or `state.json` in the state directory is damaged (empty, cut short, or not JSON), `status` names the file and the parse error on standard error, says what checks are doing meanwhile and what to do, then prints everything it could still read, and exits 1. `status --json` carries the same in an `unreadable` list, each entry with `file`, `problem` and `remedy`. With `control.json` unreadable the control state, the activity and the reason read `unavailable`: an empty record would otherwise read as disabled. With `state.json` unreadable the target reads `unavailable`. Status never rewrites the damaged file.
+
+What to do: stop the daemon, service or scheduler, then restore the file from a copy of the state directory. Or move it aside. A loop with no `control.json` is disabled, and the next `enable`, `pause` or `stop` writes a new one, without the earlier holds, note and owner. A missing `state.json` is started again by the next check, without the re-prompt and nudge counts, the active target or the record of the last check and send.
+
+While `control.json` is unreadable, checks send nothing, but `pause`, `stop` and `resume` cannot be saved either, so nothing keepgoing offers holds the loop: stop the process that runs it.
+
 ## Completing a task
 
 When the authorized work is finished and verified, the agent or operator runs:
