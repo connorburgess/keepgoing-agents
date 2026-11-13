@@ -171,7 +171,7 @@ var Matrix = []Behaviour{
 		Cells: merge(map[string]Cell{
 			"bb":      {Partial, Fixture, "A provider error carrying HTTP 403 or a permission code is restricted. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle.", []Ref{t("internal/adapter/bb/bb_test.go", "TestObserveForbiddenIsRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
 			"claude":  {Yes, Fixture, "HTTP 403 in api_error_status, and stop_reason \"refusal\" in the result object, which Claude Code documents for a declined turn. Neither has been captured from the real CLI.", []Ref{t(runnerTest, "TestClaudeErrorClassification"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
-			"codex":   {Missing, None, "The documented event stream carries a failure only as a message, with no refusal or policy field, so a refusal is unknown or looks like a finished turn.", nil},
+			"codex":   {Partial, Fixture, "An event carrying HTTP 403 or a permission code is restricted. The documented event stream has no refusal or policy field and usually carries a failure only as a message, so a refusal is unknown or looks like a finished turn.", []Ref{t(runnerTest, "TestParseCodexEventsRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
 			"cursor":  {Missing, None, "Every failure is unknown.", nil},
 			"process": {Yes, Fixture, "When the status command reports errorClass restricted, or an exit code is mapped to it.", []Ref{t(processTest, "TestObserveRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
 		})},

@@ -164,6 +164,23 @@ const codexWithHookWarning = `{"type":"thread.started","thread_id":"00000000-000
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"OK"}}
 {"type":"turn.completed","usage":{"input_tokens":21000,"cached_input_tokens":13000,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}`
 
+// A forbidden status or permission code in a Codex event is a restriction. A
+// refusal the stream carries only as a message stays unknown.
+func TestParseCodexEventsRestricted(t *testing.T) {
+	for _, events := range []string{
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","status":403}}`,
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","code":"permission_denied"}}`,
+	} {
+		if o := ParseCodexEvents([]byte(events)); !o.Failed || o.Class != decide.ErrRestricted {
+			t.Errorf("%s: %+v", events, o)
+		}
+	}
+	refusedInProse := `{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"I can't help with that request."}}`
+	if o := ParseCodexEvents([]byte(refusedInProse)); !o.Failed || o.Class != decide.ErrUnknown {
+		t.Errorf("prose: %+v", o)
+	}
+}
+
 func TestParseCodexEventsIgnoresErrorItems(t *testing.T) {
 	o := ParseCodexEvents([]byte(codexWithHookWarning))
 	if !o.Completed || o.Failed || o.ThreadID == "" {
