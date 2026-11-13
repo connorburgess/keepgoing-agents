@@ -282,7 +282,66 @@ func TestUpgradeDoesNotPruneAlternatingLegacyChecksInBulk(t *testing.T) {
 	}
 	mustAppend(t, dir, retentionTick(256))
 	j := loadAccounted(t, dir)
-	if j.SchemaVersion != 6 || len(j.Records) != MaxRecords || j.Dropped != 1 || j.Pruned.Routine.Count != 1 || j.Collapsed != 0 || j.Records[0].Sequence != 2 {
+	if j.SchemaVersion != SchemaVersion || len(j.Records) != MaxRecords || j.Dropped != 1 || j.Pruned.Routine.Count != 1 || j.Collapsed != 0 || j.Records[0].Sequence != 2 {
 		t.Fatalf("retained %d dropped %d pruned %+v", len(j.Records), j.Dropped, j.Pruned)
+	}
+}
+
+// The check that detects a long limit wait is an event: it is never folded,
+// and its marker survives only as a known value on a tick.
+func TestLimitWaitReportMarkerIsKeptOutOfCollapsedRuns(t *testing.T) {
+	m := newMemJournal()
+	for i, mark := range []string{"", "", "", "requested", "", "", "PRIVATE_MARKER", ""} {
+		r := retentionTick(i)
+		r.Cause, r.LimitWaitReport = "limit_failover_disabled", mark
+		m.add(t, r)
+	}
+	j := m.flush(t)
+	var got []uint64
+	for _, r := range j.Records {
+		got = append(got, r.Sequence)
+	}
+	// 1..3 collapse to 1,3; 4 is the report; 5..8 collapse to 5,8 (the unknown marker is not a report).
+	if len(got) != 5 || got[0] != 1 || got[1] != 3 || got[2] != 4 || got[3] != 5 || got[4] != 8 {
+		t.Fatalf("%v", got)
+	}
+	mark := j.Records[2]
+	if mark.LimitWaitReport != "requested" || mark.Tier != TierCondition || repeatable(mark) || mark.Collapsed != nil || j.Records[4].LimitWaitReport != "none" {
+		t.Fatalf("%+v", mark)
+	}
+	c := clean(Record{Kind: "control", CheckStartedAt: retentionStart, LimitWaitReport: "requested", ControlBefore: &Controls{}, ControlAfter: &Controls{}, ControlChange: &ControlChange{Operation: "pause", SaveObservedAt: retentionStart}})
+	if c.LimitWaitReport != "none" {
+		t.Fatal("a control save carried a report marker")
+	}
+}
+
+// A schema-6 journal is already tiered and collapsed. Upgrading it keeps its
+// accounting exactly and cannot claim a report an older build never made.
+func TestSchemaSixUpgradeKeepsAccounting(t *testing.T) {
+	m := newMemJournal()
+	for i := 0; i < 300; i++ {
+		r := retentionTick(i)
+		if i >= 20 {
+			r.Observation.Queued = 1 + i%2
+		}
+		m.add(t, r)
+	}
+	m.j.SchemaVersion = 6
+	m.j.Records[0].LimitWaitReport = "requested"
+	dir := t.TempDir()
+	b, _ := json.Marshal(m.j)
+	if err := os.WriteFile(filepath.Join(dir, FileName), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := loadAccounted(t, dir)
+	if old.SchemaVersion != 6 || old.Collapsed != 18 || old.Dropped == 0 || old.Pruned.Routine.Count != old.Dropped || old.Records[0].LimitWaitReport != "none" {
+		t.Fatalf("schema %d collapsed %d dropped %d", old.SchemaVersion, old.Collapsed, old.Dropped)
+	}
+	r := retentionTick(300)
+	r.Action = "wake"
+	mustAppend(t, dir, r)
+	j := loadAccounted(t, dir)
+	if j.SchemaVersion != SchemaVersion || j.Collapsed != old.Collapsed || j.Dropped != old.Dropped+1 || j.Pruned.Routine.Count != old.Pruned.Routine.Count+1 || j.NextSequence != old.NextSequence+1 {
+		t.Fatalf("schema %d collapsed %d dropped %d pruned %+v", j.SchemaVersion, j.Collapsed, j.Dropped, j.Pruned)
 	}
 }

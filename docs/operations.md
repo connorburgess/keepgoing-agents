@@ -233,7 +233,7 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete` is included in the default event list on `main`; an explicit event list must include it or `all`. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete` and `limit_wait` are included in the default event list on `main`; an explicit event list must include them or `all`. Both make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 
@@ -242,6 +242,24 @@ Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `reco
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
 - **Only `resume` clears a stop.** `enable` does not.
+
+### A long limit wait with no way out
+
+Unreleased source; **offline fixtures only**. A provider limit with a reported reset is waited out without prompts when no handoff can happen: failover is off for that error class, or no fallback is confirmed. That wait can last days. When the reported reset is further away than `errors.report_wait_after` (default `6h`), keepgoing sends one `limit_wait` report for that wait, saying which target is waiting, when the limit resets and why no handoff is possible.
+
+- **It does not hold the loop or change a decision.** Checks keep observing. If the limit lifts early, the next check acts exactly as it would have without the report. Nothing needs to be resumed.
+- **One report per wait.** The wait is recorded in `state.json`, so repeated checks and a restarted supervisor stay quiet. The wait ends only on positive evidence: the loop moved to another target, the session is idle or working without a provider retry, or it is in error with no reset still ahead. A check that merely decided something else (outside the time window, queued messages, a pending interaction, child work, a provider retry, an unknown or pending state) does not end it, so a loop with a daily window reports a multi-day wait once. After the wait has ended, a later long wait is reported again.
+- **A reset that moves later.** Within one wait, a second report is sent only if the reported reset moves more than one hour later than the reset last reported, and a third only if it then moves more than two hours later again. Three is the most any single wait sends, so a provider whose reset keeps sliding cannot produce a stream. A reset that moves earlier is never re-reported.
+- **At most once, never retried.** The wait is saved before the request is made, the same order as holds and completions. A report makes a single request without following redirects. If the supervisor is killed mid-request, or the request fails, that report is lost: it is not sent again by later checks, held or not, and a failure stays visible in `status` and the notification records. If `state.json` cannot be written, nothing is sent.
+- **Subscription.** `limit_wait` is in the default `report.events` because, like `await_user`, it says a person may be needed. An explicit `report.events` list receives it only if it names `limit_wait` or `all`: existing explicit lists are unchanged and get nothing new. With no subscription the wait is still recorded and shown, marked as not sent; subscribing during the wait sends its one report on the next check.
+- **Holds win.** A paused, disabled, completed, awaiting-user or stopped loop does not observe its target, so it neither sends this report nor forgets one already recorded. Dry runs send and record nothing.
+- **Turning it off.** There is no off value: `report_wait_after: 0` means the default. To receive nothing, give `report.events` an explicit list without `limit_wait`. The wait is then still recorded and shown as not sent.
+- **When it does not apply.** No report is sent when a handoff is possible. That includes a long wait you chose with a large `wait_if_reset_within` while a fallback is confirmed. The same setting with no confirmed fallback leaves no way out and is reported. With no reported reset time the supervisor does not wait at all: it re-prompts within `errors.max_reprompts` and then holds for a person, which reports `await_user`. So a limit without a reset time is never waited out silently.
+- **Where it shows.** `status` prints the recorded wait, its reset time and whether the report was requested, failed or not subscribed (`limitWait` in JSON). `timeline --kind limit_wait_report` shows the check that detected it, and the delivery appears as a `limit_wait` notification.
+
+- **Older builds.** Once a `limit_wait` delivery or a marked check is recorded, v0.1.5 and earlier refuse `deliveries.json` (unknown event label) and `incidents.json` (newer schema) rather than rewrite them. Do not run an older build against the same state directory.
+
+The payload carries the loop name, the target alias, the reset time, the reason the threshold and the report's number within the wait. It carries no task text, transcript or thread ID. This is the same content class as the existing `handoff` report.
 
 ## ci-wait
 

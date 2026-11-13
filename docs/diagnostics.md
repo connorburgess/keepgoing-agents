@@ -359,6 +359,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | `ownership` | A control save that changed the loop owner, a daemon takeover, or a transfer step. Owner identities are withheld. |
 | `probe` | A check that ran at least one scheduled or exact probe, or that summarizes folded checks which did. |
 | `limit_wait` | A check that sent nothing because a provider limit has a known reset. |
+| `limit_wait_report` | The check that detected a long limit wait with no handoff possible and requested its one report (or recorded that none was sent). |
 | `hold` | A check or control save that entered a stop, pause, disable, awaiting-user or completed state. |
 | `control` | Any saved control command. |
 | `collapsed` | A check that also summarizes identical earlier checks. |
@@ -370,7 +371,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 
 Invalid filters exit 2 with a fixed message that does not repeat the rejected value. A filter that matches nothing is a successful, empty view, not evidence that nothing happened.
 
-When the latest retained check is a limit wait, `nextSteps` says so. keepgoing still sends and reports nothing during that wait, however far away the reset is; reporting a long wait to a person is a separate [roadmap item](roadmap.md#priority-reliability-checkpoints) (R8), not part of this view.
+When the latest retained check is a limit wait, `nextSteps` says so. keepgoing sends no prompt during that wait. The check that first finds the reset further away than `errors.report_wait_after`, with no handoff possible, is marked `limit_wait_report` and says whether its one report was requested, failed or not subscribed; `summary.lastLimitWaitReport` references it. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). The marker is incident schema 7 (`limitWaitReport` on tick records: `none`, `requested`, `delivery_failed` or `not_subscribed`); a marked check is never collapsed and is kept in the `condition` tier. Timeline JSON is schema 4 with this addition.
 
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 
