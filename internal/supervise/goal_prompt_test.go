@@ -92,8 +92,10 @@ func TestMissingPromptGoalDoesNotSendOrSpendAndHoldsStillWin(t *testing.T) {
 			if err != nil || st.LastPromptSend != nil {
 				t.Fatalf("invented send evidence: %+v %v", st.LastPromptSend, err)
 			}
-			if _, err := os.Stat(filepath.Join(w.dir, "sends.json")); !os.IsNotExist(err) {
-				t.Fatalf("reserved allowance: %v", err)
+			// Nothing was counted against an allowance, and the only intended
+			// send recorded is the stop, which is not a prompt.
+			if l, err := state.LoadLedger(w.dir); err != nil || *l.Used != 0 || len(l.Pending) > 1 || (len(l.Pending) == 1 && (hold != "stop" || l.Pending[0].Action != "stop")) {
+				t.Fatalf("reserved a send: %+v %v", l, err)
 			}
 			if hold == "stop" && p.stopped != 1 {
 				t.Fatal("goal blocked stop")

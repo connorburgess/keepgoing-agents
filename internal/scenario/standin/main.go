@@ -22,6 +22,13 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
+//	show.gate              if present, holds a number N: each `thread show`
+//	                       records its arrival in show.arrived and waits until N
+//	                       have arrived or show.open exists, then answers
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -36,6 +43,19 @@
 // thread's show file says "error" and answers like BB otherwise: an error
 // envelope with no_failed_turn and exit status 1.
 //
+// As example-agent it plays a fictional agent that keepgoing has no built-in
+// runner for, with this documented interface:
+//
+//	example-agent run --json [--session ID]
+//	    Reads the prompt on standard input and prints one JSON line of type
+//	    "result" with "status" (ok, failed or needs_input) and "session".
+//	    Exits 0 when ok, 1 when failed, 2 when it needs input.
+//
+// What each successive turn does comes from example-agent.turns, one outcome
+// per line consumed in order (default ok). Every turn is recorded in
+// sends.jsonl like the other headless stand-ins: kind "turn", the agent's name,
+// the session it resumed as the mode, and its prompt.
+//
 // Any command it does not know is recorded and answered with {"ok":true}.
 // It never contacts a network or a real agent.
 package main
@@ -48,9 +68,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
+	// A scenario may run keepgoing with no room to write (a zero file-size
+	// limit, which is how a full disk looks to a program). The stand-in
+	// is not the program under test: it lifts its own limit, so it can
+	// still record what it was sent.
+	liftFileSizeLimit()
 	world := os.Getenv("SCENARIO_WORLD")
 	if world == "" {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
@@ -72,7 +98,28 @@ func main() {
 		}
 		os.Exit(turn(world, name, os.Args[1:]))
 	}
-	os.Exit(run(world, os.Args[1:]))
+	if name == "example-agent" {
+		os.Exit(exampleAgent(world, os.Args[1:]))
+	}
+	args := os.Args[1:]
+	// killbefore.<command>: the stand-in kills the keepgoing process that
+	// runs `thread <command>` before doing anything, as a crash just before
+	// the call would. The command is not recorded or done. The file is used up.
+	if len(args) > 1 && args[0] == "thread" && os.Remove(filepath.Join(world, "killbefore."+args[1])) == nil {
+		killParent()
+		os.Exit(1)
+	}
+	code := run(world, args)
+	// kill.<command>: once the command has done its work and answered, the
+	// stand-in kills the keepgoing process that ran it, as a crash or a
+	// power cut would at that moment. The file is used up.
+	if len(args) > 1 && args[0] == "thread" {
+		if os.Remove(filepath.Join(world, "kill."+args[1])) == nil {
+			os.Stdout.Sync()
+			killParent()
+		}
+	}
+	os.Exit(code)
 }
 
 func run(world string, args []string) int {
@@ -94,6 +141,10 @@ func run(world string, args []string) int {
 	}
 	switch args[1] {
 	case "show":
+		if !gate(world) {
+			fmt.Fprintln(os.Stderr, "standin: the show gate was never opened")
+			return 1
+		}
 		return emit(world, arg(args, 2)+".show", `{"thread":{"status":"idle"}}`)
 	case "list":
 		if p := flagValue(args, "--parent-thread"); p != "" {
@@ -286,6 +337,42 @@ func retry(world, thread string) int {
 	return 0
 }
 
+// exampleSession is the session the fictional agent reports.
+const exampleSession = "sess_example_0001"
+
+func exampleAgent(world string, args []string) int {
+	if len(args) < 2 || args[0] != "run" || args[1] != "--json" {
+		fmt.Fprintln(os.Stderr, "example-agent: usage: run --json [--session ID]")
+		return 64
+	}
+	prompt, _ := io.ReadAll(os.Stdin)
+	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{
+		"kind": "turn", "thread": "example-agent", "mode": flagValue(args, "--session"), "message": string(prompt),
+	})
+	outcome := "ok"
+	path := filepath.Join(world, "example-agent.turns")
+	if b, err := os.ReadFile(path); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+		if len(lines) > 0 && lines[0] != "" {
+			outcome = lines[0]
+			os.WriteFile(path, []byte(strings.Join(lines[1:], "\n")+"\n"), 0o600)
+		}
+	}
+	// With the network down the agent's turn fails with nothing structured.
+	if outcome == "ok" && readMode(filepath.Join(world, "net.mode"), "online") != "online" {
+		outcome = "failed"
+	}
+	status, code := "ok", 0
+	switch outcome {
+	case "failed":
+		status, code = "failed", 1
+	case "needs_input":
+		status, code = "needs_input", 2
+	}
+	fmt.Printf(`{"type":"result","status":%q,"session":%q}`+"\n", status, exampleSession)
+	return code
+}
+
 // HeadlessSession is the session every stand-in headless turn reports.
 const HeadlessSession = "00000000-0000-4000-8000-0000000000aa"
 
@@ -365,4 +452,32 @@ func readMode(path, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// gate holds `thread show` while show.gate exists, until as many calls as
+// it names have arrived or show.open is created. It lets a test put two
+// checks in the same moment, or keep one check in the middle of its work
+// while another starts. It gives up after 30 seconds.
+func gate(world string) bool {
+	b, err := os.ReadFile(filepath.Join(world, "show.gate"))
+	if err != nil {
+		return true
+	}
+	want, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	f, err := os.OpenFile(filepath.Join(world, "show.arrived"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err == nil {
+		f.Write([]byte{'.'})
+		f.Close()
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(world, "show.open")); err == nil {
+			return true
+		}
+		if info, err := os.Stat(filepath.Join(world, "show.arrived")); err == nil && want > 0 && info.Size() >= int64(want) {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }

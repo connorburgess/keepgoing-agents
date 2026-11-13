@@ -29,15 +29,21 @@ type fakeAdapter struct {
 	noStop      bool
 	activated   int
 	activateErr error
+	onSend      func() // runs after a send is recorded by the fake
+	observed    int
 }
 
 func (f *fakeAdapter) Name() string { return "fake" }
 func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
+	f.observed++
 	return f.obs, f.obsErr
 }
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {
 	f.sent = append(f.sent, p)
 	f.modes = append(f.modes, m)
+	if f.onSend != nil {
+		f.onSend()
+	}
 	return f.sendErr
 }
 func (f *fakeAdapter) Stop(context.Context) error {
@@ -58,6 +64,7 @@ func (f *fakeAdapter) Activate(context.Context) error {
 type world struct {
 	cfg      *config.Config
 	dir      string
+	sessions string // this world's session claims
 	adapters map[string]*fakeAdapter
 	probeOK  map[string]bool // exact and scheduled outcome per candidate
 	probes   []string
@@ -72,6 +79,9 @@ func (w *world) Report(_ context.Context, e report.Event) error {
 func (w *world) opts(now time.Time) Options {
 	return Options{
 		Now: now,
+		// Each world has its own claims: worlds run in parallel and share
+		// fictional thread IDs.
+		SessionDir: w.sessions,
 		NewAdapter: func(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 			f, ok := w.adapters[target]
 			if !ok {
@@ -128,7 +138,7 @@ func newWorld(t *testing.T, enabled bool, withFallbacks bool) *world {
 			t.Fatal(err)
 		}
 	}
-	return &world{cfg: cfg, dir: dir, adapters: map[string]*fakeAdapter{}, probeOK: map[string]bool{}}
+	return &world{cfg: cfg, dir: dir, sessions: t.TempDir(), adapters: map[string]*fakeAdapter{}, probeOK: map[string]bool{}}
 }
 
 func (w *world) primary(obs decide.Observation) *fakeAdapter {

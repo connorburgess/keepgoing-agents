@@ -58,7 +58,7 @@ keepgoing init --non-interactive \
 
 Add `--dry-run` to preview without writing files. `keepgoing init --help` lists all flags. Input ending or cancellation while answering the wizard writes no setup. Existing setups are never overwritten; edit their private configuration or choose a new name/directory.
 
-In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume; downtime counts. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
+In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran or the network was down. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
 
 In v0.1.3 or newer, optional `--max-sends 20` caps automatic send attempts with a persistent counter; failed attempts count and resume does not reset it. Zero or omission leaves accounting disabled. See [send allowance](operations.md#total-send-allowance).
 
@@ -85,7 +85,7 @@ keepgoing-dev init --non-interactive --agent cursor \
   --task-file /private/example-task.md --with-goal --max-sends 10
 ```
 
-Setup resolves `agent` on `PATH` and saves that executable, the project directory and optional `--model`. It never runs the provider or checks/changes its login. Existing Cursor credentials and permissions are inherited. `--account-dir` and `--fallback` are rejected for Cursor without writing a setup; the wizard skips those questions. Cursor is also unavailable as a fallback for other agents. `--dry-run` and the private stdin/JSON path below work as for other targets.
+Setup resolves `agent` on `PATH` and saves that executable, the project directory and optional `--model`. It never runs the provider or checks/changes its login; run `keepgoing doctor` afterwards to check the CLI version and stored login. Existing Cursor credentials and permissions are inherited, and Cursor must already trust the project directory or the first turn fails before it starts. `--account-dir` and `--fallback` are rejected for Cursor without writing a setup; the wizard skips those questions. Cursor is also unavailable as a fallback for other agents. `--dry-run` and the private stdin/JSON path below work as for other targets.
 
 This starts a separate CLI conversation on the first wake. Existing IDE chats, interactive permission bridging, quota/reset detection and automatic fallback recovery are unavailable. Text/JSON previews and doctor disclose these limits; reading a version string does not establish a supported version range. Review [Cursor evidence and remaining live checks](cursor.md) before starting. Creation stays disabled, including with an optional goal.
 
@@ -110,6 +110,7 @@ Schema version 1 has these fields:
 | --- | --- |
 | `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
 | `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
+| `startJson` | Unreleased. `true` when this build's `start` accepts `--background --json`, which reports a [second loop on one session](operations.md#one-loop-per-session) as a structured refusal. Absent in older results: do not pass the flag. |
 | `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
 | `taskPath`, `goal` | Additive fields in v0.1.5, present only with `--with-goal`. `taskPath` identifies the private snapshot; `goal` describes `promptContext: true`, `titleSource: "loop_name"`, `specificationSource: "task_snapshot"`, and, after creation only, `record` with generated ID/revision/state. Preview has no saved record. Private task text and goal references are omitted. |
 | `taskBinding` | `snapshot`: task input is imported once into `promptPath` (or `taskPath` for goal setup in v0.1.5); the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
@@ -120,6 +121,8 @@ Schema version 1 has these fields:
 | `probes` | Present only with fallbacks: `every`, `ttl`, `dailyCapPerCandidate`, `exactOutsideCap`, and `manualOutsideCap`. The cap does not include exact/manual calls. No probe runs during setup. |
 | `next` | `doctor`, `startForeground`, and `startBackground` argv arrays, including the executable and exact config path. Execute as argument arrays, never concatenate into a shell command. These are suggestions, not actions performed by init. |
 | `limitations` | Human-readable scope and review reminders; do not parse these strings to make decisions. |
+
+**Refused (unreleased).** When another enabled loop already supervises the same session (see [one loop per session](operations.md#one-loop-per-session)), `init --json` writes nothing, exits 1, and prints exactly `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"example-loop"}}` on stdout: `outcome: "refused"`, a `refusal.code`, and the other loop's name in `refusal.otherLoop`, never its path. The sentence for people, which does name the other loop's configuration, is on stderr. Show `otherLoop`; do not parse stderr. `--allow-second-loop` sets the loop up anyway. Other codes may be added; treat an unknown code as a refusal without a reason.
 
 The result omits task/prompt text, raw YAML, environment maps, and account-directory values. It does not verify the supplied BB identity, provider/model availability, authenticated subscription, independent quota, or scheduler state. After creation, an integration can use the existing `doctor --json` flow to display diagnostics, then offer an explicit start choice. Review the resolved target and limits before starting; do not automatically run `next` commands when parsing a result. Preview paths do not yet exist, and a preview does not reserve them or guarantee later creation will succeed.
 

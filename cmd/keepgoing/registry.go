@@ -135,8 +135,16 @@ func registryCommand(e env, args []string) int {
 	return exitOK
 }
 
+// registryDirEnv names a private registry to use when no --directory is
+// given. It is how tests keep every command away from the person's own
+// registry; it changes nothing else.
+const registryDirEnv = "KEEPGOING_REGISTRY_DIR"
+
 func registryDirectory(path string) (string, error) {
 	bad := errors.New("registry directory must be a private path outside Git checkouts")
+	if path == "" {
+		path = os.Getenv(registryDirEnv)
+	}
 	if path == "" {
 		base, err := os.UserConfigDir()
 		if err != nil {
