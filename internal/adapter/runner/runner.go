@@ -116,13 +116,38 @@ func (e notSpawned) Unwrap() error { return e.error }
 // start is Start with an optional ACP worker specification. It returns the
 // new turn's stop key, which identifies the worker that was started.
 func (d Dir) start(argv []string, workdir, prompt string, env []string, acp string) (string, error) {
+	return d.startTurn(argv, workdir, prompt, env, acp, false)
+}
+
+// StartWithPromptFile is Start for an agent that reads its prompt from the
+// private prompt file it was pointed at: its standard input is empty.
+func (d Dir) StartWithPromptFile(argv []string, workdir, prompt string, env []string) error {
+	_, err := d.startTurn(argv, workdir, prompt, env, "", true)
+	return err
+}
+
+// startTurn says explicitly what the turn's standard input is, after removing
+// the variable that carries it from the loop's own entries, so a value set
+// anywhere else can never take a prompt away from a turn.
+func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp string, emptyStdin bool) (string, error) {
+	kept := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, envTurnStdin) {
+			kept = append(kept, kv)
+		}
+	}
+	stdin := "prompt"
+	if emptyStdin {
+		stdin = "none"
+	}
+	env = append(kept, envTurnStdin+"="+stdin)
 	if len(argv) == 0 {
 		return "", notSpawned{errors.New("runner: empty command")}
 	}
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
 		return "", notSpawned{err}
 	}
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json"} {
+	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", waitAdoptedFile} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
@@ -148,12 +173,34 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 
 // Stop asks the live wrapper to stop its own turn. Saved PIDs never authorize signals.
 func (d Dir) Stop() error {
-	st, err := d.Status()
+	// Only the turn's phase and key are needed: its output is not read.
+	st, err := d.statusWithOutputLimit(skipOutput)
 	if err != nil || st.Phase != Running {
 		return err
 	}
 	return d.requestStop(st.Record.StopKey)
 }
+
+// waitAdoptedFile records that the awaiting-user hold for a turn that ended
+// waiting on a person has been saved. It names the turn, so it cannot apply
+// to a later one, and a new turn removes it.
+const waitAdoptedFile = "wait-adopted"
+
+func waitKey(rec Record) string {
+	return rec.StopKey + "|" + rec.StartedAt.UTC().Format(time.RFC3339Nano)
+}
+
+func (d Dir) waitAdopted(rec Record) bool {
+	b, err := os.ReadFile(d.path(waitAdoptedFile))
+	return err == nil && strings.TrimSpace(string(b)) == waitKey(rec)
+}
+
+func (d Dir) adoptWait(rec Record) error {
+	return os.WriteFile(d.path(waitAdoptedFile), []byte(waitKey(rec)+"\n"), 0o600)
+}
+
+// errOutputOverLimit says a turn printed more than its adapter reads.
+var errOutputOverLimit = errors.New("runner: turn output exceeds the adapter limit")
 
 // envList supplies overrides to subprocesses without changing the supervisor's
 // environment or persisting values in turn metadata.
@@ -165,7 +212,13 @@ func envList(env map[string]string) []string {
 	return entries
 }
 
+// skipOutput, as an output limit, reads no output at all.
+const skipOutput = -1
+
 func (d Dir) readOutput(limit int64) ([]byte, error) {
+	if limit == skipOutput {
+		return nil, nil
+	}
 	if limit == 0 {
 		b, _ := os.ReadFile(d.path("stdout"))
 		return b, nil
@@ -190,7 +243,7 @@ func (d Dir) readOutput(limit int64) ([]byte, error) {
 		return nil, errors.New("runner: turn output could not be read")
 	}
 	if int64(len(b)) > limit {
-		return nil, errors.New("runner: turn output exceeds the adapter limit")
+		return nil, errOutputOverLimit
 	}
 	return b, nil
 }
