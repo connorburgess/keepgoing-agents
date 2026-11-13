@@ -39,3 +39,7 @@ python3 integrations/macos/scripts/smoke-contract.py /path/to/keepgoing
 XCTest requires a toolchain containing that framework, such as full Xcode; some Command Line Tools installations can build the app but cannot run XCTest. macOS CI builds the app and runs the tests plus the contract smoke check. The smoke compiles the reader without XCTest and checks the real Go CLI against an isolated fictional disabled loop, unchanged files and a provider-command trap. Unit fixtures cover malformed/version-mismatched/partial replies, private metadata, identity mismatches, inert text, argument separation, output caps and timeouts.
 
 Native build and the real-CLI fixture smoke pass locally. Automated evidence does not establish visual/accessibility correctness, Spaces/full-screen behavior, live provider compatibility or secure distribution. No installed loop or GUI was used for these fixture checks. Pause/stop, reviewed-ticket resume, open-thread support, optional setup installation, app-bundle signing/notarization, distribution and live UI verification remain planned. The existing CLI controls remain available separately; the preview does not add another supervisor.
+
+## License
+
+This preview is part of keepgoing and is source-available under the [Sustainable Use License 1.0](../../LICENSE); see the [licensing guide](../../LICENSING.md).
