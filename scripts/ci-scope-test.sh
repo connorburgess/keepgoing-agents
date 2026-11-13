@@ -17,7 +17,7 @@ check docs README.md
 check docs CHANGELOG.md AGENTS.md CONTRIBUTING.md SECURITY.md
 check docs docs/roadmap.md docs/assets/example.png docs/releases/v0.1.5.md
 check docs LICENSE
-check docs LICENSES/Apache-2.0.txt LICENSING NOTICE LICENSE.txt
+check docs LICENSES/Example-1.0.txt LICENSING NOTICE LICENSE.txt
 check docs integrations/macos/README.md "docs/café-项目.md"
 
 # Anything else runs everything.
