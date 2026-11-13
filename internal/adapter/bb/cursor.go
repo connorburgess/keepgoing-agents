@@ -12,6 +12,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // bb returns log events oldest first and pages forward with --after-seq, so
@@ -215,7 +216,7 @@ func (a *Adapter) loadCursor() Cursor {
 	}
 	var c Cursor
 	if p := a.cursorPath(); p != "" {
-		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
+		if b, err := snapshot.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
 			return c
 		}
 	}
@@ -236,7 +237,7 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 	if os.WriteFile(tmp, append(b, '\n'), 0o600) != nil {
 		return false
 	}
-	if os.Rename(tmp, p) != nil {
+	if snapshot.Replace(tmp, p) != nil {
 		return false
 	}
 	a.mem = &c
