@@ -70,7 +70,7 @@ func TestChildWorkVerifiesIdentityAndRelationship(t *testing.T) {
 				}
 				return []byte(tc.show), nil
 			}
-			active, unknown, _, _ := a.childWork(context.Background())
+			active, unknown, _, _, _ := a.childWork(context.Background())
 			if active != tc.active || unknown != tc.unknown || shows > 1 {
 				t.Fatalf("active=%d unknown=%v shows=%d", active, unknown, shows)
 			}
@@ -90,7 +90,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 			}
 			return []byte(list), nil
 		}
-		if n, u, _, e := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
+		if n, u, _, e, _ := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
 			t.Fatal("incomplete inventory permitted a wake")
 		}
 	}
@@ -100,7 +100,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 		<-ctx.Done()
 		return []byte(`[]`), nil
 	}
-	if n, u, _, e := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
+	if n, u, _, e, _ := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
 		t.Fatal("expired query permitted a wake")
 	}
 }
@@ -188,7 +188,7 @@ func TestChildWorkListsErroredChildren(t *testing.T) {
 				t.Fatalf("a child was asked for more than status: %v", args)
 				return nil, nil
 			}
-			active, unknown, waiting, errored := a.childWork(context.Background())
+			active, unknown, waiting, errored, _ := a.childWork(context.Background())
 			if active != tc.wantActive || unknown != tc.wantUnknown || strings.Join(errored, ",") != tc.wantErrored || strings.Join(waiting, ",") != tc.wantWaiting {
 				t.Fatalf("active=%d unknown=%t waiting=%v errored=%v", active, unknown, waiting, errored)
 			}
@@ -231,5 +231,48 @@ func TestObserveErroredChildrenDoNotCountAsRunningWork(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Healthy children are the verified ones with a known status other than
+// error. An unknown status, an unreadable child or one that is not a direct
+// child is never listed as healthy.
+func TestChildWorkListsHealthyChildren(t *testing.T) {
+	show := func(id, status string) string {
+		return fmt.Sprintf(`{"thread":{"id":%q,"parentThreadId":"thr_example123","status":%q}}`, id, status)
+	}
+	shows := map[string]string{
+		"thr_a": show("thr_a", "active"), "thr_b": show("thr_b", "idle"), "thr_c": show("thr_c", "error"),
+		"thr_d": show("thr_d", "starting"), "thr_e": show("thr_e", "fictional-new-status"), "thr_f": `fictional unreadable reply`,
+		"thr_g": strings.Replace(show("thr_g", "idle"), "thr_example123", "thr_other", 1),
+	}
+	a, _ := newFake(`{"thread":{"status":"idle"}}`, `[]`, false)
+	a.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		switch args[1] {
+		case "list":
+			return []byte(`[{"id":"thr_a"},{"id":"thr_b"},{"id":"thr_c"},{"id":"thr_d"},{"id":"thr_e"},{"id":"thr_f"},{"id":"thr_g"}]`), nil
+		case "show":
+			return []byte(shows[args[2]]), nil
+		}
+		return []byte(`[]`), nil
+	}
+	_, unknown, _, errored, healthy := a.childWork(context.Background())
+	if !unknown || strings.Join(errored, ",") != "thr_c" || strings.Join(healthy, ",") != "thr_a,thr_b,thr_d" {
+		t.Fatalf("unknown=%t errored=%v healthy=%v", unknown, errored, healthy)
+	}
+	obsAdapter, _ := newFake(`{"thread":{"status":"idle"}}`, `[]`, false)
+	base := obsAdapter.run
+	obsAdapter.run = func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+		if args[1] == "list" {
+			return []byte(`[{"id":"thr_a"},{"id":"thr_c"}]`), nil
+		}
+		if args[1] == "show" && shows[args[2]] != "" {
+			return []byte(shows[args[2]]), nil
+		}
+		return base(ctx, stdin, args...)
+	}
+	obs, err := obsAdapter.Observe(context.Background())
+	if err != nil || strings.Join(obs.HealthyChildren, ",") != "thr_a" || strings.Join(obs.ErroredChildren, ",") != "thr_c" {
+		t.Fatalf("%+v %v", obs, err)
 	}
 }
