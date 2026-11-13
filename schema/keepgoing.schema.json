@@ -159,6 +159,10 @@
             },
             "wait_if_reset_within": {
               "$ref": "#/$defs/duration"
+            },
+            "report_wait_after": {
+              "$ref": "#/$defs/duration",
+              "description": "report once when a limit wait with no possible handoff has a reset further away than this (default 6h)"
             }
           }
         },
@@ -213,6 +217,7 @@
                   "error",
                   "probe_failed",
                   "switch_back",
+                  "limit_wait",
                   "test"
                 ]
               }

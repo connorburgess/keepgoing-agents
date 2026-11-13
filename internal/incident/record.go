@@ -19,6 +19,7 @@ import (
 // source details are explicitly unavailable.
 type Record struct {
 	Kind                 string         `json:"kind"`
+	LimitWaitReport      string         `json:"limitWaitReport"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -146,7 +147,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r)
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none"
 }
 
 func limitWaitCause(cause string) bool {
@@ -186,7 +187,7 @@ func tierOf(r Record) string {
 		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
 			return TierKey
 		}
-		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) {
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" {
 			return TierCondition
 		}
 		if repeatable(r) && r.Outcome != "failed" {
@@ -448,6 +449,11 @@ func clean(r Record) Record {
 	r.Action = cleanAction(r.Action)
 	r.Decisions = cleanDecisions(r.Decisions)
 	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved")
+	// Whether this check detected a long limit wait and what it did about the one report.
+	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
+	if r.Kind != "tick" {
+		r.LimitWaitReport = "none"
+	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
 	if o.Availability != "observed" {
