@@ -110,6 +110,7 @@ Schema version 1 has these fields:
 | --- | --- |
 | `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
 | `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
+| `startJson` | Unreleased. `true` when this build's `start` accepts `--background --json`, which reports a [second loop on one session](operations.md#one-loop-per-session) as a structured refusal. Absent in older results: do not pass the flag. |
 | `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
 | `taskPath`, `goal` | Additive fields in v0.1.5, present only with `--with-goal`. `taskPath` identifies the private snapshot; `goal` describes `promptContext: true`, `titleSource: "loop_name"`, `specificationSource: "task_snapshot"`, and, after creation only, `record` with generated ID/revision/state. Preview has no saved record. Private task text and goal references are omitted. |
 | `taskBinding` | `snapshot`: task input is imported once into `promptPath` (or `taskPath` for goal setup in v0.1.5); the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
