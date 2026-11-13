@@ -275,7 +275,7 @@ public enum MenuBuilder {
         if let panel, panel.running {
             // Named for what it stops, the page, so it is not taken for
             // stopping a loop; what happens to the loops is in the help.
-            rows.append(action("Stop the Panel Page", .stopPanel, symbol: "xmark.circle", help: "Stops the panel's background server. Your loops keep running.", detail: stopsIn(panel.idleRemainingSeconds)))
+            rows.append(action("Stop the Panel Page", .stopPanel, symbol: "xmark.circle", help: "Stops the panel's background process. Your loops keep running.", detail: stopsIn(panel.idleRemainingSeconds)))
         }
         rows.append(action("Quit keepgoing Menu", .quit, symbol: "power", help: "Quits this menu. Supervision keeps running."))
         rows.append(separator)

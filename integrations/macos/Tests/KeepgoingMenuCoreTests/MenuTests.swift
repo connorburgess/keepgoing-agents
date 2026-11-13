@@ -86,7 +86,7 @@ final class MenuTests: XCTestCase {
         let stop = model.rows.first { $0.command == .stopPanel }!
         XCTAssertEqual(stop.detail, "stops by itself in 23 min")
         XCTAssertEqual(stop.accessibilityLabel, "Stop the Panel Page, stops by itself in 23 min")
-        XCTAssertEqual(stop.accessibilityHelp, "Stops the panel's background server. Your loops keep running.")
+        XCTAssertEqual(stop.accessibilityHelp, "Stops the panel's background process. Your loops keep running.")
         // It does not borrow the symbol of a stopped loop.
         XCTAssertNotEqual(stop.symbol, MenuBuilder.symbols["stopped"])
         XCTAssertEqual(MenuBuilder.stopsIn(59), "stops by itself in under a minute")

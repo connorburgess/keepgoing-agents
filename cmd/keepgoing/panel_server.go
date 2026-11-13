@@ -473,7 +473,7 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 			reply.Error = "the request could not be read"
 		} else if age := time.Since(req.At); req.At.IsZero() || age > panelRequestMaxAge || age < -panelRequestMaxAge {
 			// It waited too long to be what its sender still wants.
-			reply.Error = "the request reached the server too late"
+			reply.Error = "the request reached the panel too late"
 			req.Op = ""
 		} else {
 			switch req.Op {
