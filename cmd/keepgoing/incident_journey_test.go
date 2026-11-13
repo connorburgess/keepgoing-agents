@@ -63,7 +63,7 @@ func isolatedJourney(t *testing.T, f *fixture, want string) []incident.Record {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.SchemaVersion != 6 || j.Dropped != 0 || j.NextSequence != uint64(len(j.Records)+1) {
+	if j.SchemaVersion != incident.SchemaVersion || j.Dropped != 0 || j.NextSequence != uint64(len(j.Records)+1) {
 		t.Fatal(j)
 	}
 	var got []string

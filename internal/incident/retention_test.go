@@ -428,7 +428,7 @@ func TestLegacyJournalIsCollapsedOnUpgradeNotPrunedInBulk(t *testing.T) {
 	mustAppend(t, dir, r)
 	j = loadAccounted(t, dir)
 	// first..latest of the active run, the hold, first..latest of the held run, the wake.
-	if j.SchemaVersion != 6 || j.Dropped != 43 || j.Pruned.total() != 0 || len(j.Records) != 6 || j.Collapsed != 98+153 || j.NextSequence != 301 {
+	if j.SchemaVersion != SchemaVersion || j.Dropped != 43 || j.Pruned.total() != 0 || len(j.Records) != 6 || j.Collapsed != 98+153 || j.NextSequence != 301 {
 		t.Fatalf("schema %d dropped %d pruned %+v retained %d collapsed %d", j.SchemaVersion, j.Dropped, j.Pruned, len(j.Records), j.Collapsed)
 	}
 	for i, want := range []uint64{44, 143, 144, 145, 299, 300} {

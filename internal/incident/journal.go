@@ -17,8 +17,9 @@ const FileName = "incidents.json"
 
 // SchemaVersion is written on append. Version 5 adds the post-check target
 // key, probe results, retarget records and limit-wait causes. Version 6 adds
-// retention tiers and collapsed runs of identical checks.
-const SchemaVersion = 6
+// retention tiers and collapsed runs of identical checks. Version 7 adds the
+// long limit-wait report marker.
+const SchemaVersion = 7
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -165,6 +166,9 @@ func Load(dir string) (Journal, error) {
 				r.Kind = "unavailable"
 			}
 		}
+		if j.SchemaVersion < 7 {
+			r.LimitWaitReport = ""
+		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
 		}
@@ -257,6 +261,11 @@ func (j *Journal) encode() ([]byte, error) {
 // repeated checks are collapsed instead of pruned in bulk. Sequence numbers
 // and the legacy dropped count are preserved.
 func upgrade(old Journal) Journal {
+	if old.SchemaVersion >= 6 {
+		// Already tiered and collapsed; later versions only add record fields.
+		old.SchemaVersion = SchemaVersion
+		return old
+	}
 	j := Journal{SchemaVersion: SchemaVersion, NextSequence: old.NextSequence, Dropped: old.Dropped, Records: make([]Record, 0, len(old.Records))}
 	for _, r := range old.Records {
 		j.add(r)
