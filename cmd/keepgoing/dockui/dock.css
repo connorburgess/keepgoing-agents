@@ -271,7 +271,15 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .lanes a { color: var(--ink); font-weight: 550; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 0.2em; }
 .lanes a:hover { text-decoration-color: currentColor; }
 
+/* The page shown for a used or expired link. It has no session and no script. */
+.notice { max-width: 76rem; margin: 0 auto; padding: 2.5rem 1.5rem 3rem; }
+.notice > * { max-width: 62ch; }
+.notice p { margin: 0.9rem 0 0; color: var(--ink-2); }
+.notice .lede { margin-top: 0.6rem; color: var(--ink); font-size: 1.0625rem; }
+.command { -webkit-user-select: all; user-select: all; padding: 0.1rem 0.4rem; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
+
 @media (max-width: 52rem) {
+  .notice { padding: 1.5rem 1rem 2rem; }
   .layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; padding: 1.1rem 1rem 1rem; }
   .picker { position: static; max-height: none; overflow: visible; }
   .layout[data-view="home"] .pane { order: -1; }

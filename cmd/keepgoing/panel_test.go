@@ -133,7 +133,7 @@ func TestPanelOpeningAddressWorksOnceAndBecomesASessionCookie(t *testing.T) {
 	// A second use, and a code that never existed, get the plain page.
 	for _, used := range []string{address, "http://127.0.0.1:" + strconv.Itoa(rec.Port) + "/open/" + strings.Repeat("0", 64), "http://127.0.0.1:" + strconv.Itoa(rec.Port) + "/open/"} {
 		resp, body := dockRequest(t, http.MethodGet, used, nil)
-		if resp.StatusCode != http.StatusGone || len(resp.Cookies()) != 0 || !strings.Contains(body, "Run <code>keepgoing panel</code> again") || strings.Contains(body, "<script") {
+		if resp.StatusCode != http.StatusGone || len(resp.Cookies()) != 0 || !strings.Contains(body, `Run <code class="command">keepgoing panel</code>`) || strings.Contains(body, "style=") || strings.Contains(body, "<script") {
 			t.Fatalf("reused address: %d %q", resp.StatusCode, body)
 		}
 	}

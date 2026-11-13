@@ -34,23 +34,33 @@ const (
 )
 
 // panelExpiredPage is shown for an opening address that was used or has
-// expired, and for a page address whose session is gone. It is plain HTML
-// with no script or style, so it needs nothing the content policy forbids.
+// expired, and for a page address whose session is gone. It has no script,
+// and its only stylesheet is the panel's own, served without a session at
+// /panel.css, so it looks like the page it stands in for and needs nothing
+// the content policy forbids.
 const panelExpiredPage = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
-<title>keepgoing: open the panel again</title>
+<title>keepgoing: this link has expired</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/panel.css">
 </head>
 <body>
-<main>
-<h1>This address no longer opens the keepgoing panel</h1>
-<p>An opening address works once, for 30 seconds, and a page address works only in the browser session that opened it.</p>
-<p>Run <code>keepgoing panel</code> again to open the panel.</p>
-<p>Your loops are not affected: the panel only shows them.</p>
+<header class="bar">
+  <div class="bar-in">
+    <p class="brand"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>keepgoing</span></p>
+  </div>
+</header>
+<main class="notice">
+  <h1>This link to the keepgoing panel has expired</h1>
+  <p class="lede">Run <code class="command">keepgoing panel</code> in a terminal to open the panel again.</p>
+  <p>Each link opens the panel once, within 30 seconds. An open panel stops working when the browser session ends or the panel server stops.</p>
+  <p>Your loops are not affected. The panel only shows them.</p>
 </main>
 </body>
 </html>
@@ -215,6 +225,10 @@ func (h *panelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Nothing but the instance ID: no version, time, port or count.
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"instance": h.state.instance})
+	case r.URL.Path == "/panel.css":
+		// The stylesheet holds nothing private; the expired page needs it
+		// without a session.
+		h.page.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
 	case strings.HasPrefix(r.URL.Path, "/open/"):
 		h.open(w, r)
 	case strings.HasPrefix(r.URL.Path, "/s/"):
