@@ -6,10 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
@@ -31,11 +37,24 @@ const (
 
 // Evidence labels for a chat/session reference.
 const (
-	evidenceConfigured  = "configured"  // the target's configured chat ID, for the open run's saved active target
-	evidenceObserved    = "observed"    // a saved runner resume ID read from disk, for the open run's saved active target
-	evidenceHistorical  = "historical"  // recorded for a closed run, or for a target that is not the saved active target
+	evidenceConfigured  = "configured"  // the open run's link for the saved active target, still matching configuration
+	evidenceObserved    = "observed"    // the open run's link for the saved active target, still matching the runner's saved resume ID
+	evidenceHistorical  = "historical"  // a closed run, another target, a superseded chat, or no saved active target to compare
 	evidenceUnavailable = "unavailable" // nothing recorded
 )
+
+// Record availability. not_recorded means the file does not exist, which is
+// different from a default: nothing is reported in its place.
+const (
+	recordAvailable   = "available"
+	recordRecorded    = "recorded"
+	recordNotRecorded = "not_recorded"
+	recordUnavailable = "unavailable"
+)
+
+// runsRefPattern is every character a recorded reference can contain. --id is
+// refused outside it, so it can be echoed without forging output lines.
+var runsRefPattern = regexp.MustCompile(`^[A-Za-z0-9._:@/-]{1,512}$`)
 
 type runsReport struct {
 	SchemaVersion int        `json:"schemaVersion"`
@@ -51,7 +70,11 @@ type runsLoop struct {
 	RegistrationID string `json:"registrationId,omitempty"`
 	// Registration says whether the graph has seen this registry reference
 	// used: recorded, not_recorded, or unavailable when the graph is.
-	Registration string          `json:"registration,omitempty"`
+	Registration string `json:"registration,omitempty"`
+	// Binding is set with a registry selector: available when the registered
+	// configuration still names this loop and runtime directory, otherwise
+	// unavailable, and then nothing is read from the registered directory.
+	Binding      string          `json:"binding,omitempty"`
 	Loop         string          `json:"loop,omitempty"`
 	Graph        runsGraph       `json:"graph"`
 	Control      runsControl     `json:"control"`
@@ -100,11 +123,13 @@ type runsRun struct {
 	Invocation   string          `json:"invocation,omitempty"`
 	// SessionEvidence is unavailable when Sessions is empty, otherwise the
 	// strongest label among them.
-	SessionEvidence string           `json:"sessionEvidence"`
-	Sessions        []runsSession    `json:"sessions"`
-	GoalRevisions   []runsGoal       `json:"goalRevisions"`
-	Attempts        runsAttempts     `json:"attempts"`
-	Unrecorded      []runsUnrecorded `json:"unrecorded"`
+	SessionEvidence      string           `json:"sessionEvidence"`
+	Sessions             []runsSession    `json:"sessions"`
+	OmittedSessions      int              `json:"omittedSessions"`
+	GoalRevisions        []runsGoal       `json:"goalRevisions"`
+	OmittedGoalRevisions int              `json:"omittedGoalRevisions"`
+	Attempts             runsAttempts     `json:"attempts"`
+	Unrecorded           []runsUnrecorded `json:"unrecorded"`
 }
 
 type runsSession struct {
@@ -156,7 +181,9 @@ type runsUnrecorded struct {
 }
 
 type runsNode struct {
-	Ref          string          `json:"ref"`
+	Ref string `json:"ref"`
+	// Status is found, not_recorded, not_recorded_or_expired, or unavailable
+	// when the graph exists but cannot be read.
 	Status       rungraph.Status `json:"status"`
 	Type         string          `json:"type,omitempty"`
 	RecordedAt   *time.Time      `json:"recordedAt,omitempty"`
@@ -169,6 +196,9 @@ type runsNode struct {
 	// through its run and target alias. Newest first.
 	Attempts        []runsAttempt `json:"attempts,omitempty"`
 	OmittedAttempts int           `json:"omittedAttempts,omitempty"`
+	// AmbiguousAttempts counts sends in this chat's runs, for its target
+	// alias, that cannot be attributed because the alias named several chats.
+	AmbiguousAttempts int `json:"ambiguousAttempts,omitempty"`
 }
 
 type runsEdge struct {
@@ -219,7 +249,7 @@ func runsCommand(e env, args []string) int {
 	registered := set["registry-id"] || *all
 	if fs.NArg() != 0 || selectors > 1 || *limit < 1 || *limit > runsMaxLimit || (set["state-dir"] && *dir == "") ||
 		(set["registry-id"] && !clientRegistrationID.MatchString(*registration)) || (set["directory"] && !registered) ||
-		(*all && set["id"]) || (set["id"] && (*ref == "" || len(*ref) > 512)) {
+		(*all && set["id"]) || (set["id"] && !runsRefPattern.MatchString(*ref)) {
 		e.errf("runs: select one of -c, --state-dir, --registry-id or --all; --directory needs a registry selector; --id needs one loop; limit 1-256; no positional arguments")
 		return exitUsage
 	}
@@ -249,22 +279,38 @@ func runsCommand(e env, args []string) int {
 			if *all {
 				limitRuns = 0 // The registry view shows each loop's current run only.
 			}
-			loop, g, bad := readRunsLoop(entry.StateDir, limitRuns)
-			loop.RegistrationID, loop.Loop = entry.ID, entry.Loop
-			loop.Registration = "unavailable"
+			// Revalidate the binding as registered status does. If the
+			// configuration now names another loop or runtime directory, the
+			// registered directory's runs are not printed under this name.
+			cfg, bound := clientConfig(entry)
+			if !bound {
+				failed = true
+				r.Loops = append(r.Loops, runsLoop{RegistrationID: entry.ID, Loop: entry.Loop, Binding: recordUnavailable, Registration: recordUnavailable,
+					Graph: runsGraph{Availability: recordUnavailable}, Control: runsControl{Availability: recordUnavailable}, ActiveTarget: runsTarget{Availability: recordUnavailable},
+					Recent: []runsRun{}, Blocker: runsUnavailable{Availability: recordUnavailable, Reason: "no_validated_blocker_relationship"}})
+				if set["id"] {
+					r.View, r.Node = "node", &runsNode{Ref: *ref, Status: recordUnavailable, Edges: []runsEdge{}}
+				}
+				continue
+			}
+			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit}
+			loop, bad := c.readLoop(limitRuns)
+			loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
+			loop.Registration = recordUnavailable
 			if loop.Graph.Availability == rungraph.Available || loop.Graph.Availability == rungraph.Missing {
-				loop.Registration = "not_recorded"
-				if n, status := g.Lookup(entry.ID); status == rungraph.Found && n.Type == rungraph.RegistrationNode {
-					loop.Registration = "recorded"
+				loop.Registration = recordNotRecorded
+				if n, status := c.g.Lookup(entry.ID); status == rungraph.Found && n.Type == rungraph.RegistrationNode {
+					loop.Registration = recordRecorded
 				}
 			}
 			failed = failed || bad
 			r.Loops = append(r.Loops, loop)
 			if set["id"] {
-				r.View, r.Node = "node", readRunsNode(&g, *ref, *limit, loop.ActiveTarget.Alias)
+				r.View, r.Node = "node", c.readNode(*ref)
 			}
 		}
 	default:
+		c := runsContext{dir: *dir, limit: *limit}
 		name := ""
 		if *dir == "" {
 			cfg, err := config.Load(*path)
@@ -272,13 +318,13 @@ func runsCommand(e env, args []string) int {
 				e.errf("runs: configuration unavailable; repair it or select --state-dir to read private records directly")
 				return exitUsage
 			}
-			*dir, name = cfg.Loop.StateDir, cfg.Loop.Name
+			c.dir, c.cfg, name = cfg.Loop.StateDir, cfg, cfg.Loop.Name
 		}
-		loop, g, bad := readRunsLoop(*dir, *limit)
+		loop, bad := c.readLoop(*limit)
 		loop.Loop, failed = name, bad
 		r.Loops = append(r.Loops, loop)
 		if set["id"] {
-			r.View, r.Node = "node", readRunsNode(&g, *ref, *limit, loop.ActiveTarget.Alias)
+			r.View, r.Node = "node", c.readNode(*ref)
 		}
 	}
 	if *asJSON {
@@ -307,53 +353,109 @@ func runsEntries(dir, id string, all bool) ([]registry.Entry, bool) {
 	return f.Entries, err == nil
 }
 
-// readRunsLoop reads one state directory. Each file is an independent
-// snapshot; none is locked and none is created.
-func readRunsLoop(dir string, limit int) (runsLoop, rungraph.Graph, bool) {
-	loop := runsLoop{Recent: []runsRun{}, Blocker: runsUnavailable{Availability: "unavailable", Reason: "no_validated_blocker_relationship"}}
-	g, availability := rungraph.Load(dir)
-	failed := availability == rungraph.Unsupported || availability == rungraph.Corrupt
-	loop.Graph = runsGraph{Availability: availability}
-	loop.ActiveTarget = runsTarget{Availability: "unavailable"}
-	active := ""
-	if st, err := state.Load(dir); err == nil {
-		active = st.Target()
-		loop.ActiveTarget = runsTarget{Availability: "recorded", Alias: active}
-	} else {
-		failed = true
+// runsContext is one loop's read. cfg is nil with --state-dir: then nothing
+// can be compared with configuration.
+type runsContext struct {
+	dir       string
+	cfg       *config.Config
+	limit     int
+	g         rungraph.Graph
+	available rungraph.Availability
+	active    string
+}
+
+// absent reports whether a record file does not exist, without creating or
+// following anything.
+func absent(dir, name string) bool {
+	_, err := os.Lstat(filepath.Join(dir, name))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// readLoop reads one state directory. Each file is an independent snapshot;
+// none is locked and none is created. A file that does not exist is reported
+// as not_recorded, never as the default it would be read as.
+func (c *runsContext) readLoop(limitRuns int) (runsLoop, bool) {
+	loop := runsLoop{Recent: []runsRun{}, Blocker: runsUnavailable{Availability: recordUnavailable, Reason: "no_validated_blocker_relationship"}}
+	c.g, c.available = rungraph.Load(c.dir)
+	failed := c.available == rungraph.Unsupported || c.available == rungraph.Corrupt
+	loop.Graph = runsGraph{Availability: c.available}
+	switch st, err := state.Load(c.dir); {
+	case absent(c.dir, state.FileName):
+		loop.ActiveTarget = runsTarget{Availability: recordNotRecorded}
+	case err != nil:
+		loop.ActiveTarget, failed = runsTarget{Availability: recordUnavailable}, true
+	default:
+		c.active = st.Target()
+		loop.ActiveTarget = runsTarget{Availability: recordRecorded, Alias: c.active}
 	}
-	loop.Control = runsControl{Availability: "unavailable"}
-	ctl, err := control.Load(dir)
-	if err == nil {
-		loop.Control = runsControl{Availability: "available", State: ctl.Summary()}
-	} else {
-		failed = true
+	ctl, err := control.Load(c.dir)
+	controlKnown := false
+	switch {
+	case absent(c.dir, control.FileName):
+		loop.Control = runsControl{Availability: recordNotRecorded}
+	case err != nil:
+		loop.Control, failed = runsControl{Availability: recordUnavailable}, true
+	default:
+		loop.Control, controlKnown = runsControl{Availability: recordAvailable, State: ctl.Summary()}, true
 	}
-	if availability != rungraph.Available {
-		return loop, g, failed
+	if c.available != rungraph.Available {
+		return loop, failed
 	}
+	g := &c.g
 	updated, dropped := g.UpdatedAt, g.Dropped
 	loop.Graph.SchemaVersion, loop.Graph.LoopID, loop.Graph.UpdatedAt, loop.Graph.Dropped = g.SchemaVersion, g.LoopID, &updated, &dropped
-	if err == nil {
+	if controlKnown {
 		loop.Conflict = g.Conflict(rungraph.GateOf(ctl))
 	}
 	for i := len(g.Runs) - 1; i >= 0; i-- {
 		id := g.Runs[i].ID
 		if id == g.CurrentRun {
-			run := projectRun(&g, id, active)
+			run := c.projectRun(id)
 			loop.Current = &run
 			continue
 		}
-		if len(loop.Recent) >= limit {
+		if len(loop.Recent) >= limitRuns {
 			loop.OmittedRuns++
 			continue
 		}
-		loop.Recent = append(loop.Recent, projectRun(&g, id, active))
+		loop.Recent = append(loop.Recent, c.projectRun(id))
 	}
-	return loop, g, failed
+	return loop, failed
 }
 
-func projectRun(g *rungraph.Graph, id, active string) runsRun {
+// current reports whether a session link still names the chat its target
+// alias resolves to now. A headless link is compared with the runner's saved
+// resume ID on disk. A configured link is compared with the loaded
+// configuration; without one (--state-dir) it counts only when it is the
+// alias's single chat in the run, because nothing says which of several is
+// in use.
+func (c *runsContext) current(run rungraph.Node, e rungraph.Edge) bool {
+	_, id, _ := strings.Cut(strings.TrimPrefix(e.To, "session:"), "/")
+	if e.Source == rungraph.SourceRunnerFile {
+		saved, err := runner.Dir(filepath.Join(c.dir, "targets", e.Target)).InspectSession()
+		return err == nil && saved != "" && saved == id
+	}
+	if c.cfg != nil {
+		agent := c.cfg.Loop.Agent
+		if e.Target != state.Primary {
+			candidate, ok := c.cfg.FallbackSet.Find(e.Target)
+			if !ok {
+				return false
+			}
+			agent = candidate.Agent
+		}
+		return agent.BB != nil && agent.BB.Thread == id
+	}
+	for _, other := range run.Edges {
+		if other.Type == rungraph.EdgeSession && other.Target == e.Target && other.To != e.To {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *runsContext) projectRun(id string) runsRun {
+	g := &c.g
 	n, _ := g.Lookup(id)
 	r := *n.Run
 	out := runsRun{ID: r.ID, State: "open", Origin: r.Origin, RecordedAt: r.RecordedAt, Source: r.Source, Reopens: r.Reopens,
@@ -369,19 +471,28 @@ func projectRun(g *rungraph.Graph, id, active string) runsRun {
 		switch e.Type {
 		case rungraph.EdgeSession:
 			evidence := evidenceHistorical
-			if !closed && active != "" && e.Target == active {
+			if !closed && c.active != "" && e.Target == c.active && c.current(n, e) {
 				evidence = evidenceConfigured
 				if e.Source == rungraph.SourceRunnerFile {
 					evidence = evidenceObserved
 				}
 			}
-			provider, session, _ := strings.Cut(strings.TrimPrefix(e.To, "session:"), "/")
-			out.Sessions = append(out.Sessions, runsSession{Ref: e.To, Provider: provider, ID: session, Target: e.Target, Evidence: evidence, Source: e.Source, RecordedAt: e.RecordedAt,
-				Link: runsUnavailable{Availability: "unavailable", Reason: "no_validated_link_format"}})
+			// The strongest label covers every session, shown or not.
 			if rank[evidence] > rank[out.SessionEvidence] {
 				out.SessionEvidence = evidence
 			}
+			if len(out.Sessions) >= c.limit {
+				out.OmittedSessions++
+				continue
+			}
+			provider, session, _ := strings.Cut(strings.TrimPrefix(e.To, "session:"), "/")
+			out.Sessions = append(out.Sessions, runsSession{Ref: e.To, Provider: provider, ID: session, Target: e.Target, Evidence: evidence, Source: e.Source, RecordedAt: e.RecordedAt,
+				Link: runsUnavailable{Availability: recordUnavailable, Reason: "no_validated_link_format"}})
 		case rungraph.EdgeGoalRevision:
+			if len(out.GoalRevisions) >= c.limit {
+				out.OmittedGoalRevisions++
+				continue
+			}
 			out.GoalRevisions = append(out.GoalRevisions, runsGoal{Ref: e.To, Source: e.Source, RecordedAt: e.RecordedAt})
 		case rungraph.EdgeAttempt:
 			attempts = append(attempts, e.To)
@@ -409,7 +520,7 @@ func projectRun(g *rungraph.Graph, id, active string) runsRun {
 
 func projectAttempt(g *rungraph.Graph, a rungraph.Attempt) runsAttempt {
 	out := runsAttempt{ID: a.ID, Run: a.Run, Target: a.Target, Action: a.Action, Mode: a.Mode, Outcome: a.Outcome, RecordedAt: a.RecordedAt,
-		Session: runsAttemptSession{Availability: "unavailable"}}
+		Session: runsAttemptSession{Availability: recordUnavailable}}
 	if !a.ReturnedAt.IsZero() {
 		at := a.ReturnedAt
 		out.ReturnedAt = &at
@@ -428,15 +539,22 @@ func projectAttempt(g *rungraph.Graph, a rungraph.Attempt) runsAttempt {
 			out.Session = runsAttemptSession{Availability: "ambiguous"}
 			break
 		}
-		out.Session = runsAttemptSession{Availability: "recorded", Ref: e.To}
+		out.Session = runsAttemptSession{Availability: recordRecorded, Ref: e.To}
 	}
 	return out
 }
 
-// readRunsNode resolves one exact reference. Nothing is searched or inferred:
-// an unknown reference reports the graph's own not-recorded status.
-func readRunsNode(g *rungraph.Graph, ref string, limit int, active string) *runsNode {
+// readNode resolves one exact reference. Nothing is searched or inferred. A
+// graph that exists but cannot be read answers unavailable, because the
+// reference may be in it; only a readable or absent graph can answer
+// not_recorded.
+func (c *runsContext) readNode(ref string) *runsNode {
 	out := &runsNode{Ref: ref, Edges: []runsEdge{}}
+	if c.available == rungraph.Unsupported || c.available == rungraph.Corrupt {
+		out.Status = recordUnavailable
+		return out
+	}
+	g := &c.g
 	if g.LoopID == "" {
 		out.Status = rungraph.NotRecorded
 		return out
@@ -452,7 +570,7 @@ func readRunsNode(g *rungraph.Graph, ref string, limit int, active string) *runs
 		out.RecordedAt = &at
 	}
 	for _, e := range n.Edges {
-		if len(out.Edges) >= limit {
+		if len(out.Edges) >= c.limit {
 			out.OmittedEdges++
 			continue
 		}
@@ -461,27 +579,48 @@ func readRunsNode(g *rungraph.Graph, ref string, limit int, active string) *runs
 	}
 	switch n.Type {
 	case rungraph.RunNode:
-		run := projectRun(g, n.Ref, active)
+		run := c.projectRun(n.Ref)
 		out.Run = &run
 	case rungraph.AttemptNode:
 		a := projectAttempt(g, *n.Attempt)
 		out.Attempt = &a
 	case rungraph.SessionNode:
-		// Back from a chat to the sends recorded for it: every attempt in a
-		// run that links this chat, for the alias that link was recorded for.
+		// Back from a chat to the sends recorded for it. A send belongs here
+		// when this is the only chat its run recorded for its target alias.
+		// Sends for an alias that named several chats are counted, not guessed.
+		linked := map[[2]string]bool{}
+		for _, e := range n.Edges {
+			if e.Type == rungraph.EdgeRun {
+				linked[[2]string{e.To, e.Target}] = true
+			}
+		}
 		for i := len(g.Attempts) - 1; i >= 0; i-- {
 			a := projectAttempt(g, g.Attempts[i])
-			if a.Session.Ref != ref {
-				continue
+			switch {
+			case a.Session.Ref == ref:
+				if len(out.Attempts) >= c.limit {
+					out.OmittedAttempts++
+					continue
+				}
+				out.Attempts = append(out.Attempts, a)
+			case a.Session.Availability == "ambiguous" && linked[[2]string{a.Run, a.Target}]:
+				out.AmbiguousAttempts++
 			}
-			if len(out.Attempts) >= limit {
-				out.OmittedAttempts++
-				continue
-			}
-			out.Attempts = append(out.Attempts, a)
 		}
 	}
 	return out
+}
+
+// runsSafe keeps recorded strings from forging terminal output. Recorded
+// references are already printable; target aliases come from configuration
+// and a hand-edited record could hold anything.
+func runsSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x21 || r > 0x7e {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 func printRuns(w io.Writer, r runsReport) {
@@ -489,9 +628,13 @@ func printRuns(w io.Writer, r runsReport) {
 	for _, l := range r.Loops {
 		fmt.Fprintln(w)
 		if l.RegistrationID != "" {
-			fmt.Fprintf(w, "registration: %s (%s) loop: %s\n", l.RegistrationID, l.Registration, l.Loop)
+			fmt.Fprintf(w, "registration: %s (%s) loop: %s\n", l.RegistrationID, l.Registration, runsSafe(l.Loop))
+			if l.Binding != recordAvailable {
+				fmt.Fprintln(w, "binding: unavailable; the registered configuration is missing or now names another loop or runtime directory, so nothing was read")
+				continue
+			}
 		} else if l.Loop != "" {
-			fmt.Fprintf(w, "loop: %s\n", l.Loop)
+			fmt.Fprintf(w, "loop: %s\n", runsSafe(l.Loop))
 		}
 		fmt.Fprintf(w, "graph: %s", l.Graph.Availability)
 		if l.Graph.LoopID != "" {
@@ -503,7 +646,7 @@ func printRuns(w io.Writer, r runsReport) {
 		}
 		fmt.Fprintf(w, "  saved active target: %s", l.ActiveTarget.Availability)
 		if l.ActiveTarget.Alias != "" {
-			fmt.Fprintf(w, " (%s)", l.ActiveTarget.Alias)
+			fmt.Fprintf(w, " (%s)", runsSafe(l.ActiveTarget.Alias))
 		}
 		fmt.Fprintln(w)
 		if l.Conflict != "" {
@@ -531,8 +674,11 @@ func printRuns(w io.Writer, r runsReport) {
 		fmt.Fprintf(w, "\n%d registered loops not shown; raise --limit\n", r.Omitted)
 	}
 	if n := r.Node; n != nil {
-		fmt.Fprintf(w, "\nreference %s: %s", n.Ref, n.Status)
+		fmt.Fprintf(w, "\nreference %s: %s", runsSafe(n.Ref), n.Status)
 		if n.Status != rungraph.Found {
+			if n.Status == recordUnavailable {
+				fmt.Fprint(w, " (the graph or binding could not be read, so the reference may exist)")
+			}
 			fmt.Fprintln(w)
 			return
 		}
@@ -545,9 +691,9 @@ func printRuns(w io.Writer, r runsReport) {
 			printAttempt(w, *n.Attempt)
 		}
 		for _, e := range n.Edges {
-			fmt.Fprintf(w, "  %s -> %s", e.Type, e.To)
+			fmt.Fprintf(w, "  %s -> %s", e.Type, runsSafe(e.To))
 			if e.Target != "" {
-				fmt.Fprintf(w, " [target %s]", e.Target)
+				fmt.Fprintf(w, " [target %s]", runsSafe(e.Target))
 			}
 			if !e.Resolves {
 				fmt.Fprint(w, " (not retained)")
@@ -563,6 +709,9 @@ func printRuns(w io.Writer, r runsReport) {
 		if n.OmittedAttempts > 0 {
 			fmt.Fprintf(w, "  %d more sends not shown; raise --limit\n", n.OmittedAttempts)
 		}
+		if n.AmbiguousAttempts > 0 {
+			fmt.Fprintf(w, "  %d sends not attributed: their target named more than one chat in the run\n", n.AmbiguousAttempts)
+		}
 	}
 }
 
@@ -576,13 +725,19 @@ func printRun(w io.Writer, label string, run runsRun) {
 		fmt.Fprintln(w, "  chat/session: unavailable (none recorded)")
 	}
 	for _, s := range run.Sessions {
-		fmt.Fprintf(w, "  chat/session: %s  target %s  %s (%s)\n", s.Ref, s.Target, s.Evidence, s.Source)
+		fmt.Fprintf(w, "  chat/session: %s  target %s  %s (%s)\n", runsSafe(s.Ref), runsSafe(s.Target), s.Evidence, s.Source)
+	}
+	if run.OmittedSessions > 0 {
+		fmt.Fprintf(w, "  %d more chat/session references not shown; raise --limit\n", run.OmittedSessions)
 	}
 	for _, u := range run.Unrecorded {
-		fmt.Fprintf(w, "  chat/session for target %s: unavailable (%s)\n", u.Target, u.Reason)
+		fmt.Fprintf(w, "  chat/session for target %s: unavailable (%s)\n", runsSafe(u.Target), runsSafe(u.Reason))
 	}
 	for _, g := range run.GoalRevisions {
-		fmt.Fprintf(w, "  goal revision: %s\n", g.Ref)
+		fmt.Fprintf(w, "  goal revision: %s\n", runsSafe(g.Ref))
+	}
+	if run.OmittedGoalRevisions > 0 {
+		fmt.Fprintf(w, "  %d more goal revisions not shown; raise --limit\n", run.OmittedGoalRevisions)
 	}
 	fmt.Fprintf(w, "  sends: %d recorded, %d unconfirmed\n", run.Attempts.Total, run.Attempts.Unconfirmed)
 	for _, a := range run.Attempts.Latest {
@@ -591,5 +746,12 @@ func printRun(w io.Writer, label string, run runsRun) {
 }
 
 func printAttempt(w io.Writer, a runsAttempt) {
-	fmt.Fprintf(w, "    %s  %s to %s  %s  %s\n", a.ID, a.Action, a.Target, a.Outcome, a.RecordedAt.Format(time.RFC3339))
+	chat := "chat/session " + a.Session.Availability
+	switch a.Session.Availability {
+	case recordRecorded:
+		chat = "chat/session " + runsSafe(a.Session.Ref)
+	case "ambiguous":
+		chat = "chat/session ambiguous (its target named more than one chat in the run)"
+	}
+	fmt.Fprintf(w, "    %s  %s to %s  %s  %s  run %s  %s\n", a.ID, runsSafe(a.Action), runsSafe(a.Target), a.Outcome, a.RecordedAt.Format(time.RFC3339), a.Run, chat)
 }

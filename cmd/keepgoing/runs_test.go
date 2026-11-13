@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -56,6 +57,14 @@ func runsFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := control.Save(dir, control.File{Enabled: true, Note: "PRIVATE-NOTE"}); err != nil {
+		t.Fatal(err)
+	}
+	// As a check leaves it: a saved active target and the fallback runner's
+	// saved resume ID.
+	if err := state.Save(dir, state.File{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Dir(filepath.Join(dir, "targets", "example-fallback")).SaveSession(runsHeadless); err != nil {
 		t.Fatal(err)
 	}
 	runsSync(t, dir, false, "start", 1)
@@ -343,8 +352,14 @@ func TestRunsReadsNeverChangeRecordsOrWaitForLocks(t *testing.T) {
 	absent := filepath.Join(t.TempDir(), "never-started")
 	code, r, raw := runsExec(t, "--state-dir", absent)
 	l := r.Loops[0]
-	if code != exitOK || l.Graph.Availability != rungraph.Missing || l.Current != nil || len(l.Recent) != 0 || l.Control.State != "disabled" || l.Graph.LoopID != "" {
-		t.Fatalf("%d %s", code, raw)
+	if code != exitOK || l.Graph.Availability != rungraph.Missing || l.Current != nil || len(l.Recent) != 0 || l.Graph.LoopID != "" ||
+		l.Control != (runsControl{Availability: recordNotRecorded}) || l.ActiveTarget != (runsTarget{Availability: recordNotRecorded}) {
+		t.Fatalf("absent records were reported as defaults: %d %s", code, raw)
+	}
+	for _, invented := range []string{"primary", "disabled", "enabled"} {
+		if strings.Contains(raw, `"`+invented+`"`) {
+			t.Fatalf("a default %q was printed for a record that does not exist", invented)
+		}
 	}
 	if code, r, _ := runsExec(t, "--state-dir", absent, "--id", runsID("run_", 1)); code != exitOK || r.Node.Status != rungraph.NotRecorded {
 		t.Fatal(code, r.Node)
@@ -370,7 +385,7 @@ func TestRunsUnusableRecordsArePartialResults(t *testing.T) {
 			}
 			code, r, raw := runsExec(t, "--state-dir", dir, "--id", runsID("run_", 2))
 			l := r.Loops[0]
-			if code != exitFailed || l.Graph.Availability != tt.want || l.Current != nil || l.Control.State != "enabled" || l.Conflict != "" || r.Node.Status != rungraph.NotRecorded {
+			if code != exitFailed || l.Graph.Availability != tt.want || l.Current != nil || l.Control.State != "enabled" || l.Conflict != "" || r.Node.Status != recordUnavailable || len(r.Node.Edges) != 0 {
 				t.Fatalf("%d %s", code, raw)
 			}
 			if b, _ := os.ReadFile(path); string(b) != tt.body {
@@ -419,9 +434,10 @@ func TestRunsRegistryViewSeparatesLoopsWithTheSameName(t *testing.T) {
 	if code != exitOK || r.View != "registry" || len(r.Loops) != 2 || r.Omitted != 0 {
 		t.Fatalf("%d %s", code, raw)
 	}
+	allOutput := raw
 	first, second := r.Loops[0], r.Loops[1]
 	if first.RegistrationID != entries[0].ID || first.Registration != "recorded" || first.Loop != "example-loop" || first.Current == nil || first.Current.ID != runsID("run_", 1) ||
-		first.Control.State != "paused" || first.Current.Sessions[0].Ref != "session:bb/thr_example" || len(first.Recent) != 0 {
+		first.Control.State != "paused" || first.Current.Sessions[0].Ref != "session:bb/thr_example" || len(first.Recent) != 0 || first.Binding != recordAvailable {
 		t.Fatalf("%+v", first)
 	}
 	if second.RegistrationID != entries[1].ID || second.Registration != "not_recorded" || second.Loop != first.Loop || second.Current != nil || second.Graph.Availability != rungraph.Missing {
@@ -446,8 +462,8 @@ func TestRunsRegistryViewSeparatesLoopsWithTheSameName(t *testing.T) {
 	if _, err := os.Stat(entries[1].StateDir); !os.IsNotExist(err) {
 		t.Fatal("a registry read created a runtime directory")
 	}
-	for _, private := range []string{entries[0].StateDir, entries[0].ConfigPath, "private-missing-task"} {
-		if strings.Contains(raw, private) {
+	for _, private := range []string{entries[0].StateDir, entries[0].ConfigPath, entries[1].StateDir, entries[1].ConfigPath, filepath.Dir(entries[0].ConfigPath), "private-missing-task", "nonexistent-provider-fixture"} {
+		if strings.Contains(raw, private) || strings.Contains(allOutput, private) {
 			t.Fatalf("private value %q in output", private)
 		}
 	}
@@ -466,6 +482,9 @@ func TestRunsRejectsAmbiguousOrOutOfRangeArguments(t *testing.T) {
 		{"--state-dir", dir, "--limit", "257"},
 		{"--state-dir", dir, "--id", ""},
 		{"--state-dir", dir, "--id", strings.Repeat("a", 513)},
+		{"--state-dir", dir, "--id", "run_1\nforged: line"},
+		{"--state-dir", dir, "--id", "run_1\x1b[2Jcleared"},
+		{"--state-dir", dir, "--id", "two words"},
 		{"--state-dir", dir, "--directory", dir},
 		{"--registry-id", "example-loop"},
 		{"--all", "--id", runsID("run_", 1)},
@@ -481,5 +500,256 @@ func TestRunsRejectsAmbiguousOrOutOfRangeArguments(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := run(context.Background(), []string{"runs", "--help"}, &out, &errs); code != exitOK || !strings.Contains(out.String(), "registry-id") {
 		t.Fatal(code, out.String())
+	}
+}
+
+// A corrupt, newer-schema or unreadable record must never answer a lookup
+// with not_recorded: the reference may be in it.
+func TestRunsLookupInAnUnreadableGraphIsUnavailableNotUnrecorded(t *testing.T) {
+	for name, body := range map[string]string{"truncated": `{"schemaVersion":1,"loopId":"superv`, "newer schema": `{"schemaVersion":2}`, "empty": ""} {
+		dir := runsFixture(t)
+		if err := os.WriteFile(filepath.Join(dir, rungraph.FileName), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, r, raw := runsExec(t, "--state-dir", dir, "--id", runsID("run_", 2))
+		if code != exitFailed || r.Node.Status != recordUnavailable || strings.Contains(raw, "not_recorded") {
+			t.Fatalf("%s: %d %s", name, code, raw)
+		}
+		var text, errs bytes.Buffer
+		run(context.Background(), []string{"runs", "--state-dir", dir, "--id", runsID("run_", 2)}, &text, &errs)
+		if !strings.Contains(text.String(), "reference "+runsID("run_", 2)+": unavailable") || strings.Contains(text.String(), "not_recorded") {
+			t.Fatalf("%s: %s", name, text.String())
+		}
+	}
+	// With no graph at all, not_recorded is the true answer.
+	if _, r, _ := runsExec(t, "--state-dir", t.TempDir(), "--id", runsID("run_", 2)); r.Node.Status != rungraph.NotRecorded {
+		t.Fatal(r.Node.Status)
+	}
+}
+
+// With no saved active target there is nothing to compare a chat with, so no
+// chat is labelled configured or observed.
+func TestRunsWithoutSavedTargetLabelsNoChatAsCurrent(t *testing.T) {
+	dir := runsFixture(t)
+	if err := os.Remove(filepath.Join(dir, state.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	_, r, raw := runsExec(t, "--state-dir", dir)
+	cur := r.Loops[0].Current
+	if r.Loops[0].ActiveTarget != (runsTarget{Availability: recordNotRecorded}) || cur.SessionEvidence != evidenceHistorical || strings.Contains(raw, `"evidence": "configured"`) || strings.Contains(raw, `"evidence": "observed"`) {
+		t.Fatalf("%s", raw)
+	}
+}
+
+func runsConfig(t *testing.T, stateDir, thread string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "keepgoing.yaml")
+	body := fmt.Sprintf("version: 1\nloop:\n  name: example-loop\n  state_dir: %q\n  adapter: bb\n  provider: example\n  bb: {thread: %s, cli: nonexistent-provider-fixture}\n  prompt: Continue the fictional loop.\n", stateDir, thread)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The configured chat was edited during the open run, so the alias has two
+// links. Only the one configuration names now is configured; the sends for
+// that alias cannot be attributed and are counted on both chats.
+func TestRunsSupersededChatIsHistoricalAndItsSendsAreCounted(t *testing.T) {
+	dir := runsFixture(t)
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) {
+		return g.Relate(rtSession("primary", "bb", "thr_example_b", rungraph.SourceConfigured))
+	})
+	evidence := func(r runsReport) string {
+		var out []string
+		for _, s := range r.Loops[0].Current.Sessions {
+			out = append(out, s.ID+"="+s.Evidence)
+		}
+		return strings.Join(out, " ")
+	}
+	for thread, want := range map[string]string{
+		"thr_example_b": "thr_example_a=historical " + runsHeadless + "=historical thr_example_b=configured",
+		"thr_example_a": "thr_example_a=configured " + runsHeadless + "=historical thr_example_b=historical",
+		// Configuration changed again and no check has recorded it yet.
+		"thr_example_c": "thr_example_a=historical " + runsHeadless + "=historical thr_example_b=historical",
+	} {
+		_, r, raw := runsExec(t, "-c", runsConfig(t, dir, thread))
+		if got := evidence(r); got != want || r.Loops[0].Loop != "example-loop" {
+			t.Fatalf("configured %s: %s\n%s", thread, got, raw)
+		}
+	}
+	// Without configuration nothing says which of the two is in use.
+	_, r, _ := runsExec(t, "--state-dir", dir)
+	if got := evidence(r); strings.Contains(got, evidenceConfigured) || r.Loops[0].Current.SessionEvidence != evidenceHistorical {
+		t.Fatal(got)
+	}
+	for _, chat := range []string{"session:bb/thr_example_a", "session:bb/thr_example_b"} {
+		_, r, raw := runsExec(t, "--state-dir", dir, "--id", chat)
+		if r.Node.AmbiguousAttempts != 1 {
+			t.Fatalf("%s: unattributed sends not counted: %s", chat, raw)
+		}
+		var text, errs bytes.Buffer
+		run(context.Background(), []string{"runs", "--state-dir", dir, "--id", chat}, &text, &errs)
+		if !strings.Contains(text.String(), "1 sends not attributed") {
+			t.Fatalf("%s", text.String())
+		}
+	}
+	// The earlier run recorded one chat for the alias, so its send still
+	// belongs to that chat.
+	_, r, _ = runsExec(t, "--state-dir", dir, "--id", "session:bb/thr_example_a")
+	if len(r.Node.Attempts) != 1 || r.Node.Attempts[0].ID != runsID("attempt_", 1) {
+		t.Fatalf("%+v", r.Node.Attempts)
+	}
+	// A headless link stops being observed when the runner's saved ID changes.
+	if err := state.Save(dir, state.File{ActiveTarget: "example-fallback"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Current.SessionEvidence != evidenceObserved {
+		t.Fatal(evidence(r))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "targets", "example-fallback", "session"), []byte("99999999-2222-3333-4444-555555555555\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, r, _ = runsExec(t, "--state-dir", dir); strings.Contains(evidence(r), evidenceObserved) {
+		t.Fatal(evidence(r))
+	}
+}
+
+// A registration whose configuration now names another runtime directory or
+// loop must not print the old directory's runs under the registered name.
+func TestRunsRegistrySelectorsRefuseAStaleBinding(t *testing.T) {
+	regDir, entry := clientFixture(t)
+	if err := control.Save(entry.StateDir, control.File{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	runsSync(t, entry.StateDir, false, "start", 1)
+	if code, r, _ := runsExec(t, "--registry-id", entry.ID, "--directory", regDir); code != exitOK || r.Loops[0].Binding != recordAvailable || r.Loops[0].Current == nil {
+		t.Fatal(code, r.Loops)
+	}
+	original, _ := os.ReadFile(entry.ConfigPath)
+	for name, edit := range map[string]func() error{
+		"state_dir changed": func() error {
+			return os.WriteFile(entry.ConfigPath, []byte(strings.Replace(string(original), "state_dir: state", "state_dir: elsewhere", 1)), 0o600)
+		},
+		"loop renamed": func() error {
+			return os.WriteFile(entry.ConfigPath, []byte(strings.Replace(string(original), "name: example-loop", "name: other-loop", 1)), 0o600)
+		},
+		"config removed": func() error { return os.Remove(entry.ConfigPath) },
+	} {
+		if err := edit(); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"--registry-id", entry.ID}, {"--all"}, {"--registry-id", entry.ID, "--id", runsID("run_", 1)}} {
+			code, r, raw := runsExec(t, append(args, "--directory", regDir)...)
+			l := r.Loops[0]
+			if code != exitFailed || l.Binding != recordUnavailable || l.Current != nil || l.Graph.LoopID != "" || l.Graph.Availability != recordUnavailable ||
+				strings.Contains(raw, runsID("run_", 1)) && r.Node == nil || (r.Node != nil && r.Node.Status != recordUnavailable) {
+				t.Fatalf("%s %v: %d %s", name, args, code, raw)
+			}
+		}
+		var text, errs bytes.Buffer
+		run(context.Background(), []string{"runs", "--registry-id", entry.ID, "--directory", regDir}, &text, &errs)
+		if !strings.Contains(text.String(), "binding: unavailable") || strings.Contains(text.String(), "current run") {
+			t.Fatalf("%s: %s", name, text.String())
+		}
+	}
+}
+
+// Text mode must be enough to walk every documented path: each step uses only
+// a reference printed by the step before.
+func TestRunsTextModeWalksEveryDocumentedPath(t *testing.T) {
+	dir := runsFixture(t)
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Register(runsID("loop_", 7), runsAt) })
+	text := func(args ...string) string {
+		t.Helper()
+		var out, errs bytes.Buffer
+		if code := run(context.Background(), append([]string{"runs", "--state-dir", dir}, args...), &out, &errs); code != exitOK {
+			t.Fatalf("%v: %d %s", args, code, errs.String())
+		}
+		return out.String()
+	}
+	// step follows ref and returns the reference printed after marker.
+	step := func(ref, marker string) string {
+		t.Helper()
+		out := text("--id", ref)
+		_, rest, found := strings.Cut(out[strings.Index(out, "\nreference "):], marker)
+		if !found {
+			t.Fatalf("%s does not print %q:\n%s", ref, marker, out)
+		}
+		return strings.Fields(rest)[0]
+	}
+	// registry reference → durable loop → current run → send → chat
+	loop := step(runsID("loop_", 7), "loop -> ")
+	if !strings.HasPrefix(loop, "supervision_") {
+		t.Fatal(loop)
+	}
+	current := step(loop, "current_run -> ")
+	earlier := step(loop, "\n  run -> ")
+	send := step(current, "attempt -> ")
+	if current != runsID("run_", 2) || earlier != runsID("run_", 1) || send != runsID("attempt_", 2) {
+		t.Fatal(current, earlier, send)
+	}
+	chat := step(send, "chat/session ")
+	if chat != "session:bb/thr_example_a" || step(send, "run -> ") != current || step(send, "goal_revision -> ") != runsGoalID+"@1" {
+		t.Fatal(chat)
+	}
+	// chat → the runs that recorded it → and its sends, each naming its run
+	back := text("--id", chat)
+	for _, want := range []string{"run -> " + earlier, "run -> " + current, runsID("attempt_", 1), send, "run " + earlier, "run " + current} {
+		if !strings.Contains(back, want) {
+			t.Fatalf("chat view lacks %q:\n%s", want, back)
+		}
+	}
+	// run → chat, goal revision, predecessor; goal revision → run
+	if step(current, "session -> ") != chat || step(current, "reopens -> ") != earlier || step(earlier, "goal_revision -> ") != runsGoalID+"@1" || step(runsGoalID+"@1", "run -> ") != earlier {
+		t.Fatal("a run link is missing in text mode")
+	}
+	// The loop view itself names the current run, its chat and each send's chat.
+	view := text()
+	for _, want := range []string{"current run: " + current, "chat/session: " + chat, send, "chat/session " + chat, "chat/session session:claude/" + runsHeadless} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("loop view lacks %q:\n%s", want, view)
+		}
+	}
+	// An ambiguous send says so.
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) {
+		return g.Relate(rtSession("primary", "bb", "thr_example_b", rungraph.SourceConfigured))
+	})
+	if out := text("--id", send); !strings.Contains(out, "chat/session ambiguous") {
+		t.Fatal(out)
+	}
+}
+
+func TestRunsLimitBoundsEveryListInARun(t *testing.T) {
+	dir := t.TempDir()
+	runsSync(t, dir, false, "start", 1)
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) {
+		for n := 0; n < 12; n++ {
+			g.Relate(rtSession(fmt.Sprintf("target-%d", n), "bb", fmt.Sprintf("thr_example_%d", n), rungraph.SourceConfigured))
+			g.Relate(rungraph.Link{Kind: rd.GoalLink, GoalID: runsGoalID, GoalRevision: uint64(n + 1), Source: rungraph.SourceGoal, RecordedAt: runsAt})
+		}
+		return true, nil
+	})
+	_, r, _ := runsExec(t, "--state-dir", dir, "--limit", "5")
+	cur := r.Loops[0].Current
+	if len(cur.Sessions) != 5 || cur.OmittedSessions != 7 || len(cur.GoalRevisions) != 5 || cur.OmittedGoalRevisions != 7 {
+		t.Fatalf("sessions=%d+%d goals=%d+%d", len(cur.Sessions), cur.OmittedSessions, len(cur.GoalRevisions), cur.OmittedGoalRevisions)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir, "--limit", "5"}, &text, &errs)
+	if !strings.Contains(text.String(), "7 more chat/session references not shown") || !strings.Contains(text.String(), "7 more goal revisions not shown") {
+		t.Fatal(text.String())
+	}
+}
+
+// A hand-edited record cannot forge output lines through a target alias.
+func TestRunsTextOutputNeutralisesControlCharacters(t *testing.T) {
+	dir := runsFixture(t)
+	if err := state.Save(dir, state.File{ActiveTarget: "evil\nforged: line\x1b[2J"}); err != nil {
+		t.Fatal(err)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
+	if strings.Contains(text.String(), "\nforged") || strings.Contains(text.String(), "\x1b") || !strings.Contains(text.String(), "evil?forged:?line?[2J") {
+		t.Fatal(text.String())
 	}
 }
