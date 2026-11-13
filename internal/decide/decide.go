@@ -32,9 +32,14 @@ type ErrorClass string
 
 // Error classes.
 const (
-	ErrNone       ErrorClass = "none"
-	ErrRateLimit  ErrorClass = "rate_limit"
-	ErrAuth       ErrorClass = "auth"
+	ErrNone      ErrorClass = "none"
+	ErrRateLimit ErrorClass = "rate_limit"
+	ErrAuth      ErrorClass = "auth"
+	// ErrRestricted is a provider declining the request for this account:
+	// forbidden, permission denied, a policy block or an account
+	// restriction. It is not a limit. It holds for a person and can never
+	// cause a move to another route.
+	ErrRestricted ErrorClass = "restricted"
 	ErrOverloaded ErrorClass = "overloaded"
 	ErrNetwork    ErrorClass = "network"
 	ErrUnknown    ErrorClass = "unknown"
@@ -352,6 +357,10 @@ func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges in
 	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
 }
 
+// RestrictedReason is the reason recorded when a session's error is a
+// provider refusal or restriction.
+const RestrictedReason = "provider refused or restricted the request; not a limit, so no handoff"
+
 // decideError bounds recovery from an errored session. A handoff happens
 // only for an error class the loop is configured to fail over on, and only
 // when a confirmed fallback is available. Unknown errors never hand off.
@@ -365,6 +374,12 @@ func decideError(in Input) Decision {
 	// and a hold raised because of it would outlast the outage.
 	if in.NetworkDown {
 		return none(NetworkDownReason)
+	}
+	// Ahead of the handoff rule: a provider that refused or restricted the
+	// request has made a decision about the work or the account. Moving to
+	// another route, or prompting again, would be a way around it.
+	if o.ErrorClass == ErrRestricted {
+		return Decision{Action: AwaitUser, Reason: RestrictedReason}
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
@@ -422,8 +437,8 @@ const (
 // RecoverBy chooses the method for a re-prompt decision. A turn retry is used
 // only for a session in error whose class a retry can plausibly fix: network,
 // overloaded or unknown. A rate limit is not cured by running the same turn
-// again and an auth error needs a person, so those keep the existing prompt
-// path (auth is held before it gets here). Anything that is not a re-prompt
+// again and an auth error or a restriction needs a person, so those keep the
+// existing prompt path (both are held before they get here). Anything that is not a re-prompt
 // of an errored session on a provider that can retry is a prompt.
 func RecoverBy(d Decision, obs Observation, canRetryTurn bool) Recovery {
 	if d.Action != Reprompt || !canRetryTurn || obs.State != Error {

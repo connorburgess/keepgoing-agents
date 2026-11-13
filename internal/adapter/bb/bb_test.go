@@ -121,6 +121,22 @@ func TestObserveStructuredRateLimit(t *testing.T) {
 	}
 }
 
+// A forbidden provider error is the provider's decision about the account or
+// the work. It is its own class, so it can never be treated as a login to
+// fail over from.
+func TestObserveForbiddenIsRestricted(t *testing.T) {
+	for _, log := range []string{
+		"[" + turnStarted + "," + providerError("unknown", 403, "unknown", nil) + "]",
+		"[" + turnStarted + "," + providerError("unknown", nil, "permission_denied", nil) + "]",
+	} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+		obs, _ := a.Observe(context.Background())
+		if obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
+			t.Errorf("%+v", obs)
+		}
+	}
+}
+
 func TestObserveStreamDisconnectIsNetworkAndRetrying(t *testing.T) {
 	log := "[" + turnStarted + "," + providerError("stream-disconnected", nil, "responseStreamDisconnected", true) + "]"
 	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)

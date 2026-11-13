@@ -159,13 +159,21 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Fixture, "The turn's process state, exit code and bounded event stream.", []Ref{t(cursorTest, "TestCursorLifecycleOnThisPlatform")}},
 			"process": {Yes, Fixture, "The JSON the status command prints.", []Ref{t(processTest, "TestObserveJSON")}},
 		})},
-	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
+	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, restricted, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "From real provider error and rate-limit events.", []Ref{d(providers), t(bbTest, "TestObserveStructuredRateLimit")}},
 			"claude":  {Yes, Fixture, "From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured.", []Ref{t(runnerTest, "TestClaudeErrorClassification")}},
 			"codex":   {Yes, Live, "Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only.", []Ref{d(providers), t(runnerTest, "TestCodexTurnLimitClassifiedFromAppServerNotProse")}},
 			"cursor":  {Missing, Fixture, "Every failure is unknown: no structured error contract is mapped.", []Ref{t(cursorTest, "TestCursorFailuresRemainUnknown")}},
 			"process": {Yes, Fixture, "From errorClass in the status JSON or the exit_codes map.", []Ref{t(processTest, "TestObserveExitCodeMap")}},
+		})},
+	{ID: "restricted", Title: "Refusals and restrictions hold", What: "Recognise a provider refusing or restricting the request, from a structured field, as its own class. It holds for a person at once; it is never re-prompted and never causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.",
+		Cells: merge(map[string]Cell{
+			"bb":      {Partial, Fixture, "A provider error carrying HTTP 403 or a permission code is restricted. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle.", []Ref{t("internal/adapter/bb/bb_test.go", "TestObserveForbiddenIsRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
+			"claude":  {Yes, Fixture, "HTTP 403 in api_error_status, and stop_reason \"refusal\" in the result object, which Claude Code documents for a declined turn. Neither has been captured from the real CLI.", []Ref{t(runnerTest, "TestClaudeErrorClassification"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
+			"codex":   {Missing, None, "The documented event stream carries a failure only as a message, with no refusal or policy field, so a refusal is unknown or looks like a finished turn.", nil},
+			"cursor":  {Missing, None, "Every failure is unknown.", nil},
+			"process": {Yes, Fixture, "When the status command reports errorClass restricted, or an exit code is mapped to it.", []Ref{t(processTest, "TestObserveRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves")}},
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{

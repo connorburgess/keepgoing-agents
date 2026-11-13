@@ -36,7 +36,7 @@ var claudeSpec = &Spec{
 		if !ok {
 			return Reading{Class: decide.ErrUnknown}
 		}
-		return Reading{Session: r.SessionID, Completed: !r.IsError, Class: r.Class(), Evidence: r.evidence(turn)}
+		return Reading{Session: r.SessionID, Completed: !r.IsError && !r.Refused(), Class: r.Class(), Evidence: r.evidence(turn)}
 	},
 	Probe: ProbeSpec{
 		// stream-json carries the same final result object as json, plus the
@@ -68,7 +68,14 @@ type ClaudeResult struct {
 	SessionID      string `json:"session_id"`
 	APIErrorStatus any    `json:"api_error_status"`
 	TerminalReason string `json:"terminal_reason"`
+	// StopReason is "refusal" when the model declined the turn. Claude Code
+	// documents that such a result usually has subtype "success".
+	StopReason string `json:"stop_reason"`
 }
+
+// Refused reports whether the model declined the turn, from the result's
+// structured stop reason.
+func (r ClaudeResult) Refused() bool { return r.StopReason == "refusal" }
 
 // ParseClaudeResult reads the last result object in stdout.
 func ParseClaudeResult(stdout []byte) (ClaudeResult, bool) {
@@ -100,6 +107,9 @@ func claudeResult(stdout []byte) (ClaudeResult, []byte, bool) {
 
 // Class classifies a failed result from structured fields only.
 func (r ClaudeResult) Class() decide.ErrorClass {
+	if r.Refused() {
+		return decide.ErrRestricted
+	}
 	switch v := r.APIErrorStatus.(type) {
 	case float64:
 		if cl := adapter.ClassifyCode(strconv.Itoa(int(v))); cl != decide.ErrUnknown {
@@ -184,6 +194,9 @@ func (r ClaudeResult) evidence(st Status) evidence.Detail {
 	d.Source = "claude_result"
 	d.Category = r.Subtype
 	d.Code = r.TerminalReason
+	if r.Refused() {
+		d.Code = "refusal"
+	}
 	if evidence.Code(d.Code) == "unavailable" {
 		d.Code = r.Subtype
 	}

@@ -535,7 +535,9 @@ func (c *Config) Validate() error {
 		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
-		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
+		if class == "restricted" {
+			add("loop.errors.failover_on: %q is not allowed: a provider refusal or restriction is not a limit and never causes a handoff", class)
+		} else if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
@@ -627,7 +629,7 @@ func (c *Config) Validate() error {
 }
 
 // ErrorClasses lists the structured error classes an adapter may report.
-var ErrorClasses = []string{"none", "rate_limit", "auth", "overloaded", "network", "unknown"}
+var ErrorClasses = []string{"none", "rate_limit", "auth", "restricted", "overloaded", "network", "unknown"}
 
 // ValidErrorClass reports whether s is a known error class.
 func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }

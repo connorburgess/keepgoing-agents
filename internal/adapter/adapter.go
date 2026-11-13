@@ -112,8 +112,10 @@ func ClassifyCode(code string) decide.ErrorClass {
 		switch n {
 		case 429:
 			return decide.ErrRateLimit
-		case 401, 403:
+		case 401:
 			return decide.ErrAuth
+		case 403:
+			return decide.ErrRestricted
 		case 503, 529:
 			return decide.ErrOverloaded
 		}
@@ -122,8 +124,10 @@ func ClassifyCode(code string) decide.ErrorClass {
 	switch c {
 	case "rate_limit", "rate-limit", "rate_limited", "ratelimit", "rate_limit_event", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked":
 		return decide.ErrRateLimit
-	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired":
+	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
+	case "restricted", "permission_denied", "permission_error", "forbidden":
+		return decide.ErrRestricted
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
 	case "network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error", "stream-disconnected", "stream_disconnected", "responsestreamdisconnected":

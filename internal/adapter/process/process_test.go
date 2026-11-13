@@ -59,6 +59,19 @@ func TestObserveExitCodeMap(t *testing.T) {
 	}
 }
 
+func TestObserveRestricted(t *testing.T) {
+	a := New(config.Process{StatusCommand: []string{script(t, `exit 78`, "exit /b 78")}, ExitCodes: map[int]string{78: "restricted"}})
+	obs, err := a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
+		t.Errorf("%+v %v", obs, err)
+	}
+	a = New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"error","errorClass":"restricted"}'`, `echo {"state":"error","errorClass":"restricted"}`)}})
+	obs, err = a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
+		t.Errorf("%+v %v", obs, err)
+	}
+}
+
 func TestObserveBadJSONIsUnknown(t *testing.T) {
 	a := New(config.Process{StatusCommand: []string{script(t, `echo "all good, rate limit fine"`, "echo all good, rate limit fine")}})
 	obs, err := a.Observe(context.Background())

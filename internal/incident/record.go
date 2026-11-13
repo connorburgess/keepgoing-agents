@@ -321,7 +321,7 @@ func cleanProbes(p Probes) Probes {
 			r.TargetKey = "unavailable"
 		}
 		r.Tier = oneOf(r.Tier, "unavailable", "scheduled", "exact")
-		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
+		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "overloaded", "network", "unknown")
 	}
 	return p
 }
@@ -472,7 +472,7 @@ func clean(r Record) Record {
 		*o = Observation{Availability: o.Availability}
 	}
 	o.State = oneOf(o.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
-	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
+	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "overloaded", "network", "unknown")
 	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired")
 	o.SourceTime = "unavailable"
 	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})

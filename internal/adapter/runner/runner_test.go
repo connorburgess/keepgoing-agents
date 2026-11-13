@@ -43,6 +43,9 @@ func waitPhase(t *testing.T, d Dir, want Phase) Status {
 // Synthetic result objects with the field names Claude Code prints.
 const claudeOK = `{"type":"result","subtype":"success","is_error":false,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"terminal_reason":"completed","result":"done"}`
 const claudeLimited = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":429,"result":"You have hit your usage limit"}`
+const claudeForbidden = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":403,"result":"example"}`
+const claudeRefused = `{"type":"result","subtype":"success","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"stop_reason":"refusal","result":"example"}`
+const claudeRefusedQuietly = `{"type":"result","subtype":"success","is_error":false,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"stop_reason":"refusal","result":"example"}`
 const claudeProseOnly = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s","api_error_status":null,"result":"usage limit reached 429"}`
 
 func TestClaudeTurnLifecycle(t *testing.T) {
@@ -90,6 +93,12 @@ func TestClaudeErrorClassification(t *testing.T) {
 	}{
 		{claudeLimited, "1", decide.ErrRateLimit},
 		{claudeProseOnly, "1", decide.ErrUnknown},
+		{claudeForbidden, "1", decide.ErrRestricted},
+		// Claude Code reports a model refusal in stop_reason, usually with
+		// subtype "success"; neither that nor a zero exit makes it a
+		// finished turn to wake again.
+		{claudeRefused, "1", decide.ErrRestricted},
+		{claudeRefusedQuietly, "0", decide.ErrRestricted},
 		{"not json at all: usage limit", "1", decide.ErrUnknown},
 	} {
 		dir := t.TempDir()

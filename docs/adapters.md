@@ -45,6 +45,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | --- | --- | --- | --- | --- | --- | --- |
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · fixture | missing · none | yes · fixture |
+| [Refusals and restrictions hold](#refusals-and-restrictions-hold) | partial · fixture | yes · fixture | missing · none | missing · none | missing · none | yes · fixture |
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a |
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
@@ -75,7 +76,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 
 ### Structured error classes
 
-Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
+Classify a failure as rate_limit, auth, restricted, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
 
 - **BB thread:** yes, evidence live. From real provider error and rate-limit events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveStructuredRateLimit`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
@@ -83,6 +84,17 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 - **Cursor headless:** missing, evidence fixture. Every failure is unknown: no structured error contract is mapped. [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
+
+### Refusals and restrictions hold
+
+Recognise a provider refusing or restricting the request, from a structured field, as its own class. It holds for a person at once; it is never re-prompted and never causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.
+
+- **BB thread:** partial, evidence fixture. A provider error carrying HTTP 403 or a permission code is restricted. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. [`TestObserveForbiddenIsRestricted`](../internal/adapter/bb/bb_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Claude Code headless:** yes, evidence fixture. HTTP 403 in api_error_status, and stop_reason "refusal" in the result object, which Claude Code documents for a declined turn. Neither has been captured from the real CLI. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Codex headless:** missing, evidence none. The documented event stream carries a failure only as a message, with no refusal or policy field, so a refusal is unknown or looks like a finished turn.
+- **Cursor headless:** missing, evidence none. Every failure is unknown.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted, or an exit code is mapped to it. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
 
 ### Stale retry-notice expiry
 

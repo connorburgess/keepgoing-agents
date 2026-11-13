@@ -9,7 +9,13 @@ import (
 func TestClassifyCode(t *testing.T) {
 	cases := map[string]decide.ErrorClass{
 		"429": decide.ErrRateLimit, "rate_limit": decide.ErrRateLimit, "usage_limit": decide.ErrRateLimit,
-		"401": decide.ErrAuth, "403": decide.ErrAuth, "authentication_error": decide.ErrAuth,
+		"401": decide.ErrAuth, "authentication_error": decide.ErrAuth, "oauth_token_expired": decide.ErrAuth,
+		// Forbidden is a provider's decision about the account or the work,
+		// not an expired login and not a limit.
+		"403": decide.ErrRestricted, "permission_denied": decide.ErrRestricted, "permission_error": decide.ErrRestricted,
+		"forbidden": decide.ErrRestricted, "restricted": decide.ErrRestricted,
+		// Prose about a refusal must not classify.
+		"refused": decide.ErrUnknown, "policy violation": decide.ErrUnknown,
 		"529": decide.ErrOverloaded, "overloaded_error": decide.ErrOverloaded,
 		"ECONNRESET": decide.ErrNetwork,
 		"":           decide.ErrUnknown, "500": decide.ErrUnknown, "boom": decide.ErrUnknown,
