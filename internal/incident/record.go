@@ -375,6 +375,10 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 			r.ErrorClass = "unavailable"
 		case o.Retrying:
 			r.Retry = "retrying"
+		case o.RetryExpired:
+			// A stale retry notice on a session that is not running; the adapter
+			// stopped honoring it, so ordinary error handling applied.
+			r.Retry = "expired"
 		case o.RetryKnown:
 			r.Retry = "not_retrying"
 		}
@@ -463,7 +467,7 @@ func clean(r Record) Record {
 	}
 	o.State = oneOf(o.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
 	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
-	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified")
+	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired")
 	o.SourceTime = "unavailable"
 	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})
 	o.Source, o.Category, o.ProviderCode, o.HTTPStatus, o.ExitCode = d.Source, d.Category, d.Code, d.HTTPStatus, d.ExitCode
@@ -515,7 +519,7 @@ func Cause(reason string) string {
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
 		{"no Git progress within ", "git_limit"}, {"no progress after ", "stall_limit"},
 		{"no progress for ", "stall"}, {"children waiting on a person ", "child_input"},
-		{"stop requested", "stop"}, {"stop already requested", "stop"},
+		{"provider retry went silent ", "retry_silent"}, {"stop requested", "stop"}, {"stop already requested", "stop"},
 	} {
 		if strings.HasPrefix(reason, c.prefix) {
 			return c.code
@@ -534,7 +538,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

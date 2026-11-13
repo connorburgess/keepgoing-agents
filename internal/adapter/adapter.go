@@ -4,6 +4,8 @@
 package adapter
 
 import (
+	"time"
+
 	"context"
 	"strconv"
 	"strings"
@@ -109,4 +111,11 @@ func ParseState(s string) decide.State {
 		return decide.Pending
 	}
 	return decide.Unknown
+}
+
+// CheckTimer is implemented by adapters that compare provider times (event
+// or reset times) against the check time. The supervisor passes its own
+// check time so the observation and the decision share one clock.
+type CheckTimer interface {
+	CheckAt(time.Time)
 }

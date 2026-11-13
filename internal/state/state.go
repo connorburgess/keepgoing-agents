@@ -26,18 +26,21 @@ const Primary = "primary"
 
 // File is what one tick leaves for the next.
 type File struct {
-	LastPromptSend    *PromptSend `json:"lastPromptSend,omitempty"`
-	StallRetry        *StallRetry `json:"stallRetry,omitempty"`
-	Fingerprint       string      `json:"fingerprint,omitempty"`
-	LastProgressAt    time.Time   `json:"lastProgressAt,omitempty"`
-	LastWakeAt        time.Time   `json:"lastWakeAt,omitempty"`
-	CheckedAt         time.Time   `json:"checkedAt,omitempty"`
-	LastState         string      `json:"lastState,omitempty"`
-	LastCheck         *Check      `json:"lastCheck,omitempty"`
-	Reprompts         int         `json:"reprompts,omitempty"`
-	Nudges            int         `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt    time.Time   `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent bool        `json:"stopSent,omitempty"`
+	LastPromptSend *PromptSend `json:"lastPromptSend,omitempty"`
+	StallRetry     *StallRetry `json:"stallRetry,omitempty"`
+	// SilentRetry records when the active target was first observed with an
+	// expired retry notice, so its continued silence can be bounded.
+	SilentRetry       *SilentRetry `json:"silentRetry,omitempty"`
+	Fingerprint       string       `json:"fingerprint,omitempty"`
+	LastProgressAt    time.Time    `json:"lastProgressAt,omitempty"`
+	LastWakeAt        time.Time    `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time    `json:"checkedAt,omitempty"`
+	LastState         string       `json:"lastState,omitempty"`
+	LastCheck         *Check       `json:"lastCheck,omitempty"`
+	Reprompts         int          `json:"reprompts,omitempty"`
+	Nudges            int          `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time    `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool         `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -104,6 +107,13 @@ func (f *File) ClearBriefs() {
 	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
 }
 
+// SilentRetry is target-scoped and cleared as soon as the target is not both
+// active and carrying an expired retry notice.
+type SilentRetry struct {
+	Target string    `json:"target"`
+	Since  time.Time `json:"since"`
+}
+
 // StallRetry is a target-scoped grace period for ordinary stall nudges only.
 // It never replaces Git evidence or refunds loop-wide allowances.
 type StallRetry struct {
@@ -121,6 +131,9 @@ type Check struct {
 	ObservedTarget string    `json:"observedTarget,omitempty"`
 	ObservedState  string    `json:"observedState"`
 	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
+	// RetrySignal is "expired" when the check saw a stale provider retry
+	// notice and stopped honoring it; empty otherwise.
+	RetrySignal string `json:"retrySignal,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is
 	// a lower bound. ChildErrorNoticeStopped: the notice was given up after

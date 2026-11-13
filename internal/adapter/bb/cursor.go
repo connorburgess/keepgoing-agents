@@ -12,6 +12,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // bb returns log events oldest first and pages forward with --after-seq, so
@@ -33,6 +34,32 @@ type Cursor struct {
 	Blocked         bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
 	ResetsAt        time.Time         `json:"resetsAt,omitempty"`
 	Pending         map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
+	// LastEventAt is the bounded time of the newest event that is not
+	// requested input (client/...), and
+	// ScannedAt the local time of the last complete scan. See eventTime.
+	LastEventAt time.Time `json:"lastEventAt,omitempty"`
+	ScannedAt   time.Time `json:"scannedAt,omitempty"`
+}
+
+// eventTime bounds BB's createdAt for an event by what this supervisor knows
+// locally. It is never later than seenAt, the scan that read the event, so a
+// source clock running ahead cannot keep evidence fresh. It is never earlier
+// than the previous complete scan, which did not contain the event, so a
+// source clock running behind (a remote BB host) cannot age evidence early.
+// The first scan of a log has no earlier scan, so old events keep their own
+// time there. A missing or unusable createdAt is the scan time.
+func (c *Cursor) eventTime(e event, seenAt time.Time) time.Time {
+	t := e.time()
+	if t.IsZero() || t.After(seenAt) {
+		return seenAt
+	}
+	if !c.ScannedAt.IsZero() && t.Before(c.ScannedAt) {
+		t = c.ScannedAt
+		if t.After(seenAt) { // the local clock moved backwards between scans
+			t = seenAt
+		}
+	}
+	return t
 }
 
 type errorSignal struct {
@@ -41,17 +68,45 @@ type errorSignal struct {
 	Class      decide.ErrorClass `json:"class"`
 	WillRetry  bool              `json:"willRetry,omitempty"`
 	RetryKnown bool              `json:"retryKnown,omitempty"`
+	// At is the bounded event time (see Cursor.eventTime). For a retry notice
+	// it is what the freshness interval is measured from. Zero only in a
+	// summary saved before signals carried a time.
+	At time.Time `json:"at,omitempty"`
 }
 
 type event struct {
 	Seq  int64           `json:"seq"`
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
+	// CreatedAt is Unix milliseconds in BB. It is decoded leniently so an
+	// unexpected shape loses only the event time, never the whole scan.
+	CreatedAt json.RawMessage `json:"createdAt"`
 }
 
-// apply folds one event into the summary.
-func (c *Cursor) apply(e event) {
+// minEventMillis and maxEventMillis reject values that are not plausible Unix
+// millisecond timestamps (seconds, microseconds, zero or negative numbers).
+const (
+	minEventMillis = int64(1_000_000_000_000) // 2001-09-09
+	maxEventMillis = int64(9_999_999_999_999) // 2286-11-20
+)
+
+func (e event) time() time.Time {
+	var ms int64
+	if len(e.CreatedAt) == 0 || json.Unmarshal(e.CreatedAt, &ms) != nil || ms < minEventMillis || ms > maxEventMillis {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
+
+// apply folds one event into the summary. seenAt is the local scan time.
+func (c *Cursor) apply(e event, seenAt time.Time) {
 	c.LastSeq = e.Seq
+	when := c.eventTime(e, seenAt)
+	// Requested input (a person's message, a child notice, this supervisor's
+	// own nudge) says nothing about whether the turn is alive.
+	if !strings.HasPrefix(e.Type, "client/") {
+		c.LastEventAt = when
+	}
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
 	}
@@ -84,7 +139,7 @@ func (c *Cursor) apply(e event) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = d.ProviderThread
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. Tool output can continue independently of
@@ -124,7 +179,7 @@ func (c *Cursor) apply(e event) {
 			if e.Type != "system/error" {
 				source = "bb_failure_event"
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code)}
+			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when}
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)
@@ -161,7 +216,7 @@ func (a *Adapter) loadCursor() Cursor {
 	}
 	var c Cursor
 	if p := a.cursorPath(); p != "" {
-		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
+		if b, err := snapshot.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
 			return c
 		}
 	}
@@ -182,7 +237,7 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 	if os.WriteFile(tmp, append(b, '\n'), 0o600) != nil {
 		return false
 	}
-	if os.Rename(tmp, p) != nil {
+	if snapshot.Replace(tmp, p) != nil {
 		return false
 	}
 	a.mem = &c
@@ -199,6 +254,19 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		// its delivery watermark, so this scan cannot replay old child notices.
 		c = Cursor{Thread: a.cfg.Thread, RetrySchema: 1}
 	}
+	seenAt := a.now().UTC()
+	if c.LastSeq > 0 && c.LastEventAt.IsZero() {
+		// A summary saved before event times were kept: age it from this scan,
+		// so it is bounded without rereading the log.
+		c.LastEventAt = seenAt
+	}
+	if c.Error != nil && c.Error.At.IsZero() {
+		// Likewise for its error signal. Copy, because the cached summary
+		// shares this pointer and the scan may still fail.
+		aged := *c.Error
+		aged.At = seenAt
+		c.Error = &aged
+	}
 	for pages := 0; pages < 10000; pages++ {
 		out, err := a.run(ctx, "", "thread", "log", a.cfg.Thread, "--json", "--after-seq", strconv.FormatInt(c.LastSeq, 10), "--limit", strconv.Itoa(pageSize))
 		if err != nil || ctx.Err() != nil {
@@ -211,11 +279,12 @@ func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 		progressed := false
 		for _, e := range events {
 			if e.Seq > c.LastSeq {
-				c.apply(e)
+				c.apply(e, seenAt)
 				progressed = true
 			}
 		}
 		if len(events) < pageSize || !progressed {
+			c.ScannedAt = seenAt
 			return c, a.saveCursor(c)
 		}
 	}
