@@ -101,6 +101,9 @@ type World struct {
 	Threads map[string]*Thread
 	// Headless is the CLI of a headless loop, or "" for a BB loop.
 	Headless string
+	// sendsUnrecordable is set when the scenario makes keepgoing unable to
+	// write its records, so its run history cannot account for every send.
+	sendsUnrecordable bool
 
 	bin, world, home string
 	env              []string
@@ -672,7 +675,7 @@ func (w *World) invariants(s *Step) {
 	}
 	// Every delivery is recorded as an attempt. An attempt that failed
 	// before anything arrived (a refused creation) has no delivery.
-	if got := s.Runs.Attempts(); got < w.sendsTotal {
+	if got := s.Runs.Attempts(); got < w.sendsTotal && !w.sendsUnrecordable {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
