@@ -176,13 +176,15 @@ func TestIncidentJourneyBBInterruptedCommandRecovery(t *testing.T) {
 	// A CLI transport failure and an invalid reply both leave state unknown.
 	cli := filepath.Join(f.dir, "bin", "bb")
 	write(t, cli, "#!/bin/sh\nexit 1\n", 0700)
-	if code, _, _ := f.run("tick", "--now", "2030-01-01T00:00:00Z"); code == 0 {
-		t.Fatal("failed observation reported success")
+	// The check ran and was recorded, so the exit code is 0; its recorded
+	// outcome and stderr say that the observation failed.
+	if code, out, errs := f.run("tick", "--now", "2030-01-01T00:00:00Z"); code != exitOK || !strings.Contains(out, `"outcome":"failed"`) || !strings.Contains(errs, "tick:") {
+		t.Fatalf("failed observation: exit %d\n%s\n%s", code, out, errs)
 	}
 	write(t, cli, fakeBB, 0700)
 	write(t, show, "invalid-json", 0600)
-	if code, _, _ := f.run("tick", "--now", "2030-01-01T00:01:00Z"); code == 0 {
-		t.Fatal("invalid observation reported success")
+	if code, out, _ := f.run("tick", "--now", "2030-01-01T00:01:00Z"); code != exitOK || !strings.Contains(out, `"outcome":"failed"`) {
+		t.Fatalf("invalid observation: exit %d\n%s", code, out)
 	}
 	if f.read("thr_primary.told") != "" {
 		t.Fatal("unreadable status caused a prompt")

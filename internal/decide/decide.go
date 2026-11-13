@@ -145,6 +145,10 @@ type Input struct {
 	MaxReprompts      int
 	SinceLastReprompt time.Duration
 	Backoff           time.Duration
+
+	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
+	// this check ran out of time to confirm one. Nothing is spent on that.
+	HandoffDeferred bool
 }
 
 // Failover is the supervisor's view of whether a handoff is possible.
@@ -210,6 +214,9 @@ func limitWait(kind LimitWait, reason string) Decision {
 }
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
+
+// HandoffDeferredReason is recorded when a due handoff waits for the next check.
+const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed within this check's time budget; the next check retries"
 
 // Decide applies the rules in priority order. Stop and pause always win.
 func Decide(in Input) Decision {
@@ -339,6 +346,9 @@ func decideError(in Input) Decision {
 			return limitWait(WaitResetSoon, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; waiting")
 		}
 		if f.Available {
+			if in.HandoffDeferred {
+				return none(HandoffDeferredReason)
+			}
 			return Decision{Action: Handoff, Reason: "error: " + string(o.ErrorClass)}
 		}
 		if f.ResetIn > 0 {

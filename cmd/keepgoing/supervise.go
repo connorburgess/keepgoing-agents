@@ -47,6 +47,9 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	} else {
 		e.errf("warning: %s", config.UnboundedWarning)
 	}
+	if w := l.TickTimeoutWarning(); w != "" {
+		e.errf("warning: %s", w)
+	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
@@ -83,6 +86,14 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		e.errf("tick: %v", err)
 		if errors.Is(err, lock.ErrHeld) {
 			return exitSkipped
+		}
+		// The exit code says whether keepgoing ran and recorded the check, not
+		// whether the session, provider or repository was healthy. A recorded
+		// check that could not observe or act has outcome "failed" in its
+		// output and in status, and exits 0, so an external scheduler that
+		// counts non-zero exits does not disable supervision over an outage.
+		if res.Recorded {
+			return exitOK
 		}
 		return exitFailed
 	}
@@ -578,6 +589,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	if st.FailedChecks > 0 {
+		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
 	}
 	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
 	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
