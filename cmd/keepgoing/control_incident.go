@@ -14,6 +14,13 @@ import (
 var errControlHistory = errors.New("control saved; incident history write failed; diagnostic evidence is incomplete")
 
 func updateControlWithHistory(dir, operation string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlAnnotated(dir, operation, fn, nil, routine...)
+}
+
+// updateControlAnnotated is updateControlWithHistory for a command that
+// records who ran it and what else the save did. annotate runs after fn has
+// succeeded, inside the control update.
+func updateControlAnnotated(dir, operation string, fn func(*control.File) error, annotate func(control.File, *incident.ControlChange), routine ...rd.RoutineRef) (control.File, error) {
 	var r incident.Record
 	f, err := control.UpdateChecked(dir, func(f *control.File) error {
 		r = incident.Record{Kind: "control", CheckStartedAt: time.Now().UTC(), Build: version,
@@ -27,6 +34,9 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 		r.ControlAfter = incident.Gate(f.Gate())
 		r.ControlChange.OwnerPresentAfter = f.Ownership != nil
 		r.ControlChange.OwnershipChanged = owner != nextOwner || generation != nextGeneration
+		if annotate != nil {
+			annotate(*f, r.ControlChange)
+		}
 		return nil
 	})
 	if err != nil {

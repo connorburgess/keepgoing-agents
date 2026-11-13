@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -92,11 +93,28 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	for k, v := range c.ProbeEnv() {
 		env = append(env, k+"="+v)
 	}
-	// An agent on the runner contract is probed as its specification says.
-	spec, known := runner.SpecFor(c.Probe.Kind)
+	// An agent on the runner contract, built in or defined in configuration,
+	// is probed as its specification says.
+	spec, known := probeSpec(c)
+	cli, stdin := probeCLI(c, spec), ""
 	switch {
 	case known:
-		argv = spec.Probe.Argv(c.ProbeCLI(), model, Prompt)
+		req := runner.ProbeRequest{CLI: cli, Model: model, Prompt: Prompt}
+		if spec.Prompt == runner.PromptFile {
+			// The prompt goes in a private file, never in an argument.
+			dir, err := os.MkdirTemp("", "keepgoing-probe-prompt-*")
+			if err != nil {
+				res.ErrorClass, res.Detail = string(decide.ErrUnknown), "not runnable"
+				return res
+			}
+			defer os.RemoveAll(dir)
+			req.PromptFile = filepath.Join(dir, "prompt")
+			if err := os.WriteFile(req.PromptFile, []byte(Prompt), 0o600); err != nil {
+				res.ErrorClass, res.Detail = string(decide.ErrUnknown), "not runnable"
+				return res
+			}
+		}
+		argv, stdin = spec.Probe.Command(req)
 	case c.Probe.Kind == "command":
 		argv = c.Probe.Command
 	default:
@@ -112,7 +130,13 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		}
 	}
 	start := time.Now()
-	stdout, code, err := run(ctx, argv, workdir, env)
+	// A specification that bounds its output has the probe's bounded as it
+	// is read: one byte over the limit is kept to show it was exceeded.
+	var limit int64
+	if known {
+		limit = spec.MaxOutput
+	}
+	stdout, code, err := run(ctx, argv, workdir, env, stdin, limit)
 	res.Raw = capture(c.Probe.Kind, stdout)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	res.ExitCode = code
@@ -133,16 +157,15 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	if !v.OK {
 		res.ErrorClass = string(v.Class)
 	}
-	usage := usageReaders[spec.Name]
-	if usage.fromOutput != nil {
-		res.Usage = newUsage(res.At, usage.source, res.UsageIdentity, usage.fromOutput(stdout))
+	if spec.Probe.Usage != nil {
+		res.Usage = newUsage(res.At, spec.Probe.UsageSource, res.UsageIdentity, usageWindows(spec.Probe.Usage(stdout)))
 	}
 	// An agent that reports a usage limit only as prose is asked for its
 	// structured snapshot instead.
 	if l := spec.Limits; l != nil && !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
-		limits, err := l.Read(ctx, c.ProbeCLI(), env)
-		if err == nil && usage.fromLimits != nil {
-			res.Usage = newUsage(res.At, usage.source, res.UsageIdentity, usage.fromLimits(limits))
+		limits, err := l.Read(ctx, cli, env)
+		if err == nil && l.UsageSource != "" {
+			res.Usage = newUsage(res.At, l.UsageSource, res.UsageIdentity, CodexUsage(limits))
 		}
 		if err == nil && limits.Blocked {
 			res.ErrorClass = string(decide.ErrRateLimit)
@@ -156,16 +179,23 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	return res
 }
 
-// usageReaders says where each agent's usage reading comes from. The reading
-// types live in this package, so this table does too; it is keyed by the
-// specification's name.
-var usageReaders = map[string]struct {
-	source     string
-	fromOutput func(stdout []byte) []UsageWindow
-	fromLimits func(runner.CodexLimits) []UsageWindow
-}{
-	"claude": {source: UsageSourceClaude, fromOutput: ClaudeUsage},
-	"codex":  {source: UsageSourceCodex, fromLimits: CodexUsage},
+// probeSpec returns the specification a candidate's probe kind names: a
+// registered agent, or the candidate's own definition.
+func probeSpec(c config.Candidate) (*runner.Spec, bool) {
+	if c.Probe.Kind == config.CustomAdapter {
+		spec, _, ok := runner.Resolve(c.Agent)
+		return spec, ok && spec.Probe.Command != nil
+	}
+	return runner.SpecFor(c.Probe.Kind)
+}
+
+// probeCLI is the executable a probe runs: the one configured for the probe
+// or the candidate, else the specification's default.
+func probeCLI(c config.Candidate, spec *runner.Spec) string {
+	if cli := c.ProbeCLI(); cli != "" || spec == nil {
+		return cli
+	}
+	return spec.DefaultCLI
 }
 
 // judgeCommand: exit 0 is healthy unless stdout says otherwise with
@@ -193,13 +223,31 @@ func judgeCommand(res *Result, stdout []byte, code int, codes map[int]string) {
 	}
 }
 
-func run(ctx context.Context, argv []string, dir string, env []string) ([]byte, int, error) {
+// limitedBuffer keeps at most limit+1 bytes when limit is positive and
+// discards the rest, so a probe cannot make the supervisor hold its output.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.buf.Write(p)
+	}
+	if room := b.limit + 1 - int64(b.buf.Len()); room > 0 {
+		b.buf.Write(p[:min(int64(len(p)), room)])
+	}
+	return len(p), nil
+}
+
+func run(ctx context.Context, argv []string, dir string, env []string, stdin string, limit int64) ([]byte, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
-	cmd.Stdin = strings.NewReader("")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	cmd.Stdin = strings.NewReader(stdin)
+	out := &limitedBuffer{limit: limit}
+	stdout := &out.buf
+	cmd.Stdout = out
 	// A killed probe whose children still hold its output must not hold the
 	// check open past the timeout.
 	cmd.WaitDelay = 2 * time.Second

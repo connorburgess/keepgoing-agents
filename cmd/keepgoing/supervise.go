@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -53,6 +54,28 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	}
 	if w := l.NetworkCheckWarning(); w != "" {
 		e.errf("warning: %s", w)
+	}
+	// A defined agent's own mapping decides what moves work to a fallback,
+	// so every such mapping is said in words.
+	defined := []struct {
+		where string
+		agent config.Agent
+	}{{"primary", l.Agent}}
+	if fb := cfg.FallbackSet; fb != nil {
+		for _, c := range fb.Candidates {
+			defined = append(defined, struct {
+				where string
+				agent config.Agent
+			}{c.ID, c.Agent})
+		}
+	}
+	for _, d := range defined {
+		if d.agent.Custom == nil {
+			continue
+		}
+		for _, move := range d.agent.Custom.FailoverMappings(l.Errors.FailoverOn) {
+			fmt.Fprintf(e.stdout, "failover (%s, defined agent %s): %s\n", d.where, d.agent.Custom.Name, move)
+		}
 	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
@@ -393,21 +416,215 @@ func refOf(a config.Agent) agentRef {
 }
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
+	out, err := readStatus(e.ctx, cfg, now, staleAfter, inspectDaemon)
+	if err != nil {
+		e.errf("%v", err)
+		return exitFailed
+	}
+	ctl, st := out.Control, out.State
+	if asJSON {
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Fprintln(e.stdout, string(b))
+		return exitOK
+	}
+	w := e.stdout
+	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	if ctl.PendingTransfer != nil {
+		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
+	}
+	if ctl.BBTarget != "" {
+		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
+	}
+	if out.Goal != nil {
+		printGoal(e, *out.Goal, false)
+	}
+	if out.GoalError != "" {
+		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
+	}
+	printPromptSend(w, out.PromptSend)
+	if n := out.NewThreads; n.Created > 0 || n.Pending {
+		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
+		if n.Active != nil {
+			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
+		}
+		if n.Pending {
+			fmt.Fprint(w, "; one creation could not be confirmed: nothing is created or handed off until a person settles it with retarget")
+		}
+		fmt.Fprintln(w)
+	}
+	printLimitWait(w, out.LimitWait)
+	printTurnRetry(w, out.TurnRetry)
+	printChildReport(w, out.ChildErrorReport)
+	fmt.Fprintf(w, "task:      %s", out.TaskSource)
+	if out.TaskFile != "" {
+		fmt.Fprintf(w, " (%s)", out.TaskFile)
+	}
+	fmt.Fprintln(w, "; task text withheld")
+	fmt.Fprintf(w, "primary:   %s\n", out.Primary)
+	fmt.Fprintf(w, "target:    %s", out.Target)
+	if st.Handoffs > 0 {
+		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
+	}
+	fmt.Fprintln(w)
+	if s := out.TargetSession; s != nil {
+		fmt.Fprintf(w, "session:   %s", s.State)
+		if s.ID != "" {
+			fmt.Fprintf(w, " (%s)", s.ID)
+		}
+		fmt.Fprintf(w, "; %s\n", s.Message)
+	}
+	if out.TargetConfigured {
+		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
+		if out.TargetAgent.BBThread != "" {
+			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
+		}
+	} else {
+		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
+	}
+	if ctl.Ownership != nil {
+		fmt.Fprintf(w, "owner:     %s (generation %d)\n", ctl.Ownership.ThreadID, ctl.Ownership.Generation)
+		if p := ctl.Ownership.Previous; p != nil {
+			fmt.Fprintf(w, "previous owner: %s (%s)\n", p.ThreadID, p.Status)
+		}
+	}
+	fmt.Fprintf(w, "control:   %s", out.ControlState)
+	if ctl.Note != "" {
+		fmt.Fprintf(w, " (%s)", ctl.Note)
+	}
+	fmt.Fprintln(w)
+	if q := ctl.OpenQuestion; q != nil {
+		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
+	}
+	printDeliveryStatus(w, out.Notifications)
+	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	tickBudget := out.TickBudget.Timeout
+	if out.TickBudget.Grown {
+		tickBudget += fmt.Sprintf(" (tick_timeout is not set; raised from the %s default to fit fallbacks probe.timeout)", config.DefaultTickTimeout)
+	}
+	fmt.Fprintf(w, "check budget: %s\n", tickBudget)
+	if out.TickBudget.Warning != "" {
+		fmt.Fprintf(w, "check budget: warning: %s\n", out.TickBudget.Warning)
+	}
+	if out.WorkBounds.Unbounded {
+		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
+	} else {
+		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
+	}
+	if a := out.SendAllowance; a != nil {
+		if a.Error != "" {
+			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
+		} else {
+			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
+		}
+	}
+	if a := out.ProgressAllowance; a != nil {
+		switch {
+		case a.Error != "":
+			fmt.Fprintf(w, "progress:  unavailable (%s)\n", a.Error)
+		case a.BaselinePending:
+			fmt.Fprintf(w, "progress:  %s timeout; awaiting first verified baseline\n", a.Timeout)
+		default:
+			fmt.Fprintf(w, "progress:  %s timeout; last verified change %s (due: %t; next tick rechecks Git)\n", a.Timeout, a.ChangedAt.Format(time.RFC3339), a.Due)
+		}
+	}
+	if out.Deadline != "" {
+		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
+	}
+	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
+	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
+	if c := st.LastCheck; c != nil {
+		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
+		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
+		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.RetrySignal == "declined" {
+			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
+		}
+		if c.RetrySignal == "expired" {
+			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
+		}
+		if c.ErroredChildren > 0 {
+			count := fmt.Sprintf("%d", c.ErroredChildren)
+			if c.ErroredChildrenPartial {
+				count = "at least " + count + " (child discovery was incomplete)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+		}
+		if c.ChildErrorNoticeStopped {
+			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
+		}
+		if c.DryRun {
+			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
+		}
+	} else {
+		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	switch {
+	case st.NetworkDownSince.IsZero():
+	case st.NetworkDistrusted:
+		fmt.Fprintf(w, "network:   the connectivity check has failed since %s, but the provider answered a probe, so it is not believed and the ordinary rules apply. Run doctor to test loop.network\n", st.NetworkDownSince.Format(time.RFC3339))
+	default:
+		reported := "not reported yet"
+		if !st.NetworkReportedAt.IsZero() {
+			reported = "reported " + st.NetworkReportedAt.Format(time.RFC3339)
+		} else if !st.NetworkVerifiedAt.IsZero() {
+			reported = "provider last tested " + st.NetworkVerifiedAt.Format(time.RFC3339) + ", report not delivered yet"
+		}
+		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
+	}
+	if warning := cfg.Loop.NetworkCheckWarning(); warning != "" {
+		fmt.Fprintf(w, "network:   warning: %s\n", warning)
+	}
+	if st.FailedChecks > 0 {
+		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
+	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
+	if out.Daemon.State == "responsive" {
+		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
+	}
+	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
+	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
+	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	if st.Reprompts > 0 {
+		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
+	}
+	if st.ResumeEpisodes > 0 {
+		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
+	}
+	if r := out.Redundancy; r != nil {
+		verdict := "handoffs allowed"
+		if !r.Meets {
+			verdict = "handoffs refused"
+		}
+		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
+	}
+	if b := out.TakeoverBriefs; len(b.Capped) > 0 {
+		fmt.Fprintf(w, "handoff briefs: %s rejected %d and will not be tried again this error episode; resume or retarget clears this\n", strings.Join(b.Capped, ", "), b.Cap)
+	}
+	if b := out.TakeoverBriefs; b.SwitchBackStopped {
+		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
+	}
+	printUsage(w, "usage:     ", out.Usage)
+	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
+	return exitOK
+}
+
+// readStatus builds the status report. It reads local records and the existing
+// daemon endpoint through query; it never queries a provider or writes.
+func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAfter time.Duration, query clientDaemonQuery) (statusOut, error) {
 	l := cfg.Loop
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	st, err := state.Load(l.StateDir)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	in, why, err := window.Inside(l.Window, now)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	if ctl.BBTarget != "" && !transferThreadID.MatchString(ctl.BBTarget) {
 		ctl.BBTarget = "unavailable"
@@ -499,8 +716,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
-	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
-	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
+	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
+	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
 	if out.Daemon.State == "responsive" {
 		out.Runtime.NextCheck = out.Daemon.NextCheck
@@ -525,186 +742,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			out.Redundancy = &s
 		}
 	}
-	if asJSON {
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Fprintln(e.stdout, string(b))
-		return exitOK
-	}
-	w := e.stdout
-	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
-	if ctl.PendingTransfer != nil {
-		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
-	}
-	if ctl.BBTarget != "" {
-		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
-	}
-	if out.Goal != nil {
-		printGoal(e, *out.Goal, false)
-	}
-	if out.GoalError != "" {
-		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
-	}
-	printPromptSend(w, out.PromptSend)
-	if n := out.NewThreads; n.Created > 0 || n.Pending {
-		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
-		if n.Active != nil {
-			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
-		}
-		if n.Pending {
-			fmt.Fprint(w, "; one creation could not be confirmed: nothing is created or handed off until a person settles it with retarget")
-		}
-		fmt.Fprintln(w)
-	}
-	printLimitWait(w, out.LimitWait)
-	printTurnRetry(w, out.TurnRetry)
-	printChildReport(w, out.ChildErrorReport)
-	fmt.Fprintf(w, "task:      %s", out.TaskSource)
-	if out.TaskFile != "" {
-		fmt.Fprintf(w, " (%s)", out.TaskFile)
-	}
-	fmt.Fprintln(w, "; task text withheld")
-	fmt.Fprintf(w, "primary:   %s\n", out.Primary)
-	fmt.Fprintf(w, "target:    %s", out.Target)
-	if st.Handoffs > 0 {
-		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
-	}
-	fmt.Fprintln(w)
-	if s := out.TargetSession; s != nil {
-		fmt.Fprintf(w, "session:   %s", s.State)
-		if s.ID != "" {
-			fmt.Fprintf(w, " (%s)", s.ID)
-		}
-		fmt.Fprintf(w, "; %s\n", s.Message)
-	}
-	if out.TargetConfigured {
-		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
-		if out.TargetAgent.BBThread != "" {
-			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
-		}
-	} else {
-		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
-	}
-	if ctl.Ownership != nil {
-		fmt.Fprintf(w, "owner:     %s (generation %d)\n", ctl.Ownership.ThreadID, ctl.Ownership.Generation)
-		if p := ctl.Ownership.Previous; p != nil {
-			fmt.Fprintf(w, "previous owner: %s (%s)\n", p.ThreadID, p.Status)
-		}
-	}
-	fmt.Fprintf(w, "control:   %s", out.ControlState)
-	if ctl.Note != "" {
-		fmt.Fprintf(w, " (%s)", ctl.Note)
-	}
-	fmt.Fprintln(w)
-	printDeliveryStatus(w, out.Notifications)
-	fmt.Fprintf(w, "window:    %s\n", out.Window)
-	tickBudget := out.TickBudget.Timeout
-	if out.TickBudget.Grown {
-		tickBudget += fmt.Sprintf(" (tick_timeout is not set; raised from the %s default to fit fallbacks probe.timeout)", config.DefaultTickTimeout)
-	}
-	fmt.Fprintf(w, "check budget: %s\n", tickBudget)
-	if out.TickBudget.Warning != "" {
-		fmt.Fprintf(w, "check budget: warning: %s\n", out.TickBudget.Warning)
-	}
-	if out.WorkBounds.Unbounded {
-		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
-	} else {
-		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
-	}
-	if a := out.SendAllowance; a != nil {
-		if a.Error != "" {
-			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
-		} else {
-			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
-		}
-	}
-	if a := out.ProgressAllowance; a != nil {
-		switch {
-		case a.Error != "":
-			fmt.Fprintf(w, "progress:  unavailable (%s)\n", a.Error)
-		case a.BaselinePending:
-			fmt.Fprintf(w, "progress:  %s timeout; awaiting first verified baseline\n", a.Timeout)
-		default:
-			fmt.Fprintf(w, "progress:  %s timeout; last verified change %s (due: %t; next tick rechecks Git)\n", a.Timeout, a.ChangedAt.Format(time.RFC3339), a.Due)
-		}
-	}
-	if out.Deadline != "" {
-		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
-	}
-	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
-	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
-	if c := st.LastCheck; c != nil {
-		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
-		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
-		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
-		if c.RetrySignal == "declined" {
-			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
-		}
-		if c.RetrySignal == "expired" {
-			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
-		}
-		if c.ErroredChildren > 0 {
-			count := fmt.Sprintf("%d", c.ErroredChildren)
-			if c.ErroredChildrenPartial {
-				count = "at least " + count + " (child discovery was incomplete)"
-			}
-			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
-		}
-		if c.ChildErrorNoticeStopped {
-			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
-		}
-		if c.DryRun {
-			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
-		}
-	} else {
-		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
-	}
-	switch {
-	case st.NetworkDownSince.IsZero():
-	case st.NetworkDistrusted:
-		fmt.Fprintf(w, "network:   the connectivity check has failed since %s, but the provider answered a probe, so it is not believed and the ordinary rules apply. Run doctor to test loop.network\n", st.NetworkDownSince.Format(time.RFC3339))
-	default:
-		reported := "not reported yet"
-		if !st.NetworkReportedAt.IsZero() {
-			reported = "reported " + st.NetworkReportedAt.Format(time.RFC3339)
-		} else if !st.NetworkVerifiedAt.IsZero() {
-			reported = "provider last tested " + st.NetworkVerifiedAt.Format(time.RFC3339) + ", report not delivered yet"
-		}
-		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
-	}
-	if warning := l.NetworkCheckWarning(); warning != "" {
-		fmt.Fprintf(w, "network:   warning: %s\n", warning)
-	}
-	if st.FailedChecks > 0 {
-		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
-	}
-	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
-	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
-	if out.Daemon.State == "responsive" {
-		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
-	}
-	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
-	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
-	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
-	if st.Reprompts > 0 {
-		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
-	}
-	if r := out.Redundancy; r != nil {
-		verdict := "handoffs allowed"
-		if !r.Meets {
-			verdict = "handoffs refused"
-		}
-		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
-	}
-	if b := out.TakeoverBriefs; len(b.Capped) > 0 {
-		fmt.Fprintf(w, "handoff briefs: %s rejected %d and will not be tried again this error episode; resume or retarget clears this\n", strings.Join(b.Capped, ", "), b.Cap)
-	}
-	if b := out.TakeoverBriefs; b.SwitchBackStopped {
-		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
-	}
-	printUsage(w, "usage:     ", out.Usage)
-	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
-	return exitOK
+	return out, nil
 }
 
 func when(t time.Time) string {
@@ -712,6 +750,58 @@ func when(t time.Time) string {
 		return "never"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// saveEpisodeState is swapped in tests to make the save fail.
+var saveEpisodeState = state.Save
+
+// resumeEpisode is the state half of an explicit resume. A person resuming a
+// loop that keepgoing held because a per-episode allowance was spent is
+// saying "try again", so those counts start over: otherwise the next check
+// finds the same spent count and raises the same hold, and resume does
+// nothing.
+//
+// Only that hold starts a new episode. A resume with nothing held, or of a
+// hold a command created (pause, stop, await-user, complete), would
+// otherwise refund the running episode: hold and resume before every check,
+// by anyone who can run the commands, and a session in error is re-prompted
+// at every check with no backoff, cap or hold. Such a resume still gives a
+// repaired fallback or primary fresh takeover briefs, as it always has.
+//
+// Loop-wide limits are never refunded. It runs inside the control update,
+// before the holds are cleared, with the tick lock held: if the counts
+// cannot be saved the resume fails and changes nothing.
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return err
+	}
+	before := st
+	if episodeHold {
+		st.NewEpisode(at)
+	} else {
+		st.RetryRepaired()
+	}
+	if reflect.DeepEqual(before, st) {
+		return nil
+	}
+	return saveEpisodeState(stateDir, st)
+}
+
+// errEpisodeState marks a resume refused because the saved counts could not
+// be reset.
+var errEpisodeState = errors.New("the saved re-prompt and nudge counts could not be reset")
+
+// controlCaller is who is running a control command, as a role.
+func controlCaller(f control.File) string {
+	caller := os.Getenv("BB_THREAD_ID")
+	switch {
+	case caller == "":
+		return "terminal"
+	case f.Ownership != nil && f.Ownership.ThreadID == caller:
+		return "owner_thread"
+	}
+	return "other_thread"
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
@@ -730,17 +820,31 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"enable":  func(f *control.File) { f.Enabled = true },
 		"disable": func(f *control.File) { f.Enabled = false },
 		"pause":   func(f *control.File) { f.Paused = true },
-		"resume":  func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
-		"stop":    func(f *control.File) { f.Stop = true },
+		"resume": func(f *control.File) {
+			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+			f.EpisodeHold, f.OpenQuestion = false, nil
+		},
+		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
 			if !f.Completed {
 				completionDeclaredAt = time.Now().UTC()
 			}
 			f.Completed = true
+			// The task is done, so the loop is shown as completed and not as
+			// waiting on a person. What the person was being asked is kept:
+			// the hold may have been raised by a check, for a child waiting
+			// on a person, and its note is stored nowhere else. A stop or
+			// pause is the operator's and stays.
+			if f.AwaitingUser {
+				f.OpenQuestion = &control.OpenQuestion{Note: f.Note, At: time.Now().UTC()}
+			}
+			f.AwaitingUser = false
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	f, err := updateControlWithHistory(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+	newEpisode, openQuestion := false, false
+	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+		newEpisode, openQuestion = false, false
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -752,16 +856,24 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC()); err != nil {
+				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
+			}
+			newEpisode = f.EpisodeHold
 		}
+		wasAwaiting := f.AwaitingUser
 		if !transfer {
 			fn(f)
 		} // Transferring ownership preserves disabled too.
+		openQuestion = cmd == "complete" && wasAwaiting
 		if note != "" {
 			f.Note = note
-		} else if cmd == "resume" {
-			f.Note = ""
+		} else if cmd == "resume" || openQuestion {
+			f.Note = "" // the note described the hold that has just ended
 		}
 		return nil
+	}, func(f control.File, c *incident.ControlChange) {
+		c.Caller, c.NewEpisode = controlCaller(f), newEpisode
 	}, suppliedRoutine(e.ctx))
 	historyFailed := errors.Is(err, errControlHistory)
 	if historyFailed {
@@ -773,19 +885,6 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
-	}
-	if cmd == "resume" {
-		// Resume is the operator saying "try again": a fallback or primary
-		// that was repaired gets fresh takeover briefs. The tick lock is held.
-		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
-			e.errf("warning: could not clear rejected takeover briefs: %v", err)
-		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 || st.ChildErrorNoticeAttempts > 0 {
-			st.ClearBriefs()
-			st.ChildErrorNoticeAttempts = 0 // a child-error notice that was given up is tried again
-			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
-				e.errf("warning: could not clear rejected takeover briefs: %v", err)
-			}
-		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
@@ -811,6 +910,13 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
+	if openQuestion && f.OpenQuestion != nil {
+		// The note is not repeated here; status shows it, as it shows any note.
+		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+	}
+	if cmd == "resume" && newEpisode {
+		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")
+	}
 	if cmd == "enable" && f.Ownership != nil {
 		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
 	}
@@ -818,6 +924,14 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// noteSuffix renders an optional note.
+func noteSuffix(note string) string {
+	if note == "" {
+		return ""
+	}
+	return ": " + note
 }
 
 // retargetFind looks a created thread up by its generated title. Swapped in tests.
