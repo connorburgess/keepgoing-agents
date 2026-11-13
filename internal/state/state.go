@@ -49,6 +49,14 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
+	// ChildErrorsAnnounced holds decide.ChildHashes of the errored children
+	// the session has been told about and that are still in error. It holds no
+	// child ID and is bounded by the adapter's child limit.
+	ChildErrorsAnnounced []string `json:"childErrorsAnnounced,omitempty"`
+	// ChildErrorNoticeFor identifies the pending announcement (the hashes not
+	// yet announced) that ChildErrorNoticeAttempts rejected sends belong to.
+	ChildErrorNoticeFor      string `json:"childErrorNoticeFor,omitempty"`
+	ChildErrorNoticeAttempts int    `json:"childErrorNoticeAttempts,omitempty"`
 	// AwaitingReported is set once a pending interaction has been reported,
 	// so the person is told once, not on every tick.
 	AwaitingReported bool `json:"awaitingReported,omitempty"`
@@ -82,6 +90,12 @@ type BriefRecord struct {
 	LastAt time.Time `json:"lastAt"`
 }
 
+// ClearChildErrors forgets what was announced about errored children. They
+// belong to one thread, so it is called whenever the loop's target changes.
+func (f *File) ClearChildErrors() {
+	f.ChildErrorsAnnounced, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, "", 0
+}
+
 // ClearBriefs starts a new episode for handoff and switch-back briefs.
 func (f *File) ClearBriefs() {
 	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
@@ -104,10 +118,17 @@ type Check struct {
 	ObservedTarget string    `json:"observedTarget,omitempty"`
 	ObservedState  string    `json:"observedState"`
 	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
-	Action         string    `json:"action"`
-	Reason         string    `json:"reason"`
-	Outcome        string    `json:"outcome"` // succeeded, failed, or dry_run
-	DryRun         bool      `json:"dryRun,omitempty"`
+	// ErroredChildren is how many direct child threads were in error.
+	// ErroredChildrenPartial: child discovery was incomplete, so the count is
+	// a lower bound. ChildErrorNoticeStopped: the notice was given up after
+	// repeated rejected sends.
+	ErroredChildren         int    `json:"erroredChildren,omitempty"`
+	ErroredChildrenPartial  bool   `json:"erroredChildrenPartial,omitempty"`
+	ChildErrorNoticeStopped bool   `json:"childErrorNoticeStopped,omitempty"`
+	Action                  string `json:"action"`
+	Reason                  string `json:"reason"`
+	Outcome                 string `json:"outcome"` // succeeded, failed, or dry_run
+	DryRun                  bool   `json:"dryRun,omitempty"`
 }
 
 // Target returns the active target id, defaulting to primary.

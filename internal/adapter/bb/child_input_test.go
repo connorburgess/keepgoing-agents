@@ -123,7 +123,7 @@ func TestChildInputSharesDiscoveryDeadline(t *testing.T) {
 		return []byte(fmt.Sprintf(`[{"threadId":%q,"status":"pending"}]`, args[3])), nil
 	}
 	a.Timeout = time.Millisecond
-	if _, u, p := a.childWork(context.Background()); !u || len(p) > 0 {
+	if _, u, p, _ := a.childWork(context.Background()); !u || len(p) > 0 {
 		t.Fatal("cancelled discovery accepted input")
 	}
 }
