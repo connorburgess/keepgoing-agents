@@ -64,6 +64,11 @@ import (
 )
 
 func main() {
+	// A scenario may run keepgoing with no room to write (a zero file-size
+	// limit, which is how a full disk looks to a program). The stand-in
+	// is not the program under test: it lifts its own limit, so it can
+	// still record what it was sent.
+	liftFileSizeLimit()
 	world := os.Getenv("SCENARIO_WORLD")
 	if world == "" {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
