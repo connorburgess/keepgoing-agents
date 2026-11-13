@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
@@ -380,6 +381,28 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		cli, workdir, env = a.Cursor.CLI, a.Cursor.Workdir, a.Cursor.Env
 		r.add(prefix+".account", "unavailable", "Cursor account identity and quota state are not verified; existing CLI configuration and environment are inherited.", "")
 		r.add(prefix+".capabilities", "unavailable", initCursorNotice, "Review the Cursor integration limits before starting supervision.")
+	case a.Custom != nil:
+		// A defined agent declares no version or login interface, and doctor
+		// runs nothing a definition does not declare: it resolves the
+		// executable and says what the definition lets keepgoing do.
+		workdir, env = a.Custom.Workdir, a.Custom.Env
+		spec, set, ok := runner.Resolve(a)
+		if !ok {
+			r.add(prefix+".cli", "error", "The defined agent has no usable definition.", "Run validate and correct the custom agent's definition.")
+			return
+		}
+		if _, err := exec.LookPath(set.CLI); err != nil {
+			r.add(prefix+".cli", "error", "The defined agent's executable is missing or not executable.", "Install it or correct the first argument of the definition's start command and the scheduler PATH.")
+		} else {
+			r.add(prefix+".cli", "ok", "The defined agent's executable resolves. It was not run.", "")
+		}
+		can, cannot := spec.Abilities()
+		r.add(prefix+".capabilities", "ok", "Defined agent "+spec.Provider+". keepgoing can: "+strings.Join(can, "; ")+".", "")
+		if len(cannot) > 0 {
+			r.add(prefix+".limits", "unavailable", "With this definition keepgoing cannot: "+strings.Join(cannot, "; ")+".", "Declare the capability with the rule that lets it be observed, if the agent's documented interface supports it.")
+		}
+		r.add(prefix+".account", "unavailable", "A defined agent's account and login are not queried; its environment is passed through.", "")
+		return
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return

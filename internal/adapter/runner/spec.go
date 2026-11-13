@@ -219,6 +219,30 @@ func (s *Spec) ObservationInputs() []string {
 	return in
 }
 
+// Abilities says in plain words what keepgoing can and cannot do with an
+// agent, from its specification alone. Whatever is not declared is listed as
+// cannot: keepgoing treats it as unknown.
+func (s *Spec) Abilities() (can, cannot []string) {
+	add := func(ok bool, yes, no string) {
+		if ok {
+			can = append(can, yes)
+		} else {
+			cannot = append(cannot, no)
+		}
+	}
+	can = append(can, "start a turn with the prompt passed by "+string(s.Prompt))
+	add(s.Capabilities.ExactResume, "continue the same session on later turns", "continue a session: every turn starts a new one")
+	add(s.Capabilities.Stoppable, "stop a running turn", "stop a running turn")
+	add(s.Capabilities.StructuredErrors, "classify a failed turn from its declared codes", "classify a failed turn: every failure is unknown")
+	add(s.Capabilities.StructuredWaiting, "hold for a person when a turn ends waiting on one", "tell that a turn is waiting on a person")
+	add(s.Probe.Command != nil, "check the account and model with a probe, so it can be a fallback", "check the account and model: it cannot be a fallback without a command probe")
+	add(s.Limits != nil, "ask whether an unclassified failure is a usage limit", "tell a usage limit from another failure unless a declared code says so")
+	add(s.MaxOutput > 0, "bound the output it reads", "bound the output it reads")
+	add(s.Capabilities.ChildWork, "see work that outlives a turn", "see work that outlives a turn")
+	add(s.Capabilities.RetriesItself || s.Capabilities.FailsOverItself || s.Capabilities.SchedulesItself, "defer to the agent's own retries, failover or scheduling", "know whether the agent retries, fails over or schedules itself")
+	return can, cannot
+}
+
 // specs is the registry, in the order agents are listed to people.
 var specs = []*Spec{claudeSpec, codexSpec}
 
@@ -250,7 +274,7 @@ func SpecForProvider(provider string) (*Spec, bool) {
 // its target directory. Cursor does and is not on the contract yet.
 func KeepsSessionFile(adapterName string) bool {
 	_, ok := SpecFor(adapterName)
-	return ok || adapterName == "cursor"
+	return ok || adapterName == "cursor" || adapterName == config.CustomAdapter
 }
 
 // Headless runs one agent from its Spec: one turn per Send, resuming the same
