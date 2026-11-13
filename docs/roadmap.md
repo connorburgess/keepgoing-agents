@@ -52,7 +52,9 @@ Every capability/release PR and roadmap check-off includes the [capability and d
 
 ### Delivery priorities after roadmap reassessment
 
-The project retains **Apache-2.0**. Optional paid products or support are business hypotheses, not prerequisites for the local supervisor or a license change.
+The project is source-available under the **Sustainable Use License 1.0**; releases through v0.1.5 and earlier commits on `main` remain under Apache-2.0. See the [licensing guide](../LICENSING.md). Personal and internal-company use of the local supervisor stays free of charge; optional paid products or support remain business hypotheses, not prerequisites for it.
+
+- [ ] **Decision for the owner: a permissively licensed specification.** Publish the agent definition format and the adapter conformance suite as a separately and permissively licensed specification, so any agent can make itself supervisable without touching the restricted code. Not decided and not started.
 
 Reliability of supervision comes before new features: a day of live supervision stopped the loop four separate ways. Most of that list has since landed in unreleased source, so priority 0 now lists what is still open and what has to be proven.
 

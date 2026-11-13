@@ -171,11 +171,20 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
+- [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Use fictional data everywhere. Roadmap completion includes a [capability and documentation review](docs/testing.md#capability-and-documentation-review); documentation must distinguish implemented, released and live-verified behavior.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit sign-offs and the short [contributor agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md). Use fictional data everywhere. Roadmap completion includes a [capability and documentation review](docs/testing.md#capability-and-documentation-review); documentation must distinguish implemented, released and live-verified behavior.
 
 ## License
 
-[Apache-2.0](LICENSE).
+keepgoing is **source-available** under the [Sustainable Use License 1.0](LICENSE).
+
+- Personal use and ordinary internal company use are free, including supervising your company's own agents and using your own installation in consulting or client work.
+- You can inspect and modify the source, and share copies free of charge for noncommercial purposes while preserving the required notices.
+- Selling keepgoing, incorporating its implementation into a commercial product such as an IDE, agent host or managed service, or offering it as a paid hosted service requires a separate commercial agreement.
+
+An agent or tool that makes itself supervisable, or that calls a permitted keepgoing installation through its command line and JSON output, does not by itself require a commercial agreement. This is not an OSI-approved open-source license. Every release through v0.1.5 and other previously published Apache-2.0 material keeps its existing permissions.
+
+See the [licensing guide](LICENSING.md) for examples, prior-version rights, and commercial inquiries. The license text governs.
