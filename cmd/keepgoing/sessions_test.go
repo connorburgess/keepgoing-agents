@@ -1,0 +1,199 @@
+//go:build unix
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
+)
+
+// secondLoop writes another loop beside the fixture's, with its own state
+// directory, changing its configuration with edit, and returns its path.
+func secondLoop(t *testing.T, f *fixture, name string, edit func(string) string) string {
+	t.Helper()
+	b, err := os.ReadFile(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(f.dir, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(string(b), "name: example-loop", "name: "+name, 1)
+	body = strings.Replace(body, "state_dir: state", "state_dir: "+filepath.Join(dir, "state"), 1)
+	body = strings.Replace(body, "fallbacks: fallbacks.yaml", "fallbacks: "+filepath.Join(f.dir, "fallbacks.yaml"), 1)
+	if edit != nil {
+		body = edit(body)
+	}
+	path := filepath.Join(dir, "keepgoing.yaml")
+	write(t, path, body, 0o600)
+	return path
+}
+
+func runWith(args ...string) (int, string, string) {
+	var out, errb bytes.Buffer
+	code := run(context.Background(), args, &out, &errb)
+	return code, out.String(), errb.String()
+}
+
+func TestEnableRefusesASecondLoopOnOneSession(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != exitOK {
+		t.Fatalf("first enable: %d %s", code, errs)
+	}
+	other := secondLoop(t, f, "example-loop-b", nil)
+	code, _, errs := runWith("enable", "-c", other)
+	if code != exitFailed || !strings.Contains(errs, "loop example-loop (") || !strings.Contains(errs, "BB thread thr_primary") || !strings.Contains(errs, "--allow-second-loop") {
+		t.Fatalf("second enable: %d %s", code, errs)
+	}
+	otherCfg, _ := config.Load(other)
+	if ctl, _ := control.Load(otherCfg.Loop.StateDir); ctl.Enabled {
+		t.Fatal("the refused loop was enabled")
+	}
+	// Asked for explicitly: enabled, with a warning naming the first.
+	code, _, errs = runWith("enable", "-c", other, "--allow-second-loop")
+	if code != exitOK || !strings.Contains(errs, "warning: loop example-loop (") || !strings.Contains(errs, "also supervises BB thread thr_primary") {
+		t.Fatalf("allowed enable: %d %s", code, errs)
+	}
+	// Status and validate of either loop name the other.
+	for _, c := range []struct{ cfg, other string }{{f.cfg, "example-loop-b"}, {other, "example-loop"}} {
+		code, out, _ := runWith("status", "-c", c.cfg)
+		if code != exitOK || !strings.Contains(out, "shared:    loop "+c.other+" (") {
+			t.Fatalf("status of %s: %d %s", c.cfg, code, out)
+		}
+		code, _, errs := runWith("validate", "-c", c.cfg)
+		if code != exitOK || !strings.Contains(errs, "warning: loop "+c.other+" (") {
+			t.Fatalf("validate of %s: %d %s", c.cfg, code, errs)
+		}
+	}
+	code, out, _ := runWith("status", "--json", "-c", f.cfg)
+	var st struct {
+		SharedWith []string `json:"sharedWith"`
+	}
+	// The two fixture loops share their fallbacks' threads too: each is
+	// named, the primary first.
+	if code != exitOK || json.Unmarshal([]byte(out), &st) != nil || len(st.SharedWith) != 3 || !strings.Contains(st.SharedWith[0], "also supervises BB thread thr_primary") ||
+		!strings.Contains(strings.Join(st.SharedWith, "\n"), "fallback claude-other-account and this loop's fallback claude-other-account are the same BB thread thr_alt") {
+		t.Fatalf("status json: %s", out)
+	}
+	// The flag belongs to enable, start and init only.
+	if code, _, errs := runWith("pause", "-c", other, "--allow-second-loop"); code != exitUsage || !strings.Contains(errs, "only supported by enable, start and init") {
+		t.Fatalf("pause --allow-second-loop: %d %s", code, errs)
+	}
+}
+
+// A loop that was never registered is still found: enabling it recorded it
+// in the session directory, outside every loop's own directory.
+func TestAnUnregisteredLoopIsFoundThroughTheSessionRecord(t *testing.T) {
+	f := newFixture(t)
+	if code, _, _ := f.run("enable"); code != exitOK {
+		t.Fatal("enable")
+	}
+	entries, err := os.ReadDir(os.Getenv(registryDirEnv))
+	if err == nil && len(entries) > 0 {
+		t.Fatalf("the fixture loop is registered: %v", entries)
+	}
+	other := secondLoop(t, f, "example-loop-b", nil)
+	if code, _, errs := runWith("enable", "-c", other); code != exitFailed || !strings.Contains(errs, "loop example-loop (") {
+		t.Fatalf("%d %s", code, errs)
+	}
+	// A loop that is disabled, or whose configuration no longer names the
+	// session, no longer counts.
+	if code, _, _ := f.run("disable"); code != exitOK {
+		t.Fatal("disable")
+	}
+	if code, _, errs := runWith("enable", "-c", other); code != exitOK || strings.Contains(errs, "example-loop (") {
+		t.Fatalf("after the first was disabled: %d %s", code, errs)
+	}
+	third := secondLoop(t, f, "example-loop-c", nil)
+	b, _ := os.ReadFile(other)
+	write(t, other, strings.Replace(string(b), "thread: thr_primary", "thread: thr_elsewhere", 1), 0o600)
+	if code, _, errs := runWith("enable", "-c", third); code != exitOK || strings.Contains(errs, "already supervises") || strings.Contains(errs, "example-loop-b ("+other+") also supervises") {
+		t.Fatalf("after the second moved to another thread: %d %s", code, errs)
+	}
+}
+
+func TestRegisteredLoopsAreFoundAndStartAndInitRefuse(t *testing.T) {
+	f := newFixture(t)
+	if code, _, _ := f.run("enable"); code != exitOK {
+		t.Fatal("enable")
+	}
+	// Registered and enabled before this build kept session records: the
+	// registry finds it.
+	if err := os.RemoveAll(os.Getenv("KEEPGOING_SESSION_DIR")); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := runWith("registry", "add", "-c", f.cfg); code != exitOK {
+		t.Fatalf("registry add: %d %s", code, errs)
+	}
+	other := secondLoop(t, f, "example-loop-b", nil)
+	code, _, errs := runWith("start", "-c", other)
+	if code != exitFailed || !strings.Contains(errs, "start: loop example-loop (") || !strings.Contains(errs, "--allow-second-loop to start this one") {
+		t.Fatalf("start: %d %s", code, errs)
+	}
+	otherCfg, _ := config.Load(other)
+	if ctl, _ := control.Load(otherCfg.Loop.StateDir); ctl.Enabled {
+		t.Fatal("the refused loop was started")
+	}
+	var out, ierr bytes.Buffer
+	project := newSetupFixture(t).project
+	code = initLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	if code != exitFailed || !strings.Contains(ierr.String(), "init: loop example-loop (") {
+		t.Fatalf("init: %d %s %s", code, out.String(), ierr.String())
+	}
+	out.Reset()
+	ierr.Reset()
+	code = initLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--allow-second-loop", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	if code != exitOK || !strings.Contains(ierr.String(), "warning: loop example-loop (") {
+		t.Fatalf("init allowed: %d %s %s", code, out.String(), ierr.String())
+	}
+}
+
+// Two headless loops in one checkout are two conversations, so neither
+// refuses the other; each is warned about the other.
+func TestHeadlessLoopsInOneDirectoryAreWarnedNotRefused(t *testing.T) {
+	f := newFixture(t)
+	work := filepath.Join(f.dir, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	headless := func(adapter string) func(string) string {
+		return func(body string) string {
+			body = strings.Replace(body, "  adapter: bb\n", "  adapter: "+adapter+"\n", 1)
+			body = strings.Replace(body, "  provider: claude-code\n", "", 1)
+			body = strings.Replace(body, "  group: claude-account-a\n", "", 1)
+			lines := strings.Split(body, "\n")
+			for i, l := range lines {
+				if strings.HasPrefix(l, "  bb: {thread: thr_primary") {
+					lines[i] = "  " + adapter + ": {workdir: " + work + ", cli: " + filepath.Join(f.dir, "bin", adapter) + "}"
+				}
+				if strings.HasPrefix(l, "  fallbacks:") {
+					lines[i] = ""
+				}
+			}
+			return strings.Join(lines, "\n") + "  progress: {repositories: [" + work + "]}\n"
+		}
+	}
+	claude := secondLoop(t, f, "example-claude", headless("claude"))
+	codex := secondLoop(t, f, "example-codex", headless("codex"))
+	if code, _, errs := runWith("enable", "-c", claude); code != exitOK {
+		t.Fatalf("claude: %d %s", code, errs)
+	}
+	code, _, errs := runWith("enable", "-c", codex)
+	if code != exitOK || !strings.Contains(errs, "warning: loop example-claude (") || !strings.Contains(errs, "its current agent works in the same directory") || !strings.Contains(errs, "it tracks the same repository") {
+		t.Fatalf("codex: %d %s", code, errs)
+	}
+	// The same CLI in the same directory is one session: refused.
+	claudeTwo := secondLoop(t, f, "example-claude-two", headless("claude"))
+	if code, _, errs := runWith("enable", "-c", claudeTwo); code != exitFailed || !strings.Contains(errs, "claude session in ") {
+		t.Fatalf("second claude: %d %s", code, errs)
+	}
+}

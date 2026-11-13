@@ -264,11 +264,12 @@ func (r Result) asStep(w *World, label string) *Step {
 	return &Step{Label: label, At: w.Now, Result: r}
 }
 
-// TestScenarioTwoLoopsOnOneSession: two separately configured loops supervise
-// the same BB thread. Nothing ties them together: each has its own state
-// directory, locks and allowance. Checked one after the other, the second
-// sees the session working and leaves it alone. Checked at the same moment,
-// both see it idle and both wake it.
+// TestScenarioTwoLoopsOnOneSession: two separately configured loops, each with
+// its own state directory, are set up on the same BB thread. Enabling the
+// second is refused, naming the first, until it is asked for explicitly.
+// Checked one after the other, the second sees the session working and
+// leaves it alone. Checked at the same moment, only one acts: the other finds
+// the session claimed, sends nothing and exits 75 as a busy check does.
 func TestScenarioTwoLoopsOnOneSession(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
@@ -300,12 +301,18 @@ func TestScenarioTwoLoopsOnOneSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Run("enable", "-c", w.Config)
-	// Enabling a second loop on a session another loop supervises is not
-	// refused or warned about today.
+	// Enabling a second loop on a session another loop supervises is
+	// refused, naming that loop and the session.
 	r := w.Run("enable", "-c", other)
 	step := w.record("enable the second loop", r, nil)
-	w.Check(step, "second loop enabled", exit(step, 0))
-	w.Known(step, Waits(WaitTwoLoops), "enabling a second loop on a supervised session says so", check(strings.Contains(r.Stderr+r.Stdout, primaryThread), "nothing was said: %q", strings.TrimSpace(r.Stdout+r.Stderr)))
+	w.Check(step, "enabling a second loop on a supervised session is refused and says so", all(exit(step, 1),
+		check(strings.Contains(r.Stderr, "loop example-loop ") && strings.Contains(r.Stderr, primaryThread) && strings.Contains(r.Stderr, "--allow-second-loop"), "stderr %q", r.Stderr),
+		nothingSent(step)))
+	// Asked for explicitly, it is enabled, with a warning naming the first.
+	r = w.Run("enable", "-c", other, "--allow-second-loop")
+	step = w.record("enable the second loop anyway", r, nil)
+	w.Check(step, "second loop enabled when asked, with a warning", all(exit(step, 0),
+		check(strings.Contains(r.Stderr, "warning: loop example-loop ") && strings.Contains(r.Stderr, primaryThread), "stderr %q", r.Stderr)))
 
 	// One after the other: the first wakes the session; the second sees it
 	// working and sends nothing.
@@ -316,24 +323,40 @@ func TestScenarioTwoLoopsOnOneSession(t *testing.T) {
 	step = w.record("the second loop", r, tickLine(t, r))
 	w.Check(step, "the second loop leaves a working session alone", all(exit(step, 0), action(step, "none"), reasonIs(step, "active"), nothingSent(step)))
 
-	// The turn ends. Both loops check at the same moment: both read the
-	// session idle before either has sent anything.
+	// The turn ends. Both loops check at the same moment. The first to claim
+	// the session observes and wakes it; the other finds it claimed before it
+	// observes anything.
 	primary.FinishTurn()
 	w.Advance(30 * time.Minute)
-	w.gateShow(2)
+	// The gate holds the first observation until the other check has run
+	// to its end, so the two checks overlap.
+	w.gateShow(0)
 	a := w.tickInBackground(w.Config, "")
-	b := w.tickInBackground(other, "")
-	ra, rb := <-a, <-b
+	w.waitArrivals(1)
+	rb := <-w.tickInBackground(other, "")
+	w.openGate()
+	ra := <-a
 	w.removeGate()
 	step = w.record("both loops at once", ra, nil)
-	la, lb := tickLine(t, ra), tickLine(t, rb)
-	w.Check(step, "both checks ran", check(ra.Code == 0 && rb.Code == 0, "exits %d and %d: %s %s", ra.Code, rb.Code, ra.Stderr, rb.Stderr))
-	w.Known(step, Waits(WaitTwoLoops), "a session checked by two loops at once is woken once",
-		check(len(step.Sent) == 1, "the session received %s (loops decided %v and %v)", describeSends(step.Sent), la["action"], lb["action"]))
+	w.Check(step, "a session checked by two loops at once is woken once", all(
+		check(ra.Code == 0, "the first loop exited %d: %s", ra.Code, ra.Stderr),
+		check(rb.Code == 75 && strings.Contains(rb.Stderr, primaryThread) && strings.Contains(rb.Stderr, "being checked by loop example-loop ") && strings.Contains(rb.Stderr, "nothing sent"), "the second loop exited %d: %s", rb.Code, rb.Stderr),
+		check(len(step.Sent) == 1, "the session received %s", describeSends(step.Sent)),
+	))
+	// The other order: the second loop claims first and the first is skipped.
+	primary.FinishTurn()
+	w.Advance(30 * time.Minute)
+	w.gateShow(0)
+	b := w.tickInBackground(other, "")
+	w.waitArrivals(1)
+	ra = <-w.tickInBackground(w.Config, "")
+	w.openGate()
+	rb = <-b
+	w.removeGate()
+	step = w.record("both loops at once, the other way round", rb, nil)
+	w.Check(step, "the first loop is skipped while the second acts", all(
+		check(rb.Code == 0, "the second loop exited %d: %s", rb.Code, rb.Stderr),
+		check(ra.Code == 75 && strings.Contains(ra.Stderr, "being checked by loop example-loop-b "), "the first loop exited %d: %s", ra.Code, ra.Stderr),
+		check(len(step.Sent) == 1, "the session received %s", describeSends(step.Sent)),
+	))
 }
-
-// WaitTwoLoops: nothing stops two loops supervising one session. Each has its
-// own state directory, locks, send allowance and re-prompt count, and nothing
-// in enable, status or a check mentions the other. Reported from this
-// scenario; not assigned yet.
-const WaitTwoLoops Waiting = "two loops on one session, unassigned"

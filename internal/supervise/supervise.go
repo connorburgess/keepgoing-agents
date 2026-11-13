@@ -24,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
 )
@@ -33,7 +34,10 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
-	Version     string // build label of the caller, for historical diagnostics
+	Version string // build label of the caller, for historical diagnostics
+	// SessionDir is the private directory of session claims shared by every
+	// loop this user runs; empty means session.Dir().
+	SessionDir  string
 	Now         time.Time
 	DryRun      bool // decide and record; send nothing and run no probes
 	Fingerprint func([]string) (string, error)
@@ -145,6 +149,11 @@ type Result struct {
 }
 
 type tick struct {
+	// claims are the session claims this check holds, by key. A check holds
+	// its active session's claim from before it first observes it until it
+	// ends, and a fallback's or the primary's before it probes or sends there.
+	claims              map[string]*session.Claim
+	sessionDir          string
 	incidentDecisions   incident.Decisions
 	incidentStateLoaded bool
 	incidentAdapter     string
@@ -278,6 +287,7 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	}
 	t.graphSync()
 	err := t.run()
+	t.releaseClaims()
 	t.graphClose()
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
@@ -285,6 +295,88 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 		res.Recorded = false
 	}
 	return res, err
+}
+
+// sessionDirectory resolves the shared claim directory once per check.
+func (t *tick) sessionDirectory() (string, error) {
+	if t.sessionDir != "" {
+		return t.sessionDir, nil
+	}
+	dir := t.opts.SessionDir
+	if dir == "" {
+		var err error
+		if dir, err = session.Dir(); err != nil {
+			return "", err
+		}
+	}
+	t.sessionDir = dir
+	return dir, nil
+}
+
+// claim takes a session's claim for the rest of this check. It returns the
+// *session.ClaimedError of another loop's claim; an agent with no fixed
+// session needs none.
+func (t *tick) claim(a config.Agent) error {
+	id, ok := session.Of(a)
+	if !ok {
+		return nil
+	}
+	if t.claims[id.Key()] != nil {
+		return nil // this check already holds it
+	}
+	dir, err := t.sessionDirectory()
+	if err != nil {
+		return err
+	}
+	c, err := session.Take(dir, id, session.Holder{Loop: t.loop.Name, PID: os.Getpid(), Since: t.opts.Clock().UTC(), Until: t.deadline.UTC()})
+	if err != nil {
+		return err
+	}
+	if t.claims == nil {
+		t.claims = map[string]*session.Claim{}
+	}
+	t.claims[id.Key()] = c
+	return nil
+}
+
+// claimActive claims the session this check is about to observe. Another
+// loop's claim ends the check: nothing is observed, decided, sent or
+// recorded, and the caller skips it as a busy check. A claim that cannot be
+// taken at all fails the check without acting.
+func (t *tick) claimActive(a config.Agent) error {
+	err := t.claim(a)
+	var claimed *session.ClaimedError
+	switch {
+	case err == nil:
+		if id, ok := session.Of(a); ok && !t.opts.DryRun && t.cfg.Path() != "" {
+			// Best effort: lets enable and status name this loop to others.
+			_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now})
+		}
+		return nil
+	case errors.As(err, &claimed):
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "another loop is acting on this session"
+		return err
+	}
+	t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unavailable; no action taken"
+	return t.record(fmt.Errorf("session claim: %w", err))
+}
+
+// claimOther claims a session this check may move to. It returns another
+// loop's claim as the first value; the second is any other failure.
+func (t *tick) claimOther(a config.Agent) (*session.ClaimedError, error) {
+	err := t.claim(a)
+	var claimed *session.ClaimedError
+	if errors.As(err, &claimed) {
+		return claimed, nil
+	}
+	return nil, err
+}
+
+func (t *tick) releaseClaims() {
+	for _, c := range t.claims {
+		c.Release()
+	}
+	t.claims = nil
 }
 
 // resolve returns the agent for a target id, reverting to primary when a
@@ -419,6 +511,12 @@ func (t *tick) run() error {
 	if moved {
 		target, agent = t.resolve(t.st.Target())
 		res.Target, t.incidentTarget, t.incidentAdapter = target, target, agent.Adapter
+	}
+	// No two loops act on one session at the same moment: another loop's
+	// check of this session ends this one before anything is observed or
+	// sent.
+	if err := t.claimActive(agent); err != nil {
+		return err
 	}
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
@@ -779,6 +877,9 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
+	if err := t.claimActive(agent); err != nil {
+		return err
+	}
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
 		res.State, res.Reason = "not observed", "stop requested; could not build the target's adapter"
@@ -969,6 +1070,17 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 			t.moveToCreated(&state.NewThreadIntent{Candidate: id, From: from, Continues: t.st.NewThreads[id].Continues, Reason: string(class)}, thread, note)
 			return true, nil
 		}
+		// The probe asked the account, not the session. Before anything is
+		// sent to the session, it is claimed: a fallback whose session
+		// another loop is acting on right now is not sent a brief.
+		if claimed, err := t.claimOther(c.Agent); err != nil || claimed != nil {
+			why := "its session claim is unavailable"
+			if claimed != nil {
+				why = "another loop is acting on its session"
+			}
+			note.Skipped = append(note.Skipped, id+": "+why)
+			continue
+		}
 		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
 			t.warn("handoff to %s: %v", id, err)
@@ -1088,6 +1200,15 @@ func (t *tick) switchBack(from string) (bool, error) {
 	brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
 	if err != nil {
 		return false, fmt.Errorf("switch-back brief: %w", err)
+	}
+	// The primary's session is not sent to while another loop is acting on
+	// it; the switch-back waits for a later check.
+	if claimed, err := t.claimOther(t.loop.Agent); err != nil || claimed != nil {
+		if claimed != nil {
+			t.warn("switch-back waits: %v", claimed)
+		}
+		t.switchBackDeferred = true
+		return false, nil
 	}
 	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {

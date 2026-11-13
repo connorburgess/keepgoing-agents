@@ -40,6 +40,9 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 		fmt.Fprintln(e.stdout, "ownership: validation only; use enable --take-over to transfer the claim")
 	}
 	fmt.Fprintf(e.stdout, "ok: %s (loop %s, %s)\n", path, l.Name, l.Describe())
+	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
+		e.errf("warning: %s", w)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
 	}
@@ -287,6 +290,12 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	// SharedWith lists, in words, other enabled loops that share this loop's
+	// session, a fallback's session, its working directory or a repository.
+	SharedWith []string `json:"sharedWith,omitempty"`
+	// SessionClaim describes a check of another loop acting on this loop's
+	// primary session right now, or one that is stuck holding it.
+	SessionClaim      string                   `json:"sessionClaim,omitempty"`
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	TurnRetry         turnRetryStatus          `json:"turnRetry"`
@@ -421,6 +430,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		return exitFailed
 	}
 	ctl, st := out.Control, out.State
+	out.SharedWith = sharedLoopWarnings(cfg, findOtherLoops(cfg))
+	out.SessionClaim = sessionClaimText(cfg, now)
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
@@ -428,6 +439,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	for _, s := range out.SharedWith {
+		fmt.Fprintf(w, "shared:    %s\n", s)
+	}
+	if out.SessionClaim != "" {
+		fmt.Fprintf(w, "session:   %s\n", out.SessionClaim)
+	}
 	if ctl.PendingTransfer != nil {
 		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
 	}
