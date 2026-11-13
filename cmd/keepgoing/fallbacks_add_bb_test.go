@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 const (
@@ -377,17 +378,13 @@ func TestRunBBLookupIsBoundedAndReadsOnlyStdout(t *testing.T) {
 	}
 	dir := t.TempDir()
 	ok := filepath.Join(dir, "bb-ok")
-	if err := os.WriteFile(ok, []byte("#!/bin/sh\necho 'noise' >&2\nprintf '[{\"id\":\"thr_example_docs\",\"providerId\":\"codex\",\"title\":\"Docs\"}]'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, ok, "#!/bin/sh\necho 'noise' >&2\nprintf '[{\"id\":\"thr_example_docs\",\"providerId\":\"codex\",\"title\":\"Docs\"}]'\n")
 	threads, err := bbThreads(context.Background(), runBBLookup, ok)
 	if err != nil || len(threads) != 1 || threads[0].ID != "thr_example_docs" {
 		t.Fatalf("%v %+v", err, threads)
 	}
 	failing := filepath.Join(dir, "bb-fail")
-	if err := os.WriteFile(failing, []byte("#!/bin/sh\nprintf '[]'\nexit 3\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, failing, "#!/bin/sh\nprintf '[]'\nexit 3\n")
 	if _, err := bbThreads(context.Background(), runBBLookup, failing); err == nil {
 		t.Fatal("a failed listing was accepted")
 	}
@@ -395,9 +392,7 @@ func TestRunBBLookupIsBoundedAndReadsOnlyStdout(t *testing.T) {
 		t.Fatal("a missing executable was accepted")
 	}
 	big := filepath.Join(dir, "bb-big")
-	if err := os.WriteFile(big, []byte("#!/bin/sh\nhead -c 9000000 /dev/zero\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, big, "#!/bin/sh\nhead -c 9000000 /dev/zero\n")
 	if _, err := runBBLookup(context.Background(), big, "thread", "list", "--json"); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("oversized listing: %v", err)
 	}
@@ -490,9 +485,7 @@ func TestRunBBLookupStopsAHungListing(t *testing.T) {
 	bbLookupTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { bbLookupTimeout = old })
 	hung := filepath.Join(t.TempDir(), "bb-hung")
-	if err := os.WriteFile(hung, []byte("#!/bin/sh\nprintf '['\nsleep 60 &\nwait\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, hung, "#!/bin/sh\nprintf '['\nsleep 60 &\nwait\n")
 	start := time.Now()
 	threads, err := bbThreads(context.Background(), runBBLookup, hung)
 	if err == nil || threads != nil {
