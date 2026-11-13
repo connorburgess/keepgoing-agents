@@ -270,9 +270,17 @@ func Load(path string) (*Config, error) {
 // or no scheduled probe could ever be started.
 const TickTimeoutProbeMargin = 90 * time.Second
 
+// MinTickTimeout is the least tick_timeout. A check's hard limit is
+// tick_timeout plus TickTail, and the steps that cannot be skipped (yield,
+// observation, fingerprint, send and three brief reports) can take 250s.
+const MinTickTimeout = 160 * time.Second
+
+// TickTail is added to tick_timeout to give a check's hard limit.
+const TickTail = 90 * time.Second
+
 // TickTimeoutSchedulerNote is the longest tick_timeout whose worst case still
 // ends inside a five-minute scheduler timeout.
-const TickTimeoutSchedulerNote = 4 * time.Minute
+const TickTimeoutSchedulerNote = 3*time.Minute + 15*time.Second
 
 // fitTickTimeout makes room for one whole scheduled probe. An omitted
 // tick_timeout grows to fit, so an existing file with a long probe timeout
@@ -292,11 +300,17 @@ func (l *Loop) fitTickTimeout(probeTimeout time.Duration) error {
 // TickTimeoutWarning is non-empty when a check's worst case may outlast a
 // five-minute scheduler timeout. The daemon and managed services have no
 // such timeout.
+// TickTimeoutGrown reports whether an omitted tick_timeout was raised above
+// its default to fit the fallback probe timeout.
+func (l Loop) TickTimeoutGrown() bool {
+	return l.tickTimeoutDefaulted && l.TickTimeout.Duration > DefaultTickTimeout
+}
+
 func (l Loop) TickTimeoutWarning() string {
 	if l.TickTimeout.Duration <= TickTimeoutSchedulerNote {
 		return ""
 	}
-	return fmt.Sprintf("loop.tick_timeout is %s; with an external scheduler, give its own timeout at least %s more than that, or a slow check is killed before it records anything", l.TickTimeout.Duration, 90*time.Second)
+	return fmt.Sprintf("loop.tick_timeout is %s, so a check may take up to %s; an external scheduler's own timeout must be longer than that, or a slow check is killed before it records anything", l.TickTimeout.Duration, l.TickTimeout.Duration+TickTail)
 }
 
 // Parse decodes and validates YAML bytes without touching the filesystem.
@@ -437,8 +451,8 @@ func (c *Config) Validate() error {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
-	if l.TickTimeout.Duration < 30*time.Second {
-		add("loop.tick_timeout must be at least 30s")
+	if l.TickTimeout.Duration < MinTickTimeout {
+		add("loop.tick_timeout must be at least %s", MinTickTimeout)
 	}
 	if l.Daemon.Interval.Duration < 10*time.Second {
 		add("loop.daemon.interval must be at least 10s")

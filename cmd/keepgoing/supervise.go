@@ -277,6 +277,7 @@ type statusOut struct {
 	Deadline          string                   `json:"deadline,omitempty"`
 	DeadlineReached   bool                     `json:"deadlineReached"`
 	WorkBounds        workBoundsStatus         `json:"workBounds"`
+	TickBudget        tickBudgetStatus         `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -311,6 +312,16 @@ type takeoverBriefsStatus struct {
 
 // workBoundsStatus reports which loop-wide limits the loaded configuration
 // sets. It does not say whether one has been reached; see the allowance fields.
+// tickBudgetStatus is the configured time budget of one check. Grown means
+// tick_timeout was omitted and raised above its default to fit the fallback
+// probe timeout. Warning is set when a slow check may outlast a five-minute
+// scheduler timeout.
+type tickBudgetStatus struct {
+	Timeout string `json:"timeout"`
+	Grown   bool   `json:"grown"`
+	Warning string `json:"warning,omitempty"`
+}
+
 type workBoundsStatus struct {
 	Limits    []string `json:"limits"`
 	Unbounded bool     `json:"unbounded"`
@@ -437,6 +448,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	sort.Strings(out.TakeoverBriefs.Capped)
 	out.WorkBounds = workBoundsStatus{Limits: l.Limits.Configured()}
+	out.TickBudget = tickBudgetStatus{Timeout: l.TickTimeout.Duration.String(), Grown: l.TickTimeoutGrown(), Warning: l.TickTimeoutWarning()}
 	if len(out.WorkBounds.Limits) == 0 {
 		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
 	}
@@ -540,6 +552,14 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintln(w)
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	tickBudget := out.TickBudget.Timeout
+	if out.TickBudget.Grown {
+		tickBudget += fmt.Sprintf(" (tick_timeout is not set; raised from the %s default to fit fallbacks probe.timeout)", config.DefaultTickTimeout)
+	}
+	fmt.Fprintf(w, "check budget: %s\n", tickBudget)
+	if out.TickBudget.Warning != "" {
+		fmt.Fprintf(w, "check budget: warning: %s\n", out.TickBudget.Warning)
+	}
 	if out.WorkBounds.Unbounded {
 		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
 	} else {
