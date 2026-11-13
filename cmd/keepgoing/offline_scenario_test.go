@@ -54,6 +54,12 @@ func newOfflineLoop(t *testing.T, kind string) *offlineLoop {
 	testexec.Script(t, cli, `#!/bin/sh
 d="`+dir+`"
 case "$1" in app-server) exit 1 ;; esac
+# A probe of the provider, not a turn: it does not count as a send.
+case "$*" in *--no-session-persistence*|*--ephemeral*)
+	echo "$*" >> "$d/probes"
+	if [ "$(cat "$d/mode")" = online ]; then `+online+`; exit 0; fi
+	exit 1 ;;
+esac
 echo "$*" >> "$d/args"
 cat > "$d/last-prompt"
 case "$(cat "$d/mode")" in
@@ -66,6 +72,9 @@ esac
 	cfg := filepath.Join(dir, "keepgoing.yaml")
 	provider := map[string]string{"claude": "claude-code", "codex": "codex"}[kind]
 	write(t, cfg, fmt.Sprintf("version: 1\nloop:\n  name: example-headless\n  state_dir: state\n  adapter: %s\n  provider: %s\n  %s: {cli: %s, workdir: %s}\n  prompt: %s\n", kind, provider, kind, cli, dir, offlinePrompt), 0o600)
+	// keepgoing's connectivity check follows the stand-in's mode: it passes
+	// only while the stand-in is online, so "portal" reads as offline.
+	t.Setenv("KEEPGOING_NET_PROBE", `test "$(cat '`+dir+`/mode')" = online`)
 	l := &offlineLoop{t: t, kind: kind, dir: dir, cfg: cfg, clock: time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)}
 	l.mode("online")
 	if code, _, errs := l.run("enable"); code != exitOK {
@@ -145,96 +154,66 @@ func TestOfflineScenarioHeadless(t *testing.T) {
 			if strings.Contains(l.sends()[0], offlineSession) || l.read("session") != offlineSession {
 				t.Fatalf("first turn: %v, saved %q", l.sends(), l.read("session"))
 			}
-			expect(time.Minute, "reprompt", "error: ")
-			// What the runner recorded for the failed turn: its exit code and
-			// output, with the saved session untouched.
+			// The turn that ran into the outage fails: the runner records its
+			// exit code and output and leaves the saved session untouched.
+			l.settle()
 			if l.read("session") != offlineSession {
 				t.Fatalf("the failed turn changed the saved session: %q", l.read("session"))
 			}
-			// Still offline. Re-prompts are spent into the outage with a
-			// ten-minute backoff, and the third failure asks for a person.
-			expect(time.Minute, "none", "backing off after error")
-			expect(10*time.Minute, "reprompt", "error: ")
-			expect(10*time.Minute, "reprompt", "error: ")
-			expect(10*time.Minute, "await_user", "error persisted after re-prompts")
-			ctl, _ := control.Load(filepath.Join(l.dir, "state"))
-			if !ctl.AwaitingUser {
-				t.Fatal("the loop is not on an awaiting-user hold")
+			_ = resumed
+			held := func() bool {
+				ctl, _ := control.Load(filepath.Join(l.dir, "state"))
+				return ctl.AwaitingUser
 			}
-			// Twenty-odd minutes after the drop the loop is held. Nothing
-			// changes at four hours, three days or three weeks, online or not:
-			// keepgoing does not come back by itself.
+			// Still offline. The connectivity check fails, so nothing more is
+			// sent and nothing is held, at twenty minutes, four hours, three
+			// days and three weeks. Before the check existed, three re-prompts
+			// went into the outage ten minutes apart, the loop was on hold
+			// within half an hour, and nothing brought it back.
 			sent := len(l.sends())
-			for _, later := range []time.Duration{4 * time.Hour, 3 * 24 * time.Hour, 18 * 24 * time.Hour} {
-				expect(later, "none", "awaiting user")
+			for _, later := range []time.Duration{time.Minute, 10 * time.Minute, 10 * time.Minute, 4 * time.Hour, 3 * 24 * time.Hour, 18 * 24 * time.Hour} {
+				expect(later, "none", "network down; waiting for connectivity")
 			}
 			l.mode("portal") // the network returns behind a captive portal
-			expect(time.Hour, "none", "awaiting user")
-			l.mode("online")
-			expect(time.Hour, "none", "awaiting user")
-			if len(l.sends()) != sent {
-				t.Fatal("a held loop sent a prompt")
+			expect(time.Hour, "none", "network down; waiting for connectivity")
+			if held() || len(l.sends()) != sent || sent != 2 {
+				t.Fatalf("held=%t, %d sends: %v", held(), len(l.sends()), l.sends())
 			}
-
+			// The portal is cleared. The first check sends one re-prompt, which
+			// resumes the saved session, and the loop carries on by itself.
+			l.mode("online")
+			expect(time.Hour, "reprompt", "error: ")
+			expect(time.Minute, "wake", "idle")
+			if held() {
+				t.Fatal("the loop is on hold after recovering")
+			}
 			// Every send after the first resumed the saved session exactly,
 			// and every one carried the whole task prompt again.
 			for i, args := range l.sends() {
-				if i > 0 && !strings.Contains(args, resumed[kind]) || i > 0 && !strings.Contains(args, offlineSession) {
+				if i > 0 && (!strings.Contains(args, resumed[kind]) || !strings.Contains(args, offlineSession)) {
 					t.Fatalf("send %d did not resume the saved session: %s", i, args)
 				}
 			}
 			if got, _ := os.ReadFile(filepath.Join(l.dir, "last-prompt")); string(got) != offlinePrompt {
 				t.Fatalf("a re-prompt sent %q", got)
 			}
-			if sent != 5 {
-				t.Fatalf("%d sends: %v", sent, l.sends())
+			if got := len(l.sends()); got != 4 {
+				t.Fatalf("%d sends: %v", got, l.sends())
 			}
-
-			// A person resumes three weeks later. Resume clears the hold but
-			// not the spent re-prompts, and a headless session cannot change
-			// state without a send, so the next check holds again at once
-			// without trying. This is a gap, listed in docs/adapters.md.
-			if code, _, errs := l.run("resume"); code != exitOK {
-				t.Fatal(errs)
-			}
-			expect(time.Minute, "await_user", "error persisted after re-prompts")
-			if len(l.sends()) != sent {
-				t.Fatal("resume alone sent a prompt")
-			}
-			// Today's way out is to reselect the target, which starts a new
-			// error episode, and then resume. Behind the portal the cycle
-			// repeats against the same session and ends on hold.
-			l.mode("portal")
-			recoverLoop := func() {
-				t.Helper()
-				for _, args := range [][]string{{"retarget", "primary"}, {"resume"}} {
-					if code, _, errs := l.run(args...); code != exitOK {
-						t.Fatal(args, errs)
-					}
-				}
-			}
-			recoverLoop()
-			expect(time.Minute, "reprompt", "error: ")
-			expect(10*time.Minute, "reprompt", "error: ")
-			expect(10*time.Minute, "reprompt", "error: ")
-			expect(10*time.Minute, "await_user", "error persisted after re-prompts")
-			// Once the network is really back, the same steps recover the
-			// loop in the same session.
-			l.mode("online")
-			recoverLoop()
-			expect(time.Minute, "reprompt", "error: ")
-			expect(time.Minute, "wake", "idle")
-			last := l.sends()[len(l.sends())-1]
-			if !strings.Contains(last, offlineSession) {
-				t.Fatalf("recovery did not resume the session: %s", last)
+			// The provider was asked directly now and then during the outage,
+			// never more than once per check.
+			probes, _ := os.ReadFile(filepath.Join(l.dir, "probes"))
+			if n := strings.Count(string(probes), "\n"); n == 0 || n > 5 {
+				t.Fatalf("%d verification probes", n)
 			}
 		})
 	}
 }
 
 // If the very first turn fails before the CLI reports a session, nothing is
-// saved, so each re-prompt starts a new conversation with the whole task.
-func TestOfflineFirstTurnStartsANewSessionOnEveryReprompt(t *testing.T) {
+// saved, so the re-prompt after the outage starts a new conversation with the
+// whole task.
+func TestOfflineFirstTurnStartsANewSessionOnReprompt(t *testing.T) {
 	for _, kind := range []string{"claude", "codex"} {
 		t.Run(kind, func(t *testing.T) {
 			l := newOfflineLoop(t, kind)
@@ -242,16 +221,24 @@ func TestOfflineFirstTurnStartsANewSessionOnEveryReprompt(t *testing.T) {
 			if action, _ := l.check(0); action != "wake" {
 				t.Fatal(action)
 			}
-			for _, after := range []time.Duration{time.Minute, 10 * time.Minute, 10 * time.Minute} {
-				if action, reason := l.check(after); action != "reprompt" {
+			// Offline: nothing more is sent and nothing is held.
+			for _, after := range []time.Duration{time.Minute, 10 * time.Minute, 4 * time.Hour} {
+				if action, reason := l.check(after); action != "none" || reason != "network down; waiting for connectivity" {
 					t.Fatalf("%s (%s)", action, reason)
 				}
 			}
-			if action, _ := l.check(10 * time.Minute); action != "await_user" {
-				t.Fatal(action)
-			}
-			if l.read("session") != "" || len(l.sends()) != 4 {
+			if l.read("session") != "" || len(l.sends()) != 1 {
 				t.Fatalf("saved %q after %d sends", l.read("session"), len(l.sends()))
+			}
+			// Back online: with no session ever reported, the one re-prompt
+			// starts a new conversation with the whole task.
+			l.mode("online")
+			if action, reason := l.check(time.Hour); action != "reprompt" {
+				t.Fatalf("%s (%s)", action, reason)
+			}
+			l.settle()
+			if len(l.sends()) != 2 {
+				t.Fatalf("%d sends", len(l.sends()))
 			}
 			for i, args := range l.sends() {
 				if strings.Contains(args, "resume") {
