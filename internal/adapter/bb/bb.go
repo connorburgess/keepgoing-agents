@@ -128,6 +128,12 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		if obs.Retrying && a.retryExpired(obs.State, sig) {
 			obs.Retrying, obs.RetryExpired = false, true
 		}
+		// A fresh notice on an errored thread is still dropped at once when
+		// BB's retry plugin says it will not retry this failure. Nothing is
+		// running on an errored thread, so no later notice can revive it.
+		if obs.Retrying && obs.State == decide.Error && decide.RetryNoticeDead(a.retryService(ctx, sig.turnStartedMs)) {
+			obs.Retrying, obs.RetryExpired, obs.RetryDeclined = false, true, true
+		}
 		if sig.ok && sig.hasError {
 			obs.ErrorClass = sig.class
 		}
@@ -212,6 +218,8 @@ type signals struct {
 	resetsAt     time.Time
 	pending      bool
 	ok           bool
+	// turnStartedMs is BB's time of the latest turn start, or 0 when unknown.
+	turnStartedMs int64
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -219,7 +227,7 @@ type signals struct {
 // started count, so a stale error from an earlier turn is ignored.
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
-	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt}
+	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
