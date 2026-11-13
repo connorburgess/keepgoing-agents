@@ -554,12 +554,10 @@ func (b *doctorBuffer) Write(p []byte) (int, error) {
 
 func (b *doctorBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
-var doctorCursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
-
 func doctorAgentVersion(adapter string, raw []byte) string {
 	if adapter == "cursor" {
 		v := strings.TrimSpace(string(raw))
-		if doctorCursorVersionPattern.MatchString(v) {
+		if config.CursorVersionPattern.MatchString(v) {
 			return v
 		}
 		return ""

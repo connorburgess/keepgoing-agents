@@ -343,41 +343,56 @@ func TestCursorMissingOutputIsUnknown(t *testing.T) {
 }
 
 // A fresh conversation after a turn with no session is allowed for one shape
-// only: exit code 1, an existing empty output file, and a CLI version whose
-// start order is verified. Everything else keeps the refusal, including a
-// stand-in that swallowed the prompt and exited with another code.
+// only: exit code 1, an existing empty output file, and a verified CLI version
+// recorded when that turn started. Everything else keeps the refusal,
+// including a stand-in that swallowed the prompt and exited with another code,
+// and a CLI that was updated to a verified version after the turn ran.
 func TestCursorFreshStartNeedsExactShapeAndVerifiedVersion(t *testing.T) {
-	const other = "2030.01.02-abcdef0"
+	const inspected, other = "2026.09.18-9a7762b", "2030.01.02-abcdef0"
+	shape := func(exit, stdout, version string) map[string]string {
+		files := map[string]string{"run.json": "{}", "exit": exit, "stdout": stdout}
+		if version != "" {
+			files[cursorTurnVersionName] = version
+		}
+		return files
+	}
 	for _, tc := range []struct {
 		name     string
 		files    map[string]string
-		version  string
+		current  string // what the CLI answers now; never consulted for the rule
 		extra    []string
 		retry    bool
 		resume   bool
 		explains bool
 	}{
-		{"empty_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "", nil, true, false, false},
-		{"empty_output_exit_2", map[string]string{"run.json": "{}", "exit": "2", "stdout": ""}, "", nil, false, false, false},
-		{"empty_output_exit_127", map[string]string{"run.json": "{}", "exit": "127", "stdout": ""}, "", nil, false, false, false},
-		{"empty_output_exit_130", map[string]string{"run.json": "{}", "exit": "130", "stdout": ""}, "", nil, false, false, false},
-		{"empty_output_exit_143", map[string]string{"run.json": "{}", "exit": "143", "stdout": ""}, "", nil, false, false, false},
-		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1"}, "", nil, false, false, false},
-		{"empty_output_exit_0", map[string]string{"run.json": "{}", "exit": "0", "stdout": ""}, "", nil, false, false, false},
-		{"empty_output_unreadable_exit", map[string]string{"run.json": "{}", "exit": "not-a-number", "stdout": ""}, "", nil, false, false, false},
-		{"empty_output_no_exit_record", map[string]string{"run.json": "{}", "stdout": ""}, "", nil, false, false, false},
-		{"some_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": "rate limit\n"}, "", nil, false, false, false},
-		{"unverified_version", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, nil, false, false, true},
-		{"unverified_version_listed", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, []string{"2031.01.01-0000000", other}, true, false, false},
-		{"another_version_listed", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, other, []string{"2031.01.01-0000000"}, false, false, true},
-		{"version_command_fails", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "fail", []string{other}, false, false, true},
-		{"version_not_a_token", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, "2026.09.18-9a7762b extra", nil, false, false, true},
+		{"empty_output_exit_1", shape("1", "", inspected+"\n"), "", nil, true, false, false},
+		{"empty_output_exit_2", shape("2", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_127", shape("127", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_130", shape("130", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_143", shape("143", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_0", shape("0", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_unreadable_exit", shape("not-a-number", "", inspected+"\n"), "", nil, false, false, false},
+		{"some_output_exit_1", shape("1", "rate limit\n", inspected+"\n"), "", nil, false, false, false},
+		{"whitespace_only_output_exit_1", shape("1", " \n", inspected+"\n"), "", nil, false, false, false},
+		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", cursorTurnVersionName: inspected + "\n"}, "", nil, false, false, false},
+		{"no_exit_record", map[string]string{"run.json": "{}", "stdout": "", cursorTurnVersionName: inspected + "\n"}, "", nil, false, false, false},
+		{"unverified_version", shape("1", "", other+"\n"), "", nil, false, false, true},
+		{"unverified_version_listed", shape("1", "", other+"\n"), "", []string{"2031.01.01-0000000", other}, true, false, false},
+		{"another_version_listed", shape("1", "", other+"\n"), "", []string{"2031.01.01-0000000"}, false, false, true},
+		// The turn ran on an unverified version; the CLI has since been updated
+		// to a verified one. The turn is judged by the version that ran it.
+		{"updated_since_to_verified", shape("1", "", other+"\n"), inspected, nil, false, false, true},
+		// And the reverse: a turn that ran on the verified version stays allowed.
+		{"updated_since_to_unverified", shape("1", "", inspected+"\n"), other, nil, true, false, false},
+		{"version_not_recorded", shape("1", "", ""), inspected, []string{other}, false, false, true},
+		{"version_record_not_a_token", shape("1", "", inspected+" extra\n"), inspected, nil, false, false, true},
+		{"version_record_empty", shape("1", "", "\n"), inspected, nil, false, false, true},
 		// A verified session never needs the exception, whatever the version.
-		{"initialized_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": cursorInit + "\n"}, other, nil, true, true, false},
+		{"initialized_exit_1", shape("1", cursorInit+"\n", other+"\n"), other, nil, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
-			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = tc.version
+			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = tc.current
 			c.cfg.FreshStartVersions = tc.extra
 			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
 				t.Fatal(err)
@@ -410,9 +425,39 @@ func TestCursorFreshStartNeedsExactShapeAndVerifiedVersion(t *testing.T) {
 			if !reflect.DeepEqual(got.Args, want) {
 				t.Fatalf("argv %q", got.Args)
 			}
+			// The new turn's record names the CLI that is running it now.
+			current := tc.current
+			if current == "" {
+				current = inspected
+			}
+			if b, err := os.ReadFile(c.dir.path(cursorTurnVersionName)); err != nil || string(b) != current+"\n" {
+				t.Fatalf("recorded version %q %v", b, err)
+			}
 			waitFor(t, c.dir, Finished)
 		})
 	}
+
+	t.Run("unreadable_version_leaves_no_record", func(t *testing.T) {
+		for _, answer := range []string{"fail", "not a version"} {
+			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
+			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = answer
+			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// A record left by an earlier turn must not survive into this one.
+			if err := os.WriteFile(c.dir.path(cursorTurnVersionName), []byte(inspected+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Send(context.Background(), "fixture", adapter.ModeAuto); err != nil {
+				t.Fatal(err)
+			}
+			readCursorCapture(t, capture)
+			if _, err := os.Stat(c.dir.path(cursorTurnVersionName)); !os.IsNotExist(err) {
+				t.Fatalf("stale or invalid version record kept (%s): %v", answer, err)
+			}
+			waitFor(t, c.dir, Finished)
+		}
+	})
 }
 
 const cursorReconnecting = `{"type":"connection","subtype":"reconnecting","session_id":"` + cursorSession + `","timestamp_ms":1893456000000,"attempt":1,"endpoint_url":"https://example.com/fictional"}`

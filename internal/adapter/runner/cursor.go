@@ -9,13 +9,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
-	"strings"
-	"time"
 )
 
 // Cursor runs one print-mode turn per send. Only provider lifecycle fields and
@@ -256,11 +256,45 @@ func (c *Cursor) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 		return err
 	}
 	if st.Phase != NeverRun && session == "" {
-		if err := c.freshStartAllowed(ctx, st); err != nil {
+		if err := c.freshStartAllowed(st); err != nil {
 			return err
 		}
 	}
-	return c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env))
+	// Record which CLI version runs this turn. If the turn fails before it
+	// starts, the fresh-start rule is judged by this version, not by whatever
+	// is installed when the re-prompt comes (the CLI can update itself between).
+	// The previous turn's record is removed first so it can never stand in.
+	version := c.version(ctx)
+	_ = os.Remove(c.dir.path(cursorTurnVersionName))
+	if err := c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env)); err != nil {
+		return err
+	}
+	if version != "" {
+		// Best effort: without a record a later fresh start is refused.
+		_ = os.WriteFile(c.dir.path(cursorTurnVersionName), []byte(version+"\n"), 0o600)
+	}
+	return nil
+}
+
+// cursorTurnVersionName holds the CLI version read when the latest turn started.
+const cursorTurnVersionName = "cursor-version"
+
+// turnVersion returns the version recorded for the latest turn, or "" when
+// there is no record or it is not exactly one version token.
+func (c *Cursor) turnVersion() string {
+	info, err := os.Lstat(c.dir.path(cursorTurnVersionName))
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 128 {
+		return ""
+	}
+	b, err := os.ReadFile(c.dir.path(cursorTurnVersionName))
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSuffix(string(b), "\n")
+	if !config.CursorVersionPattern.MatchString(v) {
+		return ""
+	}
+	return v
 }
 
 // CursorInspectedVersions lists the CLI versions whose source was read to
@@ -273,23 +307,25 @@ var errCursorNoSession = errors.New("cursor: previous turn has no verified sessi
 // freshStartAllowed decides whether a turn that left no session may be followed
 // by a new conversation. That is allowed for one observed shape only: the turn
 // finished with exit code 1, its output file exists and is empty, and the CLI
-// is a version known to write its first records before it submits the prompt.
+// version recorded when that turn started is one known to write its first
+// records before it submits the prompt.
 // A live untrusted-workspace refusal had this shape.
 //
 // The evidence is keepgoing's own record of the turn, not a statement from
 // Cursor that no conversation began: the CLI offers none. A wrapper that
 // discards output and exits 1 is indistinguishable, which is why the shape is
 // this narrow. Any other exit code (including signal-style codes), any output,
-// a missing output file, a crashed wrapper or an unverified version keeps the
-// refusal, and the loop ends in its ordinary hold for a person.
-func (c *Cursor) freshStartAllowed(ctx context.Context, st Status) error {
+// a missing output file, a crashed wrapper, or a turn whose version is
+// unverified or was not recorded keeps the refusal, and the loop ends in its
+// ordinary hold for a person.
+func (c *Cursor) freshStartAllowed(st Status) error {
 	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode != 1 || len(st.Stdout) != 0 {
 		return errCursorNoSession
 	}
 	if info, err := os.Lstat(c.dir.path("stdout")); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
 		return errCursorNoSession
 	}
-	version := c.version(ctx)
+	version := c.turnVersion()
 	if CursorInspectedVersions[version] {
 		return nil
 	}
@@ -298,7 +334,7 @@ func (c *Cursor) freshStartAllowed(ctx context.Context, st Status) error {
 			return nil
 		}
 	}
-	return errors.New("cursor: the previous turn exited with an error before writing any output, but the installed CLI is not a version whose start order has been verified, so a new conversation is refused; see docs/cursor.md before listing the version in cursor.fresh_start_versions")
+	return errors.New("cursor: the previous turn exited with an error before writing any output, but the CLI version that ran it was not recorded or is not a version whose start order has been verified, so a new conversation is refused; see docs/cursor.md before listing the version in cursor.fresh_start_versions")
 }
 
 // version runs only the CLI's version command, bounded in time and output, and
