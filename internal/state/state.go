@@ -120,8 +120,11 @@ type File struct {
 	// SkipHandoffOnce: a person resumed a hold for a brief that may have
 	// been delivered, to keep the loop where it is. The next check that
 	// would hand off or switch back does not, once.
-	SkipHandoffOnce      bool `json:"skipHandoffOnce,omitempty"`
-	UnconfirmedReprompts int  `json:"unconfirmedReprompts,omitempty"`
+	SkipHandoffOnce bool `json:"skipHandoffOnce,omitempty"`
+	// ResumedBriefs are the briefs a person settled with resume. A record
+	// for one of them that no check settled yet is taken as settled.
+	ResumedBriefs        []Brief `json:"resumedBriefs,omitempty"`
+	UnconfirmedReprompts int     `json:"unconfirmedReprompts,omitempty"`
 	// ResumeEpisodes counts the error episodes started by an explicit resume
 	// of a held loop, and LastResumeEpisodeAt is when the latest one was.
 	// Each is a fresh allowance of re-prompts and nudges granted by a person
@@ -447,4 +450,11 @@ func Append(stateDir string, e Event) error {
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// Brief names a brief to another conversation: Action is handoff or
+// switch_back, Target the route it went to.
+type Brief struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
 }

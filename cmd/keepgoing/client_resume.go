@@ -283,7 +283,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			// Before the holds are cleared: if the counts cannot be reset the
 			// resume fails with the holds intact, like any failure after the
 			// ticket was consumed.
-			if resumeEpisode(entry.StateDir, f.EpisodeHold, at, f.BriefHold...) != nil {
+			if resumeEpisode(entry.StateDir, f.EpisodeHold, at, cfg.Loop.Errors.MaxReprompts, f.BriefHold...) != nil {
 				return fail("new_episode_unconfirmed")
 			}
 			newEpisode = f.EpisodeHold

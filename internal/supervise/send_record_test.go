@@ -129,8 +129,47 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 				t.Fatalf("%s was briefed", id)
 			}
 		}
-		if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || !ctl.Stop {
+		if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || !ctl.Stop || !strings.Contains(ctl.Note, "keepgoing resume --keep-stop") {
 			t.Fatalf("%+v", ctl)
+		}
+	})
+	t.Run("a stop requested after the hold stops every conversation it names", func(t *testing.T) {
+		w, p, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		runTick(t, w, t0.Add(time.Minute)) // holds; nothing is stopped
+		if p.stopped != 0 {
+			t.Fatal("stopped before a stop was asked for")
+		}
+		control.Update(w.dir, func(f *control.File) { f.Stop = true })
+		r := runTick(t, w, t0.Add(2*time.Minute))
+		if r.Action != "stop" || p.stopped != 1 || fallbacks["claude-other"].stopped != 1 || fallbacks["codex-main"].stopped != 0 {
+			t.Fatalf("%s (%s) primary=%d claude-other=%d", r.Action, r.Reason, p.stopped, fallbacks["claude-other"].stopped)
+		}
+		runTick(t, w, t0.Add(3*time.Minute))
+		if p.stopped != 1 || fallbacks["claude-other"].stopped != 1 {
+			t.Fatal("the stop was repeated for the same request")
+		}
+	})
+	t.Run("killed after the hold was saved, before state: resume still settles", func(t *testing.T) {
+		w, _, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		// The hold was saved, then the check was killed: state.json does not
+		// say the record is settled. A person resumes (what resume does).
+		st, _ := state.Load(w.dir)
+		st.ResumedBriefs = []state.Brief{{Action: "handoff", Target: "claude-other"}}
+		st.SkipHandoffOnce = true
+		state.Save(w.dir, st)
+		r := runTick(t, w, t0.Add(2*time.Minute))
+		if r.Action == "await_user" || r.Action == "handoff" {
+			t.Fatalf("held or briefed again after resume: %s (%s)", r.Action, r.Reason)
+		}
+		for id, f := range fallbacks {
+			if len(f.sent) != 0 {
+				t.Fatalf("%s was briefed", id)
+			}
+		}
+		if st, _ = state.Load(w.dir); len(st.ResumedBriefs) != 0 {
+			t.Fatalf("%+v", st.ResumedBriefs)
 		}
 	})
 	t.Run("handoff, then a dry run: previewed, not settled", func(t *testing.T) {

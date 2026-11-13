@@ -383,3 +383,36 @@ func TestResumeOfABriefHoldSaysWhereTheLoopContinues(t *testing.T) {
 		t.Fatalf("%+v", ctl)
 	}
 }
+
+// resume --keep-stop settles a brief hold and keeps a requested stop, so a
+// person who stopped the loop is not led to undo it.
+func TestResumeKeepStopSettlesABriefHoldAndKeepsTheStop(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.Stop, c.AwaitingUser = true, true
+		c.BriefHold = []control.Brief{{Action: "handoff", Target: "fallback-example"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := f.run("resume", "--keep-stop"); code != 0 || !strings.Contains(out, "is settled as delivered and not taken") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	ctl, _ := control.Load(dir)
+	if !ctl.Stop || ctl.AwaitingUser || len(ctl.BriefHold) != 0 {
+		t.Fatalf("%+v", ctl)
+	}
+	if st, _ := state.Load(dir); len(st.ResumedBriefs) != 1 {
+		t.Fatalf("%+v", st.ResumedBriefs)
+	}
+	if code, _, _ := f.run("pause", "--keep-stop"); code == 0 {
+		t.Fatal("--keep-stop accepted by pause")
+	}
+}

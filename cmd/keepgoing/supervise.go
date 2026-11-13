@@ -785,7 +785,7 @@ var saveEpisodeState = state.Save
 // Loop-wide limits are never refunded. It runs inside the control update,
 // before the holds are cleared, with the tick lock held: if the counts
 // cannot be saved the resume fails and changes nothing.
-func resumeEpisode(stateDir string, episodeHold bool, at time.Time, briefs ...control.Brief) error {
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time, maxBriefs int, briefs ...control.Brief) error {
 	st, err := state.Load(stateDir)
 	if err != nil {
 		return err
@@ -810,19 +810,26 @@ func resumeEpisode(stateDir string, episodeHold bool, at time.Time, briefs ...co
 	// that route is spaced like any rejected brief, and no route is briefed
 	// on the next check: the person resumed to keep the loop where it is.
 	for _, b := range briefs {
+		// The record of the brief is settled by the next check, from this.
+		st.ResumedBriefs = append(st.ResumedBriefs, state.Brief(b))
 		if b.Target == st.Target() {
 			continue
 		}
 		if b.Action == "switch_back" {
-			st.SwitchBackRejected++
+			// Spaced by switch_back.retry_every; not counted toward its cap,
+			// so the person's resume cannot by itself end switch-back.
 			st.LastSwitchBackTry = at
-		} else {
-			if st.HandoffBriefs == nil {
-				st.HandoffBriefs = map[string]state.BriefRecord{}
-			}
-			r := st.HandoffBriefs[b.Target]
-			st.HandoffBriefs[b.Target] = state.BriefRecord{Failed: r.Failed + 1, LastAt: at}
+			continue
 		}
+		// Spaced like a rejected brief, but never capped by the resume: with
+		// a cap of one, that would leave the loop with no fallback. With a
+		// cap of one it is not spaced either; the next check still briefs
+		// no route.
+		if st.HandoffBriefs == nil {
+			st.HandoffBriefs = map[string]state.BriefRecord{}
+		}
+		r := st.HandoffBriefs[b.Target]
+		st.HandoffBriefs[b.Target] = state.BriefRecord{Failed: max(0, min(r.Failed+1, maxBriefs-1)), LastAt: at}
 	}
 	if len(briefs) > 0 {
 		st.SkipHandoffOnce = true
@@ -866,7 +873,8 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"disable": func(f *control.File) { f.Enabled = false },
 		"pause":   func(f *control.File) { f.Paused = true },
 		"resume": func(f *control.File) {
-			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
+			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
 		},
 		"stop": func(f *control.File) { f.Stop = true },
@@ -902,7 +910,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
-			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), f.BriefHold...); err != nil {
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
 				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
 			}
 			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold

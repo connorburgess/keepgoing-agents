@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -205,6 +206,9 @@ type tick struct {
 	sessionRecovered    bool            // the target was observed and is not in error
 	savedSends          int64           // the last intended send state.json recorded when this check began
 	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
+	briefHold           []control.Brief // briefs named by a hold already raised for them
+	stopRequested       bool            // a stop is requested in control.json
+	stopsMade           []string        // targets this check sent a stop to
 	stBeforeRecords     state.File      // state before the records were handled, to undo them
 	quietFailure        bool            // a failure already reported by an earlier check
 	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
@@ -327,6 +331,7 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Control = ctl.Summary()
+	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
@@ -837,40 +842,66 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if err := t.countUnrecordedSends(); err != nil {
 		t.warn("%v", err)
 	}
-	if len(t.unsettledBriefs) > 0 {
-		// The task may be on another conversation now. A stop is asked for:
-		// stop every conversation that may have it, the current one and each
-		// one briefed (a second stop is harmless), then hold so a person
-		// sees which.
+	// The briefs that may have put the task on another conversation: those
+	// found unsettled now, and those named by a hold already raised for them.
+	briefs := append(append([]control.Brief(nil), t.briefHold...), t.unsettledBriefs...)
+	if len(briefs) > 0 && !t.st.StopRequestedSent {
+		// A stop is asked for: stop every conversation that may have the
+		// task, the current one and each one briefed (a second stop is
+		// harmless). Each stop is recorded first, like any send.
 		t.st.LastState = string(obs.State)
+		res.Action, res.Reason = string(decide.Stop), "stop requested; stopping every conversation that may have the task"
 		if t.opts.DryRun {
-			res.Action, res.Reason = string(decide.Stop), "stop requested; "+briefsReason(t.unsettledBriefs, t.st.Target())
 			return t.record(nil)
 		}
 		var errs []error
-		if err := a.Stop(t.ctx); err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
-			errs = append(errs, fmt.Errorf("stop %s: %w", target, err))
+		var stopped []string
+		stopOne := func(id string, a adapter.Adapter) {
+			if _, err := t.reserveSend("stop", id); err != nil {
+				t.warn("the stop to %s could not be recorded before it was made: %v", id, err)
+			}
+			if err := a.Stop(t.ctx); err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
+				errs = append(errs, fmt.Errorf("stop %s: %w", id, err))
+				return
+			}
+			stopped = append(stopped, id)
 		}
-		for _, b := range t.unsettledBriefs {
-			if b.Target == target {
+		stopOne(target, a)
+		seen := map[string]bool{target: true}
+		for _, b := range briefs {
+			if seen[b.Target] {
 				continue
+			}
+			seen[b.Target] = true
+			if b.Target != state.Primary {
+				if _, ok := t.fb.Find(b.Target); t.fb == nil || !ok {
+					t.warn("a brief went to %s, which is no longer configured, so keepgoing cannot stop it: stop that conversation by hand", b.Target)
+					continue
+				}
 			}
 			id, agent := t.resolve(b.Target)
 			ba, err := t.newAdapter(agent, t.loop.StateDir, id)
-			if err == nil {
-				err = ba.Stop(t.ctx)
-			}
-			if err != nil && !errors.As(err, new(adapter.ErrUnsupported)) {
+			if err != nil {
 				errs = append(errs, fmt.Errorf("stop %s: %w", b.Target, err))
+				continue
 			}
+			stopOne(b.Target, ba)
 		}
+		t.stopsMade = stopped
 		if len(errs) == 0 {
 			t.st.StopRequestedSent = true
 		}
-		if err := t.holdForBriefs(); err != nil {
-			errs = append(errs, err)
+		if len(t.unsettledBriefs) > 0 {
+			if err := t.holdForBriefs(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 		return t.record(errors.Join(errs...))
+	}
+	if len(t.unsettledBriefs) > 0 {
+		// Already stopped for this request: hold for the new briefs.
+		t.st.LastState = string(obs.State)
+		return t.record(t.holdForBriefs())
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
@@ -1481,8 +1512,10 @@ func (t *tick) reserveSend(action, target string, key ...string) (int64, error) 
 // cannot be, the records this check handled are put back as they were, and
 // the next check finds them again.
 func (t *tick) holdForBriefs() error {
-	reason := briefsReason(t.unsettledBriefs, t.st.Target())
-	if t.res.Action != string(decide.Stop) {
+	reason := briefsReason(t.unsettledBriefs, t.st.Target(), t.stopRequested)
+	if t.res.Action == string(decide.Stop) {
+		t.res.Reason += "; then held: " + reason
+	} else {
 		t.res.Action, t.res.Reason = string(decide.AwaitUser), reason
 	}
 	if t.opts.DryRun {
@@ -1494,7 +1527,14 @@ func (t *tick) holdForBriefs() error {
 		f.BriefHold = append(f.BriefHold, briefs...)
 	}); err != nil {
 		t.st = t.stBeforeRecords
-		t.res.Action, t.res.Reason = string(decide.None), "a brief to another conversation may have been delivered, but the hold for it could not be saved; nothing was settled or sent"
+		what := "nothing was sent"
+		if len(t.stopsMade) > 0 {
+			what = "stops were sent to " + strings.Join(t.stopsMade, " and ")
+		}
+		t.res.Reason = "a brief to another conversation may have been delivered, but the hold for it could not be saved; nothing was settled, and " + what
+		if len(t.stopsMade) == 0 {
+			t.res.Action = string(decide.None)
+		}
 		return err
 	}
 	t.report("await_user", fmt.Sprintf("%s: needs a person: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target})
@@ -1502,7 +1542,9 @@ func (t *tick) holdForBriefs() error {
 }
 
 // briefsReason says which briefs may have been delivered and what to do.
-func briefsReason(briefs []control.Brief, current string) string {
+// With a stop requested it does not send the person to a plain resume,
+// which would cancel the stop.
+func briefsReason(briefs []control.Brief, current string, stopRequested bool) string {
 	var names []string
 	for _, b := range briefs {
 		kind := "a handoff brief to " + b.Target
@@ -1511,7 +1553,11 @@ func briefsReason(briefs []control.Brief, current string) string {
 		}
 		names = append(names, kind)
 	}
-	return strings.Join(names, " and ") + " may have been delivered. Check that conversation: if it took the task, run `keepgoing retarget <id>` and then `keepgoing resume`, so the loop follows it; if not, run `keepgoing resume`, and the loop stays on " + current + " and briefs no route on the next check"
+	resume := "`keepgoing resume`"
+	if stopRequested {
+		resume = "`keepgoing resume --keep-stop` (a stop is requested, and a plain `keepgoing resume` would cancel it)"
+	}
+	return strings.Join(names, " and ") + " may have been delivered. Check that conversation: if it took the task, run `keepgoing retarget <id>` and then " + resume + ", so the loop follows it; if not, run " + resume + ", and the loop stays on " + current + " and briefs no route on the next check"
 }
 
 // copyState copies a state record deeply enough to restore it.
@@ -1552,9 +1598,18 @@ func (t *tick) countUnrecordedSends() error {
 	settled := max(t.st.SendsRecorded, l.Settled)
 	t.savedSends = settled
 	t.stBeforeRecords = copyState(t.st)
+	if !t.opts.DryRun {
+		defer func() { t.st.ResumedBriefs = nil }()
+	}
 	for _, p := range l.Unrecorded(settled) {
 		if p.Action == "handoff" || p.Action == "switch_back" {
-			t.unsettledBriefs = append(t.unsettledBriefs, control.Brief{Action: p.Action, Target: p.Target})
+			b := control.Brief{Action: p.Action, Target: p.Target}
+			// A person has already looked at this brief and resumed: its
+			// hold was saved, but the check that raised it could not save
+			// that it had settled the record. It is settled now.
+			if !slices.Contains(t.st.ResumedBriefs, state.Brief(b)) {
+				t.unsettledBriefs = append(t.unsettledBriefs, b)
+			}
 		}
 		if t.opts.DryRun {
 			continue // a dry run previews the hold and settles nothing

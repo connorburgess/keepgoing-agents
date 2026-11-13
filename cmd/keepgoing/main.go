@@ -195,6 +195,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
 		discard:    fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
 		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
+		keepStop:   fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
 		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
 	}
@@ -204,6 +205,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	positional = append(positional, fs.Args()...)
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
+		return exitUsage
+	}
+	if *f.keepStop && cmd != "resume" {
+		e.errf("--keep-stop is only supported by resume")
 		return exitUsage
 	}
 	if *f.discard && cmd != "retarget" {
@@ -261,7 +266,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
 	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
-		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
+		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")
@@ -287,7 +292,7 @@ type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
-	discard                         *bool
+	discard, keepStop               *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in
