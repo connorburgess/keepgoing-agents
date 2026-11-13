@@ -3,9 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -360,5 +362,107 @@ func TestTickRunsWhenTheRoutineValueCannotBeRecorded(t *testing.T) {
 	g := graphOf(t, f)
 	if strings.Count(string(log), routineIgnoredWarning) != 1 || len(g.Links) != 1 || g.Links[0].Kind != rd.SessionLink || g.Runs[0].Routine != nil {
 		t.Fatalf("%s %#v", log, g.Links)
+	}
+}
+
+// Two supervised loops run at once through real commands. The parent's checks
+// find its conversation waiting on a child conversation that is itself a
+// registered loop. `runs` names that loop's run and chat from the recorded
+// listing, and neither reading nor following it touches the child.
+func TestRunsNamesTheSupervisedConversationALoopIsWaitingOn(t *testing.T) {
+	f := newFixture(t)
+	parentState := filepath.Join(f.dir, "state")
+	childCfg := filepath.Join(f.dir, "child.yaml")
+	write(t, childCfg, fmt.Sprintf("version: 1\nloop:\n  name: example-child\n  state_dir: child-state\n  adapter: bb\n  provider: example\n  bb: {thread: thr_child, cli: %s/bin/bb}\n  prompt: Continue the fictional child.\n", f.dir), 0o600)
+	childState := filepath.Join(f.dir, "child-state")
+	command := func(args ...string) string {
+		t.Helper()
+		var out, errs bytes.Buffer
+		if code := run(context.Background(), args, &out, &errs); code != exitOK {
+			t.Fatalf("%v: %d %s %s", args, code, out.String(), errs.String())
+		}
+		return out.String()
+	}
+	write(t, filepath.Join(f.bbDir, "thr_primary.children"), `[{"id":"thr_child","visibility":"hidden"}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"active"}}`, 0o600)
+	command("enable", "-c", f.cfg)
+	command("enable", "-c", childCfg)
+	command("tick", "-c", childCfg)
+	if v := f.tick(); v["reason"] != "child work running" {
+		t.Fatalf("%v", v)
+	}
+	regDir := filepath.Join(f.dir, "registry")
+	for _, cfg := range []string{f.cfg, childCfg} {
+		if code, out, errs := registryRun(t, regDir, "add", "-c", cfg); code != 0 {
+			t.Fatal(out, errs)
+		}
+	}
+	reg, _ := registry.Load(regDir)
+	childEntry := reg.Entries[1]
+	childGraph, _ := rungraph.Load(childState)
+	key := childKeyOf("thr_child")
+	read := func() (runsBlocker, string) {
+		t.Helper()
+		out := command("runs", "-c", f.cfg, "--directory", regDir, "--json")
+		var r runsReport
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r.Loops[0].Blocker, out
+	}
+	calls := f.read("calls")
+	before := snapshotTree(t, parentState) + snapshotTree(t, childState) + snapshotTree(t, regDir)
+	b, parentView := read()
+	want := runsSupervised{Availability: recordRecorded, RegistrationID: childEntry.ID, Loop: "example-child", Run: childGraph.CurrentRun}
+	if b.Availability != blockerBlocked || len(b.Children) != 1 || b.Children[0].Ref != "child:"+key || b.Children[0].Status != rungraph.ChildActive || !b.Children[0].Holds || b.Children[0].Supervised != want {
+		t.Fatalf("%+v", b)
+	}
+	// Follow it: the child, then the blocking loop's run and chat.
+	if out := command("runs", "-c", f.cfg, "--id", "child:"+key); !strings.Contains(out, "blocks -> "+graphOf(t, f).CurrentRun) {
+		t.Fatal(out)
+	}
+	if out := command("runs", "--registry-id", childEntry.ID, "--directory", regDir, "--id", childGraph.CurrentRun); !strings.Contains(out, "session -> session:bb/thr_child") {
+		t.Fatal(out)
+	}
+	text := command("runs", "-c", f.cfg, "--directory", regDir)
+	// The child's conversation is named only through its own loop's view.
+	if strings.Contains(parentView, "thr_child") || strings.Contains(text, "thr_child") {
+		t.Fatal("the child's thread ID was printed in the parent's view")
+	}
+	if !strings.Contains(text, "follow it with: keepgoing runs --registry-id "+childEntry.ID) || !strings.Contains(text, "waiting on: blocked") || !strings.Contains(text, "a registered loop: "+childEntry.ID+" (example-child)  run "+childGraph.CurrentRun) {
+		t.Fatal(text)
+	}
+	// Nothing was sent, queried, stopped, claimed or written by any of it.
+	if f.read("calls") != calls || f.read("thr_child.told") != "" || snapshotTree(t, parentState)+snapshotTree(t, childState)+snapshotTree(t, regDir) != before {
+		t.Fatal("reading or following a blocker contacted the provider or changed a record")
+	}
+
+	// The child fails: it is listed as errored and no longer holds the parent.
+	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"error"}}`, 0o600)
+	f.tick()
+	if b, _ = read(); b.Availability != blockerNone || len(b.Children) != 1 || b.Children[0].Status != rungraph.ChildErrored || b.Children[0].Holds {
+		t.Fatalf("%+v", b)
+	}
+	// The listing cannot be verified: unknown, and no child is named.
+	write(t, filepath.Join(f.bbDir, "thr_primary.children"), `null`, 0o600)
+	f.tick()
+	if b, out := read(); b.Availability != blockerUnknown || b.Reason != "child_listing_incomplete" || len(b.Children) != 0 || strings.Contains(out, key) {
+		t.Fatalf("%+v", b)
+	}
+	// A held check observes nothing, so the record is older than the last check.
+	write(t, filepath.Join(f.bbDir, "thr_primary.children"), `[{"id":"thr_child","visibility":"hidden"}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_child.show"), `{"thread":{"id":"thr_child","parentThreadId":"thr_primary","status":"active"}}`, 0o600)
+	f.tick()
+	if b, _ = read(); b.Availability != blockerBlocked {
+		t.Fatalf("%+v", b)
+	}
+	command("pause", "-c", f.cfg)
+	f.tick()
+	if b, _ = read(); b.Availability != blockerUnknown || b.Reason != "not_refreshed_by_the_last_check" || len(b.Children) != 0 {
+		t.Fatalf("%+v", b)
+	}
+	// No child thread ID was ever written to the parent's graph.
+	if raw, _ := os.ReadFile(filepath.Join(parentState, rungraph.FileName)); strings.Contains(string(raw), "thr_child") {
+		t.Fatal("the child thread ID reached the parent's graph")
 	}
 }

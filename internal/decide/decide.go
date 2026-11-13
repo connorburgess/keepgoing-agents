@@ -85,6 +85,9 @@ type Observation struct {
 	// in one case only, childErrorWake; ChildErrorNote says when a wake should
 	// mention them.
 	ErroredChildren []string
+	// ActiveChildIDs names the children counted in ActiveChildren, for the
+	// run graph only. It is diagnostic and never changes Decide policy.
+	ActiveChildIDs []string
 	// HealthyChildren contains verified direct child IDs with a known status
 	// other than error. Decide never reads it; the owner report uses it to
 	// tell a child that recovered from one an incomplete listing did not show.

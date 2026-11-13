@@ -21,6 +21,7 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // It lets a caller tell a child that is verifiably no longer in error from one
 // an incomplete listing simply did not show.
 func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting, errored, healthy []string) {
+	a.activeChildIDs = nil
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
@@ -91,6 +92,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		case "active":
 			active++
 			healthy = append(healthy, child.ID)
+			a.activeChildIDs = append(a.activeChildIDs, child.ID)
 		case "error":
 			errored = append(errored, child.ID)
 		case "idle", "pending", "starting", "stopping":
