@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -421,5 +422,90 @@ func TestDamagedStateAndJournalTogetherFailTheCheck(t *testing.T) {
 	}
 	if strings.Contains(f.hooks.types(), "degraded") {
 		t.Fatalf("reports: %s", f.hooks.types())
+	}
+}
+
+// A control record written by the current main build keeps every field
+// through a stop saved in the marker while it was unreadable, an ordinary
+// stop beside the marker, and the resume that releases it. Only the holds
+// and the note resume clears may change. A field added to control.File
+// without being set here fails the test, so a build that drops it on its
+// next control write cannot pass.
+func TestEveryControlFieldSurvivesAMarkerStopAndResume(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.dir, "state")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	full := control.File{
+		// A pending transfer refuses resume; it is left out here, and
+		// TestClientHoldPreservesStateDuringTickAndTransfer shows a stop keeps it.
+		BBTarget:     "thr_primary",
+		Ownership:    &control.Ownership{ThreadID: "thr_example_owner", Generation: 4, Previous: &control.Handoff{ThreadID: "thr_example_before", Status: "archived", At: at}},
+		Enabled:      true,
+		Paused:       true,
+		Stop:         true,
+		AwaitingUser: true,
+		Completed:    true,
+		Note:         "Example note",
+		EpisodeHold:  true,
+		OpenQuestion: &control.OpenQuestion{Note: "Example question", At: at},
+		UpdatedAt:    at,
+	}
+	v := reflect.ValueOf(full)
+	for i := 0; i < v.NumField(); i++ {
+		if name := v.Type().Field(i).Name; name != "PendingTransfer" && v.Field(i).IsZero() {
+			t.Fatalf("control.File.%s is not set by this test; set it so it is checked", name)
+		}
+	}
+	if err := control.Save(dir, full); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, control.FileName)
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Damaged: the stop goes to the marker and the record is left alone.
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := f.run("stop"); code != 0 {
+		t.Fatalf("stop: %d %s%s", code, out, errs)
+	}
+	// Restored from a copy: an ordinary stop beside the marker keeps every field.
+	if err := os.WriteFile(path, written, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := f.run("stop"); code != 0 {
+		t.Fatalf("stop: %d %s%s", code, out, errs)
+	}
+	got, err := control.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.UpdatedAt = full.UpdatedAt
+	if !reflect.DeepEqual(got, full) {
+		t.Fatalf("stop changed the record:\n got %+v\nwant %+v", got, full)
+	}
+
+	if code, out, errs := f.run("resume"); code != 0 {
+		t.Fatalf("resume: %d %s%s", code, out, errs)
+	}
+	if h, err := control.LoadHold(dir); h != nil || err != nil {
+		t.Fatal("resume left the marker", h, err)
+	}
+	got, err = control.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := full
+	want.Paused, want.Stop, want.AwaitingUser, want.Completed = false, false, false, false
+	want.EpisodeHold, want.OpenQuestion, want.Note = false, nil, ""
+	want.UpdatedAt = got.UpdatedAt
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume changed more than the holds:\n got %+v\nwant %+v", got, want)
 	}
 }
