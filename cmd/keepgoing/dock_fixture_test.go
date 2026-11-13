@@ -165,7 +165,12 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			fbYAML = strings.Replace(fbYAML, "group: second-account", "group: team-second-account", 1)
 		}
 		if dockOnCodex(name) {
-			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: codex\n  switch_back: {enabled: true}\n", 1)
+			// inventory-sync returns by itself; report-builder has that off.
+			back := "  switch_back: {enabled: true}\n"
+			if name == "report-builder" {
+				back = ""
+			}
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: codex\n"+back, 1)
 			cfgYAML = strings.Replace(cfgYAML, "model: claude-opus-5-5, reasoning: medium, ", "", 1)
 			fbYAML = dockCodexFallbacksYAML
 		}

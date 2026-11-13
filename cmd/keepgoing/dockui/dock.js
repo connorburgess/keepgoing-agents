@@ -248,12 +248,14 @@
     if (!a.resetsAt) s += "The provider reported no reset time";
     else if (a.resetPassed) s += "The reset the provider reported, " + dayTime(a.resetsAt) + ", has passed";
     else s += "The provider reported a reset for " + dayTime(a.resetsAt) + " (" + countdown(a.resetsAt) + ")";
-    if (a.return === "off") s += "; automatic return is off";
-    else if (a.return === "stopped") s += "; automatic return has stopped after refused attempts";
-    else if (a.return === "on" && a.resetsAt && !a.resetPassed) s += "; keepgoing returns after that, once a test passes";
-    else if (a.return === "on" && a.lastReturnTry) s += "; a return was last tried " + agoOf(a.lastReturnTry);
-    else if (a.return === "on") s += "; no return has been tried yet";
-    return s + ".";
+    s += ". ";
+    if (a.return === "off") s += "keepgoing will not return by itself: returning is switched off for this loop.";
+    else if (a.return === "stopped") s += "keepgoing has stopped trying to return, after its attempts were refused.";
+    else if (a.return === "on" && a.resetsAt && !a.resetPassed) s += "keepgoing returns after that, once a test passes.";
+    else if (a.return === "on" && a.lastReturnTry) s += "A return was last tried " + agoOf(a.lastReturnTry) + ".";
+    else if (a.return === "on") s += "No return has been tried yet.";
+    else s += "Whether keepgoing returns by itself is unknown.";
+    return s;
   }
   function atLimit(a) { return a.reason === "a usage limit" && !a.resetPassed; }
   function awayShort(a) {
@@ -546,7 +548,7 @@
         what.appendChild(document.createTextNode(" · also a registered loop: "));
         what.appendChild(link("#/loop/" + x.loopKey, x.loop));
       }
-      if (x.key) {
+      if (x.key && state.identifiers) {
         what.appendChild(document.createTextNode(" · "));
         what.appendChild(el("code", null, x.key));
       }
@@ -654,7 +656,7 @@
     dl.appendChild(fact("Last check", lastCheck(l.lastCheck)));
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
-    dl.appendChild(fact("Device", joinParts([l.device.hostname ? l.device.hostname + " (" + l.device.name.toLowerCase() + ")" : l.device.name, l.device.role])));
+    dl.appendChild(fact("Device", joinParts([state.identifiers && l.device.hostname ? l.device.hostname + " (" + String(l.device.name).toLowerCase() + ")" : l.device.name, l.device.role])));
     checks.appendChild(dl);
     if (list(l.issues).length) {
       var ul = el("ul", "issues");
@@ -685,7 +687,7 @@
       var li = el("li", "allow");
       var head = el("div", "allow-head");
       head.appendChild(el("h3", "allow-name", a.account || a.provider || "Unnamed account group"));
-      head.appendChild(el("span", "sub", [a.provider && a.provider !== a.account ? "provider " + a.provider : "", a.routes + (a.routes === 1 ? " route" : " routes")].filter(Boolean).join(" · ")));
+      head.appendChild(el("span", "sub", [a.provider && a.provider !== a.account ? "provider " + a.provider : "", (Number(a.routes) || 0) + (a.routes === 1 ? " route" : " routes")].filter(Boolean).join(" · ")));
       li.appendChild(head);
       var body = el("div", "allow-body");
       if (a.limit) {

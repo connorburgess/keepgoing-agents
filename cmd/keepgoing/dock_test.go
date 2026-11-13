@@ -827,7 +827,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 	}
 	// No reset time reported: the reason is still the handoff's recorded class.
 	rep := dockLoopNamed(t, r, "report-builder").Away
-	if rep == nil || rep.Reason != "a usage limit" || rep.ResetsAt != nil || rep.ResetPassed {
+	if rep == nil || rep.Reason != "a usage limit" || rep.ResetsAt != nil || rep.ResetPassed || rep.Return != "off" {
 		t.Errorf("%+v", rep)
 	}
 	// A loop on its first route has left nothing.
