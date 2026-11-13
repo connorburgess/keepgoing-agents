@@ -282,6 +282,9 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			r.ControlSave = "unconfirmed"
 			return nil
 		})
+		if err == nil || errors.Is(err, errControlHistory) {
+			recordRegistration(entry.StateDir, entry.ID)
+		}
 		if err != nil && !errors.Is(err, errControlHistory) {
 			return err
 		}
