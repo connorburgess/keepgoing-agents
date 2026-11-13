@@ -72,6 +72,10 @@ jobs:
       - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
       - name: Verify allowance persistence and replacement on Windows
         run: go test -v ./internal/state -run '^Test(SendLedger|ProgressLedger)' -count=1
+      - name: Verify runtime records can be replaced while readers poll
+        # Report every record even when an earlier step has already failed.
+        if: always()
+        run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/keepgoing -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
       - name: Verify BB transfer and recovery on Windows
         run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
       - run: go test -v ./internal/config -run '^TestBBTransfer' -count=1
@@ -94,7 +98,7 @@ jobs:
       - name: Verify daemon control polling with unchanged file metadata
         run: go test -v ./cmd/keepgoing -run '^TestDaemonWait' -count=1
       - name: Verify control snapshots permit atomic replacement on Windows
-        run: go test -race -v ./internal/control ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
+        run: go test -race -v ./internal/control ./internal/snapshot ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
       - name: Verify the run reference graph store and replacement on Windows
         run: go test -race -v ./internal/rungraph -count=1
       - name: Verify offline run navigation on Windows

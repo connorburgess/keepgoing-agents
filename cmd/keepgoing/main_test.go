@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // fakeBB emulates the bb CLI over files in $FAKE_BB: <thread>.show and
@@ -75,6 +76,15 @@ type fixture struct {
 
 func write(t *testing.T, path, body string, mode os.FileMode) {
 	t.Helper()
+	// Executable shell stand-ins go through testexec, so the host's first-run
+	// delay is paid here and not inside a test's deadline.
+	if mode&0o111 != 0 && strings.HasPrefix(body, "#!/bin/sh\n") {
+		testexec.Script(t, path, body)
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if err := os.WriteFile(path, []byte(body), mode); err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +97,9 @@ func newFixture(t *testing.T) *fixture {
 	os.Mkdir(bbDir, 0o700)
 	bin := filepath.Join(dir, "bin")
 	os.Mkdir(bin, 0o700)
-	write(t, filepath.Join(bin, "bb"), fakeBB, 0o755)
-	write(t, filepath.Join(bin, "claude"), fakeClaude, 0o755)
-	write(t, filepath.Join(bin, "codex"), fakeCodex, 0o755)
+	testexec.Shared(t, filepath.Join(bin, "bb"), fakeBB)
+	testexec.Shared(t, filepath.Join(bin, "claude"), fakeClaude)
+	testexec.Shared(t, filepath.Join(bin, "codex"), fakeCodex)
 	t.Setenv("FAKE_BB", bbDir)
 
 	h := &hooks{}
@@ -409,7 +419,7 @@ func TestDaemonWakesForControlChangeDuringAPass(t *testing.T) {
 func TestFallbacksCheckExitsOneWhenRedundancyIsUnmet(t *testing.T) {
 	f := newFixture(t)
 	// Break the codex candidate's probe so only one provider is healthy.
-	os.WriteFile(filepath.Join(f.dir, "bin", "codex"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	write(t, filepath.Join(f.dir, "bin", "codex"), "#!/bin/sh\nexit 1\n", 0o755)
 	code, out, _ := f.run("fallbacks", "check")
 	if code != exitFailed || !strings.Contains(out, "handoffs refused") {
 		t.Errorf("%d\n%s", code, out)

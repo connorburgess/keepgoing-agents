@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 const GoalName = "goal.json"
@@ -123,7 +124,7 @@ func LoadGoal(dir string) (*Goal, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGoalBytes {
 		return nil, ErrGoal
 	}
-	f, err := os.Open(path)
+	f, err := snapshot.Open(path)
 	if err != nil {
 		return nil, ErrGoal
 	}

@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 const FileName = "daemon-endpoint.json"
@@ -89,7 +91,7 @@ func Start(stateDir, version string, dryRun bool) (*Server, error) {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(f.Name(), s.path)
+		err = snapshot.Replace(f.Name(), s.path)
 	}
 	if err != nil {
 		l.Close()
@@ -200,7 +202,7 @@ func readEndpoint(path string) (endpoint, error) {
 	if !info.Mode().IsRegular() || info.Size() > 1024 {
 		return ep, errors.New("invalid endpoint record")
 	}
-	f, err := os.Open(path)
+	f, err := snapshot.Open(path)
 	if err != nil {
 		return ep, err
 	}

@@ -124,6 +124,31 @@ func TestDaemonWaitDoesNotWakeForUnchangedControl(t *testing.T) {
 	}
 }
 
+// A poll can consume a one-shot wake notice, so none may run once the daemon
+// has been told to exit. Hold each poll past several control ticks, so that on
+// return both the cancelled context and a pending tick are ready and the wait
+// must choose correctly. Left to select's random choice, one round in two
+// polled again; fifty rounds make a chance pass negligible.
+func TestDaemonWaitNeverPollsAfterCancellation(t *testing.T) {
+	cfg := &config.Config{Loop: config.Loop{StateDir: t.TempDir()}}
+	cfg.Loop.Daemon.Interval.Duration = time.Hour
+	cfg.Loop.Daemon.ControlPoll.Duration = time.Millisecond
+	sig := controlSignature(cfg.Loop.StateDir)
+	for round := 0; round < 50; round++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		poll := func(context.Context) bool {
+			calls++
+			cancel()
+			time.Sleep(10 * cfg.Loop.Daemon.ControlPoll.Duration)
+			return false
+		}
+		if waitForNextWithPoll(ctx, cfg, sig, nil, poll) || calls != 1 {
+			t.Fatalf("round %d: next after cancellation or extra poll (polls=%d)", round, calls)
+		}
+	}
+}
+
 func TestDaemonWaitHandlesPollResultsBeforeOrdinaryInterval(t *testing.T) {
 	for _, mode := range []string{"notification", "later notification", "control change", "cancelled notification"} {
 		t.Run(mode, func(t *testing.T) {
