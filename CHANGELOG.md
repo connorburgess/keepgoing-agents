@@ -14,7 +14,7 @@
 
 - An explicit `tick_timeout: 2m40s` still loads. The connectivity check uses only the time `tick_timeout` has beyond that minimum, so at `2m40s` it is not made, and `validate`, `status` and `doctor` say so.
 
-- A re-prompt of an errored session now carries the count-only child-error notice when a direct child has newly entered error, as an idle wake already did. Before, a parent in error was re-prompted without being told.
+- A re-prompt of an errored session now carries the count-only child-error notice when a direct child has newly entered error, as an idle wake already did. Before, a parent in error was re-prompted without being told. Where a BB turn is recovered by a turn retry, which has no text, the notice follows it as one notice-only message.
 
 - Add an internal, unregistered Antigravity runner: one owned detached worker per send performs a single checkpointed ACP exchange with the prompt on private stdin, exact conversation resume, per-turn hold records, rollover without replay, owned stop and bounded setup and exit. Failures stay `unknown`. Nothing can select it: there is no configuration, factory or setup entry, because the permission contract is unresolved. Tested only with a stand-in agent; Antigravity is not installed and no version is supported.
 
