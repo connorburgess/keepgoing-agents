@@ -198,6 +198,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		keepStop:   fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
 		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		allowShare: fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -209,6 +210,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *f.keepStop && cmd != "resume" {
 		e.errf("--keep-stop is only supported by resume")
+		return exitUsage
+	}
+	if *f.allowShare && cmd != "enable" {
+		e.errf("--allow-second-loop is only supported by enable, start and init")
 		return exitUsage
 	}
 	if *f.discard && cmd != "retarget" {
@@ -265,7 +270,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
-	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
+	case "enable":
+		// A second loop on a session another enabled loop supervises would
+		// prompt it too: refused unless asked for.
+		if !checkSecondLoop(e, cfg, "enable", *f.allowShare) {
+			return exitFailed
+		}
+		code := controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
+		if code == exitOK {
+			noteSupervisor(cfg)
+		}
+		return code
+	case "disable", "pause", "resume", "stop", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
 		if len(positional) != 1 {
@@ -292,7 +308,7 @@ type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
-	discard, keepStop               *bool
+	discard, allowShare, keepStop   *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in

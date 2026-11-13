@@ -99,6 +99,9 @@ type World struct {
 	Net     *Connectivity
 	Hooks   *Receiver
 	Threads map[string]*Thread
+	// otherLoops is set when another loop sends to the same stand-ins, so
+	// this loop's runs do not account for every send.
+	otherLoops bool
 	// Headless is the CLI of a headless loop, or "" for a BB loop.
 	Headless string
 	// sendsUnrecordable is set when the scenario makes keepgoing unable to
@@ -675,7 +678,7 @@ func (w *World) invariants(s *Step) {
 	}
 	// Every delivery is recorded as an attempt. An attempt that failed
 	// before anything arrived (a refused creation) has no delivery.
-	if got := s.Runs.Attempts(); got < w.sendsTotal && !w.sendsUnrecordable {
+	if got := s.Runs.Attempts(); got < w.sendsTotal && !w.sendsUnrecordable && !w.otherLoops {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
