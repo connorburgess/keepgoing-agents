@@ -389,6 +389,10 @@
         },
         "reasoning": {
           "type": "string"
+        },
+        "retry_signal_ttl": {
+          "$ref": "#/$defs/duration",
+          "description": "how long a provider retry notice on an errored thread suppresses error recovery; default 15m, minimum 1m"
         }
       }
     },

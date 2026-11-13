@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Agent describes how to reach one agent session. The primary loop and
@@ -25,6 +26,9 @@ type BB struct {
 	CLI       string `yaml:"cli,omitempty"`
 	Model     string `yaml:"model,omitempty"`
 	Reasoning string `yaml:"reasoning,omitempty"`
+	// RetrySignalTTL bounds how long a provider retry notice on an errored
+	// thread suppresses error recovery. Zero uses the adapter default (15m).
+	RetrySignalTTL Duration `yaml:"retry_signal_ttl,omitempty"`
 }
 
 // Process configures the generic process adapter. Each command is argv.
@@ -133,6 +137,9 @@ func (a Agent) validate(where string) []error {
 	case a.Adapter == "bb" && a.BB != nil:
 		if a.BB.Thread == "" {
 			add("bb.thread is required")
+		}
+		if d := a.BB.RetrySignalTTL.Duration; d != 0 && d < time.Minute {
+			add("bb.retry_signal_ttl must be at least 1m")
 		}
 	case a.Adapter == "process" && a.Process != nil:
 		if len(a.Process.StatusCommand) == 0 {
