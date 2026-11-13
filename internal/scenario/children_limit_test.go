@@ -18,13 +18,15 @@ func TestScenarioLimitWhileChildrenWork(t *testing.T) {
 		name string
 		// held is the reason an idle parent is left alone.
 		held string
+		// brief is what the handoff brief says about the children left behind.
+		brief string
 		// scan sets what listing the parent's children returns.
 		scan func(w *World, primary *Thread)
 	}{
-		{"child working", "child work running", func(w *World, primary *Thread) {
+		{"child working", "child work running", "1 child conversation started by the previous conversation was still working", func(w *World, primary *Thread) {
 			primary.Child(childThread).StartTurn()
 		}},
-		{"child listing unreadable", "child status unverified", func(w *World, primary *Thread) {
+		{"child listing unreadable", "child status unverified", "could not list them, so their number is unknown", func(w *World, primary *Thread) {
 			w.writeJSON(primaryThread+".children", "not a thread list")
 		}},
 	} {
@@ -64,7 +66,7 @@ func TestScenarioLimitWhileChildrenWork(t *testing.T) {
 			w.Check(s, "handoff while the child works", all(
 				action(s, "handoff"), reasonIs(s, "error: rate_limit"), probedModels(s, altModel),
 				sentExactly(s, Send{Kind: "tell", Thread: altThread, Mode: "auto"}),
-				sentContains(s, "rate_limit"), reported(s, "keepgoing.handoff"), holds(s),
+				sentContains(s, "rate_limit"), sentContains(s, tc.brief), sentContains(s, "not supervised by this loop"), reported(s, "keepgoing.handoff"), holds(s),
 				targetIs(s, altCandidate, altThread),
 			))
 

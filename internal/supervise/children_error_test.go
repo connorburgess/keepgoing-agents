@@ -8,6 +8,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/handoff"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -23,6 +24,38 @@ var childWork = map[string]func(*decide.Observation){
 		o.ActiveChildren, o.ActiveChildIDs, o.ErroredChildren = 1, []string{"thr_child_a"}, children("thr_child_b")
 	},
 	"scan failed": func(o *decide.Observation) { o.ChildrenUnverified = true },
+}
+
+// wantBrief is what the handoff brief says for each childWork case.
+var wantBrief = map[string]string{
+	"working":                       "2 child conversations started by the previous conversation were still working",
+	"one failed beside one working": "1 child conversation started by the previous conversation was still working",
+	"scan failed":                   "could not list them, so their number is unknown",
+}
+
+// A candidate in the conversation being left continues it, so its brief says
+// nothing about children; any other candidate is told.
+func TestChildrenLeftAppliesOnlyToADifferentConversation(t *testing.T) {
+	obs := decide.Observation{State: decide.Error, ActiveChildren: 3, ChildrenUnverified: true}
+	from := config.Agent{Adapter: "bb", BB: &config.BB{Thread: "thr_primary"}}
+	cand := func(a config.Agent) config.Candidate { return config.Candidate{ID: "example", Agent: a} }
+	told := handoff.ChildrenLeft{Working: 3, Unverified: true}
+	for name, tc := range map[string]struct {
+		to   config.Agent
+		want handoff.ChildrenLeft
+	}{
+		"same thread, another model": {config.Agent{Adapter: "bb", BB: &config.BB{Thread: "thr_primary", Model: "example-model"}}, handoff.ChildrenLeft{}},
+		"another thread":             {config.Agent{Adapter: "bb", BB: &config.BB{Thread: "thr_other"}}, told},
+		"a new thread":               {config.Agent{Adapter: "bb", BB: &config.BB{NewThread: true}}, told},
+		"a headless agent":           {config.Agent{Adapter: "codex"}, told},
+	} {
+		if got := childrenLeft(obs, from, cand(tc.to)); got != tc.want {
+			t.Errorf("%s: %+v, want %+v", name, got, tc.want)
+		}
+	}
+	if got := childrenLeft(decide.Observation{State: decide.Error}, from, cand(config.Agent{Adapter: "codex"})); got.Line() != "" {
+		t.Errorf("no children, complete listing: %q", got.Line())
+	}
 }
 
 // The live failure: the supervised conversation reached its usage limit while
@@ -57,6 +90,12 @@ func TestErroredParentIsRecoveredWhileChildrenWork(t *testing.T) {
 			}
 			if r := lastIncident(t, w); r.Action != "handoff" || r.TargetKey == r.TargetKeyAfter {
 				t.Fatalf("incident: %+v", r)
+			}
+			// The brief tells the fallback what was left working, from the
+			// count alone: no child is named.
+			brief := strings.Join(w.adapters["claude-other"].sent, "\n")
+			if !strings.Contains(brief, wantBrief[name]) || !strings.Contains(brief, "not supervised by this loop") || strings.Contains(brief, "thr_child") {
+				t.Fatalf("brief with children %s:\n%s", name, brief)
 			}
 			// The limited conversation is sent nothing, and nobody is asked to act.
 			if len(p.sent) != 0 {
