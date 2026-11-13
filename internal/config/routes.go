@@ -419,3 +419,23 @@ func (c *Config) loadStandardRoutes() {
 	}
 	c.FallbackSet = fb
 }
+
+// WithCurrentRoute returns the fallbacks a loop uses while it is on a route
+// that is no longer in its list: the list as it is now (or none) plus that one
+// route, so the loop can still observe, stop and finish on it. The route is
+// the active target, which is never a handoff destination.
+func WithCurrentRoute(list *Fallbacks, current Candidate) *Fallbacks {
+	out := &Fallbacks{Version: 1}
+	if list != nil {
+		out.Redundancy, out.Probe, out.source = list.Redundancy, list.Probe, list.source
+		for _, c := range list.Candidates {
+			// A switched-off entry with the same id gives way to the saved route.
+			if c.ID != current.ID {
+				out.Candidates = append(out.Candidates, c)
+			}
+		}
+	}
+	out.Candidates = append(out.Candidates, current)
+	out.applyDefaults()
+	return out
+}

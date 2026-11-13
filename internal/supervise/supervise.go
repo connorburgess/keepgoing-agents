@@ -97,7 +97,9 @@ type Result struct {
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
 	// that it will not retry the failed turn. Empty otherwise.
-	RetrySignal  string     `json:"retrySignal,omitempty"`
+	RetrySignal string `json:"retrySignal,omitempty"`
+	// Routes is set when the loop's route list needs attention.
+	Routes       *RouteNote `json:"routes,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
 	Target       string     `json:"target"`
@@ -145,6 +147,9 @@ type Result struct {
 }
 
 type tick struct {
+	// routeOutsideList: a loop following the standard list is on a route that
+	// list no longer resolves; the route is kept from its saved record.
+	routeOutsideList    bool
 	incidentDecisions   incident.Decisions
 	incidentStateLoaded bool
 	incidentAdapter     string
@@ -330,6 +335,7 @@ func (t *tick) run() error {
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
+	t.keepCurrentRoute()
 	target, agent := t.resolve(t.st.Target())
 	if target != t.st.Target() {
 		t.st.ActiveTarget = target
@@ -436,6 +442,7 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	t.noteRouteList()
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
@@ -1826,7 +1833,9 @@ func (t *tick) reportContext(typ, text string) (context.Context, context.CancelF
 func (t *tick) noteRedundancy(target, group string) health.Summary {
 	summary := health.Evaluate(t.fb, t.reg, t.now, target, group)
 	t.res.Redundancy = &summary
-	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun {
+	// While the standard list is unreadable there are no other routes at all;
+	// that is reported once by noteRouteList, not again as lost redundancy.
+	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && !t.cfg.RouteList.Unreadable {
 		t.st.Degraded = degraded
 		if degraded {
 			t.report("degraded", fmt.Sprintf("%s: only %d of the required %d distinct healthy fallbacks; handoffs are refused", t.loop.Name, summary.Distinct, summary.Min), map[string]any{"redundancy": summary})
