@@ -44,9 +44,17 @@ func MaybeRunTurn() {
 	// Hold the turn lock until the exit code is published. The operating system
 	// releases it when this process ends, so a reader never has to trust a
 	// saved PID. Start holds the lock while it sets this turn up, so wait for it,
-	// then write this turn's key so Start knows which wrapper has it.
+	// then write this turn's key so Start knows which wrapper has it. The
+	// record must name this turn: one that names another, or that Start has
+	// marked abandoned, means this wrapper is not wanted and runs nothing.
 	turnKey = key
-	if !holdTurnLock(dir) || os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
+	if !holdTurnLock(dir) {
+		os.Exit(2)
+	}
+	if rec, err := Dir(dir).record(); err != nil || rec.StopKey != key || rec.Abandoned {
+		os.Exit(2)
+	}
+	if os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
 	done := make(chan struct{})
@@ -149,6 +157,9 @@ var (
 	turnKey      string
 )
 
+// afterPublish runs once the exit code is visible. Only tests set it.
+var afterPublish func()
+
 func holdTurnLock(dir string) bool {
 	held, err := acquireTurnLock(dir)
 	turnLockHeld = held
@@ -173,6 +184,9 @@ func publishExit(dir, tmp string) error {
 	// started and written its own.
 	if b, readErr := os.ReadFile(finishing); readErr == nil && string(b) == turnKey {
 		os.Remove(finishing)
+	}
+	if afterPublish != nil {
+		afterPublish()
 	}
 	return err
 }

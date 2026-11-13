@@ -287,7 +287,7 @@ The four questions:
 
 Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test.
 
-A reboot, or anything else that ends the turn's wrapper before it records an exit code, is read as a crashed turn, which a check treats as an unknown error and re-prompts. A turn is "running" only while its wrapper holds the turn lock, which the operating system releases when the wrapper ends. The saved PID is not consulted, so an unrelated process that later gets that PID cannot make a dead turn look alive ([`TestKilledWrapperIsCrashedEvenWhenItsPIDIsReused`](../internal/adapter/runner/liveness_unix_test.go)). The one exception is a turn started by a build from before this change, which holds no lock and is still judged by its PID until it ends.
+A reboot, or anything else that ends the turn's wrapper before it records an exit code, is read as a crashed turn, which a check treats as an unknown error and re-prompts. A turn is "running" only while its wrapper holds the turn lock, which the operating system releases when the wrapper ends. The saved PID is not consulted, so an unrelated process that later gets that PID cannot make a dead turn look alive ([`TestKilledWrapperIsCrashedEvenWhenItsPIDIsReused`](../internal/adapter/runner/liveness_unix_test.go)). The one exception is a turn started by a build from before this change, which holds no lock and is still judged by its PID until it ends, unless the machine has restarted since it began ([upgrading](operations.md#owned-headless-cancellation)).
 
 ## Gaps this exposed
 

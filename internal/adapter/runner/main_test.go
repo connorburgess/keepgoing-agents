@@ -13,6 +13,18 @@ import (
 // The runner re-runs the current executable as the turn wrapper;
 // under go test that executable is the test binary.
 func TestMain(m *testing.M) {
+	// Faults for a process started as a turn wrapper. The agent it starts does
+	// not get the wrapper's variables, so these never apply to the agent.
+	if os.Getenv(envTurnDir) != "" {
+		switch fault := os.Getenv("KEEPGOING_TEST_WRAPPER"); fault {
+		case "dead": // ends before it takes the turn lock
+			os.Exit(3)
+		case "late": // takes the turn lock long after Start stopped waiting
+			time.Sleep(1500 * time.Millisecond)
+		case "linger": // stays alive after its exit code can be seen
+			afterPublish = func() { time.Sleep(3 * time.Second) }
+		}
+	}
 	MaybeRunTurn()
 	switch os.Getenv("KEEPGOING_TEST_HELPER") {
 	case "antigravity-acp":
