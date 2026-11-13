@@ -241,28 +241,59 @@ Verification uses fictional fixtures only: malformed, partial, multi-event and a
 
 Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
 
-**History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept. The history is bounded to 48 readings per window, the newest kept (eight days at a probe every four hours), and to eight windows. A window is dropped once its reset time has passed. The whole history is dropped when the candidate is probed as another account, as the latest reading is. A reading no later than the newest one already kept is ignored, so the same reading recorded twice, or a clock set back, adds nothing. A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
+**History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept.
 
-**Projection.** For each window of the latest reading, keepgoing draws a straight line through the oldest and newest readings of the same instance and extends it to the reset. The result is the projected use at the reset. When that reaches 100% first, it says when the window would run out and how long before its reset. The rate covers all use of the account between the two readings, by any loop or by the person. A projection is made only when all of these hold; otherwise it says which one did not:
+- **Bounds.** The newest 24 readings per window are kept (four days at a probe every four hours, twelve at one every twelve), across at most eight windows. That is at most about 26 KB of `health.json` per candidate, measured with long window keys at both bounds. A seven-day window probed every 12 hours stays under 2 KB.
+- **Resets and accounts.** A window is dropped once its reset time has passed. The whole history is dropped when the candidate is probed as another account, as the latest reading is.
+- **The clock.** The same reading recorded twice adds nothing. Readings stamped later than a new reading are dropped when it is added: only a clock that was ahead and has been set back leaves them, and the current clock wins, so new readings are never refused because of them. A reading that reports a window whose reset is at or before the reading's own time suggests this machine's clock is ahead. That window is not recorded, and nothing is dropped for that reading, so a clock far ahead cannot wipe the history.
+- **Stored records.** A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
+
+**Projection.** For each window of the latest reading, keepgoing fits a rate through the recorded readings of the same instance and extends it from the newest reading to the reset. The rate is the least squares slope through every reading used, not just the first and last, so an early jump or a single rounding step does not decide it alone. The rate covers all use of the account over the readings' span, by any loop or by the person. The result says one of:
+
+- **Used up since a time:** the newest reading is at 100%, dated at the first of the latest run of readings at 100%. No rate is needed for this.
+- **A share at reset,** for example `seven_day 60% at reset (3 readings over 12h 0m)`. Shares are rounded down and shown up to 100%.
+- **Runs out before the reset,** for example `seven_day runs out about 24h 0m before it resets, at 2030-01-10 12:00Z (3 readings over 12h 0m)`, or `projected to have run out at …` when that time has already passed. This is said only when it holds for every rate the readings allow if each was off by one percentage point, since some providers report whole percents.
+- **May run out, within rounding:** the fitted rate reaches 100% before the reset, but a rate within the readings' rounding does not.
+
+A projection is made only when the readings allow it. Otherwise the line says why:
 
 | Reason code | Words shown |
 | --- | --- |
 | `no_reset_time` | no reset time was reported |
 | `no_history` | no earlier reading of this window is recorded |
 | `window_reset` | the window has reset |
-| `one_reading` | one reading in this window |
-| `clock_behind` | the newest reading is after this clock's time (check the host clock) |
+| `too_few_readings` | N of the 3 readings needed in this window |
 | `newest_too_old` | the newest reading is older than the fallbacks' `probe.ttl` |
 | `span_too_short` | the readings cover less than 6 hours |
+| `too_early` | too early to project: the readings' span, for a window that resets in more than four times that span |
 | `used_went_down` | a reading is lower than an earlier one |
 
-For a BB route every reason adds that its readings come only from its probes. BB does not pass the provider's rate-limit events through, so a BB thread's allowance can be projected only as often as it is probed.
+Readings stamped after the current time are ignored and counted in the line, not treated as a reason.
 
-Where it is shown: after each `usage` line that has windows, `fallbacks list` prints `projected <id>:` and `status` prints `projected:`, for example `seven_day 90% at reset (3 readings over 12h 0m)` or `seven_day runs out about 2d 12h before it resets, at 2030-01-10 12:00Z (2 readings over 12h 0m)`. Percentages are rounded down and shown up to 100%. In JSON each window carries `projection` with `state` (`projected` or `unavailable`), `reason`, `usedAtReset` (a fraction that may exceed 1), `runsOutAt`, `readings`, `spanSeconds`, and the rules used, `minSpanSeconds` and `maxAgeSeconds`. A BB route's `usage` has `readingsFromProbesOnly: true`. The panel does not show projections yet.
+**Where readings come from.** Today readings come only from probes on every route. BB does not pass the provider's rate-limit events through, and headless turns do not record them yet ([Q3](roadmap.md#quota-monitoring-planned)). A route's line therefore ends `Readings for this route come only from its probes.` whenever one of its windows cannot be projected. When Q3 adds readings from turns, this narrows per adapter; for loops on BB threads it stays so.
 
-How much a projection can say depends on how often the account is probed. At least two readings six hours apart are needed in one window instance. A seven-day window probed every 12 hours gets about 14 readings a week. A five-hour window cannot be projected from probes four or more hours apart. A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on usually has no projection today.
+Where it is shown: after each `usage` line that has windows, `fallbacks list` prints `projected <id>:` and `status` prints `projected:`. In JSON each window carries `projection` with:
+- `state` (`projected` or `unavailable`) and `reason`;
+- `usedAtReset`, a fraction that may exceed 1;
+- `usedUpSince`, `runsOutAt` and `withinRounding`;
+- `readings`, `ignoredLaterReadings`, `spanSeconds` and `resetsInSeconds`;
+- the rules used: `minReadings`, `minSpanSeconds`, `maxAgeSeconds`, `maxAheadSpans` and `rounding`.
 
-Verification uses fictional fixtures only: table tests of adding readings, instances, resets, bounds, identity changes and stored records that are not valid, and of every projection outcome; health records saved and loaded; and the real `fallbacks check`, `fallbacks list` and `status` commands against fake probes and recorded histories. Nothing here has been checked against a live provider.
+Each `usage` object has `readingsFromProbesOnly`, true on every route today. The panel does not show projections yet.
+
+How much a projection can say depends on how often the account is probed:
+- It needs three readings over at least six hours in one window instance, and readings covering at least a quarter of the time left to the reset.
+- A seven-day window probed every 12 hours gets about 14 readings a week. A projection from the start of the week needs over a day of them.
+- A five-hour window cannot be projected from probes four or more hours apart.
+- A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on usually has no projection today.
+
+Verification uses fictional fixtures only:
+- table tests of adding readings, instances, resets, bounds, identity changes, a clock set back or far ahead, and stored records that are not valid;
+- table tests of every projection outcome, including one pair 75% to 77% six hours apart, a jump in the first hour followed by 23 flat hours, use already at 100%, and a run-out time already past;
+- health records saved and loaded;
+- the real `fallbacks check`, `fallbacks list` and `status` commands against fake probes and recorded histories.
+
+Nothing here has been checked against a live provider.
 
 ## Preview manual probes
 
