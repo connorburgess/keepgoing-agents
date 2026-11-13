@@ -117,7 +117,6 @@ func TestChildErrorNoticeFollowsTheWakeRules(t *testing.T) {
 		{"parent waiting on a person", func(w *world, p *fakeAdapter) { p.obs.AwaitingInput = true }, "none"},
 		{"messages already queued", func(w *world, p *fakeAdapter) { p.obs.Queued = 1 }, "none"},
 		{"paused", func(w *world, p *fakeAdapter) { control.Update(w.dir, func(f *control.File) { f.Paused = true }) }, "none"},
-		{"parent errored: re-prompt without the notice", func(w *world, p *fakeAdapter) { p.obs.State, p.obs.ErrorClass = decide.Error, decide.ErrUnknown }, "reprompt"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,6 +143,29 @@ func TestChildErrorNoticeFollowsTheWakeRules(t *testing.T) {
 				t.Fatalf("notices at %v after %d earlier sends: %q", got, sent, p.sent)
 			}
 		})
+	}
+}
+
+// A parent that is itself in error is re-prompted, not woken. The re-prompt
+// carries the same count-only notice, once: a parent with a child in error
+// used to be re-prompted three times without ever being told.
+func TestChildErrorNoticeRidesOnAReprompt(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Errors.MaxReprompts = 3
+	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, ErroredChildren: []string{"thr_example_a", "thr_example_b"}})
+	var told []bool
+	for i := 0; i < 3; i++ {
+		res, err := Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(i)*20*time.Minute)))
+		if err != nil || res.Action != "reprompt" {
+			t.Fatalf("check %d: %+v %v", i, res, err)
+		}
+		told = append(told, res.ChildErrorNote)
+	}
+	if got := notes(p); len(got) != 1 || got[0] != 0 || !told[0] || told[1] || told[2] || len(p.sent) != 3 {
+		t.Fatalf("notices at %v, told %v, sends %d: %q", got, told, len(p.sent), p.sent)
+	}
+	if !strings.Contains(p.sent[0], "[keepgoing:child-errors count=2]") || strings.Contains(p.sent[0], "thr_example") {
+		t.Fatalf("notice text: %q", p.sent[0])
 	}
 }
 
