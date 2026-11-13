@@ -2,10 +2,9 @@ package runner
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -13,19 +12,53 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
-// Claude runs Claude Code headless, one turn per Send, resuming the same
-// session. Status comes from the result JSON's is_error, subtype, and
-// api_error_status fields and from the exit code, never from result text.
-type Claude struct {
-	cfg config.Claude
-	dir Dir
+// claudeSpec is Claude Code headless: `claude -p --output-format json`, one
+// turn per process, resuming the same session. Status comes from the result
+// JSON's is_error, subtype, and api_error_status fields and from the exit
+// code, never from result text.
+var claudeSpec = &Spec{
+	Name:         "claude",
+	Provider:     "claude-code",
+	DefaultCLI:   "claude",
+	AccountEnv:   "CLAUDE_CONFIG_DIR",
+	SettingNames: []string{"cli", "workdir", "model", "effort", "permission_mode", "max_budget_usd", "extra_args", "env"},
+	Prompt:       PromptStdin,
+	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
+	Settings: func(a config.Agent) (Settings, bool) {
+		if a.Claude == nil {
+			return Settings{}, false
+		}
+		return Settings{CLI: a.Claude.CLI, Workdir: a.Claude.Workdir, Model: a.Claude.Model, Env: a.Claude.Env}, true
+	},
+	Argv: func(a config.Agent, session string) []string { return claudeArgv(*a.Claude, session) },
+	Read: func(turn Status) Reading {
+		r, ok := ParseClaudeResult(turn.Stdout)
+		if !ok {
+			return Reading{Class: decide.ErrUnknown}
+		}
+		return Reading{Session: r.SessionID, Completed: !r.IsError, Class: r.Class(), Evidence: r.evidence(turn)}
+	},
+	Probe: ProbeSpec{
+		// stream-json carries the same final result object as json, plus the
+		// usage events the probe reads. Print mode requires --verbose with it.
+		Argv: func(cli, model, prompt string) []string {
+			argv := []string{cli, "-p", prompt, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+				"--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}
+			if model != "" {
+				argv = append(argv, "--model", model)
+			}
+			return argv
+		},
+		Judge: judgeClaudeProbe,
+		Trim:  dropClaudeInit,
+	},
 }
 
 // NewClaude returns a headless Claude Code adapter storing turn files in dir.
-func NewClaude(cfg config.Claude, dir string) *Claude { return &Claude{cfg: cfg, dir: Dir(dir)} }
-
-// Name implements adapter.Adapter.
-func (c *Claude) Name() string { return "claude" }
+func NewClaude(cfg config.Claude, dir string) *Headless {
+	h, _ := New(config.Agent{Adapter: claudeSpec.Name, Claude: &cfg}, dir)
+	return h
+}
 
 // ClaudeResult is the subset of `claude -p --output-format json` we read.
 type ClaudeResult struct {
@@ -83,83 +116,68 @@ func (r ClaudeResult) Class() decide.ErrorClass {
 	return adapter.ClassifyCode(r.Subtype)
 }
 
-// Observe implements adapter.Adapter.
-func (c *Claude) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, err := c.dir.Status()
-	if err != nil {
-		return decide.Observation{State: decide.Unknown}, err
+// claudeArgv builds the claude argv for one turn.
+func claudeArgv(cfg config.Claude, session string) []string {
+	args := []string{cfg.CLI, "-p", "--output-format", "json"}
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
 	}
-	defer func() {
-		if obs.Evidence.Source == "" {
-			obs.Evidence = runnerEvidence(st)
+	if cfg.Effort != "" {
+		args = append(args, "--effort", cfg.Effort)
+	}
+	if cfg.PermissionMode != "" {
+		args = append(args, "--permission-mode", cfg.PermissionMode)
+	}
+	if cfg.MaxBudgetUSD > 0 {
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(cfg.MaxBudgetUSD, 'f', -1, 64))
+	}
+	if session != "" {
+		args = append(args, "--resume", session)
+	}
+	return append(args, cfg.ExtraArgs...)
+}
+
+// judgeClaudeProbe reads a probe's result object.
+func judgeClaudeProbe(stdout []byte, code int) ProbeVerdict {
+	var v ProbeVerdict
+	r, ok := ParseClaudeResult(stdout)
+	var extra struct {
+		CredentialExpiresAt time.Time `json:"credential_expires_at"`
+	}
+	// Read the expiry from the result object itself: stream output may carry
+	// other events after it.
+	if line, found := ClaudeResultLine(stdout); found && json.Unmarshal(line, &extra) == nil && !extra.CredentialExpiresAt.IsZero() {
+		t := extra.CredentialExpiresAt
+		v.CredentialExpiresAt = &t
+	}
+	switch {
+	case !ok:
+		v.Class, v.Detail = decide.ErrUnknown, "no result object"
+	case !r.IsError && code == 0:
+		v.OK, v.Detail = true, "subtype="+r.Subtype
+	default:
+		v.Class, v.Detail = r.Class(), "subtype="+r.Subtype
+	}
+	return v
+}
+
+// dropClaudeInit drops the CLI's initialization message, which describes the
+// local installation (working directory, session and tool lists) and says
+// nothing about a failure.
+func dropClaudeInit(stdout []byte) []byte {
+	var kept [][]byte
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		var event struct {
+			Type    string `json:"type"`
+			Subtype string `json:"subtype"`
 		}
-	}()
-	switch st.Phase {
-	case NeverRun:
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone}, nil
-	case Running:
-		return decide.Observation{State: decide.Active, ErrorClass: decide.ErrNone}, nil
-	case Crashed:
-		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
-	}
-	r, ok := ParseClaudeResult(st.Stdout)
-	if ok {
-		c.dir.SaveSession(r.SessionID)
-	}
-	if ok && !r.IsError && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: r.evidence(st)}, nil
-	}
-	class := decide.ErrUnknown
-	if ok {
-		class = r.Class()
-	}
-	obs = decide.Observation{State: decide.Error, ErrorClass: class}
-	if ok {
-		obs.Evidence = r.evidence(st)
-	}
-	return obs, nil
-}
-
-// Args builds the claude argv for one turn.
-func (c *Claude) Args() []string {
-	args := []string{c.cfg.CLI, "-p", "--output-format", "json"}
-	if c.cfg.Model != "" {
-		args = append(args, "--model", c.cfg.Model)
-	}
-	if c.cfg.Effort != "" {
-		args = append(args, "--effort", c.cfg.Effort)
-	}
-	if c.cfg.PermissionMode != "" {
-		args = append(args, "--permission-mode", c.cfg.PermissionMode)
-	}
-	if c.cfg.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", strconv.FormatFloat(c.cfg.MaxBudgetUSD, 'f', -1, 64))
-	}
-	if s := c.dir.Session(); s != "" {
-		args = append(args, "--resume", s)
-	}
-	return append(args, c.cfg.ExtraArgs...)
-}
-
-// Send starts a turn. A running turn cannot be steered or queued into.
-func (c *Claude) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	st, err := c.dir.Status()
-	if err != nil {
-		return err
-	}
-	if st.Phase == Running {
-		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running headless turn (%s mode)", mode)}
-	}
-	if st.Phase == Finished {
-		if r, ok := ParseClaudeResult(st.Stdout); ok {
-			c.dir.SaveSession(r.SessionID)
+		if json.Unmarshal(line, &event) == nil && event.Type == "system" && event.Subtype == "init" {
+			continue
 		}
+		kept = append(kept, line)
 	}
-	return c.dir.Start(c.Args(), c.cfg.Workdir, prompt, envList(c.cfg.Env))
+	return bytes.Join(kept, []byte("\n"))
 }
-
-// Stop implements adapter.Adapter.
-func (c *Claude) Stop(ctx context.Context) error { return c.dir.Stop() }
 
 func (r ClaudeResult) evidence(st Status) evidence.Detail {
 	d := runnerEvidence(st)
