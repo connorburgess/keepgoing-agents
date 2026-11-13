@@ -88,7 +88,7 @@ Everything under [Access](#access) holds for this server too, with a session in 
 - Neither the opening code nor the session is ever in a program's arguments or environment, or in a log. The server keeps no log.
 - Without a valid cookie nothing under `/s/` is served, and nothing is served at any other path except an opening address and two static files the expired-link page needs and which hold nothing private: the stylesheet (`/panel.css`) and its copy-button script (`/expired.js`).
 - With a session, `api/v1/server` returns which command serves the page and its idle limit, and nothing about any loop.
-- There is still no write endpoint.
+- Without `--allow-changes` there is no write endpoint. With it, the [change requests](#changes-from-the-page-keepgoing-panel---allow-changes) have stricter checks of their own.
 
 **What this protects against, and what it does not.**
 
@@ -185,12 +185,51 @@ The token keeps other local web pages and casual local requests out. It is not p
 
 The page loads everything from one endpoint, `GET /<token>/api/v1/dock` (`?identifiers=1` for the view with identifiers and notes). It returns `schemaVersion: 1`, `readOnly: true`, `readAt`, `refreshSeconds`, `staleAfterSeconds`, `registry`, `complete`, `allClear`, `unread`, `needsYou`, `loops`, `routes` and `allowances`. Each loop carries its current route, its ordered preferred routes (`chain.entries`, each with a `route` key, `current`, `inUse`, `effort`, `enter`, `source`, readiness, usage and resets), `away` when it is not on its first route (when it left, why, the reported reset, and whether returning is on), and its `decision`, `hold`, `device`, `lanes` and `events`; `routes` is the same data grouped by route, with `notes`, `leftBy` and `attention`, and `allowances` groups the routes by account, so every view is one feed. Each sentence is sent as parts (`{"t": text}` or `{"at": time, "f": "date"|"datetime"|"clock"}`) that the page joins, showing each time in its own time zone. A route is named by its opaque `route` key; the configuration's name for it (`id`, `named`) is included only with identifiers. `enter` and `source` use the vocabulary of the planned route lists (`first`, `same_conversation`, `other_conversation`, `new_conversation`, `headless`, `command`; `loop` for the first route and `own` for the rest, until a shared standard list exists). Ages are computed against `readAt` when the report is built, so the page does not depend on the browser's clock or on being opened on the same computer. Consumers must check `schemaVersion`, tolerate added fields, and show an all-clear only when `allClear` is true. An unreadable registry is `registry.availability: unavailable`, never an empty list of loops. The schema is unreleased and may change before a release.
 
+## Changes from the page: `keepgoing panel --allow-changes`
+
+```sh
+keepgoing panel --allow-changes
+```
+
+A panel server started this way lets the page pause, stop and resume one loop at a time. Without the flag the panel is read-only, and `keepgoing dock` is read-only for good. `keepgoing dock`'s token is in its address, which ends up in terminal scrollback and shared screens, and it runs with its terminal's environment, so it would act as whatever BB thread it was started in. A running server never switches mode. `keepgoing panel --allow-changes` against a read-only server says so and asks for `keepgoing panel stop` first, and `keepgoing panel` against a server that allows changes asks the same. The footer says which mode the page is in, and for how long changes have been allowed: "Changes allowed for 2 h: started with keepgoing panel --allow-changes at 14:02. keepgoing panel stop turns them off." So does `keepgoing panel status`. With changes off the page shows no controls at all.
+
+**On a loop's page**, Pause, Stop and Resume appear as the loop's control flags allow: Pause when it is not paused, Stop when no stop is requested, Resume when any hold is set. Each opens a review before anything changes. The review is built from a fresh read and says only what the records support:
+
+- **Pause:** "keepgoing sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change."
+- **Stop:** the loop's next check carries out the stop, and the page cannot confirm that the session stopped.
+- **Resume:** exactly which holds it clears (paused, stop requested, waiting for you, finished, and the note left with a hold, whose text is not shown). It also says that resume does not turn supervision on or start a turn, the loop's current route, and what is known of the next check. If supervision is off, it says resume will not turn it on.
+- **A loop owned by a conversation:** when the loop's records name an owning conversation, the stop and resume reviews say so without naming it: "This loop is supervised for a conversation. Resuming here clears the holds that conversation or keepgoing set; it does not answer any question the conversation asked."
+- **Expiry:** each review ends with when it expires: 2 minutes for pause and stop, 5 for resume, as the resume ticket does.
+
+Focus starts on Cancel, and Escape cancels. The confirm button names the action and the loop. The outcome is shown in the page and announced, and says only what the save evidence supports:
+
+- **Saved:** "Paused: keepgoing will send nothing; a check already running finishes." "Stop requested: the next check carries it out." "Resumed: holds cleared; the next check decides what to send."
+- **Refused:** a busy loop reads "keepgoing is in the middle of a check on this loop. Nothing was changed." Any other refusal gives its fixed reason, then "Nothing was changed."
+- **Review again:** a loop that changed since the review, or an expired or already-used review, says to review it again.
+- **Uncertain:** an unconfirmed save, or a reply that never arrived, reads "keepgoing could not confirm whether … Check its state below before doing anything else."
+
+Nothing is retried by itself; a new attempt is a new review. A saved hold is not the provider acting.
+
+**What runs.** The server calls the same functions as `client pause|stop` and `client prepare-resume` followed by `client resume` ([registered controls](local-clients.md#registered-pause-and-stop)), in its own process. So a change takes the same locks, makes the same checks and refusals, and records the same history. It acts as no BB thread, as a terminal outside BB does. Today that lets it pause and stop any registered loop, and resume one, including a loop a BB thread owns, without taking over its ownership. A resume of a hold keepgoing raised for a spent allowance starts a new error episode, as `client resume` does. The resume ticket never leaves the server. The history records each change as `panel_pause`, `panel_stop` or `panel_resume`, and the page words it "from the panel". The origin is part of the operation's value, not a separate field, because the history is decoded strictly: a binary from before such a field would refuse the whole history. An older binary reads these values as "unavailable" instead.
+
+**Each change request must pass every one of these checks:**
+
+- Two `POST` requests under the session path: `api/v1/loops/<key>/prepare` returns the review, and `api/v1/loops/<key>/confirm` performs it. The page names a loop only by its key; the server finds the registration.
+- A loopback `Host`, and an `Origin` that is exactly this page's.
+- `Sec-Fetch-Site: same-origin` with a fetch's mode and destination. A browser that sends no fetch metadata can read the page but cannot change anything.
+- A JSON body of at most 4 KiB with no unknown fields.
+- Exactly one valid session cookie.
+- An anti-forgery header. For prepare it carries a value derived from the session, which only `api/v1/server` hands out, and only to a session. For confirm it carries the single-use value the prepare returned. That value is bound to the session, the loop and the action, is spent on its first use whatever the outcome, and expires with its review. At most 32 reviews are pending.
+- `GET` and `HEAD` still never change anything. A server started without `--allow-changes` routes no write request at all.
+
+**What this does not protect against.** Everything under [what this protects against](#access-through-keepgoing-panel) still holds, with one more consequence: *anyone who can use your browser window, or who uses a `--no-open` address within its 30 seconds, can change loops*, not only read them. Use `--allow-changes` only when you mean to, and `keepgoing panel stop` when you are done. A program running as you can change loops anyway, with the same commands.
+
 ## Planned slices
 
 This is the first slice. The rest is not implemented.
 
 1. **Read-only view** (this slice): the picker, needs you, one loop through its routes with its last decision, hold, lanes and recent activity, and routes across loops with each account group's allowance. A lane's title is not shown because none is recorded; recording one privately is a separate planned change, and the lane rows have room for it.
-2. **Controls**: pause, resume and stop from a loop's page, and picker commands such as pause all, through the existing registered commands (`client pause|stop`, and `client prepare-resume` followed by `client resume` with its reviewed single-use ticket). The page will not get its own control logic.
+2. **Controls**: pause, resume and stop from a loop's page are built ([above](#changes-from-the-page-keepgoing-panel---allow-changes)), through the existing registered commands' own functions. Still planned: picker commands such as pause all, each with a confirmation per loop. The page will not get its own control logic.
 3. **Configuration**, starting with a loop's routes: their order, switching one off or on, and whether the loop follows a shared standard list or has its own; later limits, the usage-switch threshold and which reports are sent. It will be a front end to the existing guided commands (`fallbacks add|move|remove|handoff`, with their `--dry-run --json` previews, confirmation, ownership and transfer guards and comment-preserving edits), never its own logic or its own file writes. The route rows already carry a position and an opaque route key for this. Credentials and logins will never be shown or edited.
 4. **Actions on many lanes at once** from the routes view, such as moving every lane on one route to another or changing their effort level. This depends on two things keepgoing does not have: lanes as first-class records (today it knows a loop's lanes only as counts and hashes, and never changes them), and a group (a coordinator and its lanes) so one action can apply to all members.
 
