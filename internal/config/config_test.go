@@ -285,3 +285,14 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 		t.Errorf("primary with new_thread: %v", err)
 	}
 }
+
+// hung_turn is a known event but not a default one: a loop receives it only
+// by naming it, or all, in report.events.
+func TestHungTurnReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "hung_turn") || contains(DefaultReportEvents, "hung_turn") {
+		t.Fatal("hung_turn must be a known event and not a default one")
+	}
+	if (&Report{Events: DefaultReportEvents}).ReportsEvent("hung_turn") || !(&Report{Events: []string{"hung_turn"}}).ReportsEvent("hung_turn") {
+		t.Fatal("subscription to hung_turn")
+	}
+}

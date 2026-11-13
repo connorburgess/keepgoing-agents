@@ -16,13 +16,17 @@ import (
 // hungWorld is an active turn, tracked by Git, that last logged something
 // five minutes before t0. stall_after 30m, min_wake_interval 1h, three
 // nudges, checks every ten minutes.
-func hungWorld(t *testing.T) (*world, *fakeAdapter, func(at time.Duration, online bool, print string) Result) {
+// Each configure function may change the loop before the first check.
+func hungWorld(t *testing.T, configure ...func(*config.Loop)) (*world, *fakeAdapter, func(at time.Duration, online bool, print string) Result) {
 	t.Helper()
 	w := newWorld(t, true, false)
 	w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
 	w.cfg.Loop.Progress.MaxNudges = 3
 	w.cfg.Loop.Daemon.Interval = config.Duration{Duration: 10 * time.Minute}
 	w.cfg.Loop.Report = &config.Report{Events: []string{"all"}}
+	for _, c := range configure {
+		c(&w.cfg.Loop)
+	}
 	p := w.primary(decide.Observation{State: decide.Active, Turn: &decide.TurnActivity{ID: "turn-example-1", LastActivityAt: t0.Add(-5 * time.Minute)}})
 	run := func(at time.Duration, online bool, print string) Result {
 		t.Helper()
@@ -41,8 +45,8 @@ func hungWorld(t *testing.T) (*world, *fakeAdapter, func(at time.Duration, onlin
 // hungJourney runs the outage: online checks, then offline ones (every ten
 // minutes for an hour, then every seven hours), then online checks every ten
 // minutes from back. It fails if anything is sent or held while offline.
-func hungJourney(t *testing.T, length time.Duration) (w *world, p *fakeAdapter, run func(time.Duration, bool, string) Result, back time.Duration) {
-	w, p, run = hungWorld(t)
+func hungJourney(t *testing.T, length time.Duration, configure ...func(*config.Loop)) (w *world, p *fakeAdapter, run func(time.Duration, bool, string) Result, back time.Duration) {
+	w, p, run = hungWorld(t, configure...)
 	run(0, true, "same")
 	run(10*time.Minute, true, "same")
 	drop := 15 * time.Minute
@@ -79,29 +83,32 @@ func waitFrom(t *testing.T, run func(time.Duration, bool, string) Result, back t
 // The owner's scenario with a turn whose host slept mid-request: it stays
 // active and silent through the outage. Once the network is back, the check
 // waits stall_after as for any turn, then waits on it instead of nudging and
-// reports that once, and asks a person after the nudges' patience (3 x 30m)
-// with a reason that says what happened. At every length, no nudge is sent.
+// reports that once, and asks a person when the stall rule would have held
+// (stall_after 30m, then three nudges an hour apart: 3h30m after the network
+// came back) with a reason that says what happened. At every length, no nudge
+// is sent.
 func TestHungTurnIsWaitedOnThenHeldAtAnyOutageLength(t *testing.T) {
 	for _, length := range []time.Duration{20 * time.Minute, 4 * time.Hour, 72 * time.Hour, 21 * 24 * time.Hour} {
 		t.Run(length.String(), func(t *testing.T) {
 			w, p, run, back := hungJourney(t, length)
 			var got []string
-			for after := time.Duration(0); after <= 2*time.Hour; after += 10 * time.Minute {
+			hold := 3*time.Hour + 30*time.Minute
+			for after := time.Duration(0); after <= hold; after += 10 * time.Minute {
 				r := run(back+after, true, "same")
 				got = append(got, fmt.Sprintf("%s:%s", after, r.Reason))
 			}
 			want := map[time.Duration]string{}
-			for after := time.Duration(0); after <= 2*time.Hour; after += 10 * time.Minute {
+			for after := time.Duration(0); after <= hold; after += 10 * time.Minute {
 				switch {
 				case after < 30*time.Minute:
 					want[after] = "active"
-				case after < 2*time.Hour:
+				case after < hold:
 					want[after] = decide.HungTurnReason
 				default:
 					want[after] = decide.HungTurnHoldReason
 				}
 			}
-			for i, after := 0, time.Duration(0); after <= 2*time.Hour; i, after = i+1, after+10*time.Minute {
+			for i, after := 0, time.Duration(0); after <= hold; i, after = i+1, after+10*time.Minute {
 				if got[i] != fmt.Sprintf("%s:%s", after, want[after]) {
 					t.Fatalf("after the network came back: %s, want %s", got[i], want[after])
 				}
@@ -177,8 +184,13 @@ func TestHungTurnNeedsEverySign(t *testing.T) {
 		{name: "another turn", change: func(o *decide.Observation) {
 			o.Turn = &decide.TurnActivity{ID: "turn-example-2", LastActivityAt: t0.Add(-5 * time.Minute)}
 		}, reason: "no progress for"},
-		{name: "activity after the outage", change: func(o *decide.Observation) { o.Turn.LastActivityAt = t0.Add(time.Hour) }, reason: "no progress for"},
-		{name: "activity unknown", change: func(o *decide.Observation) { o.Turn = nil }, reason: "no progress for"},
+		// A turn that came back gets a full stall_after from this check.
+		{name: "activity after the outage", change: func(o *decide.Observation) { o.Turn.LastActivityAt = t0.Add(time.Hour) }, reason: "active"},
+		{name: "no turn seen", change: func(o *decide.Observation) { o.Turn = nil }, reason: "no progress for"},
+		// The log could not be read: nothing is decided, and the watch is
+		// kept (TestHungTurnWatchSurvivesAFailedLogRead).
+		{name: "activity unknown", change: func(o *decide.Observation) { o.Turn, o.TurnUnknown, o.RetryUnverified = nil, true, true }, reason: "provider retry state unverified"},
+		{name: "background agents", change: func(o *decide.Observation) { o.Background = 1 }, reason: "no progress for"},
 		{name: "a tool is running", change: func(o *decide.Observation) { o.Turn.ToolsRunning = true }, reason: "no progress for"},
 		{name: "something queued", change: func(o *decide.Observation) { o.Queued = 1 }, reason: "no progress for"},
 		{name: "children running", change: func(o *decide.Observation) { o.ActiveChildren = 1 }, reason: "child work running"},

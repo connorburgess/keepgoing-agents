@@ -830,8 +830,15 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
-	in.HungTurn, in.HungTurnFor = t.hungTurn(obs, progressed)
-	in.HungTurnPatience = t.hungTurnPatience()
+	hung, revived := t.hungTurn(obs, progressed, unchangedFor)
+	if revived {
+		// The watched turn came back: it gets a full stall_after from now.
+		in.UnchangedFor = 0
+		if !t.opts.DryRun {
+			t.st.ActiveSince = t.now
+		}
+	}
+	in.HungTurn, in.HungTurnFor, in.HungTurnPatience = hung, in.UnchangedFor, t.hungTurnPatience()
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}

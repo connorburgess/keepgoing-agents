@@ -139,8 +139,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		}
 	}
 	if obs.State == decide.Active && sig.ok && sig.turnStartSeq > 0 {
-		obs.Turn = &decide.TurnActivity{ID: fmt.Sprintf("bb-turn-%d", sig.turnStartSeq), LastActivityAt: sig.lastEventAt, ToolsRunning: sig.toolsRunning}
+		// The log sequence number is per thread: the thread is part of the ID.
+		obs.Turn = &decide.TurnActivity{ID: fmt.Sprintf("%s/bb-turn-%d", a.cfg.Thread, sig.turnStartSeq), LastActivityAt: sig.lastEventAt, ToolsRunning: sig.toolsRunning}
 	}
+	obs.TurnUnknown = obs.State == decide.Active && !sig.ok
 	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
 	}

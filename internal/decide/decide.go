@@ -47,11 +47,14 @@ type Observation struct {
 	State      State
 	ErrorClass ErrorClass
 	// Turn is what the adapter knows of the running turn, from structured
-	// events. Nil means nothing is known.
-	Turn       *TurnActivity
-	Queued     int  // messages already waiting for the session
-	Background int  // background workers still running
-	Gone       bool // target deleted or archived
+	// events. Nil means nothing is known. TurnUnknown: the session is
+	// active but its turn could not be read this time (the log read
+	// failed), as opposed to having no turn the adapter can see.
+	Turn        *TurnActivity
+	TurnUnknown bool
+	Queued      int  // messages already waiting for the session
+	Background  int  // background workers still running
+	Gone        bool // target deleted or archived
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
