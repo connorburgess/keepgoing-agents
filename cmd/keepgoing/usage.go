@@ -105,14 +105,14 @@ func usageOf(reg *health.Registry, c config.Candidate, now time.Time, rules allo
 		if !stale {
 			v.State = "available"
 		}
-		v.Windows = append(v.Windows, usageWindowView{UsageWindow: w, Stale: stale, Projection: projectionOf(history, w, now, rules)})
+		v.Windows = append(v.Windows, usageWindowView{UsageWindow: w, Stale: stale, Projection: projectionOf(history, w, at, now, rules)})
 	}
 	return v
 }
 
 // projectionOf projects the window from the recorded readings of the same
 // window instance: the series with its key whose reset time matches.
-func projectionOf(h *allowance.History, w probe.UsageWindow, now time.Time, rules allowance.Rules) projectionView {
+func projectionOf(h *allowance.History, w probe.UsageWindow, readAt, now time.Time, rules allowance.Rules) projectionView {
 	pv := projectionView{State: "unavailable", MinReadings: rules.MinReadings, MinSpanSeconds: int64(rules.MinSpan / time.Second),
 		MaxAgeSeconds: int64(rules.MaxAge / time.Second), MaxAhead: rules.MaxAhead, Rounding: rules.Rounding, now: now}
 	if w.ResetsAt == nil {
@@ -130,6 +130,13 @@ func projectionOf(h *allowance.History, w probe.UsageWindow, now time.Time, rule
 	}
 	if s == nil && !w.ResetsAt.After(now) {
 		pv.Reason = allowance.WindowReset
+		return pv
+	}
+	// With no history of the instance, the latest reading alone can still
+	// say the window is used up; it needs no rate.
+	if s == nil && w.Used >= 1 {
+		used, since := 1.0, readAt.UTC()
+		pv.State, pv.UsedAtReset, pv.UsedUpSince, pv.Readings = "projected", &used, &since, 1
 		return pv
 	}
 	p := allowance.Project(s, now, rules)
@@ -165,10 +172,13 @@ func usageSpan(d time.Duration) string {
 	return fmt.Sprintf("%dd %dh", int(d/(24*time.Hour)), int(d%(24*time.Hour)/time.Hour))
 }
 
-// text words one window's projection.
-func (p projectionView) text(key string, resetsAt *time.Time) string {
-	span := func(n int64) string { return usageSpan(time.Duration(n) * time.Second) }
-	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04Z") }
+// words is one window's projection as parts, without the window's name:
+// strings, and each time as stamp gives it. Status and the panel both word a
+// projection with it, so they say the same.
+// duration words a length of time; status passes usageSpan and the panel its
+// own style, so each reads one way and the sentences are otherwise identical.
+func (p projectionView) words(resetsAt *time.Time, stamp func(time.Time) any, duration func(time.Duration) string) []any {
+	span := func(n int64) string { return duration(time.Duration(n) * time.Second) }
 	over := fmt.Sprintf("%d readings over %s", p.Readings, span(p.SpanSeconds))
 	if p.Ignored > 0 {
 		over += fmt.Sprintf(", %d stamped after this clock's time ignored", p.Ignored)
@@ -191,33 +201,53 @@ func (p projectionView) text(key string, resetsAt *time.Time) string {
 		if reason == "" {
 			reason = p.Reason
 		}
-		return key + " can't project: " + reason
+		return []any{"can't project: " + reason}
 	case p.UsedUpSince != nil:
-		return key + " used up since " + stamp(*p.UsedUpSince)
+		return []any{"used up since ", stamp(*p.UsedUpSince)}
 	case p.RunsOutAt != nil && resetsAt != nil && !p.RunsOutAt.After(p.now):
-		return fmt.Sprintf("%s projected to have run out at %s, %s before it resets (%s)", key, stamp(*p.RunsOutAt), usageSpan(resetsAt.Sub(*p.RunsOutAt)), over)
+		return []any{"projected to have run out at ", stamp(*p.RunsOutAt), ", " + duration(resetsAt.Sub(*p.RunsOutAt)) + " before it resets (" + over + ")"}
 	case p.RunsOutAt != nil && resetsAt != nil:
-		return fmt.Sprintf("%s runs out about %s before it resets, at %s (%s)", key, usageSpan(resetsAt.Sub(*p.RunsOutAt)), stamp(*p.RunsOutAt), over)
+		return []any{"runs out about " + duration(resetsAt.Sub(*p.RunsOutAt)) + " before it resets, at ", stamp(*p.RunsOutAt), " (" + over + ")"}
 	case p.WithinRounding:
-		return fmt.Sprintf("%s may run out before it resets, within the readings' rounding (%s)", key, over)
+		return []any{"may run out before it resets, within the readings' rounding (" + over + ")"}
 	case p.UsedAtReset == nil:
-		return key + " can't project: unknown"
+		return []any{"can't project: unknown"}
 	}
-	return fmt.Sprintf("%s %d%% at reset (%s)", key, usagePercent(min(1, *p.UsedAtReset)), over)
+	return []any{fmt.Sprintf("%d%% at reset (%s)", usagePercent(min(1, *p.UsedAtReset)), over)}
+}
+
+// text words one window's projection for status, with times in UTC.
+func (p projectionView) text(key string, resetsAt *time.Time) string {
+	var b strings.Builder
+	b.WriteString(key + " ")
+	for _, part := range p.words(resetsAt, func(t time.Time) any { return t.UTC().Format("2006-01-02 15:04Z") }, usageSpan) {
+		b.WriteString(part.(string))
+	}
+	return b.String()
+}
+
+// readingsNote is said once for a route when one of its windows could not be
+// projected for want of readings: a window that has reset needs none.
+const readingsNote = "Readings for this route come only from its probes."
+
+// needsReadings reports whether the projection is missing for want of readings.
+func (p projectionView) needsReadings() bool {
+	return p.State != "projected" && p.Reason != allowance.WindowReset
 }
 
 // projectionText is one route's projected line. When a window cannot be
-// projected, it ends by saying once where the route's readings come from.
+// projected for want of readings, it ends by saying once where the route's
+// readings come from.
 func (v usageView) projectionText() string {
 	parts := make([]string, 0, len(v.Windows))
-	cannot := false
+	note := false
 	for _, w := range v.Windows {
 		parts = append(parts, w.Projection.text(w.Key, w.ResetsAt))
-		cannot = cannot || w.Projection.State != "projected"
+		note = note || w.Projection.needsReadings()
 	}
 	out := strings.Join(parts, "; ")
-	if cannot && v.ProbesOnly {
-		out += ". Readings for this route come only from its probes."
+	if note && v.ProbesOnly {
+		out += ". " + readingsNote
 	}
 	return out
 }

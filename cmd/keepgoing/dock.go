@@ -45,7 +45,7 @@ const (
 	// dockMaxResponse bounds the JSON a read may produce. The projection
 	// caps every list and string, and states what it leaves out. The largest
 	// registry (128 loops) with every list at its cap and every name at its
-	// longest measured about 4.4 MB with identifiers, and 5.1 MB with names
+	// longest measured about 5.4 MB with identifiers, and 6.1 MB with names
 	// of four-byte characters; tests keep both under three quarters of this
 	// bound (6 MiB).
 	dockMaxResponse = 8 << 20

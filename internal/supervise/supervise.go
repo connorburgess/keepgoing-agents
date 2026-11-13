@@ -221,6 +221,7 @@ type tick struct {
 	enabled             bool            // the loop is enabled in control.json
 	stBeforeRecords     state.File      // state before the records were handled, to undo them
 	quietFailure        bool            // a failure already reported by an earlier check
+	failure             *failureReport  // wording for the one error report of a failed check
 	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
 	lateReports         int             // reports started after the budget was spent
 	lateProbed          bool
@@ -652,7 +653,9 @@ func (t *tick) run() error {
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason, res.Window = string(decide.Unknown), "could not verify state; no action taken", "not checked"
-		t.report("error", fmt.Sprintf("%s: could not observe %s", loop.Name, target), map[string]any{"target": target})
+		// One failure, one report: record sends it, with the target named
+		// and the cause, in place of its general "tick failed" text.
+		t.failure = &failureReport{text: fmt.Sprintf("%s: could not observe %s: %v", loop.Name, target, err), data: map[string]any{"target": target}}
 		return t.record(err)
 	}
 	res.State = string(obs.State)
@@ -1630,6 +1633,13 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	return err
 }
 
+// failureReport is the error report a failed check sends, worded by the step
+// that failed.
+type failureReport struct {
+	text string
+	data map[string]any
+}
+
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
 	t.st.CheckedAt = t.now
@@ -1689,7 +1699,12 @@ func (t *tick) record(actErr error) error {
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
-		if !t.quietFailure {
+		// A failed check sends one error report, and none when an earlier
+		// check already reported the same failure. A step that knows more
+		// than the error itself (which target could not be observed) words it.
+		if f := t.failure; f != nil && !t.quietFailure {
+			t.report("error", f.text, f.data)
+		} else if !t.quietFailure {
 			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
 		}
 	}

@@ -281,6 +281,43 @@ func TestObserveFailureTakesNoAction(t *testing.T) {
 	}
 }
 
+// One failure, one report. A check that could not observe its session used
+// to send two error reports for it, "could not observe primary" and "tick
+// failed: ...", so an outage produced two notifications per check. It sends
+// one, which names the target and carries the cause.
+func TestUnobservableSessionSendsOneErrorReport(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"all"}}
+	p := w.primary(decide.Observation{})
+	p.obsErr = errors.New("fictional observation failure")
+	for i := 1; i <= 3; i++ {
+		if _, err := Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(i)*time.Minute))); err == nil {
+			t.Fatal("the failed observation was not returned")
+		}
+		if got := strings.Count(w.reportTypes(), "error"); got != i {
+			t.Fatalf("check %d: %d error reports in all (%s)", i, got, w.reportTypes())
+		}
+	}
+	e := w.reports[0]
+	if e.Type != "error" || e.Text != "example-loop: could not observe primary: fictional observation failure" || e.Data["target"] != "primary" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+// Any other failed check still sends its one report, in the general wording.
+func TestFailedSendSendsOneErrorReport(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"error"}}
+	p := w.primary(decide.Observation{State: decide.Idle})
+	p.sendErr = errors.New("fictional send failure")
+	if _, err := Tick(context.Background(), w.cfg, w.opts(t0)); err == nil {
+		t.Fatal("the failed send was not returned")
+	}
+	if len(w.reports) != 1 || w.reports[0].Type != "error" || !strings.HasPrefix(w.reports[0].Text, "example-loop: tick failed: ") {
+		t.Fatalf("%+v", w.reports)
+	}
+}
+
 func TestYieldSkipsWithoutObserving(t *testing.T) {
 	w := newWorld(t, true, false)
 	w.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"x"}}
