@@ -429,15 +429,17 @@ func TestLimitWaitReportThroughTheRecordedWebhook(t *testing.T) {
 func TestLimitWaitSurvivesChecksThatAreNotRecovery(t *testing.T) {
 	reset := t0.Add(72 * time.Hour)
 	for name, flip := range map[string]decide.Observation{
-		"provider retrying":       {State: decide.Active, Retrying: true},
-		"retry unverified":        {State: decide.Active, RetryUnverified: true},
-		"unknown":                 {State: decide.Unknown},
-		"pending":                 {State: decide.Pending},
-		"stopping":                {State: decide.Stopping},
-		"queued after the error":  {State: decide.Error, ErrorClass: decide.ErrRateLimit, Queued: 1, ResetsAt: reset},
-		"pending interaction":     {State: decide.Error, ErrorClass: decide.ErrRateLimit, AwaitingInput: true, ResetsAt: reset},
-		"child work running":      {State: decide.Error, ErrorClass: decide.ErrRateLimit, ActiveChildren: 1, ResetsAt: reset},
-		"child status unverified": {State: decide.Error, ErrorClass: decide.ErrRateLimit, ChildrenUnverified: true, ResetsAt: reset},
+		"provider retrying":      {State: decide.Active, Retrying: true},
+		"retry unverified":       {State: decide.Active, RetryUnverified: true},
+		"unknown":                {State: decide.Unknown},
+		"pending":                {State: decide.Pending},
+		"stopping":               {State: decide.Stopping},
+		"queued after the error": {State: decide.Error, ErrorClass: decide.ErrRateLimit, Queued: 1, ResetsAt: reset},
+		"pending interaction":    {State: decide.Error, ErrorClass: decide.ErrRateLimit, AwaitingInput: true, ResetsAt: reset},
+		// Child work does not hold back a limited parent, so these two checks
+		// decide the same wait again: still one report.
+		"same limit, child work running":      {State: decide.Error, ErrorClass: decide.ErrRateLimit, ActiveChildren: 1, ResetsAt: reset},
+		"same limit, child status unverified": {State: decide.Error, ErrorClass: decide.ErrRateLimit, ChildrenUnverified: true, ResetsAt: reset},
 	} {
 		w, p := limitWaitWorld(t, 72*time.Hour)
 		wait := p.obs
