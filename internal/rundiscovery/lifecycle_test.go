@@ -281,3 +281,27 @@ func TestDryRunValidatesProspectiveTransition(t *testing.T) {
 		}
 	}
 }
+
+// A re-prompt may be a retry of the failed turn by reference, which has no
+// prompt. No other action may claim that mode.
+func TestTurnRetryIsAReprompAttemptOnly(t *testing.T) {
+	a := intent()
+	a.Action, a.Mode = "reprompt", "turn_retry"
+	if !a.Valid() {
+		t.Fatal("a turn-retry re-prompt was refused")
+	}
+	a.Mode = "auto"
+	if !a.Valid() {
+		t.Fatal("a prompted re-prompt was refused")
+	}
+	for _, action := range []string{"wake", "nudge", "handoff", "switch_back"} {
+		a.Action, a.Mode = action, "turn_retry"
+		if a.Valid() {
+			t.Errorf("%s accepted the turn_retry mode", action)
+		}
+	}
+	a.Action, a.Mode = "reprompt", "queue"
+	if a.Valid() {
+		t.Error("a queued re-prompt was accepted")
+	}
+}

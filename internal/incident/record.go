@@ -23,6 +23,7 @@ type Record struct {
 	// NewThread says this check recorded a BB thread keepgoing created for a
 	// handoff. The thread ID is in the run graph, not here.
 	NewThread            bool           `json:"newThread,omitempty"`
+	TurnRetry            string         `json:"turnRetry"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -460,8 +461,10 @@ func clean(r Record) Record {
 	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved")
 	// Whether this check detected a long limit wait and what it did about the one report.
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
+	// What a re-prompt that retried the failed turn by reference was told.
+	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "refused", "unsupported")
 	if r.Kind != "tick" {
-		r.LimitWaitReport = "none"
+		r.LimitWaitReport, r.TurnRetry = "none", "none"
 	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
