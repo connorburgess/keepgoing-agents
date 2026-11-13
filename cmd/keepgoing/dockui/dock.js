@@ -176,6 +176,7 @@
       row.appendChild(m);
       row.appendChild(el("span", "pct", w.stale ? "—" : w.usedPercent + "%"));
       if (list(w.reset).length) row.appendChild(el("span", "meter-reset", say(w.reset)));
+      if (list(w.projection).length) row.appendChild(el("span", "meter-projection", say(w.projection)));
       f.appendChild(row);
     });
     if (t.omitted) f.appendChild(el("p", "more", t.omitted + (t.omitted === 1 ? " more window is" : " more windows are") + " not shown."));
@@ -192,6 +193,7 @@
     if (u.availability === "stale") uh.appendChild(tag("stale", "Stale"));
     box.appendChild(uh);
     box.appendChild(meters(u));
+    if (u.readingsNote) box.appendChild(el("p", "sub usage-note", u.readingsNote));
     return box;
   }
   function notesOf(notes) { return list(notes).map(function (n) { return { tone: n.tone, text: say(n.text) }; }); }
