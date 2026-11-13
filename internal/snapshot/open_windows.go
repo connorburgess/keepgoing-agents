@@ -1,14 +1,21 @@
 package snapshot
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Open opens path read-only. The handle allows read/write/delete sharing, so
 // holding it does not block Replace. It remains the old snapshot afterwards.
+//
+// While another process is replacing path, Windows can briefly refuse to open
+// it with an access-denied or sharing error. Only those two codes are retried,
+// a few times over about thirty milliseconds; a lasting denial is returned
+// after that short delay, and any other error at once.
 func Open(path string) (*os.File, error) {
 	name, err := snapshotWindowsPath(path)
 	if err != nil {
@@ -16,9 +23,11 @@ func Open(path string) (*os.File, error) {
 	}
 	// No create, truncate, write access, privilege adjustment or inheritable
 	// handle. DELETE sharing permits replacement; it does not grant delete access.
-	handle, err := syscall.CreateFile(&name[0], syscall.GENERIC_READ,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
-		nil, syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	handle, err := openWithRetry(func() (syscall.Handle, error) {
+		return syscall.CreateFile(&name[0], syscall.GENERIC_READ,
+			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
+			nil, syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	}, time.Sleep)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
@@ -28,6 +37,26 @@ func Open(path string) (*os.File, error) {
 		return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EINVAL}
 	}
 	return file, nil
+}
+
+const openAttempts = 5
+
+func openWithRetry(open func() (syscall.Handle, error), sleep func(time.Duration)) (syscall.Handle, error) {
+	delay := 2 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		handle, err := open()
+		if err == nil || attempt == openAttempts || !replacementInProgress(err) {
+			return handle, err
+		}
+		sleep(delay)
+		delay *= 2
+	}
+}
+
+// replacementInProgress classifies by Windows error code, never by text.
+func replacementInProgress(err error) bool {
+	var code syscall.Errno
+	return errors.As(err, &code) && (code == syscall.ERROR_ACCESS_DENIED || code == 32 /* ERROR_SHARING_VIOLATION */)
 }
 
 func snapshotWindowsPath(path string) ([]uint16, error) {
