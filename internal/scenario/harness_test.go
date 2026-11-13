@@ -433,6 +433,35 @@ func (w *World) HeadlessMode(mode string) {
 	}
 }
 
+// standinTrouble says whether a stand-in process was ended early during the
+// last command: it reports one that started and did not end on its own, and a
+// command whose error output says a process it ran was killed. On a loaded
+// machine the operating system, or another program signalling a stale process
+// ID, has killed a stand-in about once in a few thousand runs. A check then
+// records that it could not observe, which is correct, and the scenario's
+// expectation fails for a reason that has nothing to do with the product.
+func standinTrouble(world, stderr string) string {
+	size := func(name string) int64 {
+		info, err := os.Stat(filepath.Join(world, name))
+		if err != nil {
+			return 0
+		}
+		return info.Size()
+	}
+	started, ended := size("standin.started"), size("standin.ended")
+	// A stand-in a test holds at the show gate is still running on purpose.
+	held := size("standin.held") - size("standin.released")
+	switch {
+	case started-ended != held && held > 0:
+		return fmt.Sprintf("%d stand-in processes started and %d ended on their own, with %d held at the show gate", started, ended, held)
+	case started-ended != held:
+		return fmt.Sprintf("%d stand-in processes started and %d ended on their own", started, ended)
+	case strings.Contains(stderr, "signal: killed"):
+		return "a process the command ran was killed: " + strings.TrimSpace(stderr)
+	}
+	return ""
+}
+
 // Step is everything observable after one command: what was sent to the
 // agents, what holds exist, what was reported, and what status, timeline and
 // runs say.
@@ -586,6 +615,10 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	// A headless turn started by this command runs detached; let it end so
 	// this step records what it sent and the next one sees its result.
 	w.settle()
+	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" {
+		w.t.Fatalf("ENVIRONMENT FAILURE in %s at %s (%s): %s. Nothing in keepgoing or in this harness ends a stand-in early, so this step's result says nothing about the product. Run the scenario again; if it keeps happening, look for what is killing processes on this machine.",
+			w.Name, w.stamp(), label, trouble)
+	}
 	s := &Step{Label: label, At: w.Now, Result: r, Tick: line}
 	var sends []Send
 	readLines(w.t, filepath.Join(w.world, "sends.jsonl"), &sends)
