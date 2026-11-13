@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -41,8 +42,9 @@ const (
 	dockMinRefresh     = 5 * time.Second
 	dockMaxRefresh     = 10 * time.Minute
 	// dockMaxResponse bounds the JSON a read may produce. The projection
-	// already caps every list and string, so reaching this is a defect.
-	dockMaxResponse = 2 << 20
+	// caps every list and string; the largest registry (128 loops) with long
+	// fallback lists measured just under 2 MiB, so the bound leaves room.
+	dockMaxResponse = 8 << 20
 	// dockReadTimeout bounds one whole read of the registry.
 	dockReadTimeout = 20 * time.Second
 	// dockReadParallel bounds how many loops are read at once.
@@ -88,7 +90,7 @@ func dockCommand(e env, args []string) int {
 		e.errf("dock: no random source for the access token")
 		return exitFailed
 	}
-	reader := &dockReader{directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon}
+	reader := &dockReader{ctx: e.ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon}
 	if *offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)
@@ -230,7 +232,7 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.asset(w, "dockui/dock.js", "text/javascript; charset=utf-8")
 	case dockAPIPath:
 		identifiers := r.URL.Query().Get("identifiers") == "1"
-		body, err := s.reader.json(r.Context(), identifiers)
+		body, err := s.reader.json(identifiers)
 		if err != nil {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
@@ -252,14 +254,18 @@ func (s *dockServer) asset(w http.ResponseWriter, name, contentType string) {
 	_, _ = w.Write(b)
 }
 
-// dockReader builds the report. Reads are serialized and a result is reused
-// for two seconds, so several open tabs do not multiply the reads.
+// dockReader builds the report. Reads are serialized and a complete result is
+// reused for two seconds, so several open tabs do not multiply the reads. A
+// read runs on the reader's own context, never a request's: a page that
+// reloads mid-read must not cut the read short for everyone else.
 type dockReader struct {
+	ctx        context.Context // the command's lifetime; nil means background
 	directory  string
 	refresh    time.Duration
 	staleAfter time.Duration
 	query      clientDaemonQuery
 	now        func() time.Time
+	timeout    time.Duration // zero means dockReadTimeout
 
 	mu    sync.Mutex
 	cache map[bool]dockCached
@@ -277,15 +283,30 @@ func (d *dockReader) clock() time.Time {
 	return time.Now().UTC()
 }
 
-func (d *dockReader) json(ctx context.Context, identifiers bool) ([]byte, error) {
+// json returns the encoded report. A read that was cut off by the time limit
+// is returned marked incomplete and is never cached, so its unread loops
+// cannot be served again as if they were the current picture. A read cut off
+// because the command is exiting is an error.
+func (d *dockReader) json(identifiers bool) ([]byte, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if c, ok := d.cache[identifiers]; ok && time.Since(c.at) < 2*time.Second {
 		return c.body, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, dockReadTimeout)
+	base := d.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	timeout := d.timeout
+	if timeout == 0 {
+		timeout = dockReadTimeout
+	}
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	report := d.read(ctx, identifiers)
+	if base.Err() != nil {
+		return nil, base.Err()
+	}
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(report); err != nil {
 		return nil, err
@@ -293,48 +314,73 @@ func (d *dockReader) json(ctx context.Context, identifiers bool) ([]byte, error)
 	if buf.Len() > dockMaxResponse {
 		return nil, errors.New("dock report exceeds its bound")
 	}
-	if d.cache == nil {
-		d.cache = map[bool]dockCached{}
+	if report.Complete {
+		if d.cache == nil {
+			d.cache = map[bool]dockCached{}
+		}
+		d.cache[identifiers] = dockCached{at: time.Now(), body: buf.Bytes()}
 	}
-	d.cache[identifiers] = dockCached{at: time.Now(), body: buf.Bytes()}
 	return buf.Bytes(), nil
 }
 
-// read uses the same code paths as registry list, client status, status and
-// runs --registry-id. It takes no lock and starts nothing.
+// read uses the same code paths as registry list, client status, status,
+// runs --registry-id and fallbacks list. It takes no lock and starts nothing.
 func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 	now := d.clock()
 	dir, err := registryDirectory(d.directory)
 	if err != nil {
-		return buildDockReport(nil, now, d.refresh, d.staleAfter, identifiers, false, 0)
+		return buildDockReport(nil, now, d.refresh, d.staleAfter, identifiers, false, 0, true)
 	}
 	f, err := registry.Load(dir)
 	if err != nil {
-		return buildDockReport(nil, now, d.refresh, d.staleAfter, identifiers, false, 0)
+		return buildDockReport(nil, now, d.refresh, d.staleAfter, identifiers, false, 0, true)
 	}
 	entries := f.Entries
 	omitted := 0
 	if len(entries) > dockMaxLoops {
 		omitted, entries = len(entries)-dockMaxLoops, entries[:dockMaxLoops]
 	}
-	inputs := make([]dockInput, len(entries))
-	sem := make(chan struct{}, dockReadParallel)
-	var wg sync.WaitGroup
-	for i, entry := range entries {
-		wg.Add(1)
-		go func(i int, entry registry.Entry) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			inputs[i] = d.readLoop(ctx, dir, entry, f.Entries, now)
-		}(i, entry)
+	each := func(fn func(i int)) {
+		sem := make(chan struct{}, dockReadParallel)
+		var wg sync.WaitGroup
+		for i := range f.Entries {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				fn(i)
+			}(i)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
-	return buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted)
+	// Validate every registered configuration once. Each loop's read then
+	// reuses it, including to see whether a lane is itself a registered loop.
+	loaded := make([]*config.Config, len(f.Entries))
+	each(func(i int) {
+		if cfg, ok := clientConfig(f.Entries[i]); ok && ctx.Err() == nil {
+			loaded[i] = cfg
+		}
+	})
+	validated := make(map[string]*config.Config, len(f.Entries))
+	for i, entry := range f.Entries {
+		validated[entry.ID] = loaded[i]
+	}
+	inputs := make([]dockInput, len(entries))
+	each(func(i int) {
+		if i < len(entries) {
+			inputs[i] = d.readLoop(ctx, dir, entries[i], f.Entries, validated, now)
+		}
+	})
+	return buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
 }
 
-func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, now time.Time) dockInput {
+func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
 	in := dockInput{Entry: entry}
+	if ctx.Err() != nil {
+		in.Client = clientStatusReport{SchemaVersion: 1, RegistrationID: entry.ID, ReadAt: now, Outcome: "unavailable", Issues: []string{"cancelled"}}
+		return in
+	}
 	// Registered status asks the local daemon once; status reuses that answer.
 	var daemon daemonStatus
 	query := func(ctx context.Context, stateDir, current string, offline bool) daemonStatus {
@@ -345,7 +391,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	if in.Client.Snapshot == nil {
 		return in
 	}
-	if cfg, ok := clientConfig(entry); ok {
+	if cfg := validated[entry.ID]; cfg != nil {
 		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn}
 		if fb := cfg.FallbackSet; fb != nil {
 			in.Chain.Candidates = fb.Candidates
@@ -368,8 +414,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 			in.Hold = dockHoldFrom(j)
 		}
 	}
-	loop, _, bad := readRegisteredRuns(entry, all, true, runsMaxLimit, 0, d.staleAfter)
+	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable
-	_ = bad // A partial runs read still carries its blocker's own availability.
 	return in
 }

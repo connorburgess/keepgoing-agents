@@ -253,6 +253,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .route-top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.55rem; min-height: 1.7rem; }
 .route-name { margin: 0; font-weight: 620; font-size: 0.95rem; overflow-wrap: anywhere; }
 .in-use { font-size: 0.72rem; font-weight: 650; color: var(--good); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--good) 55%, transparent); padding: 0 0.4rem; border-radius: 5px; }
+.in-use.is-recorded { color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
 .ready { margin-left: auto; font-size: 0.75rem; font-weight: 600; padding: 0.05rem 0.55rem; border-radius: 999px; }
 .route-meta { font-size: 0.8125rem; margin-top: 0.1rem; }
 .route-usage { margin-top: 0.45rem; max-width: 34rem; }

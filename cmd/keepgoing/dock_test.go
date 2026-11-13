@@ -77,7 +77,8 @@ func treeDigest(t *testing.T, root string) string {
 func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	d, _ := dockFixtureReader(t)
 	r := d.read(context.Background(), false)
-	if r.SchemaVersion != 1 || !r.ReadOnly || !r.ReadAt.Equal(dockNow) || r.RefreshSeconds != 15 || r.Registry.Availability != "available" || r.Registry.Count != len(dockLoops) || len(r.Loops) != len(dockLoops) {
+	if r.SchemaVersion != 1 || !r.ReadOnly || !r.Complete || r.AllClear || r.Unread != 0 || !r.ReadAt.Equal(dockNow) || r.RefreshSeconds != 15 ||
+		r.Registry.Availability != "available" || r.Registry.Count != len(dockLoops) || len(r.Loops) != len(dockLoops) {
 		t.Fatalf("%+v", r)
 	}
 	want := map[string]string{
@@ -94,115 +95,115 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 		t.Errorf("order: %s, %s", r.Loops[0].Name, r.Loops[1].Name)
 	}
 
-	// Needs you: the hold's recorded cause, the owner's note verbatim, and how
-	// long it has waited, from the retained history record of the hold.
+	// Needs you: the hold's recorded cause and how long it has waited, from
+	// the retained history record of the hold. The note is withheld.
 	if len(r.NeedsYou) != 1 {
 		t.Fatalf("%+v", r.NeedsYou)
 	}
 	n := r.NeedsYou[0]
-	if n.Loop != "billing-api-migration" || n.Reason != "A child conversation is waiting for an answer." || !strings.HasPrefix(n.Note, "Needs a decision on the refund table") ||
+	if n.Kind != "held" || n.Loop != "billing-api-migration" || n.Reason != "A lane is waiting for an answer." || n.Note != "" || !n.NoteWithheld ||
 		n.SinceEvidence != "hold_recorded" || n.WaitedSeconds == nil || *n.WaitedSeconds != int64((2*time.Hour+14*time.Minute)/time.Second) || !strings.Contains(n.Action, "resume") {
 		t.Errorf("%+v", n)
 	}
 
 	docs := dockLoopNamed(t, r, "docs-site-refresh")
-	if c := docs.Children; c.Availability != "current" || c.Working != 3 || c.Stuck != 0 || c.Failed != 1 || c.Phrase != "3 working, 1 failed" {
-		t.Errorf("children %+v", c)
+	if c := docs.Children; c.Availability != "current" || !c.Holding || c.Working != 3 || c.Stuck != 0 || c.Failed != 1 || c.Phrase != "3 working, 1 failed" {
+		t.Errorf("lanes %+v", c)
 	}
-	if c := docs.LastCheck; c.Availability != "recent" || c.AgeSeconds == nil || *c.AgeSeconds != 180 || c.Phrase != "Looked; nothing needed" {
+	if docs.Detail != "On. Its last check sent nothing because lanes are working or waiting." {
+		t.Errorf("%q", docs.Detail)
+	}
+	if c := docs.LastCheck; c.Availability != "recent" || c.AgeSeconds == nil || *c.AgeSeconds != 180 || c.Phrase != "Checked; sent nothing" {
 		t.Errorf("last check %+v", c)
 	}
-	if docs.RunningOn != (dockTarget{Availability: "known", Role: "main", Name: "primary", Tool: "BB thread", Provider: "claude-code", Model: "claude-opus-5-5"}) {
-		t.Errorf("%+v", docs.RunningOn)
+	if docs.CurrentRoute != (dockTarget{Availability: "known", Role: "main", Name: "primary", Tool: "BB thread", Provider: "claude-code", Model: "claude-opus-5-5"}) {
+		t.Errorf("%+v", docs.CurrentRoute)
 	}
-	if docs.NextCheck.Availability != "unknown" || docs.NextCheck.Detail == "" {
+	if docs.NextCheck.Availability != "unknown" || !strings.Contains(docs.NextCheck.Detail, "no keepgoing daemon endpoint is recorded") {
 		t.Errorf("next check must be unknown without a daemon: %+v", docs.NextCheck)
 	}
 	if f := docs.Fallbacks; f.Availability != "known" || f.Ready != 1 || f.Eligible != 2 || !f.Enough {
 		t.Errorf("%+v", f)
 	}
-	// The handoff chain: main first, then fallbacks in configured order.
+	// Its routes: the first route, then the others in configured order.
 	ch := docs.Chain
 	if ch.Availability != "known" || len(ch.HandoffOn) != 1 || ch.HandoffOn[0] != "rate_limit" || len(ch.Entries) != 4 {
 		t.Fatalf("%+v", ch)
 	}
 	for i, w := range []struct{ id, readiness string }{{"primary", "main"}, {"claude-second-account", "ready"}, {"codex-thread", "not_ready"}, {"example-cli", "disabled"}} {
-		if e := ch.Entries[i]; e.Position != i || e.ID != w.id || e.Readiness != w.readiness || e.Active != (i == 0) {
-			t.Errorf("chain %d: %+v", i, e)
+		if e := ch.Entries[i]; e.Position != i || e.ID != w.id || e.Readiness != w.readiness || e.Current != (i == 0) || e.InUse != (i == 0) {
+			t.Errorf("route %d: %+v", i, e)
 		}
+	}
+	if ch.Entries[0].Use != "In use now" {
+		t.Errorf("%q", ch.Entries[0].Use)
 	}
 	if u := ch.Entries[0].Usage; u.Availability != "available" || len(u.Windows) != 2 || u.Windows[0].Name != "5-hour" || u.Windows[0].UsedPercent != 38 || u.AgeSeconds == nil || *u.AgeSeconds != 720 {
 		t.Errorf("%+v", u)
 	}
-	if e := ch.Entries[2]; e.Phrase != "Needs signing in again" || e.Usage.Availability != "unavailable" || e.ProbeAge == nil {
+	if e := ch.Entries[2]; e.Phrase != "Sign-in failed at its last probe" || e.Usage.Availability != "unavailable" || e.ProbeAge == nil {
 		t.Errorf("%+v", e)
+	}
+
+	// "In use" needs an enabled loop with no hold and a recent check that
+	// recorded the target. Anything else says what is recorded.
+	for name, use := range map[string]string{
+		"billing-api-migration": "Recorded route; loop is held", "mobile-onboarding": "Recorded route; loop is paused", "release-notes-bot": "Recorded route; loop is finished",
+		"data-export-cleanup": "Recorded route; loop is off", "nightly-dependency-bumps": "Recorded route; no recent check",
+	} {
+		if e := dockLoopNamed(t, r, name).Chain.Entries[0]; !e.Current || e.InUse || e.Use != use {
+			t.Errorf("%s: %+v", name, e)
+		}
 	}
 
 	// The same data by route: one entry per configured model on an account.
 	if e := ch.Entries[1]; e.Route == "" || e.Route == ch.Entries[0].Route || e.Account != "second-account" {
 		t.Errorf("%+v", e)
 	}
-	var opus, sonnet *dockRoute
+	routes := map[string]*dockRoute{}
 	for i := range r.Routes {
-		switch r.Routes[i].Model + "/" + r.Routes[i].Account {
-		case "claude-opus-5-5/claude-code":
-			opus = &r.Routes[i]
-		case "claude-sonnet-5-5/second-account":
-			sonnet = &r.Routes[i]
-		}
+		routes[r.Routes[i].Model+"/"+r.Routes[i].Account] = &r.Routes[i]
 	}
-	if len(r.Routes) != 7 || opus == nil || sonnet == nil || opus.Key != ch.Entries[0].Route || len(opus.RunningNow) != 4 || len(opus.PreferredBy) != 1 || opus.ChildLanes != "unknown" {
+	opus, sonnet, haiku := routes["claude-opus-5-5/claude-code"], routes["claude-sonnet-5-5/second-account"], routes["claude-haiku-5-5/claude-code"]
+	if len(r.Routes) != 7 || opus == nil || sonnet == nil || haiku == nil || opus.Key != ch.Entries[0].Route || opus.Lanes != "unknown" {
 		t.Fatalf("routes %+v", r.Routes)
+	}
+	names := func(list []dockRouteLoop) string {
+		out := []string{}
+		for _, x := range list {
+			out = append(out, x.Loop)
+		}
+		return strings.Join(out, ",")
+	}
+	// Only the loop that is in use counts as running on the route; held,
+	// paused and stale loops are recorded for it, and off and finished loops
+	// are never "running".
+	if names(opus.RunningNow) != "docs-site-refresh" || names(opus.RecordedFor) != "billing-api-migration,nightly-dependency-bumps,mobile-onboarding" ||
+		names(opus.StandbyFor) != "payments-reconciler" || len(opus.UnknownFor) != 0 || opus.RunningNow[0].Working != 3 {
+		t.Errorf("opus: running %q recorded %q standby %q", names(opus.RunningNow), names(opus.RecordedFor), names(opus.StandbyFor))
+	}
+	if len(haiku.RunningNow) != 0 || names(haiku.RecordedFor) != "data-export-cleanup,release-notes-bot" {
+		t.Errorf("haiku: running %q recorded %q", names(haiku.RunningNow), names(haiku.RecordedFor))
 	}
 	// The newest evidence any loop holds wins: a 12-minute-old reading over
 	// nightly-dependency-bumps' stale one, a 47-minute-old passing probe over
 	// the 30- and 32-hour-old ones.
 	if opus.Usage.Availability != "available" || opus.Usage.Windows[0].UsedPercent != 38 || sonnet.Readiness != "ready" || *sonnet.ProbeAge != 47*60 ||
-		len(sonnet.PreferredBy) != 4 || len(sonnet.RunningNow) != 1 || sonnet.RunningNow[0].Loop != "payments-reconciler" || sonnet.PreferredBy[0].Position != 1 {
+		len(sonnet.StandbyFor) != 4 || names(sonnet.RunningNow) != "payments-reconciler" || sonnet.StandbyFor[0].Position != 1 {
 		t.Errorf("opus %+v sonnet %+v", opus.Usage, sonnet)
 	}
-	for _, x := range opus.RunningNow {
-		if x.Loop == "docs-site-refresh" && x.Working != 3 {
-			t.Errorf("%+v", x)
-		}
-	}
 
-	// A loop running on a fallback whose last probe is old: the route in use
-	// is not probed, so it gets no readiness verdict, only the probe's age.
+	// A loop running on a later route whose last probe is old: the current
+	// target is not probed, so it gets no readiness verdict, only the age.
 	pay := dockLoopNamed(t, r, "payments-reconciler")
-	if pay.RunningOn.Role != "fallback" || pay.RunningOn.Name != "claude-second-account" || pay.Chain.Entries[0].Active {
-		t.Errorf("%+v", pay.RunningOn)
+	if pay.CurrentRoute.Role != "fallback" || pay.CurrentRoute.Name != "claude-second-account" || pay.Chain.Entries[0].Current {
+		t.Errorf("%+v", pay.CurrentRoute)
 	}
-	if e := pay.Chain.Entries[1]; !e.Active || e.Readiness != "in_use" || e.Phrase != "In use now" || e.ProbeAge == nil || *e.ProbeAge != int64(32*time.Hour/time.Second) {
+	if e := pay.Chain.Entries[1]; !e.Current || !e.InUse || e.Readiness != "current" || e.Phrase != "In use now" || e.ProbeAge == nil || *e.ProbeAge != int64(32*time.Hour/time.Second) {
 		t.Errorf("%+v", e)
-	}
-	// A recorded failure on the route in use is still said.
-	failing := &dockChainInput{Candidates: []config.Candidate{{ID: "example-fallback"}}}
-	failing.Primary.ID = "primary"
-	failing.Summary = &fallbacksOut{Candidates: []candidateRow{{ID: "example-fallback", Last: &probe.Result{At: dockNow.Add(-time.Hour), ErrorClass: "auth"}}}}
-	if e := dockHandoffChain(failing, "example-fallback", dockNow).Entries[1]; !e.Active || e.Readiness != "not_ready" || e.Phrase != "Needs signing in again" {
-		t.Errorf("%+v", e)
-	}
-	// Next check stays unknown, and says which kind of unknown.
-	if d := docs.NextCheck.Detail; !strings.Contains(d, "no keepgoing daemon runs this loop") {
-		t.Errorf("%q", d)
-	}
-	if n := dockNextCheck(&clientSnapshot{Daemon: daemonStatus{State: "unavailable"}}); n.Availability != "unknown" || !strings.Contains(n.Detail, "did not answer") {
-		t.Errorf("%+v", n)
-	}
-	// Durations read the same on both sides of a limit.
-	changed := dockNow.Add(-(3*time.Hour + 12*time.Minute))
-	limits := dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed}}, dockNow)
-	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" {
-		t.Errorf("%+v", limits)
-	}
-	for d, want := range map[time.Duration]string{40 * time.Second: "1 min", 90 * time.Minute: "1 h 30 min", 54 * time.Hour: "2 days 6 h", 48 * time.Hour: "2 days", -time.Hour: "0 min"} {
-		if got := dockDuration(d); got != want {
-			t.Errorf("%v: %q", d, got)
-		}
 	}
 
-	// Held: the child listing is the one verified by the check that held it.
+	// Held: the lane listing is the one verified by the check that held it.
 	if c := dockLoopNamed(t, r, "billing-api-migration").Children; c.Availability != "held" || c.Working != 1 || c.Stuck != 1 {
 		t.Errorf("%+v", c)
 	}
@@ -215,7 +216,7 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if len(search.Limits) != 1 || search.Limits[0].Phrase != "41 of 60" || search.Limits[0].Reached {
 		t.Errorf("%+v", search.Limits)
 	}
-	if search.Fallbacks.Ready != 0 || search.Chain.Entries[1].Phrase != "At its usage limit" || search.Chain.Entries[0].Usage.Windows[0].UsedPercent != 100 {
+	if search.Fallbacks.Ready != 0 || search.Chain.Entries[1].Phrase != "Hit a usage limit at its last probe" || search.Chain.Entries[0].Usage.Windows[0].UsedPercent != 100 || !search.Chain.Entries[0].InUse {
 		t.Errorf("%+v %+v", search.Fallbacks, search.Chain.Entries)
 	}
 
@@ -232,60 +233,279 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	}
 }
 
-func TestDockProjectionOfUnreadableAndOtherStates(t *testing.T) {
-	entry := registry.Entry{ID: "loop_0123456789abcdef0123456789abcdef", Loop: "example-loop"}
-	snap := func(c clientControls) clientStatusReport {
-		return clientStatusReport{Outcome: "available", Issues: []string{}, Snapshot: &clientSnapshot{Loop: "example-loop", Controls: &c}}
+// dockEvidence builds one loop's inputs for the phrase tables.
+type dockEvidence struct {
+	controls *clientControls
+	noSnap   bool
+	issues   []string
+	status   func(*statusOut) // nil status when nil and noStatus
+	noStatus bool
+	blocker  string
+	hold     *dockHold
+}
+
+func (ev dockEvidence) input() dockInput {
+	in := dockInput{Entry: registry.Entry{ID: "loop_0123456789abcdef0123456789abcdef", Loop: "example-loop"}, Hold: ev.hold}
+	in.Client = clientStatusReport{Outcome: "available", Issues: append([]string{}, ev.issues...)}
+	if !ev.noSnap {
+		in.Client.Snapshot = &clientSnapshot{Loop: "example-loop", Controls: ev.controls, Daemon: daemonStatus{State: "not_recorded"}}
 	}
-	checked := func(failed int) *statusOut {
-		return &statusOut{Target: "primary", TargetConfigured: true, State: state.File{CheckedAt: dockNow.Add(-time.Minute), FailedChecks: failed}, LimitWait: limitWaitStatus{State: "none"}}
-	}
-	for _, c := range []struct {
-		name  string
-		in    dockInput
-		state string
-		need  bool
-	}{
-		{"stopped wins", dockInput{Client: snap(clientControls{Enabled: true, Stop: true, Paused: true, AwaitingUser: true}), Status: checked(0)}, "stopped", false},
-		{"checks failing", dockInput{Client: snap(clientControls{Enabled: true}), Status: checked(3)}, "checks_failing", false},
-		{"supervising", dockInput{Client: snap(clientControls{Enabled: true}), Status: checked(0)}, "supervising", false},
-		{"status unreadable", dockInput{Client: snap(clientControls{Enabled: true})}, "not_checked_recently", false},
-		{"control unreadable", dockInput{Client: clientStatusReport{Outcome: "partial", Issues: []string{"control_unavailable"}, Snapshot: &clientSnapshot{}}}, "unknown", false},
-		{"binding gone", dockInput{Client: clientStatusReport{Outcome: "unavailable", Issues: []string{"binding_unavailable"}}}, "unknown", true},
-		{"registration gone", dockInput{Client: clientStatusReport{Outcome: "unavailable", Issues: []string{"registration_unavailable"}}}, "unknown", false},
-		{"held, cause unknown", dockInput{Client: snap(clientControls{Enabled: true, AwaitingUser: true}), Status: checked(0)}, "waiting_for_you", true},
-	} {
-		c.in.Entry = entry
-		l, need := projectDockLoop(c.in, dockNow, defaultStaleAfter, false)
-		if l.State != c.state || (need != nil) != c.need || l.Identifiers != nil {
-			t.Errorf("%s: state %q need %v", c.name, l.State, need)
+	if !ev.noStatus {
+		at := dockNow.Add(-time.Minute)
+		st := &statusOut{Target: "primary", TargetConfigured: true, InWindow: true, LimitWait: limitWaitStatus{State: "none"},
+			State: state.File{CheckedAt: at, LastCheck: &state.Check{At: at, Target: "primary", Action: "none", Outcome: "succeeded"}}}
+		if ev.status != nil {
+			ev.status(st)
 		}
-		if c.in.Status == nil && (l.RunningOn.Availability != "unknown" || l.LastCheck.Availability != "unknown" || l.Fallbacks.Availability != "unknown" || l.Children.Availability != "unknown" || l.Chain.Availability != "unknown") {
+		in.Status = st
+	}
+	if ev.blocker != "" {
+		in.RunsKnown, in.Runs = true, runsLoop{Blocker: runsBlocker{Availability: ev.blocker, Children: []runsChild{{Status: "active"}}}}
+	}
+	return in
+}
+
+// TestDockPhrasesFollowEvidence maps each record the view can be given to the
+// exact words it shows. A phrase that says more than its record does has to
+// be written into this table to pass, where a reviewer sees it.
+func TestDockPhrasesFollowEvidence(t *testing.T) {
+	on := &clientControls{Enabled: true}
+	reset := dockNow.Add(time.Hour)
+	for _, c := range []struct {
+		name                  string
+		ev                    dockEvidence
+		state, phrase, detail string
+		need, use             string
+	}{
+		{"no snapshot from registered status", dockEvidence{noSnap: true, noStatus: true, issues: []string{"registration_unavailable"}},
+			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"This registration is no longer in the registry. Whether it needs you is unknown.", ""},
+		{"a pending transfer returns no snapshot", dockEvidence{noSnap: true, noStatus: true, issues: []string{"transfer_pending"}},
+			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"A move to another conversation is in progress, which holds it.", ""},
+		{"a read cut off returns no snapshot", dockEvidence{noSnap: true, noStatus: true, issues: []string{"cancelled"}},
+			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"The read was cut off before this loop was read. Whether it needs you is unknown.", ""},
+		{"control.json unreadable", dockEvidence{},
+			"unknown", "Unknown", "Its control record could not be read, so whether it is on, held or stopped is unknown.",
+			"Its control record could not be read. Whether it needs you is unknown.", "Recorded route"},
+		{"stop flag", dockEvidence{controls: &clientControls{Enabled: true, Stop: true, Paused: true, AwaitingUser: true}},
+			"stopped", "Stopped", "A stop is requested. Nothing is sent until it is resumed.", "", "Recorded route; loop is stopped"},
+		{"completed flag", dockEvidence{controls: &clientControls{Enabled: true, Completed: true}},
+			"finished", "Finished", "Marked finished, which is a declaration and is not verified. Nothing is sent until it is resumed.", "", "Recorded route; loop is finished"},
+		{"awaiting-user flag, cause not retained", dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}},
+			"waiting_for_you", "Waiting for you", "It is held for a person.", "It is held for a person.", "Recorded route; loop is held"},
+		{"awaiting-user flag set by the await-user command", dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}, hold: &dockHold{At: dockNow, Marked: true}},
+			"waiting_for_you", "Waiting for you", "It was marked as waiting for a person.", "It was marked as waiting for a person.", "Recorded route; loop is held"},
+		{"awaiting-user flag set by another control operation", dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}, hold: &dockHold{At: dockNow}},
+			"waiting_for_you", "Waiting for you", "It is held for a person.", "It is held for a person.", "Recorded route; loop is held"},
+		{"awaiting-user flag set by a check on lane input", dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}, hold: &dockHold{At: dockNow, Cause: "child_input"}},
+			"waiting_for_you", "Waiting for you", "A lane is waiting for an answer.", "A lane is waiting for an answer.", "Recorded route; loop is held"},
+		{"paused flag", dockEvidence{controls: &clientControls{Enabled: true, Paused: true}},
+			"paused", "Paused", "Paused. Nothing is sent until it is resumed.", "", "Recorded route; loop is paused"},
+		{"enabled is false", dockEvidence{controls: &clientControls{}},
+			"off", "Off", "Supervision is off for this loop.", "", "Recorded route; loop is off"},
+		{"on, status unreadable", dockEvidence{controls: on, noStatus: true},
+			"unknown", "Unknown", "It is on, but its check history could not be read.", "Its check history could not be read. Whether it needs you is unknown.", ""},
+		{"on, outside the operating window", dockEvidence{controls: on, status: func(s *statusOut) { s.InWindow = false }},
+			"outside_hours", "Outside its hours", "It is on, and the time is outside its configured operating hours.", "", "Recorded route; outside its hours"},
+		{"on, no check recorded", dockEvidence{controls: on, status: func(s *statusOut) { s.State = state.File{} }},
+			"not_checked_recently", "Not checked yet", "It is on, and no check is recorded.", "", "Recorded route; no recent check"},
+		{"on, last check older than stale-after", dockEvidence{controls: on, status: func(s *statusOut) { s.State.CheckedAt = dockNow.Add(-2 * time.Hour) }},
+			"not_checked_recently", "Not checked recently", "It is on, and its last recorded check is older than 30 min.", "", "Recorded route; no recent check"},
+		{"on, recorded limit wait, reset in the future", dockEvidence{controls: on, status: func(s *statusOut) {
+			s.LimitWait = limitWaitStatus{State: "reported", Target: "primary", ResetsAt: &reset}
+		}},
+			"waiting_on_limit", "Waiting for a limit to reset", "A check recorded a provider usage limit with no other route able to take over. The loop is not held and keeps checking.", "", "In use now"},
+		{"on, failed checks in a row", dockEvidence{controls: on, status: func(s *statusOut) { s.State.FailedChecks = 2 }},
+			"checks_failing", "Checks are failing", "Checks are running but could not observe or act.", "", "In use now"},
+		{"on, recent check", dockEvidence{controls: on},
+			"supervising", "Supervising", "On, with a recent check.", "", "In use now"},
+		{"on, recent check that recorded lane work as its reason", dockEvidence{controls: on, blocker: blockerBlocked},
+			"supervising", "Supervising", "On. Its last check sent nothing because lanes are working or waiting.", "", "In use now"},
+		{"on, lanes listed but not the check's reason", dockEvidence{controls: on, blocker: blockerListed},
+			"supervising", "Supervising", "On, with a recent check.", "", "In use now"},
+		{"on, recent dry-run check", dockEvidence{controls: on, status: func(s *statusOut) { s.State.LastCheck.DryRun = true }},
+			"supervising", "Supervising", "On, in dry-run mode: its last check decided and sent nothing.", "", "In use now"},
+		{"on, recent check that recorded another target", dockEvidence{controls: on, status: func(s *statusOut) { s.State.LastCheck.Target = "example-fallback" }},
+			"supervising", "Supervising", "On, with a recent check.", "", "Recorded route; the last check did not record it"},
+		{"on, unconfirmed new conversation", dockEvidence{controls: on, status: func(s *statusOut) { s.NewThreads.Pending = true }},
+			"supervising", "Supervising", "On, with a recent check.", "A new conversation it tried to create for a move to another route could not be confirmed.", "In use now"},
+	} {
+		in := c.ev.input()
+		in.Chain = &dockChainInput{}
+		in.Chain.Primary.ID = "primary"
+		l, need := projectDockLoop(in, dockNow, defaultStaleAfter, false)
+		got := ""
+		if need != nil {
+			got = need.Reason
+		}
+		use := ""
+		if len(l.Chain.Entries) > 0 {
+			use = l.Chain.Entries[0].Use
+		}
+		if l.State != c.state || l.Phrase != c.phrase || l.Detail != c.detail || got != c.need || use != c.use {
+			t.Errorf("%s:\n got  %q | %q | %q | need %q | use %q\n want %q | %q | %q | need %q | use %q", c.name, l.State, l.Phrase, l.Detail, got, use, c.state, c.phrase, c.detail, c.need, c.use)
+		}
+		// Only a loop that is on, unheld, recently checked on this target is in use.
+		if inUse := len(l.Chain.Entries) > 0 && l.Chain.Entries[0].InUse; inUse != (c.use == "In use now") {
+			t.Errorf("%s: inUse %t", c.name, inUse)
+		}
+		if l.Identifiers != nil {
+			t.Errorf("%s: identifiers in the default view", c.name)
+		}
+		if c.ev.noStatus && (l.CurrentRoute.Availability != "unknown" || l.LastCheck.Availability != "unknown" || l.Children.Availability != "unknown") {
 			t.Errorf("%s: missing evidence must be unknown: %+v", c.name, l)
 		}
 	}
-	// Without a history record of the hold starting, the wait is a lower bound.
-	in := dockInput{Entry: entry, Client: snap(clientControls{Enabled: true, AwaitingUser: true}), Status: checked(0)}
-	in.Status.Control = control.File{UpdatedAt: dockNow.Add(-time.Hour), Note: "  check the example  "}
-	_, need := projectDockLoop(in, dockNow, defaultStaleAfter, false)
-	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "check the example" || need.Reason != "It is held for a person." {
-		t.Errorf("%+v", need)
+
+	// The recorded action and outcome of the last check.
+	for _, c := range []struct {
+		check state.Check
+		want  string
+	}{
+		{state.Check{Action: "none", Outcome: "succeeded"}, "Checked; sent nothing"},
+		{state.Check{Action: "wake", Outcome: "succeeded"}, "Sent a wake"},
+		{state.Check{Action: "nudge", Outcome: "succeeded"}, "Sent a nudge"},
+		{state.Check{Action: "reprompt", Outcome: "succeeded"}, "Sent a re-prompt or retried the turn"},
+		{state.Check{Action: "await_user", Outcome: "succeeded"}, "Held the loop for a person"},
+		{state.Check{Action: "stop", Outcome: "succeeded"}, "Stopped the session"},
+		{state.Check{Action: "handoff", Outcome: "succeeded"}, "Moved to another route"},
+		{state.Check{Action: "switch_back", Outcome: "succeeded"}, "Returned to the first route"},
+		{state.Check{Action: "none", Outcome: "failed"}, "The check failed"},
+		{state.Check{Action: "wake", Outcome: "failed"}, "Sent a wake, which failed"},
+		{state.Check{Action: "wake", Outcome: "dry_run"}, "Sent a wake (dry run: nothing was sent)"},
+		{state.Check{Action: "something-new", Outcome: "succeeded"}, "Checked"},
+	} {
+		if got := dockAction(&c.check); got != c.want {
+			t.Errorf("%+v: %q", c.check, got)
+		}
 	}
-	in.Hold = &dockHold{At: dockNow.Add(-2 * time.Hour), Manual: true}
-	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, false); need.SinceEvidence != "hold_recorded" || *need.WaitedSeconds != 7200 || need.Reason != "It was marked as waiting for a person." {
-		t.Errorf("%+v", need)
+
+	// The last probe of a route that is not ready.
+	for _, c := range []struct {
+		ok    bool
+		class string
+		want  string
+	}{
+		{true, "", "Last probe passed, but too long ago to rely on"}, {false, "rate_limit", "Hit a usage limit at its last probe"},
+		{false, "auth", "Sign-in failed at its last probe"}, {false, "network", "Could not be reached at its last probe"},
+		{false, "overloaded", "Provider overloaded at its last probe"}, {false, "unknown", "Last probe failed"},
+	} {
+		if got := dockProbePhrase(c.ok, c.class); got != c.want {
+			t.Errorf("%t %s: %q", c.ok, c.class, got)
+		}
 	}
-	// An unreadable registry is never an empty list of loops.
-	if r := buildDockReport(nil, dockNow, time.Minute, time.Hour, false, false, 0); r.Registry.Availability != "unavailable" || len(r.Loops) != 0 {
+
+	// The next check: only a responsive daemon gives a time.
+	next := dockNow.Add(time.Minute)
+	for _, c := range []struct {
+		daemon               daemonStatus
+		availability, detail string
+	}{
+		{daemonStatus{State: "not_recorded"}, "unknown", "no keepgoing daemon endpoint is recorded for this loop; a scheduler outside keepgoing is not visible"},
+		{daemonStatus{State: "unavailable"}, "unknown", "a keepgoing daemon endpoint is recorded for this loop but could not be verified"},
+		{daemonStatus{State: "skipped"}, "unknown", "the local daemon was not asked"},
+		{daemonStatus{State: "responsive", Phase: "waiting", NextCheckAt: &next}, "known", ""},
+		{daemonStatus{State: "responsive", Phase: "checking"}, "in_progress", ""},
+	} {
+		if n := dockNextCheck(&clientSnapshot{Daemon: c.daemon}); n.Availability != c.availability || n.Detail != c.detail {
+			t.Errorf("%+v: %+v", c.daemon, n)
+		}
+	}
+
+	// Lanes, from the runs blocker.
+	for _, c := range []struct {
+		blocker              runsBlocker
+		availability, phrase string
+		holding              bool
+	}{
+		{runsBlocker{Availability: blockerBlocked, Children: []runsChild{{Status: "active"}, {Status: "error"}}}, "current", "1 working, 1 failed", true},
+		{runsBlocker{Availability: blockerListed, Children: []runsChild{{Status: "awaiting_input"}}}, "current", "1 waiting for an answer", false},
+		{runsBlocker{Availability: blockerNone}, "current", "None at the last check", false},
+		{runsBlocker{Availability: blockerHeld, Children: []runsChild{{Status: "awaiting_input"}}}, "held", "1 waiting for an answer (as of the check that held it)", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "no_open_run"}, "none_recorded", "None recorded", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after"}, "stale", "Stale: the last listing is too old to show as current", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "child_listing_incomplete"}, "unknown", "Unknown", false},
+		{runsBlocker{Availability: blockerUnknown, Reason: "not_refreshed_by_the_last_check"}, "unknown", "Unknown", false},
+	} {
+		if got := dockChildWork(runsLoop{Blocker: c.blocker}, true); got.Availability != c.availability || got.Phrase != c.phrase || got.Holding != c.holding {
+			t.Errorf("%+v: %+v", c.blocker, got)
+		}
+	}
+	if got := dockChildWork(runsLoop{}, false); got.Availability != "unknown" || got.Phrase != "Unknown" {
+		t.Errorf("%+v", got)
+	}
+}
+
+func TestDockNothingNeedsYouOnlyWhenEveryLoopWasRead(t *testing.T) {
+	on := &clientControls{Enabled: true}
+	quiet := dockEvidence{controls: on}.input()
+	// Every loop read, none held: the only case that is all clear.
+	if r := buildDockReport([]dockInput{quiet, quiet}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true); !r.AllClear || len(r.NeedsYou) != 0 || r.Unread != 0 {
 		t.Errorf("%+v", r)
+	}
+	for name, in := range map[string]dockInput{
+		"control unreadable": dockEvidence{}.input(),
+		"pending transfer":   dockEvidence{noSnap: true, noStatus: true, issues: []string{"transfer_pending"}}.input(),
+		"binding gone":       dockEvidence{noSnap: true, noStatus: true, issues: []string{"binding_unavailable"}}.input(),
+		"status unreadable":  dockEvidence{controls: on, noStatus: true}.input(),
+		"read cut off":       dockEvidence{noSnap: true, noStatus: true, issues: []string{"cancelled"}}.input(),
+	} {
+		r := buildDockReport([]dockInput{quiet, in}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true)
+		if r.AllClear || r.Unread != 1 || len(r.NeedsYou) != 1 || r.NeedsYou[0].Kind != "unreadable" || r.NeedsYou[0].Reason == "" || r.NeedsYou[0].Action == "" {
+			t.Errorf("%s: allClear %t unread %d needs %+v", name, r.AllClear, r.Unread, r.NeedsYou)
+		}
+	}
+	// A held loop, a read that was cut off, loops left out, and an
+	// unreadable registry are never all clear either.
+	held := dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}}.input()
+	if r := buildDockReport([]dockInput{held}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true); r.AllClear || r.Unread != 0 || r.NeedsYou[0].Kind != "held" {
+		t.Errorf("%+v", r)
+	}
+	if r := buildDockReport([]dockInput{quiet}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, false); r.AllClear || r.Complete {
+		t.Errorf("incomplete: %+v", r)
+	}
+	if r := buildDockReport([]dockInput{quiet}, dockNow, time.Minute, defaultStaleAfter, false, true, 3, true); r.AllClear {
+		t.Errorf("omitted: %+v", r)
+	}
+	if r := buildDockReport(nil, dockNow, time.Minute, defaultStaleAfter, false, false, 0, true); r.AllClear || r.Registry.Availability != "unavailable" || len(r.Loops) != 0 {
+		t.Errorf("registry: %+v", r)
+	}
+	// A loop whose current route could not be read is not "on standby" for
+	// its own first route: it is listed as unknown.
+	unread := dockEvidence{controls: on, noStatus: true}.input()
+	unread.Chain = &dockChainInput{}
+	unread.Chain.Primary.ID = "primary"
+	r := buildDockReport([]dockInput{unread}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true)
+	if len(r.Routes) != 1 || len(r.Routes[0].UnknownFor) != 1 || len(r.Routes[0].StandbyFor)+len(r.Routes[0].RunningNow)+len(r.Routes[0].RecordedFor) != 0 {
+		t.Errorf("%+v", r.Routes)
+	}
+}
+
+func TestDockHoldWaitAndNoteWithholding(t *testing.T) {
+	in := dockEvidence{controls: &clientControls{Enabled: true, AwaitingUser: true}}.input()
+	in.Status.Control = control.File{UpdatedAt: dockNow.Add(-time.Hour), Note: "  see thr_private0001 in /private/example  "}
+	// Without a history record of the hold starting, the wait is a lower
+	// bound. The note is withheld, as registered status withholds it.
+	_, need := projectDockLoop(in, dockNow, defaultStaleAfter, false)
+	if need.SinceEvidence != "control_changed" || *need.WaitedSeconds != 3600 || need.Note != "" || !need.NoteWithheld {
+		t.Errorf("%+v", need)
+	}
+	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, true); need.Note != "see thr_private0001 in /private/example" || need.NoteWithheld {
+		t.Errorf("%+v", need)
+	}
+	in.Hold = &dockHold{At: dockNow.Add(-2 * time.Hour), Marked: true}
+	if _, need = projectDockLoop(in, dockNow, defaultStaleAfter, false); need.SinceEvidence != "hold_recorded" || *need.WaitedSeconds != 7200 {
+		t.Errorf("%+v", need)
 	}
 }
 
 var dockPrivate = regexp.MustCompile(`thr_[A-Za-z0-9]+|loop_[0-9a-f]{32}`)
 
-func TestDockWithholdsIdentifiersAndPathsAndIsBounded(t *testing.T) {
+func TestDockWithholdsIdentifiersNotesAndPathsAndIsBounded(t *testing.T) {
 	d, root := dockFixtureReader(t)
-	// An oversized note and a long handoff chain must be cut down.
+	// A note carrying a thread ID and a path, far over the size cap.
 	f, _ := registry.Load(d.directory)
 	var billing registry.Entry
 	for _, e := range f.Entries {
@@ -293,63 +513,150 @@ func TestDockWithholdsIdentifiersAndPathsAndIsBounded(t *testing.T) {
 			billing = e
 		}
 	}
-	if _, err := control.Update(billing.StateDir, func(c *control.File) { c.Note = strings.Repeat("long note ", 5000) }); err != nil {
+	if _, err := control.Update(billing.StateDir, func(c *control.File) {
+		c.Note = "ask in thr_private0001, see " + filepath.Join(root, "notes") + " " + strings.Repeat("long note ", 5000)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	body, err := d.json(context.Background(), false)
+	body, err := d.json(false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(body) > 64<<10 {
-		t.Errorf("report is %d bytes for seven loops", len(body))
+		t.Errorf("report is %d bytes for eight loops", len(body))
 	}
 	if m := dockPrivate.Find(body); m != nil {
 		t.Errorf("identifier %s in the default report", m)
 	}
-	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe"} {
+	for _, private := range []string{root, "keepgoing.yaml", "nonexistent-provider-fixture", "state_dir", "nonexistent-probe", "long note"} {
 		if bytes.Contains(body, []byte(private)) {
-			t.Errorf("%q in the report", private)
+			t.Errorf("%q in the default report", private)
 		}
 	}
 	var r dockReport
 	if err := json.Unmarshal(body, &r); err != nil {
 		t.Fatal(err)
 	}
-	if n := []rune(r.NeedsYou[0].Note); len(n) != dockMaxNote || n[len(n)-1] != '…' {
-		t.Errorf("note is %d runes", len(n))
+	if r.NeedsYou[0].Note != "" || !r.NeedsYou[0].NoteWithheld {
+		t.Errorf("%+v", r.NeedsYou[0])
 	}
-	// On request: the registration and the configured thread, which
-	// registered status already prints. Still no path.
+	// On request: the registration, the configured thread and the note, cut
+	// to its cap. Still no configuration or state path of keepgoing's own.
 	d.cache = nil
-	withIDs, err := d.json(context.Background(), true)
+	withIDs, err := d.json(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// thr_example0002 is the thread payments-reconciler is running on, which
-	// its registered status prints; a fallback thread that is only on standby
+	// thr_example0002 is the thread payments-reconciler is on, which its
+	// registered status prints; a thread that is only on standby
 	// (thr_example0003) and lane threads are never included.
-	for _, want := range []string{billing.ID, "thr_example0001", "thr_example0002"} {
+	for _, want := range []string{billing.ID, "thr_example0001", "thr_example0002", "ask in thr_private0001"} {
 		if !bytes.Contains(withIDs, []byte(want)) {
 			t.Errorf("identifier view lacks %s", want)
 		}
 	}
-	for _, private := range []string{root, "thr_child", "thr_example0003"} {
+	for _, private := range []string{"keepgoing.yaml", "thr_child", "thr_example0003", filepath.Join(root, "loops")} {
 		if bytes.Contains(withIDs, []byte(private)) {
 			t.Errorf("identifier view contains %s", private)
 		}
 	}
+	if err := json.Unmarshal(withIDs, &r); err != nil {
+		t.Fatal(err)
+	}
+	if n := []rune(r.NeedsYou[0].Note); len(n) != dockMaxNote || n[len(n)-1] != '…' {
+		t.Errorf("note is %d runes", len(n))
+	}
 }
 
-func TestDockChainIsCapped(t *testing.T) {
+func TestDockRoutesAreCappedAndKeyedByAccount(t *testing.T) {
 	in := &dockChainInput{}
 	in.Primary.ID = "primary"
 	in.Candidates = make([]config.Candidate, dockMaxChain+9)
 	for i := range in.Candidates {
 		in.Candidates[i].ID = fmt.Sprintf("fallback-%d", i)
 	}
-	c := dockHandoffChain(in, "primary", dockNow)
+	c := dockHandoffChain(in, dockRouteUse{Target: "primary"}, dockNow)
 	if len(c.Entries) != dockMaxChain+1 || c.Omitted != 9 || c.Availability != "unknown" {
 		t.Errorf("%d entries, %d omitted, %s", len(c.Entries), c.Omitted, c.Availability)
+	}
+	// Two accounts under one group and model are two routes: the key takes
+	// in what selects the account a probe reads, so they never share a reading.
+	a := config.Candidate{ID: "account-a"}
+	a.Provider, a.Group, a.Adapter = "example", "shared-group", "claude"
+	a.Probe.Env = map[string]string{"CLAUDE_CONFIG_DIR": "/fictional/accounts/a"}
+	b := a
+	b.ID, b.Probe.Env = "account-b", map[string]string{"CLAUDE_CONFIG_DIR": "/fictional/accounts/b"}
+	same := a
+	same.ID = "account-a-again"
+	two := dockHandoffChain(&dockChainInput{Primary: in.Primary, Candidates: []config.Candidate{a, b, same}, Summary: &fallbacksOut{}}, dockRouteUse{}, dockNow)
+	if two.Entries[1].Route == two.Entries[2].Route || two.Entries[1].Route != two.Entries[3].Route {
+		t.Errorf("%s %s %s", two.Entries[1].Route, two.Entries[2].Route, two.Entries[3].Route)
+	}
+	// A recorded failure on the current route is still said.
+	failing := &dockChainInput{Primary: in.Primary, Candidates: []config.Candidate{{ID: "example-fallback"}}}
+	failing.Summary = &fallbacksOut{Candidates: []candidateRow{{ID: "example-fallback", Last: &probe.Result{At: dockNow.Add(-time.Hour), ErrorClass: "auth"}}}}
+	if e := dockHandoffChain(failing, dockRouteUse{Target: "example-fallback", InUse: true, Phrase: "In use now"}, dockNow).Entries[1]; !e.Current || e.Readiness != "not_ready" || e.Phrase != "Sign-in failed at its last probe" {
+		t.Errorf("%+v", e)
+	}
+	// Durations read the same on both sides of a limit.
+	changed := dockNow.Add(-(3*time.Hour + 12*time.Minute))
+	limits := dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed}}, dockNow)
+	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" {
+		t.Errorf("%+v", limits)
+	}
+	for d, want := range map[time.Duration]string{40 * time.Second: "1 min", 90 * time.Minute: "1 h 30 min", 54 * time.Hour: "2 days 6 h", 48 * time.Hour: "2 days", -time.Hour: "0 min"} {
+		if got := dockDuration(d); got != want {
+			t.Errorf("%v: %q", d, got)
+		}
+	}
+}
+
+// A read is never cut short by the request that happened to start it, and a
+// read that is cut off by the time limit is never cached or shown as clear.
+func TestDockReadIsNotTiedToARequestAndIncompleteReadsAreNotCached(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	release := make(chan struct{})
+	d.query = func(ctx context.Context, dir, current string, offline bool) daemonStatus {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return daemonStatus{State: "not_recorded"}
+	}
+	// The time limit passes while loops are still being read.
+	d.timeout = 50 * time.Millisecond
+	body, err := d.json(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r dockReport
+	if err := json.Unmarshal(body, &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Complete || r.AllClear || r.Unread == 0 || len(r.NeedsYou) < r.Unread || len(r.Loops) != len(dockLoops) {
+		t.Fatalf("complete %t allClear %t unread %d needs %d", r.Complete, r.AllClear, r.Unread, len(r.NeedsYou))
+	}
+	if len(d.cache) != 0 {
+		t.Fatal("an incomplete read was cached")
+	}
+	// The next read, allowed to finish, is complete and is what gets cached.
+	close(release)
+	d.timeout = 0
+	if body, err = d.json(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Complete || r.Unread != 0 || len(d.cache) != 1 {
+		t.Fatalf("complete %t unread %d cached %d", r.Complete, r.Unread, len(d.cache))
+	}
+	// When the command itself is exiting, a read is an error, not a report.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.ctx, d.cache = ctx, nil
+	if _, err := d.json(false); err == nil || len(d.cache) != 0 {
+		t.Fatal("a read during exit returned a report")
 	}
 }
 
@@ -365,7 +672,7 @@ func TestDockReadWritesNothing(t *testing.T) {
 	before := treeDigest(t, root)
 	for _, identifiers := range []bool{false, true, false} {
 		d.cache = nil
-		if _, err := d.json(context.Background(), identifiers); err != nil {
+		if _, err := d.json(identifiers); err != nil {
 			t.Fatal(err)
 		}
 	}
