@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,10 +244,9 @@ func TestRepromptCapSurvivesActiveChecksBetweenFailures(t *testing.T) {
 }
 
 // The episode ends, and the allowance starts over, when a turn finishes
-// without an error or the session makes verified Git progress. Progress
-// first seen on a check that finds the session in error again counts: the
-// check re-prompts at once, as the first attempt of a new episode, where an
-// error without progress is still backing off.
+// without an error or the active session makes verified Git progress. Git
+// progress seen while the session is in error does not end it: the check
+// keeps backing off.
 func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
 	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
 	for _, tc := range []struct {
@@ -260,7 +260,7 @@ func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
 		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", "none", 0},
 		{"idle", decide.Observation{State: decide.Idle}, "same", "wake", 0},
 		{"error_no_progress", failed, "same", "none", 1},
-		{"error_git_progress", failed, "changed", "reprompt", 1},
+		{"error_git_progress", failed, "changed", "none", 1},
 		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", "none", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -288,45 +288,62 @@ func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
 	}
 }
 
-// A session that is re-prompted, works and commits, and fails again before
-// the next check has started a new error episode. The check that finds it in
-// error is the only one that sees the commit: the fingerprint is taken there,
-// so a later check sees no change. Before, the count was left alone and the
-// second, unrelated failure inherited the first one's spent attempts.
-func TestGitProgressFirstSeenOnAnErroredCheckStartsANewEpisode(t *testing.T) {
-	w := newWorld(t, true, false) // max_reprompts 2, backoff 10m
-	w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
-	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
-	p := w.primary(failed)
-	if err := state.Save(w.dir, state.File{Fingerprint: "one", LastProgressAt: t0, HandoffDeferrals: 1}); err != nil {
-		t.Fatal(err)
-	}
-	for i, c := range []struct {
-		minute    int
-		print     string
-		action    string
-		reprompts int
+// A session that never leaves error reaches its hold however much the
+// repository changes around it. The Git fingerprint covers every worktree,
+// so lanes, other loops and people change it: a coordinator in error while
+// its lanes commit is the ordinary case. If a change seen on an errored check
+// restarted the count, such a session would be re-prompted for as long as
+// anyone committed, with no backoff and no hold. Each case runs two hours
+// with three re-prompts and a ten-minute backoff, and expects what an
+// unchanged repository gives: three sends, ten minutes apart, then the hold
+// at the next check.
+func TestErroredSessionReachesItsHoldWhateverTheRepositoryDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		commitEvery, check time.Duration
+		maxSends           int64
 	}{
-		{0, "one", "reprompt", 1},
-		{11, "one", "reprompt", 2},   // it failed again with nothing done: the same episode
-		{22, "two", "reprompt", 1},   // it worked, committed and failed again: a new episode
-		{23, "two", "none", 1},       // backing off; the commit is not counted twice
-		{33, "two", "reprompt", 2},   //
-		{44, "two", "await_user", 2}, // the new episode is bounded like the first
+		{"nothing committed", 0, 10 * time.Minute, 0},
+		{"commit every 5m, check every 10m", 5 * time.Minute, 10 * time.Minute, 0},
+		{"commit every 5m, check every 5m", 5 * time.Minute, 5 * time.Minute, 0},
+		{"commit every 30m, check every 10m", 30 * time.Minute, 10 * time.Minute, 0},
+		{"commit every 5m, max_sends 6", 5 * time.Minute, 10 * time.Minute, 6},
 	} {
-		opts := w.opts(t0.Add(time.Duration(c.minute) * time.Minute))
-		opts.Fingerprint = func([]string) (string, error) { return c.print, nil }
-		r, err := Tick(context.Background(), w.cfg, opts)
-		st, _ := state.Load(w.dir)
-		if err != nil || r.Action != c.action || st.Reprompts != c.reprompts {
-			t.Fatalf("check %d (+%dm): %s (%s) reprompts=%d %v", i, c.minute, r.Action, r.Reason, st.Reprompts, err)
-		}
-		if c.minute == 22 && st.HandoffDeferrals != 0 {
-			t.Fatalf("handoffs put off were kept across the new episode: %d", st.HandoffDeferrals)
-		}
-	}
-	if len(p.sent) != 4 {
-		t.Fatalf("sends=%d", len(p.sent))
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.Errors.MaxReprompts = 3
+			w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+			w.cfg.Loop.Limits.MaxSends = tc.maxSends
+			p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+			var sentAt []time.Duration
+			heldAt := time.Duration(-1)
+			for at := time.Duration(0); at <= 2*time.Hour; at += tc.check {
+				opts := w.opts(t0.Add(at))
+				print := "unchanged"
+				if tc.commitEvery > 0 {
+					print = fmt.Sprintf("commit-%d", at/tc.commitEvery)
+				}
+				opts.Fingerprint = func([]string) (string, error) { return print, nil }
+				before := len(p.sent)
+				r, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(p.sent) > before {
+					sentAt = append(sentAt, at)
+				}
+				if r.Action == "await_user" && heldAt < 0 {
+					heldAt = at
+				}
+			}
+			// The hold is raised by the first check after the third send.
+			if fmt.Sprint(sentAt) != fmt.Sprint([]time.Duration{0, 10 * time.Minute, 20 * time.Minute}) || heldAt != 20*time.Minute+tc.check {
+				t.Fatalf("sends at %v, held at %v; want sends at 0, 10m and 20m and the hold at %v", sentAt, heldAt, 20*time.Minute+tc.check)
+			}
+			if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || !strings.Contains(ctl.Note, "error persisted after re-prompts") {
+				t.Fatalf("%+v", ctl)
+			}
+		})
 	}
 }
 

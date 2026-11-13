@@ -567,17 +567,19 @@ func (t *tick) run() error {
 	}
 	// One error episode covers the re-prompt count and the rejected handoff
 	// briefs. It ends on evidence that the session recovered: a turn finished
-	// without an error (idle), or verified Git progress. Merely seeing the
-	// session active does not end it: our own re-prompt, or a provider retry,
-	// makes it active, and a turn that errors again must spend the same
-	// allowances, or neither cap is ever reached.
+	// without an error (idle), or verified Git progress while active. Merely
+	// seeing the session active does not end it: our own re-prompt, or a
+	// provider retry, makes it active, and a turn that errors again must spend
+	// the same allowances, or neither cap is ever reached.
 	//
-	// Progress counts when it is first seen on a check that finds the session
-	// in error, too. The session worked after the last check and then failed
-	// again before this one: that failure is a new episode. The fingerprint
-	// has now been taken, so a later active check would see no change, and
-	// leaving the counts alone here would lose the evidence for good.
-	if obs.State == decide.Idle || ((obs.State == decide.Active || obs.State == decide.Error) && progressed) {
+	// Git progress seen on a check that finds the session in error does not
+	// end it, although the fingerprint is taken there and no later check sees
+	// that change. The fingerprint covers every worktree, so lanes, other
+	// loops and people change it; counting it here would re-prompt a session
+	// that never leaves error at every check for as long as anyone commits,
+	// past the backoff, the hold and the brief caps. Only evidence about this
+	// session's own turns could tell the two apart, and Git has none.
+	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.st.HandoffBriefs = nil
 		// Handoffs put off for lack of time belong to the same episode. A

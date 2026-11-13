@@ -110,7 +110,11 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	// BB's acknowledgement of it: every client/turn/requested is followed
 	// within milliseconds by a turn/input/accepted, which BB logs even into a
 	// turn that is dead or about to fail.
-	if !strings.HasPrefix(e.Type, "client/") && e.Type != "turn/input/accepted" {
+	// A real thread logs a third event per request, provider/unhandled: BB
+	// could not interpret something the provider sent. An event nobody could
+	// read is not structured evidence of anything, so it does not count
+	// either; a turn that is alive logs events BB does understand.
+	if !strings.HasPrefix(e.Type, "client/") && e.Type != "turn/input/accepted" && e.Type != "provider/unhandled" {
 		c.LastEventAt = when
 	}
 	if childOutcome(e, c.Thread) {
@@ -152,9 +156,11 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
-		// Consume event metadata only. A new item of any kind is the model
-		// answering again: a provider that recovers straight into a tool call
-		// starts a tool item and may not write a message for a long time.
+		// Consume event metadata only. A new item the model produced is the
+		// model answering again: a provider that recovers straight into a
+		// tool call starts a tool item and may not write a message for a long
+		// time. A userMessage item is input, which BB can log as a started
+		// item, and is not the model answering.
 		// Output from a tool that was already running can continue
 		// independently of a disconnected model stream and is deliberately
 		// not a recovery signal.
@@ -173,7 +179,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 		switch {
 		case e.Type == "item/agentMessage/delta" && d.ItemID != "":
 			c.Error = nil
-		case e.Type == "item/started" && d.Item.ID != "" && d.Item.Type != "":
+		case e.Type == "item/started" && d.Item.ID != "" && d.Item.Type != "" && d.Item.Type != "userMessage":
 			c.Error = nil
 		case e.Type == "turn/completed" && d.Status == "completed":
 			c.Error = nil

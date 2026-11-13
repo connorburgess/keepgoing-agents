@@ -50,6 +50,8 @@ func TestActiveRetryRecoveryEvidence(t *testing.T) {
 		// item and may write no message for a long time.
 		{"tool_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, false},
 		{"reasoning_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"reasoning"}}}`, false},
+		{"user_message_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"userMessage"}}}`, true},
+		{"unhandled_provider_event", `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`, true},
 		{"item_without_identity", `{"type":"item/started","data":{"providerThreadId":"p1","item":{}}}`, true},
 		{"item_of_another_provider_thread", `{"type":"item/started","data":{"providerThreadId":"other","item":{"id":"item_example","type":"commandExecution"}}}`, true},
 		{"tool_item_finished", `{"type":"item/completed","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, true},

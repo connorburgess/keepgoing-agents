@@ -121,11 +121,13 @@ const toolOutput = `{"type":"item/commandExecution/outputDelta","data":{"provide
 const queuedInput = `{"type":"client/turn/requested","data":{}}`
 
 // requestedInput is requested input as a real BB thread logs it: the client
-// request, then BB's own acknowledgement a few milliseconds later, which is
-// not a client event. The IDs are fictional.
+// request, then within milliseconds BB's own acknowledgement and a
+// provider/unhandled event, neither of which is a client event. The IDs are
+// fictional.
 func requestedInput(t time.Time, id string) string {
 	return at(`{"type":"client/turn/requested","data":{"requestId":"`+id+`"}}`, t) + `,` +
-		at(`{"type":"turn/input/accepted","data":{"providerThreadId":"p1","clientRequestId":"`+id+`"}}`, t.Add(40*time.Millisecond))
+		at(`{"type":"turn/input/accepted","data":{"providerThreadId":"p1","clientRequestId":"`+id+`"}}`, t.Add(40*time.Millisecond)) + `,` +
+		at(`{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`, t.Add(45*time.Millisecond))
 }
 
 func stallDecision(o decide.Observation, nudges int) decide.Decision {
