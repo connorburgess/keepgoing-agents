@@ -197,6 +197,11 @@ func TestOfflineScenarioHeadless(t *testing.T) {
 			// not the spent re-prompts, and a headless session cannot change
 			// state without a send, so the next check holds again at once
 			// without trying. This is a gap, listed in docs/adapters.md.
+			//
+			// The decided fix is that an explicit resume starts a new error
+			// episode. When that lands, the next two assertions fail: replace
+			// them with a re-prompt after resume, and drop the retarget from
+			// recoverLoop below.
 			if code, _, errs := l.run("resume"); code != exitOK {
 				t.Fatal(errs)
 			}
