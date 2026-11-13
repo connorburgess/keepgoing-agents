@@ -1,0 +1,39 @@
+name: Contribution metadata
+
+# The only check that reads the pull request title and body, so the only one
+# that must run again when they are edited. It lives in its own workflow so an
+# `edited` event starts this job alone. Gating the build jobs with a job-level
+# `if` in checks.yml would instead record them as skipped on every edit, which
+# replaces their real result on that commit, and the edit would cancel a build
+# still in progress through the shared concurrency group.
+#
+# The job name is the check name branch protection requires. Keep it.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+# Its own group: the newest title, body and head win here, and nothing in
+# checks.yml is cancelled.
+concurrency:
+  group: contributions-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  contributions:
+    name: Contribution metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check sign-offs and attribution
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_TEXT: ${{ github.event.pull_request.title }}${{ '\n' }}${{ github.event.pull_request.body }}
+        run: ./scripts/check-contributions.sh "$BASE" "$HEAD"
