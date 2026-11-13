@@ -379,6 +379,10 @@ func Observed(o decide.Observation, adapter string, failed bool) Observation {
 			r.ErrorClass = "unavailable"
 		case o.Retrying:
 			r.Retry = "retrying"
+		case o.RetryDeclined:
+			// The provider's retry service declined to retry this failure and
+			// had nothing pending, so the notice was dropped before it aged out.
+			r.Retry = "declined"
 		case o.RetryExpired:
 			// A stale retry notice on a session that is not running; the adapter
 			// stopped honoring it, so ordinary error handling applied.
@@ -462,7 +466,7 @@ func clean(r Record) Record {
 	// Whether this check detected a long limit wait and what it did about the one report.
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
 	// What a re-prompt that retried the failed turn by reference was told.
-	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "refused", "unsupported")
+	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	if r.Kind != "tick" {
 		r.LimitWaitReport, r.TurnRetry = "none", "none"
 	}
@@ -473,7 +477,7 @@ func clean(r Record) Record {
 	}
 	o.State = oneOf(o.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
 	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
-	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired")
+	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired", "declined")
 	o.SourceTime = "unavailable"
 	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})
 	o.Source, o.Category, o.ProviderCode, o.HTTPStatus, o.ExitCode = d.Source, d.Category, d.Code, d.HTTPStatus, d.ExitCode
@@ -525,7 +529,7 @@ func Cause(reason string) string {
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
 		{"no Git progress within ", "git_limit"}, {"no progress after ", "stall_limit"},
 		{"no progress for ", "stall"}, {"children waiting on a person ", "child_input"},
-		{"provider retry went silent ", "retry_silent"}, {"handoff deferred:", "handoff_deferred"}, {"stop requested", "stop"}, {"stop already requested", "stop"},
+		{"provider retry went silent ", "retry_silent"}, {"handoff deferred:", "handoff_deferred"}, {"network down;", "network_down"}, {"stop requested", "stop"}, {"stop already requested", "stop"},
 	} {
 		if strings.HasPrefix(reason, c.prefix) {
 			return c.code
@@ -544,7 +548,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

@@ -59,6 +59,11 @@ def fixture(kind, args):
             # As BB answers for a failed turn it dispatched again by reference.
             require(sys.stdin.read() == "", "A turn retry carried text.")
             value = {"ok": True, "threadId": args[2], "delivery": "sent", "turnRequestId": "req_smoke1", "attempt": 2}
+        elif command == ["provider-retry", "explain"]:
+            # BB's optional retry plugin, with no decision recorded for the thread.
+            value = {"threadId": args[2], "diagnostic": None}
+        elif command == ["provider-retry", "status"]:
+            value = {"retries": []}
         elif command == ["thread", "stop"]:
             save(root / "observation.json", {"state": "idle", "errorClass": "none"})
             value = {"ok": True}
@@ -159,6 +164,8 @@ class Loop:
             "RECOVERY_FIXTURE": str(root),
             "RECOVERY_URL": f"http://127.0.0.1:{receiver.server.server_port}",
             "RECOVERY_SECRET": "fictional-recovery-key",
+            # The connectivity check must not reach the real network.
+            "KEEPGOING_NET_PROBE": "exit 0",
         }
         for name, adapter in (("bb", "bb"), ("claude", "claude"), ("codex", "codex"), ("agent", "cursor")):
             stub = self.commands / name

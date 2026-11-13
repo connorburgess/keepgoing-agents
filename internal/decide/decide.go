@@ -57,6 +57,11 @@ type Observation struct {
 	// ordinary error or stall handling applies. Its only policy effect is the
 	// bound on a silent active session that has no Git progress tracking.
 	RetryExpired bool
+	// RetryDeclined says why RetryExpired is set before the notice aged out:
+	// the provider's own retry service recorded that it will not retry this
+	// failed turn, and has nothing pending. It is diagnostic; RetryExpired
+	// carries the policy effect.
+	RetryDeclined bool
 	// RetryKnown is diagnostic evidence availability; false does not assert that
 	// retries are absent. It does not change decision policy.
 	RetryKnown bool
@@ -75,7 +80,9 @@ type Observation struct {
 	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
-	// parent prompt or target move; control holds and stop retain precedence.
+	// wake, nudge or switch-back of a parent that is not in error. Neither
+	// holds back the error rules for a parent that is: see Decide. Control
+	// holds and stop retain precedence.
 	ActiveChildren     int
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
@@ -146,6 +153,12 @@ type Input struct {
 	SinceLastReprompt time.Duration
 	Backoff           time.Duration
 
+	// NetworkDown: a structured connectivity check just failed and is still
+	// believed. Nothing that needs the network is sent: no re-prompt, handoff,
+	// wake, nudge or switch-back, and an errored session is not held for a
+	// person because of it. The session is looked at again on the next check.
+	NetworkDown bool
+
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
 	HandoffDeferred bool
@@ -215,6 +228,9 @@ func limitWait(kind LimitWait, reason string) Decision {
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
 
+// NetworkDownReason is recorded when recovery waits for connectivity.
+const NetworkDownReason = "network down; waiting for connectivity"
+
 // HandoffDeferredReason is recorded when a due handoff waits for the next check.
 const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed in this check; the next check retries"
 
@@ -261,14 +277,24 @@ func Decide(in Input) Decision {
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
 	}
-	if o.ActiveChildren > 0 {
-		if childErrorWake(in) {
-			return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+	// Child work keeps a parent that is idle, active or of unknown state from
+	// being woken, nudged or moved: it may be waiting on its children. A parent
+	// that is itself in error is not waiting on anything. It cannot take its
+	// children's results, so holding back its recovery would stall the loop
+	// until a person acted. The error rules below therefore apply whatever its
+	// children are doing, and whether or not the child scan completed: recovery
+	// never messages, stops or answers a child, and a child waiting on a person
+	// has already held the loop above whenever a scan can see it.
+	if o.State != Error {
+		if o.ActiveChildren > 0 {
+			if childErrorWake(in) {
+				return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+			}
+			return none("child work running")
 		}
-		return none("child work running")
-	}
-	if o.ChildrenUnverified {
-		return none("child status unverified")
+		if o.ChildrenUnverified {
+			return none("child status unverified")
+		}
 	}
 	if !in.InWindow {
 		return none("outside window")
@@ -293,6 +319,9 @@ func Decide(in Input) Decision {
 		if o.Queued > 0 {
 			return none("messages already queued")
 		}
+		if in.NetworkDown {
+			return none(NetworkDownReason)
+		}
 		// Only between turns: never pull the loop from a fallback mid-turn.
 		if in.SwitchBackReady {
 			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
@@ -304,9 +333,16 @@ func Decide(in Input) Decision {
 		// silent for the patience a tracked loop would have shown (one stall
 		// interval, then every nudge interval) needs a person.
 		if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
+			if in.NetworkDown {
+				return none(NetworkDownReason)
+			}
 			return Decision{Action: AwaitUser, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
 		}
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+			if in.NetworkDown {
+				// Neither a nudge nor the hold that follows the last one.
+				return none(NetworkDownReason)
+			}
 			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
 				return Decision{Action: AwaitUser, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
 			}
@@ -340,6 +376,12 @@ func decideError(in Input) Decision {
 	o, f := in.Obs, in.Failover
 	if o.Queued > 0 {
 		return none("messages already queued after error")
+	}
+	// Ahead of every recovery rule, including the caps: a re-prompt or brief
+	// sent into a dead network fails and spends its allowance for nothing,
+	// and a hold raised because of it would outlast the outage.
+	if in.NetworkDown {
+		return none(NetworkDownReason)
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
@@ -380,6 +422,32 @@ type Counters struct {
 	Reprompts      int
 	LastSendAt     time.Time
 	LastRepromptAt time.Time
+}
+
+// RetryService is what a provider's own retry service says about a failed
+// turn whose retry notice is still fresh. Each fact is false when the service
+// is absent, failed or answered in a shape that was not recognised.
+type RetryService struct {
+	// DecisionKnown: the service's last decision for the session was read.
+	DecisionKnown bool
+	// Declined: that decision was not to retry.
+	Declined bool
+	// ForCurrentTurn: the decision was made at or after the session's latest
+	// turn started, so it is about this failure and not an earlier one.
+	ForCurrentTurn bool
+	// PendingKnown: the service's list of pending retries was read.
+	PendingKnown bool
+	// Pending is how many retries it has waiting for the session.
+	Pending int
+}
+
+// RetryNoticeDead reports whether a fresh retry notice can be dropped now
+// instead of when it ages out. It needs positive evidence of all of: a
+// decision, that it declined, that it is about the current failure, and that
+// nothing is pending. Anything unknown keeps the notice, and the age-based
+// expiry still applies. A pending retry is always waited for.
+func RetryNoticeDead(s RetryService) bool {
+	return s.DecisionKnown && s.Declined && s.ForCurrentTurn && s.PendingKnown && s.Pending == 0
 }
 
 // Recovery is how a re-prompt decision is carried out.
@@ -458,7 +526,8 @@ func childErrorWake(in Input) bool {
 }
 
 // ChildErrorNote returns how many errored children a message should announce,
-// or zero for none. Only a wake of an idle session carries the note, and only
+// or zero for none. A wake of an idle session and a re-prompt of an errored
+// one carry the note, and only
 // while a newly errored child is unannounced: the supervisor never retries,
 // messages or stops a child, so the owning session is told and decides. The
 // count is every child now in error, including ones announced before. Every
@@ -466,7 +535,7 @@ func childErrorWake(in Input) bool {
 // the ordinary idle wake, or is the whole message of the one wake
 // childErrorWake allows.
 func ChildErrorNote(in Input, d Decision) int {
-	if d.Action != Wake || !childErrorNoticeDue(in) || in.Obs.ChildrenUnverified {
+	if (d.Action != Wake && d.Action != Reprompt) || !childErrorNoticeDue(in) || in.Obs.ChildrenUnverified {
 		return 0
 	}
 	return len(in.Obs.ErroredChildren)

@@ -81,7 +81,7 @@ var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
+			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -102,7 +102,7 @@ var Adapters = []Adapter{
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
 var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
+	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -133,17 +133,20 @@ func merge(maps ...map[string]Cell) map[string]Cell {
 }
 
 const (
-	bbTest       = "internal/adapter/bb/bb_test.go"
-	runnerTest   = "internal/adapter/runner/runner_test.go"
-	cursorTest   = "internal/adapter/runner/cursor_test.go"
-	processTest  = "internal/adapter/process/process_test.go"
-	superTest    = "internal/supervise/supervise_test.go"
-	graphTest    = "internal/supervise/graph_test.go"
-	offlineTest  = "internal/scenario/headless_outage_test.go"
-	providers    = "docs/integrations.md#agent-providers"
-	waitingLive  = "docs/run-discovery.md#live-check-waiting-on"
-	runsLive     = "docs/run-discovery.md#live-check"
-	fakeDecision = "The decision is the same for every adapter and is tested with a fake adapter, not with this one."
+	bbTest        = "internal/adapter/bb/bb_test.go"
+	runnerTest    = "internal/adapter/runner/runner_test.go"
+	cursorTest    = "internal/adapter/runner/cursor_test.go"
+	processTest   = "internal/adapter/process/process_test.go"
+	superTest     = "internal/supervise/supervise_test.go"
+	graphTest     = "internal/supervise/graph_test.go"
+	offlineTest   = "internal/scenario/headless_outage_test.go"
+	offlineBBTest = "internal/supervise/offline_scenario_unix_test.go"
+	networkTest   = "internal/supervise/network_test.go"
+	networkDoc    = "docs/operations.md#network-outages"
+	providers     = "docs/integrations.md#agent-providers"
+	waitingLive   = "docs/run-discovery.md#live-check-waiting-on"
+	runsLive      = "docs/run-discovery.md#live-check"
+	fakeDecision  = "The decision is the same for every adapter and is tested with a fake adapter, not with this one."
 )
 
 // Matrix is every behaviour in row order.
@@ -166,7 +169,7 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{
-			"bb": {Yes, Live, "Running on one live loop.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires")}},
+			"bb": {Yes, Live, "The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires"), t("internal/adapter/bb/retry_plugin_test.go", "TestDeclinedRetryNoticeIsDroppedAtOnce")}},
 		}, same(Cell{NA, None, "A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.", nil}, headless...),
 			same(Cell{NA, None, "The status contract has no retry notice.", nil}, "process"))},
 	{ID: "reprompt", Title: "Recover a failed turn: re-prompt", What: "After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.",
@@ -193,13 +196,13 @@ var Matrix = []Behaviour{
 			same(Cell{Missing, None, "The contract has a resume command only.", nil}, "process"))},
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Missing, None, "A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold.", []Ref{t(bbTest, "TestObserveStreamDisconnectIsNetworkAndRetrying")}},
-			"claude":  {Missing, Fixture, "An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"codex":   {Missing, Fixture, "As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
-			"cursor":  {Missing, None, "Every failure is unknown.", nil},
-			"process": {Missing, None, "The status command may report network; it is handled like any other error.", nil},
+			"bb":      {Yes, Fixture, "The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb.", []Ref{t(offlineBBTest, "TestOfflineForAnyLengthThenRecoversOnce"), d(networkDoc)}},
+			"claude":  {Yes, Fixture, "As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
+			"codex":   {Yes, Fixture, "As for Claude Code.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
+			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
+			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
-	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold the parent while conversations it started are still working, and say which.",
+	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Live, "Direct child threads are listed and verified on each check.", []Ref{d(waitingLive), t("internal/adapter/bb/children_test.go", "TestObserveActiveChildSuppressesParentUntilFinished")}},
 		}, same(Cell{NA, None, "A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.", nil}, headless...),

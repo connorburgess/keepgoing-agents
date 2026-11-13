@@ -49,7 +49,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
 | [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none |
-| [Connection loss and the network check](#connection-loss-and-the-network-check) | missing · none | missing · fixture | missing · fixture | missing · none | missing · none | missing · none |
+| [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
@@ -88,7 +88,7 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 
 Stop honouring a provider's "retrying" notice when nothing fresh stands behind it.
 
-- **BB thread:** yes, evidence live. Running on one live loop. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go)
+- **BB thread:** yes, evidence live. The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go) [`TestDeclinedRetryNoticeIsDroppedAtOnce`](../internal/adapter/bb/retry_plugin_test.go)
 - **Claude Code headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Codex headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
@@ -132,16 +132,16 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 
 Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
 
-- **BB thread:** missing, evidence none. A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold. [`TestObserveStreamDisconnectIsNetworkAndRetrying`](../internal/adapter/bb/bb_test.go)
-- **Claude Code headless:** missing, evidence fixture. An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
-- **Codex headless:** missing, evidence fixture. As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
-- **Cursor headless:** missing, evidence none. Every failure is unknown.
+- **BB thread:** yes, evidence fixture. The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. [`TestOfflineForAnyLengthThenRecoversOnce`](../internal/supervise/offline_scenario_unix_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **Claude Code headless:** yes, evidence fixture. As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **Codex headless:** yes, evidence fixture. As for Claude Code. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** missing, evidence none. The status command may report network; it is handled like any other error.
+- **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 
 ### Child-work awareness
 
-Hold the parent while conversations it started are still working, and say which.
+Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
@@ -265,23 +265,22 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 
 The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
 
-What happens, with default settings:
+What happens, with default settings and the connectivity check on (unreleased source). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
 
 | Moment | What keepgoing does |
 | --- | --- |
 | The CLI exits on the network failure | The runner records the exit code and the CLI's output for that turn. The saved session ID is not changed. |
-| Next check | The turn is an error. Claude Code's is `unknown`; Codex's stream-disconnect code is `network`, which changes nothing unless `failover_on` includes it. A re-prompt is sent at once. |
-| Still offline | Each re-prompt fails. They are spaced by `errors.backoff` (10 minutes) and capped by `errors.max_reprompts` (3). |
-| About 20 to 30 minutes after the drop | The third re-prompt has failed. The loop goes on an awaiting-user hold: `error persisted after re-prompts`. |
-| Four hours, three days, three weeks | Nothing. Checks run and report `awaiting user`. Nothing is sent. |
-| The network returns, behind a captive portal or not | Nothing. keepgoing does not notice and does not come back by itself. |
-| A person runs `resume` | The hold clears, but the spent re-prompts do not, and a headless session cannot change state without a send. The next check holds again at once, without trying. |
-| A person runs `retarget primary`, then `resume` | A new error episode starts and the loop re-prompts. With the network back, the first re-prompt succeeds in the same session. (Behind a captive portal the three re-prompts would fail again and it would hold again; that repeat is reasoning from the episode rules and is no longer run as a fixture.) |
+| Next check | The turn is an error. Before re-prompting, keepgoing checks connectivity; it fails, so nothing is sent. The check records `network down; waiting for connectivity`. |
+| Still offline, at 20 minutes, four hours, three days, three weeks | The same, at every check. No re-prompt is spent and no hold is raised. About once an hour the provider is asked directly with one probe, which does not get through. |
+| The network returns behind a captive portal | Still `network down`: the check target does not answer as itself. |
+| The portal is cleared | The first check sends one re-prompt, which resumes the saved session, and the loop carries on. |
+
+The idle wake that ran into the outage is still sent: an idle wake does not trigger the connectivity check. See [network outages](operations.md#network-outages).
 
 The four questions:
 
 - **What does the runner record when the CLI exits on a network failure?** The exit code, standard output and standard error of that turn, in the target's private directory. No network state is recorded: an outage is not told apart from any other failure unless the CLI prints a recognised code.
-- **Is the saved session ID reused exactly?** Yes. Every send after the first passed the saved ID (`--resume <id>` for Claude Code, `exec resume … <id>` for Codex), including after `retarget primary` and three weeks later. A failed turn does not change it.
+- **Is the saved session ID reused exactly?** Yes. Every send after the first passed the saved ID (`--resume <id>` for Claude Code, `exec resume … <id>` for Codex), including three weeks later. A failed turn does not change it.
 - **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go)). Files the earlier turns changed are still on disk either way.
 - **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
 
@@ -291,12 +290,12 @@ A reboot, or anything else that ends the turn's wrapper before it records an exi
 
 ## Gaps this exposed
 
-None of these is fixed here. Each needs a decision or is not small.
+Unless a row says otherwise, none of these is fixed. Each needs a decision or is not small.
 
 | Gap | Affects | Evidence |
 | --- | --- | --- |
-| **An outage ends in a hold that needs a person.** Re-prompts are spent into a dead network, and nothing acts when it returns. | Every adapter | The scenario above; [roadmap](roadmap.md) "network-aware sending" |
-| **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. | Headless Claude Code, Codex, Cursor | The scenario above |
+| **Closed in unreleased source: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
+| **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. An outage no longer leads here, but a provider failure still can. | Headless Claude Code, Codex, Cursor | Observed with the scenario before the connectivity check existed; no fixture exercises it now |
 | **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |

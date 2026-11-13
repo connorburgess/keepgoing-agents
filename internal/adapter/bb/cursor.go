@@ -24,16 +24,19 @@ const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
 type Cursor struct {
-	RetrySchema     int               `json:"retrySchema,omitempty"`
-	ProviderThread  string            `json:"providerThread,omitempty"`
-	ChildOutcomeSeq int64             `json:"childOutcomeSeq,omitempty"`
-	Thread          string            `json:"thread"`
-	LastSeq         int64             `json:"lastSeq"`
-	TurnSeq         int64             `json:"turnSeq,omitempty"` // latest turn start
-	Error           *errorSignal      `json:"error,omitempty"`   // latest error since that turn started
-	Blocked         bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
-	ResetsAt        time.Time         `json:"resetsAt,omitempty"`
-	Pending         map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
+	RetrySchema     int    `json:"retrySchema,omitempty"`
+	ProviderThread  string `json:"providerThread,omitempty"`
+	ChildOutcomeSeq int64  `json:"childOutcomeSeq,omitempty"`
+	Thread          string `json:"thread"`
+	LastSeq         int64  `json:"lastSeq"`
+	TurnSeq         int64  `json:"turnSeq,omitempty"` // latest turn start
+	// TurnStartedMs is BB's own createdAt of the latest turn/started event, in
+	// epoch milliseconds, unbounded. It is compared only with other BB times.
+	TurnStartedMs int64             `json:"turnStartedMs,omitempty"`
+	Error         *errorSignal      `json:"error,omitempty"`   // latest error since that turn started
+	Blocked       bool              `json:"blocked,omitempty"` // latest rate-limit window blocked
+	ResetsAt      time.Time         `json:"resetsAt,omitempty"`
+	Pending       map[string]string `json:"pending,omitempty"` // interaction id -> "pending"
 	// LastEventAt is the bounded time of the newest event that is not
 	// requested input (client/...), and
 	// ScannedAt the local time of the last complete scan. See eventTime.
@@ -117,6 +120,10 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	case e.Type == "turn/started":
 		// A new turn makes earlier errors stale.
 		c.TurnSeq, c.Error = e.Seq, nil
+		c.TurnStartedMs = 0
+		if at := e.time(); !at.IsZero() {
+			c.TurnStartedMs = at.UnixMilli()
+		}
 		var d struct {
 			ProviderThread string `json:"providerThreadId"`
 		}

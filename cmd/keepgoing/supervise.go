@@ -51,6 +51,9 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if w := l.TickTimeoutWarning(); w != "" {
 		e.errf("warning: %s", w)
 	}
+	if w := l.NetworkCheckWarning(); w != "" {
+		e.errf("warning: %s", w)
+	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
@@ -633,6 +636,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
 		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
 		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.RetrySignal == "declined" {
+			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
+		}
 		if c.RetrySignal == "expired" {
 			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
 		}
@@ -651,6 +657,22 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	switch {
+	case st.NetworkDownSince.IsZero():
+	case st.NetworkDistrusted:
+		fmt.Fprintf(w, "network:   the connectivity check has failed since %s, but the provider answered a probe, so it is not believed and the ordinary rules apply. Run doctor to test loop.network\n", st.NetworkDownSince.Format(time.RFC3339))
+	default:
+		reported := "not reported yet"
+		if !st.NetworkReportedAt.IsZero() {
+			reported = "reported " + st.NetworkReportedAt.Format(time.RFC3339)
+		} else if !st.NetworkVerifiedAt.IsZero() {
+			reported = "provider last tested " + st.NetworkVerifiedAt.Format(time.RFC3339) + ", report not delivered yet"
+		}
+		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
+	}
+	if warning := l.NetworkCheckWarning(); warning != "" {
+		fmt.Fprintf(w, "network:   warning: %s\n", warning)
 	}
 	if st.FailedChecks > 0 {
 		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
