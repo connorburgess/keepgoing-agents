@@ -75,7 +75,9 @@ type Observation struct {
 	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
-	// parent prompt or target move; control holds and stop retain precedence.
+	// wake, nudge or switch-back of a parent that is not in error. Neither
+	// holds back the error rules for a parent that is: see Decide. Control
+	// holds and stop retain precedence.
 	ActiveChildren     int
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
@@ -261,14 +263,24 @@ func Decide(in Input) Decision {
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
 	}
-	if o.ActiveChildren > 0 {
-		if childErrorWake(in) {
-			return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+	// Child work keeps a parent that is idle, active or of unknown state from
+	// being woken, nudged or moved: it may be waiting on its children. A parent
+	// that is itself in error is not waiting on anything. It cannot take its
+	// children's results, so holding back its recovery would stall the loop
+	// until a person acted. The error rules below therefore apply whatever its
+	// children are doing, and whether or not the child scan completed: recovery
+	// never messages, stops or answers a child, and a child waiting on a person
+	// has already held the loop above whenever a scan can see it.
+	if o.State != Error {
+		if o.ActiveChildren > 0 {
+			if childErrorWake(in) {
+				return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+			}
+			return none("child work running")
 		}
-		return none("child work running")
-	}
-	if o.ChildrenUnverified {
-		return none("child status unverified")
+		if o.ChildrenUnverified {
+			return none("child status unverified")
+		}
 	}
 	if !in.InWindow {
 		return none("outside window")

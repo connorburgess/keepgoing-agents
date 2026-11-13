@@ -1,0 +1,128 @@
+package supervise
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
+)
+
+// childWork is what a check can see of a parent's children without any of
+// them waiting on a person.
+var childWork = map[string]func(*decide.Observation){
+	"working": func(o *decide.Observation) {
+		o.ActiveChildren, o.ActiveChildIDs = 2, []string{"thr_child_a", "thr_child_b"}
+	},
+	"one failed beside one working": func(o *decide.Observation) {
+		o.ActiveChildren, o.ActiveChildIDs, o.ErroredChildren = 1, []string{"thr_child_a"}, children("thr_child_b")
+	},
+	"scan failed": func(o *decide.Observation) { o.ChildrenUnverified = true },
+}
+
+// The live failure: the supervised conversation reached its usage limit while
+// conversations it had started were working. A confirmed fallback was
+// configured and rate limits were set to hand off, yet every check recorded
+// "child work running" and the loop stalled until a person acted.
+func TestErroredParentIsRecoveredWhileChildrenWork(t *testing.T) {
+	healthy := func(w *world) {
+		reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+		for _, id := range []string{"claude-other", "codex-main"} {
+			reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+		}
+		if err := reg.Save(w.dir); err != nil {
+			t.Fatal(err)
+		}
+		w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+	}
+	for name, kids := range childWork {
+		t.Run("handoff/"+name, func(t *testing.T) {
+			w := newWorld(t, true, true)
+			obs := limited
+			kids(&obs)
+			p := w.primary(obs)
+			healthy(w)
+			res := runTick(t, w, t0)
+			if res.Action != "handoff" || res.Target != "claude-other" || strings.Contains(res.Reason, "child") {
+				t.Fatalf("no handoff with children %s: %+v", name, res)
+			}
+			st, err := state.Load(w.dir)
+			if err != nil || st.Target() != "claude-other" {
+				t.Fatalf("target not moved: %+v %v", st, err)
+			}
+			if r := lastIncident(t, w); r.Action != "handoff" || r.TargetKey == r.TargetKeyAfter {
+				t.Fatalf("incident: %+v", r)
+			}
+			// The limited conversation is sent nothing, and nobody is asked to act.
+			if len(p.sent) != 0 {
+				t.Fatalf("the limited parent was sent %d messages", len(p.sent))
+			}
+			if ctl, err := control.Load(w.dir); err != nil || ctl.AwaitingUser || !ctl.Enabled {
+				t.Fatalf("the loop was held: %+v %v", ctl, err)
+			}
+		})
+		t.Run("limit wait is reported/"+name, func(t *testing.T) {
+			w, p := limitWaitWorld(t, 72*time.Hour)
+			kids(&p.obs)
+			res := waitTick(t, w, t0)
+			if strings.Contains(res.Reason, "child") || len(limitWaitReports(w)) != 1 || len(p.sent) != 0 {
+				t.Fatalf("children %s: %+v, %d reports, %d sent", name, res, len(limitWaitReports(w)), len(p.sent))
+			}
+		})
+		t.Run("re-prompts stay bounded/"+name, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			obs := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
+			kids(&obs)
+			p := w.primary(obs)
+			var actions []string
+			for i := 0; i < 5; i++ {
+				actions = append(actions, runTick(t, w, t0.Add(time.Duration(i)*time.Hour)).Action)
+			}
+			// Two re-prompts (the configured cap), then the owner is asked once.
+			if got := strings.Join(actions, " "); got != "reprompt reprompt await_user none none" || len(p.sent) != 2 {
+				t.Fatalf("children %s: %s, %d sent", name, got, len(p.sent))
+			}
+		})
+		t.Run("auth error asks the owner/"+name, func(t *testing.T) {
+			w := newWorld(t, true, true)
+			obs := decide.Observation{State: decide.Error, ErrorClass: decide.ErrAuth}
+			kids(&obs)
+			p := w.primary(obs)
+			healthy(w)
+			if res := runTick(t, w, t0); res.Action != "await_user" || res.Reason != "auth error" || len(p.sent) != 0 {
+				t.Fatalf("children %s: %+v", name, res)
+			}
+		})
+	}
+}
+
+// The other half of the rule is unchanged: a parent that is not in error is
+// never moved or woken while its children work, whatever else is configured.
+func TestChildWorkStillHoldsAHealthyParentWithFallbacksConfigured(t *testing.T) {
+	for name, kids := range childWork {
+		for _, parent := range []decide.State{decide.Idle, decide.Active} {
+			w := newWorld(t, true, true)
+			w.cfg.Loop.Probe = config.Probe{Kind: "command", Command: []string{"x"}}
+			obs := decide.Observation{State: parent}
+			kids(&obs)
+			p := w.primary(obs)
+			w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+			for i := 0; i < 4; i++ {
+				res := runTick(t, w, t0.Add(time.Duration(i)*time.Hour))
+				if res.Action == "handoff" || res.Action == "reprompt" || res.Target != state.Primary || len(p.sent) > 1 {
+					t.Fatalf("%s parent, children %s, check %d: %+v (%d sent)", parent, name, i, res, len(p.sent))
+				}
+				// The only message a held parent may get is the single notice
+				// that a child failed.
+				if len(p.sent) == 1 && !res.ChildErrorNote && i == 0 {
+					t.Fatalf("%s parent, children %s: woken: %+v", parent, name, res)
+				}
+			}
+		}
+	}
+}

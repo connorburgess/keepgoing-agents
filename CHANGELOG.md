@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix: a supervised BB conversation that is itself in error is now recovered while its child conversations are working. Before, an active child, or a child listing that could not be read, suppressed every error rule, so a conversation that reached its usage limit with children running recorded `child work running` at each check and never moved to its confirmed fallback, until a person acted. The error rules (handoff, the limit wait and its report, the authentication hold, turn retry, and re-prompts with their cap and backoff) now apply to a session in error whatever its children are doing. A session that is idle or working is still left alone while its children work, a child waiting on a person still holds the loop, and no child is ever messaged. Offline fixtures only. See [BB child awareness](docs/operations.md#bb-child-awareness).
+
 - Add an internal, unregistered Antigravity runner: one owned detached worker per send performs a single checkpointed ACP exchange with the prompt on private stdin, exact conversation resume, per-turn hold records, rollover without replay, owned stop and bounded setup and exit. Failures stay `unknown`. Nothing can select it: there is no configuration, factory or setup entry, because the permission contract is unresolved. Tested only with a stand-in agent; Antigravity is not installed and no version is supported.
 
 - Internal: the headless Claude Code and Codex runners are now each one specification (`runner.Spec`) run by a shared runner, the first step of the runner kit (roadmap K1). No behaviour, command line or state file changes; existing fixtures are unmodified. Cursor is not ported. See [runner contract](docs/architecture.md#runner-contract).
