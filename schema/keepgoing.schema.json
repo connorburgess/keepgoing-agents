@@ -27,7 +27,8 @@
             "process",
             "claude",
             "codex",
-            "cursor"
+            "cursor",
+            "custom"
           ]
         },
         "provider": {
@@ -361,6 +362,9 @@
         },
         "cursor": {
           "$ref": "#/$defs/cursor"
+        },
+        "custom": {
+          "$ref": "#/$defs/custom"
         }
       },
       "allOf": [
@@ -588,6 +592,422 @@
           "type": "object",
           "additionalProperties": {
             "type": "string"
+          }
+        },
+        "fresh_start_versions": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "further Cursor CLI versions confirmed to write their first stream records before submitting a prompt",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7,40}$"
+          }
+        }
+      }
+    },
+    "custom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "workdir",
+        "definition"
+      ],
+      "description": "an agent defined in configuration, run one turn per process; unreleased source",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "description": "label for the agent; the provider when none is set"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "description": "this loop's values for the settings the definition accepts"
+        },
+        "definition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "output"
+          ],
+          "properties": {
+            "settings": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,31}$"
+              },
+              "description": "setting names the commands may refer to as {name}"
+            },
+            "start": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            },
+            "resume": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "description": "argv to continue a session; refers to {session}. Needs session and capabilities.exact_resume",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            },
+            "prompt": {
+              "enum": [
+                "stdin",
+                "file"
+              ],
+              "default": "stdin",
+              "description": "how a turn receives its prompt; with file the commands refer to {prompt_file}. A prompt is never an argument"
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format"
+              ],
+              "properties": {
+                "format": {
+                  "enum": [
+                    "json",
+                    "jsonl"
+                  ]
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 16777216,
+                  "default": 1048576,
+                  "description": "larger output is not read"
+                },
+                "select": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field",
+                    "equals"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                      "description": "a code; free text is never compared"
+                    }
+                  },
+                  "description": "read the last object whose field has this value; without it, the last object"
+                }
+              }
+            },
+            "session": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "where the session identity comes from: a field of the output, or a file under the working directory",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "select": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field",
+                    "equals"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                      "description": "a code; free text is never compared"
+                    }
+                  }
+                },
+                "file": {
+                  "type": "string"
+                }
+              }
+            },
+            "finished": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "the turn ended healthy; defaults to exit code 0",
+              "properties": {
+                "exit_codes": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "equals": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                    "description": "a code; free text is never compared"
+                  }
+                }
+              }
+            },
+            "waiting": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "the turn ended waiting on a person; needs capabilities.structured_waiting",
+              "properties": {
+                "exit_codes": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "equals": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                    "description": "a code; free text is never compared"
+                  }
+                }
+              }
+            },
+            "errors": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "classify a failed turn; needs capabilities.structured_errors. Anything unmatched is unknown",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "classes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "enum": [
+                      "rate_limit",
+                      "auth",
+                      "overloaded",
+                      "network",
+                      "unknown"
+                    ]
+                  },
+                  "description": "the agent's own codes mapped to error classes"
+                },
+                "http_status_field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "exit_codes": {
+                  "type": "object",
+                  "patternProperties": {
+                    "^[0-9]+$": {
+                      "enum": [
+                        "rate_limit",
+                        "auth",
+                        "overloaded",
+                        "network",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "probe": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "argv"
+              ],
+              "description": "a small real request, judged by the finished and errors rules; lets the agent be a fallback",
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "argv",
+                "blocked"
+              ],
+              "description": "asks the agent whether its account is blocked by a usage limit; run only for an unclassified failure",
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "blocked": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "the account is blocked; read from a field",
+                  "properties": {
+                    "exit_codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      }
+                    },
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                        "description": "a code; free text is never compared"
+                      }
+                    }
+                  }
+                },
+                "resets_at_field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                }
+              }
+            },
+            "capabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "each must be backed by the rule that lets keepgoing observe it; anything undeclared is unknown",
+              "properties": {
+                "exact_resume": {
+                  "type": "boolean"
+                },
+                "can_be_stopped": {
+                  "type": "boolean"
+                },
+                "structured_errors": {
+                  "type": "boolean"
+                },
+                "structured_waiting": {
+                  "type": "boolean"
+                },
+                "retries_itself": {
+                  "const": false
+                },
+                "fails_over_itself": {
+                  "const": false
+                },
+                "schedules_itself": {
+                  "const": false
+                },
+                "child_work": {
+                  "const": false
+                }
+              }
+            }
           }
         }
       }

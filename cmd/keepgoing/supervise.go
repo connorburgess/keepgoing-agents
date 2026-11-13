@@ -54,6 +54,28 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if w := l.NetworkCheckWarning(); w != "" {
 		e.errf("warning: %s", w)
 	}
+	// A defined agent's own mapping decides what moves work to a fallback,
+	// so every such mapping is said in words.
+	defined := []struct {
+		where string
+		agent config.Agent
+	}{{"primary", l.Agent}}
+	if fb := cfg.FallbackSet; fb != nil {
+		for _, c := range fb.Candidates {
+			defined = append(defined, struct {
+				where string
+				agent config.Agent
+			}{c.ID, c.Agent})
+		}
+	}
+	for _, d := range defined {
+		if d.agent.Custom == nil {
+			continue
+		}
+		for _, move := range d.agent.Custom.FailoverMappings(l.Errors.FailoverOn) {
+			fmt.Fprintf(e.stdout, "failover (%s, defined agent %s): %s\n", d.where, d.agent.Custom.Name, move)
+		}
+	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}

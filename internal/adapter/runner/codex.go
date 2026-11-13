@@ -24,36 +24,31 @@ var codexSpec = &Spec{
 	SettingNames: []string{"cli", "workdir", "model", "sandbox", "skip_git_repo_check", "extra_args", "env"},
 	Prompt:       PromptStdin,
 	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
-	Settings: func(a config.Agent) (Settings, bool) {
-		if a.Codex == nil {
-			return Settings{}, false
-		}
-		return Settings{CLI: a.Codex.CLI, Workdir: a.Codex.Workdir, Model: a.Codex.Model, Env: a.Codex.Env}, true
-	},
-	Argv: func(a config.Agent, session string) []string { return codexArgv(*a.Codex, session) },
+	Argv:         func(set Settings, session, _ string) []string { return codexArgv(set, session) },
 	Read: func(turn Status) Reading {
 		o := ParseCodexEvents(turn.Stdout)
 		if o.Evidence.Source != "" {
 			o.Evidence.ExitCode = runnerEvidence(turn).ExitCode
 		}
-		return Reading{Session: o.ThreadID, Completed: o.Completed && !o.Failed, Class: o.Class, Evidence: o.Evidence}
+		return Reading{Session: o.ThreadID, Completed: o.Completed && !o.Failed && turn.ExitCode == 0, Class: o.Class, Evidence: o.Evidence}
 	},
 	// Codex's event stream reports a usage limit only as prose. Its
 	// app-server has the structured snapshot.
 	Limits: &LimitLookup{
-		Read: func(ctx context.Context, cli string, env []string) (CodexLimits, error) {
+		UsageSource: "codex_rate_limits_read",
+		Read: func(ctx context.Context, cli string, env []string) (Limits, error) {
 			return ReadCodexLimits(ctx, cli, env)
 		},
 		EvidenceSource: "codex_rate_limits", EvidenceCode: "subscription_window_blocked",
 		ProbeDetail: "account/rateLimits/read: ",
 	},
 	Probe: ProbeSpec{
-		Argv: func(cli, model, prompt string) []string {
-			argv := []string{cli, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only"}
-			if model != "" {
-				argv = append(argv, "-m", model)
+		Command: func(p ProbeRequest) ([]string, string) {
+			argv := []string{p.CLI, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only"}
+			if p.Model != "" {
+				argv = append(argv, "-m", p.Model)
 			}
-			return append(argv, prompt)
+			return append(argv, p.Prompt), ""
 		},
 		Judge: func(stdout []byte, code int) ProbeVerdict {
 			o := ParseCodexEvents(stdout)
@@ -138,28 +133,44 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 	return out
 }
 
+// codexSettings reads the loop's codex settings.
+func codexSettings(a config.Agent) (Settings, bool) {
+	c := a.Codex
+	if c == nil {
+		return Settings{}, false
+	}
+	set := Settings{CLI: c.CLI, Workdir: c.Workdir, Model: c.Model, Env: c.Env, ExtraArgs: c.ExtraArgs, Options: map[string]string{}}
+	if c.Sandbox != "" {
+		set.Options["sandbox"] = c.Sandbox
+	}
+	if c.SkipGitRepoCheck {
+		set.Options["skip_git_repo_check"] = "true"
+	}
+	return set, true
+}
+
 // codexArgv builds the codex argv for one turn. The prompt is read from stdin.
-func codexArgv(cfg config.Codex, session string) []string {
-	args := []string{cfg.CLI, "exec"}
+func codexArgv(set Settings, session string) []string {
+	args := []string{set.CLI, "exec"}
 	if session != "" {
 		args = append(args, "resume")
 	}
 	args = append(args, "--json")
-	if cfg.Model != "" {
-		args = append(args, "-m", cfg.Model)
+	if set.Model != "" {
+		args = append(args, "-m", set.Model)
 	}
-	if cfg.SkipGitRepoCheck {
+	if set.Options["skip_git_repo_check"] != "" {
 		args = append(args, "--skip-git-repo-check")
 	}
-	if cfg.Sandbox != "" {
+	if sandbox := set.Options["sandbox"]; sandbox != "" {
 		if session != "" {
 			// resume has no --sandbox flag; set it as a config override.
-			args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", cfg.Sandbox))
+			args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandbox))
 		} else {
-			args = append(args, "-s", cfg.Sandbox)
+			args = append(args, "-s", sandbox)
 		}
 	}
-	args = append(args, cfg.ExtraArgs...)
+	args = append(args, set.ExtraArgs...)
 	if session != "" {
 		args = append(args, session)
 	}
