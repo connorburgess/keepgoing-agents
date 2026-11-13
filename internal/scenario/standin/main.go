@@ -22,6 +22,7 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	bb.down                if present, every bb command fails with no output
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -77,6 +78,11 @@ func main() {
 
 func run(world string, args []string) int {
 	appendLine(filepath.Join(world, "calls.jsonl"), args)
+	// bb.down: BB cannot be reached. Every command fails with no output.
+	if _, err := os.Stat(filepath.Join(world, "bb.down")); err == nil {
+		fmt.Fprintln(os.Stderr, "fictional: bb is unavailable")
+		return 1
+	}
 	// BB's optional retry plugin: its last decision for a thread, from
 	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
 	if len(args) >= 3 && args[0] == "provider-retry" {
