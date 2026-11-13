@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ var dockLoops = []string{
 	"release-notes-bot",        // finished
 	"nightly-dependency-bumps", // not checked recently
 	"data-export-cleanup",      // off
+	"payments-reconciler",      // running on a fallback whose last probe is old
 }
 
 const dockFallbacksYAML = `version: 1
@@ -116,9 +118,16 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		if name == "search-indexer" {
 			maxSends = 60
 		}
-		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), dockConfigYAML(name, withFallbacks, maxSends))
+		cfgYAML, fbYAML := dockConfigYAML(name, withFallbacks, maxSends), dockFallbacksYAML
+		if name == "search-indexer" {
+			// This loop runs on another pair of accounts, so its exhausted
+			// limits are not readings of the routes the other loops use.
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: team-account\n", 1)
+			fbYAML = strings.Replace(fbYAML, "group: second-account", "group: team-second-account", 1)
+		}
+		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), cfgYAML)
 		if withFallbacks {
-			dockWrite(t, filepath.Join(dir, "fallbacks.yaml"), dockFallbacksYAML)
+			dockWrite(t, filepath.Join(dir, "fallbacks.yaml"), fbYAML)
 		}
 		var out, errs bytes.Buffer
 		if code := run(context.Background(), []string{"registry", "add", "-c", filepath.Join(dir, "keepgoing.yaml"), "--directory", regDir, "--json"}, &out, &errs); code != 0 {
@@ -180,6 +189,10 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "wake", "idle")
 		case "data-export-cleanup":
 			ctl.Enabled = false
+		case "payments-reconciler":
+			st.ActiveTarget = "claude-second-account"
+			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "active")
+			st.LastCheck.Target, st.LastCheck.ObservedTarget = st.ActiveTarget, st.ActiveTarget
 		}
 		if err := control.Save(sd, ctl); err != nil {
 			t.Fatal(err)
@@ -221,6 +234,9 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 					probe.UsageWindow{Key: "seven_day", Used: 0.82, ResetsAt: dockPtr(now.Add(3 * 24 * time.Hour))})
 				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-20 * time.Minute), OK: false, Kind: "bb", ErrorClass: "rate_limit"},
 					Usage: dockUsageReading(cands[0], now.Add(-20*time.Minute), probe.UsageWindow{Key: "five_hour", Used: 1, ResetsAt: dockPtr(now.Add(time.Hour))})}
+			case "payments-reconciler":
+				// Handed off 32 hours ago; the route in use is not probed since.
+				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-32 * time.Hour), OK: true, Kind: "bb"}}
 			case "nightly-dependency-bumps":
 				// Old readings whose windows have since reset.
 				reg.Candidates["primary"].Usage = dockUsageReading(primary, now.Add(-30*time.Hour),

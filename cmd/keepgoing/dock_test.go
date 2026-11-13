@@ -20,6 +20,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -81,7 +82,7 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	}
 	want := map[string]string{
 		"docs-site-refresh": "supervising", "billing-api-migration": "waiting_for_you", "mobile-onboarding": "paused", "search-indexer": "waiting_on_limit",
-		"release-notes-bot": "finished", "nightly-dependency-bumps": "not_checked_recently", "data-export-cleanup": "off",
+		"release-notes-bot": "finished", "nightly-dependency-bumps": "not_checked_recently", "data-export-cleanup": "off", "payments-reconciler": "supervising",
 	}
 	for name, state := range want {
 		if l := dockLoopNamed(t, r, name); l.State != state || l.Phrase == "" || l.Detail == "" || l.Evidence != "available" {
@@ -143,23 +144,61 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	}
 	var opus, sonnet *dockRoute
 	for i := range r.Routes {
-		switch r.Routes[i].Model {
-		case "claude-opus-5-5":
+		switch r.Routes[i].Model + "/" + r.Routes[i].Account {
+		case "claude-opus-5-5/claude-code":
 			opus = &r.Routes[i]
-		case "claude-sonnet-5-5":
+		case "claude-sonnet-5-5/second-account":
 			sonnet = &r.Routes[i]
 		}
 	}
-	if len(r.Routes) != 5 || opus == nil || sonnet == nil || opus.Key != ch.Entries[0].Route || len(opus.RunningNow) != 5 || len(opus.PreferredBy) != 0 || opus.ChildLanes != "unknown" {
+	if len(r.Routes) != 7 || opus == nil || sonnet == nil || opus.Key != ch.Entries[0].Route || len(opus.RunningNow) != 4 || len(opus.PreferredBy) != 1 || opus.ChildLanes != "unknown" {
 		t.Fatalf("routes %+v", r.Routes)
 	}
-	// The newest evidence any loop holds wins: search-indexer's readings.
-	if opus.Usage.Windows[0].UsedPercent != 100 || sonnet.Readiness != "not_ready" || sonnet.Phrase != "At its usage limit" || len(sonnet.PreferredBy) != 5 || len(sonnet.RunningNow) != 0 || sonnet.PreferredBy[0].Position != 1 {
+	// The newest evidence any loop holds wins: a 12-minute-old reading over
+	// nightly-dependency-bumps' stale one, a 47-minute-old passing probe over
+	// the 30- and 32-hour-old ones.
+	if opus.Usage.Availability != "available" || opus.Usage.Windows[0].UsedPercent != 38 || sonnet.Readiness != "ready" || *sonnet.ProbeAge != 47*60 ||
+		len(sonnet.PreferredBy) != 4 || len(sonnet.RunningNow) != 1 || sonnet.RunningNow[0].Loop != "payments-reconciler" || sonnet.PreferredBy[0].Position != 1 {
 		t.Errorf("opus %+v sonnet %+v", opus.Usage, sonnet)
 	}
 	for _, x := range opus.RunningNow {
 		if x.Loop == "docs-site-refresh" && x.Working != 3 {
 			t.Errorf("%+v", x)
+		}
+	}
+
+	// A loop running on a fallback whose last probe is old: the route in use
+	// is not probed, so it gets no readiness verdict, only the probe's age.
+	pay := dockLoopNamed(t, r, "payments-reconciler")
+	if pay.RunningOn.Role != "fallback" || pay.RunningOn.Name != "claude-second-account" || pay.Chain.Entries[0].Active {
+		t.Errorf("%+v", pay.RunningOn)
+	}
+	if e := pay.Chain.Entries[1]; !e.Active || e.Readiness != "in_use" || e.Phrase != "In use now" || e.ProbeAge == nil || *e.ProbeAge != int64(32*time.Hour/time.Second) {
+		t.Errorf("%+v", e)
+	}
+	// A recorded failure on the route in use is still said.
+	failing := &dockChainInput{Candidates: []config.Candidate{{ID: "example-fallback"}}}
+	failing.Primary.ID = "primary"
+	failing.Summary = &fallbacksOut{Candidates: []candidateRow{{ID: "example-fallback", Last: &probe.Result{At: dockNow.Add(-time.Hour), ErrorClass: "auth"}}}}
+	if e := dockHandoffChain(failing, "example-fallback", dockNow).Entries[1]; !e.Active || e.Readiness != "not_ready" || e.Phrase != "Needs signing in again" {
+		t.Errorf("%+v", e)
+	}
+	// Next check stays unknown, and says which kind of unknown.
+	if d := docs.NextCheck.Detail; !strings.Contains(d, "no keepgoing daemon runs this loop") {
+		t.Errorf("%q", d)
+	}
+	if n := dockNextCheck(&clientSnapshot{Daemon: daemonStatus{State: "unavailable"}}); n.Availability != "unknown" || !strings.Contains(n.Detail, "did not answer") {
+		t.Errorf("%+v", n)
+	}
+	// Durations read the same on both sides of a limit.
+	changed := dockNow.Add(-(3*time.Hour + 12*time.Minute))
+	limits := dockLimits(&statusOut{ProgressAllowance: &progressAllowanceStatus{Timeout: "24h0m0s", ChangedAt: &changed}}, dockNow)
+	if len(limits) != 1 || limits[0].Phrase != "3 h 12 min of 24 h" {
+		t.Errorf("%+v", limits)
+	}
+	for d, want := range map[time.Duration]string{40 * time.Second: "1 min", 90 * time.Minute: "1 h 30 min", 54 * time.Hour: "2 days 6 h", 48 * time.Hour: "2 days", -time.Hour: "0 min"} {
+		if got := dockDuration(d); got != want {
+			t.Errorf("%v: %q", d, got)
 		}
 	}
 
@@ -286,8 +325,18 @@ func TestDockWithholdsIdentifiersAndPathsAndIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(withIDs, []byte(billing.ID)) || !bytes.Contains(withIDs, []byte("thr_example0001")) || bytes.Contains(withIDs, []byte(root)) || bytes.Contains(withIDs, []byte("thr_child")) || bytes.Contains(withIDs, []byte("thr_example0002")) {
-		t.Errorf("identifier view: %s", withIDs)
+	// thr_example0002 is the thread payments-reconciler is running on, which
+	// its registered status prints; a fallback thread that is only on standby
+	// (thr_example0003) and lane threads are never included.
+	for _, want := range []string{billing.ID, "thr_example0001", "thr_example0002"} {
+		if !bytes.Contains(withIDs, []byte(want)) {
+			t.Errorf("identifier view lacks %s", want)
+		}
+	}
+	for _, private := range []string{root, "thr_child", "thr_example0003"} {
+		if bytes.Contains(withIDs, []byte(private)) {
+			t.Errorf("identifier view contains %s", private)
+		}
 	}
 }
 

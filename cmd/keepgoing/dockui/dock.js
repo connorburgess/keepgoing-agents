@@ -202,18 +202,21 @@
     var li = el("li", "route" + (o.active ? " is-active" : "") + (o.off ? " is-off" : ""));
     if (o.id) li.dataset.id = o.id;
     if (o.position != null) li.dataset.position = String(o.position);
-    var pos = el("span", "pos");
-    pos.setAttribute("aria-hidden", "true");
-    if (o.badge) pos.textContent = o.badge; else pos.appendChild(icon("route"));
-    li.appendChild(pos);
+    if (o.badge) {
+      var pos = el("span", "pos", o.badge);
+      pos.setAttribute("aria-hidden", "true");
+      li.appendChild(pos);
+    }
     var body = el("div", "route-body");
     var top = el("div", "route-top");
-    top.appendChild(el(o.heading || "h3", "route-name", o.name));
+    var name = el("h3", "route-name", o.name);
+    if (o.account) name.appendChild(el("span", "route-account", " on " + o.account));
+    top.appendChild(name);
     if (o.active) top.appendChild(el("span", "in-use", o.activeLabel || "In use now"));
     if (o.readiness) top.appendChild(el("span", "ready tone-" + (READY_TONE[o.readiness] || "unknown"), o.phrase));
     body.appendChild(top);
     var meta = el("div", "sub route-meta");
-    meta.appendChild(joinParts(o.meta.concat(o.probeAgeSeconds != null ? ["checked " + ago(o.probeAgeSeconds)] : [])));
+    meta.appendChild(joinParts(o.meta.concat(o.probeAgeSeconds != null ? ["last probed " + ago(o.probeAgeSeconds)] : [])));
     body.appendChild(meta);
     var usage = el("div", "route-usage");
     var u = o.usage;
@@ -238,7 +241,7 @@
     return box;
   }
   function routeName(e) { return e.model || (e.tool === "BB thread" ? "The thread's own model" : e.tool || "Unknown model"); }
-  function routeMeta(e) { return [e.model ? e.tool : "", e.provider, e.account ? "account " + e.account : ""]; }
+  function routeMeta(e) { return [e.model ? e.tool : "", e.provider !== e.account ? e.provider : ""]; }
 
   function needCard(n, link) {
     var li = el("li", "need");
@@ -424,8 +427,8 @@
       var lanes = [];
       if (e.active) lanes.push(lanesBox("Lanes on this route", children(l.children)));
       var item = routeItem({
-        id: e.id, position: e.position, badge: e.position === 0 ? "Main" : String(e.position), name: routeName(e), active: e.active, off: e.disabled,
-        readiness: e.position > 0 ? e.readiness : "", phrase: e.phrase, meta: [e.position === 0 ? "Main target" : "Fallback " + e.id].concat(routeMeta(e)),
+        id: e.id, position: e.position, badge: e.position === 0 ? "Main" : String(e.position), name: routeName(e), account: e.account, active: e.active, off: e.disabled,
+        readiness: e.position > 0 && e.readiness !== "in_use" ? e.readiness : "", phrase: e.phrase, meta: [e.position === 0 ? "Main target" : "Fallback " + e.id].concat(routeMeta(e)),
         probeAgeSeconds: e.probeAgeSeconds, usage: e.usage, lanes: lanes
       });
       item.setAttribute("aria-label", (e.position === 0 ? "Main target" : "Fallback " + e.position) + ": " + routeName(e) + (e.active ? ", in use now" : ""));
@@ -472,28 +475,50 @@
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
       return;
     }
+    var inUse = d.routes.filter(function (n) { return n.runningNow.length > 0; }).length;
+    var trouble = d.routes.filter(function (n) {
+      return n.readiness === "not_ready" || n.usage.windows.some(function (w) { return !w.stale && w.usedPercent >= 90; });
+    }).length;
+    var sum = el("p", "route-summary");
+    sum.appendChild(el("span", null, d.routes.length + (d.routes.length === 1 ? " route" : " routes")));
+    sum.appendChild(el("span", "c-good", inUse + " in use"));
+    sum.appendChild(el("span", trouble ? "c-warn" : "sub", trouble ? trouble + " at a limit or not ready" : "none at a limit or failing"));
+    pane.appendChild(sum);
     var box = el("section", "panel");
     var ol = el("ul", "route-list");
     d.routes.forEach(function (n) {
-      function loops(list) {
+      // Loops on the route now, one per line with their state.
+      function running(list) {
         var ul = el("ul");
         list.forEach(function (x) {
           var li = el("li");
           var a = el("a", null, x.loop);
           a.href = "#/loop/" + x.key;
           li.appendChild(a);
-          li.appendChild(el("span", "sub", " · " + x.phrase + (x.working ? " · " + x.working + " " + (x.working === 1 ? "lane" : "lanes") + " working" : "") + (x.position > 0 ? " · fallback " + x.position : "")));
+          li.appendChild(el("span", "sub", " · " + x.phrase + (x.working ? " · " + x.working + " " + (x.working === 1 ? "lane" : "lanes") + " working" : "")));
           ul.appendChild(li);
         });
         return ul;
       }
+      // Loops that only keep it on standby, as one wrapping line of names.
+      function standby(list) {
+        var p = el("p", "standby");
+        list.forEach(function (x, i) {
+          if (i) p.appendChild(document.createTextNode(", "));
+          var a = el("a", null, x.loop);
+          a.href = "#/loop/" + x.key;
+          a.title = x.position > 0 ? "Fallback " + x.position + " for " + x.loop : "Main target of " + x.loop;
+          p.appendChild(a);
+        });
+        return p;
+      }
       var lanes = [];
-      if (n.runningNow.length) lanes.push(lanesBox("Running on it now", loops(n.runningNow)));
-      if (n.preferredBy.length) lanes.push(lanesBox("On standby for", loops(n.preferredBy)));
+      if (n.runningNow.length) lanes.push(lanesBox("Running on it now", running(n.runningNow)));
+      if (n.preferredBy.length) lanes.push(lanesBox("On standby for " + n.preferredBy.length + (n.preferredBy.length === 1 ? " loop" : " loops"), standby(n.preferredBy)));
       if (n.omitted) lanes.push(el("p", "sub", n.omitted + " more loops not shown"));
       ol.appendChild(routeItem({
-        name: routeName(n), active: n.runningNow.length > 0, activeLabel: n.runningNow.length + (n.runningNow.length === 1 ? " loop on it now" : " loops on it now"),
-        readiness: n.readiness === "unknown" && n.runningNow.length ? "" : n.readiness, phrase: n.phrase, meta: routeMeta(n), probeAgeSeconds: n.probeAgeSeconds, usage: n.usage, lanes: lanes
+        name: routeName(n), account: n.account, active: n.runningNow.length > 0, activeLabel: n.runningNow.length + (n.runningNow.length === 1 ? " loop on it now" : " loops on it now"),
+        readiness: n.readiness === "in_use" || (n.readiness === "unknown" && n.runningNow.length) ? "" : n.readiness, phrase: n.phrase, meta: routeMeta(n), probeAgeSeconds: n.probeAgeSeconds, usage: n.usage, lanes: lanes
       }));
     });
     box.appendChild(ol);

@@ -203,7 +203,9 @@ type dockChainEntry struct {
 	Model    string `json:"model,omitempty"`
 	Active   bool   `json:"active"`
 	Disabled bool   `json:"disabled,omitempty"`
-	// Readiness is ready, not_ready, not_probed, disabled or unknown.
+	// Readiness is ready, not_ready, not_probed, disabled, unknown, main for
+	// the main target, or in_use for a fallback the loop is running on, which
+	// carries no verdict because the route in use is not probed.
 	Readiness string          `json:"readiness"`
 	Phrase    string          `json:"phrase"`
 	ProbedAt  *time.Time      `json:"probedAt,omitempty"`
@@ -727,8 +729,12 @@ func dockNextCheck(snap *clientSnapshot) dockNext {
 	switch {
 	case d.State == "skipped":
 		n.Detail = "the local daemon was not asked"
+	case d.State == "not_recorded":
+		// Nothing says a daemon runs this loop. Its checks may come from a
+		// scheduler outside keepgoing, which is not inspected or inferred.
+		n.Detail = "no keepgoing daemon runs this loop; a scheduler outside keepgoing is not visible"
 	case d.State != "responsive":
-		n.Detail = "no keepgoing daemon answered"
+		n.Detail = "a keepgoing daemon is recorded for this loop but did not answer"
 	case d.Phase == "waiting" && d.NextCheckAt != nil:
 		n.Availability, n.At, n.Phrase = "known", d.NextCheckAt, "Due"
 	default:
@@ -789,11 +795,11 @@ func dockLimits(st *statusOut, now time.Time) []dockLimit {
 		l := dockLimit{Label: "Time without Git progress", Reached: p.Due}
 		switch {
 		case p.Error != "":
-			l.Unknown, l.Phrase = true, "Unknown (limit "+p.Timeout+")"
+			l.Unknown, l.Phrase = true, "Unknown (limit "+dockLimitDuration(p.Timeout)+")"
 		case p.BaselinePending:
-			l.Phrase = "Not measured yet (limit " + p.Timeout + ")"
+			l.Phrase = "Not measured yet (limit " + dockLimitDuration(p.Timeout) + ")"
 		case p.ChangedAt != nil:
-			l.Phrase = dockDuration(now.Sub(*p.ChangedAt)) + " of " + p.Timeout
+			l.Phrase = dockDuration(now.Sub(*p.ChangedAt)) + " of " + dockLimitDuration(p.Timeout)
 		}
 		out = append(out, l)
 	}
@@ -807,15 +813,37 @@ func dockLimits(st *statusOut, now time.Time) []dockLimit {
 	return out
 }
 
+// dockDuration prints a length of time the same way wherever the page shows
+// one: "45 min", "3 h 12 min", "24 h", "2 days 6 h".
 func dockDuration(d time.Duration) string {
 	if d < 0 {
-		return "0m"
+		d = 0
 	}
-	d = d.Round(time.Minute)
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d/time.Minute))
+	m := int(d.Round(time.Minute) / time.Minute)
+	part := func(n int, unit string) string {
+		if n == 0 {
+			return ""
+		}
+		return fmt.Sprintf(" %d %s", n, unit)
 	}
-	return fmt.Sprintf("%dh%02dm", int(d/time.Hour), int(d%time.Hour/time.Minute))
+	switch {
+	case m < 60:
+		return fmt.Sprintf("%d min", m)
+	case m < 48*60:
+		return fmt.Sprintf("%d h", m/60) + part(m%60, "min")
+	}
+	days := "days"
+	return fmt.Sprintf("%d %s", m/(24*60), days) + part(m%(24*60)/60, "h")
+}
+
+// dockLimitDuration formats a configured duration string; one that does not
+// parse is shown as written.
+func dockLimitDuration(s string) string {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return clip(s, 40)
+	}
+	return dockDuration(d)
 }
 
 func dockUsageOf(v usageView) dockUsageTarget {
@@ -876,6 +904,10 @@ func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChai
 			e.Readiness, e.Phrase = "disabled", "Turned off"
 		case in.Summary == nil || !ok:
 			c.Availability = "unknown"
+		case e.Active && (row.Last == nil || row.Last.OK):
+			// The route doing the work is not probed, so an old probe says
+			// nothing against it. Only a recorded failure is a verdict.
+			e.Readiness, e.Phrase = "in_use", "In use now"
 		case row.Healthy:
 			e.Readiness, e.Phrase = "ready", "Ready"
 		case row.Last == nil:
