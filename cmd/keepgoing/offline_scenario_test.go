@@ -184,6 +184,7 @@ func TestOfflineScenarioHeadless(t *testing.T) {
 			l.mode("online")
 			expect(time.Hour, "reprompt", "error: ")
 			expect(time.Minute, "wake", "idle")
+			l.settle() // the woken turn records its arguments when it starts
 			if held() {
 				t.Fatal("the loop is on hold after recovering")
 			}
