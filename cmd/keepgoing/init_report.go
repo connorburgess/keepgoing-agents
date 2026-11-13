@@ -14,7 +14,7 @@ import (
 
 const initTaskLimit = 1 << 20
 
-const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited; live compatibility and a supported CLI version range have not been verified."
+const initCursorNotice = "Cursor starts a separate CLI conversation; existing IDE chats are not attached. Interactive permission bridging, quota/reset detection and fallback recovery are unavailable. Existing permissions are inherited. Doctor can check the stored login; models, quota and permissions stay unverified. One CLI version has been inspected and walked through live once on macOS; other versions and platforms are unverified."
 
 const initTaskBindingNotice = "Task binding: snapshot imported into prompt.md at creation. Later edits to the original task source are not tracked; supervision rereads the saved prompt.md when preparing task prompts."
 

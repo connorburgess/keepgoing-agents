@@ -51,6 +51,9 @@ func planProbes(fb *config.Fallbacks, only string, exact bool) (probePlan, []con
 		if c.Probe.Kind == "command" {
 			cost = "Custom command; monetary cost, model requests, and side effects are unknown."
 		}
+		if c.Probe.Kind == config.CustomAdapter {
+			cost = "The probe command from the agent's definition, given the fixed probe prompt. keepgoing cannot tell what it does: it may be a full paid turn of the agent, with tools and side effects. Cost and model requests are unknown."
+		}
 		p.Candidates = append(p.Candidates, probePlanCandidate{ID: c.ID, Kind: c.Probe.Kind, Provider: c.Provider, Group: c.Group, Model: c.ProbeModel(exact), Disabled: c.Disabled, Timeout: fb.Probe.Timeout.Duration.String(), CostNote: cost})
 		selected = append(selected, c)
 	}
