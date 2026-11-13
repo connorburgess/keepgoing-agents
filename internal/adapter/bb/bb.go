@@ -94,7 +94,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	if obs.Gone {
 		return obs, nil
 	}
-	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren = a.childWork(ctx)
+	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren = a.childWork(ctx)
 	if len(obs.AwaitingChildren) > 0 {
 		if obs.State == decide.Error {
 			obs.ErrorClass = decide.ErrUnknown

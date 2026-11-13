@@ -58,7 +58,7 @@ Reordered after a day of live supervision in which the loop stopped doing its on
 
 0. **Keep the loop going: supervision reliability.** A supervisor that waits silently is worse than none. Close, in this order:
    - **Stale provider-retry signal.** A "will retry" signal with no later evidence must expire so a dead session falls through to bounded re-prompts instead of being left alone indefinitely.
-   - **Errored child threads.** Record what happens today when a child of the supervised thread fails, then surface or recover it; a parent must not be left idle behind children that will never finish. See [BB child awareness](#3-bb-child-awareness-and-loop-ownership).
+   - **Errored child threads.** Record what happens today when a child of the supervised thread fails, then surface or recover it; a parent must not be left idle behind children that will never finish. Surfacing is implemented in unreleased source with offline fixtures (3.5); recovery by keepgoing is not. See [BB child awareness](#3-bb-child-awareness-and-loop-ownership).
    - **Long limit wait that needs a person** ([R8](#priority-reliability-checkpoints)). With failover off or no confirmed fallback, a far-off reset is reported once instead of waited out silently.
    - **Failed handoff briefs.** Count and space briefs a fallback rejects. Implemented per fallback in unreleased source with offline fixtures; see the item under [bounded work](#8-bounded-work-and-portable-goals).
    - **Timing-dependent tests.** Tests that fail under load or on one platform hide real regressions and slow every merge. Fix causes, not deadlines.
@@ -244,13 +244,10 @@ Implemented with persistent `control.ownership` metadata and explicit `--take-ov
 
 Acceptance: enabling from a second fictional thread ID fails without changing ownership; `--take-over` succeeds and records the previous owner as handed off. Offline fixtures also cover conflicting `validate`/`daemon` calls and shared control-file paths. Define scheduler calls without a BB identity and stale ownership explicitly; an unavailable owner-status check must not silently authorize a takeover.
 
-#### 3.5. Errored children
+#### 3.5. Children in error
 
-- [ ] Surface direct children whose status is `error`, and decide whether keepgoing should recover them. Nothing is implemented.
-
-Current behavior, recorded by `TestErroredChildrenAreNotSurfacedOrRecovered` (passing, fake `bb`) and the `failed` rows of the adapter and early-wake fixtures: a child in `error` is a known non-active state, so it is not counted as running work and does not make discovery unverified. The parent is then handled on its own status alone. An idle parent gets its ordinary wake (early, when BB logged the child's structured `failed` notice); an active parent is left as `active`; an errored parent gets its own error handling. The wake prompt is the loop's ordinary prompt and does not mention the child. No tick output, `status`, `timeline`, incident record or report names or counts an errored child, and no child is messaged, retried or restarted. A parent left alone earlier as `child work running` therefore becomes eligible again once its children fail, but whether the failed work is redone depends entirely on the parent agent noticing. A child with a pending interaction is still escalated under 3.3 whatever its status.
-
-Open questions for the owner before any implementation: report only (a count and IDs in `status` and one report) or also recover; whether recovery means prompting the parent to redo the work or re-prompting the child directly, which keepgoing has never done; and which bound applies per child.
+- [x] Tell the owning session when its direct children are in error, and record the count. Errored children are listed from status alone and are not running work. An idle parent's ordinary wake carries a fixed, count-only notice when a child newly enters error, never because the set shrank; tick output, `status` and `timeline` show the count. keepgoing never retries, messages, stops or reads a child. Bounded by the existing idle-wake rules, loop-wide limits and holds, and given up after `errors.max_reprompts` rejected sends. It adds a wake in one case only: an idle parent waiting on other running children is woken once with the notice alone, spaced by `min_wake_interval`. Offline adapter, decision-table, supervisor and CLI fixtures against a fake `bb`; unreleased; no live child failure. See [children in error](operations.md#children-in-error).
+- [ ] Decide whether an owner report is wanted for errored children, whether a parent that is itself active or in error should be told sooner, and whether keepgoing should ever recover a child itself. Today no report is sent, such a parent hears on its next wake, and recovery is left to the parent agent.
 
 ### 4. Start and run in the background
 

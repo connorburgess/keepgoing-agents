@@ -12,12 +12,16 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // childWork observes direct children only. Listing discovers IDs; show verifies
 // the current relationship and status. No child is sent a message, stopped,
 // spawned, or re-parented. Incomplete discovery must not authorize a wake.
-func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting []string) {
+//
+// errored lists verified direct children whose status is error. They are not
+// running work. Only the status field decides this; no child log, message or
+// title is read.
+func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting, errored []string) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
 	if err != nil || ctx.Err() != nil {
-		return 0, true, nil
+		return 0, true, nil, nil
 	}
 	var children []struct {
 		ID string `json:"id"`
@@ -25,7 +29,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 	// A bare array is required: null, envelopes, and missing data are not an
 	// empty inventory. Bound the number of show calls in addition to time.
 	if json.Unmarshal(out, &children) != nil || children == nil || len(children) > 200 {
-		return 0, true, nil
+		return 0, true, nil, nil
 	}
 	seen := make(map[string]bool)
 	for _, child := range children {
@@ -38,11 +42,11 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		}
 		seen[child.ID] = true
 		if ctx.Err() != nil {
-			return active, true, awaiting
+			return active, true, awaiting, errored
 		}
 		out, err := a.run(ctx, "", "thread", "show", child.ID, "--json")
 		if ctx.Err() != nil {
-			return active, true, awaiting
+			return active, true, awaiting, errored
 		}
 		if code, ok := envelopeError(out); ok && code == "thread_not_found" {
 			continue // Child disappeared after discovery.
@@ -82,7 +86,9 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		switch t.Status {
 		case "active":
 			active++
-		case "idle", "error", "pending", "starting", "stopping":
+		case "error":
+			errored = append(errored, child.ID)
+		case "idle", "pending", "starting", "stopping":
 			// Known non-active state; it may still be waiting on a person.
 		default:
 			unverified = true
@@ -94,7 +100,8 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		}
 	}
 	sort.Strings(awaiting)
-	return active, unverified, awaiting
+	sort.Strings(errored)
+	return active, unverified, awaiting, errored
 }
 
 // childPending inspects only identity and status, never interaction contents.

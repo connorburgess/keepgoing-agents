@@ -664,6 +664,13 @@ func describeIncident(r incident.Record) string {
 			text += fmt.Sprintf("; provider exit %d", *o.ExitCode)
 		}
 	}
+	if o.ErroredChildren > 0 {
+		count := fmt.Sprintf("%d", o.ErroredChildren)
+		if o.ChildrenUnverified {
+			count = "at least " + count + " (child discovery was incomplete)"
+		}
+		text += fmt.Sprintf("; %s direct child thread(s) in error (keepgoing does not retry, message or stop children)", count)
+	}
 	text += fmt.Sprintf("; action %s; outcome %s; cause %s; controls %s -> %s", r.Action, r.Outcome, r.Cause, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter))
 	if r.TargetKeyAfter != "unavailable" {
 		text += "; target " + timelineTarget(r.TargetKey)

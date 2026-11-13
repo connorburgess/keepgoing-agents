@@ -70,7 +70,7 @@ func TestChildWorkVerifiesIdentityAndRelationship(t *testing.T) {
 				}
 				return []byte(tc.show), nil
 			}
-			active, unknown, _ := a.childWork(context.Background())
+			active, unknown, _, _ := a.childWork(context.Background())
 			if active != tc.active || unknown != tc.unknown || shows > 1 {
 				t.Fatalf("active=%d unknown=%v shows=%d", active, unknown, shows)
 			}
@@ -90,7 +90,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 			}
 			return []byte(list), nil
 		}
-		if n, u, _ := a.childWork(context.Background()); n != 0 || !u {
+		if n, u, _, e := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
 			t.Fatal("incomplete inventory permitted a wake")
 		}
 	}
@@ -100,7 +100,7 @@ func TestChildDiscoveryFailureAndBounds(t *testing.T) {
 		<-ctx.Done()
 		return []byte(`[]`), nil
 	}
-	if n, u, _ := a.childWork(context.Background()); n != 0 || !u {
+	if n, u, _, e := a.childWork(context.Background()); n != 0 || !u || len(e) != 0 {
 		t.Fatal("expired query permitted a wake")
 	}
 }
@@ -136,6 +136,99 @@ func TestObserveActiveChildSuppressesParentUntilFinished(t *testing.T) {
 			want := map[string]decide.Action{"idle": decide.Wake, "active": decide.Nudge, "error": decide.Reprompt}[parentStatus]
 			if d := decide.Decide(in); d.Action != want {
 				t.Fatalf("child finished: %+v", d)
+			}
+		})
+	}
+}
+
+// Errored children are listed from the status field alone. They are never
+// running work, and nothing but list, show and interactions is asked of a child.
+func TestChildWorkListsErroredChildren(t *testing.T) {
+	show := func(id, status, extra string) string {
+		return fmt.Sprintf(`{"thread":{"id":%q,"parentThreadId":"thr_example123","status":%q,"title":"private fixture text"%s}}`, id, status, extra)
+	}
+	for _, tc := range []struct {
+		name        string
+		children    map[string]string // id -> show reply
+		pending     string            // child with a pending interaction
+		wantActive  int
+		wantErrored string
+		wantUnknown bool
+		wantWaiting string
+	}{
+		{"none", map[string]string{}, "", 0, "", false, ""},
+		{"all errored, listed in order", map[string]string{"thr_c": show("thr_c", "error", ""), "thr_a": show("thr_a", "error", ""), "thr_b": show("thr_b", "error", "")}, "", 0, "thr_a,thr_b,thr_c", false, ""},
+		{"errored beside active, idle and starting", map[string]string{"thr_a": show("thr_a", "error", ""), "thr_b": show("thr_b", "active", ""), "thr_c": show("thr_c", "idle", ""), "thr_d": show("thr_d", "starting", "")}, "", 1, "thr_a", false, ""},
+		{"archived or deleted errored child is not counted", map[string]string{"thr_a": show("thr_a", "error", `,"archivedAt":123`), "thr_b": show("thr_b", "error", `,"deletedAt":123`)}, "", 0, "", false, ""},
+		{"reparented errored child is not counted", map[string]string{"thr_a": strings.Replace(show("thr_a", "error", ""), "thr_example123", "thr_other", 1)}, "", 0, "", false, ""},
+		{"errored child waiting on a person is listed in both", map[string]string{"thr_a": show("thr_a", "error", "")}, "thr_a", 0, "thr_a", false, "thr_a"},
+		{"unknown status beside an errored child is unverified", map[string]string{"thr_a": show("thr_a", "error", ""), "thr_b": show("thr_b", "private fixture text", "")}, "", 0, "thr_a", true, ""},
+		{"unreadable child beside an errored child is unverified", map[string]string{"thr_a": show("thr_a", "error", ""), "thr_b": `private fixture text`}, "", 0, "thr_a", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newFake(`{"thread":{"status":"idle"}}`, `[]`, false)
+			var ids []string
+			for id := range tc.children {
+				ids = append(ids, fmt.Sprintf(`{"id":%q}`, id), fmt.Sprintf(`{"id":%q}`, id)) // duplicates are ignored
+			}
+			a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+				switch {
+				case stdin != "":
+					t.Fatal("a child query carried input")
+				case len(args) == 6 && args[1] == "list":
+					return []byte("[" + strings.Join(ids, ",") + "]"), nil
+				case len(args) == 4 && args[1] == "show" && tc.children[args[2]] != "":
+					return []byte(tc.children[args[2]]), nil
+				case len(args) == 5 && args[1] == "interactions" && args[2] == "list":
+					if args[3] == tc.pending {
+						return []byte(fmt.Sprintf(`[{"threadId":%q,"status":"pending","payload":{"text":"private fixture text"}}]`, args[3])), nil
+					}
+					return []byte(`[]`), nil
+				}
+				t.Fatalf("a child was asked for more than status: %v", args)
+				return nil, nil
+			}
+			active, unknown, waiting, errored := a.childWork(context.Background())
+			if active != tc.wantActive || unknown != tc.wantUnknown || strings.Join(errored, ",") != tc.wantErrored || strings.Join(waiting, ",") != tc.wantWaiting {
+				t.Fatalf("active=%d unknown=%t waiting=%v errored=%v", active, unknown, waiting, errored)
+			}
+		})
+	}
+}
+
+// Observe carries the errored children, and they never keep the parent busy:
+// an idle parent whose children all failed is eligible for its ordinary wake.
+func TestObserveErroredChildrenDoNotCountAsRunningWork(t *testing.T) {
+	for _, parentStatus := range []string{"idle", "active", "error"} {
+		t.Run(parentStatus, func(t *testing.T) {
+			a, calls := newFake(fmt.Sprintf(`{"thread":{"status":%q}}`, parentStatus), `[]`, false)
+			baseRun := a.run
+			a.run = func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+				if args[1] == "list" {
+					return []byte(`[{"id":"thr_child"},{"id":"thr_child_two"}]`), nil
+				}
+				if args[1] == "show" && strings.HasPrefix(args[2], "thr_child") {
+					return []byte(strings.Replace(childShow("error"), `"id":"thr_child"`, fmt.Sprintf(`"id":%q`, args[2]), 1)), nil
+				}
+				return baseRun(ctx, stdin, args...)
+			}
+			obs, err := a.Observe(context.Background())
+			if err != nil || obs.ActiveChildren != 0 || obs.ChildrenUnverified || len(obs.AwaitingChildren) != 0 || strings.Join(obs.ErroredChildren, ",") != "thr_child,thr_child_two" {
+				t.Fatalf("%+v %v", obs, err)
+			}
+			in := decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: obs, StallAfter: time.Minute, MinWakeInterval: time.Minute, UnchangedFor: time.Hour, SinceWake: time.Hour, MaxNudges: 2, MaxReprompts: 2}
+			want := map[string]decide.Action{"idle": decide.Wake, "active": decide.Nudge, "error": decide.Reprompt}[parentStatus]
+			if d := decide.Decide(in); d.Action != want {
+				t.Fatalf("%+v", d)
+			}
+			// No child log is read and nothing is sent to or stopped on a child.
+			for _, c := range *calls {
+				if len(c.args) > 2 && strings.HasPrefix(c.args[2], "thr_child") && c.args[1] != "show" {
+					t.Fatalf("child command: %v", c.args)
+				}
+				if c.args[1] == "tell" || c.args[1] == "stop" {
+					t.Fatalf("mutating command: %v", c.args)
+				}
 			}
 		})
 	}
