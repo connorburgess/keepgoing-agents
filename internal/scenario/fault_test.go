@@ -2,8 +2,8 @@ package scenario
 
 import (
 	"bytes"
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
