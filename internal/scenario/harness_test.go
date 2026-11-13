@@ -102,9 +102,9 @@ type World struct {
 	bin, world, home string
 	env              []string
 
-	sendsSeen, callsSeen, hooksSeen int
-	sendsTotal                      int
-	Journal                         []*Step
+	sendsSeen, callsSeen, hooksSeen, probesSeen int
+	sendsTotal                                  int
+	Journal                                     []*Step
 }
 
 // NewWorld builds a scenario world starting at the given time.
@@ -123,6 +123,7 @@ func NewWorld(t *testing.T, start time.Time) *World {
 		}
 	}
 	w.install("bb")
+	w.install("claude")
 	w.linkGit()
 	w.Net = newConnectivity(t)
 	w.Hooks = newReceiver(t)
@@ -290,6 +291,60 @@ func (w *World) EditConfig(edit func(loop map[string]any)) {
 	}
 }
 
+// BinPath is the path of a stand-in executable, for configuration.
+func (w *World) BinPath(name string) string { return filepath.Join(w.bin, name+exe) }
+
+// Fallbacks writes fallbacks.yaml beside the configuration and points the
+// loop at it. %[1]s in the text is replaced by the stand-in directory.
+func (w *World) Fallbacks(text string, loop func(map[string]any)) {
+	w.t.Helper()
+	path := filepath.Join(filepath.Dir(w.Config), "fallbacks.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(text, w.bin)), 0o600); err != nil {
+		w.t.Fatal(err)
+	}
+	w.EditConfig(func(l map[string]any) {
+		l["fallbacks"] = "fallbacks.yaml"
+		if loop != nil {
+			loop(l)
+		}
+	})
+}
+
+// SpawnOutcomes queues what the next `bb thread spawn` calls do: ok, lost,
+// unlisted or refuse (see the stand-in).
+func (w *World) SpawnOutcomes(modes ...string) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(w.world, "spawn.modes"), []byte(strings.Join(modes, "\n")), 0o600); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// ListUnderTitle makes a created thread appear in the place listing, as when
+// someone restores the title of a renamed thread.
+func (w *World) ListUnderTitle(id, title string) {
+	w.t.Helper()
+	var listed []map[string]any
+	b, err := os.ReadFile(filepath.Join(w.world, "place.list"))
+	if err == nil {
+		json.Unmarshal(b, &listed)
+	}
+	w.writeJSON("place.list", append(listed, map[string]any{"id": id, "title": title}))
+}
+
+// ProbeLimited makes claude probes of a model report a rate limit (or pass
+// again when limited is false).
+func (w *World) ProbeLimited(model string, limited bool) {
+	w.t.Helper()
+	path := filepath.Join(w.world, "probe-limited."+model)
+	if !limited {
+		os.Remove(path)
+		return
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 // Control runs a control command (enable, pause, resume, stop, complete…).
 func (w *World) Control(cmd string, extra ...string) *Step {
 	w.t.Helper()
@@ -329,6 +384,7 @@ type Step struct {
 	Tick      map[string]any
 	Sent      []Send
 	Calls     [][]string
+	Probes    [][]string
 	Reports   []Report
 	NetChecks int
 	Status    Status
@@ -341,6 +397,7 @@ type Send struct {
 	Kind    string `json:"kind"` // tell or retry
 	Thread  string `json:"thread"`
 	Mode    string `json:"mode"`
+	Title   string `json:"title,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -366,7 +423,15 @@ func (s *Step) reason() string { r, _ := s.Tick["reason"].(string); return r }
 type Status struct {
 	ControlState string `json:"controlState"`
 	Target       string `json:"target"`
-	Control      struct {
+	TargetAgent  struct {
+		BBThread string `json:"bbThread"`
+		Model    string `json:"model"`
+	} `json:"targetAgent"`
+	NewThreads struct {
+		Created int  `json:"created"`
+		Pending bool `json:"pending"`
+	} `json:"newThreads"`
+	Control struct {
 		Enabled, Paused, Stop, AwaitingUser, Completed bool
 		Note                                           string
 	} `json:"control"`
@@ -409,7 +474,8 @@ type Runs struct {
 			ID       string `json:"id"`
 			State    string `json:"state"`
 			Attempts struct {
-				Total int `json:"total"`
+				Total  int       `json:"total"`
+				Latest []Attempt `json:"latest"`
 			} `json:"attempts"`
 		} `json:"current"`
 		Recent []struct {
@@ -420,6 +486,13 @@ type Runs struct {
 		} `json:"recent"`
 	} `json:"loops"`
 	Raw string `json:"-"`
+}
+
+// Attempt is one send attempt as runs reports it.
+type Attempt struct {
+	Target  string `json:"target"`
+	Action  string `json:"action"`
+	Outcome string `json:"outcome"`
 }
 
 // ControlState is the loop's control state as runs reports it. A loop with
@@ -461,6 +534,10 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	readLines(w.t, filepath.Join(w.world, "calls.jsonl"), &calls)
 	s.Calls = calls[w.callsSeen:]
 	w.callsSeen = len(calls)
+	var probes [][]string
+	readLines(w.t, filepath.Join(w.world, "probes.jsonl"), &probes)
+	s.Probes = probes[w.probesSeen:]
+	w.probesSeen = len(probes)
 	all := w.Hooks.Events()
 	s.Reports = all[w.hooksSeen:]
 	w.hooksSeen = len(all)
@@ -470,6 +547,11 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	// The stand-in agents respond to what they were sent, so the next step
 	// observes the consequence.
 	for _, m := range s.Sent {
+		if m.Kind == "spawn" {
+			// A created thread is already running its first turn.
+			w.adopt(m.Thread)
+			continue
+		}
 		if th := w.Threads[m.Thread]; th != nil {
 			th.received(m)
 		}
@@ -525,7 +607,9 @@ func (w *World) invariants(s *Step) {
 	if got := strings.ReplaceAll(s.Runs.ControlState(), "_", " "); got != s.Status.ControlState {
 		w.Failf(s, "runs control state %q, status %q", got, s.Status.ControlState)
 	}
-	if got := s.Runs.Attempts(); got != w.sendsTotal {
+	// Every delivery is recorded as an attempt. An attempt that failed
+	// before anything arrived (a refused creation) has no delivery.
+	if got := s.Runs.Attempts(); got < w.sendsTotal {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
@@ -652,6 +736,20 @@ type Thread struct {
 	OnSend func(th *Thread, m Send)
 }
 
+// The fictional BB project and environment every thread lives in.
+const (
+	exampleProject     = "proj_example"
+	exampleEnvironment = "env_example"
+)
+
+// adopt starts tracking a thread the stand-in created with `thread spawn`.
+func (w *World) adopt(id string) *Thread {
+	th := &Thread{w: w, ID: id, status: "active", OnSend: reactToNetwork}
+	w.Threads[id] = th
+	th.writeLog()
+	return th
+}
+
 // Thread returns the stand-in thread with this ID, creating it idle.
 func (w *World) Thread(id string) *Thread {
 	if th := w.Threads[id]; th != nil {
@@ -662,6 +760,14 @@ func (w *World) Thread(id string) *Thread {
 	th.Set("idle")
 	th.writeLog()
 	return th
+}
+
+// RateLimited records a structured usage limit that resets at reset: the
+// turn fails and BB marks the window blocked.
+func (th *Thread) RateLimited(reset time.Time) {
+	th.Event("provider/error", map[string]any{"willRetry": false, "errorInfo": map[string]any{"category": "rate-limit", "httpStatusCode": 429, "providerCode": "rate_limit_event"}})
+	th.Event("provider/rateLimits/updated", map[string]any{"rateLimits": map[string]any{"status": "blocked", "windows": []any{map[string]any{"status": "blocked", "resetsAtMs": reset.UnixMilli()}}}})
+	th.Set("error")
 }
 
 // Child adds a direct child thread.
@@ -681,7 +787,7 @@ func (th *Thread) Child(id string) *Thread {
 // Set changes the status `bb thread show` reports.
 func (th *Thread) Set(status string) {
 	th.status = status
-	t := map[string]any{"id": th.ID, "status": status}
+	t := map[string]any{"id": th.ID, "status": status, "projectId": exampleProject, "environmentId": exampleEnvironment}
 	if th.Parent != "" {
 		t["parentThreadId"] = th.Parent
 	}
