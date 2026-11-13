@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,5 +177,49 @@ func TestRunBoundaryIsRecordedFromCurrentControlNotTheCallersSnapshot(t *testing
 	recordRunBoundary(stateDir, "complete")
 	if g := graphOf(t, f); g.Completed || g.CurrentRun != run || len(g.Runs) != 1 {
 		t.Fatalf("%#v", g)
+	}
+}
+
+// From real commands to the reader: the run a tick recorded is what `runs`
+// shows, and reading it never calls the provider or changes a hold.
+func TestRunsCommandShowsWhatTicksRecordedWithoutProviderCalls(t *testing.T) {
+	f := newFixture(t)
+	stateDir := filepath.Join(f.dir, "state")
+	f.run("enable")
+	f.tick()
+	g := graphOf(t, f)
+	for _, hold := range []string{"", "pause", "stop", "complete"} {
+		if hold != "" {
+			if code, _, errs := f.run(hold); code != 0 {
+				t.Fatal(hold, errs)
+			}
+		}
+		calls, before := f.read("calls"), snapshotTree(t, stateDir)
+		code, out, errs := f.run("runs", "--json")
+		var r runsReport
+		if code != exitOK || json.Unmarshal([]byte(out), &r) != nil {
+			t.Fatalf("%s: %d %s %s", hold, code, out, errs)
+		}
+		l := r.Loops[0]
+		if l.Loop != "example-loop" || l.Graph.LoopID != g.LoopID || l.Current == nil || l.Current.ID != g.CurrentRun || len(l.Current.Sessions) != 1 ||
+			l.Current.Sessions[0].Ref != "session:bb/thr_primary" || l.Current.Attempts.Total != 1 || l.Current.Attempts.Latest[0].Session.Ref != "session:bb/thr_primary" {
+			t.Fatalf("%s: %s", hold, out)
+		}
+		wantEvidence, wantState := evidenceConfigured, "open"
+		if hold == "complete" {
+			wantEvidence, wantState = evidenceHistorical, "completion_declared"
+		}
+		if l.Current.Sessions[0].Evidence != wantEvidence || l.Current.State != wantState || l.Conflict != "" {
+			t.Fatalf("%s: %s", hold, out)
+		}
+		if code, out, _ := f.run("runs", "--id", "session:bb/thr_primary"); code != exitOK || !strings.Contains(out, g.CurrentRun) {
+			t.Fatal(code, out)
+		}
+		if f.read("calls") != calls {
+			t.Fatalf("%s: runs called the provider", hold)
+		}
+		if after := snapshotTree(t, stateDir); after != before {
+			t.Fatalf("%s: runs changed the state directory", hold)
+		}
 	}
 }
