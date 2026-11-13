@@ -733,7 +733,7 @@ A lane is sent nothing but a stop: no message, no retry. Stop wins: lanes are st
 
 **Time.** The walk uses the check's own time budget. With less than ten seconds left it ends, the check says so, and the next check goes on with the same request; the report waits for the end.
 
-**One report.** When the walk is finished one `stop` report is sent, for the supervised thread and its lanes together, recorded before it is sent so that it is sent once: whether the supervised thread was stopped, and the lanes stopped, already idle, left to another loop, failed (by error class, for example `thread_host_offline` or `timeout`), and not checked, with queued retries cancelled and not cancelled. It names no thread. The check's JSON has the same counts as `laneStop`, and `state.json` keeps the latest as `laneStop`.
+**One report.** When the walk is finished one `stop` report is sent, for the supervised thread and its lanes together, recorded before it is sent so that it is sent once: whether the supervised thread was stopped, and the lanes stopped, already idle, left to another loop, failed (by error class, for example `thread_host_offline` or `timeout`), and not checked, with queued retries cancelled and not cancelled. It names no thread. A lane stop that fails is reported and not retried by later checks; running `stop --lanes` again makes a new request, which walks the lanes again. The check's JSON has the same counts as `laneStop`, and `state.json` keeps the latest as `laneStop`.
 
 **Other adapters.** Headless agents, defined agents and process loops have no child conversations keepgoing can see. A stop with `--lanes` stops the session as before, and its output and report say lanes are not applicable.
 
