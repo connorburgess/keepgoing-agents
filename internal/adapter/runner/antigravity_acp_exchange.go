@@ -37,7 +37,14 @@ type AntigravityACPCheckpoint struct {
 // This is an internal transport foundation. No durable storage implementation,
 // owned process lifecycle, question handoff or unattended eligibility is supplied.
 func ExchangeAntigravityACP(ctx context.Context, r io.Reader, w io.Writer, saved, cwd, prompt string, checkpoint func(context.Context, AntigravityACPCheckpoint) error) (AntigravityACPOutcome, error) {
-	g, err := NewAntigravityACPGate(saved)
+	return ExchangeACP(ctx, r, w, ACPOptions{RequireResume: true}, saved, cwd, prompt, checkpoint)
+}
+
+// ExchangeACP is the exchange for any agent that speaks ACP v1, with the
+// options that differ between agents. Everything said of
+// ExchangeAntigravityACP holds for it.
+func ExchangeACP(ctx context.Context, r io.Reader, w io.Writer, opts ACPOptions, saved, cwd, prompt string, checkpoint func(context.Context, AntigravityACPCheckpoint) error) (ACPOutcome, error) {
+	g, err := NewACPGate(saved, opts)
 	if err != nil {
 		return AntigravityACPOutcome{Failed: true}, errors.New("acp: exchange configuration failed")
 	}

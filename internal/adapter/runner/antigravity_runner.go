@@ -20,10 +20,24 @@ import (
 // the provider's ACP server command with its arguments. No default is assumed:
 // no installed Antigravity CLI has been examined, so the command, its flags
 // and its supported versions are unverified.
-type AntigravityConfig struct {
-	Command []string
-	Workdir string
-	Env     map[string]string
+type AntigravityConfig = ACPConfig
+
+// ACPConfig is what the runner needs to start one ACP turn for any agent.
+// Its zero options are the Antigravity groundwork's: every failure unknown,
+// and an agent that does not advertise session resume refused.
+type ACPConfig struct {
+	// Name is the adapter name; "" is "antigravity".
+	Name string
+	// Classify reads an error class from the turn's typed end: a protocol
+	// stop reason or a JSON-RPC error code. Without it every failure is
+	// unknown.
+	Classify bool
+	// AllowWithoutResume accepts an agent that advertises no way to continue
+	// a session; a saved session is then never continued and never replaced.
+	AllowWithoutResume bool
+	Command            []string
+	Workdir            string
+	Env                map[string]string
 	// HandshakeTimeout bounds initialization and session setup inside the
 	// detached worker; ExitTimeout bounds the wait for the agent process to
 	// exit after its turn. Zero selects the defaults.
@@ -41,10 +55,40 @@ type AntigravityConfig struct {
 // Only transport evidence decides an observation: the worker's exit status,
 // the saved hold records and the worker's outcome record. Message, tool and
 // error text never do, and every failure is unknown.
-type Antigravity struct {
-	cfg AntigravityConfig
+type Antigravity = ACP
+
+// ACP is the runner for any agent that speaks ACP v1 over its standard
+// streams: one owned worker process per turn, which starts the agent,
+// performs one checkpointed prompt exchange and exits.
+type ACP struct {
+	cfg ACPConfig
 	dir Dir
 }
+
+// NewACP returns the ACP runner for one target directory.
+func NewACP(cfg ACPConfig, dir string) *ACP { return &ACP{cfg: cfg, dir: Dir(dir)} }
+
+// acpClass maps a turn's typed end to an error class. A refusal is the
+// provider declining the request: never a limit. The protocol's
+// authentication-required code is the only error code with a class. Anything
+// else is unknown.
+func acpClass(out antigravityOutcome) decide.ErrorClass {
+	switch {
+	case out.stopReason == "refusal":
+		return acpRestricted
+	case out.errorCode != nil && *out.errorCode == acpAuthRequired:
+		return decide.ErrAuth
+	}
+	return decide.ErrUnknown
+}
+
+const (
+	// acpRestricted is decide.ErrRestricted, named here until the change
+	// that defines it (#174) is on main.
+	acpRestricted decide.ErrorClass = "restricted"
+	// acpAuthRequired is ACP's authentication-required error code.
+	acpAuthRequired = -32000
+)
 
 // NewAntigravity returns the runner for one target directory.
 func NewAntigravity(cfg AntigravityConfig, dir string) *Antigravity {
@@ -52,7 +96,12 @@ func NewAntigravity(cfg AntigravityConfig, dir string) *Antigravity {
 }
 
 // Name implements adapter.Adapter.
-func (a *Antigravity) Name() string { return "antigravity" }
+func (a *Antigravity) Name() string {
+	if a.cfg.Name != "" {
+		return a.cfg.Name
+	}
+	return "antigravity"
+}
 
 const (
 	antigravityTurnName    = "acp-turn.json"
@@ -71,6 +120,9 @@ const (
 	antigravityMaxLimit         = 10 * time.Minute
 )
 
+// acpStopReasons are the stop reasons ACP v1 defines.
+var acpStopReasons = map[string]bool{"end_turn": true, "max_tokens": true, "max_turn_requests": true, "refusal": true, "cancelled": true}
+
 var errAntigravityRecords = errors.New("antigravity: saved turn records are unavailable or inconsistent; inspect the private target directory")
 
 // A turn was recorded but Send never confirmed the worker it started, for
@@ -83,6 +135,10 @@ var errAntigravityUnconfirmed = errors.New("antigravity: a turn was recorded wit
 type antigravityOutcome struct {
 	turn, session               string
 	returned, needsUser, failed bool
+	// stopReason and errorCode are the typed ends of the prompt, when the
+	// agent gave one: a protocol stop reason, or a JSON-RPC error code.
+	stopReason string
+	errorCode  *int
 }
 
 func (d Dir) antigravityTurnDir(turn string) Dir {
@@ -92,6 +148,11 @@ func (d Dir) antigravityTurnDir(turn string) Dir {
 // readAntigravityObject requires a bounded regular file holding one JSON
 // object with exactly n keys and version 1. A missing file is (nil, nil).
 func (d Dir) readAntigravityObject(name string, n int) (map[string]json.RawMessage, error) {
+	return d.readAntigravityObjectOf(name, n, n)
+}
+
+// readAntigravityObjectOf reads a record with between least and most fields.
+func (d Dir) readAntigravityObjectOf(name string, least, most int) (map[string]json.RawMessage, error) {
 	p := d.path(name)
 	info, err := os.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
@@ -110,7 +171,7 @@ func (d Dir) readAntigravityObject(name string, n int) (map[string]json.RawMessa
 		return nil, errAntigravityRecords
 	}
 	fields, err := cursorObject(b)
-	if err != nil || len(fields) != n || string(fields["version"]) != "1" {
+	if err != nil || len(fields) < least || len(fields) > most || string(fields["version"]) != "1" {
 		return nil, errAntigravityRecords
 	}
 	return fields, nil
@@ -194,11 +255,24 @@ func (d Dir) rememberAntigravitySession(session string) error {
 }
 
 func (d Dir) antigravityOutcome() (antigravityOutcome, bool, error) {
-	fields, err := d.readAntigravityObject(antigravityOutcomeName, 6)
+	fields, err := d.readAntigravityObjectOf(antigravityOutcomeName, 6, 8)
 	if err != nil || fields == nil {
 		return antigravityOutcome{}, false, err
 	}
 	var out antigravityOutcome
+	// Optional: records written before these fields existed have neither.
+	if _, ok := fields["stopReason"]; ok {
+		if !acpString(fields, "stopReason", &out.stopReason) || !acpStopReasons[out.stopReason] {
+			return antigravityOutcome{}, false, errAntigravityRecords
+		}
+	}
+	if raw, ok := fields["errorCode"]; ok {
+		var code int
+		if json.Unmarshal(raw, &code) != nil {
+			return antigravityOutcome{}, false, errAntigravityRecords
+		}
+		out.errorCode = &code
+	}
 	flag := func(key string, v *bool) bool {
 		switch string(fields[key]) {
 		case "true":
@@ -220,13 +294,15 @@ func (d Dir) antigravityOutcome() (antigravityOutcome, bool, error) {
 // saveAntigravityOutcome is called once by the worker, after the exchange.
 func (d Dir) saveAntigravityOutcome(out antigravityOutcome) error {
 	b, err := json.Marshal(struct {
-		Version   int    `json:"version"`
-		Turn      string `json:"turn"`
-		SessionID string `json:"sessionId"`
-		Returned  bool   `json:"returned"`
-		NeedsUser bool   `json:"needsUser"`
-		Failed    bool   `json:"failed"`
-	}{1, out.turn, out.session, out.returned, out.needsUser, out.failed})
+		Version    int    `json:"version"`
+		Turn       string `json:"turn"`
+		SessionID  string `json:"sessionId"`
+		Returned   bool   `json:"returned"`
+		NeedsUser  bool   `json:"needsUser"`
+		Failed     bool   `json:"failed"`
+		StopReason string `json:"stopReason,omitempty"`
+		ErrorCode  *int   `json:"errorCode,omitempty"`
+	}{1, out.turn, out.session, out.returned, out.needsUser, out.failed, out.stopReason, out.errorCode})
 	if err != nil {
 		return err
 	}
@@ -376,6 +452,15 @@ func (a *Antigravity) Observe(ctx context.Context) (decide.Observation, error) {
 		return decide.Observation{State: decide.Active, ErrorClass: decide.ErrNone, Evidence: detail}, nil
 	}
 	detail.Source = "antigravity_acp"
+	if a.cfg.Classify {
+		detail.Source = "acp_result"
+		if v.hasOut {
+			failed.ErrorClass = acpClass(v.out)
+			if v.out.errorCode != nil {
+				detail.Code = "unavailable"
+			}
+		}
+	}
 	detail = evidence.Clean(detail)
 	failed.Evidence = detail
 	if v.hasHold && v.hold.Deferred() {
@@ -456,7 +541,7 @@ func (a *Antigravity) Send(ctx context.Context, prompt string, mode adapter.Mode
 		return errors.New("antigravity: could not record the new turn")
 	}
 	handshake, exit := a.limits()
-	spec, _ := json.Marshal(antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds()})
+	spec, _ := json.Marshal(antigravityTurnSpec{Turn: turn, HandshakeMs: handshake.Milliseconds(), ExitMs: exit.Milliseconds(), RequireResume: !a.cfg.AllowWithoutResume})
 	turnDir := a.dir.antigravityTurnDir(turn)
 	record := func(name string, v any) error {
 		b, _ := json.Marshal(v)

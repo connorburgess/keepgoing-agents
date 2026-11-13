@@ -21,6 +21,8 @@ type antigravityTurnSpec struct {
 	Turn        string `json:"turn"`
 	HandshakeMs int64  `json:"handshakeMs"`
 	ExitMs      int64  `json:"exitMs"`
+	// RequireResume is the gate option of the same name.
+	RequireResume bool `json:"requireResume"`
 }
 
 // runAntigravityACPTurn is the detached worker for one prompt. It owns the
@@ -145,9 +147,10 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 		}
 		return hold(ctx, c)
 	}
-	result, exErr := ExchangeAntigravityACP(context.Background(), fromAgent, toAgent, saved, cwd, string(prompt), checkpoint)
+	result, exErr := ExchangeACP(context.Background(), fromAgent, toAgent, ACPOptions{RequireResume: spec.RequireResume}, saved, cwd, string(prompt), checkpoint)
 	close(exchangeDone)
 	out.session, out.needsUser = result.SessionID, result.NeedsUser
+	out.stopReason, out.errorCode = result.StopReason, result.ErrorCode
 	out.returned = exErr == nil && result.TurnReturned && !result.NeedsUser && !result.Failed
 	out.failed = exErr != nil || result.Failed
 	if !acpIdentifier(out.session) {

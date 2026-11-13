@@ -20,12 +20,33 @@ const (
 // AntigravityACPOutcome is protocol evidence only. It grants no permission,
 // enables no unattended mode, and does not establish task completion. NeedsUser
 // is latched even if cancellation later returns end_turn, fails, or disconnects.
-type AntigravityACPOutcome struct {
+type AntigravityACPOutcome = ACPOutcome
+
+// ACPOutcome is what one ACP prompt exchange established, from typed protocol
+// fields only. It never holds response text or a permission's description.
+type ACPOutcome struct {
 	SessionID    string
 	NeedsUser    bool
 	TurnReturned bool
 	Failed       bool
+	// StopReason is the prompt response's typed stop reason, when it was one
+	// the protocol defines; "" otherwise.
+	StopReason string
+	// ErrorCode is the JSON-RPC error code the agent answered the prompt
+	// with, when it answered with an error.
+	ErrorCode *int
 }
+
+// ACPOptions are what differs between agents that speak ACP.
+type ACPOptions struct {
+	// RequireResume refuses an agent that does not advertise session
+	// resume, even for a new session.
+	RequireResume bool
+}
+
+// AntigravityACPGate is the gate with the options the Antigravity groundwork
+// was written for.
+type AntigravityACPGate = ACPGate
 
 // AntigravityACPGate handles one ACP v1 prompt on one connection. It has no I/O,
 // storage, adapter registration or automatic-loop eligibility. A future worker
@@ -33,21 +54,32 @@ type AntigravityACPOutcome struct {
 // unattended operation; this gate deliberately advertises neither elicitation
 // nor filesystem/terminal execution capabilities. It is not safe for concurrent
 // use. Create a new gate for an explicitly authorized subsequent turn.
-type AntigravityACPGate struct {
+type ACPGate struct {
 	phase         string
 	saved         string
-	out           AntigravityACPOutcome
+	opts          ACPOptions
+	out           ACPOutcome
 	bytes, frames int
 	permissions   map[string]bool
+	// resume is the method that continues a saved session, as negotiated:
+	// session/resume, session/load, or "" when the agent offers neither.
+	resume string
 }
 
 // NewAntigravityACPGate accepts an exact opaque saved session ID, or empty for
 // an explicitly new session. It never falls back from resume to session/new.
 func NewAntigravityACPGate(saved string) (*AntigravityACPGate, error) {
+	return NewACPGate(saved, ACPOptions{RequireResume: true})
+}
+
+// NewACPGate accepts an exact opaque saved session ID, or empty for an
+// explicitly new session. It never falls back from continuing a session to
+// starting a new one.
+func NewACPGate(saved string, opts ACPOptions) (*ACPGate, error) {
 	if saved != "" && !acpIdentifier(saved) {
 		return nil, errors.New("acp: invalid saved session identity")
 	}
-	return &AntigravityACPGate{phase: "new", saved: saved, permissions: map[string]bool{}}, nil
+	return &ACPGate{phase: "new", saved: saved, opts: opts, permissions: map[string]bool{}}, nil
 }
 
 func (g *AntigravityACPGate) fail() error {
@@ -89,7 +121,11 @@ func (g *AntigravityACPGate) OpenSession(cwd string) ([]byte, error) {
 	if g.phase != "initialized" {
 		return nil, g.fail()
 	}
-	b, err := acpOpenSessionFrame(g.saved, cwd)
+	// A saved session is continued only by a method the agent advertised.
+	if g.saved != "" && g.resume == "" {
+		return nil, g.fail()
+	}
+	b, err := acpOpenSessionFrameWith(g.saved, cwd, g.resume)
 	if err != nil {
 		return nil, g.fail()
 	}
@@ -98,13 +134,17 @@ func (g *AntigravityACPGate) OpenSession(cwd string) ([]byte, error) {
 }
 
 func acpOpenSessionFrame(saved, cwd string) ([]byte, error) {
+	return acpOpenSessionFrameWith(saved, cwd, "session/resume")
+}
+
+func acpOpenSessionFrameWith(saved, cwd, resume string) ([]byte, error) {
 	if len(cwd) > antigravityACPFrameLimit || !filepath.IsAbs(cwd) || !utf8.ValidString(cwd) || strings.ContainsRune(cwd, 0) {
 		return nil, errors.New("acp: invalid working directory")
 	}
 	method := "session/new"
 	params := map[string]any{"cwd": cwd, "mcpServers": []any{}}
 	if saved != "" {
-		method = "session/resume"
+		method = resume
 		params["sessionId"] = saved
 	}
 	return acpRequest("keepgoing-open", method, params)
@@ -167,8 +207,26 @@ func (g *AntigravityACPGate) Receive(frame []byte) ([][]byte, error) {
 		return nil, g.fail()
 	}
 	want := map[string]string{"initializing": "keepgoing-init", "opening": "keepgoing-open", "prompting": "keepgoing-prompt", "cancelling": "keepgoing-prompt"}[g.phase]
-	if want == "" || request != want || rpcError {
+	if want == "" || request != want {
 		return nil, g.fail()
+	}
+	if rpcError {
+		// An error answer to the prompt is still a failed turn; its typed
+		// code is kept as evidence, its message never.
+		if g.phase == "prompting" || g.phase == "cancelling" {
+			if e, err := cursorObject(fields["error"]); err == nil {
+				var code int
+				if json.Unmarshal(e["code"], &code) == nil {
+					g.out.ErrorCode = &code
+				}
+			}
+		}
+		return nil, g.fail()
+	}
+	// session/load answers with null once the history has been replayed.
+	if g.phase == "opening" && g.saved != "" && g.resume == "session/load" && string(fields["result"]) == "null" {
+		g.out.SessionID, g.phase = g.saved, "ready"
+		return nil, nil
 	}
 	payload, err := cursorObject(fields["result"])
 	if err != nil {
@@ -184,11 +242,17 @@ func (g *AntigravityACPGate) Receive(frame []byte) ([][]byte, error) {
 		if err != nil {
 			return nil, g.fail()
 		}
-		sessions, err := cursorObject(capabilities["sessionCapabilities"])
-		if err != nil {
-			return nil, g.fail()
+		// How a saved session is continued, from what the agent advertises:
+		// session/resume when it has that capability, else session/load.
+		if sessions, err := cursorObject(capabilities["sessionCapabilities"]); err == nil {
+			if _, err = cursorObject(sessions["resume"]); err == nil {
+				g.resume = "session/resume"
+			}
 		}
-		if _, err = cursorObject(sessions["resume"]); err != nil {
+		if g.resume == "" && !g.opts.RequireResume && string(capabilities["loadSession"]) == "true" {
+			g.resume = "session/load"
+		}
+		if g.resume == "" && g.opts.RequireResume {
 			return nil, g.fail()
 		}
 		g.phase = "initialized"
@@ -209,6 +273,7 @@ func (g *AntigravityACPGate) Receive(frame []byte) ([][]byte, error) {
 		}
 		switch reason {
 		case "end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled":
+			g.out.StopReason = reason
 			g.out.TurnReturned = reason == "end_turn" && !g.out.NeedsUser
 			g.phase = "done"
 		default:
@@ -220,11 +285,21 @@ func (g *AntigravityACPGate) Receive(frame []byte) ([][]byte, error) {
 
 func (g *AntigravityACPGate) receiveMethod(fields map[string]json.RawMessage, id json.RawMessage, hasID bool) ([][]byte, error) {
 	var method string
-	if !acpString(fields, "method", &method) || (g.phase != "ready" && g.phase != "prompting" && g.phase != "cancelling") {
+	// session/load replays the saved conversation as updates before it
+	// answers, so updates for that session are expected while opening.
+	replaying := g.phase == "opening" && g.saved != "" && g.resume == "session/load"
+	if !acpString(fields, "method", &method) || (g.phase != "ready" && g.phase != "prompting" && g.phase != "cancelling" && !replaying) {
 		return nil, g.fail()
 	}
+	session := g.out.SessionID
+	if replaying {
+		if method != "session/update" {
+			return nil, g.fail()
+		}
+		session = g.saved
+	}
 	params, err := cursorObject(fields["params"])
-	if err != nil || !acpStringEquals(params, "sessionId", g.out.SessionID) {
+	if err != nil || !acpStringEquals(params, "sessionId", session) {
 		return nil, g.fail()
 	}
 	switch method {
