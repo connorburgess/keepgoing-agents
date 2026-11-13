@@ -20,7 +20,7 @@ A run is one opened episode of supervision for a loop. It can span many checks, 
 | --- | --- | --- |
 | External routine and invocation (optional) | Source, routine and optional invocation tokens supplied by a structured integration | Names the scheduler entry and one trigger. Never derived from a timestamp. An invocation ID is a reference on a run, not the run's ID. |
 | Registered loop reference | Existing registry `loop_` plus 32 hex digits | A removable reference to a config/runtime binding. Re-registering creates a new one. It maps to a durable loop only through an explicit, caller-verified record. |
-| Durable loop | `supervision_` plus 32 hex digits | Enrollment identity that owns runs. Distinct from the registry reference, loop name and runtime path. Nothing allocates it yet. |
+| Durable loop | `supervision_` plus 32 hex digits | Enrollment identity that owns runs. Distinct from the registry reference, loop name and runtime path. Allocated by the first graph write for a state directory; see [where identity lives](#where-identity-lives). |
 | Goal and revision | Existing `goal_` ID and revision 1–128 | A run records each revision in effect; an attempt carries a revision only when it was composed into that prompt. |
 | Execution run | `run_` plus 32 hex digits | One supervision episode. Never a daemon process, PID, poll, scheduled tick, provider turn or wake. |
 | Attempt | `attempt_` plus 32 hex digits | One adapter-send intent in one run: a wake, re-prompt, handoff or switch-back, or a queued nudge that may not start a provider turn. A daemon process is not an identity. |
@@ -86,7 +86,7 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Send attempt, `intent` | Before every automatic adapter send | `adapter_call` |
 | Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
 | Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
-| Run → chat/session | A check's target is a BB thread (its configured thread ID) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target` or `runner_session_file` |
+| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread keepgoing created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
 | Run's opening invocation | An accepted `enable` or `resume` that opens a run carries `--routine` | the run's own source |
 | Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
 | Registry reference | `registry add` finds an existing graph | `registry_add` |

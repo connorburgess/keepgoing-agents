@@ -31,7 +31,7 @@ loop:
     backoff: 10m
     failover_on: [rate_limit]
     wait_if_reset_within: 30m
-    report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this
+    report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this; needs limit_wait in report.events
   fallbacks: fallbacks.yaml
   report:
     secret_file: ~/.config/keepgoing/example-bb-loop.env   # KEEPGOING_WEBHOOK_URL and KEEPGOING_WEBHOOK_SECRET
