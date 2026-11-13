@@ -98,7 +98,17 @@ Unreleased source (roadmap K1). A command-line agent that runs one turn per proc
 
 **The reading.** A result reader returns a `Reading`: the session identity, whether the agent reported completion, whether it reported waiting on a person, the error class (or `unknown`) and structured evidence. It reads structured fields and the exit code only, never prose, and has no side effects. The shared runner turns a reading into an observation the same way for every agent. `Waiting` is carried to the observation's awaiting-input flag only for an agent that declares structured waiting-on-person; neither ported agent does, and a stand-in specification tests both cases.
 
-**Capabilities.** Each specification declares what the agent does itself and reports in a structured form: retries itself, fails over itself, schedules itself, has child work, exact resume, can be stopped, structured errors, structured waiting-on-person. False means "not established", not "known absent". Both ported agents declare exact resume, can be stopped and structured errors, and nothing else: the repository holds no evidence for the rest. Two parts of a specification already have an effect: structured waiting gates the awaiting-input flag, and the [capability matrix](adapters.md) takes each ported agent's decision inputs from `Spec.ObservationInputs()` (state, error class and evidence for both; the reset time for Codex, which has the limit lookup). Its tests fail when a specification gains an input the table does not list, or when the shared runner refers to an observation field no specification can declare. The other declarations are there for `doctor` and later work.
+**Capabilities.** Each specification declares what the agent does itself and reports in a structured form: retries itself, fails over itself, schedules itself, has child work, exact resume, can be stopped, structured errors, structured waiting-on-person. False means "not established", not "known absent". Both ported agents declare exact resume, can be stopped and structured errors, and nothing else: the repository holds no evidence for the rest. Two parts of a specification already have an effect: structured waiting gates the awaiting-input flag, and the [capability matrix](adapters.md) takes each ported agent's decision inputs from `Spec.ObservationInputs()` (state, error class and evidence for both; the reset time for Codex, which has the limit lookup). Its tests fail when a specification gains an input the table does not list, or when the shared runner refers to an observation field no specification can declare. Every declaration is tied to the code it describes by a test, so it cannot drift before K2 relies on it:
+
+- the setting names are exactly the YAML keys of the agent's settings struct;
+- the provider and default CLI are what configuration gives a loop that sets neither;
+- the shared runner builds nothing for a prompt it cannot pass, and refuses to stop an agent that does not declare it can be stopped;
+- exact resume means the resume command carries the saved session and the first one does not;
+- structured errors means a coded failure is classified and comes with evidence;
+- child work, stop, exact resume, structured errors and structured waiting agree with the capability matrix's rows;
+- each ported agent's real runner is run over a healthy turn, a coded failure, an uncoded failure and unreadable output, with the limit lookup answering "blocked", and the observation fields it set must be exactly the table's inputs.
+
+Retries itself, fails over itself and schedules itself are vocabulary for agents that supervise themselves (K3). Nothing acts on them, and a test refuses a registered agent that declares one.
 
 **Registry.** `runner.Specs()` lists the specifications. These read from it: the adapter factory, `internal/probe` (argv, verdict, kept output and the limit lookup), the saved-session check in `status`, the run graph's session link, and guided `fallbacks add` (account variable, existing logins, default quota group and the probe for a BB provider).
 
@@ -108,7 +118,7 @@ These still name agents and were left, with the reason:
 - `init` and the guided `fallbacks add` flow: they build those typed settings and carry per-agent wording.
 - `internal/probe`'s usage readings: the reading types live in that package, so a small table there is keyed by specification name.
 - `internal/incident`'s allowed adapter names: a storage allowlist that should change deliberately.
-- `doctor`'s version pattern.
+- `doctor`'s version pattern, and the account variables `CLAUDE_CONFIG_DIR` and `CODEX_HOME` written out in `doctor` (where it reads an agent's CLI, account and working directory) and in `init` (where it builds an agent from an account directory). Both switch on the typed settings, so they were left with them.
 
 **Not on the contract.** Cursor (`cursor.go`) keeps its own adapter and is the next to adopt it. From its code as it is, adopting needs three additions to the contract that neither ported agent uses: an output size limit on the turn's stream, a strict session rule (a returned session that differs from the saved one is refused, and so is a new conversation after a turn with no verified session), and a reading that can say the output is unsafe to act on, which the runner reports as an unknown state with an error. It also reads a crashed turn's output, where the shared runner does not. Antigravity has no runner yet. BB and process targets are not one-turn-per-process agents.
 
@@ -122,6 +132,14 @@ These still name agents and were left, with the reason:
 - A probe command with its own argv, a model flag, and the same success and class rules.
 - An account directory variable and environment overrides.
 - A capability declaration.
+- What the two agents' probes and lookups also return, which a definition would need fields for or go without: a credential expiry time (Claude's result object), usage windows (Claude's stream events and Codex's limit snapshot) and the time a reached limit resets (Codex's snapshot, used for the observation's reset time and the probe result).
+
+Parts of the contract as built that assume a built-in agent, and that K2 has to change first:
+
+- `Spec.Argv` and `Spec.Settings` take `config.Agent` and read its typed `claude` or `codex` settings, so a configuration-defined agent has nowhere to put its settings.
+- `LimitLookup.Read` returns `runner.CodexLimits`.
+- Usage readings in `internal/probe` are a table keyed by agent name.
+- A probe's CLI falls back to the probe kind (`ProbeCLI()` in `internal/config`), not to the specification's default CLI. The two are equal for both ported agents.
 
 Two things these agents needed that such a shape cannot express without code: Codex's limit lookup speaks a JSON-RPC exchange with a second process, and Claude's kept probe output drops one message type. K2 should either leave them out for defined agents (the class stays `unknown`) or name them as built-in helpers.
 

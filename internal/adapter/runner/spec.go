@@ -61,19 +61,25 @@ const PromptStdin PromptVia = "stdin"
 // structured form. False means "not established", not "known absent":
 // keepgoing must not rely on anything that is false.
 type Capabilities struct {
-	// RetriesItself: the agent retries a failed request before the turn ends.
-	RetriesItself bool
-	// FailsOverItself: the agent moves between providers or accounts itself.
+	// RetriesItself, FailsOverItself and SchedulesItself describe an agent
+	// that supervises itself: it retries a failed request before the turn
+	// ends, moves between providers or accounts, or starts its own later
+	// turns. Nothing acts on them yet and no registered agent may declare
+	// them (a test enforces that) until something does.
+	RetriesItself   bool
 	FailsOverItself bool
-	// SchedulesItself: the agent can start its own later turns.
 	SchedulesItself bool
-	// ChildWork: the agent runs work that outlives the turn's process.
+	// ChildWork: the agent runs work that outlives the turn's process. It
+	// must agree with the child rows of the capability matrix.
 	ChildWork bool
-	// ExactResume: a later turn continues exactly the saved session.
+	// ExactResume: a later turn continues exactly the saved session. The
+	// resume argv must carry the saved session.
 	ExactResume bool
 	// Stoppable: a running turn can be stopped through the owned wrapper.
+	// The shared runner refuses to stop a turn without it.
 	Stoppable bool
 	// StructuredErrors: a failure carries a machine-readable code or status.
+	// The reader must classify a coded failure and return evidence for it.
 	StructuredErrors bool
 	// StructuredWaiting: the agent reports waiting on a person in a
 	// machine-readable form. A reading's Waiting is ignored without it.
@@ -203,7 +209,9 @@ func New(a config.Agent, dir string) (h *Headless, ok bool) {
 		return nil, false
 	}
 	set, ok := spec.Settings(a)
-	if !ok {
+	if !ok || spec.Prompt != PromptStdin {
+		// No settings for this agent, or a way of passing the prompt the
+		// shared runner does not implement.
 		return nil, false
 	}
 	return &Headless{spec: spec, agent: a, set: set, dir: Dir(dir)}, true
@@ -275,5 +283,11 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	return h.dir.Start(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))
 }
 
-// Stop implements adapter.Adapter.
-func (h *Headless) Stop(ctx context.Context) error { return h.dir.Stop() }
+// Stop implements adapter.Adapter. An agent that does not declare it can be
+// stopped is never signalled.
+func (h *Headless) Stop(ctx context.Context) error {
+	if !h.spec.Capabilities.Stoppable {
+		return adapter.ErrUnsupported{Op: "stopping a " + h.spec.Name + " turn"}
+	}
+	return h.dir.Stop()
+}

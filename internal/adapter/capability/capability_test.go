@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
@@ -335,5 +337,112 @@ func TestSharedRunnerInputsAreAllDeclarable(t *testing.T) {
 	})
 	if got, want := sorted(used), []string{"AwaitingInput", "ErrorClass", "Evidence", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the shared runner refers to Observation fields %v, want %v", got, want)
+	}
+}
+
+// turns are finished turns for each agent on the runner contract: a healthy
+// one, a failure with a structured code, and a failure with nothing
+// structured. With the never-run and unreadable cases they are every kind of
+// output its reader distinguishes.
+var turns = map[string][]struct {
+	out  string
+	exit string
+}{
+	"claude": {
+		{`{"type":"result","subtype":"success","is_error":false,"session_id":"00000000-0000-4000-8000-0000000000aa"}`, "0"},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"terminal_reason":"rate_limit"}`, "1"},
+		{`{"type":"result","subtype":"error_during_execution","is_error":true}`, "1"},
+		{`fictional text`, "1"},
+	},
+	"codex": {
+		{`{"type":"thread.started","thread_id":"00000000-0000-4000-8000-0000000000aa"}` + "\n" + `{"type":"turn.completed"}`, "0"},
+		{`{"type":"turn.failed","error":{"message":"x","code":"usage_limit_reached","status":429}}`, "1"},
+		{`{"type":"turn.failed","error":{"message":"x"}}`, "1"},
+		{`fictional text`, "1"},
+	},
+}
+
+// An agent's Inputs are what its reader actually sets. Each ported agent's
+// real runner observes its turns, with the account-limit lookup answering
+// "blocked, with a reset time" for any agent that asks, and the Observation
+// fields that came back non-zero are compared with the table. So an agent
+// that starts producing a field (a reader that reports waiting, a limit
+// lookup added to a specification) fails here, and so does a table entry
+// the agent cannot produce.
+func TestPortedAgentsSetExactlyTheirInputs(t *testing.T) {
+	lookup := runner.ReadCodexLimits
+	defer func() { runner.ReadCodexLimits = lookup }()
+	runner.ReadCodexLimits = func(context.Context, string, []string) (runner.CodexLimits, error) {
+		return runner.CodexLimits{Blocked: true, ResetsAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}, nil
+	}
+	settings := map[string]config.Agent{
+		"claude": {Adapter: "claude", Claude: &config.Claude{CLI: "absent"}},
+		"codex":  {Adapter: "codex", Codex: &config.Codex{CLI: "absent"}},
+	}
+	for _, spec := range runner.Specs() {
+		var listed []string
+		for _, a := range Adapters {
+			if a.ID == spec.Name {
+				listed = append(listed, a.Inputs...)
+			}
+		}
+		sort.Strings(listed)
+		samples, ok := turns[spec.Name]
+		if !ok || len(listed) == 0 {
+			t.Errorf("%s is on the runner contract: give it turns here and a column in the table", spec.Name)
+			continue
+		}
+		set := map[string]bool{}
+		observe := func(dir string) {
+			t.Helper()
+			h, ok := runner.New(settings[spec.Name], dir)
+			if !ok {
+				t.Fatalf("%s: no runner", spec.Name)
+			}
+			obs, err := h.Observe(t.Context())
+			if err != nil {
+				t.Fatalf("%s: %v", spec.Name, err)
+			}
+			v := reflect.ValueOf(obs)
+			for i := 0; i < v.NumField(); i++ {
+				if !v.Field(i).IsZero() {
+					set[v.Type().Field(i).Name] = true
+				}
+			}
+		}
+		observe(t.TempDir()) // never run
+		for _, turn := range samples {
+			dir := t.TempDir()
+			for name, content := range map[string]string{"run.json": `{"pid":1,"startedAt":"2026-01-01T00:00:00Z","argv0":"absent"}`, "exit": turn.exit + "\n", "stdout": turn.out} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observe(dir)
+		}
+		if got := sorted(set); !reflect.DeepEqual(got, listed) {
+			t.Errorf("%s: its runner set Observation fields %v; the capability table lists %v", spec.Name, got, listed)
+		}
+		// An agent has child work exactly when the matrix gives it child rows.
+		for _, row := range []string{"child_awareness", "child_notice"} {
+			if has := byID(row).Cells[spec.Name].Status != NA; has != spec.Capabilities.ChildWork {
+				t.Errorf("%s: ChildWork=%v but the %s row is %s", spec.Name, spec.Capabilities.ChildWork, row, byID(row).Cells[spec.Name].Status)
+			}
+		}
+		// It can be stopped exactly when the matrix says so.
+		if listed := byID("stop").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.Stoppable {
+			t.Errorf("%s: Stoppable=%v but the stop row is %s", spec.Name, spec.Capabilities.Stoppable, byID("stop").Cells[spec.Name].Status)
+		}
+		// Exact resume and structured errors likewise.
+		if listed := byID("session_resume").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.ExactResume {
+			t.Errorf("%s: ExactResume=%v but the session_resume row is %s", spec.Name, spec.Capabilities.ExactResume, byID("session_resume").Cells[spec.Name].Status)
+		}
+		if listed := byID("error_classes").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredErrors {
+			t.Errorf("%s: StructuredErrors=%v but the error_classes row is %s", spec.Name, spec.Capabilities.StructuredErrors, byID("error_classes").Cells[spec.Name].Status)
+		}
+		// Waiting on a person is structured exactly when permissions are.
+		if listed := byID("permissions").Cells[spec.Name].Status == Yes; listed != spec.Capabilities.StructuredWaiting {
+			t.Errorf("%s: StructuredWaiting=%v but the permissions row is %s", spec.Name, spec.Capabilities.StructuredWaiting, byID("permissions").Cells[spec.Name].Status)
+		}
 	}
 }

@@ -2,9 +2,12 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -217,5 +220,105 @@ func TestRunnerActsOnAnyReading(t *testing.T) {
 	reading = Reading{Class: decide.ErrUnknown}
 	if obs := observe(); obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit || obs.Evidence.Source != "codex_rate_limits" || lookups != 1 {
 		t.Fatalf("%+v lookups=%d", obs, lookups)
+	}
+}
+
+// settingsTypes is the configuration struct each registered agent's settings
+// are read from.
+var settingsTypes = map[string]any{"claude": config.Claude{}, "codex": config.Codex{}}
+
+// Each declaration in a specification is tied to the code it describes, so it
+// cannot drift: the setting names to the configuration's YAML keys, the
+// provider and CLI to the defaults configuration applies, the prompt to what
+// the shared runner implements, and each capability to behaviour.
+func TestDeclarationsMatchTheCodeTheyDescribe(t *testing.T) {
+	const session = "00000000-0000-4000-8000-0000000000aa"
+	for _, s := range Specs() {
+		// SettingNames are exactly the YAML keys of the agent's settings.
+		typ, ok := settingsTypes[s.Name]
+		if !ok {
+			t.Fatalf("%s: add its settings type to settingsTypes", s.Name)
+		}
+		var keys []string
+		rt := reflect.TypeOf(typ)
+		for i := 0; i < rt.NumField(); i++ {
+			key, _, _ := strings.Cut(rt.Field(i).Tag.Get("yaml"), ",")
+			keys = append(keys, key)
+		}
+		if !reflect.DeepEqual(keys, s.SettingNames) {
+			t.Errorf("%s: configuration accepts %v; the specification lists %v", s.Name, keys, s.SettingNames)
+		}
+
+		// Provider and DefaultCLI are what a loop that sets neither gets.
+		cfg, err := config.Parse([]byte(fmt.Sprintf("version: 1\nloop:\n  name: example-loop\n  state_dir: state\n  adapter: %s\n  %s: {workdir: /example/project}\n  prompt: Continue the loop.\n", s.Name, s.Name)))
+		if err != nil {
+			t.Fatalf("%s: %v", s.Name, err)
+		}
+		set, ok := s.Settings(cfg.Loop.Agent)
+		if !ok || cfg.Loop.Provider != s.Provider || set.CLI != s.DefaultCLI || set.Workdir != "/example/project" {
+			t.Errorf("%s: configuration defaults to provider %q and CLI %q; the specification says %q and %q", s.Name, cfg.Loop.Provider, set.CLI, s.Provider, s.DefaultCLI)
+		}
+		// The account variable reaches a turn through the settings' env.
+		if s.AccountEnv == "" || !strings.Contains(strings.Join(s.SettingNames, ","), "env") {
+			t.Errorf("%s: an account variable needs an env setting", s.Name)
+		}
+
+		// ExactResume: the resume command carries the saved session, and a
+		// first turn carries none.
+		start, resume := strings.Join(s.Argv(cfg.Loop.Agent, ""), " "), strings.Join(s.Argv(cfg.Loop.Agent, session), " ")
+		if s.Capabilities.ExactResume != (strings.Contains(resume, session) && !strings.Contains(start, session) && start != resume) {
+			t.Errorf("%s: ExactResume=%v but start is %q and resume is %q", s.Name, s.Capabilities.ExactResume, start, resume)
+		}
+	}
+	if len(settingsTypes) != len(Specs()) {
+		t.Errorf("settingsTypes lists %d agents, the registry %d", len(settingsTypes), len(Specs()))
+	}
+
+	// StructuredErrors: a coded failure is classified and comes with evidence.
+	coded := map[string]string{
+		"claude": `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429}`,
+		"codex":  `{"type":"turn.failed","error":{"message":"x","code":"usage_limit_reached"}}`,
+	}
+	for _, s := range Specs() {
+		r := s.Read(Status{Phase: Finished, ExitCode: 1, ExitCodeKnown: true, Stdout: []byte(coded[s.Name])})
+		if got := r.Class != decide.ErrUnknown && r.Evidence.Source != ""; got != s.Capabilities.StructuredErrors {
+			t.Errorf("%s: StructuredErrors=%v but a coded failure read as %+v", s.Name, s.Capabilities.StructuredErrors, r)
+		}
+	}
+
+	// Prompt: the shared runner passes it on standard input and builds
+	// nothing for a specification that asks for anything else.
+	// Stoppable: a turn of an agent that does not declare it is not stopped.
+	standIn := &Spec{
+		Name: "stand-in", Prompt: PromptStdin,
+		Settings: func(config.Agent) (Settings, bool) { return Settings{}, true },
+		Argv:     func(config.Agent, string) []string { return []string{"stand-in-cli"} },
+		Read:     func(Status) Reading { return Reading{} },
+	}
+	specs = append(specs, standIn)
+	defer func() { specs = specs[:len(specs)-1] }()
+	h, ok := New(config.Agent{Adapter: "stand-in"}, t.TempDir())
+	if !ok {
+		t.Fatal("no runner for a specification with the prompt on stdin")
+	}
+	var unsupported adapter.ErrUnsupported
+	if err := h.Stop(context.Background()); !errors.As(err, &unsupported) {
+		t.Errorf("stopping an agent that does not declare Stoppable: %v", err)
+	}
+	standIn.Capabilities.Stoppable = true
+	if err := h.Stop(context.Background()); err != nil {
+		t.Errorf("stopping with nothing running: %v", err)
+	}
+	standIn.Prompt = "argument"
+	if _, ok := New(config.Agent{Adapter: "stand-in"}, t.TempDir()); ok {
+		t.Error("built a runner for a prompt the shared runner cannot pass")
+	}
+	names := make([]string, 0, len(coded))
+	for name := range coded {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if !reflect.DeepEqual(names, []string{"claude", "codex"}) {
+		t.Errorf("coded samples for %v", names)
 	}
 }
