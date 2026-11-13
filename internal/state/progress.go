@@ -69,6 +69,9 @@ func ObserveProgress(dir string, previous *Progress, sources, fingerprint string
 		return Progress{}, ErrProgressLedger
 	}
 	p := Progress{Version: 1, Sources: sources, Fingerprint: fingerprint, ChangedAt: now, ObservedAt: now}
+	if previous != nil && sources == previous.Sources {
+		p.Fingerprint = Remember(previous.Fingerprint, fingerprint)
+	}
 	if previous != nil && (sources != previous.Sources || SameProgress(previous.Fingerprint, fingerprint)) {
 		p.ChangedAt = previous.ChangedAt
 	}

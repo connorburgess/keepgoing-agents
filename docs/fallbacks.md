@@ -270,6 +270,8 @@ A handoff is allowed only when the healthy, eligible candidates cover at least `
 
 Below the minimum, keepgoing warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
 
+A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, keepgoing probes the handoff's target exactly and hands off without first refreshing the others (unreleased; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
+
 ## Multiple subscriptions
 
 For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; keepgoing selects an existing login and never creates accounts or copies credentials.

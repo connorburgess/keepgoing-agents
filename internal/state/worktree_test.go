@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -174,5 +175,117 @@ func TestStatGivesUpWhenItsContextEnds(t *testing.T) {
 	}
 	if _, err := git(ctx, t.TempDir(), "status"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("git ignored its context: %v", err)
+	}
+}
+
+func gitRepo(t *testing.T) (string, func(dir string, env []string, args ...string)) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(dir string, env []string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com"), env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(repo, nil, "init", "-q")
+	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("one\n"), 0o644)
+	run(repo, nil, "add", "a.txt")
+	run(repo, []string{"GIT_COMMITTER_DATE=2030-01-01T00:00:00Z"}, "commit", "-q", "-m", "init")
+	return repo, run
+}
+
+// A worktree whose HEAD is newer than every other worktree's goes away and
+// comes back unchanged some checks later. Comparing only with the previous
+// observation, its commit looked newer than anything seen and counted as
+// progress, which cleared the re-prompt and deferral counts. The newest
+// commit time is remembered across observations instead.
+func TestReturningWorktreeWithTheNewestCommitIsNotProgress(t *testing.T) {
+	repo, run := gitRepo(t)
+	ahead := filepath.Join(t.TempDir(), "ahead")
+	run(repo, nil, "worktree", "add", "-q", "-b", "ahead", ahead)
+	run(ahead, []string{"GIT_COMMITTER_DATE=2031-01-01T00:00:00Z"}, "commit", "-q", "--allow-empty", "-m", "ahead")
+	observe := func(saved string) (string, bool) {
+		t.Helper()
+		f, err := Fingerprint([]string{repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Remember(saved, f), SameProgress(saved, f)
+	}
+	saved, _ := observe("")
+	run(repo, nil, "worktree", "remove", "--force", ahead)
+	for i := 0; i < 3; i++ { // several checks without it
+		var same bool
+		if saved, same = observe(saved); !same {
+			t.Fatalf("check %d without the worktree counted as progress", i)
+		}
+	}
+	run(repo, nil, "worktree", "add", "-q", ahead, "ahead")
+	saved, same := observe(saved)
+	if !same {
+		t.Fatal("a worktree returning unchanged counted as progress")
+	}
+	// A commit made after it returned is progress.
+	run(ahead, []string{"GIT_COMMITTER_DATE=2032-01-01T00:00:00Z"}, "commit", "-q", "--allow-empty", "-m", "more")
+	if _, same := observe(saved); same {
+		t.Fatal("a new commit in the returned worktree was not progress")
+	}
+	// Remembering keeps one number and never lowers it.
+	if got := Remember("kg3|m=0|n=500|aaaaaaaaaaaaaaaa=100.c.1111", "kg3|m=1|bbbbbbbbbbbbbbbb=300.c.2222"); got != "kg3|m=1|n=500|bbbbbbbbbbbbbbbb=300.c.2222" {
+		t.Fatal(got)
+	}
+	if got := Remember("an older format", "kg3|m=0|aaaaaaaaaaaaaaaa=100.c.1111"); got != "kg3|m=0|aaaaaaaaaaaaaaaa=100.c.1111" {
+		t.Fatal(got)
+	}
+}
+
+// With log.showSignature set and a signed HEAD, `git log` prints the
+// signature check ahead of the requested format. The fingerprint then failed
+// with "unexpected output" on every check, so the loop took no action at all.
+func TestFingerprintIgnoresShowSignature(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	repo, run := gitRepo(t)
+	key := filepath.Join(t.TempDir(), "fictional-signing-key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "fixture@example.com", "-f", key).CombinedOutput(); err != nil {
+		t.Skipf("ssh-keygen: %v\n%s", err, out)
+	}
+	signers := filepath.Join(t.TempDir(), "allowed_signers")
+	pub, _ := os.ReadFile(key + ".pub")
+	os.WriteFile(signers, append([]byte("fixture@example.com "), pub...), 0o600)
+	run(repo, nil, "config", "gpg.format", "ssh")
+	run(repo, nil, "config", "user.signingkey", key+".pub")
+	run(repo, nil, "config", "gpg.ssh.allowedSignersFile", signers)
+	sign := exec.Command("git", "commit", "-q", "-S", "--allow-empty", "-m", "signed")
+	sign.Dir = repo
+	sign.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=fixture@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=fixture@example.com")
+	if out, err := sign.CombinedOutput(); err != nil {
+		t.Skipf("this git cannot sign with an SSH key: %v\n%s", err, out)
+	}
+	before, err := Fingerprint([]string{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(repo, nil, "config", "log.showSignature", "true")
+	shown, err := exec.Command("git", "-C", repo, "log", "-1", "--format=%H %ct").Output()
+	if err != nil || len(strings.Split(strings.TrimSpace(string(shown)), "\n")) < 2 {
+		t.Skipf("this git does not print a signature line here: %q %v", shown, err)
+	}
+	after, err := Fingerprint([]string{repo})
+	if err != nil {
+		t.Fatalf("log.showSignature broke the fingerprint: %v", err)
+	}
+	if after != before {
+		t.Fatal("log.showSignature changed the fingerprint")
 	}
 }

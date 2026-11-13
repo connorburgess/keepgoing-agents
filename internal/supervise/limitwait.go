@@ -1,7 +1,6 @@
 package supervise
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -97,6 +96,12 @@ func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 		return
 	}
 	rec.Outcome, rec.Reports = state.LimitWaitRequested, reports+1
+	// A report that cannot be sent in this check for lack of time must not use
+	// up its single attempt: nothing is recorded, so the next check sends it.
+	if !t.canReport(limitWaitEvent) {
+		t.warn("report %s put off to the next check: no time left in this one (loop.tick_timeout)", limitWaitEvent)
+		return
+	}
 	// Intent first, as holds and completions are saved before their reports.
 	// If it cannot be saved nothing is sent, so an unwritable state directory
 	// cannot turn into a report on every check.
@@ -120,10 +125,9 @@ func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 	if rec.Reports > 1 {
 		text += " The reported reset has moved later since the last report for this wait."
 	}
-	ctx, cancel, ok := t.reportContext(limitWaitEvent)
+	ctx, cancel, ok := t.reportContext(limitWaitEvent, text)
 	if !ok {
-		ctx, cancel = context.WithCancel(t.ctx)
-		cancel() // no time left: recorded as a failed delivery below
+		return // cannot happen: canReport was checked before the attempt was reserved
 	}
 	defer cancel()
 	err = t.opts.Reporter.Report(ctx, report.Event{Type: limitWaitEvent, Loop: t.loop.Name, Text: text, At: t.now,

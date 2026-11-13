@@ -276,3 +276,35 @@ func TestDeliveryHistoryRefusesAliasedFile(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+// A report the caller decided not to send, for lack of time in a check, is
+// kept beside the deliveries with no request and no attempt, and shows as a
+// warning. Events the loop does not subscribe to leave no record.
+func TestDroppedReportIsRecordedWithoutARequest(t *testing.T) {
+	dir := t.TempDir()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer srv.Close()
+	r := recordedWebhook(t, dir, srv.URL)
+	d, ok := Reporter(r).(Dropper)
+	if !ok {
+		t.Fatal("the recording reporter cannot note a dropped report")
+	}
+	if err := d.Dropped(Event{Type: "await_user", Loop: "example-loop", Text: "private text"}); err != nil {
+		t.Fatal(err)
+	}
+	h := history(t, dir)
+	if len(h.Records) != 1 || h.Records[0].Outcome != "not_sent" || h.Records[0].Event != "await_user" || len(h.Records[0].Attempts) != 0 || calls.Load() != 0 {
+		t.Fatalf("%+v calls=%d", h.Records, calls.Load())
+	}
+	if s := InspectDeliveries(dir); len(s.Warnings) != 1 || s.Warnings[0].Outcome != "not_sent" {
+		t.Fatalf("%+v", s)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, DeliveryFile))
+	if strings.Contains(string(b), "private text") {
+		t.Fatal("delivery record kept report text")
+	}
+	if err := d.Dropped(Event{Type: "wake"}); err != nil || len(history(t, dir).Records) != 1 {
+		t.Fatalf("an unsubscribed event was recorded: %v", err)
+	}
+}

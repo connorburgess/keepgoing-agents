@@ -25,18 +25,22 @@ type outage struct {
 	*world
 	clock       time.Time
 	probeUp     map[string]bool
+	probeFast   map[string]bool // fails at once instead of hanging
 	probeCalls  []string
 	observeTime time.Duration
 	// fingerprintTime and sendTime model slow Git and a slow send.
 	fingerprintTime time.Duration
 	sendTime        time.Duration
+	// activateTime and yieldTime model a slow model switch and yield command.
+	activateTime time.Duration
+	yieldTime    time.Duration
 }
 
 // reportTime is a webhook that fails slowly: two attempts of report.timeout.
 const reportTime = 40 * time.Second
 
 func newOutage(t *testing.T, candidates int) *outage {
-	o := &outage{world: newWorld(t, true, true), clock: t0, probeUp: map[string]bool{}, observeTime: time.Second}
+	o := &outage{world: newWorld(t, true, true), clock: t0, probeUp: map[string]bool{}, probeFast: map[string]bool{}, observeTime: time.Second}
 	o.cfg.Loop.Report = &config.Report{}
 	o.cfg.FallbackSet.Candidates = nil
 	for i := 0; i < candidates; i++ {
@@ -70,6 +74,14 @@ func (s slowAdapter) Observe(ctx context.Context) (decide.Observation, error) {
 	return s.Adapter.Observe(ctx)
 }
 
+func (s slowAdapter) Activate(ctx context.Context) error {
+	s.o.clock = s.o.clock.Add(s.o.activateTime)
+	if act, ok := s.Adapter.(adapter.Activator); ok {
+		return act.Activate(ctx)
+	}
+	return nil
+}
+
 func (s slowAdapter) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
 	s.o.clock = s.o.clock.Add(s.o.sendTime)
 	return s.Adapter.Send(ctx, prompt, mode)
@@ -85,6 +97,10 @@ func (o *outage) tick(t *testing.T, at time.Time) (Result, time.Duration, error)
 	}
 	opts.Reporter = o
 	opts.Clock = func() time.Time { return o.clock }
+	opts.Busy = func(context.Context, config.Yield) (bool, error) {
+		o.clock = o.clock.Add(o.yieldTime)
+		return false, nil
+	}
 	opts.Fingerprint = func([]string) (string, error) {
 		o.clock = o.clock.Add(o.fingerprintTime)
 		return "same", nil
@@ -94,6 +110,10 @@ func (o *outage) tick(t *testing.T, at time.Time) (Result, time.Duration, error)
 		if o.probeUp[c.ID] {
 			o.clock = o.clock.Add(2 * time.Second)
 			return probe.Result{OK: true}
+		}
+		if o.probeFast[c.ID] {
+			o.clock = o.clock.Add(2 * time.Second)
+			return probe.Result{ErrorClass: string(decide.ErrAuth)}
 		}
 		o.clock = o.clock.Add(timeout)
 		return probe.Result{ErrorClass: string(decide.ErrUnknown), Detail: "timeout", TimedOut: true}
@@ -241,7 +261,7 @@ func TestHandoffReachesAWorkingFallbackPastHangingOnes(t *testing.T) {
 	// fallback-3. The handoff is put off, through the decision engine.
 	r, took := o.next(t, first)
 	st, _ := state.Load(o.dir)
-	if r.Action != "none" || r.Reason != decide.HandoffDeferredReason || took > 3*time.Minute || len(p.sent) != sends || st.Reprompts != 0 || st.HandoffDeferrals != 1 || st.ExactCut["fallback-2"] != 1 {
+	if r.Action != "none" || !strings.HasPrefix(r.Reason, decide.HandoffDeferredReason) || took > 3*time.Minute || len(p.sent) != sends || st.Reprompts != 0 || st.HandoffDeferrals != 1 || st.ExactCut["fallback-2"] != 1 {
 		t.Fatalf("%+v took=%s state=%+v", r, took, st)
 	}
 	if notRun, cut, ran := skipped(r); cut != 1 || notRun < 1 || ran != 1 {
@@ -310,7 +330,7 @@ func TestHandoffWaitsForTheNextCheckWhenTheBudgetIsSpent(t *testing.T) {
 	r, _ := o.next(t, 1)
 	st, _ := state.Load(o.dir)
 	ctl, _ := control.Load(o.dir)
-	if r.Action != "none" || r.Reason != decide.HandoffDeferredReason || len(p.sent) != sends || st.Reprompts != 0 || st.Target() != state.Primary || ctl.AwaitingUser {
+	if r.Action != "none" || !strings.HasPrefix(r.Reason, decide.HandoffDeferredReason) || len(p.sent) != sends || st.Reprompts != 0 || st.Target() != state.Primary || ctl.AwaitingUser {
 		t.Fatalf("%+v reprompts=%d", r, st.Reprompts)
 	}
 	if notRun, _, _ := skipped(r); notRun != 1 || len(o.probeCalls) != 0 {
@@ -361,25 +381,39 @@ func TestReportAfterTheBudgetIsBrief(t *testing.T) {
 	}
 }
 
-// Worst cases, measured. Every step takes as long as it is allowed to: the
-// observation and the fingerprint run to their own limits or are quick,
-// probes hang, sends are slow and every report fails slowly on both attempts.
-// The longest check of each configuration is logged and must stay inside a
-// five-minute scheduler timeout. docs/operations.md quotes these figures.
-func TestWorstCaseCheckFitsAFiveMinuteScheduler(t *testing.T) {
+// The hard limit, tested. A check must end within loop.tick_timeout plus 90
+// seconds whatever is slow. Every step is charged its maximum or almost
+// nothing, independently: the yield command (10s), the observation (90s),
+// the fingerprint (60s), every probe (its timeout), the model switch and the
+// send (30s each) and every report (two attempts, 40s). Each combination is
+// run against every kind of session, with and without fallbacks that were
+// healthy before, for several checks. Before the steps were accounted
+// together, a quick observation followed by a hung probe, two slow reports,
+// a slow fingerprint and a slow send ran to 4m21s at the defaults and 4m51s
+// with a two-minute probe timeout, and the yield and the model switch came
+// on top.
+func TestCheckEndsWithinItsHardLimitInEveryCombination(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		probeTimeout time.Duration
 		budget       time.Duration // as config.Load would set it
-		limit        time.Duration
 	}{
-		{"defaults", 90 * time.Second, 3 * time.Minute, 4*time.Minute + 15*time.Second},
-		{"probe timeout 2m, budget grown to 3m30s", 2 * time.Minute, 3*time.Minute + 30*time.Second, 4*time.Minute + 45*time.Second},
+		{"defaults", 90 * time.Second, 3 * time.Minute},
+		{"probe timeout 2m, budget grown to 3m30s", 2 * time.Minute, 3*time.Minute + 30*time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			limit := tc.budget + config.TickTail
 			var worst time.Duration
 			var where string
-			for _, slowFront := range []bool{false, true} {
+			runs := 0
+			for mask := 0; mask < 32; mask++ {
+				slow := func(bit int, d time.Duration) time.Duration {
+					if mask&(1<<bit) != 0 {
+						return d
+					}
+					return 0
+				}
 				for _, obs := range []decide.Observation{
 					{State: decide.Idle},
 					{State: decide.Active},
@@ -395,28 +429,35 @@ func TestWorstCaseCheckFitsAFiveMinuteScheduler(t *testing.T) {
 						o.cfg.FallbackSet.Probe.Timeout = config.Duration{Duration: tc.probeTimeout}
 						o.cfg.Loop.Progress.Repositories = []string{"/example/project"}
 						o.cfg.Loop.Errors.ReportWaitAfter = config.Duration{Duration: time.Hour}
+						o.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"x"}}
+						for i := range o.cfg.FallbackSet.Candidates {
+							o.cfg.FallbackSet.Candidates[i].BB.Model = "example-model" // so a handoff switches the model
+						}
 						p := o.primary(decide.Observation{State: decide.Idle})
 						first := 0
 						if healthyFirst {
 							first = healthyThenHung(t, o, "fallback-1", "fallback-2", "fallback-3", "fallback-4")
 						}
-						o.sendTime = 30 * time.Second
-						if slowFront {
-							o.observeTime, o.fingerprintTime = observeTimeout, state.FingerprintTimeout
-						}
+						o.yieldTime = slow(0, 10*time.Second)
+						o.observeTime = time.Second + slow(1, observeTimeout-time.Second)
+						o.fingerprintTime = slow(2, state.FingerprintTimeout)
+						o.sendTime = slow(3, 30*time.Second)
+						o.activateTime = slow(4, 30*time.Second)
 						p.obs = obs
-						for i := 1; i <= 6; i++ {
+						for i := 1; i <= 3; i++ {
 							r, took := o.next(t, first+i)
+							runs++
 							if took > worst {
-								worst, where = took, fmt.Sprintf("slowFront=%t healthyFirst=%t state=%s class=%s check=%d action=%s", slowFront, healthyFirst, obs.State, obs.ErrorClass, i, r.Action)
+								worst, where = took, fmt.Sprintf("yield=%s observe=%s fingerprint=%s send=%s activate=%s healthyFirst=%t state=%s class=%s check=%d action=%s",
+									o.yieldTime, o.observeTime, o.fingerprintTime, o.sendTime, o.activateTime, healthyFirst, obs.State, obs.ErrorClass, i, r.Action)
 							}
 						}
 					}
 				}
 			}
-			t.Logf("longest check: %s (%s)", worst, where)
-			if worst > tc.limit {
-				t.Fatalf("longest check %s exceeds %s: %s", worst, tc.limit, where)
+			t.Logf("%d checks; longest %s of a %s limit (%s)", runs, worst, limit, where)
+			if worst > limit {
+				t.Fatalf("a check took %s, over its hard limit of %s: %s", worst, limit, where)
 			}
 		})
 	}
@@ -465,6 +506,11 @@ func TestDueHandoffRunsBeforeScheduledProbes(t *testing.T) {
 // active check, so thirty checks in a row did nothing.
 func TestDeferralCountSurvivesActiveChecks(t *testing.T) {
 	o := newOutage(t, 2)
+	// Keep the fallbacks' earlier results valid for the whole test. Otherwise
+	// they expire partway, the handoff is refused for want of redundancy and
+	// the ordinary rules act for that reason instead.
+	o.cfg.FallbackSet.Probe.TTL = config.Duration{Duration: 1000 * time.Hour}
+	o.cfg.FallbackSet.Probe.Every = config.Duration{Duration: 1000 * time.Hour}
 	p := o.primary(decide.Observation{State: decide.Idle})
 	first := healthyThenHung(t, o)
 	sends := len(p.sent)
@@ -521,10 +567,10 @@ func TestReportsAreBoundedOnceTheBudgetIsSpent(t *testing.T) {
 	if err != nil || r.Action != "wake" || o.reportTypes() != "" || took != time.Hour || !strings.Contains(strings.Join(r.Warnings, "\n"), "report wake not sent") {
 		t.Fatalf("%+v took=%s reports=%q %v", r, took, o.reportTypes(), err)
 	}
-	tk := &tick{ctx: context.Background(), res: &Result{}, opts: Options{Clock: func() time.Time { return t0 }}, deadline: t0.Add(-time.Second)}
+	tk := &tick{ctx: context.Background(), res: &Result{}, opts: Options{Clock: func() time.Time { return t0 }, Reporter: report.Nop{}}, deadline: t0.Add(-time.Second)}
 	sent := 0
 	for i := 0; i < 6; i++ {
-		if _, cancel, ok := tk.reportContext("await_user"); ok {
+		if _, cancel, ok := tk.reportContext("await_user", ""); ok {
 			cancel()
 			sent++
 		}
@@ -598,5 +644,135 @@ func TestMissingWorktreesAreReportedAndDoNotBlockAWake(t *testing.T) {
 	r, err = tick(200, "", true)
 	if err == nil || r.Action != "none" || len(p.sent) != sent || !r.Recorded || r.Outcome != "failed" {
 		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+// With min_healthy 2, fallback A confirmed healthy and fallback B confirmed
+// healthy but due for its scheduled probe: B's earlier result is still inside
+// probe.ttl, so the redundancy rule is met and a due handoff goes to A
+// without waiting for B's refresh. Evidence inside its ttl counts; a due
+// scheduled probe is a refresh, not a precondition.
+func TestHandoffReliesOnEvidenceInsideItsTTL(t *testing.T) {
+	o := newOutage(t, 2)
+	p := o.primary(decide.Observation{State: decide.Idle})
+	first := healthyThenHung(t, o, "fallback-2") // B is now down, and due again five hours on
+	p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
+	r, _ := o.next(t, first)
+	if r.Action != "handoff" || r.Target != "fallback-1" || len(o.probeCalls) != 1 {
+		t.Fatalf("%+v probes=%v", r, o.probeCalls)
+	}
+}
+
+// When the confirmed fallback fails its exact probe and others were held
+// back, those are probed in the same check and no re-prompt is spent before
+// the next check has seen the result. The redundancy picture and the degraded
+// report follow the late probes.
+func TestFailedHandoffProbesHeldBackFallbacksBeforeReprompting(t *testing.T) {
+	o := newOutage(t, 3)
+	o.cfg.FallbackSet.Redundancy.MinHealthy = 1
+	p := o.primary(decide.Observation{State: decide.Idle})
+	o.probeUp["fallback-1"] = true
+	o.next(t, 0) // fallback-1 healthy; 2 and 3 time out one per check
+	o.next(t, 1)
+	sends := len(p.sent)
+	// Five hours on: fallback-1 has gone down, fallback-2 has come up, and
+	// every scheduled probe is due again.
+	// fallback-1 now refuses at once (a revoked login, say).
+	o.probeUp["fallback-1"], o.probeUp["fallback-2"], o.probeFast["fallback-1"] = false, true, true
+	o.probeCalls = nil
+	p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
+	r, took := o.next(t, 30)
+	st, _ := state.Load(o.dir)
+	if r.Action != "none" || !strings.HasPrefix(r.Reason, decide.HandoffDeferredReason) || !strings.Contains(r.Reason, "held back for them") ||
+		len(p.sent) != sends || st.Reprompts != 0 || st.HandoffDeferrals != 1 || took > 4*time.Minute+30*time.Second {
+		t.Fatalf("%+v reprompts=%d deferrals=%d took=%s", r, st.Reprompts, st.HandoffDeferrals, took)
+	}
+	calls := strings.Join(o.probeCalls, " ")
+	if !strings.HasPrefix(calls, "fallback-1:exact:") || !strings.Contains(calls, "fallback-2:scheduled:") {
+		t.Fatalf("probes: %s", calls)
+	}
+	// The result reflects the late probes: fallback-2 is healthy now.
+	if r.Redundancy == nil || len(r.Redundancy.Healthy) != 1 || r.Redundancy.Healthy[0] != "fallback-2" {
+		t.Fatalf("redundancy not re-evaluated: %+v", r.Redundancy)
+	}
+	if r, _ := o.next(t, 31); r.Action != "handoff" || r.Target != "fallback-2" {
+		t.Fatalf("next check: %+v", r)
+	}
+}
+
+// droppingReporter keeps the delivery record of reports that were not sent.
+type droppingReporter struct {
+	*outage
+	dropped []string
+}
+
+func (d *droppingReporter) Dropped(e report.Event) error {
+	d.dropped = append(d.dropped, e.Type)
+	return nil
+}
+
+// A report that cannot be sent for lack of time does not use up an
+// at-most-once attempt: the limit-wait and child-error reports are left for
+// the next check, with nothing recorded and no request made. A routine
+// report that is not sent is noted in the delivery records.
+func TestReportsWithoutTimeAreLeftForTheNextCheck(t *testing.T) {
+	o := newOutage(t, 0)
+	o.cfg.FallbackSet = nil
+	o.cfg.Loop.Report = &config.Report{Events: []string{"limit_wait", "child_error", "wake", "reprompt"}}
+	o.cfg.Loop.Errors.ReportWaitAfter = config.Duration{Duration: time.Hour}
+	p := o.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, ResetsAt: t0.Add(72 * time.Hour),
+		ErroredChildren: []string{"thr_child_a"}})
+	rep := &droppingReporter{outage: o}
+	check := func(at time.Time) Result {
+		t.Helper()
+		opts := o.world.opts(at)
+		opts.Reporter = rep
+		opts.Clock = func() time.Time { return o.clock }
+		inner := opts.NewAdapter
+		opts.NewAdapter = func(a config.Agent, dir, target string) (adapter.Adapter, error) {
+			ad, err := inner(a, dir, target)
+			return slowAdapter{ad, o}, err
+		}
+		r, err := Tick(context.Background(), o.cfg, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	// No time left at all, and the three late slots are not available to
+	// these two: use them up first with a deadline in the past.
+	o.observeTime = time.Hour
+	o.clock = t0
+	r := check(t0)
+	st, _ := state.Load(o.dir)
+	// Both are essential, so with slots free they are sent even now.
+	if o.reportTypes() != "limit_wait,child_error" || st.LimitWaitReport == nil || st.ChildErrorReport == nil {
+		t.Fatalf("essential reports were not sent with late slots free: %q %+v", o.reportTypes(), r.Warnings)
+	}
+
+	// With the late slots spent, they wait: nothing recorded, nothing sent.
+	o2 := newOutage(t, 0)
+	o2.cfg.FallbackSet = nil
+	o2.cfg.Loop.Report = o.cfg.Loop.Report
+	o2.cfg.Loop.Errors.ReportWaitAfter = config.Duration{Duration: time.Hour}
+	o2.primary(p.obs)
+	tk := &tick{ctx: context.Background(), cfg: o2.cfg, loop: o2.cfg.Loop, res: &Result{Action: "none", Target: state.Primary}, now: t0,
+		opts: Options{Clock: func() time.Time { return t0 }, Reporter: rep}, deadline: t0.Add(-time.Second), lateReports: maxLateReports,
+		incidentLimitWait: decide.WaitNoFallback}
+	tk.st, _ = state.Load(o2.dir)
+	tk.reportLongLimitWait(state.Primary, p.obs)
+	tk.reportChildErrors(state.Primary, p.obs)
+	saved, _ := state.Load(o2.dir)
+	if tk.st.LimitWaitReport != nil || tk.st.ChildErrorReport != nil || saved.LimitWaitReport != nil || saved.ChildErrorReport != nil {
+		t.Fatalf("an unsent report used its attempt: %+v %+v", tk.st.LimitWaitReport, tk.st.ChildErrorReport)
+	}
+	if n := strings.Count(strings.Join(tk.res.Warnings, "\n"), "put off to the next check"); n != 2 {
+		t.Fatalf("warnings: %v", tk.res.Warnings)
+	}
+	// A routine report with no time is noted in the delivery records.
+	rep.dropped = nil
+	tk.report("wake", "example", nil)
+	if len(rep.dropped) != 1 || rep.dropped[0] != "wake" {
+		t.Fatalf("dropped: %v", rep.dropped)
 	}
 }

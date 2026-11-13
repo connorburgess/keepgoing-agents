@@ -56,27 +56,14 @@ func Fingerprint(repositories []string) (string, error) {
 			digests[hex.EncodeToString(key[:8])] = digest
 		}
 	}
-	keys := make([]string, 0, len(digests))
-	for k := range digests {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s|m=%d", fingerprintPrefix, missing)
-	for _, k := range keys {
-		fmt.Fprintf(&b, "|%s=%s", k, digests[k])
-	}
-	return b.String(), nil
+	return parsed{missing: missing, digests: digests}.String(), nil
 }
 
-// treeDigest describes one worktree as "<commit time>.<c|d>.<hash>": the
-// committer time of HEAD in Unix seconds, whether tracked files differ from
-// HEAD (d) or not (c), and a hash of HEAD, the status and the metadata of the
-// changed files. The first two parts let a worktree seen for the first time
-// be judged: see SameProgress.
 func treeDigest(ctx context.Context, tree string) (string, error) {
 	h := sha256.New()
-	head, err := git(ctx, tree, "log", "-1", "--format=%H %ct")
+	// --no-show-signature: with log.showSignature set, a signed HEAD would
+	// otherwise put its verification lines ahead of the requested format.
+	head, err := git(ctx, tree, "log", "-1", "--no-show-signature", "--format=%H %ct")
 	if err != nil {
 		return "", fmt.Errorf("%s: git log: %w", tree, err)
 	}
@@ -125,26 +112,86 @@ func digestParts(digest string) (committed int64, dirty bool, ok bool) {
 	return committed, parts[1] == "d", err == nil
 }
 
+// parsed is a structured fingerprint: the count of prunable worktrees left
+// out, the newest HEAD commit time remembered from earlier observations, and
+// one digest per worktree.
+type parsed struct {
+	missing int
+	newest  int64
+	digests map[string]string
+}
+
+// newestCommit is the newest HEAD commit time the fingerprint knows of: the
+// remembered one or any of its own worktrees'.
+func (p parsed) newestCommit() int64 {
+	newest := p.newest
+	for _, digest := range p.digests {
+		if committed, _, ok := digestParts(digest); ok && committed > newest {
+			newest = committed
+		}
+	}
+	return newest
+}
+
 // parseFingerprint splits a structured fingerprint. ok is false for any other
 // string, such as one saved by an older build.
-func parseFingerprint(fp string) (missing int, digests map[string]string, ok bool) {
+func parseFingerprint(fp string) (parsed, bool) {
 	parts := strings.Split(fp, "|")
 	if len(parts) < 2 || parts[0] != fingerprintPrefix || !strings.HasPrefix(parts[1], "m=") {
-		return 0, nil, false
+		return parsed{}, false
 	}
-	missing, err := strconv.Atoi(strings.TrimPrefix(parts[1], "m="))
-	if err != nil || missing < 0 {
-		return 0, nil, false
+	p := parsed{digests: map[string]string{}}
+	var err error
+	if p.missing, err = strconv.Atoi(strings.TrimPrefix(parts[1], "m=")); err != nil || p.missing < 0 {
+		return parsed{}, false
 	}
-	digests = map[string]string{}
 	for _, part := range parts[2:] {
-		key, digest, found := strings.Cut(part, "=")
-		if !found || key == "" || digest == "" {
-			return 0, nil, false
+		key, value, found := strings.Cut(part, "=")
+		if !found || key == "" || value == "" {
+			return parsed{}, false
 		}
-		digests[key] = digest
+		if key == "n" {
+			if p.newest, err = strconv.ParseInt(value, 10, 64); err != nil {
+				return parsed{}, false
+			}
+			continue
+		}
+		p.digests[key] = value
 	}
-	return missing, digests, true
+	return p, true
+}
+
+func (p parsed) String() string {
+	keys := make([]string, 0, len(p.digests))
+	for k := range p.digests {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|m=%d", fingerprintPrefix, p.missing)
+	if p.newest > 0 {
+		fmt.Fprintf(&b, "|n=%d", p.newest)
+	}
+	for _, k := range keys {
+		fmt.Fprintf(&b, "|%s=%s", k, p.digests[k])
+	}
+	return b.String()
+}
+
+// Remember returns current carrying the newest HEAD commit time known to
+// previous, so that a worktree which goes away and comes back, however many
+// checks later, is not mistaken for new work. It is the value to save. One
+// number is kept, whatever the number of worktrees or observations.
+func Remember(previous, current string) string {
+	was, wasOK := parseFingerprint(previous)
+	is, isOK := parseFingerprint(current)
+	if !wasOK || !isOK {
+		return current
+	}
+	if newest := was.newestCommit(); newest > is.newest {
+		is.newest = newest
+	}
+	return is.String()
 }
 
 // SameProgress reports whether two fingerprints show no progress.
@@ -152,8 +199,9 @@ func parseFingerprint(fp string) (missing int, digests map[string]string, ok boo
 // A worktree present in both observations is progress when its digest
 // changed. A worktree that disappeared is not progress. A worktree seen for
 // the first time is progress only when it shows work of its own: tracked
-// files that differ from HEAD, or a HEAD commit newer than every commit seen
-// in the previous observation. A fresh checkout of an existing commit, a
+// files that differ from HEAD, or a HEAD commit newer than every commit the
+// previous fingerprint knows of, including those it remembers from earlier
+// observations (see Remember). A fresh checkout of an existing commit, a
 // returning worktree and a newly registered one are therefore not progress by
 // themselves, while a commit made in a new worktree is.
 //
@@ -161,29 +209,24 @@ func parseFingerprint(fp string) (missing int, digests map[string]string, ok boo
 // and that change of format is not progress either. Two unstructured values
 // are compared as they are.
 func SameProgress(previous, current string) bool {
-	_, was, wasOK := parseFingerprint(previous)
-	_, is, isOK := parseFingerprint(current)
+	was, wasOK := parseFingerprint(previous)
+	is, isOK := parseFingerprint(current)
 	if !wasOK && !isOK {
 		return previous == current
 	}
 	if wasOK != isOK {
 		return true
 	}
-	var newest int64
-	for _, digest := range was {
-		if committed, _, ok := digestParts(digest); ok && committed > newest {
-			newest = committed
-		}
-	}
-	for key, digest := range is {
-		before, shared := was[key]
+	newest := was.newestCommit()
+	for key, digest := range is.digests {
+		before, shared := was.digests[key]
 		if shared {
 			if before != digest {
 				return false
 			}
 			continue
 		}
-		if committed, dirty, ok := digestParts(digest); ok && len(was) > 0 && (dirty || committed > newest) {
+		if committed, dirty, ok := digestParts(digest); ok && len(was.digests) > 0 && (dirty || committed > newest) {
 			return false
 		}
 	}
@@ -193,8 +236,8 @@ func SameProgress(previous, current string) bool {
 // MissingWorktrees is how many registered worktrees the fingerprint left out
 // because Git marks them prunable. Zero for an unstructured fingerprint.
 func MissingWorktrees(fingerprint string) int {
-	missing, _, _ := parseFingerprint(fingerprint)
-	return missing
+	p, _ := parseFingerprint(fingerprint)
+	return p.missing
 }
 
 // worktrees lists the registered worktrees of repo that can be read and

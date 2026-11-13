@@ -204,7 +204,7 @@ func TestGrownCheckBudgetIsShownByStatusAndDoctor(t *testing.T) {
 		warn                  bool
 	}{
 		{"10s", "check budget: 3m0s\n", `"status": "ok"`, false},
-		{"2m", "check budget: 3m30s (tick_timeout is not set; raised from the 3m0s default to fit fallbacks probe.timeout)\n", "raised from the 3m0s default", false},
+		{"2m", "check budget: 3m30s (tick_timeout is not set; raised from the 3m0s default to fit fallbacks probe.timeout)\n", "may outlast a five-minute scheduler timeout", true},
 		{"3m", "check budget: 4m30s (tick_timeout is not set; raised from the 3m0s default to fit fallbacks probe.timeout)\n", "may outlast a five-minute scheduler timeout", true},
 	} {
 		t.Run(tc.probe, func(t *testing.T) {
