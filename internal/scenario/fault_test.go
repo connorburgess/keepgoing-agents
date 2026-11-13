@@ -350,12 +350,13 @@ const (
 	pauseStillWorks = "a person can still pause or stop the loop"
 )
 
-// statusExplains: status exits 0, names the file and what to do about it,
-// and still prints the loop's name.
+// statusExplains: status names the file and what to do about it, and still
+// prints the loop. It exits 1, because a record that decides could not be
+// read.
 func statusExplains(r Result, file string) error {
 	text := r.Stdout + r.Stderr
 	return all(
-		check(r.Code == 0, "status exits %d", r.Code),
+		check(r.Code == 1, "status exits %d", r.Code),
 		check(strings.Contains(text, file) && strings.Contains(strings.ToLower(text), "restore"), "it does not name %s with what to do: %q", file, strings.TrimSpace(text)),
 		check(strings.Contains(r.Stdout, "example-loop"), "it prints nothing else"),
 	)
