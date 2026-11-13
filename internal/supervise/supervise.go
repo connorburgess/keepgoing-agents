@@ -567,6 +567,7 @@ func (t *tick) run() error {
 		}
 	}
 	t.reportLongLimitWait(target, obs)
+	t.reportChildErrors(target, obs)
 	t.st.LastState = string(obs.State)
 	res.Reprompts = t.st.Reprompts
 	return t.record(actErr)

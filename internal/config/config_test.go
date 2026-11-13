@@ -193,3 +193,36 @@ func TestLimitWaitReportDefaultsAndSubscription(t *testing.T) {
 		t.Error("negative report_wait_after accepted")
 	}
 }
+
+// child_error is in the default event list. A loop with a report section and
+// no events list therefore receives it; an explicit list is unchanged and
+// must name it.
+func TestChildErrorReportSubscription(t *testing.T) {
+	if !contains(ReportEvents, "child_error") || !contains(DefaultReportEvents, "child_error") {
+		t.Fatal("child_error is not a default report event")
+	}
+	cfg, err := Parse([]byte(valid))
+	if err != nil || cfg.Loop.Report.ReportsEvent("child_error") {
+		t.Fatalf("subscribed without a report section: %v", err)
+	}
+	for src, want := range map[string]bool{
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET}\n":                              true, // default events
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: []}\n":                  true, // empty means default
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [all]}\n":               true,
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [child_error]}\n":       true,
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [await_user, stop]}\n":  false, // an explicit list must name it
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [limit_wait, error]}\n": false,
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [handoff, complete]}\n": false,
+	} {
+		cfg, err := Parse([]byte(valid + src))
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if got := cfg.Loop.Report.ReportsEvent("child_error"); got != want {
+			t.Errorf("%s: subscribed = %t, want %t", strings.TrimSpace(src), got, want)
+		}
+	}
+	if _, err := Parse([]byte(valid + "  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [child_errors]}\n")); err == nil {
+		t.Error("misspelled event accepted")
+	}
+}
