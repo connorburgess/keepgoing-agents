@@ -41,7 +41,12 @@ func MaybeRunTurn() {
 	}
 	done := make(chan struct{})
 	go watchStop(Dir(dir), key, terminate, done)
-	code := runTurn(dir, argv)
+	var code int
+	if spec := os.Getenv(envTurnACP); spec != "" {
+		code = runAntigravityACPTurn(dir, argv, spec)
+	} else {
+		code = runTurn(dir, argv)
+	}
 	close(done)
 	os.Exit(code)
 }
@@ -65,13 +70,7 @@ func runTurn(dir string, argv []string) int {
 	defer stderr.Close()
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	// The wrapper must not pass its own selection variables to the agent.
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
+	cmd.Env = turnChildEnv()
 	code := 0
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -87,6 +86,19 @@ func runTurn(dir string, argv []string) int {
 		os.Rename(tmp, filepath.Join(dir, "exit"))
 	}
 	return code
+}
+
+// turnChildEnv is the agent's environment: the wrapper's own, without the
+// variables that select and configure the wrapper.
+func turnChildEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // wrapperCommand builds the command that re-runs this executable as the
