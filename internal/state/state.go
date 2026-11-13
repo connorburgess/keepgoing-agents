@@ -108,6 +108,9 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// HungTurn watches an active turn through a network outage or a gap with
+	// no check, for signs that it hung. See the supervisor's hungTurn.
+	HungTurn *HungTurn `json:"hungTurn,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -403,4 +406,17 @@ func Append(stateDir string, e Event) error {
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// HungTurn is the watch kept on one active turn after an outage. Turn names
+// the turn; OutageAt is when the outage was first seen; BackAt is the first
+// check after it that found the network working; Since is when every sign of
+// a hung turn first held, zero while they do not; Reported says its report
+// was sent.
+type HungTurn struct {
+	Turn     string    `json:"turn"`
+	OutageAt time.Time `json:"outageAt"`
+	BackAt   time.Time `json:"backAt,omitempty"`
+	Since    time.Time `json:"since,omitempty"`
+	Reported bool      `json:"reported,omitempty"`
 }

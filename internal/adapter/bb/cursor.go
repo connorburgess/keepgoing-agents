@@ -47,6 +47,61 @@ type Cursor struct {
 	// provider/unhandled event is BB's answer to that request and is not
 	// activity. It is saved because a scan can end between the two.
 	AnsweringRequest bool `json:"answeringRequest,omitempty"`
+	// TurnStartSeq is the sequence of the latest turn/started event, and so
+	// names the current turn. OpenTools are the tool items that turn started
+	// and has not completed, by item ID. ToolsUncertain says the bookkeeping
+	// cannot be trusted for this turn: an item without an ID or type, an item
+	// type not recognised, or more open items than are kept. A turn with an
+	// open or uncertain tool item is waiting on a tool, not on the model.
+	TurnStartSeq   int64           `json:"turnStartSeq,omitempty"`
+	OpenTools      map[string]bool `json:"openTools,omitempty"`
+	ToolsUncertain bool            `json:"toolsUncertain,omitempty"`
+}
+
+// modelItems are items the model itself produces; an open one is the model
+// answering, or failing to. toolItems are items that run outside the model
+// and end with their own completion. The types are those a real BB 0.48 log
+// records. Any other type makes the turn's bookkeeping uncertain.
+var (
+	modelItems = map[string]bool{"reasoning": true, "agentMessage": true, "userMessage": true}
+	toolItems  = map[string]bool{"commandExecution": true, "fileRead": true, "fileChange": true, "toolCall": true, "backgroundTask": true, "webSearch": true, "mcpToolCall": true}
+)
+
+// maxOpenTools bounds the open tool items kept for one turn.
+const maxOpenTools = 64
+
+// trackItem keeps the turn's open tool items.
+func (c *Cursor) trackItem(e event) {
+	var d struct {
+		ProviderThread string `json:"providerThreadId"`
+		Item           struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(e.Data, &d) != nil {
+		c.ToolsUncertain = true
+		return
+	}
+	if d.ProviderThread != "" && c.ProviderThread != "" && d.ProviderThread != c.ProviderThread {
+		return // another provider thread's item
+	}
+	if e.Type != "item/started" {
+		delete(c.OpenTools, d.Item.ID) // a completion of an item never seen closes nothing
+		return
+	}
+	switch {
+	case d.Item.ID == "" || d.Item.Type == "":
+		c.ToolsUncertain = true
+	case modelItems[d.Item.Type]:
+	case !toolItems[d.Item.Type] || len(c.OpenTools) >= maxOpenTools:
+		c.ToolsUncertain = true
+	default:
+		if c.OpenTools == nil {
+			c.OpenTools = map[string]bool{}
+		}
+		c.OpenTools[d.Item.ID] = true
+	}
 }
 
 // eventTime bounds BB's createdAt for an event by what this supervisor knows
@@ -131,6 +186,9 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 		c.AnsweringRequest = false
 		c.LastEventAt = when
 	}
+	if e.Type == "item/started" || e.Type == "item/completed" || e.Type == "item/backgroundTask/completed" {
+		c.trackItem(e)
+	}
 	if childOutcome(e, c.Thread) {
 		c.ChildOutcomeSeq = e.Seq
 	}
@@ -141,6 +199,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 	case e.Type == "turn/started":
 		// A new turn makes earlier errors stale.
 		c.TurnSeq, c.Error = e.Seq, nil
+		c.TurnStartSeq, c.OpenTools, c.ToolsUncertain = e.Seq, nil, false
 		c.TurnStartedMs = 0
 		if at := e.time(); !at.IsZero() {
 			c.TurnStartedMs = at.UnixMilli()

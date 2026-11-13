@@ -610,6 +610,8 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.HungTurn, in.HungTurnFor = t.hungTurn(obs, progressed)
+	in.HungTurnPatience = t.hungTurnPatience()
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -1788,7 +1790,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true, hungTurnEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget

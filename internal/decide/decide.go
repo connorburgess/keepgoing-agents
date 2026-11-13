@@ -46,6 +46,9 @@ type Observation struct {
 	Evidence   evidence.Detail
 	State      State
 	ErrorClass ErrorClass
+	// Turn is what the adapter knows of the running turn, from structured
+	// events. Nil means nothing is known.
+	Turn       *TurnActivity
 	Queued     int  // messages already waiting for the session
 	Background int  // background workers still running
 	Gone       bool // target deleted or archived
@@ -158,6 +161,14 @@ type Input struct {
 	// wake, nudge or switch-back, and an errored session is not held for a
 	// person because of it. The session is looked at again on the next check.
 	NetworkDown bool
+	// HungTurn: an active session's turn meets every sign of having hung
+	// through a network outage (see the supervisor's hung turn watch), and
+	// HungTurnFor is how long it has. HungTurnPatience is how long that
+	// may last before a person is asked: max_nudges times stall_after, the
+	// time the nudges it replaces would have taken.
+	HungTurn         bool
+	HungTurnFor      time.Duration
+	HungTurnPatience time.Duration
 
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
@@ -204,6 +215,17 @@ const (
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
 )
 
+// TurnActivity is what an adapter knows of an active session's current
+// turn. ID names the turn; it changes when a new turn starts. LastActivityAt
+// is the newest event the turn logged that is not requested input.
+// ToolsRunning: the turn has a tool item open, or its item bookkeeping is
+// uncertain, so it may be waiting on a tool rather than on the model.
+type TurnActivity struct {
+	ID             string
+	LastActivityAt time.Time
+	ToolsRunning   bool
+}
+
 // Decision is an action and the rule that produced it. LimitWait is set only
 // when the action is None because a provider limit has a known reset.
 type Decision struct {
@@ -227,6 +249,13 @@ func limitWait(kind LimitWait, reason string) Decision {
 }
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
+
+// HungTurnReason is recorded while a turn that may have hung through an
+// outage is waited on, and HungTurnHoldReason when a person is asked.
+const (
+	HungTurnReason     = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it"
+	HungTurnHoldReason = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+)
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
 const NetworkDownReason = "network down; waiting for connectivity"
@@ -328,6 +357,19 @@ func Decide(in Input) Decision {
 		}
 		return Decision{Action: Wake, Reason: "idle"}
 	case Active:
+		// A turn that went silent before a network outage and stayed silent
+		// after it may be hung. Nothing is sent into it: a nudge would only
+		// queue behind it and arrive later. It is waited on, and a person is
+		// asked after the time the nudges would have taken.
+		if in.HungTurn {
+			if in.NetworkDown {
+				return none(NetworkDownReason)
+			}
+			if in.HungTurnFor >= in.HungTurnPatience {
+				return Decision{Action: AwaitUser, Reason: HungTurnHoldReason}
+			}
+			return none(HungTurnReason)
+		}
 		// Without Git tracking there is no stall evidence and no nudge would
 		// help. A session whose retry notice expired and which has stayed
 		// silent for the patience a tracked loop would have shown (one stall

@@ -225,6 +225,7 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "hung_turn",
                   "network_wait",
                   "child_error",
                   "test"
