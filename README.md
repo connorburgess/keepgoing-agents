@@ -171,6 +171,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
+- [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
 
 ## Contributing
 
