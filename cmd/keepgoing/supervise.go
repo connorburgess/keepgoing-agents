@@ -24,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -318,6 +319,8 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	// NoProgress is the no-progress flag, the same value the panel shows.
+	NoProgress noProgressView `json:"noProgress"`
 	// SharedWith lists, in words, other enabled loops that share this loop's
 	// session, a fallback's session, its working directory or a repository.
 	SharedWith []string `json:"sharedWith,omitempty"`
@@ -505,6 +508,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w)
 	}
 	printLimitWait(w, out.LimitWait)
+	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
@@ -693,6 +697,23 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	// The flag's three reads are not one snapshot. The send attempts and the
+	// history are read before the state that sets the window, so a check
+	// that runs during the read can only leave its own records out, for one
+	// refresh; it cannot make a change look like no change.
+	var graph *rungraph.Graph
+	if g, availability := rungraph.Load(l.StateDir); availability == rungraph.Available {
+		graph = &g
+	}
+	var journal *incident.Journal
+	if j, err := incident.Load(l.StateDir); err == nil {
+		journal = &j
+	}
+	flagState := st
+	if latest, err := state.Load(l.StateDir); err == nil {
+		flagState = latest
+	}
+	out.NoProgress = noProgressOf(cfg, flagState, ctl, journal, graph, now)
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {
