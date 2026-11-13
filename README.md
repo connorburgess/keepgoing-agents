@@ -17,7 +17,7 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 | BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
 | macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
 | Cursor CLI | Unreleased primary-only adapter and guided setup | Offline fixtures; supported-version range, live acceptance and existing IDE-chat attachment remain open |
-| Antigravity | Internal headless parser and ACP exchange foundation only | Offline fixtures; no registered adapter, guided setup or verified existing IDE-chat attachment |
+| Antigravity | Internal parser, ACP exchange, saved hold and an unregistered detached runner | Offline fixtures with a stand-in agent; Antigravity itself has never been run. No registered adapter, guided setup or verified existing IDE-chat attachment |
 
 The v0.1.5 changes are **not in v0.1.4**: opt-in goal creation during setup, successful goal-subcommand help exit codes, retention of BB's generic interrupted-turn diagnostic code, and [recorded automatic prompt goal revisions](docs/goals.md#recorded-send-provenance). See the [changelog](CHANGELOG.md) and [release evidence](docs/release-verification.md) for exact scope.
 
@@ -145,7 +145,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **Preserves control and ownership.** Stop and holds take precedence on checks. A different BB thread needs explicit takeover; transfer keeps the loop held until explicitly resumed. Invalid or stale configuration can withhold provider operations, including stop, until repaired/reloaded.

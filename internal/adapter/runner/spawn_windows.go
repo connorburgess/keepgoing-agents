@@ -14,8 +14,8 @@ const (
 	stillActive            = 259
 )
 
-func spawn(argv []string, workdir, dir string, env []string) (int, error) {
-	cmd, err := wrapperCommand(argv, workdir, dir, env)
+func spawn(argv []string, workdir, dir string, env []string, acp string) (int, error) {
+	cmd, err := wrapperCommand(argv, workdir, dir, env, acp)
 	if err != nil {
 		return 0, err
 	}

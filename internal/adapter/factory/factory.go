@@ -21,12 +21,15 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 		return bb.New(*a.BB).WithStateDir(dir), nil
 	case "process":
 		return process.New(*a.Process), nil
-	case "claude":
-		return runner.NewClaude(*a.Claude, dir), nil
 	case "cursor":
 		return runner.NewCursor(*a.Cursor, dir), nil
-	case "codex":
-		return runner.NewCodex(*a.Codex, dir), nil
+	}
+	// Agents on the runner contract come from its registry.
+	if h, ok := runner.New(a, dir); ok {
+		return h, nil
+	}
+	if _, registered := runner.SpecFor(a.Adapter); registered {
+		return nil, fmt.Errorf("the %s adapter needs its %s settings, and the agent definition has none", a.Adapter, a.Adapter)
 	}
 	return nil, fmt.Errorf("unknown adapter %q", a.Adapter)
 }

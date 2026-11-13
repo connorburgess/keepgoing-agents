@@ -58,6 +58,42 @@ type InteractionAdopter interface {
 	AdoptInteraction(ctx context.Context) error
 }
 
+// TurnRetrier is implemented by adapters whose provider can re-run a failed
+// turn by reference, without a new prompt. The supervisor uses it for a
+// re-prompt decision on an errored session, so recovery does not add another
+// copy of the task to the conversation.
+type TurnRetrier interface {
+	// RetryFailedTurn asks the provider to retry the session's failed turn. It
+	// sends no text. ErrUnsupported means this provider version cannot retry
+	// a turn, and the supervisor prompts as it would without this interface.
+	// Any other error means the provider refused or the result could not be
+	// read; the supervisor then sends nothing else this check.
+	RetryFailedTurn(ctx context.Context) (TurnRetry, error)
+	// StillFailed re-reads the session's status after the provider answered
+	// that there is no failed turn. It reports true only when the session is
+	// still in error with nothing queued, the one case where a prompt is the
+	// right recovery. It reads status only: no log, no children, no send.
+	StillFailed(ctx context.Context) (bool, error)
+}
+
+// TurnRetryOutcome is what the provider reported for a retry request.
+type TurnRetryOutcome string
+
+// Retry outcomes. Only TurnRetryNothing permits a re-prompt instead.
+const (
+	TurnRetried            TurnRetryOutcome = "retried"          // the failed turn was dispatched again
+	TurnRetryQueued        TurnRetryOutcome = "queued"           // accepted, waiting behind a busy thread or a schedule
+	TurnRetryNothing       TurnRetryOutcome = "nothing_to_retry" // the session has no failed turn
+	TurnRetryAlreadyQueued TurnRetryOutcome = "already_queued"   // a retry of that turn is already waiting
+)
+
+// TurnRetry is a structured retry result. Attempt is the provider's attempt
+// number for the turn (2 is the first retry), or 0 when it did not say.
+type TurnRetry struct {
+	Outcome TurnRetryOutcome
+	Attempt int
+}
+
 // ErrUnsupported marks an operation the adapter cannot perform.
 type ErrUnsupported struct{ Op string }
 
