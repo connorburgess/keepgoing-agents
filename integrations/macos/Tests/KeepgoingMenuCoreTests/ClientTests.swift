@@ -7,9 +7,31 @@ final class ClientTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let binary = dir.appendingPathComponent("fictional keepgoing")
-        try ("#!/bin/sh\n" + body).write(to: binary, atomically: true, encoding: .utf8)
+        // The first line after the interpreter lets the script be run once,
+        // below, without doing anything.
+        try ("#!/bin/sh\n[ -z \"${KEEPGOING_TESTEXEC_WARM:-}\" ] || exit 0\n" + body).write(to: binary, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+        try Self.runOnce(binary)
         return (binary, LocalClient(executable: binary, directory: dir.appendingPathComponent("registry with spaces").path))
+    }
+    /// Runs a new executable once before a test depends on it. macOS checks a
+    /// file the first time it is run, and on a busy machine can refuse it: the
+    /// process is then ended by a signal as it starts. Such a launch is tried
+    /// again; one refused every time is reported as the host's failure, not as
+    /// an assertion about the client. See "Executables that tests run" in
+    /// docs/testing.md; internal/testexec does the same for the Go tests.
+    static func runOnce(_ executable: URL) throws {
+        struct EnvironmentFailure: Error, CustomStringConvertible { let description: String }
+        let launches = 20
+        for _ in 0..<launches {
+            let process = Process()
+            process.executableURL = executable
+            process.environment = ["KEEPGOING_TESTEXEC_WARM": "1"]
+            try process.run()
+            process.waitUntilExit()
+            if process.terminationReason == .exit { return }
+        }
+        throw EnvironmentFailure(description: "ENVIRONMENT FAILURE: the host ended \(executable.path) by a signal on each of \(launches) launches. Run the tests again.")
     }
     func testOnlyReadArgumentsAndNoShellExpansion() throws {
         let (binary, client) = try fixture("printf '%s\\n' \"$@\" > \"$0.args\"\nprintf '%s' '{\"schemaVersion\":1,\"operation\":\"list\",\"entries\":[]}'\n")

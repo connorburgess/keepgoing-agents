@@ -41,7 +41,50 @@ Install any shell script a test executes with `internal/testexec`, not `os.Write
 
 The reason is a host behaviour, not style. macOS checks a file the first time it is executed and queues those checks across the whole machine, so the first run of a new script takes from half a second to many seconds while later runs take milliseconds. A test that writes a script and runs it under a deadline, a context timeout or a configured command timeout then fails when other tests are starting new scripts too, and passes alone. The helper runs the script once while the fixture is built, in a mode that exits before its body, so the cost is paid outside any deadline. On Linux and Windows it only writes the file.
 
-To replace a script installed this way, call the helper again; never write through the path, because a shared script is a hard link. Scripts that are written but never executed, such as service-file fixtures, do not need it. Compiled fixtures are not covered.
+To replace a script installed this way, call the helper again; never write through the path, because a shared script is a hard link. Scripts that are written but never executed, such as service-file fixtures, do not need it. Compiled programs go in a `testexec.Dir`; see below.
+
+### Executables that tests run
+
+A test that creates an executable and runs it is exposed to one more host behaviour: **macOS can refuse a file it has not run before, and a refusal kills the process as it starts.** The caller sees `signal: killed` with no deadline of its own involved. It happens on a busy machine, and it was behind a day of reports of tests that failed once and then passed.
+
+The evidence is in the system log. The kernel says which file it refused, and the policy daemon says why:
+
+```text
+kernel: (AppleSystemPolicy) ASP: Security policy would not allow process: 55465, /private/var/folders/…/T/TestScenarioUpgradeFromEachReleasev0.1.0…/001/bin/claude
+syspolicyd: [com.apple.syspolicy.exec:default] Couldn't find a cached target for <private> during malware scan
+```
+
+Find them with `/usr/bin/log show --last 1h --predicate 'eventMessage CONTAINS "Security policy would not allow process"'`. Write the full path: in zsh, plain `log` is a shell builtin that takes these arguments and prints nothing useful, which hides the evidence. It is not memory pressure: the same log held no `memorystatus` or Jetsam kill, only non-fatal limit notes for unrelated applications. And no test signals a process by a saved ID.
+
+On the day this was found, with nine lanes testing on one machine, the two and a half hours the log still held (21:38 to 00:00) had 166 refusals:
+
+| Refused file | Count | Whose |
+| --- | --- | --- |
+| scenario stand-ins (`bb`, `claude`, `codex`), linked into a new directory for every scenario | 62 | `internal/scenario`, before the change below |
+| `launcher`, built into a new temporary directory | 80 | a test suite not yet on `main` |
+| `npx-cli.js` | 16 | not a keepgoing test: another tool's Node installation under the home directory |
+| `fictional keepgoing`, a script written into a new directory per test | 3 | `integrations/macos` Swift tests |
+| a defined-agent stand-in, two stand-ins in review scratch directories, the shared scenario directory during its own first runs | 7 | |
+| any script installed with `testexec.Script` or `testexec.Shared` | 0 | `cmd/keepgoing`, `internal/adapter/*`, `internal/probe`, `internal/supervise` |
+
+The last row is the point: suites that run each new file once while building the fixture were not refused during a test, although they ran all day. A refusal lands on whoever runs a file first.
+
+**The rule.** Do not let a test be the first to run a file, and do not create a new path for the same program in every test. `internal/testexec` has both halves:
+
+- `testexec.Script` and `testexec.Shared` for shell scripts, as above. Their first run now retries a launch that was ended by a signal.
+- `testexec.Dir` for compiled programs: one directory for a whole test binary, created in `TestMain` or once per test that builds something. `Build` compiles a Go package into it, `Alias` gives a program a second name, `Host` links one host command such as `git`, and each of them runs the new file once as it is added (`testexec.RunOnce`), retrying a launch ended by a signal up to 20 times. Hand tests the directory's path; do not copy or link its files into a directory per test.
+- A file still refused after 20 launches is reported as `ENVIRONMENT FAILURE: the host ended <path> by a signal on each of 20 launches`, naming the path. It is the host's failure and says nothing about the code under test.
+
+**What uses it.** The scenario suite builds one directory with `bb`, `claude`, `codex`, `example-agent` and a link to `git`, and the `keepgoing` binary beside it, in `TestMain`; every scenario uses that directory as its whole `PATH`. `TestStartBackgroundProcess` builds its two programs through it. The Swift client tests cannot use a Go helper, so their fixture does the same thing itself: the script gets the same first line, is run once, and a launch ended by a signal is retried.
+
+Measured for the scenario suite with the old and new harness alternating for 17 minutes under a load average of 40 to 50:
+
+| Harness | Failing runs | Refusals logged for its paths |
+| --- | --- | --- |
+| Stand-ins linked into a new directory per scenario | 4 of 40 | 20 |
+| One shared directory, each file run once first | 0 of 40 | 0 |
+
+Not covered: the two Python smoke scripts write their own stand-in scripts and run a freshly built binary, and do not retry; the Swift change was checked for syntax and by building the package here, and runs only in the macOS CI job (this machine has no XCTest); and nothing here was observed on Linux or Windows, where no such refusal is known.
 
 ## Scenario suite (T2)
 
@@ -49,9 +92,7 @@ To replace a script installed this way, call the helper again; never write throu
 
 Every step records four things: what the stand-in agents were sent (`bb thread tell`, `bb thread retry`, `bb thread spawn` and headless turns, with the probes run alongside), the holds in force, the reports delivered, and what `status --json`, `timeline --json` and `runs --json` say. Invariants run after every step: a check that starts on a hold sends nothing; a check exits 0 and is the latest check in both `status` and `timeline`, the three commands agree on the control state, and `runs` records as many send attempts as the agents received. The stand-in agents react to what they are sent: a turn starts, and fails at once with a network error while the provider is unreachable. A failing scenario prints its journal.
 
-**Stand-ins are run once before any scenario, from one shared directory.** macOS checks an executable the first time it is run from a path. On a busy machine that check does not only take time, as [stand-in executables in tests](#stand-in-executables-in-tests) describes: it can refuse. The kernel logs `ASP: Security policy would not allow process: <pid>, <path>`, `syspolicyd` logs `Couldn't find a cached target … during malware scan`, and the process is killed as it starts, which the caller sees as `signal: killed`. In nine hours with nine lanes testing on one machine the system log held 97 such refusals: 42 for scenario stand-ins, and the rest for other suites' freshly built or freshly written executables (`launcher`, `npx-cli.js`, a stand-in `keepgoing`, a `status.sh`). It is not memory pressure: no `memorystatus` or Jetsam kill was logged, and no test signals a process by a saved ID. Find them with `/usr/bin/log show --last 6h --predicate 'eventMessage CONTAINS "Security policy would not allow process"'` (in zsh, plain `log` is a shell builtin and prints nothing useful).
-
-The harness used to link the stand-ins into a new directory for every scenario, so each scenario presented three paths that had never been run. `TestMain` now builds one directory holding `bb`, `claude`, `codex` and a link to `git`, runs the `keepgoing` binary and each stand-in once, retrying a run that was ended by a signal, and every scenario uses that directory as its whole `PATH`. Measured with the two harnesses alternating for 17 minutes under a load average of 40 to 50: the old one failed 4 of 40 runs with 20 refusals logged for its paths; the new one failed 0 of 40 with none.
+**Stand-ins are run once before any scenario, from one shared directory**, built with `testexec.Dir`, because macOS can refuse a file it has not run before and kill the process as it starts. The cause, the log evidence and the measurements are under [executables that tests run](#executables-that-tests-run).
 
 **A stand-in that is ended early is still an environment failure.** Each stand-in marks its start and its own end, and after every command the harness compares the two and reads the command's error output for a killed process. A difference stops the scenario with `ENVIRONMENT FAILURE`, naming the step, before any expectation about the product is evaluated: a check that loses its stand-in records that it could not observe, which is correct, and `status` keeps what it knew (for example the time a network outage began), but the scenario's next expectation would fail for a reason that has nothing to do with the product. Rerun; it is not a product result. `TestHarnessNoticesAStandInEndedEarly` covers the rule.
 
@@ -82,7 +123,7 @@ Not covered yet: two supervisors, a full or unwritable state directory, fault in
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.
 
-- **A deadline that times the host, not the code.** macOS assesses a file the first time it is executed and serialises those assessments across the machine. A new shell script takes about half a second to start on an idle machine and many seconds when other processes are also starting new executables; later runs take milliseconds. CPU load alone does not reproduce this. Stand-in CLIs are therefore installed with `internal/testexec`, which runs each script once in a mode that exits before its body while the fixture is built, and hard-links scripts whose content is shared by many fixtures. Replace such a script with the same helper, never by writing through its path. New fixtures that execute a script under a deadline should use it. Compiled fixtures and scripts in service tests are not covered.
+- **A deadline that times the host, not the code.** macOS assesses a file the first time it is executed and serialises those assessments across the machine. A new shell script takes about half a second to start on an idle machine and many seconds when other processes are also starting new executables; later runs take milliseconds. CPU load alone does not reproduce this. Stand-in CLIs are therefore installed with `internal/testexec`, which runs each script once in a mode that exits before its body while the fixture is built, and hard-links scripts whose content is shared by many fixtures. Replace such a script with the same helper, never by writing through its path. New fixtures that execute a script under a deadline should use it. Compiled programs go in a `testexec.Dir`; scripts in service tests are not covered.
 - **A retry budget that is a deadline in disguise.** A fixed number of short retries measures how slow the filesystem is. Retry on the condition itself and let the test timeout bound a real hang.
 - **Two ready cases in one `select`.** Go chooses at random, so code that must not act after cancellation has to check the context when it receives the other event. `TestDaemonWaitNeverPollsAfterCancellation` holds a poll past several ticks to force both cases ready.
 - **A reader blocking a writer on Windows.** An ordinary open handle prevents a file from being replaced. A polling test per record (`Test…SnapshotSavesWhileReadersPoll` for state, the send and progress ledgers, health, the incident and delivery journals, the registry and the daemon endpoint, plus `TestStateSnapshotSaveReplacesFileHeldByReader` and `TestTransferRecordReadsDoNotBlockControlOrStateSaves`) runs natively in the Windows job. The fallback for an unsupported rename and the reader's short retry are covered by injected error codes there, not by a real exFAT or network volume; the retry was added after the health polling test failed a read with access denied in two of five runs. A program outside keepgoing that opens these files without delete sharing can still block a save; one such failure of a control save was seen in a hundred Windows iterations and is not explained. Local macOS execution and cross-compilation say nothing about these tests.

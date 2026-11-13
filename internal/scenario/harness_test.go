@@ -24,6 +24,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // keepgoingBin is built once for the whole suite. standinDir holds the
@@ -41,8 +42,13 @@ func TestMain(m *testing.M) {
 		defer os.RemoveAll(dir)
 		keepgoingBin = os.Getenv("KEEPGOING_TEST_BINARY")
 		if keepgoingBin == "" {
-			keepgoingBin = filepath.Join(dir, "keepgoing"+exe)
-			if err := goBuild(keepgoingBin, "../../cmd/keepgoing"); err != nil {
+			// Built beside the stand-ins but not among them: the command
+			// under test is never on a scenario's PATH.
+			built, err := testexec.NewDir(filepath.Join(dir, "built"))
+			if err == nil {
+				keepgoingBin, err = built.Build("keepgoing", "../../cmd/keepgoing", nil, "version")
+			}
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 2
 			}
@@ -61,90 +67,41 @@ func TestMain(m *testing.M) {
 
 var exe = map[bool]string{true: ".exe"}[runtime.GOOS == "windows"]
 
-// installStandins builds the stand-in once, gives it the three names it
-// plays in one shared directory, links git beside them, and runs each
-// executable once before any scenario starts.
-//
-// The first run is the point. macOS checks an executable the first time it
-// is run from a path, and on a busy machine that check can refuse instead of
-// only being slow: the kernel logs "Security policy would not allow process"
-// and the process is killed as it starts. When every scenario had its own
-// copy of the stand-ins, each scenario presented three paths that had never
-// been run, and about one run in a few dozen lost a stand-in that way. Here
-// the check is passed once, outside any scenario, and retried if it refuses.
+// installStandins puts everything the scenarios run in one testexec.Dir,
+// shared by every scenario: the stand-in under each name it plays, and a
+// link to git. Each is run once here, and so is the keepgoing binary, so no
+// scenario is the first to run a file. When every scenario had its own copy
+// of the stand-ins, macOS refused about one launch in a few thousand on a
+// busy machine and killed the process; see "Executables that tests run" in
+// docs/testing.md.
 func installStandins(bin, scratch string) error {
-	for _, d := range []string{bin, scratch} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			return err
-		}
-	}
-	bb := filepath.Join(bin, "bb"+exe)
-	if err := goBuild(bb, "./standin"); err != nil {
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
 		return err
 	}
-	for _, name := range []string{"claude", "codex", "example-agent"} {
-		dst := filepath.Join(bin, name+exe)
-		if err := os.Link(bb, dst); err != nil {
-			body, err := os.ReadFile(bb)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(dst, body, 0o700); err != nil {
-				return err
-			}
+	d, err := testexec.NewDir(bin)
+	if err != nil {
+		return err
+	}
+	env := []string{"SCENARIO_WORLD=" + scratch}
+	if _, err := d.Build("bb", "./standin", env, "thread", "show", "thr_example_warm", "--json"); err != nil {
+		return err
+	}
+	for name, args := range map[string][]string{
+		"claude":        {"-p", "warm"},
+		"codex":         {"app-server"},
+		"example-agent": {"warm"},
+	} {
+		if _, err := d.Alias("bb", name, env, args...); err != nil {
+			return err
 		}
 	}
 	// Only git comes from the host, so a real agent CLI that happens to sit
 	// beside it on the host PATH can never be found.
-	git, err := exec.LookPath("git")
-	if err != nil {
-		return fmt.Errorf("scenario tests need git: %w", err)
-	}
-	if err := os.Symlink(git, filepath.Join(bin, "git"+exe)); err != nil {
+	if err := d.Host("git"); err != nil {
 		return err
 	}
-	standinDir = bin
-	env := []string{"SCENARIO_WORLD=" + scratch}
-	for _, run := range [][]string{
-		{keepgoingBin, "version"},
-		{bb, "thread", "show", "thr_example_warm", "--json"},
-		{filepath.Join(bin, "claude"+exe), "-p", "warm"},
-		{filepath.Join(bin, "codex"+exe), "app-server"},
-		{filepath.Join(bin, "example-agent"+exe), "warm"},
-	} {
-		if err := runOnce(env, run...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// runOnce runs a command until it ends on its own, whatever its exit code.
-// A run ended by a signal is the host refusing it; it is tried again.
-func runOnce(env []string, argv ...string) error {
-	var last error
-	for attempt := 0; attempt < 20; attempt++ {
-		cmd := exec.Command(argv[0], argv[1:]...)
-		cmd.Env = env
-		last = cmd.Run()
-		var exit *exec.ExitError
-		if last == nil || (errors.As(last, &exit) && exit.Exited()) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%s could not be run before the scenarios: %v", argv[0], last)
-}
-
-func goBuild(out, pkg string) error {
-	gobin, err := exec.LookPath("go")
-	if err != nil {
-		gobin = filepath.Join(runtime.GOROOT(), "bin", "go"+exe)
-	}
-	cmd := exec.Command(gobin, "build", "-o", out, pkg)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("go build %s: %v\n%s", pkg, err, b)
-	}
-	return nil
+	standinDir = d.Path
+	return testexec.RunOnce(keepgoingBin, nil, "version")
 }
 
 // Thread IDs in every scenario. Fictional.

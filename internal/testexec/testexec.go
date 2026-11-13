@@ -9,6 +9,11 @@
 // The helpers pay that cost while the fixture is being built, outside any
 // deadline, by running the script once in a mode where it exits immediately.
 // On other systems they only write the file. It is imported by tests only.
+//
+// The same check can refuse a file instead of only being slow: on a busy
+// machine the process is then killed as it starts. Script and Shared retry
+// such a launch. Compiled stand-ins go in a Dir, which is shared by a whole
+// test binary and runs each executable once as it is added.
 package testexec
 
 import (
@@ -16,7 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -126,9 +130,9 @@ func warm(t TB, path string) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), warmVariable+"=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("testexec: first run of %s failed: %v %s", filepath.Base(path), err, out)
+	// A launch the host ended by a signal is retried; one refused every time
+	// is reported as an environment failure, not as the test's own.
+	if err := RunOnce(path, append(os.Environ(), warmVariable+"=1")); err != nil {
+		t.Fatalf("testexec: first run of %s: %v", filepath.Base(path), err)
 	}
 }
