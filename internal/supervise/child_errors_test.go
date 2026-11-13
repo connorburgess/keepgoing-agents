@@ -31,34 +31,42 @@ func notes(f *fakeAdapter) []int {
 }
 
 // An outage puts every child into error. The idle parent is told once, with
-// the count, in a wake it would have received anyway; it is told again only
-// when a child newly enters error, never because the set shrank.
+// the count, in a wake it would have received anyway. It is told again only
+// when a child newly enters error: never because the set shrank, and not when
+// a child that just recovered fails again inside min_wake_interval (one hour).
 func TestErroredChildrenAreAnnouncedOnlyWhenOneNewlyFails(t *testing.T) {
 	w := newWorld(t, true, false)
 	p := w.primary(decide.Observation{State: decide.Idle})
 	all := children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d", "thr_child_e")
+	m := time.Minute
 	steps := []struct {
 		name     string
+		at       time.Duration
 		errored  []string
 		wantNote int // count announced on this check, 0 for none
 	}{
-		{"no children in error", nil, 0},
-		{"outage: five in error", all, 5},
-		{"still five", all, 0},
-		{"still five, listed in another order", children("thr_child_e", "thr_child_d", "thr_child_c", "thr_child_b", "thr_child_a"), 0},
-		{"one retried and recovered: the set only shrank", all[:4], 0},
-		{"still four", all[:4], 0},
-		{"another recovered", all[:3], 0},
-		{"the one that recovered first fails again", children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 4},
-		{"still those four", children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 0},
-		{"all recovered", nil, 0},
-		{"still none", nil, 0},
-		{"the same five fail again", all, 5},
+		{"no children in error", 0, nil, 0},
+		{"outage: five in error", 1 * m, all, 5},
+		{"still five", 2 * m, all, 0},
+		{"still five, listed in another order", 3 * m, children("thr_child_e", "thr_child_d", "thr_child_c", "thr_child_b", "thr_child_a"), 0},
+		{"one retried and recovered: the set only shrank", 4 * m, all[:4], 0},
+		{"it fails again at once: the same failure", 5 * m, all, 0},
+		{"and recovers again", 6 * m, all[:4], 0},
+		{"another recovered", 7 * m, all[:3], 0},
+		{"the first to recover fails again 59 minutes later: still the same failure", 65 * m, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 0},
+		{"it recovers", 66 * m, all[:3], 0},
+		{"an hour and more later it fails again: a new failure", 130 * m, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 4},
+		{"still those four", 131 * m, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 0},
+		{"all recovered", 132 * m, nil, 0},
+		{"those four fail again inside the hour: nothing new", 150 * m, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 0},
+		{"all recovered again", 151 * m, nil, 0},
+		{"still none an hour later: forgotten", 215 * m, nil, 0},
+		{"the same five fail again", 216 * m, all, 5},
 	}
-	for i, step := range steps {
+	for _, step := range steps {
 		p.obs.ErroredChildren = step.errored
 		before := len(p.sent)
-		res := runTick(t, w, t0.Add(time.Duration(i)*time.Minute))
+		res := runTick(t, w, t0.Add(step.at))
 		// Exactly the ordinary idle wake, one per check: errored children add no sends.
 		if res.Action != "wake" || res.Reason != "idle" || len(p.sent) != before+1 || res.ErroredChildren != len(step.errored) || res.ChildErrorNote != (step.wantNote > 0) {
 			t.Fatalf("%s: %+v sends=%d", step.name, res, len(p.sent)-before)
@@ -76,7 +84,14 @@ func TestErroredChildrenAreAnnouncedOnlyWhenOneNewlyFails(t *testing.T) {
 		}
 	}
 	st, _ := state.Load(w.dir)
-	if !reflect.DeepEqual(st.ChildErrorsAnnounced, decide.ChildHashes(all)) || st.LastCheck.ErroredChildren != 5 {
+	var announced []string
+	for _, c := range st.ChildErrorsAnnounced {
+		if !c.ErroredAt.Equal(t0.Add(216*time.Minute)) || !c.RecoveredAt.IsZero() {
+			t.Fatalf("announced entry %+v", c)
+		}
+		announced = append(announced, c.Hash)
+	}
+	if !reflect.DeepEqual(announced, decide.ChildHashes(all)) || st.LastCheck.ErroredChildren != 5 {
 		t.Fatalf("state: announced=%v last=%+v", st.ChildErrorsAnnounced, st.LastCheck)
 	}
 	raw, _ := os.ReadFile(filepath.Join(w.dir, state.FileName))
@@ -381,7 +396,7 @@ func TestChildAnnouncementsAreForgottenWhenTheTargetMoves(t *testing.T) {
 	errored := children("thr_child_a", "thr_child_b")
 	seed := func(dir string, target string) {
 		st, _ := state.Load(dir)
-		st.ChildErrorsAnnounced, st.ChildErrorNoticeFor, st.ChildErrorNoticeAttempts = decide.ChildHashes(errored), "pending", 1
+		st.ChildErrorsAnnounced, st.ChildErrorNoticeFor, st.ChildErrorNoticeAttempts = decide.CoverChildren(nil, decide.ChildHashes(errored), t0, 200), "pending", 1
 		if err := state.Save(dir, st); err != nil {
 			t.Fatal(err)
 		}
@@ -423,5 +438,116 @@ func TestPartialChildScanIsMarked(t *testing.T) {
 	st, _ := state.Load(w.dir)
 	if res.Action != "none" || res.ErroredChildren != 1 || !res.ErroredChildrenPartial || !st.LastCheck.ErroredChildrenPartial {
 		t.Fatalf("%+v last=%+v", res, st.LastCheck)
+	}
+}
+
+// A child that flaps between error and a provider retry is announced to the
+// parent once, as it is reported to the owner once: both use one rule.
+func TestFlappingChildIsAnnouncedToTheParentOnce(t *testing.T) {
+	t.Run("ordinary idle wakes", func(t *testing.T) {
+		w := newWorld(t, true, false)
+		w.cfg.Loop.Report = &config.Report{Events: []string{"child_error"}}
+		p := w.primary(decide.Observation{State: decide.Idle})
+		for i := 0; i < 20; i++ {
+			p.obs = decide.Observation{State: decide.Idle, HealthyChildren: children("thr_child_a")}
+			if i%2 == 0 {
+				p.obs = decide.Observation{State: decide.Idle, ErroredChildren: children("thr_child_a")}
+			}
+			runTick(t, w, t0.Add(time.Duration(i)*time.Minute))
+		}
+		// One notice to the parent and one report to the owner for the same flapping child.
+		if got := notes(p); len(got) != 1 || len(p.sent) != 20 || len(childReports(w)) != 1 {
+			t.Fatalf("notices at %v over %d wakes, %d owner reports", got, len(p.sent), len(childReports(w)))
+		}
+	})
+	t.Run("the wake while other children run", func(t *testing.T) {
+		w := newWorld(t, true, false) // min_wake_interval 1h
+		p := w.primary(decide.Observation{State: decide.Idle})
+		// The child fails, is retried and runs, fails again, every 70 minutes:
+		// long enough for the spacing of that wake, never long enough out of
+		// error to be forgotten.
+		for i := 0; i < 12; i++ {
+			at := t0.Add(time.Duration(i) * 70 * time.Minute)
+			p.obs = decide.Observation{State: decide.Idle, ActiveChildren: 1, ErroredChildren: children("thr_child_a")}
+			runTick(t, w, at)
+			p.obs = decide.Observation{State: decide.Idle, ActiveChildren: 2, HealthyChildren: children("thr_child_a")}
+			runTick(t, w, at.Add(30*time.Minute))
+		}
+		if got := notes(p); len(got) != 1 || len(p.sent) != 1 {
+			t.Fatalf("notices at %v, sends %d", got, len(p.sent))
+		}
+	})
+	t.Run("slower than the floor is a new failure each time", func(t *testing.T) {
+		w := newWorld(t, true, false)
+		p := w.primary(decide.Observation{State: decide.Idle})
+		for i := 0; i < 5; i++ {
+			at := t0.Add(time.Duration(i) * 3 * time.Hour)
+			p.obs = decide.Observation{State: decide.Idle, ErroredChildren: children("thr_child_a")}
+			runTick(t, w, at)
+			p.obs = decide.Observation{State: decide.Idle}
+			runTick(t, w, at.Add(time.Minute))
+			runTick(t, w, at.Add(62*time.Minute))
+		}
+		if got := notes(p); len(got) != 5 {
+			t.Fatalf("%d notices for five failures three hours apart", len(got))
+		}
+	})
+}
+
+// The announced record follows incomplete listings the way the owner report
+// does: a child the listing does not show is kept, one it shows as healthy
+// ages out, and the notice itself still waits for a complete listing.
+func TestAnnouncedRecordThroughIncompleteListings(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle, ErroredChildren: children("thr_child_a", "thr_child_b")})
+	runTick(t, w, t0)
+	announced := func() int {
+		st, _ := state.Load(w.dir)
+		return len(st.ChildErrorsAnnounced)
+	}
+	// Hours of listings that show neither child prove nothing.
+	p.obs = decide.Observation{State: decide.Idle, ChildrenUnverified: true}
+	runTick(t, w, t0.Add(5*time.Hour))
+	if announced() != 2 {
+		t.Fatalf("an incomplete listing forgot %d children", 2-announced())
+	}
+	// One is shown healthy through incomplete listings for over an hour: forgotten.
+	p.obs = decide.Observation{State: decide.Idle, ChildrenUnverified: true, HealthyChildren: children("thr_child_a")}
+	runTick(t, w, t0.Add(6*time.Hour))
+	runTick(t, w, t0.Add(7*time.Hour+time.Minute))
+	if announced() != 1 {
+		t.Fatalf("%d children still announced", announced())
+	}
+	// It fails again and the listing completes: one notice, counting both.
+	p.obs = decide.Observation{State: decide.Idle, ErroredChildren: children("thr_child_a", "thr_child_b")}
+	runTick(t, w, t0.Add(8*time.Hour))
+	if got := notes(p); len(got) != 2 || !strings.Contains(p.sent[len(p.sent)-1], "[keepgoing:child-errors count=2]") {
+		t.Fatalf("notices at %v: %q", got, p.sent[len(p.sent)-1])
+	}
+}
+
+// A state file from an earlier unreleased build holds the announced children
+// as plain hashes. They are carried over, not announced a second time.
+func TestEarlierAnnouncedRecordIsCarriedOver(t *testing.T) {
+	w := newWorld(t, true, false)
+	errored := children("thr_child_a", "thr_child_b")
+	p := w.primary(decide.Observation{State: decide.Idle, ErroredChildren: errored})
+	hashes := decide.ChildHashes(errored)
+	old := `{"childErrorsAnnounced":["` + hashes[0] + `","` + hashes[1] + `"]}` + "\n"
+	if err := os.WriteFile(filepath.Join(w.dir, state.FileName), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTick(t, w, t0)
+	runTick(t, w, t0.Add(time.Minute))
+	st, _ := state.Load(w.dir)
+	raw, _ := os.ReadFile(filepath.Join(w.dir, state.FileName))
+	if len(notes(p)) != 0 || len(st.ChildErrorsAnnounced) != 2 || len(st.ChildErrorsAnnouncedV1) != 0 || strings.Contains(string(raw), `"childErrorsAnnounced"`) {
+		t.Fatalf("notices %v, record %+v, file %s", notes(p), st.ChildErrorsAnnounced, raw)
+	}
+	// A third child is new.
+	p.obs.ErroredChildren = children("thr_child_a", "thr_child_b", "thr_child_c")
+	runTick(t, w, t0.Add(2*time.Minute))
+	if got := notes(p); len(got) != 1 {
+		t.Fatalf("notices at %v", got)
 	}
 }

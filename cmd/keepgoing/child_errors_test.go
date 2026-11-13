@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -56,13 +57,31 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 		t.Fatalf("told: %q", told)
 	}
 	// One is retried by its owner and recovers: the set only shrank, so
-	// nothing new is said. When it fails again, it is announced again.
+	// nothing new is said. It fails again at once: the same failure, still
+	// nothing. Only after it has been out of error for min_wake_interval is a
+	// later failure announced again.
 	child("thr_child_b", "idle")
 	if r := f.tick(); r["action"] != "wake" || r["childErrorNote"] == true || r["erroredChildren"] != float64(2) {
 		t.Fatalf("%v", r)
 	}
 	child("thr_child_b", "error")
-	if r := f.tick(); r["childErrorNote"] != true || r["erroredChildren"] != float64(3) {
+	if r := f.tick(); r["action"] != "wake" || r["childErrorNote"] == true || r["erroredChildren"] != float64(3) {
+		t.Fatalf("a child that flapped was announced again: %v", r)
+	}
+	tickAt := func(after time.Duration) map[string]any {
+		t.Helper()
+		code, out, errs := f.run("tick", "-now", time.Now().UTC().Add(after).Format(time.RFC3339))
+		var r map[string]any
+		if code != exitOK || json.Unmarshal([]byte(out), &r) != nil {
+			t.Fatalf("tick -now: %d %s %s", code, out, errs)
+		}
+		return r
+	}
+	child("thr_child_b", "idle")
+	tickAt(time.Minute)
+	tickAt(2 * time.Hour)
+	child("thr_child_b", "error")
+	if r := tickAt(2*time.Hour + time.Minute); r["childErrorNote"] != true || r["erroredChildren"] != float64(3) {
 		t.Fatalf("%v", r)
 	}
 	if told := f.read("thr_primary.told"); strings.Count(told, "[keepgoing:child-errors count=3]") != 2 || strings.Contains(told, "[keepgoing:child-errors count=2]") {
