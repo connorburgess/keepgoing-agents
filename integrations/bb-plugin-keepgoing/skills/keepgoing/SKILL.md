@@ -10,7 +10,7 @@ keepgoing supervises agent loops: it wakes an idle thread, nudges a stalled one,
 ```sh
 bb keepgoing status           # every configured loop: control state, target, last state
 bb keepgoing pause <loop>     # stop waking the thread until resumed
-bb keepgoing resume <loop>    # clear pause, stop, and awaiting-user; on a held loop the re-prompt and nudge counts start over
+bb keepgoing resume <loop>    # clear pause, stop, and awaiting-user; on a loop held for spent re-prompts or nudges those counts start over
 bb keepgoing stop <loop>      # stop the running turn, then send nothing more
 ```
 

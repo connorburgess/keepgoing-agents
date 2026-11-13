@@ -53,8 +53,11 @@ func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
 	ledger := filepath.Join(dir, state.ProgressName)
 	write(t, ledger, `{"version":1,"fingerprint":"fictional","changedAt":"2030-01-01T00:00:00Z","observedAt":"2030-01-01T01:00:00Z"}`, 0600)
 	progress, _ := os.ReadFile(ledger)
-	if code, _, errs := f.run("await-user", "--note", "fictional hold"); code != 0 {
-		t.Fatal(errs)
+	// The hold a check raises when the re-prompt cap is spent.
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.AwaitingUser, c.EpisodeHold, c.Note = true, true, "error persisted after re-prompts"
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	if code, _, errs := f.run("resume"); code != 0 {
@@ -88,7 +91,7 @@ func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
 	if after, _ := os.ReadFile(ledger); !bytes.Equal(after, progress) {
 		t.Fatalf("the no-progress ledger changed on resume: %s", after)
 	}
-	if ctl, _ := control.Load(dir); ctl.AwaitingUser || ctl.Note != "" {
+	if ctl, _ := control.Load(dir); ctl.AwaitingUser || ctl.EpisodeHold || ctl.Note != "" {
 		t.Fatalf("%+v", ctl)
 	}
 	// The reset is in the history with who ran it, and status counts it.
@@ -109,14 +112,69 @@ func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
 	}
 }
 
-// A resume that clears no hold starts no new episode. Run before every
-// check, by a person or by the owning agent, it used to refund the running
-// episode each time: a session in error was re-prompted at every check with
-// no backoff, no cap and no hold. Now the first check re-prompts, the next
-// ones back off, and the cap is reached as if resume had not been run.
-func TestResumeWithNothingHeldDoesNotRefundTheRunningEpisode(t *testing.T) {
+// Only a hold that keepgoing raised for a spent per-episode allowance starts
+// a new episode. A resume with nothing held, or of a hold that a command
+// created, starts none. Run before every check, by a person or by the owning
+// agent, each of these cycles used to refund the running episode: a session
+// in error was re-prompted at every check with no backoff, no cap and no
+// hold. Now each gives one re-prompt in eight checks, as if resume had not
+// been run.
+func TestHoldingAndResumingByHandDoesNotRefundTheRunningEpisode(t *testing.T) {
+	for _, hold := range []string{"", "pause", "await-user", "stop", "complete"} {
+		name := hold
+		if name == "" {
+			name = "nothing held"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
+			if code, _, errs := f.run("enable"); code != 0 {
+				t.Fatal(errs)
+			}
+			cfg, err := config.Load(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := cfg.Loop.StateDir
+			var actions []string
+			for i := 0; i < 8; i++ {
+				if hold != "" {
+					if code, _, errs := f.run(hold); code != 0 {
+						t.Fatalf("%s %d: %s", hold, i, errs)
+					}
+				}
+				if code, out, errs := f.run("resume"); code != 0 || strings.Contains(out, "new error episode") {
+					t.Fatalf("resume %d: %d %s %s", i, code, out, errs)
+				}
+				actions = append(actions, fmt.Sprint(f.tick()["action"]))
+			}
+			if got := strings.Join(actions, ","); got != "reprompt,none,none,none,none,none,none,none" {
+				t.Fatalf("%s then resume before each check: %s", name, got)
+			}
+			st, _ := state.Load(dir)
+			if st.Reprompts != 1 || st.LastRepromptAt.IsZero() || st.ResumeEpisodes != 0 {
+				t.Fatalf("reprompts=%d last=%v episodes=%d", st.Reprompts, st.LastRepromptAt, st.ResumeEpisodes)
+			}
+			j, err := incident.Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range j.Records {
+				if c := r.ControlChange; c != nil && c.Operation == "resume" && (c.NewEpisode || c.Caller != "terminal") {
+					t.Fatalf("%+v", c)
+				}
+			}
+			if _, out, _ := f.run("status"); strings.Contains(out, "resumed episodes") {
+				t.Fatalf("status counts an episode that was not started:\n%s", out)
+			}
+		})
+	}
+}
+
+// A resume that starts no episode still gives a repaired fallback fresh
+// takeover briefs, as before.
+func TestResumeWithNothingHeldStillClearsRejectedBriefs(t *testing.T) {
 	f := newFixture(t)
-	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
 	if code, _, errs := f.run("enable"); code != 0 {
 		t.Fatal(errs)
 	}
@@ -125,51 +183,25 @@ func TestResumeWithNothingHeldDoesNotRefundTheRunningEpisode(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := cfg.Loop.StateDir
-	var actions []string
-	for i := 0; i < 8; i++ {
-		if code, out, errs := f.run("resume"); code != 0 || strings.Contains(out, "new error episode") {
-			t.Fatalf("resume %d: %d %s %s", i, code, out, errs)
-		}
-		actions = append(actions, fmt.Sprint(f.tick()["action"]))
-	}
-	if got := strings.Join(actions, ","); got != "reprompt,none,none,none,none,none,none,none" {
-		t.Fatalf("resume before each check: %s", got)
-	}
-	st, _ := state.Load(dir)
-	if st.Reprompts != 1 || st.LastRepromptAt.IsZero() || st.ResumeEpisodes != 0 {
-		t.Fatalf("reprompts=%d last=%v episodes=%d", st.Reprompts, st.LastRepromptAt, st.ResumeEpisodes)
-	}
-	j, err := incident.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range j.Records {
-		if c := r.ControlChange; c != nil && c.Operation == "resume" && (c.NewEpisode || c.Caller != "terminal") {
-			t.Fatalf("%+v", c)
-		}
-	}
-	if _, out, _ := f.run("status"); strings.Contains(out, "resumed episodes") {
-		t.Fatalf("status counts an episode that was not started:\n%s", out)
-	}
-	// It still gives a repaired fallback fresh takeover briefs, as before.
-	st.HandoffBriefs = map[string]state.BriefRecord{"fallback-example": {Failed: 3, LastAt: time.Now().UTC()}}
-	st.SwitchBackRejected = 2
+	st := state.File{Reprompts: 1, LastRepromptAt: time.Now().UTC(), SwitchBackRejected: 2,
+		HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 3, LastAt: time.Now().UTC()}}}
 	if err := state.Save(dir, st); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, errs := f.run("resume"); code != 0 {
 		t.Fatal(errs)
 	}
-	if st, _ = state.Load(dir); len(st.HandoffBriefs) != 0 || st.SwitchBackRejected != 0 || st.Reprompts != 1 {
+	if st, _ = state.Load(dir); len(st.HandoffBriefs) != 0 || st.SwitchBackRejected != 0 || st.Reprompts != 1 || st.ResumeEpisodes != 0 {
 		t.Fatalf("%+v", st)
 	}
 }
 
-// When the counts cannot be reset, resume says that the holds were cleared
-// and exits non-zero, as the registered client resume does.
-func TestResumeExitsNonZeroWhenTheEpisodeCannotBeSaved(t *testing.T) {
+// When the counts cannot be reset, resume changes nothing and says so: the
+// loop stays held, nothing is written to the history, and the exit code is
+// not zero.
+func TestResumeChangesNothingWhenTheEpisodeCannotBeSaved(t *testing.T) {
 	f := newFixture(t)
-	for _, cmd := range []string{"enable", "await-user"} {
+	for _, cmd := range []string{"enable", "pause"} {
 		if code, _, errs := f.run(cmd); code != 0 {
 			t.Fatal(errs)
 		}
@@ -178,51 +210,21 @@ func TestResumeExitsNonZeroWhenTheEpisodeCannotBeSaved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(cfg.Loop.StateDir, state.FileName), "fictional broken record", 0600)
-	code, _, errs := f.run("resume")
-	if code == 0 || !strings.Contains(errs, "the holds were cleared (enabled)") || !strings.Contains(errs, "could not be reset") {
-		t.Fatalf("%d %s", code, errs)
-	}
-	if ctl, _ := control.Load(cfg.Loop.StateDir); ctl.AwaitingUser {
-		t.Fatal("the hold was not cleared")
-	}
-}
-
-// A loop held because its re-prompts were spent is not held again by the
-// check after a resume: the session, still in error, is recovered again.
-// Before, resume cleared the hold and the next check raised it again.
-func TestResumeAfterASpentRepromptCapRecoversOnTheNextCheck(t *testing.T) {
-	f := newFixture(t)
-	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
-	if code, _, errs := f.run("enable"); code != 0 {
-		t.Fatal(errs)
-	}
-	cfg, err := config.Load(f.cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	dir := cfg.Loop.StateDir
-	if err := state.Save(dir, state.File{Reprompts: cfg.Loop.Errors.MaxReprompts, LastRepromptAt: time.Now().Add(-time.Hour)}); err != nil {
+	if _, err := control.Update(dir, func(c *control.File) { c.AwaitingUser, c.EpisodeHold = true, true }); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.tick(); got["action"] != "await_user" {
-		t.Fatalf("spent cap: %v", got)
+	before, _ := incident.Load(dir)
+	write(t, filepath.Join(dir, state.FileName), "fictional broken record", 0600)
+	code, out, errs := f.run("resume")
+	if code == 0 || !strings.Contains(errs, "could not be reset, so nothing was changed and the loop is still paused") || strings.Contains(out, "new error episode") {
+		t.Fatalf("%d %s %s", code, out, errs)
 	}
-	if got := f.tick(); got["action"] != "none" {
-		t.Fatalf("held: %v", got)
+	if ctl, _ := control.Load(dir); !ctl.AwaitingUser || !ctl.Paused || !ctl.EpisodeHold {
+		t.Fatalf("a failed resume changed the holds: %+v", ctl)
 	}
-	if code, _, errs := f.run("resume"); code != 0 {
-		t.Fatal(errs)
-	}
-	got := f.tick()
-	if got["action"] != "reprompt" {
-		t.Fatalf("after resume: %v", got)
-	}
-	if ctl, _ := control.Load(dir); ctl.AwaitingUser {
-		t.Fatal("held again by the check after resume")
-	}
-	if st, _ := state.Load(dir); st.Reprompts != 1 {
-		t.Fatalf("re-prompts counted in the new episode: %d", st.Reprompts)
+	if after, _ := incident.Load(dir); len(after.Records) != len(before.Records) {
+		t.Fatal("a failed resume was recorded as a saved control")
 	}
 }
 
@@ -239,8 +241,9 @@ func TestCompleteOnAHeldLoopEndsTheWaitAndKeepsTheQuestion(t *testing.T) {
 			t.Fatal(cmd, errs)
 		}
 	}
+	// The completion says a question was open without repeating its note.
 	code, out, errs := f.run("complete")
-	if code != 0 || !strings.Contains(out, "a question to a person was still open when completion was declared: fictional question") {
+	if code != 0 || !strings.Contains(out, "a question to a person was still open when completion was declared") || strings.Contains(out, "fictional question") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	cfg, err := config.Load(f.cfg)

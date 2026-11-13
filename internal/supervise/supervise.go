@@ -1188,7 +1188,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
-		if _, err := control.Update(loop.StateDir, func(f *control.File) { f.AwaitingUser, f.Note = true, d.Reason }); err != nil {
+		if _, err := control.Update(loop.StateDir, func(f *control.File) {
+			f.AwaitingUser, f.Note = true, d.Reason
+			// Kept if already set: a later hold for another reason does not
+			// make the spent allowance any less spent.
+			f.EpisodeHold = f.EpisodeHold || d.EpisodeSpent
+		}); err != nil {
 			return err
 		}
 		data := map[string]any{"target": t.res.Target}

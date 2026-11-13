@@ -267,8 +267,8 @@ func (f *File) RetryRepaired() {
 	f.ClearBriefs()
 }
 
-// NewEpisode starts a new error episode because a person resumed a held
-// loop. On top of RetryRepaired it clears what is counted per episode or per
+// NewEpisode starts a new error episode because a person resumed a loop that
+// a check had held for a spent per-episode allowance. On top of RetryRepaired it clears what is counted per episode or per
 // stalled turn: re-prompts and their backoff, nudges and the silent-retry
 // clock. It counts itself, so status can show how often it has happened.
 // It never touches a loop-wide limit: sends used, the deadline, the

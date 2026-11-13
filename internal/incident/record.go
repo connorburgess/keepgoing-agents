@@ -61,8 +61,9 @@ type ControlChange struct {
 	// (no BB thread identity), client (a registered local client), or
 	// unavailable for a save that does not record it.
 	Caller string `json:"caller"`
-	// NewEpisode: this resume cleared a hold and started a new error
-	// episode, so the per-episode re-prompt and nudge counts started over.
+	// NewEpisode: this resume cleared a hold that a check had raised for a
+	// spent per-episode allowance, and so started a new error episode: the
+	// re-prompt and nudge counts started over.
 	NewEpisode bool `json:"newEpisode"`
 }
 

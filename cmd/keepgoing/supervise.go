@@ -721,25 +721,32 @@ func when(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// resumeEpisode is the second half of an explicit resume. A person resuming
-// a held loop is saying "try again", so the per-episode counts start over: a
-// loop held on spent re-prompts or nudges would otherwise be held again by
-// the next check, and resume would do nothing.
+// saveEpisodeState is swapped in tests to make the save fail.
+var saveEpisodeState = state.Save
+
+// resumeEpisode is the state half of an explicit resume. A person resuming a
+// loop that keepgoing held because a per-episode allowance was spent is
+// saying "try again", so those counts start over: otherwise the next check
+// finds the same spent count and raises the same hold, and resume does
+// nothing.
 //
-// A resume that cleared no hold starts no new episode. It would otherwise
-// refund the running one: resume before every check, by anyone who can run
-// the command, and a session in error is re-prompted at every check with no
-// backoff, cap or hold. Such a resume still gives a repaired fallback or
-// primary fresh takeover briefs, as it always has.
+// Only that hold starts a new episode. A resume with nothing held, or of a
+// hold a command created (pause, stop, await-user, complete), would
+// otherwise refund the running episode: hold and resume before every check,
+// by anyone who can run the commands, and a session in error is re-prompted
+// at every check with no backoff, cap or hold. Such a resume still gives a
+// repaired fallback or primary fresh takeover briefs, as it always has.
 //
-// Loop-wide limits are never refunded. The caller holds the tick lock.
-func resumeEpisode(stateDir string, clearedHold bool, at time.Time) error {
+// Loop-wide limits are never refunded. It runs inside the control update,
+// before the holds are cleared, with the tick lock held: if the counts
+// cannot be saved the resume fails and changes nothing.
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
 	st, err := state.Load(stateDir)
 	if err != nil {
 		return err
 	}
 	before := st
-	if clearedHold {
+	if episodeHold {
 		st.NewEpisode(at)
 	} else {
 		st.RetryRepaired()
@@ -747,13 +754,12 @@ func resumeEpisode(stateDir string, clearedHold bool, at time.Time) error {
 	if reflect.DeepEqual(before, st) {
 		return nil
 	}
-	return state.Save(stateDir, st)
+	return saveEpisodeState(stateDir, st)
 }
 
-// held reports whether any hold a resume clears is set.
-func held(f control.File) bool {
-	return f.Paused || f.Stop || f.AwaitingUser || f.Completed
-}
+// errEpisodeState marks a resume refused because the saved counts could not
+// be reset.
+var errEpisodeState = errors.New("the saved re-prompt and nudge counts could not be reset")
 
 // controlCaller is who is running a control command, as a role.
 func controlCaller(f control.File) string {
@@ -785,7 +791,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"pause":   func(f *control.File) { f.Paused = true },
 		"resume": func(f *control.File) {
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.OpenQuestion = nil
+			f.EpisodeHold, f.OpenQuestion = false, nil
 		},
 		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
@@ -805,9 +811,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	clearedHold, openQuestion := false, false
+	newEpisode, openQuestion := false, false
 	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
-		clearedHold, openQuestion = cmd == "resume" && held(*f), false
+		newEpisode, openQuestion = false, false
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -819,6 +825,10 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC()); err != nil {
+				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
+			}
+			newEpisode = f.EpisodeHold
 		}
 		wasAwaiting := f.AwaitingUser
 		if !transfer {
@@ -832,7 +842,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 		return nil
 	}, func(f control.File, c *incident.ControlChange) {
-		c.Caller, c.NewEpisode = controlCaller(f), clearedHold
+		c.Caller, c.NewEpisode = controlCaller(f), newEpisode
 	}, suppliedRoutine(e.ctx))
 	historyFailed := errors.Is(err, errControlHistory)
 	if historyFailed {
@@ -844,14 +854,6 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
-	}
-	episodeFailed := false
-	if cmd == "resume" {
-		if err := resumeEpisode(cfg.Loop.StateDir, clearedHold, time.Now().UTC()); err != nil {
-			// The holds are cleared and saved; only the counts are not reset.
-			episodeFailed = true
-			e.errf("resume: the holds were cleared (%s), but the saved re-prompt and nudge counts could not be reset, so the next check may hold the loop again: %v", f.Summary(), err)
-		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
@@ -878,15 +880,16 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
 	if openQuestion && f.OpenQuestion != nil {
-		fmt.Fprintf(e.stdout, "a question to a person was still open when completion was declared%s; `status` keeps it until a resume\n", noteSuffix(f.OpenQuestion.Note))
+		// The note is not repeated here; status shows it, as it shows any note.
+		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
 	}
-	if cmd == "resume" && clearedHold && !episodeFailed {
+	if cmd == "resume" && newEpisode {
 		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")
 	}
 	if cmd == "enable" && f.Ownership != nil {
 		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
 	}
-	if historyFailed || episodeFailed {
+	if historyFailed {
 		return exitFailed
 	}
 	return exitOK
