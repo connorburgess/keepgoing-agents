@@ -348,6 +348,8 @@ The Claude Code, Codex and Cursor runners already share the detached turn, priva
 - [ ] **K4 — Protocol transport.** Several agents (Cursor, Hermes, Zed, Gemini CLI and others) speak the Agent Client Protocol, which carries structured permission requests, questions and cancellation that one-shot command-line turns lack. Build one protocol runner on the existing Antigravity protocol gate and exchange so that family shares it, with the durable permission hold already implemented. Source so far: the [unregistered Antigravity runner](antigravity.md#detached-runner) (A3) is a first owned worker for this transport, with the prompt on private stdin, a saved prompt reservation and hold, exact resume and owned stop, tested only against a stand-in agent. It is named and shaped for one agent and takes its command from the caller; turning it into the shared protocol runner, and resolving chat-only questions, remain K4 work.
 - [ ] **K5 — Further agents**, each from a definition plus its conformance run and an authorized live walkthrough, in order of demand. Candidates to verify against their published interfaces: Gemini CLI, OpenCode, Amp, Aider, Goose, Copilot CLI.
 - [ ] **K6 — IDE chats.** Where an IDE documents a way for an outside process to observe and continue a chat open in its window (through the protocol transport or an extension interface), support it; where it does not, say so in the capability matrix. Documentation review, 2026-11-13: none of Cursor, Antigravity, VS Code agent chat, Windsurf (now Devin Desktop) or Zed documents a way for an outside process to observe and continue a chat already open in its window; three document hooks the IDE itself runs, and VS Code documents an open protocol for a host you start yourself. See [the record with links](adapters.md#chats-already-open-in-an-ide). Nothing is implemented.
+- [ ] **K7 — Cloud-session targets.** Supervise an agent session hosted by its vendor through a documented interface that both reads its state and continues it, with structured error evidence; start with services that document both halves. Such a target keeps running while the machine running keepgoing sleeps, so setup and `doctor` must say that it needs a machine that stays on. Not started; the [design record](command-center.md#interfaces-cloud-sessions-offer-an-outside-process) lists which services document what.
+- [ ] **K8 — Small Linux ARM headless target.** Run keepgoing as a boot-time service on a small `linux/arm64` device with no desktop or login session, with reports queued until a connection returns and a remote view only. Acceptance includes a native run of the `linux/arm64` archive on such a device. Builds on network-aware waiting (unreleased, fixture-tested). Starting at boot stays the person's act: keepgoing never enables lingering or installs a system unit; `doctor` and `service status` detect a unit that will not start at boot and print the command to run, and a separate command prints a system unit for image builders ([decision](command-center.md#consequences-for-the-roadmap)). Not started; see [edge devices](command-center.md#edge-devices-and-local-models).
 
 #### Test suites
 
@@ -442,6 +444,7 @@ The owner wants keepgoing to move to another target at a usage threshold, for ex
 - [ ] Pilot two blind independent reviews of the same pinned inputs, followed by a synthesis of findings, disagreements and missing evidence. Resolve material disagreements with bounded tests or targeted review; preserve dissent and distinguish incomplete review from approval.
 - [ ] Define explicit event keys, stale-result rejection, ownership fencing, concurrency limits, retry/review budgets and crash recovery. A result may satisfy only a pre-authorized gate; it cannot widen scope, clear human holds, or authorize itself.
 - [ ] Compare single review, independent samples, independent review plus synthesis, and bounded debate at comparable cost. Measure evidence quality, missed defects, false acceptance, retained dissent, latency and human review time. Agreement alone is not correctness.
+- [ ] **Review as a lane role.** A lane may carry a declared role, `work` or `review`, recorded with the loop and shown wherever lanes are shown. A review lane reads pinned inputs and reports; it may run on a different route or device from the work it reviews, so the reviewer does not share the author's model, allowance or context. The role is explicit metadata set by a person or by the agent that started the lane; keepgoing never infers it from a title or from text, and a review result still passes only a gate that was authorized beforehand. Depends on lanes as first-class members (P6) and on the route view (V2). Today this is done by hand: each change is read by an independent reviewer that sees the code and not the author's reasoning.
 
 Reviewer execution and interpretation belong in a BB workflow or other external coordinator. keepgoing never spawns/re-parents threads, interprets review prose, or treats arbitrary model-produced JSON as provider status. Explicit control commands need validated provenance/authorization and revision checks; a JSON shape alone is insufficient. No general planner, recursive review system or second scheduler is part of this plan.
 
@@ -452,7 +455,6 @@ Reviewer execution and interpretation belong in a BB workflow or other external 
 - [x] Add registered `client pause|stop`: pin the registration against removal, revalidate config/runtime/source bindings inside the short control update, preserve all other holds/ownership/transfer state, and report confirmed saves separately from diagnostic failures. No tick wait or provider query; offline fixtures cover busy locks, corrupt records, preserved controls and failed history. Released in v0.1.4; not adopted live in verification. See [registered holds](local-clients.md#registered-pause-and-stop).
 - [x] Add registered `client prepare-resume` / `client resume` with a five-minute single-use ticket bound to registration, config/fallback source snapshots, caller/owner, controls, full saved state and goal metadata. Recheck under registry/tick/control locks and consume before clearing holds; stale, superseded or consumed evidence cannot replay. Offline fixtures cover changes, locks, expiry, interrupted consumption, lost replies, private display and process targets without BB. Released in v0.1.4; native UI resume and live adoption remain unfinished. See [registered resume](local-clients.md#registered-resume). A correction released in v0.1.5 advances loaded control timestamps across equal/backwards wall-clock readings, preserving repeated-pause invalidation; deterministic clock fixtures cover it.
 - [x] Add a read-only native macOS menu preview under `integrations/macos/`: explicitly selected trusted CLI/registry, registered-loop selection, controls, configured target, timestamped history, optional private goal title/next action, and daemon/next-check evidence. Reads occur on menu open or explicit refresh; no supervisor timer, provider call, loop mutation, registration or installation is added. Schema/exit/identity failures stay unavailable; subprocess reads are bounded. Native build and a real-CLI smoke check with a fictional disabled loop pass locally; XCTest coverage runs in macOS CI. Unreleased; visual/accessibility behavior and live adoption remain unverified. Interactive controls, stages and packaging remain below. See [preview](../integrations/macos/README.md).
-- [ ] Add `keepgoing dock`, a read-only page (the keepgoing panel; the name is not settled) for every registered loop, served to this computer only on 127.0.0.1 with a per-run token, no cross-origin access and no write endpoint. Implemented, unreleased and fixture-tested; left unchecked until its review findings are closed and it has merged. Level 1 is a picker: a needs-you line, then one row per loop with a one-phrase state. With nothing picked it lists every loop a person should look at: held loops (recorded cause, time waited, what to do; the hold's note only with identifiers) and loops that could not be read; "nothing needs you" appears only when every loop was read and none is held. Level 2 shows one loop through its preferred routes in order, with the route its records name as current marked as in use only when the loop is on, unheld and recently checked on it, each route's readiness, usage reading and resets, the loop's lanes as counts, and its last and next check and limits. A routes view shows the same route component across loops. Missing or old evidence reads unknown or stale, each phrase is tied to its record by a table test, and identifiers and notes are hidden unless requested. One versioned JSON endpoint feeds every view, built from the existing `registry list`, `client status`, `status`, `runs --registry-id` and `fallbacks list` reads plus the retained hold history; no provider, `bb`, scheduler or Git command, no lock, no write. Not verified: a responsive daemon in the page, execution on Windows, Linux and Windows browsers, a screen reader. See [the panel](dock.md).
 - [ ] Panel controls: pause, resume and stop from a loop's page and picker commands such as pause all, through `client pause|stop` and the reviewed-ticket `client prepare-resume` / `client resume`, with no control logic of the page's own.
 - [ ] Panel configuration, starting with a loop's routes (order, add, remove, automatic handoff on or off), then limits, the usage-switch threshold and report events: a front end to the guided `fallbacks add|move|remove|handoff` commands with their previews, confirmation and guards, never its own logic or file writes. Credentials and logins are never shown or edited.
 - [ ] Actions on many lanes from the routes view (move every lane on one route to another, change their effort level). Blocked on two things that do not exist: lanes as first-class records (keepgoing knows a loop's lanes only as counts and hashes and never changes them), and a group (a coordinator and its lanes) that an action can apply to.
@@ -461,6 +463,85 @@ Reviewer execution and interpretation belong in a BB workflow or other external 
 - [ ] Build a minimal local menu-bar client under `integrations/macos/`, initially using native platform controls. Offer pause/resume/stop and open-thread where supported through existing authorized controls. No scheduling, provider calls, automatic hold clearing, or UI-owned goal state.
 - [ ] Offer the companion as an entirely optional setup choice. Installation and login startup are separate explicit choices; opening the UI never starts another supervisor and quitting it leaves supervision running.
 - [ ] Verify accessibility, private metadata handling, version mismatch, unreachable/stale status, restart, signing/notarization and distribution. Defer multi-host aggregation and rich dashboards.
+
+#### Dock: a local page for every loop (planned)
+
+The supervisor's work is invisible today: a status command, a journal and a menu preview. The dock is one local page, served on this device only, that shows every registered loop and, for a selected loop, where its work is running. It is built in this order, and each step is read-only until V4. "Dock" is a working name; user-facing text says panel or page. Terms follow the [glossary](glossary.md).
+
+- [x] **V1 — A read-only page for every registered loop.** `keepgoing dock` serves a read-only page (the keepgoing panel; the name is not settled) for every registered loop, served to this computer only on 127.0.0.1 with a per-run token, no cross-origin access and no write endpoint. Level 1 is a picker: a needs-you line, then one row per loop with a one-phrase state. With nothing picked it lists every loop a person should look at: held loops (recorded cause, time waited, what to do; the hold's note only with identifiers) and loops that could not be read; "nothing needs you" appears only when every loop was read and none is held. Level 2 shows one loop through its preferred routes in order, with the route its records name as current marked as in use only when the loop is on, unheld and recently checked on it, each route's readiness, usage reading and resets, the loop's lanes as counts, and its last and next check and limits. A routes view shows the same route component across loops. Missing or old evidence reads unknown or stale, each phrase is tied to its record by a table test, and identifiers and notes are hidden unless requested. One versioned JSON endpoint feeds every view, built from the existing `registry list`, `client status`, `status`, `runs --registry-id` and `fallbacks list` reads plus the retained hold history; no provider, `bb`, scheduler or Git command, no lock, no write. Not verified: a responsive daemon in the page, execution on Windows, Linux and Windows browsers, a screen reader. See [the panel](dock.md). Implemented in unreleased source (PR #185). Evidence: fixture and table tests; an independent review of the local server (loopback only, the token on every asset, Host, Origin and method checks, no cross-origin headers, a 238-entry tree byte-identical after the request suite) with its display findings fixed; and one read-only look by the project coordinator at two supervised loops on macOS arm64, with every loop file unchanged before and after. Not verified beyond the list above: a release build, and any machine but that one.
+- [ ] **V2 — Route view.** Selecting a loop shows its routes in preference order with the one in use marked, each with model, account group, effort and its recorded health and usage reading with age; its lanes with state and, when recorded, the route each is on; the device; the last decision with its reason; and recent timeline entries. Drawn only from what keepgoing already records. Missing data reads "unknown"; nothing is estimated.
+- [ ] **V3 — No-progress flag.** Mark a loop or lane that keeps being prompted without results, from recorded facts only: sends since the progress repository last changed, re-prompts, errors and retries with no change between them, time waiting on a person against time working, and allowance used where a reading exists. The transcript is never read and no quality is judged. The flag informs a person; it never pauses, moves or stops anything by itself. Thresholds are configurable and the flag states which fact raised it.
+- [ ] **V4 — Controls and route configuration.** Pause, resume, stop, and adding, ordering and removing routes from the page, each through the existing authorized commands with the same ownership and confirmation rules. The page holds no state of its own.
+- [ ] **V5 — Remote access.** Reach a device's dock from elsewhere. Off by default, authenticated, and bounded by the fleet rules in P9; several devices in one view comes after that, not before.
+
+Order beyond the dock: the route view first, then the no-progress flag, then review as a lane role (section 9), then anything across devices. Each later step depends on seeing one loop clearly.
+
+##### Panel feature set
+
+Everything a person should be able to do from the panel, grouped by what they came to do. Each line names the step above that delivers it, or a lettered part of that step; none is built unless its step is checked. The same rules hold throughout: the page shows recorded facts only, "unknown" and "stale" are said plainly, private identifiers and notes are hidden until asked for, every change goes through an existing authorized command, is confirmed before it happens and is recorded with who made it, and the page is read-only unless it was started with changes allowed.
+
+Get to it
+
+- [ ] One command, `keepgoing panel`, starts or reuses the local page and opens it; no address to copy. (V1b)
+- [ ] The menu bar item opens the panel, shows how many loops need a person, and lists each loop as a row that opens its page. (V1c)
+- [ ] A link from each supervised conversation's banner in an agent app to that loop's page. (V2c)
+- [ ] The page says which command serves it and when it will stop by itself; the menu bar item can stop it. (V1b, V1c)
+- [ ] Optional start at login, as an explicit choice; never by itself. (V1d)
+
+See
+
+- [ ] Every loop at a glance, the ones that need a person first, each with its state in one phrase. (V1)
+- [ ] One loop: the route in use and why, its other routes in order, its lanes by title and state, the last decision and since when, the hold in force, its limits and how much of each is used, and recent history. (V2, lane titles V2b)
+- [ ] Routes across loops, with each account's allowance: the freshest reading, when it resets, and which loops are on it or waiting for it. (V2)
+- [ ] A route that was left on a usage limit says so, with the reported reset time and when keepgoing will return. (V2)
+- [ ] The device a loop runs on and its role. (V2)
+- [ ] "While you were away": what changed since the page was last opened, across loops, in a few lines. (V2d)
+- [ ] The full history of a loop, filterable by kind and time, in plain words. (V2e)
+
+Understand
+
+- [ ] Why a loop is waiting and what ends the wait: a limit reset, the network, a person, a retry in progress, its operating hours. (V2)
+- [ ] What keepgoing will do next and when, where that is known; "unknown" with the reason where it is not. (V2)
+- [ ] A no-progress flag on a loop or lane that keeps being prompted without results, naming the fact that raised it. (V3)
+- [ ] "Why did it not move?": for a held or waiting loop, the rule that decided, in one sentence, from the recorded decision. (V3b)
+- [ ] Evidence age everywhere: when each fact was last read, and a clear mark when keepgoing itself has not checked recently. (V1)
+
+Act
+
+- [ ] Pause, resume and stop a loop, with what will change shown before confirming. (V4a)
+- [ ] Open the conversation that needs an answer, and resume the loop once it is answered. (V4a)
+- [ ] Check now: run one check of a loop outside its schedule, with the same rules as any check. (V4c)
+- [ ] Move to another route now, or return to the preferred one, at the next turn boundary. (V4d)
+- [ ] Mark a loop complete. (V4a)
+- [ ] Stop every loop on this device with one control. (V4e, roadmap P9)
+
+Configure
+
+- [ ] A loop's preferred routes: reorder, switch one off or on, add from the routes already known, remove. (V4b)
+- [ ] The standard route list that loops follow unless they have their own, and which loops follow it. (V4b)
+- [ ] Add a route with guidance: which agents and accounts are signed in on this device, a probe before it counts. (V4f)
+- [ ] A loop's limits: the most automatic messages, a deadline, how long without progress, its operating hours. (V4g)
+- [ ] What a loop reports and where: which events, to which webhook, with a test send. (V4h)
+- [ ] Options that are off by default, each with what it does and what it costs: recovery of failed lanes, hand-off to a new conversation. (V4i)
+- [ ] Set up supervision for an existing agent session from the page, and remove a loop. (V4j)
+
+Be told
+
+- [ ] A count on the menu bar item when a loop needs a person, kept current without opening the menu, and a clear mark when it could not be read. (V1c)
+- [ ] Desktop notifications for the events a person chooses: needs you, moved on a limit, returned, finished. (V2f)
+- [ ] A daily summary of what each loop did. (V2g)
+
+Trust
+
+- [ ] Read-only by default; the page says which mode it is in; every change is confirmed, bounded by the same ownership rules as the command line, and recorded. (V4a)
+- [ ] Reachable from this computer only, by a session that cannot be forged from another page. (V1, V1b)
+- [ ] Works with the keyboard and a screen reader, in light and dark, on a narrow window, and with a hundred loops; each verified, not assumed. (V1e)
+- [ ] The page states its own version and warns when a loop is supervised by a different build. (V1f)
+
+Across devices, later
+
+- [ ] Reach the page over a private network the person already runs, by an explicit setting for the names it may be reached by; today it answers only to its own loopback address. (V5a)
+- [ ] The same page for another device's loops, and one view of a fleet. (V5, after P9 and the device design)
 
 Keep the first client in this repository with an independent build/release path so macOS packaging does not gate core Go releases. Reconsider a separate repository if maintainers, release cadence or supported backends diverge. Goal-aware display depends on section 8; stage display consumes explicit optional metadata and does not imply section 9 is implemented.
 
