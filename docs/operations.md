@@ -351,7 +351,7 @@ keepgoing loop remove -c /private/example-loop/keepgoing.yaml --yes    # remove 
 **Only what keepgoing marked.** `loop remove` deletes a directory only when it carries keepgoing's marker file, `.keepgoing-loop`, for the loop named in the configuration. A path in a configuration value is never enough. Two layouts are supported:
 
 - **What `init` creates.** `init` puts the setup directory under the user configuration directory (`keepgoing/loops/<name>`, or wherever `--directory` says) and the state directory inside it as `state`. It now writes the marker into the setup directory, and that marker covers the state directory inside.
-- **A state directory somewhere else**, as in a configuration written by hand with its state under the user state directory. `init` never creates this layout, so it is removable only after a person has marked it: the state directory then carries its own marker.
+- **A state directory outside the setup directory.** This is a hand-made layout: `init` never creates it. It is supported for removal only after `keepgoing loop mark` has been run and has marked both directories, the setup directory and the state directory. Until then `loop remove` refuses it.
 
 In both, removal also refuses when a directory is a symlink or inside a Git checkout, and when the setup directory holds anything keepgoing did not write (move it out first). A separate state directory must also hold keepgoing's control file and must not contain, or lie inside, a working directory, a progress repository or the setup directory. The setup directory itself is removed without recursion, so nothing unexpected can go with it.
 
