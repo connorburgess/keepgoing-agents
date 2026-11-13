@@ -54,6 +54,28 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if w := l.NetworkCheckWarning(); w != "" {
 		e.errf("warning: %s", w)
 	}
+	// A defined agent's own mapping decides what moves work to a fallback,
+	// so every such mapping is said in words.
+	defined := []struct {
+		where string
+		agent config.Agent
+	}{{"primary", l.Agent}}
+	if fb := cfg.FallbackSet; fb != nil {
+		for _, c := range fb.Candidates {
+			defined = append(defined, struct {
+				where string
+				agent config.Agent
+			}{c.ID, c.Agent})
+		}
+	}
+	for _, d := range defined {
+		if d.agent.Custom == nil {
+			continue
+		}
+		for _, move := range d.agent.Custom.FailoverMappings(l.Errors.FailoverOn) {
+			fmt.Fprintf(e.stdout, "failover (%s, defined agent %s): %s\n", d.where, d.agent.Custom.Name, move)
+		}
+	}
 	if l.Report != nil {
 		fmt.Fprintf(e.stdout, "report: %s format, %s, events %s\n", l.Report.Format, l.Report.Scheme, strings.Join(l.Report.Events, ","))
 	}
@@ -393,138 +415,12 @@ func refOf(a config.Agent) agentRef {
 }
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
-	l := cfg.Loop
-	ctl, err := control.Load(l.StateDir)
+	out, err := readStatus(e.ctx, cfg, now, staleAfter, inspectDaemon)
 	if err != nil {
 		e.errf("%v", err)
 		return exitFailed
 	}
-	st, err := state.Load(l.StateDir)
-	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
-	}
-	in, why, err := window.Inside(l.Window, now)
-	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
-	}
-	if ctl.BBTarget != "" && !transferThreadID.MatchString(ctl.BBTarget) {
-		ctl.BBTarget = "unavailable"
-	}
-	if ctl.PendingTransfer != nil {
-		p := control.PendingBBTransfer{}
-		if ctl.PendingTransfer.Valid() {
-			p = *ctl.PendingTransfer
-		}
-		p.Before, p.After = "", ""
-		ctl.PendingTransfer = &p
-	}
-	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
-	if g, err := control.LoadGoal(l.StateDir); err != nil {
-		out.GoalError = err.Error()
-	} else if g != nil {
-		summary := g.Summary()
-		out.Goal = &summary
-	}
-	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
-	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
-	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
-	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
-	if l.Limits.MaxSends > 0 {
-		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
-		used, err := state.LoadSends(l.StateDir)
-		if err != nil {
-			out.SendAllowance.Error = err.Error()
-		} else {
-			remaining := max(int64(0), l.Limits.MaxSends-used)
-			out.SendAllowance.Used, out.SendAllowance.Remaining = &used, &remaining
-			out.SendAllowance.Reached = used >= l.Limits.MaxSends
-		}
-	}
-	if timeout := l.Limits.NoProgressTimeout.Duration; timeout > 0 {
-		a := &progressAllowanceStatus{Timeout: timeout.String()}
-		out.ProgressAllowance = a
-		p, err := state.LoadProgress(l.StateDir)
-		switch {
-		case err != nil:
-			a.Error = err.Error()
-		case p == nil:
-			a.BaselinePending = true
-		case now.Before(p.ObservedAt):
-			a.Error = "host clock precedes the last verified progress observation"
-		case p.Sources != state.ProgressSources(l.Progress.Repositories):
-			a.Error = "repository list changed; next tick must rebase without replenishing time"
-		default:
-			a.ChangedAt, a.ObservedAt, a.Due = &p.ChangedAt, &p.ObservedAt, p.Reached(now, timeout)
-		}
-	}
-	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
-	out.TakeoverBriefs = takeoverBriefsStatus{Cap: l.Errors.MaxReprompts, Capped: []string{}, SwitchBackRejected: st.SwitchBackRejected,
-		SwitchBackStopped: l.SwitchBack.Enabled && st.Target() != state.Primary && st.SwitchBackRejected >= l.Errors.MaxReprompts}
-	for id, r := range st.HandoffBriefs {
-		if r.Failed >= l.Errors.MaxReprompts {
-			out.TakeoverBriefs.Capped = append(out.TakeoverBriefs.Capped, id)
-		}
-	}
-	sort.Strings(out.TakeoverBriefs.Capped)
-	out.WorkBounds = workBoundsStatus{Limits: l.Limits.Configured()}
-	out.TickBudget = tickBudgetStatus{Timeout: l.TickTimeout.Duration.String(), Grown: l.TickTimeoutGrown(), Warning: l.TickTimeoutWarning()}
-	if len(out.WorkBounds.Limits) == 0 {
-		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
-	}
-	out.PrimaryAgent = refOf(l.Agent)
-	if st.Target() == state.Primary {
-		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
-	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
-		// A fallback that starts a new thread at handoff is a target only
-		// once its thread exists.
-		if a, known := st.CandidateAgent(c); known {
-			out.TargetAgent = refOf(a)
-			out.TargetConfigured = true
-		}
-	}
-	out.NewThreads = newThreadStatus{Created: st.NewThreadsCreated, Max: l.Limits.MaxNewThreads, Pending: st.NewThreadIntent != nil}
-	if !st.LastNewThreadAt.IsZero() {
-		next := st.LastNewThreadAt.Add(config.MinNewThreadInterval)
-		out.NewThreads.NextAllowedAt = &next
-	}
-	if t, ok := st.NewThreads[st.Target()]; ok && out.TargetConfigured {
-		created := t.CreatedAt
-		out.NewThreads.Active = &created
-	}
-	out.TaskSource = "inline"
-	if l.PromptFile != "" {
-		out.TaskSource, out.TaskFile = "file", l.PromptFile
-	}
-	out.Notifications = report.InspectDeliveries(l.StateDir)
-	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
-	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
-	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
-	cancel()
-	if out.Daemon.State == "responsive" {
-		out.Runtime.NextCheck = out.Daemon.NextCheck
-	}
-	if out.TargetConfigured {
-		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
-	}
-	out.Usage = []usageView{}
-	if fb := cfg.FallbackSet; fb != nil {
-		reg, err := health.Load(l.StateDir)
-		// Readings exist only for probed targets, so they are listed only when
-		// fallbacks are configured. Unreadable history shows as unavailable.
-		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
-			out.Usage = append(out.Usage, usageOf(reg, c, now))
-		}
-		if err == nil {
-			group := l.Group
-			if c, ok := fb.Find(st.Target()); ok {
-				group = c.Group
-			}
-			s := health.Evaluate(fb, reg, now, st.Target(), group)
-			out.Redundancy = &s
-		}
-	}
+	ctl, st := out.Control, out.State
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
@@ -671,7 +567,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
 	}
-	if warning := l.NetworkCheckWarning(); warning != "" {
+	if warning := cfg.Loop.NetworkCheckWarning(); warning != "" {
 		fmt.Fprintf(w, "network:   warning: %s\n", warning)
 	}
 	if st.FailedChecks > 0 {
@@ -705,6 +601,141 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	printUsage(w, "usage:     ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
+}
+
+// readStatus builds the status report. It reads local records and the existing
+// daemon endpoint through query; it never queries a provider or writes.
+func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAfter time.Duration, query clientDaemonQuery) (statusOut, error) {
+	l := cfg.Loop
+	ctl, err := control.Load(l.StateDir)
+	if err != nil {
+		return statusOut{}, err
+	}
+	st, err := state.Load(l.StateDir)
+	if err != nil {
+		return statusOut{}, err
+	}
+	in, why, err := window.Inside(l.Window, now)
+	if err != nil {
+		return statusOut{}, err
+	}
+	if ctl.BBTarget != "" && !transferThreadID.MatchString(ctl.BBTarget) {
+		ctl.BBTarget = "unavailable"
+	}
+	if ctl.PendingTransfer != nil {
+		p := control.PendingBBTransfer{}
+		if ctl.PendingTransfer.Valid() {
+			p = *ctl.PendingTransfer
+		}
+		p.Before, p.After = "", ""
+		ctl.PendingTransfer = &p
+	}
+	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	if g, err := control.LoadGoal(l.StateDir); err != nil {
+		out.GoalError = err.Error()
+	} else if g != nil {
+		summary := g.Summary()
+		out.Goal = &summary
+	}
+	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
+	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
+	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
+	if l.Limits.MaxSends > 0 {
+		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
+		used, err := state.LoadSends(l.StateDir)
+		if err != nil {
+			out.SendAllowance.Error = err.Error()
+		} else {
+			remaining := max(int64(0), l.Limits.MaxSends-used)
+			out.SendAllowance.Used, out.SendAllowance.Remaining = &used, &remaining
+			out.SendAllowance.Reached = used >= l.Limits.MaxSends
+		}
+	}
+	if timeout := l.Limits.NoProgressTimeout.Duration; timeout > 0 {
+		a := &progressAllowanceStatus{Timeout: timeout.String()}
+		out.ProgressAllowance = a
+		p, err := state.LoadProgress(l.StateDir)
+		switch {
+		case err != nil:
+			a.Error = err.Error()
+		case p == nil:
+			a.BaselinePending = true
+		case now.Before(p.ObservedAt):
+			a.Error = "host clock precedes the last verified progress observation"
+		case p.Sources != state.ProgressSources(l.Progress.Repositories):
+			a.Error = "repository list changed; next tick must rebase without replenishing time"
+		default:
+			a.ChangedAt, a.ObservedAt, a.Due = &p.ChangedAt, &p.ObservedAt, p.Reached(now, timeout)
+		}
+	}
+	out.Deadline, out.DeadlineReached = l.Limits.Deadline, l.Limits.DeadlineReached(now)
+	out.TakeoverBriefs = takeoverBriefsStatus{Cap: l.Errors.MaxReprompts, Capped: []string{}, SwitchBackRejected: st.SwitchBackRejected,
+		SwitchBackStopped: l.SwitchBack.Enabled && st.Target() != state.Primary && st.SwitchBackRejected >= l.Errors.MaxReprompts}
+	for id, r := range st.HandoffBriefs {
+		if r.Failed >= l.Errors.MaxReprompts {
+			out.TakeoverBriefs.Capped = append(out.TakeoverBriefs.Capped, id)
+		}
+	}
+	sort.Strings(out.TakeoverBriefs.Capped)
+	out.WorkBounds = workBoundsStatus{Limits: l.Limits.Configured()}
+	out.TickBudget = tickBudgetStatus{Timeout: l.TickTimeout.Duration.String(), Grown: l.TickTimeoutGrown(), Warning: l.TickTimeoutWarning()}
+	if len(out.WorkBounds.Limits) == 0 {
+		out.WorkBounds.Unbounded, out.WorkBounds.Warning = true, config.UnboundedWarning
+	}
+	out.PrimaryAgent = refOf(l.Agent)
+	if st.Target() == state.Primary {
+		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
+	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+		// A fallback that starts a new thread at handoff is a target only
+		// once its thread exists.
+		if a, known := st.CandidateAgent(c); known {
+			out.TargetAgent = refOf(a)
+			out.TargetConfigured = true
+		}
+	}
+	out.NewThreads = newThreadStatus{Created: st.NewThreadsCreated, Max: l.Limits.MaxNewThreads, Pending: st.NewThreadIntent != nil}
+	if !st.LastNewThreadAt.IsZero() {
+		next := st.LastNewThreadAt.Add(config.MinNewThreadInterval)
+		out.NewThreads.NextAllowedAt = &next
+	}
+	if t, ok := st.NewThreads[st.Target()]; ok && out.TargetConfigured {
+		created := t.CreatedAt
+		out.NewThreads.Active = &created
+	}
+	out.TaskSource = "inline"
+	if l.PromptFile != "" {
+		out.TaskSource, out.TaskFile = "file", l.PromptFile
+	}
+	out.Notifications = report.InspectDeliveries(l.StateDir)
+	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
+	out.Daemon = query(queryCtx, l.StateDir, version, false)
+	cancel()
+	if out.Daemon.State == "responsive" {
+		out.Runtime.NextCheck = out.Daemon.NextCheck
+	}
+	if out.TargetConfigured {
+		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
+	}
+	out.Usage = []usageView{}
+	if fb := cfg.FallbackSet; fb != nil {
+		reg, err := health.Load(l.StateDir)
+		// Readings exist only for probed targets, so they are listed only when
+		// fallbacks are configured. Unreadable history shows as unavailable.
+		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
+			out.Usage = append(out.Usage, usageOf(reg, c, now))
+		}
+		if err == nil {
+			group := l.Group
+			if c, ok := fb.Find(st.Target()); ok {
+				group = c.Group
+			}
+			s := health.Evaluate(fb, reg, now, st.Target(), group)
+			out.Redundancy = &s
+		}
+	}
+	return out, nil
 }
 
 func when(t time.Time) string {

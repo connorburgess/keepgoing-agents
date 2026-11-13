@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>keepgoing</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="dock.css">
+<script src="dock.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#pane">Skip to details</a>
+<header class="bar">
+  <div class="bar-in">
+    <a class="brand" href="#/"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>keepgoing</span></a>
+    <p class="readline" id="readline" role="status" aria-live="polite">Reading…</p>
+    <div class="tools">
+      <button type="button" class="btn" id="refresh"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>Read now</span></button>
+      <button type="button" class="btn" id="identifiers" aria-pressed="false" title="Show identifiers and notes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z"/><circle cx="10" cy="10" r="2.2"/></svg><span>Show identifiers and notes</span></button>
+    </div>
+  </div>
+</header>
+<p class="banner" id="banner" hidden></p>
+<div class="layout" id="layout" data-view="home">
+  <nav class="picker" id="picker" aria-label="Loops and views">
+    <p class="placeholder">Reading…</p>
+  </nav>
+  <main class="pane" id="pane" tabindex="-1"></main>
+</div>
+<footer class="foot">
+  <p>Read-only. This page cannot pause, resume, stop or start anything, and closing it, or stopping the command that serves it, leaves supervision running. Times are shown in this browser's time zone.</p>
+  <p id="served"></p>
+</footer>
+</body>
+</html>

@@ -11,26 +11,12 @@ import (
 )
 
 // CodexLimits is the structured usage state Codex's app-server reports
-// through account/rateLimits/read.
-type CodexLimits struct {
-	// Blocked: the backend reports ordinary usage not allowed, or a limit
-	// reached type is set.
-	Blocked     bool
-	ReachedType string
-	// ResetsAt is when the reached window lifts, when reported.
-	ResetsAt time.Time
-	// Windows are the usage windows the snapshot reported, blocked or not.
-	// They are readings only and never decide Blocked.
-	Windows []CodexWindow
-}
+// through account/rateLimits/read, in the shape every limit lookup returns.
+type CodexLimits = Limits
 
 // CodexWindow is one usage window from the snapshot. Name is the snapshot's
-// own field name. ResetsAt is zero when the snapshot gave none.
-type CodexWindow struct {
-	Name        string
-	UsedPercent int
-	ResetsAt    time.Time
-}
+// own field name.
+type CodexWindow = LimitWindow
 
 // ReadCodexLimits asks `codex app-server` for the account's rate-limit
 // snapshot over its stdio JSON-RPC protocol. It reads usage status only and

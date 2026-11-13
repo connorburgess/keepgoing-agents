@@ -58,7 +58,7 @@ keepgoing init --non-interactive \
 
 Add `--dry-run` to preview without writing files. `keepgoing init --help` lists all flags. Input ending or cancellation while answering the wizard writes no setup. Existing setups are never overwritten; edit their private configuration or choose a new name/directory.
 
-In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume; downtime counts. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
+In v0.1.3 or newer, optional `--no-progress-timeout 2h` holds after two hours without verified Git metadata changes. The baseline survives turns, restart and resume. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran or the network was down. Choose it only when Git activity is a suitable progress signal. See [no-progress timeout](operations.md#no-progress-timeout).
 
 In v0.1.3 or newer, optional `--max-sends 20` caps automatic send attempts with a persistent counter; failed attempts count and resume does not reset it. Zero or omission leaves accounting disabled. See [send allowance](operations.md#total-send-allowance).
 
@@ -85,7 +85,7 @@ keepgoing-dev init --non-interactive --agent cursor \
   --task-file /private/example-task.md --with-goal --max-sends 10
 ```
 
-Setup resolves `agent` on `PATH` and saves that executable, the project directory and optional `--model`. It never runs the provider or checks/changes its login. Existing Cursor credentials and permissions are inherited. `--account-dir` and `--fallback` are rejected for Cursor without writing a setup; the wizard skips those questions. Cursor is also unavailable as a fallback for other agents. `--dry-run` and the private stdin/JSON path below work as for other targets.
+Setup resolves `agent` on `PATH` and saves that executable, the project directory and optional `--model`. It never runs the provider or checks/changes its login; run `keepgoing doctor` afterwards to check the CLI version and stored login. Existing Cursor credentials and permissions are inherited, and Cursor must already trust the project directory or the first turn fails before it starts. `--account-dir` and `--fallback` are rejected for Cursor without writing a setup; the wizard skips those questions. Cursor is also unavailable as a fallback for other agents. `--dry-run` and the private stdin/JSON path below work as for other targets.
 
 This starts a separate CLI conversation on the first wake. Existing IDE chats, interactive permission bridging, quota/reset detection and automatic fallback recovery are unavailable. Text/JSON previews and doctor disclose these limits; reading a version string does not establish a supported version range. Review [Cursor evidence and remaining live checks](cursor.md) before starting. Creation stays disabled, including with an optional goal.
 

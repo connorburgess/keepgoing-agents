@@ -42,6 +42,11 @@ def load(path):
 def fixture(kind, args):
     """Only these stand-ins are reachable; never discover a real provider."""
     root = Path(os.environ["RECOVERY_FIXTURE"])
+    if kind == "cursor" and args == ["--version"]:
+        # keepgoing reads the CLI version when it starts a Cursor turn. That is
+        # not a turn: it carries no task and is not counted as an invocation.
+        print("2026.09.18-9a7762b")
+        return 0
     with (root / "calls.jsonl").open("a") as stream:
         stream.write(json.dumps([kind, *args]) + "\n")
     if kind == "bb":
