@@ -136,11 +136,13 @@ type tick struct {
 	observedTarget   string
 	awaitingInput    bool
 	awaitingChildren []string
-	// decisionInput is the input of the latest ordinary decision, and
-	// erroredChildHashes the errored children it saw; act uses both to decide
-	// whether a wake carries the child-error notice and what to record.
+	// decisionInput is the input of the latest ordinary decision. childNoticeKept
+	// and childNoticeNew are the announced record and the newly errored
+	// children it saw; act uses them to decide whether a wake carries the
+	// child-error notice and what to record.
 	decisionInput       decide.Input
-	erroredChildHashes  []string
+	childNoticeKept     []decide.CoveredChild
+	childNoticeNew      []string
 	deferredInteraction bool
 	ctx                 context.Context
 	cfg                 *config.Config
@@ -491,14 +493,25 @@ func (t *tick) run() error {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
 	// An errored child is not running work. The session is told when a child
-	// newly enters error: the record keeps hashes of children already announced
-	// and still in error, so a set that only shrinks announces nothing and a
-	// child that recovers and fails again is announced again. An incomplete
-	// listing changes no record.
-	t.erroredChildHashes = decide.ChildHashes(obs.ErroredChildren)
-	kept, unannounced := decide.ChildAnnouncements(t.erroredChildHashes, t.st.ChildErrorsAnnounced)
-	if !obs.ChildrenUnverified {
+	// newly enters error. The record and the rule are the ones the owner
+	// report uses: only growth is new, and a covered child is forgotten only
+	// after it has stayed out of error for min_wake_interval, so one that
+	// flaps between error and a provider retry is announced once.
+	if len(t.st.ChildErrorsAnnouncedV1) > 0 {
+		// A record written before recovery times existed: carry it over as
+		// children last seen in error now.
+		if len(t.st.ChildErrorsAnnounced) == 0 {
+			t.st.ChildErrorsAnnounced = decide.CoverChildren(nil, t.st.ChildErrorsAnnouncedV1, t.now, childErrorMaxCovered)
+		}
+		t.st.ChildErrorsAnnouncedV1 = nil
+	}
+	kept, unannounced := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren),
+		t.st.ChildErrorsAnnounced, !obs.ChildrenUnverified, t.now, loop.Progress.MinWakeInterval.Duration)
+	t.childNoticeKept, t.childNoticeNew = kept, unannounced
+	if !t.opts.DryRun {
 		t.st.ChildErrorsAnnounced = kept
+	}
+	if !obs.ChildrenUnverified {
 		// Rejected sends are counted per announcement: a newly errored child
 		// is a new one.
 		if pending := strings.Join(unannounced, ","); pending != t.st.ChildErrorNoticeFor {
@@ -909,8 +922,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		switch {
 		case childErrors == 0:
 		case err == nil:
-			// Announced: every child now in error is recorded as told.
-			t.st.ChildErrorsAnnounced, t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = t.erroredChildHashes, "", 0
+			// Announced: the newly errored children are recorded as told.
+			t.st.ChildErrorsAnnounced = decide.CoverChildren(t.childNoticeKept, t.childNoticeNew, t.now, childErrorMaxCovered)
+			t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = "", 0
 		default:
 			// Rejected (failed or unsupported): try again on a later wake, up
 			// to the cap. It may have been delivered, so it must not repeat
