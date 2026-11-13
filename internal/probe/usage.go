@@ -1,7 +1,6 @@
 package probe
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -51,7 +50,13 @@ func UsageIdentity(c config.Candidate) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	parts := []string{c.Provider, c.Group, c.Probe.Kind, c.ProbeCLI()}
+	// The executable as it was fingerprinted before a specification could
+	// supply a default: the probe kind when nothing names one.
+	cli := c.ProbeCLI()
+	if cli == "" {
+		cli = c.Probe.Kind
+	}
+	parts := []string{c.Provider, c.Group, c.Probe.Kind, cli}
 	for _, k := range keys {
 		parts = append(parts, k, env[k])
 	}
@@ -163,51 +168,20 @@ func usageToken(s string) (string, bool) {
 }
 
 // ClaudeUsage reads the quota windows from rate_limit_event messages in
-// Claude Code stream-json output. Later events override earlier ones per
-// window. The event is not a documented contract, so anything unexpected
-// (no event, another shape, a utilization outside 0..1) yields no window for
-// that part and never an error. Only utilization is required: a reset time or
-// status that is missing or of another type is left out and the window kept.
+// Claude Code stream-json output, as runner.ClaudeUsageReadings parses them.
+// Later events override earlier ones per window, and a utilization outside
+// 0..1 is not a reading.
 func ClaudeUsage(stdout []byte) []UsageWindow {
-	var windows []UsageWindow
-	for _, line := range bytes.Split(stdout, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var event struct {
-			Type string `json:"type"`
-			Info struct {
-				Windows map[string]json.RawMessage `json:"unifiedWindows"`
-			} `json:"rate_limit_info"`
-		}
-		if json.Unmarshal(line, &event) != nil || event.Type != "rate_limit_event" {
-			continue
-		}
-		for key, raw := range event.Info.Windows {
-			var w struct {
-				Utilization json.RawMessage `json:"utilization"`
-				ResetsAt    json.RawMessage `json:"resetsAt"`
-				Status      json.RawMessage `json:"status"`
-			}
-			var used, resets float64
-			if json.Unmarshal(raw, &w) != nil || json.Unmarshal(w.Utilization, &used) != nil || string(w.Utilization) == "null" {
-				continue
-			}
-			window := UsageWindow{Key: key, Used: used}
-			// Epoch seconds; refuse values that are not a plausible time.
-			if json.Unmarshal(w.ResetsAt, &resets) == nil && resets > 0 && resets < 1e11 {
-				t := time.Unix(int64(resets), 0).UTC()
-				window.ResetsAt = &t
-			}
-			var status string
-			if json.Unmarshal(w.Status, &status) == nil {
-				window.Status = status
-			}
-			windows = append(windows, window)
-		}
+	return boundWindows(usageWindows(runner.ClaudeUsageReadings(stdout)))
+}
+
+// usageWindows converts the windows a specification read from its output.
+func usageWindows(in []runner.UsageReading) []UsageWindow {
+	out := make([]UsageWindow, 0, len(in))
+	for _, w := range in {
+		out = append(out, UsageWindow{Key: w.Key, Used: w.Used, ResetsAt: w.ResetsAt, Status: w.Status})
 	}
-	return boundWindows(windows)
+	return out
 }
 
 // CodexUsage converts the app-server snapshot's windows. A percentage outside

@@ -130,6 +130,10 @@ func (f *Fallbacks) applyDefaults() {
 			case "codex":
 				c.Probe.Kind = "codex"
 			}
+			// A defined agent that describes a probe is probed with it.
+			if c.Adapter == CustomAdapter && c.Custom != nil && c.Custom.Definition.Probe != nil {
+				c.Probe.Kind = CustomAdapter
+			}
 		}
 	}
 }
@@ -178,6 +182,13 @@ func (f *Fallbacks) Validate() error {
 		}
 		switch c.Probe.Kind {
 		case "claude", "codex":
+		case CustomAdapter:
+			switch {
+			case c.Adapter != CustomAdapter || c.Custom == nil || c.Custom.Definition.Probe == nil:
+				add("%sprobe.kind custom needs a custom agent whose definition has a probe", where)
+			case c.Probe.CLI != "" || len(c.Probe.Command) != 0:
+				add("%sprobe.cli and probe.command are not used with probe.kind custom; the definition's probe says what runs", where)
+			}
 		case "command":
 			if len(c.Probe.Command) == 0 {
 				add("%sprobe.command is required for a command probe", where)
@@ -188,9 +199,9 @@ func (f *Fallbacks) Validate() error {
 				}
 			}
 		case "":
-			add("%sprobe.kind is required for provider %q (claude, codex, or command)", where, c.Provider)
+			add("%sprobe.kind is required for provider %q (claude, codex, custom, or command)", where, c.Provider)
 		default:
-			add("%sprobe.kind must be claude, codex, or command", where)
+			add("%sprobe.kind must be claude, codex, custom, or command", where)
 		}
 	}
 	return errors.Join(errs...)
@@ -233,11 +244,16 @@ func (c Candidate) ProbeWorkdir() string {
 		return c.Claude.Workdir
 	case c.Codex != nil:
 		return c.Codex.Workdir
+	case c.Custom != nil:
+		return c.Custom.Workdir
 	}
 	return ""
 }
 
-// ProbeCLI is the executable a claude or codex probe runs.
+// ProbeCLI is the executable configured for a claude or codex probe: the
+// probe's own, or the candidate's when it is that kind of agent. It is ""
+// when neither is set; the caller then uses the agent specification's
+// default executable.
 func (c Candidate) ProbeCLI() string {
 	switch {
 	case c.Probe.CLI != "":
@@ -247,7 +263,7 @@ func (c Candidate) ProbeCLI() string {
 	case c.Codex != nil && c.Probe.Kind == "codex":
 		return c.Codex.CLI
 	}
-	return c.Probe.Kind
+	return ""
 }
 
 // ProbeEnv inherits the headless target's environment. Explicit probe values
@@ -263,6 +279,10 @@ func (c Candidate) ProbeEnv() map[string]string {
 	case "codex":
 		if c.Codex != nil {
 			inherited = c.Codex.Env
+		}
+	case CustomAdapter:
+		if c.Custom != nil {
+			inherited = c.Custom.Env
 		}
 	}
 	for k, v := range inherited {

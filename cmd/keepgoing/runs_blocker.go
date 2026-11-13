@@ -4,6 +4,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
@@ -108,6 +109,16 @@ type runsCandidate struct {
 	thread string
 }
 
+// validConfig is clientConfig, or the caller's answer when one read of many
+// loops validated every entry once up front.
+func (c *runsContext) validConfig(entry registry.Entry) (*config.Config, bool) {
+	if c.validated == nil {
+		return clientConfig(entry)
+	}
+	cfg := c.validated[entry.ID]
+	return cfg, cfg != nil
+}
+
 // candidates validates every registry entry once per invocation.
 func (c *runsContext) candidates() []runsCandidate {
 	if c.candidatesLoaded {
@@ -122,7 +133,7 @@ func (c *runsContext) candidates() []runsCandidate {
 		if entry.StateDir == own {
 			continue // The loop itself is never its own blocker.
 		}
-		cfg, ok := clientConfig(entry)
+		cfg, ok := c.validConfig(entry)
 		if !ok || cfg.Loop.Agent.Adapter != "bb" || cfg.Loop.Agent.BB == nil {
 			continue
 		}
