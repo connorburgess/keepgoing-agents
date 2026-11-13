@@ -321,7 +321,7 @@ A handoff happens only when all of these hold:
 3. The redundancy rule is met.
 4. A candidate passes its exact probe in the same tick.
 
-The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows.
+The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows. In unreleased source, when the conversation being left had child conversations still working, either brief also carries one fixed sentence with their number, saying they are not supervised or moved; see [BB child awareness](operations.md#bb-child-awareness).
 
 In unreleased source, a candidate that passes its exact probe but then rejects the takeover (its adapter cannot be built, its model cannot be applied, or the brief send fails) is skipped for `errors.backoff`, and for the rest of the error episode after `errors.max_reprompts` rejections. Other candidates keep their own counts. See [rejected takeover briefs](operations.md#rejected-takeover-briefs).
 

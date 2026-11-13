@@ -93,8 +93,10 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
-	// RetrySignal is "expired" when a stale provider retry notice was seen
-	// and not honored, so ordinary error or stall handling applied.
+	// RetrySignal says why a provider retry notice was not honoured, so that
+	// ordinary error or stall handling applied: "expired" when it had gone
+	// stale, "declined" when the provider's own retry service had recorded
+	// that it will not retry the failed turn. Empty otherwise.
 	RetrySignal  string     `json:"retrySignal,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
@@ -155,6 +157,9 @@ type tick struct {
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
 	incidentTurnRetry string
+	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
+	// one was already queued.
+	turnRetryAlreadyQueued bool
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -438,6 +443,9 @@ func (t *tick) run() error {
 	if obs.RetryExpired {
 		res.RetrySignal = "expired"
 	}
+	if obs.RetryDeclined {
+		res.RetrySignal = "declined"
+	}
 	if len(obs.AwaitingChildren) > 0 {
 		// Escalate before probes, fingerprints, and recovery. Child input must
 		// not depend on those succeeding, and never prompts the parent.
@@ -673,7 +681,7 @@ func (t *tick) run() error {
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
-		moved, err := t.handoff(target, agent, obs.ErrorClass, summary)
+		moved, err := t.handoff(target, agent, obs, summary)
 		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
 			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
 		}
@@ -749,8 +757,8 @@ func (t *tick) run() error {
 	}
 	t.reserve = reserveReports + t.reserveNetwork // the action, if any, has been taken
 	if handoffFirst && !handoffAttempted && inWindow && !t.opts.DryRun && t.reg != nil {
-		// The handoff did not happen after all (a limit wait, a hold, busy
-		// children): the scheduled probes it was put ahead of run now.
+		// The handoff did not happen after all (a limit wait, a hold): the
+		// scheduled probes it was put ahead of run now.
 		t.lateScheduledProbes(t.st.Target(), agent.Group)
 	}
 	if t.reg != nil && !t.opts.DryRun {
@@ -843,7 +851,18 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 
 // handoff tries healthy candidates in order. Each must pass an exact-target
 // probe right now before it receives the brief.
-func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorClass, summary health.Summary) (bool, error) {
+// childrenLeft is what the brief says about the children of the conversation
+// being left. A candidate in the same BB thread continues that conversation:
+// its children stay listed, so nothing is said.
+func childrenLeft(obs decide.Observation, from config.Agent, to config.Candidate) handoff.ChildrenLeft {
+	if from.BB != nil && to.Agent.BB != nil && !to.Agent.BB.NewThread && from.BB.Thread != "" && from.BB.Thread == to.Agent.BB.Thread {
+		return handoff.ChildrenLeft{}
+	}
+	return handoff.ChildrenLeft{Working: obs.ActiveChildren, Unverified: obs.ChildrenUnverified}
+}
+
+func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observation, summary health.Summary) (bool, error) {
+	class := obs.ErrorClass
 	note := &HandoffNote{From: from, Reason: string(class), DryRun: t.opts.DryRun}
 	t.res.Handoff = note
 	if t.opts.DryRun {
@@ -892,7 +911,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			note.Skipped = append(note.Skipped, id+": "+why)
 			continue
 		}
-		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
+		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class), Children: childrenLeft(obs, fromAgent, c)})
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}
@@ -1234,6 +1253,11 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
 	t.st.CheckedAt = t.now
+	// The count is of consecutive checks. Any check that did not end in that
+	// answer breaks the run, including one that was held or sent nothing.
+	if !t.turnRetryAlreadyQueued && !t.opts.DryRun {
+		t.st.TurnRetryNoOps = 0
+	}
 	outcome := "succeeded"
 	if t.opts.DryRun {
 		outcome = "dry_run"

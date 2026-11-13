@@ -100,7 +100,7 @@ Recognise a provider refusing or restricting the request, from a structured fiel
 
 Stop honouring a provider's "retrying" notice when nothing fresh stands behind it.
 
-- **BB thread:** yes, evidence live. Running on one live loop. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go)
+- **BB thread:** yes, evidence live. The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go) [`TestDeclinedRetryNoticeIsDroppedAtOnce`](../internal/adapter/bb/retry_plugin_test.go)
 - **Claude Code headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Codex headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
@@ -153,7 +153,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 
 ### Child-work awareness
 
-Hold the parent while conversations it started are still working, and say which.
+Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
