@@ -21,6 +21,8 @@ export const execute: Execute = (bin, args, input, threadId, signal) => new Prom
 const cliPlan = z.object({
   schemaVersion: z.literal(1), outcome: z.enum(["preview", "created"]),
   goal: z.unknown().optional(), taskPath: z.string().optional(),
+  // Only the literal true is believed; anything else means today's start.
+  startJson: z.unknown().optional(),
   loop: z.string(), project: z.string(), configPath: z.string(), stateDir: z.string(),
   primary: z.object({ agent: z.object({ adapter: z.literal("bb"), bbThread: z.string(), provider: z.string() }) }),
   fallbacks: z.array(z.unknown()).length(0),
@@ -49,13 +51,16 @@ export async function setupOnHost(input: { bin: string; target: SetupTarget; nam
     const goal = z.object({ promptContext: z.literal(true), titleSource: z.literal("loop_name"), specificationSource: z.literal("task_snapshot"), record: goalSummarySchema.optional() }).safeParse(p.goal);
     if (!goal.success || p.taskPath !== join(dirname(p.configPath), "task.md") || (dryRun ? goal.data.record !== undefined : goal.data.record?.revision !== 1)) throw new Error("Goal setup could not be verified. A disabled setup may exist; inspect the destination before retrying.");
   } else if (p.goal !== undefined) throw new Error("Setup unexpectedly included a goal. No supervisor was started.");
-  return { plan: planSchema.parse({ ...p, ...(withGoal ? { withGoal: true } : {}), threadId: target.threadId, provider: target.provider }) };
+  const { startJson, ...plan } = p;
+  return { plan: planSchema.parse({ ...plan, ...(startJson === true ? { startJson: true } : {}), ...(withGoal ? { withGoal: true } : {}), threadId: target.threadId, provider: target.provider }) };
 }
-export function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop" }, signal?: AbortSignal, run: Execute = execute) {
+export function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop"; json?: true }, signal?: AbortSignal, run: Execute = execute) {
   const { bin, record, operation } = input;
   const args: string[] = [operation];
   if (operation === "status" || operation === "doctor") args.push("--json");
   if (operation === "start") args.push("--background");
+  // Passed only when the CLI advertised it in the setup preview; never guessed.
+  if (operation === "start" && input.json === true) args.push("--json");
   args.push("-c", record.configPath);
   return run(bin, args, "", record.threadId, signal);
 }

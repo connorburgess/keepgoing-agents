@@ -86,6 +86,29 @@ test("keepgoing's structured refusal comes back as a code and a loop name, never
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("the preview's start capability is believed only as the literal true", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "keepgoing-plugin-startjson-")));
+  try {
+    const target = { threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: root, provider: "codex" };
+    const input = { bin: "keepgoing", target, name: "example-loop", task: "Fictional private task", dryRun: true };
+    const reply = (startJson: unknown) => ({ code: 0, data: { schemaVersion: 1, outcome: "preview", loop: input.name, project: root, configPath: join(root, "outside", "keepgoing.yaml"), stateDir: join(root, "outside", "state"), primary: { agent: { adapter: "bb", bbThread: target.threadId, provider: target.provider } }, fallbacks: [], limits: { wakeEvery: "1h", interval: "5m", stallAfter: "30m", backoff: "10m", maxNudges: 3, maxReprompts: 3, failoverOn: [] }, ...(startJson === undefined ? {} : { startJson }) } });
+    assert.equal(planned(await setupOnHost(input, undefined, async () => reply(true))).plan.startJson, true);
+    for (const v of [undefined, false, "true", 1, {}]) assert.equal(planned(await setupOnHost(input, undefined, async () => reply(v))).plan.startJson, undefined, String(v));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("start passes --json only when told to, and no other command ever does from that flag", async () => {
+  const record = { id: "record", threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex", configPath: "/private/example/keepgoing.yaml", loop: "example-loop" };
+  const argsOf = async (operation: "start" | "pause" | "resume" | "stop", json?: true) => {
+    let got: string[] = [];
+    await commandOnHost({ bin: "keepgoing", record, operation, json }, undefined, async (_bin, args) => { got = args; return { code: 0, data: null }; });
+    return got;
+  };
+  assert.deepEqual(await argsOf("start"), ["start", "--background", "-c", record.configPath]);
+  assert.deepEqual(await argsOf("start", true), ["start", "--background", "--json", "-c", record.configPath]);
+  for (const op of ["pause", "resume", "stop"] as const) assert.ok(!(await argsOf(op, true)).includes("--json"), op);
+});
+
 test("host commands route to the recorded file and set the owner; no shell or takeover", async () => {
   const record = { id: "record", threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex", configPath: "/private/path with spaces/keepgoing.yaml", loop: "example-loop" };
   for (const operation of ["status", "doctor", "start", "pause", "resume", "stop"] as const) {

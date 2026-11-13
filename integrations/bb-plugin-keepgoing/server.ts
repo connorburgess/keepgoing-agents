@@ -128,8 +128,8 @@ export default async function plugin(bb: BbPluginApi) {
   const intents = async () => z.array(moveIntentSchema).max(32).parse(await bb.storage.kv.get("moves.v1") ?? []);
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const records = async () => z.array(recordSchema).max(32).parse(await bb.storage.kv.get("setups.v1") ?? []);
-  const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop") =>
-    host.call("command", { bin, record, operation }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
+  const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop", json?: true) =>
+    host.call("command", { bin, record, operation, ...(json ? { json } : {}) }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
   const resolveTarget = async (threadId: string) => {
     const signal = AbortSignal.timeout(10_000);
     const t = await bb.sdk.threads.get({ threadId, signal });
@@ -221,7 +221,7 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         if (action === "resume") {
           const current = await resolveTarget(record.threadId);
-          const { id, configPath: ignored, loop, ...saved } = record;
+          const { id, configPath: ignored, loop, startJson: _json, startJsonBin: _jsonBin, ...saved } = record;
           const status = await hostCommand(bin, record, "status");
           const parsed = statusSchema.safeParse(status.data);
           if (JSON.stringify(current) !== JSON.stringify(saved) || status.code !== 0 || !parsed.success || parsed.data.target !== "primary" || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");

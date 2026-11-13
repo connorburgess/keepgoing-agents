@@ -14,7 +14,8 @@ export const hostContract = defineRpcContract({
     output: z.union([z.object({ plan: planSchema }), z.object({ refused: refusalSchema })]),
   },
   command: {
-    input: z.object({ bin: text, record: recordSchema, operation: z.enum(["status", "doctor", "start", "pause", "resume", "stop"]) }),
+    // `json` is honoured for start only, and only set when the CLI advertised it.
+    input: z.object({ bin: text, record: recordSchema, operation: z.enum(["status", "doctor", "start", "pause", "resume", "stop"]), json: z.literal(true).optional() }),
     output: z.object({ code: z.number().int(), data: z.unknown() }),
   },
 });

@@ -6,12 +6,16 @@ export const targetSchema = z.object({
   threadId: text, environmentId: text, projectId: text, hostId: text, project: text, provider: text,
 });
 export type SetupTarget = z.infer<typeof targetSchema>;
-export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text });
+// `startJson` and `startJsonBin` record that the preview this setup was created
+// from, run by that binary, advertised `start --json`. Absent on older records.
+export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, startJson: z.literal(true).optional(), startJsonBin: text.optional() });
 export type SetupRecord = z.infer<typeof recordSchema>;
 export const planSchema = z.object({
   withGoal: z.literal(true).optional(),
   loop: text, project: text, configPath: text, stateDir: text,
   threadId: text, provider: text,
+  // Advertised by a CLI whose `start` accepts --json and reports a refusal in it.
+  startJson: z.literal(true).optional(),
   limits: z.object({ wakeEvery: text, stallAfter: text, interval: text, backoff: text, maxNudges: z.number().int().positive(), maxReprompts: z.number().int().positive(), maxSends: z.number().int().positive().optional(), noProgressTimeout: text.optional() }),
 });
 export type SetupPlan = z.infer<typeof planSchema>;

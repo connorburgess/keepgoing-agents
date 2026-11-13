@@ -11,7 +11,7 @@ export interface SetupDependencies {
   save(records: SetupRecord[]): Promise<void>;
   guard(threadId: string): Promise<void>;
   init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds): Promise<{ plan: SetupPlan } | { refused: Refusal }>;
-  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start"): Promise<{ code: number; data: unknown }>;
+  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start", json?: true): Promise<{ code: number; data: unknown }>;
   changed(): void;
 }
 const agent = z.object({ adapter: z.literal("bb"), bbThread: z.string(), provider: z.string() });
@@ -38,7 +38,7 @@ export function createSetupController(d: SetupDependencies) {
   };
   const sameTarget = async (r: SetupRecord) => {
     const now = await d.target(r.threadId);
-    const { id: _id, configPath: _path, loop: _loop, ...saved } = r;
+    const { id: _id, configPath: _path, loop: _loop, startJson: _json, startJsonBin: _jsonBin, ...saved } = r;
     if (!equal(now, saved)) throw new SetupPolicyError("The thread's environment or provider changed. Setup does not transfer an existing loop.");
   };
   const inspect = async (bin: string, r: SetupRecord): Promise<SetupResult> => {
@@ -67,7 +67,9 @@ export function createSetupController(d: SetupDependencies) {
       catch { return { ok: false, record: existing, canStart: false, message: "The saved target could not be verified. Refresh diagnostics after checking the host and configuration; no transfer was performed." }; }
       if (input.action === "inspect" || !result.canStart) return result;
       await sameTarget(existing);
-      const start = await d.command(bin, existing, "start");
+      // --json only when the preview this setup came from advertised it, and
+      // the same binary is configured now. Otherwise start exactly as before.
+      const start = await d.command(bin, existing, "start", existing.startJson === true && existing.startJsonBin === bin ? true : undefined);
       const startRefused = start.code !== 0 ? refusedReportSchema.safeParse(start.data) : undefined;
       if (startRefused?.success) { d.changed(); return { ...result, ok: false, canStart: false, started: false, refused: startRefused.data.refusal, message: refusalMessage(startRefused.data.refusal, "start") }; }
       d.changed();
@@ -102,7 +104,7 @@ export function createSetupController(d: SetupDependencies) {
     // before it writes anything, so nothing was created.
     if ("refused" in created) return { ok: false, refused: created.refused, message: refusalMessage(created.refused, "init") };
     if (!equal(created.plan, preview.plan)) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
-    const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop };
+    const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop, ...(created.plan.startJson === true ? { startJson: true as const, startJsonBin: bin } : {}) };
     try { await d.save([...records, record]); }
     catch { return { ok: false, record, message: "A disabled setup was created, but the plugin could not save its reference. Keep the displayed config path for recovery; do not recreate or start it automatically." }; }
     d.changed();

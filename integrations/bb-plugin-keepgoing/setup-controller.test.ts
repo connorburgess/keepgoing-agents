@@ -171,3 +171,28 @@ test("keepgoing's refusal to start is shown with the other loop's name and is no
   const plain = await f.controller.call({ action: "start", threadId: "thr_example" });
   assert.equal(plain.refused, undefined); assert.match(plain.message, /Start could not be confirmed/);
 });
+
+test("start gets --json only when the preview it was created from advertised it, with the same binary", async () => {
+  for (const tc of [
+    { name: "advertised", advertised: true, laterBin: "keepgoing", json: true },
+    { name: "not advertised", advertised: false, laterBin: "keepgoing", json: false },
+    { name: "advertised, then a different binary configured", advertised: true, laterBin: "/opt/other/keepgoing", json: false },
+  ]) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (...args) => {
+      const r = await init(...args);
+      return tc.advertised && "plan" in r ? { plan: { ...r.plan, startJson: true as const } } : r;
+    };
+    const seen: (true | undefined)[] = [];
+    const command = f.d.command;
+    f.d.command = async (bin, record, op, json) => { if (op === "start") seen.push(json); return command(bin, record, op, json); };
+    const p = await f.preview(); const created = await f.create(p.ticket);
+    assert.equal(created.ok, true, tc.name);
+    assert.equal(f.records()[0].startJson, tc.advertised ? true : undefined, tc.name);
+    f.d.binary = async () => tc.laterBin;
+    // The fixture's target check does not depend on the binary.
+    await f.controller.call({ action: "start", threadId: "thr_example" });
+    assert.deepEqual(seen, [tc.json ? true : undefined], tc.name);
+  }
+});
