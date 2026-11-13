@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -242,14 +243,22 @@ func TestFaultKilledCheck(t *testing.T) {
 		cmd.Env = append(append([]string{}, w.env...), "BB_THREAD_ID=")
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
+		// The receiver runs on its own goroutine: it must not touch cmd,
+		// which this goroutine starts and waits on. It kills the process by
+		// its pid, through a Process of its own.
+		var pid atomic.Int64
 		w.Hooks.OnReport(func(got string) {
-			if got == typ && cmd.Process != nil {
-				cmd.Process.Kill()
+			if got != typ {
+				return
+			}
+			if p, err := os.FindProcess(int(pid.Load())); err == nil && pid.Load() > 0 {
+				p.Kill()
 			}
 		})
 		if err := cmd.Start(); err != nil {
 			w.t.Fatal(err)
 		}
+		pid.Store(int64(cmd.Process.Pid))
 		cmd.Wait()
 		w.Hooks.OnReport(nil)
 		s := w.record(label, Result{Code: cmd.ProcessState.ExitCode(), Stdout: out.String(), Stderr: errb.String()}, nil)
