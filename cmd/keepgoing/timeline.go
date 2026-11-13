@@ -649,6 +649,15 @@ func describeIncident(r incident.Record) string {
 		if r.ControlChange.OwnershipChanged {
 			text += "; loop owner changed (identity withheld)"
 		}
+		if caller := r.ControlChange.Caller; caller != "" && caller != "unavailable" {
+			text += "; run by " + map[string]string{"owner_thread": "the owning BB thread", "other_thread": "another BB thread", "terminal": "a terminal with no BB thread identity", "client": "a registered local client"}[caller]
+		}
+		if r.ControlChange.NewEpisode {
+			text += "; a hold for a spent per-episode allowance was cleared, so a new error episode started: the re-prompt and nudge counts started over"
+		}
+		if r.ControlChange.Operation == "complete" && r.ControlBefore != nil && r.ControlAfter != nil && r.ControlBefore.AwaitingUser && !r.ControlAfter.AwaitingUser {
+			text += "; an awaiting-user hold was outstanding and ended with the completion (status keeps its note until a resume)"
+		}
 		return text
 	}
 	if r.Kind == "retarget" {
