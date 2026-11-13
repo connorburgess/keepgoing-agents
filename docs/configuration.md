@@ -9,7 +9,7 @@ version: 1
 loop:
   name: example-loop
   state_dir: ~/.local/state/keepgoing/example-loop
-  adapter: bb                     # bb | process | claude | codex | cursor (unreleased)
+  adapter: bb                     # bb | process | claude | codex | cursor, custom (unreleased)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
   bb: {thread: thr_example123}
@@ -30,7 +30,7 @@ loop:
 | --- | --- | --- |
 | `name` | yes | Lowercase letters, digits, and hyphens. It appears in every event and report. |
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
-| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor`, with the matching block below. |
+| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
