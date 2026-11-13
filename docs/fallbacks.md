@@ -219,7 +219,7 @@ The Claude event is not a documented contract. Its shape was observed by the pro
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
 
-One reading per candidate is stored in `health.json` under `usage`: the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
+The latest reading per candidate is stored in `health.json` under `usage`, and earlier ones in its [history](#reading-history-and-projection): the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
 
 A reading belongs to the account it was read from. The identity is a hash of the candidate's provider, quota group, probe kind, probe executable and probe environment; no path or value is stored. When a candidate ID is pointed at another account, the stored reading stops being shown at once and is dropped by the next probe. Renaming a candidate, or changing its model or target thread, keeps it.
 
@@ -236,6 +236,33 @@ What a reading does not tell you:
 - Headless Claude turns still use `json` output and record no reading.
 
 Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. Live evidence is one live manual probe by the project coordinator, with a binary built from this source, of one headless Claude candidate on Claude Code 2.1.318 and macOS arm64: `fallbacks check --id` exited 0, the candidate was recorded healthy with its credential expiry, one `seven_day` window was recorded and shown by `fallbacks list` and `status`, and no failure capture was written. Scheduled and exact tiers, a failing probe, Codex readings, other CLI versions and Windows have not been exercised live.
+
+### Reading history and projection
+
+Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#preferred-routes-planned) (U1 and U2).
+
+**History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept. The history is bounded to 48 readings per window, the newest kept (eight days at a probe every four hours), and to eight windows. A window is dropped once its reset time has passed. The whole history is dropped when the candidate is probed as another account, as the latest reading is. A reading no later than the newest one already kept is ignored, so the same reading recorded twice, or a clock set back, adds nothing. A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
+
+**Projection.** For each window of the latest reading, keepgoing draws a straight line through the oldest and newest readings of the same instance and extends it to the reset. The result is the projected use at the reset. When that reaches 100% first, it says when the window would run out and how long before its reset. The rate covers all use of the account between the two readings, by any loop or by the person. A projection is made only when all of these hold; otherwise it says which one did not:
+
+| Reason code | Words shown |
+| --- | --- |
+| `no_reset_time` | no reset time was reported |
+| `no_history` | no earlier reading of this window is recorded |
+| `window_reset` | the window has reset |
+| `one_reading` | one reading in this window |
+| `clock_behind` | the newest reading is after this clock's time (check the host clock) |
+| `newest_too_old` | the newest reading is older than the fallbacks' `probe.ttl` |
+| `span_too_short` | the readings cover less than 6 hours |
+| `used_went_down` | a reading is lower than an earlier one |
+
+For a BB route every reason adds that its readings come only from its probes. BB does not pass the provider's rate-limit events through, so a BB thread's allowance can be projected only as often as it is probed.
+
+Where it is shown: after each `usage` line that has windows, `fallbacks list` prints `projected <id>:` and `status` prints `projected:`, for example `seven_day 90% at reset (3 readings over 12h 0m)` or `seven_day runs out about 2d 12h before it resets, at 2030-01-10 12:00Z (2 readings over 12h 0m)`. Percentages are rounded down and shown up to 100%. In JSON each window carries `projection` with `state` (`projected` or `unavailable`), `reason`, `usedAtReset` (a fraction that may exceed 1), `runsOutAt`, `readings`, `spanSeconds`, and the rules used, `minSpanSeconds` and `maxAgeSeconds`. A BB route's `usage` has `readingsFromProbesOnly: true`. The panel does not show projections yet.
+
+How much a projection can say depends on how often the account is probed. At least two readings six hours apart are needed in one window instance. A seven-day window probed every 12 hours gets about 14 readings a week. A five-hour window cannot be projected from probes four or more hours apart. A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on usually has no projection today.
+
+Verification uses fictional fixtures only: table tests of adding readings, instances, resets, bounds, identity changes and stored records that are not valid, and of every projection outcome; health records saved and loaded; and the real `fallbacks check`, `fallbacks list` and `status` commands against fake probes and recorded histories. Nothing here has been checked against a live provider.
 
 ## Preview manual probes
 
