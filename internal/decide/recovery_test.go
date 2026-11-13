@@ -1,6 +1,9 @@
 package decide
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestRecoverBy(t *testing.T) {
 	reprompt := Decision{Action: Reprompt, Reason: "error: network"}
@@ -44,6 +47,46 @@ func TestRecoverBy(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%s: decision %s recovered by %s", class, d.Action, got)
+		}
+	}
+}
+
+// Only the three holds raised because a per-episode allowance ran out are
+// marked, so an explicit resume starts a new episode for those and no other.
+func TestOnlySpentEpisodeAllowancesMarkTheirHold(t *testing.T) {
+	failed := func(class ErrorClass) Input {
+		in := base()
+		in.Obs = Observation{State: Error, ErrorClass: class}
+		in.Reprompts, in.MaxReprompts = 3, 3
+		return in
+	}
+	stalled := base()
+	stalled.Obs = Observation{State: Active}
+	stalled.ProgressTracked, stalled.StallAfter, stalled.UnchangedFor = true, 30*time.Minute, 5*time.Hour
+	stalled.MinWakeInterval, stalled.SinceWake = time.Hour, 2*time.Hour
+	stalled.Nudges, stalled.MaxNudges = 3, 3
+	silent := base()
+	silent.Obs = Observation{State: Active, RetryExpired: true, RetryKnown: true}
+	silent.StallAfter, silent.MinWakeInterval, silent.MaxNudges, silent.RetrySilentFor = 30*time.Minute, time.Hour, 3, 4*time.Hour
+	deadline, sends, gone, child := base(), base(), base(), base()
+	deadline.DeadlineReached, sends.SendLimitReached = true, true
+	gone.Obs = Observation{Gone: true}
+	child.Obs = Observation{State: Idle, AwaitingChildren: []string{"thr_example_child"}}
+	for name, tc := range map[string]struct {
+		in    Input
+		spent bool
+	}{
+		"re-prompt cap":     {failed(ErrUnknown), true},
+		"nudge cap":         {stalled, true},
+		"silent retry":      {silent, true},
+		"auth error":        {failed(ErrAuth), false},
+		"deadline":          {deadline, false},
+		"send limit":        {sends, false},
+		"target gone":       {gone, false},
+		"child interaction": {child, false},
+	} {
+		if d := Decide(tc.in); d.Action != AwaitUser || d.EpisodeSpent != tc.spent {
+			t.Fatalf("%s: %+v", name, d)
 		}
 	}
 }
