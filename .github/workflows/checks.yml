@@ -162,7 +162,10 @@ jobs:
         run: echo "Every changed file is documentation, so this job did no work. The Ubuntu build-and-test job ran every check." >> "$GITHUB_STEP_SUMMARY"
 
   go:
-    name: "${{ inputs.base && 'Scope preview - ' || '' }}Build and test"
+    # The required checks are "Build and test (ubuntu-24.04)" and "Build and
+    # test (macos-15)". A name with an expression does not get the matrix
+    # value appended, so it is written out.
+    name: "${{ inputs.base && 'Scope preview - ' || '' }}Build and test (${{ matrix.os }})"
     strategy:
       matrix:
         os: [ubuntu-24.04, macos-15]
