@@ -148,7 +148,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | File | Owner | Purpose |
 | --- | --- | --- |
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership, pendingTransfer, bbTarget |
-| `control-hold.json` | operator, via `stop` and `pause` when `control.json` cannot be read | a stop or pause kept beside the unreadable control record; honoured first by every check; cleared by `resume` once `control.json` can be read |
+| `control-hold.json` | operator, via `stop` and `pause` (or `client pause` and `client stop`) when `control.json` cannot be read | a stop or pause kept beside the unreadable control record; honoured first by every check; anything but a version 1 stop or pause in it reads as a stop; cleared by `resume` once `control.json` can be read |
 | `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |

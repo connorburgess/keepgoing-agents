@@ -291,7 +291,7 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 		// failing exits must not stop over it.
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		res.History = "unavailable"
-		t.historyUnavailable(journalErr)
+		t.historyUnavailable()
 	case journalErr != nil:
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
@@ -302,35 +302,79 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	return res, err
 }
 
-// historyUnavailable notes, once, that checks can no longer write the
-// incident journal, and reports it.
-func (t *tick) historyUnavailable(cause error) {
-	if t.opts.DryRun || t.st.HistoryUnavailableSince.After(time.Time{}) {
+// historyReportAttempts bounds delivery attempts of the degraded report for
+// one episode of an unwritable incident journal.
+const historyReportAttempts = 3
+
+// historyUnavailable notes that this check could not write the incident
+// journal. One failing check is not reported: a brief collision on its lock
+// would otherwise send a degraded and recovered pair. When the next check
+// fails too, one degraded report is sent for the episode. A delivery that
+// fails is tried again by the next checks, up to historyReportAttempts; one
+// put off for lack of time or network uses no attempt.
+func (t *tick) historyUnavailable() {
+	if t.opts.DryRun {
 		return
 	}
-	t.st.HistoryUnavailableSince = t.now
+	if t.st.HistoryUnavailableSince.IsZero() {
+		t.st.HistoryUnavailableSince = t.now
+		t.st.HistoryDegradedAttempts, t.st.HistoryDegradedSent = 0, false
+		if err := state.Save(t.loop.StateDir, t.st); err != nil {
+			t.warn("could not record that incident history is unavailable: %v", err)
+		}
+		return
+	}
+	if t.st.HistoryDegradedSent || t.st.HistoryDegradedAttempts >= historyReportAttempts {
+		return
+	}
+	const typ = "degraded"
+	if t.networkDown() || !t.canReport(typ) {
+		t.warn("report %s put off to the next check: the network is down or no time is left in this one", typ)
+		return
+	}
+	// The attempt is saved before the send, so an unwritable state directory
+	// cannot turn into a report on every check.
+	t.st.HistoryDegradedAttempts++
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
-		t.warn("could not record that incident history is unavailable: %v", err)
+		t.st.HistoryDegradedAttempts--
+		t.warn("report %s: not sent because the attempt could not be recorded", typ)
 		return
 	}
-	t.report("degraded", fmt.Sprintf("%s: incident history (incidents.json) cannot be written; checks carry on without it", t.loop.Name),
-		map[string]any{"cause": "incident_history"})
+	text := fmt.Sprintf("%s: incident history (incidents.json) cannot be written; checks carry on without it", t.loop.Name)
+	ctx, cancel, ok := t.reportContext(typ, text)
+	if !ok {
+		return // cannot happen: canReport was checked before the attempt was saved
+	}
+	defer cancel()
+	err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now,
+		Data: map[string]any{"cause": "incident_history", "unavailableSince": t.st.HistoryUnavailableSince, "attempt": t.st.HistoryDegradedAttempts}})
+	if err != nil {
+		t.warn("report %s: %v", typ, err)
+		return
+	}
+	t.st.HistoryDegradedSent = true
+	if err := state.Save(t.loop.StateDir, t.st); err != nil {
+		t.warn("could not record that the degraded report was sent: %v", err)
+	}
 }
 
-// historyAvailable notes that a check wrote the incident journal again
-// after it had been unavailable, and reports it.
+// historyAvailable notes that a check wrote the incident journal again. Its
+// recovery is reported only when its degraded report was delivered.
 func (t *tick) historyAvailable() {
 	if t.opts.DryRun || t.st.HistoryUnavailableSince.IsZero() {
 		return
 	}
-	since := t.st.HistoryUnavailableSince
+	since, sent := t.st.HistoryUnavailableSince, t.st.HistoryDegradedSent
 	t.st.HistoryUnavailableSince = time.Time{}
+	t.st.HistoryDegradedAttempts, t.st.HistoryDegradedSent = 0, false
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		t.warn("could not record that incident history is available again: %v", err)
 		return
 	}
-	t.report("recovered", fmt.Sprintf("%s: incident history (incidents.json) is written again", t.loop.Name),
-		map[string]any{"cause": "incident_history", "unavailableSince": since})
+	if sent {
+		t.report("recovered", fmt.Sprintf("%s: incident history (incidents.json) is written again", t.loop.Name),
+			map[string]any{"cause": "incident_history", "unavailableSince": since})
+	}
 }
 
 // resolve returns the agent for a target id, reverting to primary when a

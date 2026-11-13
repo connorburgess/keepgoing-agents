@@ -64,7 +64,12 @@ type File struct {
 	// HistoryUnavailableSince is when checks began to find the incident
 	// journal impossible to write, with their own work still saved here. It is
 	// cleared by the first check that writes the journal again.
-	HistoryUnavailableSince time.Time      `json:"historyUnavailableSince,omitempty"`
+	HistoryUnavailableSince time.Time `json:"historyUnavailableSince,omitempty"`
+	// HistoryDegradedAttempts counts delivery attempts of the one degraded
+	// report for that episode; HistoryDegradedSent is set once one is
+	// delivered, and only then is its recovery reported.
+	HistoryDegradedAttempts int            `json:"historyDegradedAttempts,omitempty"`
+	HistoryDegradedSent     bool           `json:"historyDegradedSent,omitempty"`
 	FailedSince             time.Time      `json:"failedSince,omitempty"`
 	HandoffDeferrals        int            `json:"handoffDeferrals,omitempty"`
 	ExactCut                map[string]int `json:"exactCut,omitempty"`
