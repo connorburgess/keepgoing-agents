@@ -649,3 +649,51 @@ func TestQueueUnconfirmedFallbackRereadsTheStatus(t *testing.T) {
 		t.Fatalf("prompts %d reprompts %d re-reads %d outcome %s count %d", len(w.a.sent), st.Reprompts, w.a.rechecks, st.LastTurnRetry.Outcome, st.TurnRetryNoOps)
 	}
 }
+
+// The turn retry sits behind the connectivity check. While the network is
+// down an errored thread waits: BB is not asked to retry, nothing is counted
+// and no hold is raised, whether the retry notice aged out or BB declined it.
+// The first check after the network returns retries the turn once.
+func TestTurnRetryWaitsForTheNetwork(t *testing.T) {
+	for name, obs := range map[string]decide.Observation{
+		"the notice aged out":   {State: decide.Error, ErrorClass: decide.ErrUnknown, RetryExpired: true, RetryKnown: true},
+		"BB declined the retry": {State: decide.Error, ErrorClass: decide.ErrUnknown, RetryExpired: true, RetryDeclined: true, RetryKnown: true},
+		"a plain network error": {State: decide.Error, ErrorClass: decide.ErrNetwork},
+	} {
+		for _, gap := range []time.Duration{20 * time.Minute, 4 * time.Hour, 72 * time.Hour, 21 * 24 * time.Hour} {
+			w := newRetryWorld(t, decide.ErrUnknown)
+			w.cfg.Loop.Limits.MaxSends = 5
+			w.a.obs = obs
+			online := false
+			tick := func(at time.Time) Result {
+				t.Helper()
+				opts := w.options(at)
+				opts.Online = func(context.Context) bool { return online }
+				res, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatalf("%s after %s: %v", name, gap, err)
+				}
+				return res
+			}
+			// Checks during the outage, spread across it.
+			for i := 0; i < 6; i++ {
+				res := tick(t0.Add(gap * time.Duration(i) / 6))
+				if res.Action != "none" || res.Reason != decide.NetworkDownReason {
+					t.Fatalf("%s after %s, check %d: %+v", name, gap, i, res)
+				}
+			}
+			st := savedState(t, w.dir)
+			used, _ := state.LoadSends(w.dir)
+			ctl, _ := control.Load(w.dir)
+			if w.a.retries != 0 || len(w.a.sent) != 0 || st.Reprompts != 0 || used != 0 || ctl.AwaitingUser || st.LastTurnRetry != nil {
+				t.Fatalf("%s after %s: spent while offline: retries %d prompts %d reprompts %d used %d held %t", name, gap, w.a.retries, len(w.a.sent), st.Reprompts, used, ctl.AwaitingUser)
+			}
+			online = true
+			res := tick(t0.Add(gap))
+			st = savedState(t, w.dir)
+			if res.Action != "reprompt" || res.Recovery != "turn_retry" || w.a.retries != 1 || len(w.a.sent) != 0 || st.Reprompts != 1 || st.LastTurnRetry.Outcome != "retried" {
+				t.Fatalf("%s after %s: first check online: %+v retries %d", name, gap, res, w.a.retries)
+			}
+		}
+	}
+}
