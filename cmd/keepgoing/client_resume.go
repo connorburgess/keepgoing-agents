@@ -153,13 +153,17 @@ func clientResumeBinding(entry registry.Entry, cfg *config.Config, caller string
 	if sources == "" {
 		return "", ctl, errClientResume
 	}
+	// A hold marker is part of what the reviewer saw: resume releases it. A
+	// damaged marker reads as the stop it stands for.
+	hold, _ := control.LoadHold(entry.StateDir)
 	b, err := json.Marshal(struct {
 		Entry           registry.Entry
 		Sources, Caller string
 		Control         control.File
 		State           state.File
 		Goal            *control.Goal
-	}{entry, sources, caller, ctl, st, g})
+		Hold            *control.Hold
+	}{entry, sources, caller, ctl, st, g, hold})
 	if err != nil {
 		return "", ctl, errClientResume
 	}
@@ -292,6 +296,15 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		r.Controls = &clientControls{f.Enabled, f.Paused, f.Stop, f.AwaitingUser, f.Completed}
 		if errors.Is(err, errControlHistory) {
 			r.Issues = append(r.Issues, "incident_history_unavailable")
+		}
+		// A hold kept in the marker while control.json was damaged is released
+		// with the others. If it cannot be, the loop is still held: say so.
+		if h, _ := control.LoadHold(entry.StateDir); h != nil {
+			if control.ReleaseHold(entry.StateDir) != nil {
+				h.Apply(&f)
+				r.Controls = &clientControls{f.Enabled, f.Paused, f.Stop, f.AwaitingUser, f.Completed}
+				r.Issues = append(r.Issues, "hold_marker_unreleased")
+			}
 		}
 		if state.Append(entry.StateDir, state.Event{Loop: entry.Loop, Event: "control", Action: "resume", Reason: f.Summary()}) != nil {
 			r.Issues = append(r.Issues, "run_history_unavailable")

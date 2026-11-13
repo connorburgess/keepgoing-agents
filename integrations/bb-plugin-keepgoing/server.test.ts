@@ -2,6 +2,9 @@ import { hostContract } from "./host-contract.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFakePluginHost, makeThreadResponse, makeHostResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
 import { setupResult } from "./setup-contract.ts";
@@ -65,4 +68,36 @@ test("SDK RPC resolves host metadata, persists references, and routes controls w
     const blocked = setupResult.parse(await activeHarness.behavior.callRpc("setup", { action: "start", threadId: thread.id }));
     assert.equal(blocked.canStart, false); assert.equal(operations.length, before);
   } finally { await activeHarness.lifecycle.dispose(); }
+});
+
+// status exits 1 when control.json is damaged; the loop must stay listed so
+// stop and pause can still reach it. They keep the hold in control-hold.json.
+test("bb keepgoing stop and pause reach a loop whose control record is damaged", { skip: !process.env.KEEPGOING_TEST_BINARY }, async () => {
+  const binary = process.env.KEEPGOING_TEST_BINARY!;
+  const root = await realpath(await mkdtemp(join(tmpdir(), "keepgoing-damaged-control-")));
+  try {
+    const config = join(root, "keepgoing.yaml"); const stateDir = join(root, "state");
+    await mkdir(stateDir, { mode: 0o700 });
+    await writeFile(config, "version: 1\nloop:\n  name: example-loop\n  state_dir: state\n  adapter: bb\n  provider: example\n  bb: {thread: thr_example, cli: nonexistent-provider-fixture}\n  prompt_file: missing-task.txt\n", { mode: 0o600 });
+    await writeFile(join(stateDir, "control.json"), "{", { mode: 0o600 });
+    const { bb, harness } = createFakePluginHost({ pluginId: "keepgoing", settings: { keepgoingPath: binary, configs: config } });
+    try {
+      await plugin(bb);
+      const listed = await harness.behavior.callRpc("forThread", { threadId: "thr_example" }) as { loops: { loop: string; controlState: string }[]; errors: string[] };
+      assert.deepEqual(listed.loops.map(l => l.loop), ["example-loop"], JSON.stringify(listed));
+      for (const [action, field] of [["pause", "paused"], ["stop", "stop"]]) {
+        const r = await harness.behavior.runCli([action, "example-loop"]);
+        assert.equal(r.exitCode, 0, `${action}: ${r.stdout}${r.stderr}`);
+        const hold = JSON.parse(await readFile(join(stateDir, "control-hold.json"), "utf8"));
+        assert.equal(hold[field], true, JSON.stringify(hold));
+      }
+      assert.equal(await readFile(join(stateDir, "control.json"), "utf8"), "{");
+      const held = await harness.behavior.callRpc("forThread", { threadId: "thr_example" }) as { loops: { controlState: string }[] };
+      assert.match(held.loops[0]?.controlState ?? "", /stopped/);
+      // Resume is refused until the record is restored; the hold stays.
+      const resumed = await harness.behavior.runCli(["resume", "example-loop"]);
+      assert.notEqual(resumed.exitCode, 0);
+      assert.equal(JSON.parse(await readFile(join(stateDir, "control-hold.json"), "utf8")).stop, true);
+    } finally { await harness.lifecycle.dispose(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -409,3 +409,60 @@ func TestClientResumeExpiryDuringConsumption(t *testing.T) {
 		t.Fatal("consumption lost")
 	}
 }
+
+// Resume releases a hold kept in the marker while control.json was damaged,
+// once the record can be read again; it never reports a resume while the
+// marker still holds the loop.
+func TestClientResumeReleasesTheHoldMarker(t *testing.T) {
+	f := newResumeFixture(t)
+	if _, err := control.SaveHold(f.entry.StateDir, true, false, f.at); err != nil {
+		t.Fatal(err)
+	}
+	p := f.prepare(t)
+	if !p.Snapshot.Controls.Stop {
+		t.Fatal("the snapshot hid the marker", p.Snapshot.Controls)
+	}
+	r, c := f.call("resume", p.Ticket, false, nil)
+	if c != 0 || r.ControlSave != "confirmed" || r.Controls.Stop || r.Controls.Paused || len(r.Issues) != 0 {
+		t.Fatal(c, r)
+	}
+	if h, err := control.LoadHold(f.entry.StateDir); h != nil || err != nil {
+		t.Fatal("resume left the marker", h, err)
+	}
+}
+
+func TestClientResumeSaysWhenTheMarkerStillHolds(t *testing.T) {
+	f := newResumeFixture(t)
+	// A directory under the marker's name reads as a stop and cannot be
+	// removed while it has an entry.
+	marker := filepath.Join(f.entry.StateDir, control.HoldFileName)
+	if err := os.MkdirAll(filepath.Join(marker, "entry"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	p := f.prepare(t)
+	r, c := f.call("resume", p.Ticket, false, nil)
+	if c != exitFailed || r.ControlSave != "confirmed" || !r.Controls.Stop || !reflect.DeepEqual(r.Issues, []string{"hold_marker_unreleased"}) {
+		t.Fatal(c, r)
+	}
+	s := clientRead(t, f.dir, f.entry, false)
+	if !s.Snapshot.Controls.Stop {
+		t.Fatal("status reads the loop as resumed", s.Snapshot.Controls)
+	}
+}
+
+func TestClientPrepareResumeRefusesADamagedControlRecord(t *testing.T) {
+	f := newResumeFixture(t)
+	if err := os.WriteFile(filepath.Join(f.entry.StateDir, control.FileName), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.SaveHold(f.entry.StateDir, true, false, f.at); err != nil {
+		t.Fatal(err)
+	}
+	r, c := f.call("prepare-resume", "", false, nil)
+	if c != exitFailed || r.Ticket != "" || r.ControlSave != "not_attempted" {
+		t.Fatal(c, r)
+	}
+	if h, _ := control.LoadHold(f.entry.StateDir); h == nil || !h.Stop {
+		t.Fatal("the marker was released", h)
+	}
+}

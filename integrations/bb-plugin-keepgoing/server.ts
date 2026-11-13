@@ -35,7 +35,14 @@ const statusSchema = z.object({
   targetConfigured: z.boolean().optional(),
   primaryAgent: agentRef,
   targetAgent: agentRef,
+  unreadable: z.array(z.unknown()).optional(),
 });
+
+// status exits 1 when control.json or state.json is damaged but still prints
+// what it could read, naming the damage in `unreadable`. Such a loop stays
+// listed so it can still be stopped or paused; resume checks the exit itself.
+const damagedButRead = (code: number, raw: unknown) =>
+  code !== 0 && typeof raw === "object" && raw !== null && Array.isArray((raw as { unreadable?: unknown }).unreadable) && (raw as { unreadable: unknown[] }).unreadable.length > 0;
 
 const loopSchema = z.object({
   details: detailsSchema.optional(),
@@ -131,13 +138,14 @@ export default async function plugin(bb: BbPluginApi) {
 
   const status = async (bin: string, configPath: string) => {
     const result = await run(bin, ["status", "--json", "-c", configPath]);
-    if (result.code !== 0) throw new Error(`${configPath}: keepgoing status exited ${result.code}`);
     let raw: unknown;
     try {
       raw = JSON.parse(result.stdout);
     } catch {
-      throw new Error(`${configPath}: keepgoing status did not print JSON`);
+      raw = undefined;
     }
+    if (result.code !== 0 && !damagedButRead(result.code, raw)) throw new Error(`${configPath}: keepgoing status exited ${result.code}`);
+    if (raw === undefined) throw new Error(`${configPath}: keepgoing status did not print JSON`);
     const parsed = statusSchema.safeParse(raw);
     if (!parsed.success) {
       const old = typeof raw === "object" && raw !== null && !("primaryAgent" in raw);
@@ -186,7 +194,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (threadId !== null && record.threadId !== threadId && move?.destination.threadId !== threadId) continue;
       try {
         const result = await hostCommand(bin, record, "status");
-        if (result.code !== 0) throw new Error("status failed");
+        if (result.code !== 0 && !damagedButRead(result.code, result.data)) throw new Error("status failed");
         const displayed = view(statusSchema.parse(result.data), record.configPath, threadId);
         // A partial move is not a normal Resume action, even if the host has
         // already committed but the plugin reference is not reconciled yet.

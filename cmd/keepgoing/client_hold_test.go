@@ -79,7 +79,7 @@ func TestClientHoldMissingControlStaysDisabled(t *testing.T) {
 }
 
 func TestClientHoldRefusalsDoNotChangeControls(t *testing.T) {
-	for _, scenario := range []string{"removed", "renamed", "runtime_changed", "config_missing", "control_null", "control_corrupt", "control_large", "cancelled", "registry_busy", "control_busy"} {
+	for _, scenario := range []string{"removed", "renamed", "runtime_changed", "config_missing", "cancelled", "registry_busy", "control_busy"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir, entry := clientFixture(t)
 			if err := control.Save(entry.StateDir, control.File{Enabled: true, Note: "PRIVATE"}); err != nil {
@@ -108,17 +108,6 @@ func TestClientHoldRefusalsDoNotChangeControls(t *testing.T) {
 				}
 			case "config_missing":
 				if err := os.Remove(entry.ConfigPath); err != nil {
-					t.Fatal(err)
-				}
-			case "control_null", "control_corrupt", "control_large":
-				body := "null"
-				if scenario == "control_corrupt" {
-					body = `{"note":"PRIVATE"`
-				}
-				if scenario == "control_large" {
-					body = strings.Repeat(" ", (1<<20)+1)
-				}
-				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 					t.Fatal(err)
 				}
 			case "cancelled":
@@ -223,5 +212,80 @@ func TestClientHoldLostResponseKeepsSave(t *testing.T) {
 	j, err := incident.Load(entry.StateDir)
 	if err != nil || len(j.Records) != 1 {
 		t.Fatal(j, err)
+	}
+}
+
+// A pause or stop that cannot go into a damaged control record is kept in
+// the hold marker beside it, which every check honours first. The record is
+// left as it is for the operator to restore.
+func TestClientHoldWithADamagedControlRecordSavesTheMarker(t *testing.T) {
+	bodies := map[string]string{"null": "null", "cut_short": `{"note":"PRIVATE"`, "oversized": strings.Repeat(" ", (1<<20)+1)}
+	for name, body := range bodies {
+		for _, op := range []string{"pause", "stop"} {
+			t.Run(name+"_"+op, func(t *testing.T) {
+				dir, entry := clientFixture(t)
+				if err := os.MkdirAll(entry.StateDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(entry.StateDir, control.FileName)
+				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+				r, code := applyClientHold(context.Background(), dir, entry.ID, op)
+				if code != exitFailed || r.ControlSave != "confirmed" || !reflect.DeepEqual(r.Issues, []string{"control_unavailable"}) || r.Controls == nil || r.Controls.Stop != (op == "stop") || r.Controls.Paused != (op == "pause") {
+					t.Fatal(code, r)
+				}
+				if after, _ := os.ReadFile(path); string(after) != body {
+					t.Fatal("the damaged control record was rewritten")
+				}
+				h, err := control.LoadHold(entry.StateDir)
+				if err != nil || h == nil || h.Stop != (op == "stop") || h.Paused != (op == "pause") {
+					t.Fatal(h, err)
+				}
+				raw, _ := json.Marshal(r)
+				if strings.Contains(string(raw), "PRIVATE") || strings.Contains(string(raw), entry.StateDir) {
+					t.Fatal("private output", string(raw))
+				}
+			})
+		}
+	}
+}
+
+func TestClientHoldWithADamagedControlRecordStillChecksTheBinding(t *testing.T) {
+	dir, entry := clientFixture(t)
+	if err := os.MkdirAll(entry.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry.StateDir, control.FileName), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(entry.ConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	r, code := applyClientHold(context.Background(), dir, entry.ID, "stop")
+	if code != exitFailed || r.ControlSave != "not_attempted" {
+		t.Fatal(code, r)
+	}
+	if h, _ := control.LoadHold(entry.StateDir); h != nil {
+		t.Fatal("a refused stop saved a marker")
+	}
+}
+
+func TestClientHoldWithADamagedControlRecordBusyLock(t *testing.T) {
+	dir, entry := clientFixture(t)
+	if err := os.MkdirAll(entry.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry.StateDir, control.FileName), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := lock.AcquireNamed(entry.StateDir, lock.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	r, code := applyClientHold(context.Background(), dir, entry.ID, "stop")
+	if code != exitSkipped || r.ControlSave != "not_attempted" || !reflect.DeepEqual(r.Issues, []string{"busy"}) {
+		t.Fatal(code, r)
 	}
 }

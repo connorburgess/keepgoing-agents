@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -83,7 +85,7 @@ func applyClientHold(ctx context.Context, directory, id, operation string) (clie
 		// Reject corrupt/oversized/non-object records before UpdateChecked's load.
 		var initial control.File
 		if readTransferRecord(entry.StateDir, control.FileName, &initial) != nil {
-			return fail("control_unavailable")
+			return saveClientHoldMarker(&r, dir, id, entry, cfg, operation, fail)
 		}
 		f, err := updateControlWithHistory(entry.StateDir, operation, func(f *control.File) error {
 			if ctx.Err() != nil {
@@ -143,4 +145,36 @@ func applyClientHold(ctx context.Context, directory, id, operation string) (clie
 		return r, exitFailed
 	}
 	return r, exitOK
+}
+
+// saveClientHoldMarker keeps a pause or stop that cannot go into a damaged
+// control record in the hold marker beside it, as ordinary pause and stop
+// do; every check honours the marker first. The report says the save is
+// confirmed and still names control_unavailable, so the exit is 1: the
+// record must be restored before the loop can resume.
+func saveClientHoldMarker(r *clientHoldReport, dir, id string, entry registry.Entry, cfg *config.Config, operation string, fail func(string) error) error {
+	current, ok := clientEntry(dir, id)
+	if !ok || current != entry {
+		return fail("registration_changed")
+	}
+	if fresh, ok := clientConfig(entry); !ok || cfg.CheckSources() != nil || fresh.CheckSources() != nil {
+		return fail("binding_changed")
+	}
+	r.ControlSave = "unconfirmed"
+	h, err := control.SaveHold(entry.StateDir, operation == "stop", operation == "pause", time.Now())
+	if errors.Is(err, lock.ErrHeld) {
+		r.ControlSave = "not_attempted"
+		return err
+	}
+	if err != nil {
+		return fail("control_unavailable")
+	}
+	recordRegistration(entry.StateDir, entry.ID)
+	r.ControlSave = "confirmed"
+	r.Controls = &clientControls{Enabled: true, Paused: h.Paused, Stop: h.Stop}
+	r.Issues = append(r.Issues, "control_unavailable")
+	if state.Append(entry.StateDir, state.Event{Loop: entry.Loop, Event: "control", Action: operation, Reason: h.Summary()}) != nil {
+		r.Issues = append(r.Issues, "run_history_unavailable")
+	}
+	return nil
 }
