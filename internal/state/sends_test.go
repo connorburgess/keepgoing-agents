@@ -74,3 +74,48 @@ func TestSendLedgerWriteFailureAndOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A refund returns exactly one reservation, never goes below zero, and does
+// nothing when accounting is off or the ledger cannot be trusted.
+func TestRefundSend(t *testing.T) {
+	dir := t.TempDir()
+	if err := RefundSend(dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := LoadSends(dir); err != nil || used != 0 {
+		t.Fatal(used, err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := ReserveSend(dir, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RefundSend(dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := LoadSends(dir); err != nil || used != 1 {
+		t.Fatal(used, err)
+	}
+	// With accounting off an earlier ledger is left alone.
+	if err := RefundSend(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := LoadSends(dir); used != 1 {
+		t.Fatal(used)
+	}
+	if err := RefundSend(dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefundSend(dir, 3); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := LoadSends(dir); err != nil || used != 0 {
+		t.Fatal(used, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, SendsName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefundSend(dir, 3); !errors.Is(err, ErrSendLedger) {
+		t.Fatal(err)
+	}
+}

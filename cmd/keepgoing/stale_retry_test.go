@@ -92,8 +92,9 @@ func TestStaleRetrySignalJourneyRecoversHoldsAndExplains(t *testing.T) {
 	status("error")
 	journeyTick(t, f, 44) // Allowance spent: a person is asked.
 	journeyTick(t, f, 45) // Held; the provider is not queried.
-	if got := strings.Count(f.read("calls"), "thread tell thr_primary "); got != 2 {
-		t.Fatalf("re-prompts sent=%d", got)
+	// Both re-prompts retried the failed turn by reference; no prompt was sent.
+	if retries, tells := strings.Count(f.read("calls"), "thread retry thr_primary "), strings.Count(f.read("calls"), "thread tell thr_primary "); retries != 2 || tells != 0 {
+		t.Fatalf("turn retries=%d prompts=%d", retries, tells)
 	}
 
 	r := isolatedJourney(t, f, "enable,none,reprompt,none,none,reprompt,none,none,await_user,none")

@@ -18,8 +18,8 @@ const FileName = "incidents.json"
 // SchemaVersion is written on append. Version 5 adds the post-check target
 // key, probe results, retarget records and limit-wait causes. Version 6 adds
 // retention tiers and collapsed runs of identical checks. Version 7 adds the
-// long limit-wait report marker.
-const SchemaVersion = 7
+// long limit-wait report marker. Version 8 adds the turn-retry marker.
+const SchemaVersion = 8
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -168,6 +168,9 @@ func Load(dir string) (Journal, error) {
 		}
 		if j.SchemaVersion < 7 {
 			r.LimitWaitReport = ""
+		}
+		if j.SchemaVersion < 8 {
+			r.TurnRetry = ""
 		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
