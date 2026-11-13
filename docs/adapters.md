@@ -57,7 +57,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
 | [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture |
 | [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none |
-| [Handoff into a new conversation](#handoff-into-a-new-conversation) | missing · none | yes · fixture | yes · fixture | missing · none | missing · none | n/a |
+| [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture |
@@ -220,7 +220,7 @@ Record how much of a usage window is used, from structured fields a probe alread
 
 Take the work over in a conversation that did not exist before the handoff.
 
-- **BB thread:** missing, evidence none. A fallback must name a thread that already exists. [roadmap.md](roadmap.md)
+- **BB thread:** yes, evidence fixture. Opt-in: a candidate with bb.new_thread has keepgoing create the thread, within loop.limits.max_new_threads. [`TestHandoffToANewThreadCreatesItOnce`](../internal/supervise/newthread_test.go) [fallbacks.md](fallbacks.md)
 - **Claude Code headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** missing, evidence none. Not a fallback candidate.

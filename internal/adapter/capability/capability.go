@@ -243,7 +243,7 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "new_conversation", Title: "Handoff into a new conversation", What: "Take the work over in a conversation that did not exist before the handoff.",
 		Cells: merge(map[string]Cell{
-			"bb":      {Missing, None, "A fallback must name a thread that already exists.", []Ref{d("docs/roadmap.md")}},
+			"bb":      {Yes, Fixture, "Opt-in: a candidate with bb.new_thread has keepgoing create the thread, within loop.limits.max_new_threads.", []Ref{t("internal/supervise/newthread_test.go", "TestHandoffToANewThreadCreatesItOnce"), d("docs/fallbacks.md")}},
 			"claude":  {Yes, Fixture, "A headless candidate has no saved session, so the handoff brief starts one.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle")}},
 			"codex":   {Yes, Fixture, "A headless candidate has no saved session, so the handoff brief starts one.", []Ref{t(runnerTest, "TestCodexTurn")}},
 			"cursor":  {Missing, None, "Not a fallback candidate.", nil},

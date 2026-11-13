@@ -146,7 +146,7 @@ func TestSessionEvidenceMatchesTheCheck(t *testing.T) {
 			want[a.ID] = true
 		}
 	}
-	if got := caseStrings(t, "internal/supervise/graph.go", "graphSession"); !reflect.DeepEqual(got, sorted(want)) {
+	if got := caseStrings(t, "internal/supervise/graph.go", "graphSessionOf"); !reflect.DeepEqual(got, sorted(want)) {
 		t.Fatalf("a check records a session for %v; the capability table says %v", got, sorted(want))
 	}
 	for _, a := range Adapters {
