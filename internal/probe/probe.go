@@ -67,24 +67,12 @@ type Result struct {
 const rawCap = 64 << 10
 
 // capture bounds the output kept for a failed probe. It keeps the end, where
-// a stream's result or error event is, not the beginning. For a Claude probe
-// it first drops the CLI's initialization message, which describes the local
-// installation (working directory, session and tool lists) and says nothing
-// about the failure.
+// a stream's result or error event is, not the beginning. An agent whose
+// output opens with a description of the local installation has that dropped
+// first (its specification's Trim).
 func capture(kind string, stdout []byte) []byte {
-	if kind == "claude" {
-		var kept [][]byte
-		for _, line := range bytes.Split(stdout, []byte("\n")) {
-			var event struct {
-				Type    string `json:"type"`
-				Subtype string `json:"subtype"`
-			}
-			if json.Unmarshal(line, &event) == nil && event.Type == "system" && event.Subtype == "init" {
-				continue
-			}
-			kept = append(kept, line)
-		}
-		stdout = bytes.Join(kept, []byte("\n"))
+	if spec, ok := runner.SpecFor(kind); ok && spec.Probe.Trim != nil {
+		stdout = spec.Probe.Trim(stdout)
 	}
 	if len(stdout) > rawCap {
 		stdout = stdout[len(stdout)-rawCap:]
@@ -104,22 +92,12 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	for k, v := range c.ProbeEnv() {
 		env = append(env, k+"="+v)
 	}
-	switch c.Probe.Kind {
-	case "claude":
-		// stream-json carries the same final result object as json, plus the
-		// usage events ClaudeUsage reads. Print mode requires --verbose with it.
-		argv = []string{c.ProbeCLI(), "-p", Prompt, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
-			"--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}
-		if model != "" {
-			argv = append(argv, "--model", model)
-		}
-	case "codex":
-		argv = []string{c.ProbeCLI(), "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only"}
-		if model != "" {
-			argv = append(argv, "-m", model)
-		}
-		argv = append(argv, Prompt)
-	case "command":
+	// An agent on the runner contract is probed as its specification says.
+	spec, known := runner.SpecFor(c.Probe.Kind)
+	switch {
+	case known:
+		argv = spec.Probe.Argv(c.ProbeCLI(), model, Prompt)
+	case c.Probe.Kind == "command":
 		argv = c.Probe.Command
 	default:
 		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "unknown probe kind"
@@ -146,65 +124,48 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "not runnable"
 		return res
 	}
-	switch c.Probe.Kind {
-	case "claude":
-		judgeClaude(&res, stdout, code)
-		res.Usage = newUsage(res.At, UsageSourceClaude, res.UsageIdentity, ClaudeUsage(stdout))
-	case "codex":
-		judgeCodex(&res, stdout, code)
-		// Codex reports a usage limit only as prose in its event stream, so
-		// ask its app-server for the structured rate-limit snapshot.
-		if !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
-			l, err := runner.ReadCodexLimits(ctx, c.ProbeCLI(), env)
-			if err == nil {
-				res.Usage = newUsage(res.At, UsageSourceCodex, res.UsageIdentity, CodexUsage(l))
-			}
-			if err == nil && l.Blocked {
-				res.ErrorClass = string(decide.ErrRateLimit)
-				res.Detail = "account/rateLimits/read: " + l.ReachedType
-				if !l.ResetsAt.IsZero() {
-					t := l.ResetsAt
-					res.ResetsAt = &t
-				}
+	if !known {
+		judgeCommand(&res, stdout, code, c.Probe.ExitCodes)
+		return res
+	}
+	v := spec.Probe.Judge(stdout, code)
+	res.OK, res.Detail, res.CredentialExpiresAt = v.OK, v.Detail, v.CredentialExpiresAt
+	if !v.OK {
+		res.ErrorClass = string(v.Class)
+	}
+	usage := usageReaders[spec.Name]
+	if usage.fromOutput != nil {
+		res.Usage = newUsage(res.At, usage.source, res.UsageIdentity, usage.fromOutput(stdout))
+	}
+	// An agent that reports a usage limit only as prose is asked for its
+	// structured snapshot instead.
+	if l := spec.Limits; l != nil && !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
+		limits, err := l.Read(ctx, c.ProbeCLI(), env)
+		if err == nil && usage.fromLimits != nil {
+			res.Usage = newUsage(res.At, usage.source, res.UsageIdentity, usage.fromLimits(limits))
+		}
+		if err == nil && limits.Blocked {
+			res.ErrorClass = string(decide.ErrRateLimit)
+			res.Detail = l.ProbeDetail + limits.ReachedType
+			if !limits.ResetsAt.IsZero() {
+				t := limits.ResetsAt
+				res.ResetsAt = &t
 			}
 		}
-	case "command":
-		judgeCommand(&res, stdout, code, c.Probe.ExitCodes)
 	}
 	return res
 }
 
-func judgeClaude(res *Result, stdout []byte, code int) {
-	r, ok := runner.ParseClaudeResult(stdout)
-	var extra struct {
-		CredentialExpiresAt time.Time `json:"credential_expires_at"`
-	}
-	// Read the expiry from the result object itself: stream output may carry
-	// other events after it.
-	if line, found := runner.ClaudeResultLine(stdout); found && json.Unmarshal(line, &extra) == nil && !extra.CredentialExpiresAt.IsZero() {
-		t := extra.CredentialExpiresAt
-		res.CredentialExpiresAt = &t
-	}
-	switch {
-	case !ok:
-		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "no result object"
-	case !r.IsError && code == 0:
-		res.OK, res.Detail = true, "subtype="+r.Subtype
-	default:
-		res.ErrorClass, res.Detail = string(r.Class()), "subtype="+r.Subtype
-	}
-}
-
-func judgeCodex(res *Result, stdout []byte, code int) {
-	o := runner.ParseCodexEvents(stdout)
-	switch {
-	case o.Completed && !o.Failed && code == 0:
-		res.OK, res.Detail = true, "turn.completed"
-	case o.Failed:
-		res.ErrorClass, res.Detail = string(o.Class), "turn.failed"
-	default:
-		res.ErrorClass, res.Detail = string(decide.ErrUnknown), fmt.Sprintf("exit %d without turn.completed", code)
-	}
+// usageReaders says where each agent's usage reading comes from. The reading
+// types live in this package, so this table does too; it is keyed by the
+// specification's name.
+var usageReaders = map[string]struct {
+	source     string
+	fromOutput func(stdout []byte) []UsageWindow
+	fromLimits func(runner.CodexLimits) []UsageWindow
+}{
+	"claude": {source: UsageSourceClaude, fromOutput: ClaudeUsage},
+	"codex":  {source: UsageSourceCodex, fromLimits: CodexUsage},
 }
 
 // judgeCommand: exit 0 is healthy unless stdout says otherwise with

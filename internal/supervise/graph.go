@@ -108,14 +108,15 @@ func (t *tick) graphSession() {
 			return
 		}
 		link.Session, link.Source = agent.BB.Thread, rungraph.SourceConfigured
-	case "claude", "codex", "cursor":
+	default:
+		if !runner.KeepsSessionFile(agent.Adapter) {
+			return // No recorded session identity exists for this adapter.
+		}
 		id, err := runner.Dir(filepath.Join(t.loop.StateDir, "targets", target)).InspectSession()
 		if err != nil || id == "" {
 			return
 		}
 		link.Session, link.Source = id, rungraph.SourceRunnerFile
-	default:
-		return // No recorded session identity exists for this adapter.
 	}
 	skipped := false
 	t.graphUpdate(func(g *rungraph.Graph) (bool, error) {

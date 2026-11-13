@@ -1,0 +1,208 @@
+package runner
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+)
+
+var _ adapter.Adapter = (*Headless)(nil)
+
+// The registry holds the agents ported to the contract, each complete.
+func TestRegistryHoldsCompleteSpecifications(t *testing.T) {
+	var names []string
+	for _, s := range Specs() {
+		names = append(names, s.Name)
+		if s.Provider == "" || s.DefaultCLI == "" || len(s.SettingNames) == 0 || s.Prompt != PromptStdin ||
+			s.Settings == nil || s.Argv == nil || s.Read == nil || s.Probe.Argv == nil || s.Probe.Judge == nil {
+			t.Errorf("%s: incomplete specification", s.Name)
+		}
+		// What the shared runner provides for every agent on it.
+		if !s.Capabilities.Stoppable || !s.Capabilities.ExactResume || !s.Capabilities.StructuredErrors {
+			t.Errorf("%s: %+v", s.Name, s.Capabilities)
+		}
+		// Nothing in the repository establishes these for either ported
+		// agent, so neither declares them.
+		if s.Capabilities.RetriesItself || s.Capabilities.StructuredWaiting || s.Capabilities.ChildWork || s.Capabilities.SchedulesItself || s.Capabilities.FailsOverItself {
+			t.Errorf("%s declares a capability it has no evidence for: %+v", s.Name, s.Capabilities)
+		}
+		if got, ok := SpecFor(s.Name); !ok || got != s {
+			t.Errorf("SpecFor(%q)", s.Name)
+		}
+		if got, ok := SpecForProvider(s.Provider); !ok || got != s {
+			t.Errorf("SpecForProvider(%q)", s.Provider)
+		}
+		if !KeepsSessionFile(s.Name) {
+			t.Errorf("%s keeps a session file", s.Name)
+		}
+	}
+	if !reflect.DeepEqual(names, []string{"claude", "codex"}) {
+		t.Fatalf("registry = %v", names)
+	}
+	// Cursor is not on the contract yet; BB and process never will be.
+	for _, name := range []string{"cursor", "bb", "process", "", "antigravity"} {
+		if _, ok := SpecFor(name); ok {
+			t.Errorf("SpecFor(%q) is registered", name)
+		}
+	}
+	if !KeepsSessionFile("cursor") || KeepsSessionFile("bb") || KeepsSessionFile("process") {
+		t.Error("KeepsSessionFile")
+	}
+	// A definition without the agent's own settings builds nothing.
+	if h, ok := New(config.Agent{Adapter: "claude"}, t.TempDir()); ok || h != nil {
+		t.Error("built a runner without settings")
+	}
+	if h, ok := New(config.Agent{Adapter: "codex", Claude: &config.Claude{}}, t.TempDir()); ok || h != nil {
+		t.Error("built a codex runner from claude settings")
+	}
+	if _, ok := New(config.Agent{Adapter: "cursor", Cursor: &config.Cursor{}}, t.TempDir()); ok {
+		t.Error("built a cursor runner from the registry")
+	}
+}
+
+// The command line of every turn and probe, written out in full: a change to
+// any argument, or to its position, fails here.
+func TestSpecificationCommandLines(t *testing.T) {
+	claude := config.Agent{Adapter: "claude", Claude: &config.Claude{CLI: "claude", Workdir: "/example/project", Model: "example-model", Effort: "high",
+		PermissionMode: "acceptEdits", MaxBudgetUSD: 2.5, ExtraArgs: []string{"--example-flag", "value"}}}
+	codex := config.Agent{Adapter: "codex", Codex: &config.Codex{CLI: "codex", Workdir: "/example/project", Model: "example-model", Sandbox: "workspace-write",
+		SkipGitRepoCheck: true, ExtraArgs: []string{"--example-flag"}}}
+	const session = "00000000-0000-4000-8000-0000000000aa"
+	for _, tc := range []struct {
+		name    string
+		agent   config.Agent
+		session string
+		want    string
+	}{
+		{"claude start", claude, "", "claude -p --output-format json --model example-model --effort high --permission-mode acceptEdits --max-budget-usd 2.5 --example-flag value"},
+		{"claude resume", claude, session, "claude -p --output-format json --model example-model --effort high --permission-mode acceptEdits --max-budget-usd 2.5 --resume " + session + " --example-flag value"},
+		{"claude bare", config.Agent{Adapter: "claude", Claude: &config.Claude{CLI: "claude"}}, "", "claude -p --output-format json"},
+		{"codex start", codex, "", "codex exec --json -m example-model --skip-git-repo-check -s workspace-write --example-flag -"},
+		{"codex resume", codex, session, `codex exec resume --json -m example-model --skip-git-repo-check -c sandbox_mode="workspace-write" --example-flag ` + session + " -"},
+		{"codex bare", config.Agent{Adapter: "codex", Codex: &config.Codex{CLI: "codex"}}, "", "codex exec --json -"},
+	} {
+		spec, _ := SpecFor(tc.agent.Adapter)
+		if got := strings.Join(spec.Argv(tc.agent, tc.session), " "); got != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
+		}
+		// The runner built from the same definition produces the same line.
+		dir := t.TempDir()
+		h, ok := New(tc.agent, dir)
+		if !ok {
+			t.Fatalf("%s: no runner", tc.name)
+		}
+		h.dir.SaveSession(tc.session)
+		if got := strings.Join(h.Args(), " "); got != tc.want {
+			t.Errorf("%s through the runner: %s", tc.name, got)
+		}
+	}
+	for _, tc := range []struct {
+		kind, model string
+		want        []string
+	}{
+		{"claude", "example-model", []string{"claude", "-p", "PROMPT", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1", "--model", "example-model"}},
+		{"claude", "", []string{"claude", "-p", "PROMPT", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}},
+		{"codex", "example-model", []string{"codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "-m", "example-model", "PROMPT"}},
+		{"codex", "", []string{"codex", "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "PROMPT"}},
+	} {
+		spec, _ := SpecFor(tc.kind)
+		if got := spec.Probe.Argv(tc.kind, tc.model, "PROMPT"); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s probe (%q): %q", tc.kind, tc.model, got)
+		}
+	}
+}
+
+// What each specification reads from a finished turn, as data.
+func TestSpecificationReadings(t *testing.T) {
+	finished := func(out string, code int) Status {
+		return Status{Phase: Finished, ExitCode: code, ExitCodeKnown: true, Stdout: []byte(out)}
+	}
+	for _, tc := range []struct {
+		name, kind string
+		turn       Status
+		session    string
+		completed  bool
+		class      decide.ErrorClass
+		source     string
+	}{
+		{"claude ok", "claude", finished(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-a"}`, 0), "sess-a", true, decide.ErrUnknown, "claude_result"},
+		{"claude rate limit", "claude", finished(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-a","api_error_status":429}`, 1), "sess-a", false, decide.ErrRateLimit, "claude_result"},
+		{"claude no result object", "claude", finished(`fictional text`, 1), "", false, decide.ErrUnknown, ""},
+		{"codex ok", "codex", finished(`{"type":"thread.started","thread_id":"sess-b"}`+"\n"+`{"type":"turn.completed"}`, 0), "sess-b", true, decide.ErrUnknown, "codex_events"},
+		{"codex coded failure", "codex", finished(codexFailedCoded, 1), "t", false, decide.ErrRateLimit, "codex_events"},
+		{"codex nothing structured", "codex", finished(`fictional text`, 1), "", false, decide.ErrUnknown, ""},
+	} {
+		spec, _ := SpecFor(tc.kind)
+		r := spec.Read(tc.turn)
+		if r.Session != tc.session || r.Completed != tc.completed || r.Class != tc.class || r.Evidence.Source != tc.source || r.Waiting {
+			t.Errorf("%s: %+v", tc.name, r)
+		}
+	}
+}
+
+// The shared runner acts on a Reading the same way for any agent. A stand-in
+// specification shows the parts neither ported agent uses: waiting on a
+// person, and a limit lookup that is asked only when the class is unknown.
+func TestRunnerActsOnAnyReading(t *testing.T) {
+	lookups := 0
+	reading := Reading{}
+	spec := &Spec{
+		Name:     "stand-in",
+		Settings: func(config.Agent) (Settings, bool) { return Settings{CLI: "stand-in-cli"}, true },
+		Argv:     func(config.Agent, string) []string { return []string{"stand-in-cli"} },
+		Read:     func(Status) Reading { return reading },
+		Limits: &LimitLookup{EvidenceSource: "codex_rate_limits", EvidenceCode: "blocked", Read: func(_ context.Context, cli string, _ []string) (CodexLimits, error) {
+			lookups++
+			if cli != "stand-in-cli" {
+				t.Errorf("lookup cli %q", cli)
+			}
+			return CodexLimits{Blocked: true}, nil
+		}},
+	}
+	dir := t.TempDir()
+	h := &Headless{spec: spec, set: Settings{CLI: "stand-in-cli"}, dir: Dir(dir)}
+	finish := func(code string) {
+		t.Helper()
+		for name, content := range map[string]string{"run.json": `{"pid":1,"startedAt":"2026-01-01T00:00:00Z","argv0":"stand-in-cli"}`, "exit": code + "\n", "stdout": ""} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	observe := func() decide.Observation {
+		t.Helper()
+		obs, err := h.Observe(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return obs
+	}
+	if h.Name() != "stand-in" || h.Spec() != spec {
+		t.Fatal("name or spec")
+	}
+	// Completed and exit 0: idle. Waiting on a person is passed through.
+	finish("0")
+	reading = Reading{Session: "sess-c", Completed: true, Waiting: true, Class: decide.ErrUnknown}
+	if obs := observe(); obs.State != decide.Idle || !obs.AwaitingInput || obs.Evidence.Source != "runner_exit" || h.dir.Session() != "sess-c" || lookups != 0 {
+		t.Fatalf("%+v session=%q lookups=%d", obs, h.dir.Session(), lookups)
+	}
+	// Completed but a failing exit code is an error.
+	finish("3")
+	reading = Reading{Completed: true, Class: decide.ErrAuth, Evidence: evidence.Clean(evidence.Detail{Source: "claude_result"})}
+	if obs := observe(); obs.State != decide.Error || obs.ErrorClass != decide.ErrAuth || obs.Evidence.Source != "claude_result" || lookups != 0 || h.dir.Session() != "sess-c" {
+		t.Fatalf("%+v lookups=%d", obs, lookups)
+	}
+	// Unclassified: the structured lookup is asked, once, and decides.
+	reading = Reading{Class: decide.ErrUnknown}
+	if obs := observe(); obs.State != decide.Error || obs.ErrorClass != decide.ErrRateLimit || obs.Evidence.Source != "codex_rate_limits" || lookups != 1 {
+		t.Fatalf("%+v lookups=%d", obs, lookups)
+	}
+}

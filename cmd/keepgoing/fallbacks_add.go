@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -311,10 +312,10 @@ type fallbackAddLogin struct {
 }
 
 func fallbackAddAccountKey(kind string) string {
-	if kind == "claude" {
-		return "CLAUDE_CONFIG_DIR"
+	if spec, ok := runner.SpecFor(kind); ok {
+		return spec.AccountEnv
 	}
-	return "CODEX_HOME"
+	return ""
 }
 
 // fallbackAddLogins lists the headless logins already in the loop. A BB or
@@ -322,15 +323,15 @@ func fallbackAddAccountKey(kind string) string {
 func fallbackAddLogins(cfg *config.Config) []fallbackAddLogin {
 	var out []fallbackAddLogin
 	add := func(owner string, a config.Agent) {
-		var env map[string]string
-		switch {
-		case a.Adapter == "claude" && a.Claude != nil:
-			env = a.Claude.Env
-		case a.Adapter == "codex" && a.Codex != nil:
-			env = a.Codex.Env
-		default:
+		spec, ok := runner.SpecFor(a.Adapter)
+		if !ok {
 			return
 		}
+		set, ok := spec.Settings(a)
+		if !ok {
+			return
+		}
+		env := set.Env
 		dir := env[fallbackAddAccountKey(a.Adapter)]
 		if dir != "" {
 			if real, err := filepath.EvalSymlinks(dir); err == nil {
@@ -641,8 +642,8 @@ func fallbackAddDefaultGroup(agent, account string) string {
 			return g
 		}
 	}
-	if agent == "claude" {
-		return "claude-code"
+	if spec, ok := runner.SpecFor(agent); ok {
+		return spec.Provider
 	}
 	return agent
 }

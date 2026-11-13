@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 )
 
@@ -172,11 +173,10 @@ func bbReasoningLevel(s string) error {
 
 // bbProbeKind maps a BB provider to the local CLI that can probe it.
 func bbProbeKind(provider string) (string, error) {
+	if spec, ok := runner.SpecForProvider(provider); ok {
+		return spec.Name, nil
+	}
 	switch provider {
-	case "claude-code":
-		return "claude", nil
-	case "codex":
-		return "codex", nil
 	case "":
 		return "", errors.New("A BB fallback needs its thread's provider: claude-code or codex.")
 	}

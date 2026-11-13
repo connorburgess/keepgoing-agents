@@ -23,7 +23,7 @@ internal/supervise          one tick: observe, probe, decide, act, record
 internal/adapter            the Adapter interface and the code-to-class mapping
 internal/adapter/bb         BB threads over the bb CLI's JSON
 internal/adapter/process    any session described by three commands
-internal/adapter/runner     headless Claude Code and Codex turns, run detached
+internal/adapter/runner     headless turns, run detached; one Spec per agent (Claude Code, Codex)
 internal/adapter/factory    builds the adapter for an agent definition
 internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
@@ -67,6 +67,62 @@ An adapter implements `Name`, `Observe`, `Send`, and `Stop`. It may implement `W
 - **process** runs a status command that prints a small JSON object. A non-zero exit maps through `exit_codes`.
 - **cursor** (unreleased) reuses the detached runner for standalone primary loops, with a bounded NDJSON lifecycle parser, matching initialization/terminal session identity and known zero exit required for turn completion. It reads prompts through stdin and preserves exact resume IDs. Missing or ambiguous identity blocks resumption. Print failures stay unknown; no fallback or switch-back path is enabled. See [Cursor contract](cursor.md).
 - **claude** and **codex** start one headless turn per send as a detached process. The process writes its stdout and exit code into the target's directory, so a short-lived tick never waits for a turn. The next tick reads the result: the `is_error`, `subtype`, and `api_error_status` fields for Claude Code, and the event types for Codex. Each new turn resumes the saved session. On macOS, Linux and Windows, a detached copy of keepgoing runs the turn. Each wrapper receives a fresh random stop key, withheld from the agent environment. Stop writes a bounded private request and waits for its matching fresh acknowledgement; it never signals a saved PID. The live Unix wrapper is its own process-group leader and signals that group; the Windows wrapper retains an unnamed job handle containing itself and its descendants and terminates that job. Both avoid a saved-PID validation-to-signal race. See [owned cancellation](operations.md#owned-headless-cancellation) for legacy, crash and receipt limits.
+
+## Runner contract
+
+Unreleased source (roadmap K1). A command-line agent that runs one turn per process is described by one specification, `runner.Spec` in `internal/adapter/runner/spec.go`. Claude Code and Codex are on it. This section lists what the code shares and what it keeps per agent, as the code is.
+
+**Common to every runner** (`runner.Dir` and `runner.Headless`; nothing here names an agent):
+
+- The detached turn: a copy of the keepgoing binary runs the agent, so a check never waits for a turn. It records `run.json`, `stdout`, `stderr` and the exit code in `targets/<id>/`.
+- The prompt, written to a private file and given to the agent on standard input. It is never in argv.
+- Session storage: one saved identifier per target, read before a turn and saved after one.
+- The phases `never_run`, `running`, `finished` and `crashed`, and what each means: never run is idle, running is active, crashed is an unknown error.
+- For a finished turn: healthy only when the agent reported completion **and** the exit code is zero; otherwise an error with the class the output gave, or `unknown`.
+- Refusing to send into a running turn, the owned stop through the live wrapper, environment overrides, output bounds and the runner's own exit evidence.
+
+**Per agent** (the fields of `runner.Spec`):
+
+| Part | Claude Code | Codex |
+| --- | --- | --- |
+| Name, default provider, default CLI | `claude`, `claude-code`, `claude` | `codex`, `codex`, `codex` |
+| Account directory variable | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| Settings read from the loop | `cli`, `workdir`, `model`, `effort`, `permission_mode`, `max_budget_usd`, `extra_args`, `env` | `cli`, `workdir`, `model`, `sandbox`, `skip_git_repo_check`, `extra_args`, `env` |
+| Start argv | `-p --output-format json` and flags | `exec --json` and flags, `-` last |
+| Resume argv | adds `--resume <id>` before the extra arguments | inserts the `resume` subcommand, turns `-s` into a `-c sandbox_mode=` override, and puts the id before `-` |
+| Prompt | standard input | standard input |
+| Result reader | the last `result` object: `is_error`, `subtype`, `api_error_status`, `terminal_reason`, `session_id` | the JSONL event stream: `thread.started`, `turn.completed`, `turn.failed`, `error` and their codes |
+| Structured limit lookup | none | the app-server's rate-limit snapshot, asked only when a failure is unclassified |
+| Probe | `-p` with `stream-json`, no tools, one turn; judged by the result object; the initialization message is dropped from kept output | `exec --json --ephemeral`, read-only sandbox; judged by `turn.completed` or `turn.failed` |
+
+**The reading.** A result reader returns a `Reading`: the session identity, whether the agent reported completion, whether it reported waiting on a person, the error class (or `unknown`) and structured evidence. It reads structured fields and the exit code only, never prose, and has no side effects. The shared runner turns a reading into an observation the same way for every agent. `Waiting` is carried to the observation's awaiting-input flag; neither ported agent sets it, and a stand-in specification tests it.
+
+**Capabilities.** Each specification declares what the agent does itself and reports in a structured form: retries itself, fails over itself, schedules itself, has child work, exact resume, can be stopped, structured errors, structured waiting-on-person. False means "not established", not "known absent". Both ported agents declare exact resume, can be stopped and structured errors, and nothing else: the repository holds no evidence for the rest. Nothing reads the declaration for a decision yet; it is there for `doctor` and the capability matrix.
+
+**Registry.** `runner.Specs()` lists the specifications. These read from it: the adapter factory, `internal/probe` (argv, verdict, kept output and the limit lookup), the saved-session check in `status`, the run graph's session link, and guided `fallbacks add` (account variable, existing logins, default quota group and the probe for a BB provider).
+
+These still name agents and were left, with the reason:
+
+- `internal/config` (the adapter list, defaults, validation, probe-kind defaults and probe settings) and both JSON schemas. `runner` imports `config`, so `config` cannot read the registry, and each agent's settings are a typed struct with its own YAML keys.
+- `init` and the guided `fallbacks add` flow: they build those typed settings and carry per-agent wording.
+- `internal/probe`'s usage readings: the reading types live in that package, so a small table there is keyed by specification name.
+- `internal/incident`'s allowed adapter names: a storage allowlist that should change deliberately.
+- `doctor`'s version pattern.
+
+**Not on the contract.** Cursor (`cursor.go`) keeps its own adapter and is the next to adopt it. From its code as it is, adopting needs three additions to the contract that neither ported agent uses: an output size limit on the turn's stream, a strict session rule (a returned session that differs from the saved one is refused, and so is a new conversation after a turn with no verified session), and a reading that can say the output is unsafe to act on, which the runner reports as an unknown state with an error. It also reads a crashed turn's output, where the shared runner does not. Antigravity has no runner yet. BB and process targets are not one-turn-per-process agents.
+
+**What K2 would have to express.** A configuration-defined agent needs at least what these two required:
+
+- Argv as an ordered template over named settings, where a flag appears only when its setting is set, plus fixed extra arguments.
+- Resume as a second template, not a suffix: Codex inserts a subcommand, changes how one setting is passed and places the session before the final argument.
+- The session identity from a named field of either one result object or one event type in a line stream.
+- Success from a structured field combined with exit code zero, with both "last object of a given type" and "any line of a given type" selection.
+- Error class from an ordered list of fields (a code, an HTTP status, a type) mapped through the existing code table, with `unknown` when none matches.
+- A probe command with its own argv, a model flag, and the same success and class rules.
+- An account directory variable and environment overrides.
+- A capability declaration.
+
+Two things these agents needed that such a shape cannot express without code: Codex's limit lookup speaks a JSON-RPC exchange with a second process, and Claude's kept probe output drops one message type. K2 should either leave them out for defined agents (the class stays `unknown`) or name them as built-in helpers.
 
 ## State directory
 
