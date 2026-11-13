@@ -117,6 +117,12 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// ResumeEpisodes counts the error episodes started by an explicit resume
+	// of a held loop, and LastResumeEpisodeAt is when the latest one was.
+	// Each is a fresh allowance of re-prompts and nudges granted by a person
+	// or by the owning agent, so the count is shown in status.
+	ResumeEpisodes      int       `json:"resumeEpisodes,omitempty"`
+	LastResumeEpisodeAt time.Time `json:"lastResumeEpisodeAt,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -260,6 +266,30 @@ func (f *File) ClearChildErrors() {
 func (f *File) ClearBriefs() {
 	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
 	f.ClearDeferrals()
+}
+
+// RetryRepaired is what every explicit resume does, held or not: a fallback
+// or a primary that was repaired gets fresh takeover briefs, and a
+// child-error notice that was given up is tried again.
+func (f *File) RetryRepaired() {
+	f.ChildErrorNoticeAttempts = 0
+	f.ClearBriefs()
+}
+
+// NewEpisode starts a new error episode because a person resumed a loop that
+// a check had held for a spent per-episode allowance. On top of RetryRepaired it clears what is counted per episode or per
+// stalled turn: re-prompts and their backoff, nudges and the silent-retry
+// clock. It counts itself, so status can show how often it has happened.
+// It never touches a loop-wide limit: sends used, the deadline, the
+// no-progress ledger and the new-thread cap live elsewhere and stay spent.
+// Nor does it touch TurnRetryNoOps, which counts a provider that keeps
+// answering a turn retry with nothing to do, whoever resumed.
+func (f *File) NewEpisode(at time.Time) {
+	f.Reprompts, f.LastRepromptAt, f.Nudges = 0, time.Time{}, 0
+	f.SilentRetry = nil
+	f.RetryRepaired()
+	f.ResumeEpisodes++
+	f.LastResumeEpisodeAt = at
 }
 
 // ClearDeferrals forgets handoffs put off for lack of time.

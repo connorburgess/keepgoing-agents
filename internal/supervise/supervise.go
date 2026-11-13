@@ -680,6 +680,14 @@ func (t *tick) run() error {
 	// seeing the session active does not end it: our own re-prompt, or a
 	// provider retry, makes it active, and a turn that errors again must spend
 	// the same allowances, or neither cap is ever reached.
+	//
+	// Git progress seen on a check that finds the session in error does not
+	// end it, although the fingerprint is taken there and no later check sees
+	// that change. The fingerprint covers every worktree, so lanes, other
+	// loops and people change it; counting it here would re-prompt a session
+	// that never leaves error at every check for as long as anyone commits,
+	// past the backoff, the hold and the brief caps. Only evidence about this
+	// session's own turns could tell the two apart, and Git has none.
 	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.st.HandoffBriefs = nil
@@ -1297,7 +1305,12 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
-		if _, err := control.Update(loop.StateDir, func(f *control.File) { f.AwaitingUser, f.Note = true, d.Reason }); err != nil {
+		if _, err := control.Update(loop.StateDir, func(f *control.File) {
+			f.AwaitingUser, f.Note = true, d.Reason
+			// Kept if already set: a later hold for another reason does not
+			// make the spent allowance any less spent.
+			f.EpisodeHold = f.EpisodeHold || d.EpisodeSpent
+		}); err != nil {
 			return err
 		}
 		data := map[string]any{"target": t.res.Target}

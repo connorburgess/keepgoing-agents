@@ -344,8 +344,10 @@ exit 1
 				}
 			}
 			in := r[6].Decisions.Evaluations[0].Input
-			if in.Reprompts != 1 || in.MaxReprompts != 2 || r[6].Reprompts != 2 {
-				t.Fatal("resume refunded attempts or lost revised allowance", r[6])
+			// An explicit resume starts a new error episode: the re-prompt
+			// count starts over, under the revised allowance.
+			if in.Reprompts != 0 || in.MaxReprompts != 2 || r[6].Reprompts != 1 {
+				t.Fatal("resume did not start a new episode or lost the revised allowance", r[6])
 			}
 			o := r[7].Observation
 			if o.Source != source || o.State != "idle" || o.ErrorClass != "none" || o.ExitCode == nil || *o.ExitCode != 0 || o.Retry != "unavailable" || r[7].Reprompts != 0 {
