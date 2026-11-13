@@ -8,9 +8,14 @@ import (
 	"syscall"
 )
 
-// panelRestrictUmask makes every file the server creates, its socket
-// included, private from the moment it exists.
-func panelRestrictUmask() { syscall.Umask(0o077) }
+// panelRestrictUmask makes files created until the returned function is
+// called private to this user from the moment they exist. A socket takes its
+// mode from the umask at bind, so this is what keeps it from being reachable
+// by others even for an instant.
+func panelRestrictUmask() (restore func()) {
+	previous := syscall.Umask(0o077)
+	return func() { syscall.Umask(previous) }
+}
 
 // panelCloseInheritedOnExec marks every descriptor this process holds beyond
 // stdin, stdout and stderr to be closed in a program it starts. Go's own

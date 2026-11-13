@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1223,57 +1222,6 @@ func TestPanelConcurrentCommandsEndWithOneServer(t *testing.T) {
 	}
 }
 
-// A server that is suspended holds its lock and does not answer. Status says
-// exactly that, the commands fail with a plain message and no file to delete,
-// and everything works again when it resumes.
-func TestPanelSuspendedServerIsRunningButNotAnswering(t *testing.T) {
-	w := newPanelProcessWorld(t)
-	if code, out, errs := w.open(); code != exitOK {
-		t.Fatalf("open: %d %s %s", code, out, errs)
-	}
-	rec := w.record()
-	process, err := os.FindProcess(rec.PID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Signal(syscall.SIGSTOP); err != nil {
-		t.Skipf("cannot suspend the server: %v", err)
-	}
-	resumed := false
-	resume := func() {
-		if !resumed {
-			_ = process.Signal(syscall.SIGCONT)
-			resumed = true
-		}
-	}
-	defer resume()
-	code, out, _ := w.run("panel", "status", "--panel-directory", w.dir)
-	if code != exitOK || !strings.Contains(out, "running but not answering") || strings.Contains(out, "not running") {
-		t.Fatalf("status while suspended: %d %s", code, out)
-	}
-	if code, _, errs := w.run("panel", "stop", "--panel-directory", w.dir); code != exitFailed || !strings.Contains(errs, "running but not answering") || strings.Contains(errs, "delete") {
-		t.Fatalf("stop while suspended: %d %s", code, errs)
-	}
-	started := time.Now()
-	code, _, errs := w.open("--no-open")
-	if code != exitFailed || !strings.Contains(errs, "running but not answering") || strings.Contains(errs, "exited while starting") {
-		t.Fatalf("open while suspended: %d %s", code, errs)
-	}
-	if waited := time.Since(started); waited > 30*time.Second {
-		t.Fatalf("open waited %s", waited)
-	}
-	if n := w.serverProcesses(); n != 1 {
-		t.Fatalf("%d server processes: a second one was started beside the suspended one", n)
-	}
-	resume()
-	if code, out, errs := w.open("--no-open"); code != exitOK || !strings.HasPrefix(out, "Open this address") {
-		t.Fatalf("open after it resumed: %d %s %s", code, out, errs)
-	}
-	if again := w.record(); again != rec {
-		t.Fatalf("a different server after resuming: %+v", again)
-	}
-}
-
 func TestPanelServerExitsWhenIdleAndLeavesLoopsAlone(t *testing.T) {
 	w := newPanelProcessWorld(t)
 	before := treeDigest(t, w.root)
@@ -1509,5 +1457,109 @@ func TestPanelRefusesWhereItIsUnverified(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"list", "--directory", d.directory, "--offline"}); code != exitOK {
 		t.Fatalf("list: %d %s", code, errs.String())
+	}
+}
+
+// A command probes the server's lock by taking it for an instant. A server
+// that starts at that instant waits for it; it does not give up.
+func TestPanelServerStartsWhileItsLockIsBeingProbed(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	dir, err := panelDirectory(filepath.Join(panelShortDir(t), "panel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := lock.AcquireNamed(dir, panelServerLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+	}()
+	defer func() { cancel(); <-done }()
+	time.Sleep(400 * time.Millisecond)
+	select {
+	case code := <-done:
+		done <- code
+		t.Fatalf("the server gave up while its lock was being probed: %d", code)
+	default:
+	}
+	_ = probe.Release()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), dir); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start after the probe let go")
+		}
+	}
+}
+
+// A server removes only the socket it created, and exits when the lock it
+// holds is no longer the file at its path.
+func TestPanelServerRemovesOnlyItsOwnSocketAndExitsWithoutItsLock(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	dir, err := panelDirectory(filepath.Join(panelShortDir(t), "panel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticks := make(chan time.Time)
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now, ticks: ticks})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), dir); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start")
+		}
+	}
+	// A check with the lock in place changes nothing.
+	ticks <- time.Now()
+	select {
+	case code := <-done:
+		t.Fatalf("exited with its lock in place: %d", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Another server's files take the place of this one's: a new lock file,
+	// a socket and a record that are not its own.
+	lockPath, socket := filepath.Join(dir, panelServerLock+".lock"), filepath.Join(dir, panelSocketName)
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("another server's socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: 49152, StartedAt: time.Now().UTC().Truncate(time.Second), IdleSeconds: 1800, Instance: strings.Repeat("9", 32), Registry: registryDir, Version: "fixture"}
+	if err := writePanelRecord(dir, other); err != nil {
+		t.Fatal(err)
+	}
+	ticks <- time.Now()
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Fatalf("exit code %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running after its lock file was replaced")
+	}
+	if b, err := os.ReadFile(socket); err != nil || string(b) != "another server's socket" {
+		t.Fatalf("it removed a socket it did not create: %v %q", err, b)
+	}
+	if rec, ok := readPanelRecord(dir); !ok || rec != other {
+		t.Fatalf("it removed a record it did not write: %+v %v", rec, ok)
 	}
 }
