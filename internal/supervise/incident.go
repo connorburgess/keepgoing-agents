@@ -27,7 +27,7 @@ func (t *tick) recordIncident(failed bool) error {
 		TargetKeyAfter: incident.TargetKey(t.res.Target), Probes: t.incidentProbes,
 		ControlBefore: t.incidentControl, Cause: cause, Action: t.res.Action, Outcome: outcome, DryRun: t.opts.DryRun,
 		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts,
-		LimitWaitReport: t.incidentLimitWaitReport}
+		LimitWaitReport: t.incidentLimitWaitReport, NewThread: t.incidentNewThread}
 	if c, err := control.Load(t.loop.StateDir); err == nil {
 		r.ControlAfter = incident.Gate(c.Gate())
 	}

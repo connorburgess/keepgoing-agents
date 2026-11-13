@@ -91,3 +91,30 @@ func TestBriefGateIsPerTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestNewThreadGate(t *testing.T) {
+	const hour = time.Hour
+	for _, tc := range []struct {
+		name          string
+		attempts, max int
+		sinceLast     time.Duration
+		any           bool
+		want          NewThreadVerdict
+	}{
+		{"first thread", 0, 3, 0, false, NewThreadAllowed},
+		{"below the cap, an hour after the last", 2, 3, hour, true, NewThreadAllowed},
+		{"below the cap, just under an hour after the last", 2, 3, hour - time.Second, true, NewThreadTooSoon},
+		{"below the cap, the last asked for by a later clock", 1, 3, -time.Minute, true, NewThreadTooSoon},
+		{"at the cap", 3, 3, 24 * hour, true, NewThreadCapped},
+		{"past the cap", 4, 3, 24 * hour, true, NewThreadCapped},
+		{"the cap wins over spacing", 3, 3, 0, true, NewThreadCapped},
+		{"cap of one, unused", 0, 1, 0, false, NewThreadAllowed},
+		{"cap of one, used by an attempt of unknown outcome", 1, 1, 24 * hour, true, NewThreadCapped},
+		{"no cap configured means no thread", 0, 0, 24 * hour, false, NewThreadCapped},
+		{"negative cap means no thread", 0, -1, 24 * hour, false, NewThreadCapped},
+	} {
+		if got := NewThreadGate(tc.attempts, tc.max, tc.sinceLast, hour, tc.any); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}

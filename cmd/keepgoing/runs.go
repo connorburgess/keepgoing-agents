@@ -482,6 +482,12 @@ func (c *runsContext) current(run rungraph.Node, e rungraph.Edge) bool {
 		saved, err := runner.Dir(filepath.Join(c.dir, "targets", e.Target)).InspectSession()
 		return err == nil && saved != "" && saved == id
 	}
+	if e.Source == rungraph.SourceCreated {
+		// A thread keepgoing created for a handoff: current while it is the
+		// one on record for that fallback.
+		st, err := state.Load(c.dir)
+		return err == nil && st.CreatedThreadFor(e.Target) == id
+	}
 	if c.cfg != nil {
 		agent := c.cfg.Loop.Agent
 		if e.Target != state.Primary {
