@@ -178,6 +178,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
+- [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing
