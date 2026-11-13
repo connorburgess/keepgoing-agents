@@ -225,17 +225,41 @@ func (t *tick) warn(format string, a ...any) {
 }
 
 func (t *tick) report(typ, text string, data map[string]any) {
+	_ = t.reportSent(typ, text, data)
+}
+
+// reportSent sends a report and says whether it was delivered.
+func (t *tick) reportSent(typ, text string, data map[string]any) bool {
 	if t.opts.DryRun {
-		return
+		return false
 	}
 	ctx, cancel, ok := t.reportContext(typ, text)
 	if !ok {
-		return
+		return false
 	}
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
+		return false
 	}
+	return true
+}
+
+// reportOnce sends the report of an episode, named by key, until it has been
+// delivered, at most state.MaxOnceAttempts times. A new key starts again.
+func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data map[string]any) {
+	if t.opts.DryRun {
+		return
+	}
+	if *slot == nil || (*slot).Key != key {
+		*slot = &state.OnceReport{Key: key}
+	}
+	r := *slot
+	if r.Sent || r.Attempts >= state.MaxOnceAttempts {
+		return
+	}
+	r.Attempts++
+	r.Sent = t.reportSent(typ, text, data)
 }
 
 // Tick performs one supervision pass. The caller holds the lock.
@@ -297,17 +321,23 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	return res, err
 }
 
-// sessionDirectory resolves the shared claim directory once per check.
+// sessionDirectory resolves the shared claim directory once per check. A
+// directory of this user's that is not exactly private is made so, and the
+// check says it once.
 func (t *tick) sessionDirectory() (string, error) {
 	if t.sessionDir != "" {
 		return t.sessionDir, nil
 	}
 	dir := t.opts.SessionDir
 	if dir == "" {
-		var err error
-		if dir, err = session.Dir(); err != nil {
+		d, tightened, err := session.Dir(true)
+		if err != nil {
 			return "", err
 		}
+		if tightened {
+			t.warn("the session claim directory %s was not private; it is now 0700", d)
+		}
+		dir = d
 	}
 	t.sessionDir = dir
 	return dir, nil
@@ -339,41 +369,93 @@ func (t *tick) claim(a config.Agent) error {
 	return nil
 }
 
-// claimActive claims the session this check is about to observe. Another
-// loop's live claim ends the check: nothing is observed, decided, sent or
-// recorded, and the caller skips it as a busy check. A claim that cannot be
-// taken for any other reason (no user state directory, a directory that is
-// not private or not writable) does not stop the check: a check that failed
-// on every run would get an external scheduler to switch itself off. The
-// check goes ahead unprotected, says so, and the start and end of such a
-// stretch are reported once each.
+// claimActive claims the session this check is about to observe.
+//
+//   - Another loop's live claim ends the check: nothing is observed, decided,
+//     sent or recorded, and the caller skips it as a busy check. A holder past
+//     its own time limit is stuck: that is recorded and reported once.
+//   - No user state directory at all (no HOME and no XDG_STATE_HOME): the
+//     check goes ahead unprotected and says so; the start and end of such a
+//     stretch are reported once each. A check that failed on every run would
+//     get an external scheduler to switch itself off.
+//   - A claim directory or claim file that cannot be repaired safely (another
+//     user's, not a directory, a link, something planted): the check acts on
+//     nothing and fails, naming the path and the fix.
 func (t *tick) claimActive(a config.Agent) error {
-	err := t.claim(a)
-	var claimed *session.ClaimedError
-	if errors.As(err, &claimed) {
-		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "another loop is acting on this session"
-		return err
-	}
-	if _, ok := session.Of(a); !ok {
+	id, ok := session.Of(a)
+	if !ok {
 		return nil // no fixed session, nothing to claim
 	}
-	unavailable := err != nil
-	if unavailable {
+	err := t.claim(a)
+	var claimed *session.ClaimedError
+	var undetermined *session.UndeterminedError
+	var unsafe *session.UnsafeError
+	switch {
+	case errors.As(err, &claimed):
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "another loop is acting on this session"
+		if claimed.Stuck() {
+			t.reportStuckClaim(claimed)
+			t.res.Reason = "another loop's stuck check holds this session"
+			return t.record(err)
+		}
+		return err
+	case errors.As(err, &unsafe):
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unsafe; no action taken"
+		return t.record(fmt.Errorf("session claim: %v; no action taken: %s", unsafe, unsafe.Fix()))
+	case errors.As(err, &undetermined):
 		t.warn("session claim unavailable (%v); this check is not protected against another loop acting on the same session at the same moment", err)
-	} else if !t.opts.DryRun && t.cfg.Path() != "" {
-		// Best effort: lets enable and status name this loop to others.
-		id, _ := session.Of(a)
-		_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now})
-	}
-	if unavailable != t.st.ClaimUnavailable && !t.opts.DryRun {
-		t.st.ClaimUnavailable = unavailable
-		if unavailable {
-			t.report("degraded", fmt.Sprintf("%s: session claims are unavailable (%v); checks are not protected against another loop acting on the same session at the same moment", t.loop.Name, err), map[string]any{"sessionClaim": "unavailable"})
-		} else {
-			t.report("recovered", fmt.Sprintf("%s: session claims are available again", t.loop.Name), map[string]any{"sessionClaim": "available"})
+	case err != nil:
+		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unsafe; no action taken"
+		return t.record(fmt.Errorf("session claim: %v; no action taken", err))
+	default:
+		if !t.opts.DryRun && t.cfg.Path() != "" {
+			// Best effort, and never more than a moment of the check's time:
+			// lets enable and status name this loop to others.
+			_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now}, 100*time.Millisecond)
 		}
 	}
+	t.noteClaimEpisode(undetermined)
 	return nil
+}
+
+// noteClaimEpisode keeps the record of a stretch without claims and sends
+// its start and end once each, retrying a failed delivery.
+func (t *tick) noteClaimEpisode(undetermined *session.UndeterminedError) {
+	if t.opts.DryRun {
+		return
+	}
+	unavailable := undetermined != nil
+	if unavailable != t.st.ClaimUnavailable {
+		t.st.ClaimUnavailable = unavailable
+		kind := "recovered"
+		if unavailable {
+			kind = "degraded"
+		}
+		t.st.ClaimReport = &state.OnceReport{Key: fmt.Sprintf("%s:%s", kind, t.now.UTC().Format(time.RFC3339))}
+	}
+	if t.st.ClaimReport == nil {
+		return
+	}
+	if strings.HasPrefix(t.st.ClaimReport.Key, "degraded:") {
+		t.reportOnce(&t.st.ClaimReport, t.st.ClaimReport.Key, "degraded", fmt.Sprintf("%s: session claims are unavailable (%s); checks are not protected against another loop acting on the same session at the same moment", t.loop.Name, claimReason(undetermined)), map[string]any{"sessionClaim": "unavailable"})
+	} else {
+		t.reportOnce(&t.st.ClaimReport, t.st.ClaimReport.Key, "recovered", fmt.Sprintf("%s: session claims are available again", t.loop.Name), map[string]any{"sessionClaim": "available"})
+	}
+}
+
+func claimReason(e *session.UndeterminedError) string {
+	if e == nil {
+		return "no user state directory"
+	}
+	return e.Error()
+}
+
+// reportStuckClaim reports, once per stuck holder, that another loop's check
+// has held this session past its own time limit, and what to do.
+func (t *tick) reportStuckClaim(c *session.ClaimedError) {
+	t.warn("%v", c)
+	key := fmt.Sprintf("%d:%s", c.Holder.PID, c.Holder.Since.UTC().Format(time.RFC3339Nano))
+	t.reportOnce(&t.st.StuckClaimReport, key, "error", fmt.Sprintf("%s: %v", t.loop.Name, c), map[string]any{"sessionClaim": "stuck", "holderLoop": c.Holder.Loop, "holderPid": c.Holder.PID})
 }
 
 // claimOther claims a session this check may move to. It returns another
@@ -904,11 +986,16 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	// live check holds the session, which the claim proves; if the claim
 	// cannot be taken for any other reason, the stop goes ahead without it.
 	claimed, err := t.claimOther(agent)
-	if claimed != nil {
+	switch {
+	case claimed != nil && claimed.Stuck():
+		// A holder past its own hard limit is stuck; a second stop is
+		// harmless, so the stop does not wait for it.
+		t.reportStuckClaim(claimed)
+		t.warn("stop proceeds past a stuck session claim")
+	case claimed != nil:
 		res.State, res.Reason = "not observed", "another loop is acting on this session"
 		return claimed
-	}
-	if err != nil {
+	case err != nil:
 		t.warn("stop proceeds without the session claim: %v", err)
 	}
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
@@ -1106,11 +1193,15 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 		// another loop is acting on right now is not sent a brief. A claim
 		// that cannot be taken at all does not stop the handoff, as it does
 		// not stop the check.
+		var undetermined *session.UndeterminedError
 		if claimed, err := t.claimOther(c.Agent); claimed != nil {
 			note.Skipped = append(note.Skipped, id+": another loop is acting on its session")
 			continue
-		} else if err != nil {
+		} else if errors.As(err, &undetermined) {
 			t.warn("handoff to %s is not protected by a session claim: %v", id, err)
+		} else if err != nil {
+			note.Skipped = append(note.Skipped, id+": its session claim is unsafe ("+err.Error()+")")
+			continue
 		}
 		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
@@ -1234,12 +1325,17 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	// The primary's session is not sent to while another loop is acting on
 	// it; the switch-back waits for a later check.
+	var undetermined *session.UndeterminedError
 	if claimed, err := t.claimOther(t.loop.Agent); claimed != nil {
 		t.warn("switch-back waits: %v", claimed)
 		t.switchBackDeferred = true
 		return false, nil
-	} else if err != nil {
+	} else if errors.As(err, &undetermined) {
 		t.warn("switch-back is not protected by a session claim: %v", err)
+	} else if err != nil {
+		t.warn("switch-back waits: its session claim is unsafe (%v)", err)
+		t.switchBackDeferred = true
+		return false, nil
 	}
 	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {

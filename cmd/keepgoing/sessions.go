@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -100,7 +101,7 @@ func findOtherLoops(cfg *config.Config) []otherLoop {
 			}
 		}
 	}
-	if dir, err := session.Dir(); err == nil {
+	if dir, _, err := session.Dir(); err == nil {
 		for _, s := range session.All(dir, maxOtherLoops) {
 			add(s.Loop, s.Config, s.StateDir)
 		}
@@ -142,7 +143,7 @@ func findOtherLoops(cfg *config.Config) []otherLoop {
 		}
 		for _, r := range other.Loop.Progress.Repositories {
 			if p := session.CleanPath(r); p != "" && myRepos[p] {
-				o.Shares = append(o.Shares, "it tracks the same repository, "+p)
+				o.Shares = append(o.Shares, "it tracks the same repository, "+p+" (a warning about shared work, not a conflict)")
 				break
 			}
 		}
@@ -221,11 +222,11 @@ func noteSupervisor(cfg *config.Config) {
 	if !ok || cfg.Path() == "" {
 		return
 	}
-	dir, err := session.Dir()
+	dir, _, err := session.Dir(true)
 	if err != nil {
 		return
 	}
-	_ = session.Note(dir, id, session.Supervisor{Loop: cfg.Loop.Name, Config: cfg.Path(), StateDir: cfg.Loop.StateDir, SeenAt: time.Now().UTC()})
+	_ = session.Note(dir, id, session.Supervisor{Loop: cfg.Loop.Name, Config: cfg.Path(), StateDir: cfg.Loop.StateDir, SeenAt: time.Now().UTC()}, 2*time.Second)
 }
 
 // checkSecondLoop is run by enable and start before they turn a loop on. It
@@ -254,9 +255,13 @@ func sessionClaimText(cfg *config.Config, now time.Time) string {
 	if !ok {
 		return ""
 	}
-	dir, err := session.Dir()
+	dir, _, err := session.Dir()
 	if err != nil {
-		return fmt.Sprintf("session claim unavailable (%v); checks are not protected against another loop acting on the same session at the same moment. Set HOME, or KEEPGOING_SESSION_DIR to a private directory", err)
+		_, message, fix := sessionDirectoryCheck()
+		return message + " " + fix
+	}
+	if !session.Private(dir) {
+		return dir + " is not private; the next check makes it 0700"
 	}
 	h := session.Peek(dir, id)
 	if h == nil || h.PID == os.Getpid() {
@@ -266,4 +271,25 @@ func sessionClaimText(cfg *config.Config, now time.Time) string {
 		return fmt.Sprintf("claimed by loop %s (pid %d) past its own time limit at %s: that process is stuck, and checks of every loop on this session skip until it ends. Find process %d and stop it; keepgoing does not break the claim", h.Loop, h.PID, h.Until.Local().Format("15:04"), h.PID)
 	}
 	return fmt.Sprintf("being checked by loop %s (pid %d) since %s", h.Loop, h.PID, h.Since.Local().Format("15:04:05"))
+}
+
+// sessionDirectoryCheck describes the claim directory for doctor and status,
+// by its real cause. It returns no status when there is nothing to say.
+func sessionDirectoryCheck() (status, message, fix string) {
+	dir, _, err := session.Dir()
+	var undetermined *session.UndeterminedError
+	var unsafe *session.UnsafeError
+	switch {
+	case errors.As(err, &undetermined):
+		return "error", "Session claims cannot be kept: " + undetermined.Error() + ". Checks still run, but are not protected against another loop acting on the same session at the same moment.", "To fix it, " + undetermined.Fix() + "."
+	case errors.As(err, &unsafe):
+		return "error", "Session claims cannot be kept safely: " + unsafe.Error() + ". Checks act on nothing until this is fixed; a requested stop still goes ahead.", "To fix it, " + unsafe.Fix() + "."
+	case err != nil:
+		return "error", "Session claims cannot be kept: " + err.Error() + ".", "Set KEEPGOING_SESSION_DIR to a private directory of your own."
+	case !session.Private(dir):
+		return "warning", "The session claim directory " + dir + " is not private (mode 0700).", "The next check makes it private, or run chmod 700 on it."
+	case os.Getenv(session.DirEnv) != "":
+		return "ok", "KEEPGOING_SESSION_DIR is set: session claims are kept in " + dir + ". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory."
+	}
+	return "", "", ""
 }

@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -217,27 +219,38 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 	if !strings.Contains(found["registry.directory"], os.Getenv(registryDirEnv)) || !strings.Contains(found["session.directory"], os.Getenv("KEEPGOING_SESSION_DIR")) {
 		t.Fatalf("%v", found)
 	}
-	// A claim directory that cannot be used is an error: every check would
-	// fail without acting.
-	t.Setenv("KEEPGOING_SESSION_DIR", "relative/sessions")
-	out.Reset()
-	doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
-	var bad struct {
-		Checks []doctorCheck `json:"checks"`
-	}
-	failed := false
-	if json.Unmarshal(out.Bytes(), &bad) == nil {
-		for _, c := range bad.Checks {
-			failed = failed || (c.ID == "session.directory" && c.Status == "error")
+	// Each cause is named as it is, with its own fix.
+	check := func(want, fix string) {
+		t.Helper()
+		out.Reset()
+		doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
+		var r struct {
+			Checks []doctorCheck `json:"checks"`
+		}
+		found := false
+		if json.Unmarshal(out.Bytes(), &r) == nil {
+			for _, c := range r.Checks {
+				found = found || (c.ID == "session.directory" && c.Status == "error" && strings.Contains(c.Message, want) && strings.Contains(c.Fix, fix))
+			}
+		}
+		if !found {
+			t.Fatalf("doctor did not say %q / %q: %s", want, fix, out.String())
+		}
+		code, text, _ := f.run("status")
+		if code != exitOK || !strings.Contains(text, want) || !strings.Contains(text, fix) {
+			t.Fatalf("status did not say %q / %q: %d %s", want, fix, code, text)
 		}
 	}
-	if !failed {
-		t.Fatalf("unusable claim directory: %s", out.String())
-	}
-	// status says it too, and the check still runs.
-	if code, out, _ := f.run("status"); code != exitOK || !strings.Contains(out, "session:   session claim unavailable (") || !strings.Contains(out, "not protected against another loop") {
-		t.Fatalf("status: %d %s", code, out)
-	}
+	// No user state directory: checks run unprotected.
+	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	check("HOME and XDG_STATE_HOME are not set", "set HOME, or KEEPGOING_SESSION_DIR")
+	// Something planted at the path: not "set HOME".
+	planted := filepath.Join(f.dir, "planted")
+	write(t, planted, "", 0o600)
+	t.Setenv("KEEPGOING_SESSION_DIR", planted)
+	check(planted+" is not a directory", "remove "+planted)
 	t.Setenv(registryDirEnv, "")
 	t.Setenv("KEEPGOING_SESSION_DIR", "")
 	t.Setenv("HOME", f.dir)
@@ -307,4 +320,40 @@ func TestInitJSONAdvertisesStartJSON(t *testing.T) {
 			t.Fatalf("dry run %v: %v %s", dryRun, err, out.String())
 		}
 	}
+}
+
+// Stop wins: a daemon whose stop met another loop's claim tries again at the
+// next control poll, not after a whole interval.
+func TestDaemonRetriesASkippedStopAtTheControlPoll(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+	dir, _, err := session.Dir(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := session.Take(dir, session.Identity{Kind: "bb", ID: "thr_primary"}, session.Holder{Loop: "example-loop-b", PID: os.Getpid(), Since: time.Now(), Until: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claim.Release()
+	f.run("stop")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var out, errb safeBuffer
+	go func() { done <- run(ctx, []string{"daemon", "-c", f.cfg}, &out, &errb) }()
+	waitFor(t, func() bool { return strings.Contains(errb.String(), "being checked by loop example-loop-b") }, "the skipped stop")
+	if strings.Contains(f.read("calls"), "thread stop thr_primary") {
+		t.Fatal("stopped while another loop's check held the session")
+	}
+	// The other loop's check ends; the interval is 30 s and the poll 100 ms.
+	released := time.Now()
+	claim.Release()
+	waitFor(t, func() bool { return strings.Contains(f.read("calls"), "thread stop thr_primary") }, "stop")
+	if d := time.Since(released); d > 5*time.Second {
+		t.Fatalf("the stop took %v after the claim ended", d)
+	}
+	cancel()
+	<-done
 }

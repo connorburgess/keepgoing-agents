@@ -168,7 +168,7 @@ func TestSupervisorsRecord(t *testing.T) {
 	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < maxSupervisors+4; i++ {
 		s := Supervisor{Loop: "example-loop", Config: "/private/example/" + string(rune('a'+i)) + "/keepgoing.yaml", StateDir: "/private/example/" + string(rune('a'+i)) + "/state", SeenAt: at.Add(time.Duration(i) * time.Minute)}
-		if err := Note(dir, id, s); err != nil {
+		if err := Note(dir, id, s, time.Second); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -177,7 +177,7 @@ func TestSupervisorsRecord(t *testing.T) {
 		t.Fatalf("%d entries, first %+v", len(list), list[0])
 	}
 	// Noting a loop again moves it to the front, once.
-	if err := Note(dir, id, Supervisor{Loop: "example-loop", Config: "/private/example/e/keepgoing.yaml", StateDir: "/private/example/e/state", SeenAt: at.Add(time.Hour)}); err != nil {
+	if err := Note(dir, id, Supervisor{Loop: "example-loop", Config: "/private/example/e/keepgoing.yaml", StateDir: "/private/example/e/state", SeenAt: at.Add(time.Hour)}, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	list = Known(dir, id)
@@ -217,29 +217,52 @@ func TestDirIsPrivate(t *testing.T) {
 		t.Skip("modes differ")
 	}
 	t.Setenv(DirEnv, filepath.Join(t.TempDir(), "sessions"))
-	dir, err := Dir()
+	dir, _, err := Dir(true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info, _ := os.Stat(dir); info.Mode().Perm() != 0o700 {
 		t.Fatalf("%v", info.Mode())
 	}
+	// This user's directory, merely too open: looked at, it is reported; with
+	// repair, it is made private.
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Dir(); err == nil {
-		t.Fatal("a directory others can read was accepted")
+	if _, tightened, err := Dir(); err != nil || tightened || Private(dir) {
+		t.Fatalf("looking repaired it: %v %v", tightened, err)
 	}
+	if _, tightened, err := Dir(true); err != nil || !tightened || !Private(dir) {
+		t.Fatalf("repair: %v %v", tightened, err)
+	}
+	var unsafe *UnsafeError
 	t.Setenv(DirEnv, "relative/sessions")
-	if _, err := Dir(); err == nil {
-		t.Fatal("a relative directory was accepted")
+	if _, _, err := Dir(); !errors.As(err, &unsafe) {
+		t.Fatalf("a relative directory: %v", err)
+	}
+	// Something planted at the path, or a link there, is not repaired.
+	planted := filepath.Join(t.TempDir(), "sessions")
+	if err := os.WriteFile(planted, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(DirEnv, planted)
+	if _, _, err := Dir(true); !errors.As(err, &unsafe) || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("a file: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "sessions")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(DirEnv, link)
+	if _, _, err := Dir(true); !errors.As(err, &unsafe) || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a link: %v", err)
 	}
 	// Without the override it is under the user's state directory.
 	t.Setenv(DirEnv, "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
-	dir, err = Dir()
+	dir, _, err = Dir(true)
 	want := filepath.Join(home, "state", "keepgoing", "sessions")
 	if runtime.GOOS == "darwin" {
 		want = filepath.Join(home, "Library", "Application Support", "keepgoing", "sessions")
@@ -260,4 +283,86 @@ func mustList(t *testing.T, dir string) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+// Something planted where a claim file belongs is not used as one.
+func TestAPlantedClaimFileIsUnsafe(t *testing.T) {
+	dir := t.TempDir()
+	id := Identity{Kind: "bb", ID: "thr_example_one"}
+	if err := os.Mkdir(filepath.Join(dir, id.Key()+".lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Take(dir, id, Holder{Loop: "example-loop", PID: os.Getpid()})
+	var unsafe *UnsafeError
+	if !errors.As(err, &unsafe) || errors.Is(err, lock.ErrHeld) || !strings.Contains(unsafe.Fix(), "remove ") {
+		t.Fatalf("%v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	other := Identity{Kind: "bb", ID: "thr_example_two"}
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, other.Key()+".lock")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Take(dir, other, Holder{Loop: "example-loop", PID: os.Getpid()}); !errors.As(err, &unsafe) {
+		t.Fatalf("a link at the claim file: %v", err)
+	}
+}
+
+// On a case-insensitive volume, two spellings of one working directory are
+// one session.
+func TestTwoSpellingsOfOneDirectoryAreOneSession(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "Lab4", "Project")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(root, "lab4", "PROJECT")
+	if _, err := os.Stat(other); err != nil {
+		t.Skip("this temporary volume is case-sensitive")
+	}
+	a, _ := Of(config.Agent{Adapter: "claude", Claude: &config.Claude{Workdir: real}})
+	b, _ := Of(config.Agent{Adapter: "claude", Claude: &config.Claude{Workdir: other}})
+	if a.Key() != b.Key() || a.ID != b.ID || !strings.HasSuffix(a.ID, filepath.Join("Lab4", "Project")) {
+		t.Fatalf("%q and %q are different sessions", a.ID, b.ID)
+	}
+}
+
+// A holder file whose process is gone, or whose pid was reused by another
+// process that does not hold the claim, is not believed.
+func TestALeftoverHolderFileIsNotBelieved(t *testing.T) {
+	dir := t.TempDir()
+	id := Identity{Kind: "bb", ID: "thr_example_one"}
+	c, err := Take(dir, id, Holder{Loop: "example-loop", PID: os.Getpid(), Until: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := filepath.Join(dir, id.Key()+".holder")
+	b, _ := os.ReadFile(holder)
+	c.Release()
+	// The details are back, naming a live process (this one) that holds
+	// nothing: a reused pid.
+	if err := os.WriteFile(holder, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if h := Peek(dir, id); h != nil {
+		t.Fatalf("believed %+v", h)
+	}
+	// Probing does not hold the claim.
+	again, err := Take(dir, id, Holder{Loop: "example-loop-b", PID: os.Getpid()})
+	if err != nil {
+		t.Fatalf("the probe kept the claim: %v", err)
+	}
+	again.Release()
+}
+
+func TestProcessSessionsAreDescribedWithoutTheirCommand(t *testing.T) {
+	id, _ := Of(config.Agent{Adapter: "process", Process: &config.Process{ResumeCommand: []string{"/private/example/resume", "--secret-flag"}}})
+	if strings.Contains(id.Describe(), "/private/example") || strings.Contains(id.Describe(), "--secret-flag") {
+		t.Fatal(id.Describe())
+	}
 }
