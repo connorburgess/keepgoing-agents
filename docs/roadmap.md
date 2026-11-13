@@ -470,6 +470,71 @@ The supervisor's work is invisible today: a status command, a journal and a menu
 
 Order beyond the dock: the route view first, then the no-progress flag, then review as a lane role (section 9), then anything across devices. Each later step depends on seeing one loop clearly.
 
+##### Panel feature set
+
+Everything a person should be able to do from the panel, grouped by what they came to do. Each line names the step above that delivers it, or a lettered part of that step; none is built unless its step is checked. The same rules hold throughout: the page shows recorded facts only, "unknown" and "stale" are said plainly, private identifiers and notes are hidden until asked for, every change goes through an existing authorized command, is confirmed before it happens and is recorded with who made it, and the page is read-only unless it was started with changes allowed.
+
+Get to it
+
+- [ ] One command, `keepgoing panel`, starts or reuses the local page and opens it; no address to copy. (V1b)
+- [ ] The menu bar item opens the panel, shows how many loops need a person, and lists each loop as a row that opens its page. (V1c)
+- [ ] A link from each supervised conversation's banner in an agent app to that loop's page. (V2c)
+- [ ] Optional start at login, as an explicit choice; never by itself. (V1d)
+
+See
+
+- [ ] Every loop at a glance, the ones that need a person first, each with its state in one phrase. (V1)
+- [ ] One loop: the route in use and why, its other routes in order, its lanes by title and state, the last decision and since when, the hold in force, its limits and how much of each is used, and recent history. (V2, lane titles V2b)
+- [ ] Routes across loops, with each account's allowance: the freshest reading, when it resets, and which loops are on it or waiting for it. (V2)
+- [ ] A route that was left on a usage limit says so, with the reported reset time and when keepgoing will return. (V2)
+- [ ] The device a loop runs on and its role. (V2)
+- [ ] "While you were away": what changed since the page was last opened, across loops, in a few lines. (V2d)
+- [ ] The full history of a loop, filterable by kind and time, in plain words. (V2e)
+
+Understand
+
+- [ ] Why a loop is waiting and what ends the wait: a limit reset, the network, a person, a retry in progress, its operating hours. (V2)
+- [ ] What keepgoing will do next and when, where that is known; "unknown" with the reason where it is not. (V2)
+- [ ] A no-progress flag on a loop or lane that keeps being prompted without results, naming the fact that raised it. (V3)
+- [ ] "Why did it not move?": for a held or waiting loop, the rule that decided, in one sentence, from the recorded decision. (V3b)
+- [ ] Evidence age everywhere: when each fact was last read, and a clear mark when keepgoing itself has not checked recently. (V1)
+
+Act
+
+- [ ] Pause, resume and stop a loop, with what will change shown before confirming. (V4a)
+- [ ] Open the conversation that needs an answer, and resume the loop once it is answered. (V4a)
+- [ ] Check now: run one check of a loop outside its schedule, with the same rules as any check. (V4c)
+- [ ] Move to another route now, or return to the preferred one, at the next turn boundary. (V4d)
+- [ ] Mark a loop complete. (V4a)
+- [ ] Stop every loop on this device with one control. (V4e, roadmap P9)
+
+Configure
+
+- [ ] A loop's preferred routes: reorder, switch one off or on, add from the routes already known, remove. (V4b)
+- [ ] The standard route list that loops follow unless they have their own, and which loops follow it. (V4b)
+- [ ] Add a route with guidance: which agents and accounts are signed in on this device, a probe before it counts. (V4f)
+- [ ] A loop's limits: the most automatic messages, a deadline, how long without progress, its operating hours. (V4g)
+- [ ] What a loop reports and where: which events, to which webhook, with a test send. (V4h)
+- [ ] Options that are off by default, each with what it does and what it costs: recovery of failed lanes, hand-off to a new conversation. (V4i)
+- [ ] Set up supervision for an existing agent session from the page, and remove a loop. (V4j)
+
+Be told
+
+- [ ] A count on the menu bar item when a loop needs a person. (V1c)
+- [ ] Desktop notifications for the events a person chooses: needs you, moved on a limit, returned, finished. (V2f)
+- [ ] A daily summary of what each loop did. (V2g)
+
+Trust
+
+- [ ] Read-only by default; the page says which mode it is in; every change is confirmed, bounded by the same ownership rules as the command line, and recorded. (V4a)
+- [ ] Reachable from this computer only, by a session that cannot be forged from another page. (V1, V1b)
+- [ ] Works with the keyboard and a screen reader, in light and dark, on a narrow window, and with a hundred loops; each verified, not assumed. (V1e)
+- [ ] The page states its own version and warns when a loop is supervised by a different build. (V1f)
+
+Across devices, later
+
+- [ ] The same page for another device's loops, and one view of a fleet. (V5, after P9 and the device design)
+
 Keep the first client in this repository with an independent build/release path so macOS packaging does not gate core Go releases. Reconsider a separate repository if maintainers, release cadence or supported backends diverge. Goal-aware display depends on section 8; stage display consumes explicit optional metadata and does not imply section 9 is implemented.
 
 ### 11. Useful supervision features from product analysis
