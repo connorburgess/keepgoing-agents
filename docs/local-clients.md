@@ -119,3 +119,21 @@ Preparation and resume return schema-1 envelopes with the same `registrationId`,
 The ticket file contains a schema version, random ID, private binding digest, issuance/expiry and consumption flag, with atomic replacement and mode 0600 on Unix. Reads reject nonregular, oversized (over 4 KiB), malformed and unsupported records; Unix also refuses group/other mode bits on the runtime directory or ticket. Windows relies on inherited access controls. A corrupt ticket must be inspected/restored privately; preparation will not silently overwrite it. One slot bounds retained state; expired/consumed records are replaced only by another explicit preparation. These are cooperative local checks, not authentication against someone who can edit files or environment variables. External file replacements, changes that revert to identical evidence, old binaries and power-loss durability remain outside the guarantee.
 
 Released in v0.1.4. Offline fixtures cover changed config/fallbacks/target/owner/caller/control/state/goals, supersession, expiry and clock rollback, busy locks, interrupted consumption, lost output, diagnostic failure, privacy and process targets without installed BB/providers. Simulated interruption verifies the consume-before-save boundary; it is not a live crash/agent walkthrough. The read-only native preview does not yet expose these controls. Optional init registration/installation, signing/distribution, live UI and provider verification remain planned.
+
+## Reviewed pause, stop and resume (`client review`, `client apply`)
+
+Unreleased; fixtures and the menu's contract smoke only.
+
+```sh
+keepgoing client review stop --loop l0123456789ab --json
+keepgoing client apply stop --loop l0123456789ab --expect <the review's expect value> --json
+```
+
+These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-changes) pause, stop and resume for a local program that shows its own confirmation, such as the [macOS menu](../integrations/macos/README.md). Both take the loop by the page key `panel list --json` gives (`--loop`), never a registration ID or path, and act as no BB thread: `BB_THREAD_ID` is ignored.
+
+- **`client review pause|stop|resume`** reads and changes nothing. It reads the loop the way the page does and prints the page's own review, built by the same code, as plain sentences: `preview` with `action`, `key`, `title`, `lines`, `confirm` (the confirming button's words), `expect`, `expiresAt`, and what to say when the confirmation's reply is lost (`lost`), refused (`refused`) or too late (`expired`). It reads the control record under its lock, which may create the empty lock file. A loop that cannot be reviewed now gives `result` instead, in the page's words, and exit 1.
+- **`client apply pause|stop|resume --expect V`** makes the change only if the loop's control record is still the one reviewed: `expect` is a hash of that record, and a record changed since is refused as `review_again` inside the control lock. A resume prepares and uses its own ticket in the one command, as the page's does. The reply is `result` with `outcome` (`done`, `refused`, `review_again` or `uncertain`), `text` in the page's words, and `retry` when a new review may be offered. Exit 0 when done, 75 when a check holds the loop, 1 otherwise. Nothing is retried; an `uncertain` outcome means look at the loop before anything else.
+- The history records these as ordinary `pause`, `stop` and `resume`, as `client pause|stop` and `client resume` do, not as from the panel.
+- The page's expiry (2 minutes, 5 for a resume) is for the program to keep: the menu does not apply a review past `expiresAt`.
+
+`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). Today a stop stops the conversation only, at the loop's next check, and the review says so. Stopping a loop's lanes and stopping now are planned (`stop --lanes`, `--now`); when the CLI has them, `client review stop` will advertise them in a `stop` object and `client apply stop` will take them.

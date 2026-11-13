@@ -34,13 +34,13 @@ public struct LocalClient {
     /// Every loop and its state in the panel's words. The read is bounded by
     /// the CLI at 20 seconds, so this waits a little longer than that.
     public func panelList() throws -> PanelList {
-        let (data, code) = try run(["panel", "list", "--json"], timeout: 25)
+        let (data, code) = try run(MenuBuilder.arguments(.readList)!, timeout: 25)
         return try Contract.panelList(data, exit: code)
     }
     /// Whether the panel's background server is running, and when it will
     /// stop by itself. Asking does not start it or keep it alive.
     public func panelStatus() throws -> PanelStatus {
-        var arguments = ["panel", "status", "--json"]
+        var arguments = MenuBuilder.arguments(.readStatus)!
         if let panelDirectory { arguments += ["--panel-directory", panelDirectory] }
         let (data, code) = try run(arguments, registry: false)
         return try Contract.panelStatus(data, exit: code)
@@ -49,10 +49,39 @@ public struct LocalClient {
     /// its background server when none is running, or stops that server.
     /// Nothing but the fixed arguments and a validated page key is passed.
     public func open(_ command: MenuCommand) throws {
+        switch command {
+        case .openPanel, .openLoop, .openPanelWithChanges, .stopPanel: break
+        default: throw ClientFailure.unavailable
+        }
         guard var arguments = MenuBuilder.arguments(command) else { throw ClientFailure.unavailable }
         if let panelDirectory { arguments += ["--panel-directory", panelDirectory] }
         let (_, code) = try run(arguments, timeout: 20, registry: command != .stopPanel)
         guard code == 0 else { throw ClientFailure.unavailable }
+    }
+    /// The review of one change, read by `keepgoing client review`, which
+    /// changes nothing.
+    public func review(_ action: LoopAction, key: String) throws -> ReviewReading {
+        guard let arguments = MenuBuilder.arguments(.review(action, key: key)) else { throw ClientFailure.invalidResponse }
+        let (data, code) = try run(arguments, timeout: 25)
+        return try Contract.review(data, exit: code, action: action, key: key)
+    }
+    /// Makes one confirmed change through `keepgoing client apply`, which
+    /// refuses it when the loop's control record is no longer the one
+    /// reviewed. It is never run twice: when the reply is lost or cannot be
+    /// read, whether it was saved is not known, and the review's own words
+    /// say so. A command that could not be started did nothing.
+    public func apply(_ command: MenuCommand, review: Review) -> ChangeResult {
+        guard case .apply = command, let arguments = MenuBuilder.arguments(command) else {
+            return ChangeResult(outcome: "refused", text: Contract.text(review.refused))
+        }
+        do {
+            let (data, _) = try run(arguments, timeout: 25)
+            return (try? Contract.applied(data)) ?? ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        } catch ClientFailure.unavailable {
+            return ChangeResult(outcome: "refused", text: Contract.text(review.refused))
+        } catch {
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        }
     }
     public func registry() throws -> [Registration] {
         let (data, code) = try run(["registry", "list", "--json"])
@@ -66,8 +95,20 @@ public struct LocalClient {
         return try Contract.status(data, exit: code, entry: entry)
     }
 
-    // Only the read operations and the panel opener above are exposed. No shell
-    // or commands from registry/goal metadata are executed; stderr is never
+    /// The environment every command is given, the one the panel gives its
+    /// own server: where the user's files are, a fixed search path, and the
+    /// locale and time zone. Nothing else reaches it, so the menu acts as no
+    /// BB thread (BB_THREAD_ID is never passed) wherever it was started.
+    public static func environment(_ from: [String: String]) -> [String: String] {
+        var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        for name in ["HOME", "USER", "LOGNAME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"] {
+            if let value = from[name] { env[name] = value }
+        }
+        return env
+    }
+
+    // Only the commands in MenuBuilder.arguments are run. No shell or
+    // commands from registry/goal metadata are executed; stderr is never
     // displayed or retained.
     private func run(_ arguments: [String], timeout: TimeInterval = 5, registry: Bool = true) throws -> (Data, Int32) {
         guard executable.isFileURL, executable.path.hasPrefix("/"),
@@ -76,6 +117,7 @@ public struct LocalClient {
         process.executableURL = executable
         // panel status and panel stop take no registry directory.
         process.arguments = arguments + (registry ? (directory.map { ["--directory", $0] } ?? []) : [])
+        process.environment = LocalClient.environment(ProcessInfo.processInfo.environment)
         let output = Pipe(), errors = Pipe()
         process.standardOutput = output
         process.standardError = errors

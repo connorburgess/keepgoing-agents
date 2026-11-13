@@ -653,6 +653,9 @@ type panelStatus struct {
 	// them for ChangesAllowedSeconds (since it started).
 	ChangesAllowed        bool `json:"changesAllowed"`
 	ChangesAllowedSeconds *int `json:"changesAllowedSeconds,omitempty"`
+	// Exposure is what the page's footer says about allowing changes, for a
+	// program that offers to start the panel with them.
+	Exposure string `json:"exposure"`
 }
 
 func panelStatusCommand(e env, args []string) int {
@@ -673,7 +676,7 @@ func panelStatusCommand(e env, args []string) int {
 		e.errf("panel status: %v", err)
 		return exitUsage
 	}
-	st := panelStatus{SchemaVersion: 1}
+	st := panelStatus{SchemaVersion: 1, Exposure: panelExposure}
 	if panelServerHeld(dir) {
 		st.Running = true
 		if reply, err := panelControl(e.ctx, dir, panelRequest{Op: "status"}); err == nil && reply.Record != nil && validPanelRecord(*reply.Record) {
@@ -781,6 +784,10 @@ type panelListLoop struct {
 	State    string `json:"state"`
 	Phrase   string `json:"phrase"`
 	NeedsYou bool   `json:"needsYou"`
+	// Can is which changes fit the loop's control flags as read, as the
+	// page offers them: pause, stop and resume. Empty when the flags could
+	// not be read. client review and client apply take them.
+	Can []string `json:"can"`
 }
 
 func buildPanelList(r dockReport) panelList {
@@ -791,7 +798,7 @@ func buildPanelList(r dockReport) panelList {
 		needs[n.Key] = true
 	}
 	for _, l := range r.Loops {
-		out.Loops = append(out.Loops, panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key]})
+		out.Loops = append(out.Loops, panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can})
 	}
 	return out
 }

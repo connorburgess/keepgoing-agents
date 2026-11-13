@@ -215,18 +215,23 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if menuOpen, menu.highlightedItem != nil {
             return // menuDidClose renders again
         } else {
-            menu.removeAllItems()
-            for row in model.rows {
-                if row.kind == .separator {
-                    menu.addItem(.separator())
-                    continue
-                }
-                let entry = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                fill(entry, row, column: column)
-                menu.addItem(entry)
-            }
+            build(menu, model.rows, column: column)
         }
         shown = model.rows
+    }
+
+    func build(_ target: NSMenu, _ rows: [MenuRow], column: CGFloat?) {
+        target.removeAllItems()
+        target.autoenablesItems = false
+        for row in rows {
+            if row.kind == .separator {
+                target.addItem(.separator())
+                continue
+            }
+            let entry = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            fill(entry, row, column: column ?? 0)
+            target.addItem(entry)
+        }
     }
 
     func fill(_ entry: NSMenuItem, _ row: MenuRow, column: CGFloat) {
@@ -255,14 +260,133 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         entry.setAccessibilityLabel(row.accessibilityLabel)
         entry.setAccessibilityHelp(row.accessibilityHelp.isEmpty ? nil : row.accessibilityHelp)
         entry.toolTip = row.toolTip.isEmpty ? nil : row.toolTip
+        if row.submenu.isEmpty {
+            entry.submenu = nil
+        } else if let open = entry.submenu, open.items.count == row.submenu.count {
+            // Same shape (render checked): updated in place, never rebuilt
+            // under the pointer.
+            for (item, sub) in zip(open.items, row.submenu) where sub.kind != .separator { fill(item, sub, column: 0) }
+        } else {
+            let sub = NSMenu()
+            build(sub, row.submenu, column: nil)
+            entry.submenu = sub
+        }
     }
 
     @objc func choose(_ sender: NSMenuItem) {
         guard let command = (sender.representedObject as? Command)?.value else { return }
-        if command == .quit {
+        switch command {
+        case .quit:
             NSApplication.shared.terminate(nil)
             return
+        case .review(let action, let key):
+            review(action, key: key)
+            return
+        case .openPanelWithChanges:
+            openWithControls()
+            return
+        default:
+            break
         }
+        run(command)
+    }
+
+    /// Asks a native question and returns the command of the button chosen,
+    /// or nil for Cancel. Cancel is first, so it is the default and Return
+    /// chooses it; Escape chooses it too. A stop is styled as destructive.
+    func ask(_ confirmation: Confirmation) -> MenuCommand? {
+        let alert = NSAlert()
+        alert.messageText = confirmation.messageText
+        alert.informativeText = confirmation.informativeText
+        alert.alertStyle = confirmation.buttons.contains { $0.destructive } ? .warning : .informational
+        for b in confirmation.buttons {
+            let button = alert.addButton(withTitle: b.title)
+            button.hasDestructiveAction = b.destructive
+            if b.command == nil {
+                button.keyEquivalent = "\r"
+            } else {
+                button.keyEquivalent = ""
+            }
+        }
+        // Escape cancels, as in every native sheet.
+        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { NSApp.abortModal(); return nil }
+            return event
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if let escape { NSEvent.removeMonitor(escape) }
+        let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        guard confirmation.buttons.indices.contains(index) else { return nil }
+        return confirmation.buttons[index].command
+    }
+
+    func tell(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// Reads the review, shows it, and applies the change only if it is
+    /// confirmed while the review is current. The result is said in the
+    /// page's words; nothing is retried by itself.
+    func review(_ action: LoopAction, key: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let reading = try? client.review(action, key: key)
+            DispatchQueue.main.async { [self] in
+                switch reading {
+                case .none:
+                    tell("keepgoing could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --loop \(key) in a terminal to see why.")
+                case .refused(let result):
+                    tell("Nothing was changed", Contract.text(result.text))
+                case .review(let review):
+                    guard let command = ask(ConfirmationBuilder.build(review)) else { return }
+                    guard ConfirmationBuilder.current(review, now: Date()) else {
+                        tell("Nothing was changed", Contract.text(review.expired))
+                        return
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        let result = client.apply(command, review: review)
+                        DispatchQueue.main.async { [self] in
+                            if result.outcome == "done" {
+                                // Seen on the next look at the menu.
+                                notice = Contract.text(result.text)
+                            } else {
+                                tell(result.outcome == "uncertain" ? "keepgoing could not confirm the change" : "Nothing was changed", Contract.text(result.text))
+                            }
+                            refresh()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opens the panel so its page can make changes. Starting one, or
+    /// restarting a read-only one, is asked first, with the footer's own
+    /// statement of who can then make changes.
+    func openWithControls() {
+        // Offered only with the footer's statement, which is always shown.
+        guard let status = panel, status.exposure != nil else { return }
+        if let confirmation = ConfirmationBuilder.openWithControls(status) {
+            guard ask(confirmation) != nil else { return }
+        }
+        let restart = status.running && status.changesAllowed != true
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            if restart, (try? client.open(.stopPanel)) == nil {
+                DispatchQueue.main.async { [self] in
+                    tell("The keepgoing panel could not be stopped", "Run keepgoing panel stop in a terminal to see why, then keepgoing panel --allow-changes. Your loops are not affected.")
+                    refresh()
+                }
+                return
+            }
+            DispatchQueue.main.async { [self] in run(.openPanelWithChanges) }
+        }
+    }
+
+    func run(_ command: MenuCommand) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let failed = (try? client.open(command)) == nil
             DispatchQueue.main.async { [self] in
@@ -270,10 +394,11 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     // The menu has closed by now, so say it where it will be
                     // seen and heard, and leave it in the menu for the next look.
                     let stopping = command == .stopPanel
-                    notice = stopping ? "The panel could not be stopped. Run keepgoing panel stop in a terminal." : "The panel could not be opened. Run keepgoing panel in a terminal."
+                    let opener = command == .openPanelWithChanges ? "keepgoing panel --allow-changes" : "keepgoing panel"
+                    notice = stopping ? "The panel could not be stopped. Run keepgoing panel stop in a terminal." : "The panel could not be opened. Run \(opener) in a terminal."
                     let alert = NSAlert()
                     alert.messageText = stopping ? "The keepgoing panel could not be stopped" : "The keepgoing panel could not be opened"
-                    alert.informativeText = stopping ? "Run keepgoing panel stop in a terminal to see why. Your loops are not affected." : "Run keepgoing panel in a terminal to see why. Your loops are not affected."
+                    alert.informativeText = stopping ? "Run keepgoing panel stop in a terminal to see why. Your loops are not affected." : "Run \(opener) in a terminal to see why. Your loops are not affected."
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
                 }

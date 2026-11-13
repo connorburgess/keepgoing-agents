@@ -120,15 +120,87 @@ final class MenuTests: XCTestCase {
         }
     }
 
-    func testCommandsRunOnlyThePanelCommand() {
-        XCTAssertEqual(MenuBuilder.arguments(.stopPanel), ["panel", "stop"])
+    // The whole allow-list, one assertion per command the menu can run.
+    func testCommandsRunOnlyTheAllowList() {
+        let key = "l0123456789ab", expect = String(repeating: "ab", count: 32)
+        XCTAssertEqual(MenuBuilder.arguments(.readList), ["panel", "list", "--json"])
+        XCTAssertEqual(MenuBuilder.arguments(.readStatus), ["panel", "status", "--json"])
         XCTAssertEqual(MenuBuilder.arguments(.openPanel), ["panel"])
-        XCTAssertEqual(MenuBuilder.arguments(.openLoop(key: "l0123456789ab")), ["panel", "--loop", "l0123456789ab"])
+        XCTAssertEqual(MenuBuilder.arguments(.openLoop(key: key)), ["panel", "--loop", key])
+        XCTAssertEqual(MenuBuilder.arguments(.openPanelWithChanges), ["panel", "--allow-changes"])
+        XCTAssertEqual(MenuBuilder.arguments(.stopPanel), ["panel", "stop"])
+        for action in LoopAction.allCases {
+            XCTAssertEqual(MenuBuilder.arguments(.review(action, key: key)), ["client", "review", action.rawValue, "--loop", key, "--json"])
+            XCTAssertEqual(MenuBuilder.arguments(.apply(action, key: key, expect: expect, lanes: false, now: false)),
+                           ["client", "apply", action.rawValue, "--loop", key, "--expect", expect, "--json"])
+        }
+        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: true, now: true)),
+                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--now", "--json"])
+        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: false, now: true)),
+                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--now", "--json"])
         XCTAssertNil(MenuBuilder.arguments(.quit))
-        // A key that is not a page key never reaches the command line.
+        // Lanes and now belong to a stop only.
+        XCTAssertNil(MenuBuilder.arguments(.apply(.pause, key: key, expect: expect, lanes: true, now: false)))
+        XCTAssertNil(MenuBuilder.arguments(.apply(.resume, key: key, expect: expect, lanes: false, now: true)))
+        // A key that is not a page key, or an expect value that is not a
+        // digest, never reaches the command line.
         for bad in ["", "--idle", "l0123", "example-api", "l0123456789ab --no-open", "L0123456789AB"] {
             XCTAssertNil(MenuBuilder.arguments(.openLoop(key: bad)), bad)
+            XCTAssertNil(MenuBuilder.arguments(.review(.stop, key: bad)), bad)
+            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: bad, expect: expect, lanes: false, now: false)), bad)
         }
+        for bad in ["", "--now", String(repeating: "AB", count: 32), String(repeating: "a", count: 63), expect + " --lanes"] {
+            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: key, expect: bad, lanes: false, now: false)), bad)
+        }
+    }
+
+    // A loop's row opens its choices: open it, and each change its flags
+    // allow, as the page offers them, Stop last. A CLI that does not say
+    // which changes fit gives the row of before, which opens the loop.
+    func testLoopRowsOfferWhatTheirFlagsAllow() {
+        func loop(_ can: [String]?) -> PanelLoop {
+            var l = PanelLoop(key: "l000000000001", name: "example-api", state: "supervising", phrase: "Supervising", needsYou: false)
+            l.can = can
+            return l
+        }
+        func choices(_ can: [String]?) -> [String] {
+            let row = MenuBuilder.build(.read(list([loop(can)]), at: now), now: now).rows.first { $0.kind == .loop }!
+            return row.submenu.map { $0.kind == .separator ? "---" : $0.title }
+        }
+        XCTAssertEqual(choices(["pause", "stop"]), ["Open in Panel", "---", "Pause…", "Stop…"])
+        XCTAssertEqual(choices(["stop", "resume"]), ["Open in Panel", "---", "Resume…", "Stop…"])
+        XCTAssertEqual(choices(["pause", "resume"]), ["Open in Panel", "---", "Pause…", "Resume…"])
+        XCTAssertEqual(choices(["resume", "enable", "take-over"]), ["Open in Panel", "---", "Resume…"], "a change this menu does not know is not offered")
+        for can in [nil, [], ["enable"]] as [[String]?] {
+            XCTAssertEqual(choices(can), [], "\(String(describing: can))")
+            let row = MenuBuilder.build(.read(list([loop(can)]), at: now), now: now).rows.first { $0.kind == .loop }!
+            XCTAssertEqual(row.command, .openLoop(key: "l000000000001"))
+        }
+        let row = MenuBuilder.build(.read(list([loop(["pause", "stop"])]), at: now), now: now).rows.first { $0.kind == .loop }!
+        XCTAssertNil(row.command)
+        XCTAssertTrue(row.isEnabled)
+        XCTAssertEqual(row.accessibilityHelp, "Shows what you can do with this loop.")
+        XCTAssertEqual(row.submenu.compactMap(\.command), [.openLoop(key: "l000000000001"), .review(.pause, key: "l000000000001"), .review(.stop, key: "l000000000001")])
+        XCTAssertTrue(row.submenu.filter { $0.kind != .separator }.allSatisfy { !$0.accessibilityHelp.isEmpty && !$0.symbol.isEmpty })
+        // Every change asks first; none runs from the menu directly.
+        XCTAssertFalse(row.submenu.contains { if case .apply = $0.command { return true }; return false })
+        // A change in what fits is a change of shape: the open menu is not
+        // updated in place under the pointer.
+        let other = MenuBuilder.build(.read(list([loop(["stop", "resume"])]), at: now), now: now).rows
+        XCTAssertFalse(MenuBuilder.sameShape(MenuBuilder.build(.read(list([loop(["pause", "stop"])]), at: now), now: now).rows, other))
+    }
+
+    // The controls row is offered only by a CLI that gives the footer's
+    // exposure statement, which its confirmation shows.
+    func testOpenPanelWithControlsNeedsTheExposureStatement() {
+        func rows(_ status: PanelStatus?) -> [MenuCommand?] { MenuBuilder.build(.read(three, at: now), now: now, panel: status).rows.map(\.command) }
+        XCTAssertFalse(rows(nil).contains(.openPanelWithChanges))
+        XCTAssertFalse(rows(PanelStatus(schemaVersion: 1, running: false, idleRemainingSeconds: nil)).contains(.openPanelWithChanges))
+        var status = PanelStatus(schemaVersion: 1, running: false, idleRemainingSeconds: nil)
+        status.exposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops."
+        let model = MenuBuilder.build(.read(three, at: now), now: now, panel: status)
+        XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Open Panel with Controls…", "Quit keepgoing Menu", "---", "Read just now"])
+        XCTAssertEqual(model.rows.first { $0.command == .openPanelWithChanges }?.accessibilityHelp, "Opens the panel so its page can pause, stop and resume loops. Asks first.")
     }
 
     func testBadgeAndNeedsLine() {
@@ -249,6 +321,9 @@ final class MenuTests: XCTestCase {
         let one = "{\"key\":\"l0123456789ab\",\"name\":\"example-api\",\"state\":\"waiting_for_you\",\"phrase\":\"Waiting for you\",\"needsYou\":true,\"addedLater\":1}"
         let parsed = try Contract.panelList(reply(one, extra: ",\"addedLater\":true"), exit: 0)
         XCTAssertEqual(parsed.loops, [PanelLoop(key: "l0123456789ab", name: "example-api", state: "waiting_for_you", phrase: "Waiting for you", needsYou: true)])
+        XCTAssertNil(parsed.loops[0].can, "a CLI from before can is still read")
+        let withCan = try Contract.panelList(reply(one.replacingOccurrences(of: "\"addedLater\":1", with: "\"can\":[\"pause\",\"stop\"]")), exit: 0)
+        XCTAssertEqual(withCan.loops[0].can, ["pause", "stop"])
         XCTAssertEqual(try Contract.panelList(reply("", registry: "unavailable", needs: 0), exit: 1).loops, [])
         XCTAssertThrowsError(try Contract.panelList(reply(one, version: 2), exit: 0)) { XCTAssertEqual(String(describing: $0), "unsupported") }
         let invalid: [(Data, Int32)] = [

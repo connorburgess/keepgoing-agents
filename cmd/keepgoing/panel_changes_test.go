@@ -357,8 +357,8 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 		text    string
 	}{
 		{clientHoldReport{ControlSave: "confirmed", Issues: []string{"incident_history_unavailable"}}, "done", "Paused: keepgoing will send nothing; a check already running finishes. Its history could not record this change."},
-		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state below before doing anything else."},
-		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state below before doing anything else."},
+		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
+		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"observation_changed"}}, "review_again", "The loop changed since you reviewed it, or the review expired. Nothing was changed. Review it again."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"binding_changed"}}, "refused", "Its configuration changed while it was being read. Nothing was changed."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"cancelled"}}, "refused", "The request was cut off before anything was saved. Nothing was changed."},

@@ -56,6 +56,52 @@ final class ClientTests: XCTestCase {
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
     }
+    // A review and its confirmation run only their allowed arguments, and a
+    // lost or unreadable reply to a confirmation is uncertain, never retried.
+    func testReviewAndApplyPassOnlyAllowedArguments() throws {
+        let key = "l0123456789ab", expect = String(repeating: "c1", count: 32)
+        let review = "{\"schemaVersion\":1,\"preview\":{\"action\":\"stop\",\"key\":\"\(key)\",\"title\":\"Stop example-api?\",\"lines\":[\"Now: Supervising.\"],\"confirm\":\"Stop example-api\",\"expect\":\"\(expect)\",\"expiresAt\":\"2030-01-01T12:02:00Z\",\"lost\":\"fictional lost\",\"refused\":\"fictional refused\",\"expired\":\"fictional expired\"}}"
+        let (binary, client) = try fixture("printf '%s\\n' \"$@\" >> \"$0.args\"\ncat \"$0.reply\"\n")
+        func args() throws -> [String] { try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init) }
+        try review.write(toFile: binary.path + ".reply", atomically: true, encoding: .utf8)
+        guard case .review(let r) = try client.review(.stop, key: key) else { return XCTFail("no review") }
+        XCTAssertEqual(Array(try args().prefix(7)), ["client", "review", "stop", "--loop", key, "--json", "--directory"])
+        try FileManager.default.removeItem(atPath: binary.path + ".args")
+        let command = ConfirmationBuilder.build(r).buttons[1].command!
+        try "{\"schemaVersion\":1,\"result\":{\"outcome\":\"done\",\"text\":\"Stop requested: the next check carries it out.\"}}".write(toFile: binary.path + ".reply", atomically: true, encoding: .utf8)
+        XCTAssertEqual(client.apply(command, review: r), ChangeResult(outcome: "done", text: "Stop requested: the next check carries it out."))
+        XCTAssertEqual(Array(try args().prefix(9)), ["client", "apply", "stop", "--loop", key, "--expect", expect, "--json", "--directory"])
+        // Run once per confirmation, whatever the reply.
+        try FileManager.default.removeItem(atPath: binary.path + ".args")
+        try "fictional-private-bad-json".write(toFile: binary.path + ".reply", atomically: true, encoding: .utf8)
+        XCTAssertEqual(client.apply(command, review: r), ChangeResult(outcome: "uncertain", text: "fictional lost"))
+        XCTAssertEqual(try args().filter { $0 == "apply" }.count, 1)
+        // Only an apply command is run as one.
+        try FileManager.default.removeItem(atPath: binary.path + ".args")
+        XCTAssertEqual(client.apply(.openPanel, review: r).outcome, "refused")
+        XCTAssertEqual(client.apply(.apply(.stop, key: key, expect: "--now", lanes: false, now: false), review: r).outcome, "refused")
+        XCTAssertThrowsError(try client.open(.review(.stop, key: key)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
+        // A CLI that cannot be started did nothing.
+        let missing = LocalClient(executable: URL(fileURLWithPath: "/nonexistent/keepgoing"))
+        XCTAssertEqual(missing.apply(command, review: r), ChangeResult(outcome: "refused", text: "fictional refused"))
+    }
+
+    // Every command is given the panel server's environment and nothing
+    // else: the menu acts as no BB thread wherever it was started.
+    func testCommandsGetAScrubbedEnvironment() throws {
+        let scrubbed = LocalClient.environment(["HOME": "/private/example", "BB_THREAD_ID": "thr_example0001", "PATH": "/opt/example/bin", "KEEPGOING_REGISTRY_DIR": "/private/other", "LANG": "en_US.UTF-8"])
+        XCTAssertEqual(scrubbed, ["HOME": "/private/example", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"])
+        setenv("BB_THREAD_ID", "thr_example0001", 1)
+        defer { unsetenv("BB_THREAD_ID") }
+        let reply = "{\"schemaVersion\":1,\"readAt\":\"2030-01-01T12:00:00Z\",\"registry\":\"available\",\"complete\":true,\"allClear\":true,\"needsYou\":0,\"unread\":0,\"omitted\":0,\"loops\":[]}"
+        let (binary, client) = try fixture("/usr/bin/env > \"$0.env\"\nprintf '%s' '\(reply)'\n")
+        XCTAssertEqual(try client.panelList().loops, [])
+        let env = try String(contentsOfFile: binary.path + ".env", encoding: .utf8)
+        XCTAssertFalse(env.contains("BB_THREAD_ID"))
+        XCTAssertTrue(env.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin"))
+    }
+
     func testAFailedOpenIsReportedAndNeverShowsOutput() throws {
         let (_, client) = try fixture("printf 'fictional-private-error' >&2\nexit 1\n")
         XCTAssertThrowsError(try client.open(.openPanel)) { error in
