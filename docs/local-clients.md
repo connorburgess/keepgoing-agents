@@ -6,7 +6,7 @@ Registration stores a reference only. It never enables, resumes, stops or transf
 
 ## Planned run and chat navigation
 
-The [run discovery plan](run-discovery.md) adds durable local references and CLI/JSON traversal from a routine or loop to its execution runs, provider chats/sessions and known blocking runs. This is planned work, not part of registry or registered status schema 1. Existing registration IDs bind a configuration reference; they do not identify an execution run or authorize navigation-based controls. The optional menu/plugin will consume the same planned contract after CLI navigation exists.
+The [run discovery plan](run-discovery.md) adds durable local references and CLI/JSON traversal from a routine or loop to its execution runs, provider chats/sessions and known blocking runs. The run records are written in source but nothing reads them yet; navigation is planned work, not part of registry or registered status schema 1. Registered pause, stop and resume record the registry reference they used in the loop's private `graph.json`. Existing registration IDs bind a configuration reference; they do not identify an execution run or authorize navigation-based controls. The optional menu/plugin will consume the same planned contract after CLI navigation exists.
 
 ## Register explicitly
 
