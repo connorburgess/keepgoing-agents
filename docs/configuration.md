@@ -17,7 +17,7 @@ loop:
   handoff_file: HANDOFF.md        # optional
   progress: {repositories: [~/src/example-app], stall_after: 30m, min_wake_interval: 60m}
   window: {tz: UTC, days: {Mon: ["08:00", "23:00"]}}
-  errors: {max_reprompts: 3, backoff: 10m, failover_on: [rate_limit], wait_if_reset_within: 30m}
+  errors: {max_reprompts: 3, backoff: 10m, failover_on: [rate_limit], wait_if_reset_within: 30m, report_wait_after: 6h}
   fallbacks: fallbacks.yaml
   report: {secret_file: ~/.config/keepgoing/example.env}
   yield: {busy_command: ["./busy-check.sh"]}
@@ -151,6 +151,7 @@ This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to 
 | `backoff` | `10m` | Minimum gap between re-prompt attempts, and between handoff briefs to a fallback that rejected one. |
 | `failover_on` | `[rate_limit]` | Error classes that may trigger a handoff: `rate_limit`, `auth`, `overloaded`, or `network`. `unknown` is not allowed. |
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
+| `report_wait_after` | `6h` | Unreleased source. When a limit is being waited out with no handoff possible and its reported reset is further away than this, send one `limit_wait` report for that wait. The loop is not held and no decision changes. There is no off value: leaving it out or setting `0` uses the default. To receive nothing, give `report.events` an explicit list without `limit_wait`. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). |
 
 The re-prompt budget resets as soon as the session is seen active or idle. An `auth` error goes to awaiting user unless a handoff happens, because retrying cannot fix it. For a class listed in `failover_on`, a reported reset time is honored: the loop waits for the reset instead of spending re-prompts when no fallback is available. For other classes the reset time is ignored. `failover_on: []` turns handoff off.
 
@@ -173,7 +174,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, complete, stop, error` (the `complete` event requires v0.1.3 or newer) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait` is unreleased source) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
