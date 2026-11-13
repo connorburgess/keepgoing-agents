@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -49,6 +50,9 @@ type Options struct {
 	// RoutineIgnored says the caller supplied an identity that could not be
 	// recorded. The check runs as usual and says so once.
 	RoutineIgnored bool
+	// Threads creates and finds BB threads for handoffs to candidates with
+	// bb.new_thread. Swapped in tests.
+	Threads func(cli string) ThreadCreator
 }
 
 // ProbeNote summarises a probe that ran during the tick.
@@ -70,6 +74,14 @@ type HandoffNote struct {
 	To     string   `json:"to,omitempty"`
 	Reason string   `json:"reason"`
 	Tried  []string `json:"tried,omitempty"`
+	// NewThread is the BB thread keepgoing created for this handoff, and
+	// Continues the thread of the conversation it continues. Reconciled says
+	// the creation was found by a later check, not returned by bb at the time.
+	// WouldCreateThread is the dry-run preview of a creation.
+	NewThread         string `json:"newThread,omitempty"`
+	Continues         string `json:"continues,omitempty"`
+	Reconciled        bool   `json:"reconciled,omitempty"`
+	WouldCreateThread bool   `json:"wouldCreateThread,omitempty"`
 	// Skipped lists fallbacks not probed this check because of rejected
 	// briefs, as "id: backing_off" or "id: capped".
 	Skipped []string `json:"skipped,omitempty"`
@@ -140,6 +152,12 @@ type tick struct {
 	// and childNoticeNew are the announced record and the newly errored
 	// children it saw; act uses them to decide whether a wake carries the
 	// child-error notice and what to record.
+	// newThreadCapped: a handoff needed a new thread and the loop had created
+	// its maximum. newThreadUnresolved: a creation's outcome is unknown.
+	// incidentNewThread: this check recorded a created thread.
+	newThreadCapped     bool
+	newThreadUnresolved bool
+	incidentNewThread   bool
 	decisionInput       decide.Input
 	childNoticeKept     []decide.CoveredChild
 	childNoticeNew      []string
@@ -203,6 +221,9 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
+	if opts.Threads == nil {
+		opts.Threads = bbThreads
+	}
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
@@ -231,6 +252,15 @@ func (t *tick) resolve(target string) (string, config.Agent) {
 	if !ok || c.Disabled {
 		t.warn("active target %q is no longer an enabled fallback; returning to primary", target)
 		return state.Primary, t.loop.Agent
+	}
+	if isNewThread(c) {
+		// Its thread is the one created for it at handoff.
+		a, ok := t.st.CandidateAgent(c)
+		if !ok {
+			t.warn("active target %q has no created thread on record; returning to primary", target)
+			return state.Primary, t.loop.Agent
+		}
+		return c.ID, a
 	}
 	return c.ID, c.Agent
 }
@@ -323,6 +353,17 @@ func (t *tick) run() error {
 		}
 	}
 
+	// A thread creation whose outcome was never recorded is settled first: if
+	// the thread exists, the handoff it was created for is completed now.
+	moved, held := t.reconcileNewThread()
+	if held {
+		res.State, res.Window = "not observed", "not checked"
+		return t.record(nil)
+	}
+	if moved {
+		target, agent = t.resolve(t.st.Target())
+		res.Target, t.incidentTarget, t.incidentAdapter = target, target, agent.Adapter
+	}
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
 		res.State, res.Window, res.Reason = "not observed", "not checked", "could not build the target's adapter; no action taken"
@@ -583,6 +624,16 @@ func (t *tick) run() error {
 				in.Failover.Available = false
 				d = t.decide("handoff_failed", in)
 				why = fmt.Sprintf(" (no fallback could be confirmed within the check's time budget in %d consecutive checks; see probes and warnings)", t.st.HandoffDeferrals)
+			case t.newThreadCapped:
+				// A fallback that starts a new thread was needed and the loop
+				// has created its maximum: a person decides, not a re-prompt.
+				d = decide.Decision{Action: decide.AwaitUser, Reason: decide.NewThreadCapReason}
+				why = ""
+			case t.newThreadUnresolved:
+				// A created thread may exist. Nothing more is sent anywhere
+				// until that is settled.
+				d = decide.Decision{Action: decide.None, Reason: "a new thread may have been created for this handoff; waiting to find it"}
+				why = ""
 			default:
 				in.Failover.Available = false
 				d = t.decide("handoff_failed", in)
@@ -693,11 +744,24 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 				note.Skipped = append(note.Skipped, id+": "+string(v))
 				continue
 			}
+			if c, _ := t.fb.Find(id); isNewThread(c) {
+				if why := t.newThreadGate(c); why != "" {
+					note.Skipped = append(note.Skipped, id+": "+why)
+					continue
+				}
+				note.WouldCreateThread = true // a preview: nothing is created
+			}
 			note.To = id
 			return true, nil
 		}
 		// Nothing would be offered a brief: preview the fall-through instead.
 		return len(summary.Healthy) == 0, nil
+	}
+	if t.st.NewThreadIntent != nil {
+		// A thread may already exist for an earlier attempt at this handoff.
+		// Handing the loop to anything now could start a second conversation.
+		t.newThreadUnresolved = true
+		return false, nil
 	}
 	// Fallbacks whose exact probe was stopped early by the budget go last, so
 	// one that hangs cannot keep a working one from being tried.
@@ -714,6 +778,12 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			continue
 		}
 		c, _ := t.fb.Find(id)
+		// A candidate that starts a new thread is skipped, unprobed, when the
+		// loop has created its maximum or an earlier creation is unsettled.
+		if why := t.newThreadGate(c); why != "" {
+			note.Skipped = append(note.Skipped, id+": "+why)
+			continue
+		}
 		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
@@ -747,6 +817,29 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		note.Tried = append(note.Tried, id)
 		if !r.OK {
 			continue
+		}
+		if isNewThread(c) {
+			// The brief is the new thread's first prompt: there is nothing to
+			// activate and nothing more to send.
+			thread, err := t.createThread(from, fromAgent, c, brief, string(class))
+			switch {
+			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger):
+				return false, err
+			case errors.Is(err, bb.ErrSpawnUncertain):
+				// A thread may exist. Creating another, or handing the loop to
+				// a different fallback, could put two conversations on the
+				// task: stop here and let the next check look for it.
+				t.warn("handoff to %s: bb did not say whether the new thread was created; the next check looks for it before anything else is tried", id)
+				t.rejectHandoffBrief(id)
+				t.newThreadUnresolved = true
+				return false, nil
+			case err != nil:
+				t.warn("handoff to %s: new thread not created: %v", id, err)
+				t.rejectHandoffBrief(id)
+				continue
+			}
+			t.moveToCreated(&state.NewThreadIntent{Candidate: id, From: from, Continues: t.st.NewThreads[id].Continues, Reason: string(class)}, thread, note)
+			return true, nil
 		}
 		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {

@@ -28,6 +28,7 @@ type fallbackAddOptions struct {
 	thread, provider, reasoning, probeAccount                      string // BB candidates
 	threadTitle                                                    string // from a BB listing; display only
 	modelListed, showIDs                                           bool
+	newThread                                                      bool // bb: start a new thread at handoff instead of naming one
 	position, probeCap                                             int
 	enableHandoff, nonInteractive, dryRun, asJSON                  bool
 	set                                                            map[string]bool // flags given on the command line
@@ -177,6 +178,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	fs.StringVar(&o.cfgPath, "c", "keepgoing.yaml", "path to the loop's config file")
 	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless), or bb (an existing BB thread)")
 	fs.StringVar(&o.thread, "thread", "", "bb: existing thread ID; may be the primary's thread with another model")
+	fs.BoolVar(&o.newThread, "new-thread", false, "bb: instead of --thread, let a handoff start a new BB thread on this provider and model")
 	fs.StringVar(&o.provider, "provider", "", "bb: the thread's provider, claude-code or codex")
 	fs.StringVar(&o.reasoning, "reasoning", "", "bb: reasoning level set at handoff: low, medium, high, xhigh or max (default: unchanged)")
 	fs.StringVar(&o.probeAccount, "probe-account-dir", "", "bb: account directory the local probe CLI uses (default: its current login)")
@@ -830,7 +832,7 @@ func fallbackAddTargetOf(cfg *config.Config, o fallbackAddOptions, lookPath func
 	if o.agent == "bb" {
 		return fallbackAddBBTarget(cfg, o, lookPath)
 	}
-	for _, name := range []string{"thread", "provider", "reasoning", "probe-account-dir", "show-ids"} {
+	for _, name := range []string{"thread", "new-thread", "provider", "reasoning", "probe-account-dir", "show-ids"} {
 		if o.set[name] {
 			return fail(fmt.Errorf("--%s applies only to --agent bb.", name))
 		}

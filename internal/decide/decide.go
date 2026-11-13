@@ -568,6 +568,17 @@ func ChildErrorReport(unreported, reports, max int, subscribed bool) ChildReport
 	return ChildReportSend
 }
 
+// NewThreadAllowed reports whether a handoff may create another thread: the
+// loop has created fewer than max. Creating a thread is opt-in per fallback
+// and happens only for a handoff, so this is the whole rule.
+func NewThreadAllowed(created, max int) bool {
+	return max > 0 && created < max
+}
+
+// NewThreadCapReason is the hold raised when a handoff needed a new thread
+// and the loop had already created its maximum.
+const NewThreadCapReason = "new thread cap reached: this loop has created its maximum of BB threads for handoffs; raise loop.limits.max_new_threads or retarget before resuming"
+
 // BriefAttempts records one target's rejected takeover briefs within the
 // current episode: handoff briefs to one fallback while an error lasts, or
 // switch-back briefs to the primary while the loop stays on a fallback.

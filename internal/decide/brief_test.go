@@ -91,3 +91,17 @@ func TestBriefGateIsPerTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestNewThreadAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		created, max int
+		want         bool
+	}{
+		{0, 3, true}, {2, 3, true}, {3, 3, false}, {4, 3, false}, {0, 1, true}, {1, 1, false},
+		{0, 0, false}, {0, -1, false}, // no cap configured means no thread, never an unlimited number
+	} {
+		if got := NewThreadAllowed(tc.created, tc.max); got != tc.want {
+			t.Errorf("created %d of %d: %t", tc.created, tc.max, got)
+		}
+	}
+}

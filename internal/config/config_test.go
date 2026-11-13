@@ -226,3 +226,50 @@ func TestChildErrorReportSubscription(t *testing.T) {
 		t.Error("misspelled event accepted")
 	}
 }
+
+// A fallback candidate may start a new BB thread at handoff instead of
+// naming one. The primary may not, and existing configurations are unchanged.
+func TestNewThreadCandidateConfig(t *testing.T) {
+	cfg, err := Parse([]byte(valid))
+	if err != nil || cfg.Loop.Limits.MaxNewThreads != DefaultMaxNewThreads || len(cfg.Loop.Limits.Configured()) != 0 {
+		t.Fatalf("default cap %d configured=%v err=%v", cfg.Loop.Limits.MaxNewThreads, cfg.Loop.Limits.Configured(), err)
+	}
+	cfg, err = Parse([]byte(valid + "  limits: {max_new_threads: 5}\n"))
+	if err != nil || cfg.Loop.Limits.MaxNewThreads != 5 || len(cfg.Loop.Limits.Configured()) != 0 {
+		t.Fatalf("%v %v", cfg, err)
+	}
+	if _, err := Parse([]byte(valid + "  limits: {max_new_threads: -1}\n")); err == nil {
+		t.Error("negative cap accepted")
+	}
+	agent := func(bb BB, provider string) Agent {
+		return Agent{Adapter: "bb", Provider: provider, BB: &bb}
+	}
+	for name, tc := range map[string]struct {
+		a  Agent
+		ok bool
+	}{
+		"existing thread":                      {agent(BB{Thread: "thr_example"}, ""), true},
+		"new thread":                           {agent(BB{NewThread: true, Model: "example-model"}, "codex"), true},
+		"new thread with a place":              {agent(BB{NewThread: true, Project: "proj_example", Environment: "env_example"}, "codex"), true},
+		"new thread and a thread":              {agent(BB{NewThread: true, Thread: "thr_example"}, "codex"), false},
+		"new thread without a provider":        {agent(BB{NewThread: true}, ""), false},
+		"neither":                              {agent(BB{}, "codex"), false},
+		"a place on an existing thread":        {agent(BB{Thread: "thr_example", Project: "proj_example"}, "codex"), false},
+		"an environment on an existing thread": {agent(BB{Thread: "thr_example", Environment: "env_example"}, "codex"), false},
+	} {
+		if errs := tc.a.validate("x."); (len(errs) == 0) != tc.ok {
+			t.Errorf("%s: %v", name, errs)
+		}
+	}
+	if got := agent(BB{NewThread: true, Model: "example-model"}, "codex").Describe(); !strings.Contains(got, "new thread") {
+		t.Errorf("describe %q", got)
+	}
+	// The primary needs an existing thread.
+	primary := strings.Replace(valid, "thread: thr_example123", "new_thread: true", 1)
+	if primary == valid {
+		t.Fatal("fixture changed")
+	}
+	if _, err := Parse([]byte(primary)); err == nil || !strings.Contains(err.Error(), "fallback candidates only") {
+		t.Errorf("primary with new_thread: %v", err)
+	}
+}

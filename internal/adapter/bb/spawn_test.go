@@ -1,0 +1,164 @@
+package bb
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestSpawnRunsOneCommandWithThePromptOnStdin(t *testing.T) {
+	a, calls := newFake(`{}`, `[]`, false)
+	a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+		*calls = append(*calls, call{stdin, args})
+		return []byte(`{"id":"thr_new_example","status":"active","title":"private fixture text","projectId":"proj_example","environmentId":"env_example"}`), nil
+	}
+	r := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Model: "example-model", Reasoning: "high",
+		Title: "keepgoing: example-loop (continued, 0a1b2c3d)", Prompt: "fictional brief\nsecond line"}
+	id, err := a.Spawn(context.Background(), r)
+	if err != nil || id != "thr_new_example" || len(*calls) != 1 {
+		t.Fatalf("%q %v %d calls", id, err, len(*calls))
+	}
+	want := []string{"thread", "spawn", "--project", "proj_example", "--environment", "env_example", "--provider", "codex", "--title", r.Title, "--prompt-file", "-", "--json", "--model", "example-model", "--reasoning-level", "high"}
+	if got := (*calls)[0]; !reflect.DeepEqual(got.args, want) || got.stdin != r.Prompt {
+		t.Fatalf("args %v stdin %q", got.args, got.stdin)
+	}
+	// The prompt never appears in argv, and no parent, fork or new environment is asked for.
+	for _, arg := range (*calls)[0].args {
+		if strings.Contains(arg, "fictional brief") || arg == "--parent-thread" || arg == "--parent-self" || arg == "--origin-kind" || arg == "--new-environment" || arg == "--source-thread" {
+			t.Fatalf("unexpected argument %q", arg)
+		}
+	}
+	// Model and reasoning are optional.
+	r.Model, r.Reasoning = "", ""
+	a.Spawn(context.Background(), r)
+	if got := (*calls)[1].args; len(got) != 13 {
+		t.Fatalf("args %v", got)
+	}
+}
+
+func TestSpawnOutcomes(t *testing.T) {
+	ok := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Title: "keepgoing: example-loop (continued, 0a1b2c3d)", Prompt: "fictional brief"}
+	for _, tc := range []struct {
+		name   string
+		req    SpawnRequest
+		out    string
+		fail   bool
+		want   error
+		wantID string
+		runs   int
+	}{
+		{"created", ok, `{"id":"thr_new_example"}`, false, nil, "thr_new_example", 1},
+		{"structured error: nothing was created", ok, `{"ok":false,"error":{"code":"provider_unavailable","message":"private fixture text"}}`, true, ErrSpawnRefused, "", 1},
+		{"structured error with exit 0", ok, `{"ok":false,"error":{"code":"invalid_environment"}}`, false, ErrSpawnRefused, "", 1},
+		{"killed with no output", ok, ``, true, ErrSpawnUncertain, "", 1},
+		{"output that is not JSON", ok, `private fixture text`, false, ErrSpawnUncertain, "", 1},
+		{"an ok envelope without a thread", ok, `{"ok":true}`, false, ErrSpawnUncertain, "", 1},
+		{"an id that is not a thread id", ok, `{"id":"--help"}`, false, ErrSpawnUncertain, "", 1},
+		{"a created thread reported with a failing exit", ok, `{"id":"thr_new_example"}`, true, ErrSpawnUncertain, "", 1},
+		{"no project", SpawnRequest{Place: Place{Environment: "env_example"}, Provider: "codex", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"unsafe environment", SpawnRequest{Place: Place{Project: "proj_example", Environment: "--machine"}, Provider: "codex", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no provider", SpawnRequest{Place: ok.Place, Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no prompt", SpawnRequest{Place: ok.Place, Provider: "codex", Title: "t"}, ``, false, ErrSpawnRefused, "", 0},
+	} {
+		a, _ := newFake(`{}`, `[]`, false)
+		runs := 0
+		a.run = func(context.Context, string, ...string) ([]byte, error) {
+			runs++
+			if tc.fail {
+				return []byte(tc.out), errors.New("exit 1")
+			}
+			return []byte(tc.out), nil
+		}
+		id, err := a.Spawn(context.Background(), tc.req)
+		if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) || id != tc.wantID || runs != tc.runs {
+			t.Errorf("%s: id=%q err=%v runs=%d", tc.name, id, err, runs)
+		}
+	}
+}
+
+func TestPlaceOfReadsOnlyTheProjectAndEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, thread, out string
+		fail              bool
+		want              Place
+		wantErr           bool
+	}{
+		{"placed", "thr_example123", `{"thread":{"id":"thr_example123","projectId":"proj_example","environmentId":"env_example","title":"private fixture text"}}`, false, Place{"proj_example", "env_example"}, false},
+		{"another thread's reply", "thr_example123", `{"thread":{"id":"thr_other","projectId":"proj_example","environmentId":"env_example"}}`, false, Place{}, true},
+		{"no environment", "thr_example123", `{"thread":{"id":"thr_example123","projectId":"proj_example"}}`, false, Place{}, true},
+		{"unsafe project", "thr_example123", `{"thread":{"id":"thr_example123","projectId":"--all","environmentId":"env_example"}}`, false, Place{}, true},
+		{"error envelope", "thr_example123", `{"ok":false,"error":{"code":"thread_not_found"}}`, true, Place{}, true},
+		{"command failure", "thr_example123", ``, true, Place{}, true},
+		{"not JSON", "thr_example123", `private fixture text`, false, Place{}, true},
+		{"unsafe thread id is never run", "--self", ``, false, Place{}, true},
+	} {
+		a, _ := newFake(`{}`, `[]`, false)
+		a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+			if tc.thread == "--self" {
+				t.Fatal("ran bb with an unsafe thread id")
+			}
+			if stdin != "" || !reflect.DeepEqual(args, []string{"thread", "show", tc.thread, "--json"}) {
+				t.Fatalf("unexpected command %v", args)
+			}
+			if tc.fail {
+				return []byte(tc.out), errors.New("exit 1")
+			}
+			return []byte(tc.out), nil
+		}
+		got, err := a.PlaceOf(context.Background(), tc.thread)
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "private fixture text") {
+			t.Errorf("%s: error carries provider text", tc.name)
+		}
+	}
+}
+
+func TestFindByTitleMatchesTheWholeTitleOnly(t *testing.T) {
+	title := "keepgoing: example-loop (continued, 0a1b2c3d)"
+	place := Place{Project: "proj_example", Environment: "env_example"}
+	for _, tc := range []struct {
+		name, out string
+		fail      bool
+		want      []string
+		wantErr   bool
+	}{
+		{"no threads", `[]`, false, []string{}, false},
+		{"one match among others", `[{"id":"thr_a","title":"another thread"},{"id":"thr_b","title":"` + title + `"},{"id":"thr_c","title":null}]`, false, []string{"thr_b"}, false},
+		{"a longer or shorter title is not a match", `[{"id":"thr_a","title":"` + title + ` copy"},{"id":"thr_b","title":"keepgoing: example-loop (continued, 0a1b2c3"}]`, false, []string{}, false},
+		{"two matches, sorted", `[{"id":"thr_z","title":"` + title + `"},{"id":"thr_a","title":"` + title + `"}]`, false, []string{"thr_a", "thr_z"}, false},
+		{"a match with an unusable id", `[{"id":"not a thread","title":"` + title + `"}]`, false, nil, true},
+		{"null is not an empty listing", `null`, false, nil, true},
+		{"an envelope is not a listing", `{"ok":true}`, false, nil, true},
+		{"error envelope", `{"ok":false,"error":{"code":"unavailable"}}`, true, nil, true},
+		{"command failure", `[]`, true, nil, true},
+	} {
+		a, _ := newFake(`{}`, `[]`, false)
+		a.run = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+			if stdin != "" || !reflect.DeepEqual(args, []string{"thread", "list", "--project", "proj_example", "--environment", "env_example", "--include-hidden", "--json"}) {
+				t.Fatalf("unexpected command %v", args)
+			}
+			if tc.fail {
+				return []byte(tc.out), errors.New("exit 1")
+			}
+			return []byte(tc.out), nil
+		}
+		got, err := a.FindByTitle(context.Background(), place, title)
+		if (err != nil) != tc.wantErr || (!tc.wantErr && !reflect.DeepEqual(got, tc.want)) {
+			t.Errorf("%s: %v %v", tc.name, got, err)
+		}
+	}
+	a, _ := newFake(`{}`, `[]`, false)
+	a.run = func(context.Context, string, ...string) ([]byte, error) { t.Fatal("ran bb"); return nil, nil }
+	for _, bad := range []Place{{}, {Project: "proj_example"}, {Project: "--all", Environment: "env_example"}} {
+		if _, err := a.FindByTitle(context.Background(), bad, title); err == nil {
+			t.Errorf("place %+v accepted", bad)
+		}
+	}
+	if _, err := a.FindByTitle(context.Background(), place, ""); err == nil {
+		t.Error("empty title accepted")
+	}
+}

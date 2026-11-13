@@ -264,6 +264,7 @@ type statusOut struct {
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
+	NewThreads        newThreadStatus          `json:"newThreads"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
 	GoalError         string                   `json:"goalError,omitempty"`
 	Notifications     report.DeliveryStatus    `json:"notifications"`
@@ -296,6 +297,17 @@ type statusOut struct {
 	Runtime          runtimeStatus  `json:"runtime"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+}
+
+// newThreadStatus reports the BB threads this loop has created for handoffs to
+// fallbacks with bb.new_thread. Active is when the active target's thread was
+// created, if keepgoing created it. Pending means a creation's outcome is not
+// yet known.
+type newThreadStatus struct {
+	Created int        `json:"created"`
+	Max     int        `json:"max"`
+	Pending bool       `json:"pending"`
+	Active  *time.Time `json:"activeCreatedAt,omitempty"`
 }
 
 // takeoverBriefsStatus reports recorded rejections against errors.max_reprompts.
@@ -444,8 +456,17 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
 	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
-		out.TargetAgent = refOf(c.Agent)
-		out.TargetConfigured = true
+		// A fallback that starts a new thread at handoff is a target only
+		// once its thread exists.
+		if a, known := st.CandidateAgent(c); known {
+			out.TargetAgent = refOf(a)
+			out.TargetConfigured = true
+		}
+	}
+	out.NewThreads = newThreadStatus{Created: st.NewThreadsCreated, Max: l.Limits.MaxNewThreads, Pending: st.NewThreadIntent != nil}
+	if t, ok := st.NewThreads[st.Target()]; ok && out.TargetConfigured {
+		created := t.CreatedAt
+		out.NewThreads.Active = &created
 	}
 	out.TaskSource = "inline"
 	if l.PromptFile != "" {
@@ -499,6 +520,16 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
 	}
 	printPromptSend(w, out.PromptSend)
+	if n := out.NewThreads; n.Created > 0 || n.Pending {
+		fmt.Fprintf(w, "new threads: keepgoing has created %d of at most %d BB thread(s) for handoffs", n.Created, n.Max)
+		if n.Active != nil {
+			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
+		}
+		if n.Pending {
+			fmt.Fprint(w, "; one creation is not yet confirmed, and nothing is handed off until it is")
+		}
+		fmt.Fprintln(w)
+	}
 	printLimitWait(w, out.LimitWait)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
@@ -775,7 +806,11 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	from := st.Target()
 	agent := cfg.Loop.Agent
 	if c, ok := cfg.FallbackSet.Find(id); ok {
-		agent = c.Agent
+		var known bool
+		if agent, known = st.CandidateAgent(c); !known {
+			e.errf("fallback candidate %q starts a new BB thread at a handoff and has none yet; retarget never creates a thread", id)
+			return exitUsage
+		}
 	}
 	if a, err := factory.New(agent, cfg.Loop.StateDir, id); err == nil {
 		if act, ok := a.(adapter.Activator); ok {
@@ -787,8 +822,9 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
-	st.ClearBriefs()      // an operator's retarget starts a new episode
-	st.ClearChildErrors() // children belong to the previous target
+	st.ClearBriefs()         // an operator's retarget starts a new episode
+	st.ClearChildErrors()    // children belong to the previous target
+	st.NewThreadIntent = nil // an operator's retarget drops a pending thread creation
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 		e.errf("%v", err)
 		return exitFailed

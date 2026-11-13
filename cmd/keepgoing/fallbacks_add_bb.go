@@ -201,6 +201,9 @@ type bbUse struct {
 
 func bbThreadUses(cfg *config.Config, thread string) []bbUse {
 	var out []bbUse
+	if thread == "" {
+		return nil // a fallback that starts a new thread shares no conversation
+	}
 	if cfg.Loop.BB != nil && cfg.Loop.BB.Thread == thread {
 		out = append(out, bbUse{"the primary", cfg.Loop.Provider, cfg.Loop.BB.Model})
 	}
@@ -247,7 +250,7 @@ func bbModelInUse(cfg *config.Config, thread string) string {
 
 // fallbackAddBBDetail is what the preview and report say about a BB candidate.
 type fallbackAddBBDetail struct {
-	relation     string // same_as_primary, same_as_fallback or other
+	relation     string // same_as_primary, same_as_fallback, new_thread or other
 	title        string // from a listing; empty when the thread was given by ID
 	thread       string // printed only with --show-ids
 	modelListed  bool   // chosen from BB's model list
@@ -260,6 +263,9 @@ func fallbackAddBBDetailOf(cfg *config.Config, o fallbackAddOptions, a config.Ag
 		return nil
 	}
 	d := &fallbackAddBBDetail{relation: "other", title: o.threadTitle, thread: a.BB.Thread, modelListed: o.modelListed, showIDs: o.showIDs}
+	if a.BB.NewThread {
+		d.relation, d.title = "new_thread", ""
+	}
 	if uses := bbThreadUses(cfg, a.BB.Thread); len(uses) > 0 {
 		d.relation = "same_as_fallback"
 		if uses[0].owner == "the primary" {
@@ -282,8 +288,12 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 		}
 	}
 	thread := strings.TrimSpace(o.thread)
-	if !transferThreadID.MatchString(thread) {
-		return fail(errors.New("A BB fallback needs an existing thread ID (--thread thr_...).\n  Nothing is created or moved."))
+	switch {
+	case o.newThread && thread != "":
+		return fail(errors.New("Give either --thread (an existing thread) or --new-thread (a handoff starts\n  one), not both."))
+	case o.newThread:
+	case !transferThreadID.MatchString(thread):
+		return fail(errors.New("A BB fallback needs an existing thread ID (--thread thr_...), or\n  --new-thread to let a handoff start one. Nothing is created or moved now."))
 	}
 	provider := strings.TrimSpace(o.provider)
 	kind, err := bbProbeKind(provider)
@@ -295,8 +305,10 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 			return fail(err)
 		}
 	}
-	if err := bbSameThread(cfg, thread, provider, o.model); err != nil {
-		return fail(err)
+	if !o.newThread {
+		if err := bbSameThread(cfg, thread, provider, o.model); err != nil {
+			return fail(err)
+		}
 	}
 	group := strings.TrimSpace(o.group)
 	if group == "" {
@@ -322,10 +334,23 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 	if probeAccount != "" {
 		probe.Env = map[string]string{fallbackAddAccountKey(kind): probeAccount}
 	}
-	agent := config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: thread, CLI: cli, Model: o.model, Reasoning: o.reasoning}}
+	agent := config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: thread, NewThread: o.newThread, CLI: cli, Model: o.model, Reasoning: o.reasoning}}
 
 	// One short line each: the preview is read before a yes/no.
 	var warnings []string
+	if o.newThread {
+		max := cfg.Loop.Limits.MaxNewThreads
+		warnings = append(warnings,
+			"A handoff to this fallback makes keepgoing create a BB thread. It creates one only then, never otherwise.",
+			fmt.Sprintf("At most %d such threads per loop (loop.limits.max_new_threads); after that a person is asked.", max),
+			"The new thread starts in the project and environment of the conversation it continues. That conversation is left as it is.",
+			"keepgoing cannot see which account BB uses for the new thread.",
+			fmt.Sprintf("Its own quota group is your claim that %s has a separate limit. keepgoing cannot check that; the check before a handoff is the only test.", provider))
+		if o.model == "" {
+			warnings = append(warnings, fmt.Sprintf("No model set: BB picks the project's default for %s, and the check uses the local %s CLI's default model.", provider, kind))
+		}
+		return agent, probe, warnings, nil
+	}
 	uses := bbThreadUses(cfg, thread)
 	claim := "this thread"
 	if len(uses) > 0 {
@@ -367,8 +392,13 @@ func (w *fallbackAddWizard) collectBB() error {
 		return err
 	}
 	fmt.Fprintln(out, "\nStep 2 of 4: Thread")
+	if o.newThread {
+		return w.collectBBNewThread(cli, nil)
+	}
 	fmt.Fprintln(out, "  Choose an existing BB thread. It can be this loop's own conversation, to")
-	fmt.Fprintln(out, "  continue it on another model, or a different thread.")
+	fmt.Fprintln(out, "  continue it on another model, or a different thread. Or type new: a")
+	fmt.Fprintln(out, "  handoff then starts a new BB thread, which is how to continue on another")
+	fmt.Fprintln(out, "  provider. keepgoing creates a thread only for such a handoff, never now.")
 	lookup := false
 	if w.bb != nil && !(o.set["thread"] && o.set["provider"] && o.set["model"]) {
 		fmt.Fprintln(out, "  keepgoing can ask BB for your threads and models so you can pick from a")
@@ -380,6 +410,9 @@ func (w *fallbackAddWizard) collectBB() error {
 	}
 	if err := w.pickBBThread(cli, lookup); err != nil {
 		return err
+	}
+	if o.newThread {
+		return w.collectBBNewThread(cli, &lookup)
 	}
 	same := bbThreadUses(cfg, o.thread)
 	if len(same) > 0 && same[0].provider != "" && !o.set["provider"] {
@@ -408,6 +441,53 @@ func (w *fallbackAddWizard) collectBB() error {
 
 	fmt.Fprintln(out, "\nStep 3 of 4: Model")
 	if err := w.pickBBModel(cli, lookup, len(same) > 0); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "  A quota group names one usage limit. A fallback needs a group of its own")
+	fmt.Fprintf(out, "  (not %s, the primary's): that is your claim that it has a separate\n", cfg.Loop.Group)
+	fmt.Fprintln(out, "  limit. keepgoing cannot check the claim.")
+	if err := w.askValid("group", "Quota group", bbDefaultGroup(cfg, o.provider, o.model), &o.group, func(s string) error { return fallbackAddGroup(cfg, s) }); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "  keepgoing hands off only to a fallback that has just passed a check: one")
+	fmt.Fprintf(out, "  small real request from the local %s CLI. It tests BB's account only\n  if both use the same login.\n", kind)
+	if err := w.askValid("probe-model", "Cheaper model for scheduled checks (blank = same model)", "", &o.probeModel, func(s string) error { return fallbackAddModelName("probe model", s) }); err != nil {
+		return err
+	}
+	return w.askValid("probe-account-dir", "Account directory for the check (blank = the CLI's current login)", "", &o.probeAccount, func(s string) error {
+		if _, err := fallbackAddAccount(s); err != nil {
+			return errors.New("Not an existing directory. Sign in to it first, or leave it blank.")
+		}
+		return nil
+	})
+}
+
+// collectBBNewThread asks what a new-thread fallback needs: a provider, a
+// model and the same quota-group and check answers as any BB fallback. No
+// thread is chosen, listed or created.
+// asked is the answer already given to "ask BB for the lists?", or nil when
+// that question has not been put.
+func (w *fallbackAddWizard) collectBBNewThread(cli string, asked *bool) error {
+	out, cfg, o := w.e.stdout, w.cfg, w.o
+	err := w.askValid("provider", "Provider for the new thread (claude-code/codex)", "", &o.provider, func(s string) error {
+		_, err := bbProbeKind(s)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	kind, _ := bbProbeKind(o.provider)
+	fmt.Fprintln(out, "  keepgoing cannot see which account BB uses for the new thread.")
+	fmt.Fprintln(out, "\nStep 3 of 4: Model")
+	lookup := asked != nil && *asked
+	if asked == nil && w.bb != nil && !o.set["model"] {
+		fmt.Fprintln(out, "  keepgoing can ask BB for the provider's models so you can pick from a")
+		fmt.Fprintln(out, "  list. That runs one read-only bb command (bb provider models).")
+		if lookup, err = w.askYesNo("Ask BB for the list? (yes/no)", "no"); err != nil {
+			return err
+		}
+	}
+	if err := w.pickBBModel(cli, lookup, false); err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "  A quota group names one usage limit. A fallback needs a group of its own")
@@ -483,11 +563,11 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 			fmt.Fprintf(out, "  Type more for the next %d of %d.\n", min(bbListPage, len(threads)-shown), len(threads))
 		}
 	}
-	label := "Thread ID"
+	label := "Thread ID, or new"
 	if len(threads) > 0 {
 		fmt.Fprintln(out, "  Your BB threads (listed by bb; nothing was sent):")
 		show(0, min(bbListPage, len(threads)))
-		label = "Thread (a number, or a thread ID)"
+		label = "Thread (a number, a thread ID, or new)"
 		fmt.Fprintln(out, "  Type ids to show thread IDs.")
 		more()
 	}
@@ -505,6 +585,9 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 			return err
 		}
 		switch {
+		case s == "new":
+			o.newThread = true // a handoff starts the thread; nothing is created here
+			return nil
 		case s == "more" && shown < len(threads):
 			show(shown, min(shown+bbListPage, len(threads)))
 			more()
@@ -538,7 +621,7 @@ func (w *fallbackAddWizard) pickBBThread(cli string, lookup bool) error {
 			return nil
 		}
 		if !transferThreadID.MatchString(s) {
-			fmt.Fprintln(out, "  ! Enter a number from the list or a thread ID (thr_...).")
+			fmt.Fprintln(out, "  ! Enter a number from the list, a thread ID (thr_...), or new.")
 			continue
 		}
 		listed := false
@@ -679,6 +762,9 @@ func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 	if d.title != "" {
 		thread = d.title
 	}
+	if d.relation == "new_thread" {
+		thread = "none yet: a new thread, created at handoff"
+	}
 	switch d.relation {
 	case "same_as_primary":
 		thread += " (this loop's own conversation)"
@@ -686,12 +772,15 @@ func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 		thread += " (already a fallback, on another model)"
 	}
 	fmt.Fprintf(tw, "  Thread:\t%s\n", thread)
-	if d.showIDs {
+	if d.showIDs && d.relation != "new_thread" {
 		fmt.Fprintf(tw, "  Thread ID:\t%s\n", d.thread)
 	}
 	fmt.Fprintf(tw, "  Account:\tchosen by BB; keepgoing cannot see or switch it\n")
 	fmt.Fprintf(tw, "  Quota group:\t%s\n", c.Group)
 	model := "the thread's own (not changed)"
+	if d.relation == "new_thread" {
+		model = "BB's default for the project and provider"
+	}
 	if m := c.Model(); m != "" {
 		model = m + " (not checked)"
 		if d.modelListed {
@@ -709,7 +798,11 @@ func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 	if c.Probe.Model != "" {
 		fmt.Fprintf(tw, "  Check model:\t%s\n", c.Probe.Model)
 	}
-	if what := bbChanges(c); what != "" {
+	if d.relation == "new_thread" {
+		fmt.Fprintf(tw, "  At handoff:\tcreates a BB thread titled \"keepgoing: %s (continued, ...)\"\n", p.cfg.Loop.Name)
+		fmt.Fprintf(tw, "  \t(bb thread spawn) with the handoff message as its first prompt,\n")
+		fmt.Fprintf(tw, "  \tand supervises it. Nothing is created now.\n")
+	} else if what := bbChanges(c); what != "" {
 		fmt.Fprintf(tw, "  At handoff:\tsets the thread's %s (bb thread\n", what)
 		fmt.Fprintf(tw, "  \tupdate), then sends the handoff message. Nothing changes now.\n")
 	} else {

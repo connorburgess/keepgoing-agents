@@ -171,13 +171,33 @@
     "bb": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "thread"
+      "oneOf": [
+        {
+          "required": ["thread"],
+          "not": {"anyOf": [{"required": ["new_thread"]}, {"required": ["project"]}, {"required": ["environment"]}]}
+        },
+        {
+          "required": ["new_thread"],
+          "properties": {"new_thread": {"const": true}},
+          "not": {"required": ["thread"]}
+        }
       ],
       "properties": {
         "thread": {
           "type": "string",
-          "description": "BB thread id"
+          "description": "existing BB thread id"
+        },
+        "new_thread": {
+          "type": "boolean",
+          "description": "instead of thread: at handoff, create a new BB thread on this candidate's provider and model. Opt-in; the only case in which keepgoing creates a thread. Requires provider."
+        },
+        "project": {
+          "type": "string",
+          "description": "with new_thread: BB project for the new thread; default is the project of the conversation it continues"
+        },
+        "environment": {
+          "type": "string",
+          "description": "with new_thread: existing BB environment for the new thread; default is the environment of the conversation it continues"
         },
         "cli": {
           "type": "string",

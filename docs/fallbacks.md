@@ -39,6 +39,15 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactiv
   --model example-model --reasoning high --dry-run
 ```
 
+A thread has one provider, so to continue on another provider without preparing a thread by hand, let the handoff start one (unreleased source). Nothing is created when you add the fallback:
+
+```sh
+keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactive \
+  --agent bb --new-thread --provider codex --model example-model --dry-run
+```
+
+In the guide, type `new` at the thread question. See [hand off to a new conversation](#hand-off-to-a-new-conversation) for what happens at the handoff.
+
 In the guide, steps 2 and 3 become:
 
 2. **Thread.** If you agree (the default answer is no), keepgoing runs `bb thread list --json` and shows live, visible threads nine at a time by title, provider and status, this loop's own thread first; `more` shows the next page. Pick a number or paste a thread ID; an ID that is not in BB's list is used as typed, with a note. Thread IDs are not printed unless you type `ids` or pass `--show-ids`. If you decline, or the listing is unavailable, you enter the ID and the provider.
@@ -150,6 +159,8 @@ candidates:
 - `disabled: true` keeps a candidate in the file without using it.
 
 A BB candidate may name the same thread as the primary with a different `model`. The handoff then switches the thread's model with `bb thread update` before sending the brief.
+
+In unreleased source a BB candidate may instead set `bb: {new_thread: true, ...}` and name no thread. See [hand off to a new conversation](#hand-off-to-a-new-conversation).
 
 ## Probes
 
@@ -311,6 +322,59 @@ A handoff happens only when all of these hold:
 The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows.
 
 In unreleased source, a candidate that passes its exact probe but then rejects the takeover (its adapter cannot be built, its model cannot be applied, or the brief send fails) is skipped for `errors.backoff`, and for the rest of the error episode after `errors.max_reprompts` rejections. Other candidates keep their own counts. See [rejected takeover briefs](operations.md#rejected-takeover-briefs).
+
+## Hand off to a new conversation
+
+Unreleased source; **offline fixtures with a fake `bb` only, nothing live**. A BB fallback normally names a thread that already exists, and a BB thread cannot change provider. So moving from, say, a Codex primary to Claude inside BB needed a thread someone had created beforehand. A candidate can now say "start a new thread on this provider and model" instead:
+
+```yaml
+candidates:
+  - id: claude-new-conversation
+    adapter: bb
+    provider: claude-code            # required: the new thread's BB provider
+    group: claude-example-account
+    bb: {new_thread: true, model: example-model, reasoning: high}
+    probe: {model: example-probe-model}
+```
+
+This is the only case in which keepgoing creates a conversation. It is opt-in per candidate; a configuration without `new_thread` behaves exactly as before, and keepgoing never asks BB to create or list a thread for it.
+
+**What happens at the handoff.** The candidate is probed like any other. After its exact probe passes, keepgoing runs one `bb thread spawn` with:
+
+- the project and environment of the conversation being continued, read with `bb thread show` (or `bb.project` and `bb.environment` when you set them; they are required when the loop is leaving a target that is not a BB thread);
+- the candidate's `provider`, `model` and `reasoning`;
+- the title `keepgoing: <loop name> (continued, <token>)`, so you can tell keepgoing started it;
+- the handoff brief as the first prompt, on stdin, ending with a line that references the earlier conversation as `@thread:<id>`.
+
+The new thread then becomes the active target and is supervised like any other. Each handoff to such a candidate creates a fresh thread; an earlier one is left where it is.
+
+**The conversation that was left** is not stopped, archived, re-parented or sent anything. It stays as it was.
+
+**Exactly one thread per handoff.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token. Then:
+
+- If bb returns the new thread, it is recorded and the move completes.
+- If bb returns a structured error, nothing was created. That counts as a [rejected takeover brief](operations.md#rejected-takeover-briefs) for that candidate, under the same per-fallback cap and spacing, and the next candidate is tried in the same check.
+- If bb gives no clear answer (it was killed, or the supervisor stopped before recording), a thread may exist. The next check looks for a thread with that exact title in that project and environment before anything else. Exactly one match is the thread, and the handoff is completed. No match means nothing was created, and the handoff goes on normally. Until it knows, keepgoing creates nothing and hands the loop to no other fallback, because a second conversation could be started on the same task. If BB cannot be asked, or more than one thread has the title, for `errors.max_reprompts` checks in a row, the loop is held for a person with the title in the note. `resume` tries again; `retarget` drops the pending creation.
+
+**Cap.** A loop creates at most `loop.limits.max_new_threads` threads (default 3) over the life of its state directory. At the cap a new-thread candidate is skipped without a probe. If another fallback can take the loop it does; if none can, the loop is held for a person. Raise the cap and `resume` to continue; `resume` alone holds again.
+
+**Bounds and holds.** The creation is one send against `max_sends`. Stop, pause, disabled, awaiting-user and completed win: a held loop asks BB nothing, creates nothing, and does not settle a pending creation until it is resumed. A dry run previews the handoff as `wouldCreateThread` and creates nothing.
+
+**Switch-back** works as for any fallback: the loop returns to its primary thread when that is configured and the primary passes its probe. The created thread is left as it was.
+
+**Ownership.** The move does not change who owns the loop. The existing rules for moving supervision apply unchanged: ownership moves only by an explicit `enable --take-over` (or `transfer apply`), never as a side effect. So the owner recorded before the handoff still owns the loop afterwards, even if that owner is the thread that hit its limit. The new thread, like any thread, may pause or stop the loop; to resume it or change it from the new thread, take ownership there first. Work accounting, the goal and holds are kept; observations about the thread that was left are cleared, as on any handoff.
+
+**Where it shows.** The tick output's `handoff` has `newThread` and `continues`. `status` shows the created thread as the target's thread and a `new threads:` line with the count against the cap (`newThreads` in JSON). `keepgoing runs` shows both conversations on the run, the new one with source `created_thread`. `timeline` marks the check as `NEW THREAD` without the thread ID. The `handoff` report carries `newThread: true` and no thread ID.
+
+**What BB records about the origin.** `bb thread spawn` in BB 0.48.1 accepts a title but no origin other than `fork`, so BB does not record these threads as started by the keepgoing plugin. The plugin SDK has an origin plugin field for threads a plugin spawns, but the supervisor is a separate CLI process with no channel to the plugin host. The title and keepgoing's own records are what identify the thread.
+
+**Limits to know about.**
+
+- A brief delivered to a thread that bb then failed to report is found by its title. A thread whose title was changed before that check cannot be found; keepgoing then creates another on a later handoff.
+- keepgoing cannot see which account BB uses for the new thread. The probe tests the local CLI's login, as for every BB candidate.
+- Without `model`, BB uses the project's remembered default for that provider.
+- `retarget <id>` to a new-thread candidate works only once a thread exists for it; `retarget` never creates one.
+- Once a created thread is recorded, a build from before this change does not know the candidate's thread and refuses the run graph's new source value. Do not run an older build against the same state directory.
 
 With failover disabled (`errors.failover_on: []`), a rate-limit error with a structured future reset waits without spending recovery retries. Ordinary checks continue observing the target, so an earlier structured recovery can take effect on the next check. Once the reset passes, a still-errored target uses bounded recovery. Without a known reset, bounded recovery applies immediately. This correction is available in v0.1.4 and later. Existing awaiting-user holds require explicit `resume`; stop, pause, completion and configured loop-wide bounds retain precedence. This does not add account polling or schedule an extra check at the reset timestamp. In unreleased source, a wait whose reset is further away than `errors.report_wait_after` (default `6h`) sends one `limit_wait` report without holding the loop; see [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). `timeline --kind limit_wait` shows the waiting checks.
 

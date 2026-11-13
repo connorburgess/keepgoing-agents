@@ -22,10 +22,19 @@ type Agent struct {
 // BB configures the BB thread adapter. Model and Reasoning, when set, are
 // applied to the thread before the first message after a handoff.
 type BB struct {
-	Thread    string `yaml:"thread"`
-	CLI       string `yaml:"cli,omitempty"`
-	Model     string `yaml:"model,omitempty"`
-	Reasoning string `yaml:"reasoning,omitempty"`
+	// Thread is an existing thread. A fallback candidate may instead set
+	// NewThread, and then has no thread until a handoff creates one.
+	Thread string `yaml:"thread,omitempty"`
+	// NewThread opts a fallback candidate in to "start a new BB thread on this
+	// provider and model" at handoff. It is the only case in which keepgoing
+	// creates a thread. Project and Environment, when unset, are taken from the
+	// conversation the new thread continues.
+	NewThread   bool   `yaml:"new_thread,omitempty"`
+	Project     string `yaml:"project,omitempty"`
+	Environment string `yaml:"environment,omitempty"`
+	CLI         string `yaml:"cli,omitempty"`
+	Model       string `yaml:"model,omitempty"`
+	Reasoning   string `yaml:"reasoning,omitempty"`
 	// RetrySignalTTL bounds how long a provider retry notice on an errored
 	// thread suppresses error recovery. Zero uses the adapter default (15m).
 	RetrySignalTTL Duration `yaml:"retry_signal_ttl,omitempty"`
@@ -135,8 +144,15 @@ func (a Agent) validate(where string) []error {
 	}
 	switch {
 	case a.Adapter == "bb" && a.BB != nil:
-		if a.BB.Thread == "" {
-			add("bb.thread is required")
+		switch {
+		case a.BB.NewThread && a.BB.Thread != "":
+			add("bb.thread and bb.new_thread cannot both be set")
+		case a.BB.NewThread && a.Provider == "":
+			add("bb.new_thread needs provider: the new thread is created on that BB provider")
+		case !a.BB.NewThread && a.BB.Thread == "":
+			add("bb.thread is required (or bb.new_thread for a fallback that starts a new thread at handoff)")
+		case !a.BB.NewThread && (a.BB.Project != "" || a.BB.Environment != ""):
+			add("bb.project and bb.environment apply only with bb.new_thread")
 		}
 		if d := a.BB.RetrySignalTTL.Duration; d != 0 && d < time.Minute {
 			add("bb.retry_signal_ttl must be at least 1m")
@@ -188,6 +204,8 @@ func (a Agent) Model() string {
 func (a Agent) Describe() string {
 	s := a.Adapter
 	switch {
+	case a.BB != nil && a.BB.NewThread:
+		s += " new thread"
 	case a.BB != nil:
 		s += " " + a.BB.Thread
 	case a.Cursor != nil:

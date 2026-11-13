@@ -42,7 +42,9 @@ loop:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `thread` | required | The BB thread id. |
+| `thread` | required, unless `new_thread` | The BB thread id. |
+| `new_thread` | `false` | Fallback candidates only, unreleased source. Instead of `thread`: a handoff to this candidate creates a new BB thread on the candidate's `provider`, with `model` and `reasoning`. Requires `provider`. See [hand off to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). |
+| `project`, `environment` | the continued conversation's | With `new_thread` only: where the new thread is created. |
 | `cli` | `bb` | Path to the bb executable. |
 | `model`, `reasoning` | none | Applied with `bb thread update` before the first message after a handoff to this agent. |
 | `retry_signal_ttl` | `15m` | How long a provider `willRetry` notice keeps suppressing recovery without newer evidence: the newest notice on an errored thread, the newest provider or system log event on an active one, or a rate-limit notice's structured reset. Minimum `1m`. See [stale retry notices](operations.md#stale-retry-notices). |
@@ -125,6 +127,8 @@ These three optional fields are the only loop-wide bounds on repeated automatic 
 | `deadline` | none | A check starts at or after this absolute time. |
 | `max_sends` | none (`0` disables) | This many automatic send attempts have been reserved in the state directory. |
 | `no_progress_timeout` | none (`0` disables) | The Git fingerprint of `progress.repositories` has not changed for this long. |
+
+`loop.limits.max_new_threads` (default `3`; `0` means the default) is separate: it caps the BB threads a loop creates for handoffs to candidates with `bb.new_thread`, and is not a bound on repeated work. See [hand off to a new conversation](fallbacks.md#hand-off-to-a-new-conversation).
 
 A reached limit persists an awaiting-user hold; it does not cancel a running or queued turn. Stop, pause and the other control holds take precedence over all three. When several are reached at once the hold names the first of `deadline`, `max_sends`, `no_progress_timeout`.
 

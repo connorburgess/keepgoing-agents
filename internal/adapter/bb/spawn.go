@@ -1,0 +1,136 @@
+package bb
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"regexp"
+	"sort"
+)
+
+// Creating a thread is the one thing in this package that is not about an
+// existing thread. It is used only for a handoff to a fallback candidate that
+// opted in with bb.new_thread. Nothing here stops, archives, re-parents or
+// messages any other thread.
+
+var placeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+// ErrSpawnUncertain means bb neither returned a created thread nor a
+// structured error, so a thread may or may not exist. The caller must look
+// for it by title before trying again.
+var ErrSpawnUncertain = errors.New("bb thread spawn: outcome unknown")
+
+// ErrSpawnRefused means bb returned a structured error: no thread was created.
+var ErrSpawnRefused = errors.New("bb thread spawn: refused")
+
+// maxListed bounds the threads inspected when looking for a created thread.
+const maxListed = 5000
+
+// Place is where a thread lives.
+type Place struct {
+	Project     string
+	Environment string
+}
+
+// SpawnRequest describes the one thread to create.
+type SpawnRequest struct {
+	Place
+	Provider  string
+	Model     string
+	Reasoning string
+	Title     string
+	Prompt    string
+}
+
+// PlaceOf reads the project and environment of an existing thread with
+// `bb thread show`. Only those two identifiers are read.
+func (a *Adapter) PlaceOf(ctx context.Context, thread string) (Place, error) {
+	if !childIDPattern.MatchString(thread) {
+		return Place{}, errors.New("bb thread show: invalid thread id")
+	}
+	out, err := a.run(ctx, "", "thread", "show", thread, "--json")
+	if code, ok := envelopeError(out); ok {
+		return Place{}, errors.New("bb thread show: " + code)
+	}
+	if err != nil {
+		return Place{}, errors.New("bb thread show: failed")
+	}
+	var resp struct {
+		Thread *struct {
+			ID          string `json:"id"`
+			Project     string `json:"projectId"`
+			Environment string `json:"environmentId"`
+		} `json:"thread"`
+	}
+	if json.Unmarshal(out, &resp) != nil || resp.Thread == nil || resp.Thread.ID != thread ||
+		!placeIDPattern.MatchString(resp.Thread.Project) || !placeIDPattern.MatchString(resp.Thread.Environment) {
+		return Place{}, errors.New("bb thread show: unexpected JSON")
+	}
+	return Place{Project: resp.Thread.Project, Environment: resp.Thread.Environment}, nil
+}
+
+// FindByTitle lists the threads of a place and returns the IDs of those whose
+// title is exactly title, sorted. The title is one keepgoing generated with a
+// random token, so a match is a thread keepgoing asked BB to create. An error
+// means the listing could not be trusted, which is not the same as no match.
+func (a *Adapter) FindByTitle(ctx context.Context, p Place, title string) ([]string, error) {
+	if !placeIDPattern.MatchString(p.Project) || !placeIDPattern.MatchString(p.Environment) || title == "" {
+		return nil, errors.New("bb thread list: invalid place or title")
+	}
+	out, err := a.run(ctx, "", "thread", "list", "--project", p.Project, "--environment", p.Environment, "--include-hidden", "--json")
+	if code, ok := envelopeError(out); ok {
+		return nil, errors.New("bb thread list: " + code)
+	}
+	if err != nil {
+		return nil, errors.New("bb thread list: failed")
+	}
+	var threads []struct {
+		ID    string  `json:"id"`
+		Title *string `json:"title"`
+	}
+	// A bare array is required: null and envelopes are not an empty listing.
+	if json.Unmarshal(out, &threads) != nil || threads == nil || len(threads) > maxListed {
+		return nil, errors.New("bb thread list: unexpected JSON")
+	}
+	ids := []string{}
+	for _, t := range threads {
+		if t.Title == nil || *t.Title != title {
+			continue
+		}
+		if !childIDPattern.MatchString(t.ID) {
+			return nil, errors.New("bb thread list: unexpected thread id")
+		}
+		ids = append(ids, t.ID)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// Spawn creates one thread with `bb thread spawn`, the prompt on stdin. It
+// returns the new thread's ID. ErrSpawnRefused means bb said no and nothing
+// was created; ErrSpawnUncertain means the caller cannot tell.
+func (a *Adapter) Spawn(ctx context.Context, r SpawnRequest) (string, error) {
+	if !placeIDPattern.MatchString(r.Project) || !placeIDPattern.MatchString(r.Environment) || r.Provider == "" || r.Title == "" || r.Prompt == "" {
+		return "", ErrSpawnRefused // nothing was run
+	}
+	args := []string{"thread", "spawn", "--project", r.Project, "--environment", r.Environment, "--provider", r.Provider, "--title", r.Title, "--prompt-file", "-", "--json"}
+	if r.Model != "" {
+		args = append(args, "--model", r.Model)
+	}
+	if r.Reasoning != "" {
+		args = append(args, "--reasoning-level", r.Reasoning)
+	}
+	out, err := a.run(ctx, r.Prompt, args...)
+	if _, ok := envelopeError(out); ok {
+		return "", ErrSpawnRefused
+	}
+	var created struct {
+		ID          string `json:"id"`
+		Project     string `json:"projectId"`
+		Environment string `json:"environmentId"`
+	}
+	if err != nil || json.Unmarshal(out, &created) != nil || !childIDPattern.MatchString(created.ID) {
+		return "", ErrSpawnUncertain
+	}
+	return created.ID, nil
+}
