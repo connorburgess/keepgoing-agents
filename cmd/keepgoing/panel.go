@@ -56,7 +56,8 @@ const (
 	panelOpenTTL   = 30 * time.Second
 	panelStartWait = 10 * time.Second
 	// panelOpenerEnv names a program to run instead of the platform's browser
-	// launcher. It receives the path of the launch page as its only argument.
+	// the default web browser. It receives the path of the launch page as its
+	// only argument.
 	panelOpenerEnv = "KEEPGOING_PANEL_OPENER"
 )
 
@@ -479,22 +480,6 @@ func panelLoopKey(registryDir, value string) (string, error) {
 	return "", errors.New("more than one registered loop has that name; pass its registration ID from keepgoing registry list")
 }
 
-// panelOpener is the program that shows a page in the browser. It is given
-// the path of the private launch page and nothing else: no address, code or
-// session is in its arguments, where other users of the computer could read
-// them.
-func panelOpener(page string) *exec.Cmd {
-	if custom := os.Getenv(panelOpenerEnv); custom != "" {
-		return exec.Command(custom, page)
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", page)
-	default:
-		return exec.Command("xdg-open", page)
-	}
-}
-
 const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m] [--directory private-registry]
        keepgoing panel status [--json]
        keepgoing panel stop
@@ -577,20 +562,31 @@ func panelCommand(e env, args []string) int {
 			return exitFailed
 		}
 	}
-	opening, err := panelRequestOpening(e.ctx, dir, rec, key, !*noOpen)
+	// The browser is found before an opening is made, so that when there is
+	// none nothing is written and nothing is launched.
+	var browser func(page string) []string
+	why := ""
+	if !*noOpen {
+		if browser, err = panelBrowser(e.ctx); err != nil {
+			why = fmt.Sprintf("No browser was started: %v. ", err)
+		}
+	}
+	opening, err := panelRequestOpening(e.ctx, dir, rec, key, browser != nil)
 	if err != nil {
 		e.errf("panel: %v", err)
 		return exitFailed
 	}
-	if *noOpen {
-		fmt.Fprintf(e.stdout, "Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", opening)
+	if browser == nil {
+		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", opening)
 		return exitOK
 	}
-	// The launcher is given the path of a private page that goes to the
+	// The browser is given the path of a private page that goes to the
 	// opening address. The server deletes that page when the opening is used
 	// or after 30 seconds. Nothing that can open the panel is in any
-	// program's arguments.
-	cmd := panelOpener(opening)
+	// program's arguments, and the page is opened by the application that
+	// handles web links, never by whatever opens .html files.
+	argv := browser(opening)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if err := cmd.Start(); err != nil {
 		e.errf("panel: could not start a browser. Run keepgoing panel --no-open and open the address it prints.")
 		return exitFailed
