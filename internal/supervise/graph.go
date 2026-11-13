@@ -88,18 +88,25 @@ func (t *tick) graphClose() {
 // graphSession records the chat/session reference known for the tick's target
 // without asking a provider: a BB target's configured thread, or a headless
 // runner's saved resume ID. Neither says the conversation exists or is live.
-func (t *tick) graphSession() {
-	target := t.res.Target
+func (t *tick) graphSession() { t.graphSessionOf(t.res.Target) }
+
+// graphSessionOf records the session reference of one target. A handoff that
+// creates a thread calls it for the target being left, so the run keeps both
+// ends of the move even when no earlier check recorded the first.
+func (t *tick) graphSessionOf(target string) {
 	if t.opts.DryRun || target == "" {
 		return
 	}
-	agent := t.loop.Agent
+	agent, created := t.loop.Agent, false
 	if target != state.Primary {
 		c, ok := t.fb.Find(target)
 		if !ok {
 			return
 		}
-		agent = c.Agent
+		if agent, ok = t.st.CandidateAgent(c); !ok {
+			return // a new-thread candidate with no thread created yet
+		}
+		created = isNewThread(c)
 	}
 	link := rungraph.Link{Kind: rd.SessionLink, Target: target, Provider: agent.Adapter, RecordedAt: t.now}
 	switch agent.Adapter {
@@ -108,6 +115,10 @@ func (t *tick) graphSession() {
 			return
 		}
 		link.Session, link.Source = agent.BB.Thread, rungraph.SourceConfigured
+		if created {
+			// A thread keepgoing created for a handoff, not one from configuration.
+			link.Source = rungraph.SourceCreated
+		}
 	case "claude", "codex", "cursor":
 		id, err := runner.Dir(filepath.Join(t.loop.StateDir, "targets", target)).InspectSession()
 		if err != nil || id == "" {

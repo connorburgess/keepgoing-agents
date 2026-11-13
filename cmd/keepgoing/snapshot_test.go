@@ -74,7 +74,7 @@ func TestProviderOperationsRejectSnapshotChangedUnderTickLock(t *testing.T) {
 							}
 							return exitSkipped
 						case "retarget":
-							return retarget(e, cfg, "claude-other-account", "fictional target selection")
+							return retarget(e, cfg, "claude-other-account", "fictional target selection", false)
 						default:
 							return fallbacksCheck(e, cfg, time.Now(), "", false, true, false)
 						}

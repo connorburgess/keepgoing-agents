@@ -82,6 +82,10 @@ type Limits struct {
 	NoProgressTimeout Duration `yaml:"no_progress_timeout,omitempty"`
 	Deadline          string   `yaml:"deadline,omitempty"`
 	MaxSends          int64    `yaml:"max_sends,omitempty"`
+	// MaxNewThreads caps the BB threads this loop may create for handoffs to
+	// candidates with bb.new_thread. Zero means the default. It is not a
+	// loop-wide work bound and is not listed by Configured.
+	MaxNewThreads int `yaml:"max_new_threads,omitempty"`
 }
 
 // DeadlineReached uses the host clock. Configuration validation rejects invalid
@@ -181,9 +185,15 @@ type Daemon struct {
 
 // Defaults applied when a field is omitted.
 const (
-	DefaultStallAfter        = 30 * time.Minute
-	DefaultMinWakeInterval   = 60 * time.Minute
-	DefaultMaxReprompts      = 3
+	DefaultStallAfter      = 30 * time.Minute
+	DefaultMinWakeInterval = 60 * time.Minute
+	DefaultMaxReprompts    = 3
+	DefaultMaxNewThreads   = 3
+	// MaxNewThreadsCeiling is the most loop.limits.max_new_threads may be, and
+	// MinNewThreadInterval the least time between two threads a loop creates.
+	// Together: at most ten threads per loop ever, and at most one an hour.
+	MaxNewThreadsCeiling     = 10
+	MinNewThreadInterval     = time.Hour
 	DefaultMaxNudges         = 3
 	DefaultBackoff           = 10 * time.Minute
 	DefaultWaitIfResetWithin = 30 * time.Minute
@@ -342,6 +352,9 @@ func (c *Config) applyDefaults() {
 	if l.Errors.MaxReprompts == 0 {
 		l.Errors.MaxReprompts = DefaultMaxReprompts
 	}
+	if l.Limits.MaxNewThreads == 0 {
+		l.Limits.MaxNewThreads = DefaultMaxNewThreads
+	}
 	setDur(&l.Errors.Backoff, DefaultBackoff)
 	setDur(&l.Errors.WaitIfResetWithin, DefaultWaitIfResetWithin)
 	setDur(&l.Errors.ReportWaitAfter, DefaultReportWaitAfter)
@@ -418,6 +431,12 @@ func (c *Config) Validate() error {
 	}
 	if l.Limits.MaxSends < 0 {
 		add("loop.limits.max_sends must be nonnegative")
+	}
+	if l.Limits.MaxNewThreads < 0 || l.Limits.MaxNewThreads > MaxNewThreadsCeiling {
+		add("loop.limits.max_new_threads must be between 0 and %d (zero means the default)", MaxNewThreadsCeiling)
+	}
+	if l.BB != nil && l.BB.NewThread {
+		add("loop.bb.new_thread is for fallback candidates only: the primary needs an existing thread")
 	}
 	if l.Limits.Deadline != "" {
 		if _, err := time.Parse(time.RFC3339, l.Limits.Deadline); err != nil {
