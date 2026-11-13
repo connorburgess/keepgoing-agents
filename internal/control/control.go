@@ -77,7 +77,9 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return snapshot.Open(filepath.Join(stateDir, FileName))
+	// A pipe or device in its place is refused at once rather than waited
+	// on; a link to a regular file is still followed.
+	return snapshot.OpenRegular(filepath.Join(stateDir, FileName), false)
 }
 
 // Save writes the control file atomically.

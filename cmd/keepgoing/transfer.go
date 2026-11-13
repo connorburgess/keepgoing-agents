@@ -220,8 +220,9 @@ func readTransferRecord(dir, name string, dst any) error {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return errors.New("record unavailable")
 	}
-	// Never block a concurrent control or state save (Windows).
-	f, err := snapshot.Open(p)
+	// Never block a concurrent control or state save (Windows), and never
+	// follow a link or wait on a pipe swapped in after the Lstat.
+	f, err := snapshot.OpenRegular(p, true)
 	if err != nil {
 		return errors.New("record unavailable")
 	}

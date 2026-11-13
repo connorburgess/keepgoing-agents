@@ -54,23 +54,20 @@ var ErrHoldNotValid = errors.New(HoldFileName + " is not a valid hold; treated a
 func LoadHold(stateDir string) (*Hold, error) {
 	path := filepath.Join(stateDir, HoldFileName)
 	stop := &Hold{Version: 1, Stop: true}
-	info, err := os.Lstat(path)
+	// The open neither follows a link nor waits on a pipe, and the type is
+	// checked on what was opened, so nothing swapped in can hang a check.
+	f, err := snapshot.OpenRegular(path, true)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	if err != nil {
-		return stop, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxHoldBytes {
+	if errors.Is(err, snapshot.ErrNotRegular) {
 		return stop, ErrHoldNotValid
 	}
-	f, err := snapshot.Open(path)
 	if err != nil {
 		return stop, err
 	}
 	defer f.Close()
-	// The file opened must be the regular file just examined.
-	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+	if info, err := f.Stat(); err != nil || info.Size() > maxHoldBytes {
 		return stop, ErrHoldNotValid
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxHoldBytes+1))

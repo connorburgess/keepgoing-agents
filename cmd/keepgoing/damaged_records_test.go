@@ -509,3 +509,34 @@ func TestEveryControlFieldSurvivesAMarkerStopAndResume(t *testing.T) {
 		t.Fatalf("resume changed more than the holds:\n got %+v\nwant %+v", got, want)
 	}
 }
+
+// A named pipe in place of control.json is refused at once, not waited on,
+// so stop still saves its hold in the marker instead of hanging.
+func TestAPipeInPlaceOfControlJSONDoesNotHangStop(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	dir := filepath.Join(f.dir, "state")
+	path := filepath.Join(dir, control.FileName)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := mkfifo(path); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		code, _, _ := f.run("stop")
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("stop exited %d", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("stop blocked on a pipe at control.json")
+	}
+	if h, err := control.LoadHold(dir); err != nil || h == nil || !h.Stop {
+		t.Fatal(h, err)
+	}
+}
