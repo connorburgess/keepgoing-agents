@@ -27,6 +27,77 @@ Open the printed address in a browser on the same computer. Nothing is hosted, t
 
 Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
+## Opening it with one command: `keepgoing panel`
+
+`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS. The same tests are meant to run on Linux in CI and have not yet.
+
+**Windows: unverified, so it refuses.** `keepgoing panel`, `panel status` and `panel stop` have never been run on Windows. Until they have, they stop there with a message that says so and points to `keepgoing dock`, which works as before. `keepgoing panel list` needs no server and works on every platform.
+
+```sh
+keepgoing panel                  # start the panel if needed, and open it
+keepgoing panel --loop NAME      # open one loop's page (a name, registration ID or key)
+keepgoing panel --no-open        # print a single-use address and start no browser
+keepgoing panel status           # running or not, since when, the port, the idle limit
+keepgoing panel stop             # stop the background server
+keepgoing panel list [--json]    # every loop and its state in the page's words; no server
+```
+
+What happens:
+
+1. If a panel server is running, it is reused. Otherwise one is started in the background and the command waits, up to ten seconds, until it answers. Two commands run at the same moment end with one server.
+2. The command asks that server, over a private local socket, for an opening. The server writes a small page into its private directory (mode `0600`, a random name) whose only content sends the browser to an opening address, `http://127.0.0.1:PORT/open/<code>`. The code works once and for 30 seconds.
+3. The page is opened with the default web browser, found as the application that handles `http` links: on macOS through LaunchServices, on Linux through `xdg-settings get default-web-browser` and, failing that, the handler for the `http` scheme. It is never opened by whatever application opens `.html` files, which for many people is an editor and would show the page's source. The browser is given the path of that page and nothing else. No address, code or session is in any program's arguments, where other users of the computer could read them. `KEEPGOING_PANEL_OPENER` names another program to use.
+   If no browser can be determined, nothing is launched and no launch page is written: the command prints what `--no-open` prints, and says why.
+4. The browser loads the page and follows it to the opening address. The server exchanges the code for a session cookie, deletes the launch page, and sends the browser on to the panel. The launch page is deleted after 30 seconds whether or not it was used. A used or expired address, or a page address whose session has ended, shows a short page that says to run `keepgoing panel` again and has a button that copies the command.
+
+`--no-open` prints the opening address instead, for a person who asked for it. The output says that anyone who can read that terminal can use the address during its 30 seconds.
+
+The page's footer says which command is serving it and when that stops: `keepgoing panel` and its idle limit, or `keepgoing dock` until Ctrl-C.
+
+**When it stops.** The background server stops by itself 30 minutes after the last page stopped reading from it (`--idle`, `1m` to `24h`). A page left open and visible reads every few seconds, so it keeps the server running for as long as it is shown; a hidden tab does not. `panel status` says "in use" when a page read within the last minute, and otherwise how long is left. Asking for status, the two static files of the expired-link page, and refused requests do not count as use. It also stops on `keepgoing panel stop`. It is never started at login or by any other command. **Starting it, using it, leaving it idle and stopping it never affect supervision**: it reads what the page reads and writes only its own runtime files.
+
+**How a running server is known.** The server holds a lock (`panel-server.lock`) for as long as it lives; the operating system releases it when the process ends, however it ends. That lock, and nothing else, says whether a server is running. `panel.json` is there for a person to read and is never relied on: if it is deleted, damaged or replaced while the server runs, the commands still find the server through its socket and the server writes its record back. Files a crash left behind are removed by the next command; nobody is asked to delete a file. A server that holds the lock and does not answer (starting, stopping, suspended or stuck) is reported as "running but not answering", never as "not running", and no second server is started beside it. A command waits three seconds for the server's answer, and the server ignores a request that reaches it more than two seconds after it was sent, so a stop that was reported as failed is never carried out later.
+
+Two servers cannot persist. A server removes only the socket and the record it created itself, so one that is exiting cannot take another's away. A server also checks every few seconds that the lock it holds is still the file at that path; if the lock file was deleted or replaced, it exits, leaving whatever another server has put in the directory.
+
+**What the server is started with.** A small fixed environment (a fixed `PATH`, and only `HOME`, the user name, the temporary directory, locale, time zone and the XDG directories from the caller), its private directory as its working directory, the null device for its input and both outputs, and none of the caller's other open files. It keeps no log.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--loop NAME` | none | Open that loop's page. A name shared by two loops is refused; pass the registration ID. |
+| `--no-open` | off | Print the opening address. It still works once, within 30 seconds. |
+| `--idle 30m` | `30m` | Idle limit for a server this command starts. A running server keeps its own. |
+| `--directory DIR` | the default registry | A non-default private registry. A running panel for another registry is refused; stop it first. |
+| `--panel-directory DIR` | `keepgoing/panel` in the user configuration directory | Where the runtime files below live. |
+| `--refresh`, `--stale-after`, `--offline` | as for `dock` | Passed to a server this command starts. |
+
+**Runtime files.** They live in one private directory (mode `0700`, never a loop's directory, never inside a Git checkout): `panel-server.lock` and `panel-open.lock`, `panel.sock` (the private socket, created private), `panel.json` (mode `0600`: process ID, port, start time, idle limit, registry directory, version and an instance ID) and, for up to 30 seconds each, launch pages named `open-<random>.html`. Only a launch page holds anything that can open the panel, and only until it is used or expires. If the directory's path is too long for a local socket on this platform the command stops and says so before creating anything; it never falls back to anything weaker.
+
+**`keepgoing panel list --json`** returns `schemaVersion: 1`, `readAt`, `registry`, `complete`, `allClear`, `needsYou`, `unread`, `omitted` and `loops`, each with `key`, `name`, `state`, `phrase` and `needsYou`. It is built by the code that builds the page, so the words match, and it carries no registration ID, thread ID, path or note. `key` is what `panel --loop` accepts. It exists so that another local program, such as the menu-bar item, can list loops without a second copy of the wording.
+
+### Access through `keepgoing panel`
+
+Everything under [Access](#access) holds for this server too, with a session in place of the token in the address. Each line is a claim the tests check:
+
+- The server listens on `127.0.0.1` only. Every request must pass the `Host`, `Origin`, fetch-metadata and `GET`/`HEAD` checks before anything else is looked at. No response the server writes carries a cross-origin header, and every one carries the content security policy, `no-store`, `nosniff` and frame denial. (A request too malformed to parse is answered by Go's HTTP library with a bare `400` before the server sees it; that reply has no body of ours and none of these headers.)
+- An opening address accepts one more kind of request than the page does: a top-level navigation that began on another site, with no `Origin`. That is what a browser sends when the launch page, a local file, takes it there. A frame, an image, a script or a fetch from another site is refused there as everywhere else.
+- An opening code is 256 random bits, compared in constant time, usable once, and dead after 30 seconds whether or not it was used. `HEAD`, refused requests and wrong codes do not spend it. At most 16 can be pending. A used code, an expired code and a code that never existed get the same page.
+- An opening can only be created through the private socket. The command checks what the socket answers before using it: only an address of exactly the form above on the server's own port, or the name of a private launch page inside the panel's directory, is accepted.
+- The session is a cookie with 256 random bits: `HttpOnly`, `SameSite=Strict`, no expiry (it ends with the browser session, or with the server), scoped to the path `/s/<random segment>/`. Cookies are not separated by port, so the random segment is what keeps a browser from sending it to another local server; the segment alone grants nothing. A request carrying more than one session cookie is refused. At most 16 sessions exist; the oldest is dropped.
+- The answer to a good opening address is a page that sets the cookie and sends the browser on, not a redirect. A strict cookie is not sent along a redirect that began on another site, and the launch page counts as one; a navigation started by the server's own page is same-site.
+- Neither the opening code nor the session is ever in a program's arguments or environment, or in a log. The server keeps no log.
+- Without a valid cookie nothing under `/s/` is served, and nothing is served at any other path except an opening address and two static files the expired-link page needs and which hold nothing private: the stylesheet (`/panel.css`) and its copy-button script (`/expired.js`).
+- With a session, `api/v1/server` returns which command serves the page and its idle limit, and nothing about any loop.
+- There is still no write endpoint.
+
+**What this protects against, and what it does not.**
+
+- *Another web page in your browser*, including one that guesses the port: it cannot read the page or its data (no cross-origin access, strict cookie, host and origin checks) and cannot create a session (it has no opening code).
+- *Another user of the same computer*: they can connect to the port, and get nothing without a session. They cannot read the private directory, so they cannot read a launch page, reach the socket or see the record. They can list your processes and their arguments; nothing there opens the panel. This has been tested with one user's processes and files only, not with a second operating-system account.
+- *`--no-open`*: the address is printed where you asked for it. Anyone who can read that terminal, its scrollback or a recording of it within 30 seconds can use it once.
+- *A program running as you*: not protected against, and cannot be. It can read the private directory, ask the socket for an opening, and read keepgoing's files directly.
+- *Someone who can see your browser window*: they see what you see.
+
 ## What the page shows
 
 The page has two levels, so opening it never starts with a list of facts.
@@ -101,7 +172,7 @@ This is the first slice. The rest is not implemented.
 3. **Configuration**, starting with a loop's routes: their order, adding and removing fallbacks, and turning automatic moves on or off; later limits, the usage-switch threshold and which reports are sent. It will be a front end to the existing guided commands (`fallbacks add|move|remove|handoff`, with their `--dry-run --json` previews, confirmation, ownership and transfer guards and comment-preserving edits), never its own logic or its own file writes. The route rows already carry a position and an ID for this. Credentials and logins will never be shown or edited.
 4. **Actions on many lanes at once** from the routes view, such as moving every lane on one route to another or changing their effort level. This depends on two things keepgoing does not have: lanes as first-class records (today it knows a loop's lanes only as counts and hashes, and never changes them), and a group (a coordinator and its lanes) so one action can apply to all members.
 
-Also planned: a native menu-bar or tray item whose click opens the same short picker (the needs-you line, a row per loop, and a few commands such as new loop, open the panel and pause all), not a list of facts; installation and start at login; and answering permission prompts.
+A macOS menu-bar preview now opens the panel and lists a row per loop with its state in the page's words; see [its README](../integrations/macos/README.md). Still planned: commands in it such as new loop and pause all, a tray item on other platforms, installation and start at login, and answering permission prompts.
 
 **Remote access** (reading and steering loops from a phone or another computer) is planned and not available. The slice is built so it can be added without a rewrite: all data comes through the one versioned endpoint, the access check is a replaceable layer separate from the network checks, the layout works at phone width, and nothing in the page assumes it runs on the same computer. Remote access will need real authentication of a person or device, transport encryption, and an explicit opt-in before it listens beyond loopback. No control will be exposed remotely before that authentication exists. Do not expose this slice through a tunnel, a reverse proxy or a port forward: the per-run token is not designed for that.
 
