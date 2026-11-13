@@ -69,6 +69,39 @@ Each scenario was run against a deliberately broken build to show it fails. For 
 
 Not covered yet: child failure reports, scheduler death, state upgrades, two supervisors, fault injection (T3). The suite runs in the macOS and Linux CI jobs as part of the full suite; it is not yet run on Windows (T4), where the link to `git` and the environment need work.
 
+## Fault injection (T3)
+
+`go test ./internal/scenario -run TestFault` breaks the supervisor on purpose, on the built binary, and checks what a restart does.
+
+**Killed partway through a check** (`TestFaultKilledCheck`). A check saves what it did only at its end: `state.json`, then the run graph, the run log and the incident journal. The stand-in `bb` can kill the `keepgoing` process that called it once a command has answered (`kill.<command>` in its directory), and the webhook receiver can kill it while a report is arriving. So a kill can be placed right after something was sent and before anything was saved, or after `state.json` and during a report. The restart runs one minute later.
+
+| Killed | The restart | |
+| --- | --- | --- |
+| while observing, before anything is written | does the interrupted check: one turn retry, counted | enforced |
+| right after a turn retry | retries again at once, inside the backoff; the interrupted retry is never counted | known failure |
+| right after a stop | sends the stop again, then waits; the stop hold is kept | the repeat is a known failure |
+| right after a send, with `max_sends` | the allowance already counts the interrupted send (it is reserved first) | enforced |
+| while the report of a hold is delivered | keeps the hold, sends nothing, runs no `bb` command, does not report again (the hold is saved first) | enforced |
+| while a report with no hold is delivered (a question on the thread) | sends nothing, but reports again | the repeat is a known failure |
+
+The known failures are marked `a send interrupted before its check is saved is repeated, unassigned`. No case lost a hold. Kills inside a single file write cannot be placed from outside; every record is replaced atomically (written to a temporary file, then renamed), so a kill leaves either the old record or the new one.
+
+**Damaged records** (`TestFaultDamagedRecord`). Each record is emptied, cut in half or overwritten with bytes that are not JSON, then a check, `status` and `pause` run. No damaged record is rewritten by any of them.
+
+| Record | The check | `status` | `pause` |
+| --- | --- | --- | --- |
+| `control.json` | exits 1, sends nothing, names the file | exits 1 with only the parse error (known failure) | exits 1: nothing keepgoing offers can hold the loop (known failure) |
+| `state.json` | exits 1, sends nothing, names the file | exits 1 with only the parse error (known failure) | works |
+| `sends.json`, `progress.json`, `health.json` | exits 0 with outcome `failed`, sends nothing, names the file | works | works |
+| `incidents.json` | does its work, then exits 1: `incident history unavailable` (documented in [diagnostics](diagnostics.md)) | works | saves the change, warns, exits 1 |
+| `deliveries.json`, `graph.json` | does its work, exits 0 | works | works |
+
+`status` stopping at an unreadable record is marked `status names an unreadable record, test-suites lane`: it should name the file, say what to do and print what it can. A loop whose `control.json` is damaged cannot be paused or stopped through keepgoing; its checks send nothing, so it is held in effect, but a daemon or scheduler keeps running. That is marked `stop with a damaged control.json, unassigned`.
+
+Mutations that fail these: a hold saved after its report instead of before, a damaged `state.json` read as a new loop, and a damaged `health.json` read as empty.
+
+Not covered: cutting each external command at its time limit (the other half of T3 on the roadmap), a kill inside a write, and power loss (nothing here cuts the power, so a flush is never tested).
+
 ## Timing-sensitive tests
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.

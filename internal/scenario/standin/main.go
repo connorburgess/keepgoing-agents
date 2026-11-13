@@ -22,6 +22,8 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -93,7 +95,18 @@ func main() {
 	if name == "example-agent" {
 		os.Exit(exampleAgent(world, os.Args[1:]))
 	}
-	os.Exit(run(world, os.Args[1:]))
+	args := os.Args[1:]
+	code := run(world, args)
+	// kill.<command>: once the command has done its work and answered, the
+	// stand-in kills the keepgoing process that ran it, as a crash or a
+	// power cut would at that moment. The file is used up.
+	if len(args) > 1 && args[0] == "thread" {
+		if os.Remove(filepath.Join(world, "kill."+args[1])) == nil {
+			os.Stdout.Sync()
+			killParent()
+		}
+	}
+	os.Exit(code)
 }
 
 func run(world string, args []string) int {
