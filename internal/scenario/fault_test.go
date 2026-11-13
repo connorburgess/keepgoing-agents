@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"bytes"
+	"fmt"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -161,7 +162,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		primary := w.Thread(primaryThread)
 		w.Control("enable")
 		w.Advance(time.Minute)
-		w.Tick()
+		w.setupWake(primaryThread)
 		w.Advance(20 * time.Minute)
 		primary.RateLimited(w.Now.Add(5 * time.Hour))
 		w.killAfter("tell")
@@ -188,7 +189,7 @@ func TestFaultKilledCheck(t *testing.T) {
 		primary, alt := w.Thread(primaryThread), w.Thread(altThread)
 		w.Control("enable")
 		w.Advance(time.Minute)
-		w.Tick()
+		w.setupWake(primaryThread)
 		w.Advance(20 * time.Minute)
 		reset := w.Now.Add(5 * time.Hour)
 		primary.RateLimited(reset)
@@ -379,7 +380,7 @@ func TestFaultDamagedRecord(t *testing.T) {
 				primary := w.Thread(primaryThread)
 				w.Control("enable")
 				w.Advance(time.Minute)
-				w.Tick()
+				w.setupWake(primaryThread)
 				w.Control("await-user", "--note", "fictional question")
 				w.Control("resume")
 				primary.FinishTurn()
@@ -503,7 +504,7 @@ func TestFaultHandoffBriefKilledThenResumed(t *testing.T) {
 			primary := w.Thread(primaryThread)
 			w.Control("enable")
 			w.Advance(time.Minute)
-			w.Tick()
+			w.setupWake(primaryThread)
 			w.Advance(20 * time.Minute)
 			primary.RateLimited(w.Now.Add(5 * time.Hour))
 			w.killAfter("tell")
@@ -539,5 +540,93 @@ func TestFaultHandoffBriefKilledThenResumed(t *testing.T) {
 			}
 			w.Check(s, "the second fallback was never briefed", journeySends(w, "thr_example_third"))
 		})
+	}
+}
+
+// setupWakeAttempts bounds how often setupWake runs its check.
+const setupWakeAttempts = 3
+
+// setupWake runs the check a scenario's setup relies on to wake thread, and
+// confirms that it did: action wake and one message to thread, nothing else.
+// A check that found the provider retry state unverified could not read
+// what the stand-in bb serves; that is the host or the harness, not the step
+// under test, so the check is run again a minute later, up to
+// setupWakeAttempts in all, and then fails as an environment failure. Any
+// other answer fails the setup at once, with what the check said.
+func (w *World) setupWake(thread string) *Step {
+	w.t.Helper()
+	for attempt := 1; ; attempt++ {
+		s := w.Tick()
+		again, failure := setupWakeVerdict(s, thread, attempt)
+		if failure != "" {
+			w.t.Fatalf("%s in %s at %s", failure, w.Name, w.stamp())
+		}
+		if !again {
+			return s
+		}
+		w.t.Logf("setup check %d at %s found the provider retry state unverified; running it again", attempt, w.stamp())
+		w.Advance(time.Minute)
+	}
+}
+
+// setupWakeVerdict says what setupWake does after its check number attempt:
+// return it, run it again, or fail with the message.
+func setupWakeVerdict(s *Step, thread string, attempt int) (again bool, failure string) {
+	if s.action() == "wake" {
+		if err := sentExactly(s, Send{Kind: "tell", Thread: thread, Mode: "auto"}); err != nil {
+			return false, fmt.Sprintf("SETUP FAILURE: the setup check woke the session but %v", err)
+		}
+		return false, ""
+	}
+	if s.reason() != "provider retry state unverified" {
+		return false, fmt.Sprintf("SETUP FAILURE: the setup check did not wake %s: exit %d, action %q (%s)\n%s", thread, s.Result.Code, s.action(), s.reason(), s.Result.Stderr)
+	}
+	if attempt >= setupWakeAttempts {
+		return false, fmt.Sprintf("ENVIRONMENT FAILURE: each of %d setup checks found the provider retry state unverified, so a bb read the stand-in serves failed every time. This says nothing about the product. Last check's error output:\n%s", attempt, s.Result.Stderr)
+	}
+	return true, ""
+}
+
+// A setup check whose bb read failed is run again, and the setup goes on
+// once one wakes the session.
+func TestSetupWakeRunsAgainAfterAFailedRead(t *testing.T) {
+	t.Parallel()
+	w := NewWorld(t, scenarioStart)
+	w.Init()
+	w.Thread(primaryThread)
+	w.Control("enable")
+	w.Advance(time.Minute)
+	if err := os.WriteFile(filepath.Join(w.world, "fail.log"), []byte("2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := w.Now
+	s := w.setupWake(primaryThread)
+	if s.action() != "wake" || w.Now.Sub(start) != 2*time.Minute {
+		t.Fatalf("action %q after %s", s.action(), w.Now.Sub(start))
+	}
+}
+
+// What setupWake makes of each kind of check.
+func TestSetupWakeVerdict(t *testing.T) {
+	tell := Send{Kind: "tell", Thread: primaryThread, Mode: "auto"}
+	step := func(action, reason string, sent ...Send) *Step {
+		return &Step{Tick: map[string]any{"action": action, "reason": reason}, Sent: sent}
+	}
+	for name, c := range map[string]struct {
+		s       *Step
+		attempt int
+		again   bool
+		failure string
+	}{
+		"woke":                   {step("wake", "idle", tell), 1, false, ""},
+		"woke and sent another":  {step("wake", "idle", tell, tell), 1, false, "SETUP FAILURE: the setup check woke the session but"},
+		"did not wake":           {step("none", "active"), 1, false, "SETUP FAILURE: the setup check did not wake"},
+		"read failed":            {step("none", "provider retry state unverified"), 1, true, ""},
+		"read failed every time": {step("none", "provider retry state unverified"), setupWakeAttempts, false, "ENVIRONMENT FAILURE"},
+	} {
+		again, failure := setupWakeVerdict(c.s, primaryThread, c.attempt)
+		if again != c.again || !strings.HasPrefix(failure, c.failure) || (c.failure == "") != (failure == "") {
+			t.Errorf("%s: again %v, failure %q", name, again, failure)
+		}
 	}
 }
