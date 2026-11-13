@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, dock, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
@@ -290,6 +290,14 @@ The command layer owns one bounded private `client-resume.json` ticket slot per 
 `resume` takes the same registry/tick locks and uses the existing checked control update/history recorder for the short control lock. It compares the ticket to fresh validated evidence and the callback's control record, persists consumption before mutating controls, then checks evidence again. Stale, expired, clock-reversed, consumed or superseded tickets are refused. A crash after consumption loses that ticket and may leave holds intact; only a new explicit preparation/action can proceed. Successful resume has ordinary CLI semantics without enabling, claiming, resetting allowances or starting work. Diagnostic failures cannot undo a saved control change. No provider, scheduler, transcript, task-file or live daemon lookup occurs under these locks.
 
 All saved state fields are bound, so an intervening ordinary tick may require another reviewed preparation. Files referenced by the config and external session/BB metadata are not bound. This is a cooperative local stale-action guard, not authentication, an approval ledger, or a power-loss transaction. See [registered resume](local-clients.md#registered-resume) for output, privacy and recovery limits.
+
+## Dock page (unreleased)
+
+`cmd/keepgoing` implements `dock` as three separate layers so that remote reach can be added later without a rewrite. `dockGuard` accepts only loopback `Host` values, same-origin requests and `GET`/`HEAD`. `dockAuth` is an interface that decides who may read; its only implementation requires a per-run random token as the first path segment, compared in constant time. `dockReader` builds one versioned report (`/api/v1/dock`) that the embedded page consumes; ages are computed against the report's read time, not the browser's clock. The listener binds `127.0.0.1` only. There is no write endpoint and no control path.
+
+The reader composes existing reads and no new evidence: `registry.Load`, `readClientStatus` (with its bounded query of the loop's existing daemon endpoint, reused for the same loop's status read), `readStatus` (the function behind `status --json`), `readRegisteredRunsWith` (behind `runs --registry-id`), `summarize` (behind `fallbacks list`) and `incident.Load` for the record of a hold starting. A read runs on the command's context with its own time limit, never a request's; each registered configuration is validated once per read and shared with the runs read; an incomplete read is marked, never cached, and its unread loops are listed as needing a look. It takes no lock, creates no file, and runs no adapter, provider, `bb`, scheduler or Git command.
+
+`dock_view.go` is a pure projection from those values to plain-language fields with explicit unknown and stale markers and caps on every list and string. `TestDockPhrasesFollowEvidence` maps each record to the exact phrase shown, so wording that says more than its record has to be added there. `allClear` is true only when every registered loop was read and none needs a person. A loop's current route is "in use" only when the loop is on with no hold and its last check is recent and recorded that route. Each loop carries its ordered routes (`primary`, then fallbacks), and the report groups the same entries by route (provider, quota group, model and the probe's usage identity) for the view across loops, so every view reads one feed. Identifiers and hold notes are withheld unless requested, and paths are never included. The token keeps other web origins out; it is not authentication against a local process that can read runtime files. See [the panel](dock.md).
 
 ## Goal-aware prompt composition
 
