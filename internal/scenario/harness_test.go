@@ -676,7 +676,10 @@ func (w *World) invariants(s *Step) {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
-		if len(c) < 2 || c[0] != "thread" {
+		// Besides thread commands, only the two read-only questions to BB's
+		// retry plugin are expected.
+		plugin := len(c) == 4 && c[0] == "provider-retry" && (c[1] == "explain" || c[1] == "status") && c[3] == "--json"
+		if !plugin && (len(c) < 2 || c[0] != "thread") {
 			w.Failf(s, "unexpected bb command %v", c)
 		}
 	}
@@ -884,6 +887,15 @@ func (th *Thread) FinishTurn() {
 func (th *Thread) NetworkError(willRetry bool) {
 	th.Event("provider/error", map[string]any{"willRetry": willRetry, "errorInfo": map[string]any{"category": "network", "httpStatusCode": nil, "providerCode": "econnreset"}})
 	th.Set("error")
+}
+
+// RetryDeclined records, as BB's retry plugin does when a turn fails with an
+// error it does not retry, a decision to decline made now.
+func (th *Thread) RetryDeclined() {
+	th.w.writeJSON(th.ID+".retry-decision", map[string]any{"threadId": th.ID, "diagnostic": map[string]any{
+		"requestId": "creq_example1", "observedAt": th.w.Now.UnixMilli(), "availability": map[string]any{"kind": "not-routed"},
+		"decision": map[string]any{"kind": "decline", "reason": "not-retryable"},
+	}})
 }
 
 func (th *Thread) received(m Send) {
