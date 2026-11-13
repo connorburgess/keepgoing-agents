@@ -15,7 +15,7 @@ type sessionStatus struct {
 }
 
 func savedSession(stateDir, target, adapter string) *sessionStatus {
-	if adapter != "claude" && adapter != "codex" && adapter != "cursor" {
+	if !runner.KeepsSessionFile(adapter) {
 		return nil
 	}
 	s := &sessionStatus{State: "missing", Source: "runner_session_file", Message: "No saved resume ID is recorded; this does not establish whether a turn is running."}
