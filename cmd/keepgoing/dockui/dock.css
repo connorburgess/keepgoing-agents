@@ -253,6 +253,19 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .route-top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.55rem; min-height: 1.7rem; }
 .route-name { margin: 0; font-weight: 620; font-size: 0.95rem; overflow-wrap: anywhere; }
 .in-use { font-size: 0.72rem; font-weight: 650; color: var(--good); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--good) 55%, transparent); padding: 0 0.4rem; border-radius: 5px; }
+.route-status { display: flex; align-items: baseline; gap: 0.45rem; margin-top: 0.15rem; font-size: 0.875rem; font-weight: 560; background: none; }
+.route-status .dot { align-self: center; }
+.route-status.tone-unknown { box-shadow: none; }
+.route-note { margin: 0.3rem 0 0; font-size: 0.875rem; max-width: 62ch; }
+.route-note.is-limit { color: var(--ink); padding: 0.4rem 0.65rem; border-radius: 8px; background: var(--limit-soft); }
+.allow-list { list-style: none; margin: 0.6rem 0 0; padding: 0; }
+.allow { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 0.5rem 1.25rem; padding: 0.75rem 0; }
+.allow + .allow { border-top: 1px dashed var(--line); }
+.allow-name { margin: 0; font-size: 0.95rem; font-weight: 620; overflow-wrap: anywhere; }
+.allow-head .sub { display: block; font-size: 0.8125rem; }
+.allow-body { max-width: 36rem; min-width: 0; }
+.allow-body .route-note { margin: 0 0 0.4rem; }
+.allow-next { margin-top: 0.3rem; font-size: 0.8125rem; }
 .in-use.is-recorded { color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
 .ready { margin-left: auto; font-size: 0.75rem; font-weight: 600; padding: 0.05rem 0.55rem; border-radius: 999px; }
 .route-meta { font-size: 0.8125rem; margin-top: 0.1rem; }
@@ -299,6 +312,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 
 @media (max-width: 52rem) {
   .now { grid-template-columns: minmax(0, 1fr); }
+  .allow { grid-template-columns: minmax(0, 1fr); }
   .lane { grid-template-columns: 0.6rem minmax(0, 1fr); }
   .lane-what { grid-column: 2; }
   .event { grid-template-columns: 4.75rem 0.9rem minmax(0, 1fr); }

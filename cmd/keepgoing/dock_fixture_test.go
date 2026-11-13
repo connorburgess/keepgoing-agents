@@ -29,7 +29,9 @@ var dockLoops = []string{
 	"release-notes-bot",        // finished
 	"nightly-dependency-bumps", // not checked recently
 	"data-export-cleanup",      // off
-	"payments-reconciler",      // running on a fallback whose last probe is old
+	"payments-reconciler",      // on its second route; the first is at a limit that resets in five days
+	"inventory-sync",           // on its second route; the first route's reported reset has passed
+	"report-builder",           // on its second route; no reset time was reported
 }
 
 const dockFallbacksYAML = `version: 1
@@ -71,6 +73,32 @@ func dockLoopThread(name string) string {
 	}
 	return "thr_example1999"
 }
+
+// dockCodexFallbacksYAML is the route list of the two loops whose first route
+// is a Codex thread. Its last route has no model, and a tool, provider and
+// account group that are all "codex".
+const dockCodexFallbacksYAML = `version: 1
+redundancy:
+  min_healthy: 1
+  span: none
+probe:
+  every: 4h
+  ttl: 12h
+  timeout: 90s
+candidates:
+  - id: claude-second-account
+    adapter: bb
+    provider: claude-code
+    group: second-account
+    bb: {thread: thr_example0002, model: claude-sonnet-5-5, cli: nonexistent-provider-fixture}
+  - id: codex-headless
+    adapter: codex
+    provider: codex
+    codex: {workdir: ., cli: nonexistent-provider-fixture}
+`
+
+// dockOnCodex reports whether a fixture loop's first route is a Codex thread.
+func dockOnCodex(name string) bool { return name == "inventory-sync" || name == "report-builder" }
 
 func dockConfigYAML(name string, withFallbacks bool, maxSends int) string {
 	model := "claude-opus-5-5"
@@ -135,6 +163,16 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			// limits are not readings of the routes the other loops use.
 			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: team-account\n", 1)
 			fbYAML = strings.Replace(fbYAML, "group: second-account", "group: team-second-account", 1)
+		}
+		if dockOnCodex(name) {
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: codex\n  switch_back: {enabled: true}\n", 1)
+			cfgYAML = strings.Replace(cfgYAML, "model: claude-opus-5-5, reasoning: medium, ", "", 1)
+			fbYAML = dockCodexFallbacksYAML
+		}
+		if name == "payments-reconciler" {
+			// Its first route is on an account group of its own, so the limit
+			// it left on is not a limit on the routes other loops are using.
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: payments-account\n  switch_back: {enabled: true}\n", 1)
 		}
 		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), cfgYAML)
 		if withFallbacks {
@@ -222,10 +260,25 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "wake", "idle")
 		case "data-export-cleanup":
 			ctl.Enabled = false
-		case "payments-reconciler":
+		case "payments-reconciler", "inventory-sync", "report-builder":
+			// Each left its first route on a usage limit and is on its second.
 			st.ActiveTarget = "claude-second-account"
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "active")
 			st.LastCheck.Target, st.LastCheck.ObservedTarget = st.ActiveTarget, st.ActiveTarget
+			st.LastHandoffAt, st.Handoffs = now.Add(-32*time.Hour), 1
+			switch name {
+			case "payments-reconciler":
+				st.PrimaryResetsAt = now.Add(5 * 24 * time.Hour) // the reported reset is still ahead
+			case "inventory-sync":
+				st.PrimaryResetsAt = now.Add(-2 * time.Hour) // it has passed, and no return has been tried
+			}
+			// report-builder: the provider reported no reset time.
+			on := &incident.Controls{Enabled: true}
+			if err := incident.Append(sd, incident.Record{Kind: "tick", CheckStartedAt: st.LastHandoffAt, Action: "handoff", Outcome: "succeeded", Cause: "other",
+				TargetKey: incident.TargetKey(state.Primary), TargetKeyAfter: incident.TargetKey(st.ActiveTarget), ControlBefore: on, ControlAfter: on,
+				Observation: incident.Observation{Availability: "observed", State: "error", ErrorClass: "rate_limit"}}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := control.Save(sd, ctl); err != nil {
 			t.Fatal(err)
@@ -270,6 +323,16 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			case "payments-reconciler":
 				// Handed off 32 hours ago; the route in use is not probed since.
 				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-32 * time.Hour), OK: true, Kind: "bb"}}
+				// The reading taken when it left: the weekly window was full.
+				reg.Candidates["primary"].Usage = dockUsageReading(primary, now.Add(-32*time.Hour),
+					probe.UsageWindow{Key: "seven_day", Used: 1, ResetsAt: dockPtr(now.Add(5 * 24 * time.Hour)), Status: "rejected"})
+			case "inventory-sync", "report-builder":
+				// The first route has no reading; the route in use was last
+				// probed before the move; the last route passed a Codex probe
+				// eight hours ago, inside its twelve-hour window.
+				delete(reg.Candidates, "primary")
+				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-32 * time.Hour), OK: true, Kind: "bb"}}
+				reg.Candidates[cands[1].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-8 * time.Hour), OK: true, Kind: "codex"}}
 			case "nightly-dependency-bumps":
 				// Old readings whose windows have since reset.
 				reg.Candidates["primary"].Usage = dockUsageReading(primary, now.Add(-30*time.Hour),

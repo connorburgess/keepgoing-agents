@@ -213,15 +213,22 @@
     if (o.account) name.appendChild(el("span", "route-account", " on " + o.account));
     top.appendChild(name);
     if (o.use) top.appendChild(el("span", o.active ? "in-use" : "in-use is-recorded", o.use));
-    if (o.readiness) top.appendChild(el("span", "ready tone-" + (READY_TONE[o.readiness] || "unknown"), o.phrase));
     body.appendChild(top);
+    // Readiness is a sentence tied to its probe, not a bare verdict.
+    if (o.readiness) {
+      var st = el("div", "route-status tone-" + (READY_TONE[o.readiness] || "unknown"));
+      st.appendChild(el("span", "dot"));
+      st.appendChild(el("span", null, o.phrase));
+      body.appendChild(st);
+    }
+    (o.notes || []).forEach(function (n) { body.appendChild(el("p", "route-note" + (n.tone ? " is-" + n.tone : ""), n.text)); });
     var meta = el("div", "sub route-meta");
-    meta.appendChild(joinParts(o.meta.concat(o.probeAgeSeconds != null ? ["last probed " + ago(o.probeAgeSeconds)] : [])));
+    meta.appendChild(joinParts(o.meta));
     body.appendChild(meta);
     var usage = el("div", "route-usage");
     var u = o.usage;
     if (u.availability === "unavailable") {
-      usage.appendChild(el("div", "sub unknown usage-none", "No usage reading"));
+      usage.appendChild(el("div", "sub unknown usage-none", "No usage reading" + (u.reason ? ": " + u.reason : "")));
     } else {
       var uh = el("div", "sub usage-read");
       uh.appendChild(document.createTextNode("Usage read " + ago(u.ageSeconds)));
@@ -240,8 +247,49 @@
     box.appendChild(content);
     return box;
   }
-  function routeName(e) { return e.model || (e.tool === "BB thread" ? "The thread's own model" : e.tool || "Unknown model"); }
-  function routeMeta(e) { return [e.model ? e.tool : "", e.provider !== e.account ? e.provider : "", e.effort ? "effort " + e.effort : "effort not recorded"]; }
+  // A route's title says what is known: its model, or the tool and that the
+  // model is the tool's default. The account group goes in the title only
+  // when it is a group of its own (not the provider's name) and repeats no
+  // word already there; it is always on the detail line.
+  function routeName(e) {
+    if (e.model) return e.model;
+    if (e.tool === "BB thread") return "BB thread \u00B7 its own model";
+    return e.tool ? e.tool + " \u00B7 default model" : "Unknown model";
+  }
+  function titleAccount(e) {
+    if (!e.account || e.account === e.provider) return "";
+    var words = routeName(e).toLowerCase().split(/[^a-z0-9]+/);
+    var repeats = e.account.toLowerCase().split(/[^a-z0-9]+/).some(function (w) { return w && words.indexOf(w) >= 0; });
+    return repeats ? "" : e.account;
+  }
+  var ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
+  function ordinal(n) { return ORDINALS[n - 1] || n + "th"; }
+  var dateFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" });
+  function day(iso) { var t = Date.parse(iso); return isNaN(t) ? "an unknown date" : dateFmt.format(new Date(t)); }
+
+  // What the loop's state records about having left a route: when, why, the
+  // reset the provider reported, and what is recorded about going back.
+  function leftSentence(a) {
+    var s = "Left" + (a.reason ? " on " + a.reason : "") + (a.since ? " on " + day(a.since) : "") + (a.reason ? "" : "; the reason is not recorded") + "; ";
+    if (!a.resetsAt) s += "reset time not reported";
+    else if (a.resetPassed) s += "the reset the provider reported, " + dayFmt.format(new Date(a.resetsAt)) + ", has passed";
+    else s += "the provider reported a reset on " + dayFmt.format(new Date(a.resetsAt)) + " (" + until(a.resetsAt).replace(/ \(.*$/, "") + ")";
+    if (a.return === "off") s += "; automatic return is off";
+    else if (a.return === "stopped") s += "; automatic return has stopped after rejected attempts";
+    else if (a.return === "on" && a.resetsAt && !a.resetPassed) s += "; keepgoing returns to it after that if it passes a probe";
+    else if (a.return === "on" && a.lastReturnTry) s += "; a return was last tried " + ago(Math.round((readTime() - Date.parse(a.lastReturnTry)) / 1000));
+    else if (a.return === "on") s += "; no return has been tried yet";
+    return s + ".";
+  }
+  function awayShort(a) {
+    var s = "On its " + ordinal(a.choice) + " choice" + (a.since ? " since " + day(a.since) : "");
+    var why = a.reason ? "first choice left on " + a.reason : "first choice left, reason not recorded";
+    if (a.reason === "a usage limit") why = !a.resetsAt ? "first choice at a usage limit, reset time not reported" : a.resetPassed ? "first choice was at a usage limit until " + day(a.resetsAt) : "first choice at a usage limit until " + day(a.resetsAt);
+    return [s, why];
+  }
+  function routeMeta(e) {
+    return [e.model ? e.tool : "", e.account ? "account group " + e.account : "", e.provider && e.provider !== e.account ? "provider " + e.provider : "", e.effort ? "effort " + e.effort : "effort not set"];
+  }
 
   function needCard(n, link) {
     var li = el("li", "need");
@@ -313,7 +361,7 @@
       if (r.view === "loop" && r.key === l.key) a.setAttribute("aria-current", "page");
       a.appendChild(el("span", "dot dot-" + (TONES[l.state] || "unknown")));
       a.appendChild(el("span", "pick-name", l.name));
-      a.appendChild(el("span", "pick-state", l.phrase));
+      a.appendChild(el("span", "pick-state", l.phrase + (l.away ? " \u00B7 on its " + ordinal(l.away.choice) + " choice" : "")));
       var go = icon("chevron");
       go.setAttribute("class", "go");
       a.appendChild(go);
@@ -421,6 +469,7 @@
     if (h.state === "unknown") card("Hold", unknown());
     else if (h.state === "none") card("Hold", "None");
     else card("Hold", h.phrase, h.sinceSeconds == null ? "since an unknown time" : (h.sinceEvidence === "hold_recorded" ? "for " : "for at least ") + span(h.sinceSeconds));
+    if (l.away) { var aw = awayShort(l.away); card("Route", aw[0], aw[1]); }
     card("Device", l.device.hostname || l.device.name, (l.device.hostname ? l.device.name + " \u00B7 " : "") + l.device.role);
     return dl;
   }
@@ -535,10 +584,13 @@
     c.entries.forEach(function (e) {
       var lanes = [];
       if (e.current) lanes.push(laneBox(l, e.inUse ? "Lanes on this route" : "Lanes, as last listed"));
+      var notes = [];
+      if (e.position === 0 && l.away) notes.push({ tone: l.away.reason === "a usage limit" && !l.away.resetPassed ? "limit" : "", text: leftSentence(l.away) });
+      if (e.probeNote) notes.push({ text: e.probeNote + "." });
       var item = routeItem({
-        id: e.id, position: e.position, badge: String(e.position + 1), name: routeName(e), account: e.account, active: e.inUse, use: e.use, off: e.disabled,
-        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase,
-        meta: ["configured as " + e.id].concat(routeMeta(e)), probeAgeSeconds: e.probeAgeSeconds, usage: e.usage, lanes: lanes
+        id: e.id, position: e.position, badge: String(e.position + 1), name: routeName(e), account: titleAccount(e), active: e.inUse, use: e.use, off: e.disabled,
+        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase, notes: notes,
+        meta: routeMeta(e).concat(["named " + e.id + " in its configuration"]), usage: e.usage, lanes: lanes
       });
       item.setAttribute("aria-label", "Route " + (e.position + 1) + ": " + routeName(e) + (e.use ? ", " + e.use : ""));
       ol.appendChild(item);
@@ -577,6 +629,39 @@
     pane.appendChild(checks);
   }
 
+  // One line per account group: the freshest recorded reading and its resets.
+  function allowancesPanel(list) {
+    var p = panel("Allowances", [el("span", "sub", "the newest reading recorded for each account group; not a live reading")]);
+    if (!list.length) { p.appendChild(el("p", "sub chain-how", "No account groups to show.")); return p; }
+    var ul = el("ul", "allow-list");
+    list.forEach(function (a) {
+      var li = el("li", "allow");
+      var head = el("div", "allow-head");
+      head.appendChild(el("h3", "allow-name", a.account || a.provider || "Unnamed account group"));
+      head.appendChild(el("span", "sub", joinPlain([a.provider && a.provider !== a.account ? "provider " + a.provider : "", a.routes + (a.routes === 1 ? " route" : " routes")])));
+      li.appendChild(head);
+      var body = el("div", "allow-body");
+      if (a.limit) body.appendChild(el("p", "route-note is-limit", "A loop left a route in this group on a usage limit; " + (a.limit.resetsAt ? "the provider reported a reset on " + dayFmt.format(new Date(a.limit.resetsAt)) + " (" + until(a.limit.resetsAt).replace(/ \(.*$/, "") + ")." : "reset time not reported.")));
+      var u = a.usage;
+      if (u.availability === "unavailable") {
+        body.appendChild(el("div", "sub unknown usage-none", "No reading"));
+      } else {
+        var uh = el("div", "sub usage-read");
+        uh.appendChild(document.createTextNode("Read " + ago(u.ageSeconds)));
+        if (u.availability === "stale") uh.appendChild(tag("stale", "Stale"));
+        body.appendChild(uh);
+        body.appendChild(meters(u));
+        var next = u.windows.filter(function (w) { return !w.stale && w.resetsAt; }).map(function (w) { return Date.parse(w.resetsAt); }).sort(function (x, y) { return x - y; })[0];
+        if (next) body.appendChild(el("div", "sub allow-next", "Next reset " + until(new Date(next).toISOString())));
+      }
+      li.appendChild(body);
+      ul.appendChild(li);
+    });
+    p.appendChild(ul);
+    return p;
+  }
+  function joinPlain(parts) { return parts.filter(Boolean).join(" \u00B7 "); }
+
   // The same route component, summed across loops.
   function renderRoutes(d, pane) {
     pane.appendChild(back());
@@ -588,14 +673,17 @@
     }
     var inUse = d.routes.filter(function (n) { return n.runningNow.length > 0; }).length;
     var trouble = d.routes.filter(function (n) {
-      return n.readiness === "not_ready" || n.usage.windows.some(function (w) { return !w.stale && w.usedPercent >= 90; });
+      return n.readiness === "not_ready" || n.usage.windows.some(function (w) { return !w.stale && w.usedPercent >= 90; }) ||
+        n.leftBy.some(function (x) { return x.reason === "a usage limit" && !x.resetPassed; });
     }).length;
     var sum = el("p", "route-summary");
     sum.appendChild(el("span", null, d.routes.length + (d.routes.length === 1 ? " route" : " routes")));
     sum.appendChild(el("span", "c-good", inUse + " in use"));
     sum.appendChild(el("span", trouble ? "c-warn" : "sub", trouble ? trouble + " at a limit or not ready" : "none at a limit or failing"));
     pane.appendChild(sum);
+    pane.appendChild(allowancesPanel(d.allowances));
     var box = el("section", "panel");
+    box.appendChild(el("h2", null, "Routes, one by one"));
     var ol = el("ul", "route-list");
     d.routes.forEach(function (n) {
       // Loops on the route now, one per line with their state.
@@ -611,28 +699,41 @@
         });
         return ul;
       }
-      // Loops that only keep it on standby, as one wrapping line of names.
+      // Loops that only keep it on standby, grouped by which choice it is for
+      // them, since the order is the point of preferred routes.
       function standby(list) {
-        var p = el("p", "standby");
-        list.forEach(function (x, i) {
-          if (i) p.appendChild(document.createTextNode(", "));
-          var a = el("a", null, x.loop);
-          a.href = "#/loop/" + x.key;
-          a.title = "Route " + (x.position + 1) + " of " + x.loop;
-          p.appendChild(a);
+        var wrap = el("div");
+        var by = {};
+        list.forEach(function (x) { (by[x.position] = by[x.position] || []).push(x); });
+        Object.keys(by).map(Number).sort(function (a, b) { return a - b; }).forEach(function (pos) {
+          var p = el("p", "standby");
+          var word = ordinal(pos + 1);
+          p.appendChild(document.createTextNode(word.charAt(0).toUpperCase() + word.slice(1) + " choice for "));
+          by[pos].forEach(function (x, i) {
+            if (i) p.appendChild(document.createTextNode(", "));
+            var a = el("a", null, x.loop);
+            a.href = "#/loop/" + x.key;
+            p.appendChild(a);
+          });
+          wrap.appendChild(p);
         });
-        return p;
+        return wrap;
       }
       var lanes = [];
       if (n.runningNow.length) lanes.push(lanesBox("Running on it now", running(n.runningNow)));
-      if (n.recordedFor.length) lanes.push(lanesBox("Current route of loops that are not in use now", running(n.recordedFor)));
-      if (n.standbyFor.length) lanes.push(lanesBox("On standby for " + n.standbyFor.length + (n.standbyFor.length === 1 ? " loop" : " loops"), standby(n.standbyFor)));
-      if (n.unknownFor.length) lanes.push(lanesBox("Listed by " + n.unknownFor.length + (n.unknownFor.length === 1 ? " loop" : " loops") + " whose current route is unknown", standby(n.unknownFor)));
+      if (n.recordedFor.length) lanes.push(lanesBox("Current route of loops that are not running now", running(n.recordedFor)));
+      if (n.standbyFor.length) lanes.push(lanesBox("On standby", standby(n.standbyFor)));
+      if (n.unknownFor.length) lanes.push(lanesBox("Listed by loops whose current route could not be read", standby(n.unknownFor)));
       if (n.omitted) lanes.push(el("p", "sub", n.omitted + " more loops not shown"));
+      var notes = [];
+      n.leftBy.forEach(function (x) {
+        notes.push({ tone: x.reason === "a usage limit" && !x.resetPassed ? "limit" : "", text: x.loop + ": " + leftSentence(x).replace(/^Left/, "left it") });
+      });
+      if (n.sharedLimit) notes.push({ tone: "limit", text: "Same account group as a route at its limit" + (n.sharedLimit.resetsAt ? " until " + day(n.sharedLimit.resetsAt) : ", reset time not reported") + "; this route's own readiness comes from a separate probe." });
       ol.appendChild(routeItem({
-        name: routeName(n), account: n.account, active: n.runningNow.length > 0,
+        name: routeName(n), account: titleAccount(n), active: n.runningNow.length > 0,
         use: n.runningNow.length ? n.runningNow.length + (n.runningNow.length === 1 ? " loop on it now" : " loops on it now") : "",
-        readiness: n.readiness === "current" || (n.readiness === "unknown" && n.probeAgeSeconds == null) ? "" : n.readiness, phrase: n.phrase, meta: routeMeta(n), probeAgeSeconds: n.probeAgeSeconds, usage: n.usage, lanes: lanes
+        readiness: n.readiness === "current" || n.readiness === "main" || (n.readiness === "unknown" && n.probeAgeSeconds == null) ? "" : n.readiness, phrase: n.phrase, notes: notes, meta: routeMeta(n), usage: n.usage, lanes: lanes
       }));
     });
     box.appendChild(ol);

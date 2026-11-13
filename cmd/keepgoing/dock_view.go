@@ -58,6 +58,51 @@ type dockReport struct {
 	// configured. Each loop's chain entries name their route by key, so the
 	// two views are one feed.
 	Routes []dockRoute `json:"routes"`
+	// Allowances is one line per account group: the freshest usage reading
+	// recorded for any of its routes, and a recorded limit if a loop left
+	// one of them on a usage limit whose reset has not passed.
+	Allowances []dockAllowance `json:"allowances"`
+}
+
+// dockAllowance is what is recorded about one account group's usage. It is
+// the newest reading any loop holds for a route in the group, not a live one.
+type dockAllowance struct {
+	Provider string          `json:"provider,omitempty"`
+	Account  string          `json:"account,omitempty"`
+	Routes   int             `json:"routes"`
+	Usage    dockUsageTarget `json:"usage"`
+	// Limit is set when a loop left a route in this group on a usage limit
+	// whose reported reset has not passed, or was not reported.
+	Limit *dockSharedLimit `json:"limit,omitempty"`
+}
+
+// dockAllowances groups routes by provider and account group, in route order.
+func dockAllowances(routes []dockRoute) []dockAllowance {
+	index := map[string]int{}
+	out := []dockAllowance{}
+	for _, r := range routes {
+		key := r.Provider + "\x00" + r.Account
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			out = append(out, dockAllowance{Provider: r.Provider, Account: r.Account, Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}})
+		}
+		a := &out[i]
+		a.Routes++
+		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
+			a.Usage = u
+		}
+		for _, left := range r.LeftBy {
+			if left.Reason != dockUsageLimit || left.ResetPassed {
+				continue
+			}
+			if a.Limit == nil || (left.ResetsAt != nil && (a.Limit.ResetsAt == nil || left.ResetsAt.After(*a.Limit.ResetsAt))) {
+				a.Limit = &dockSharedLimit{Loop: left.Loop, Since: left.Since, ResetsAt: left.ResetsAt}
+			}
+		}
+	}
+	return out
 }
 
 type dockRegistry struct {
@@ -92,8 +137,8 @@ type dockLoop struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
 	// State is one of supervising, waiting_for_you, waiting_on_limit,
-	// checks_failing, paused, stopped, finished, off, outside_hours,
-	// not_checked_recently or unknown. Phrase is its label, Detail one
+	// waiting_on_network, checks_failing, paused, stopped, finished, off,
+	// outside_hours, not_checked_recently or unknown. Phrase is its label, Detail one
 	// sentence about it.
 	State    string `json:"state"`
 	Phrase   string `json:"phrase"`
@@ -102,6 +147,9 @@ type dockLoop struct {
 	// CurrentRoute is the target the loop's records name as current. It says
 	// nothing about activity: see InUse on the chain entry.
 	CurrentRoute dockTarget `json:"currentRoute"`
+	// Away is set when the loop's current route is not its first: when it
+	// left, why, and what is recorded about going back.
+	Away *dockAway `json:"away,omitempty"`
 	// Decision is the last recorded check's action and fixed cause; Hold the
 	// hold in force; Device this computer; Lanes each lane of the last
 	// verified listing; Events the newest retained history entries.
@@ -175,6 +223,11 @@ type dockUsageTarget struct {
 	ObservedAt   *time.Time        `json:"observedAt,omitempty"`
 	AgeSeconds   *int64            `json:"ageSeconds,omitempty"`
 	Windows      []dockUsageWindow `json:"windows"`
+	// Reason says, when a record shows it, why there is no reading.
+	Reason string `json:"reason,omitempty"`
+	// FromAnotherLoop: the reading is another loop's record of the same
+	// route, shown because it is newer than this loop's own.
+	FromAnotherLoop bool `json:"fromAnotherLoop,omitempty"`
 }
 
 type dockUsageWindow struct {
@@ -233,6 +286,14 @@ type dockChainEntry struct {
 	Model    string `json:"model,omitempty"`
 	// Effort is the configured effort level; empty when none is configured.
 	Effort string `json:"effort,omitempty"`
+	// Enter is how the loop gets onto this route, in the vocabulary of the
+	// route lists: first, same_conversation, other_conversation,
+	// new_conversation, headless or command. Source is where the route
+	// comes from: loop for the first route, own for the loop's own list.
+	// (A shared standard list is planned; until it exists every other route
+	// is the loop's own.)
+	Enter  string `json:"enter"`
+	Source string `json:"source"`
 	// Current: the loop's records name this entry as its current target.
 	// InUse: also the loop is on with no hold, its last check is recent, and
 	// that check recorded this target. Use says which, in plain words.
@@ -243,11 +304,54 @@ type dockChainEntry struct {
 	// Readiness is ready, not_ready, not_probed, disabled, unknown, main for
 	// the main target, or current for a fallback that is the loop's current
 	// target, which carries no verdict because that route is not probed.
-	Readiness string          `json:"readiness"`
-	Phrase    string          `json:"phrase"`
+	Readiness string `json:"readiness"`
+	Phrase    string `json:"phrase"`
+	// ProbeNote adds the last test's age for a current route, which carries
+	// no readiness verdict. OtherTest is another loop's newer test result of
+	// the same route, when it differs from this loop's own record.
+	ProbeNote string          `json:"probeNote,omitempty"`
+	OtherTest string          `json:"otherTest,omitempty"`
 	ProbedAt  *time.Time      `json:"probedAt,omitempty"`
 	ProbeAge  *int64          `json:"probeAgeSeconds,omitempty"`
 	Usage     dockUsageTarget `json:"usage"`
+}
+
+// dockAway is what the loop's state records about having left its first
+// route: state.json's lastHandoffAt, primaryResetsAt and lastSwitchBackTry,
+// the handoff's recorded error class, and whether automatic return is on.
+type dockAway struct {
+	// Choice is the current route's place in the order, 2 for the second.
+	Choice int        `json:"choice"`
+	Since  *time.Time `json:"since,omitempty"`
+	// Reason is in plain words ("a usage limit"); empty when not recorded.
+	Reason string `json:"reason,omitempty"`
+	// ResetsAt is the reset the provider reported at the handoff; absent
+	// when none was reported. ResetPassed compares it with the read time.
+	ResetsAt      *time.Time `json:"resetsAt,omitempty"`
+	ResetPassed   bool       `json:"resetPassed"`
+	LastReturnTry *time.Time `json:"lastReturnTry,omitempty"`
+	// Return is on, off (automatic return is not configured), stopped
+	// (given up after rejected attempts) or unknown.
+	Return string `json:"return"`
+}
+
+// dockRouteLimit is one loop that left this route, with the reset recorded.
+type dockRouteLimit struct {
+	Loop        string     `json:"loop"`
+	LoopKey     string     `json:"loopKey"`
+	Since       *time.Time `json:"since,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
+	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
+	ResetPassed bool       `json:"resetPassed"`
+	Return      string     `json:"return"`
+}
+
+// dockSharedLimit says another route in the same account group is recorded
+// at a limit. It changes nothing about this route's own readiness.
+type dockSharedLimit struct {
+	Loop     string     `json:"loop,omitempty"`
+	Since    *time.Time `json:"since,omitempty"`
+	ResetsAt *time.Time `json:"resetsAt,omitempty"`
 }
 
 // dockRoute is one route across every loop that names it. keepgoing knows it
@@ -278,6 +382,15 @@ type dockRoute struct {
 	StandbyFor  []dockRouteLoop `json:"standbyFor"`
 	UnknownFor  []dockRouteLoop `json:"unknownFor"`
 	Omitted     int             `json:"omitted"`
+	// LeftBy are loops that left this route, with what their state records
+	// of the limit. SharedLimit is set on a route in the same account group
+	// as one a loop left on a limit whose reset has not passed.
+	LeftBy      []dockRouteLimit `json:"leftBy"`
+	SharedLimit *dockSharedLimit `json:"sharedLimit,omitempty"`
+	// Attention is limit (a loop left it on a usage limit that has not
+	// reset, or a recorded window is used up), not_ready (its newest test
+	// failed or is too old), or empty. Routes are listed with these first.
+	Attention string `json:"attention,omitempty"`
 	// Lanes is always unknown in this schema.
 	Lanes string `json:"lanes"`
 }
@@ -315,7 +428,7 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 				index[e.Route] = i
 				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Effort: e.Effort, Tool: e.Tool, Readiness: "unknown", Phrase: "Unknown",
 					Usage:      dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}},
-					RunningNow: []dockRouteLoop{}, RecordedFor: []dockRouteLoop{}, StandbyFor: []dockRouteLoop{}, UnknownFor: []dockRouteLoop{}, Lanes: "unknown"})
+					RunningNow: []dockRouteLoop{}, RecordedFor: []dockRouteLoop{}, StandbyFor: []dockRouteLoop{}, UnknownFor: []dockRouteLoop{}, LeftBy: []dockRouteLimit{}, Lanes: "unknown"})
 			}
 			n := &routes[i]
 			switch {
@@ -328,6 +441,9 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 			if u := e.Usage; u.AgeSeconds != nil && (n.Usage.AgeSeconds == nil || *u.AgeSeconds < *n.Usage.AgeSeconds) {
 				n.Usage = u
 				n.Usage.Name = ""
+			}
+			if a := l.Away; a != nil && e.Position == 0 && len(n.LeftBy) < dockMaxRouteLoops {
+				n.LeftBy = append(n.LeftBy, dockRouteLimit{Loop: l.Name, LoopKey: l.Key, Since: a.Since, Reason: a.Reason, ResetsAt: a.ResetsAt, ResetPassed: a.ResetPassed, Return: a.Return})
 			}
 			ref := dockRouteLoop{Key: l.Key, Loop: l.Name, State: l.State, Phrase: l.Phrase, Position: e.Position}
 			list := &n.StandbyFor
@@ -349,8 +465,86 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 			*list = append(*list, ref)
 		}
 	}
-	sort.SliceStable(routes, func(i, j int) bool { return len(routes[i].RunningNow) > len(routes[j].RunningNow) })
+	// A route in the same account group as one left on a usage limit that
+	// has not reset carries a note; its own readiness is left as it is.
+	for i := range routes {
+		for j := range routes {
+			if i == j || routes[i].Provider != routes[j].Provider || routes[i].Account != routes[j].Account {
+				continue
+			}
+			for _, left := range routes[j].LeftBy {
+				if left.Reason != dockUsageLimit || left.ResetPassed {
+					continue
+				}
+				if s := routes[i].SharedLimit; s == nil || (left.ResetsAt != nil && (s.ResetsAt == nil || left.ResetsAt.After(*s.ResetsAt))) {
+					routes[i].SharedLimit = &dockSharedLimit{Loop: left.Loop, Since: left.Since, ResetsAt: left.ResetsAt}
+				}
+			}
+		}
+	}
+	rank := func(r dockRoute) int {
+		switch {
+		case r.Attention == "limit":
+			return 0
+		case r.Attention == "not_ready":
+			return 1
+		case len(r.RunningNow) > 0:
+			return 2
+		}
+		return 3
+	}
+	for i := range routes {
+		r := &routes[i]
+		for _, left := range r.LeftBy {
+			if left.Reason == dockUsageLimit && !left.ResetPassed {
+				r.Attention = "limit"
+			}
+		}
+		for _, w := range r.Usage.Windows {
+			if !w.Stale && w.UsedPercent >= 100 {
+				r.Attention = "limit"
+			}
+		}
+		if r.Attention == "" && r.Readiness == "not_ready" {
+			r.Attention = "not_ready"
+		}
+	}
+	sort.SliceStable(routes, func(i, j int) bool {
+		if a, b := rank(routes[i]), rank(routes[j]); a != b {
+			return a < b
+		}
+		return len(routes[i].RunningNow) > len(routes[j].RunningNow)
+	})
 	return routes
+}
+
+// dockShareAcrossLoops gives each loop's route the newest usage reading and
+// test result any loop holds for that same route, marked as another loop's,
+// so one route does not read differently on different pages. A route is keyed
+// by what selects its account, so the record is of the same account.
+func dockShareAcrossLoops(loops []dockLoop, routes []dockRoute) {
+	byKey := map[string]dockRoute{}
+	for _, r := range routes {
+		byKey[r.Key] = r
+	}
+	for i := range loops {
+		for j := range loops[i].Chain.Entries {
+			e := &loops[i].Chain.Entries[j]
+			r, ok := byKey[e.Route]
+			if !ok {
+				continue
+			}
+			if u := r.Usage; u.AgeSeconds != nil && (e.Usage.AgeSeconds == nil || *u.AgeSeconds < *e.Usage.AgeSeconds) {
+				name := e.Usage.Name
+				e.Usage = u
+				e.Usage.Name, e.Usage.FromAnotherLoop = name, true
+			}
+			newer := r.ProbeAge != nil && (e.ProbeAge == nil || *r.ProbeAge < *e.ProbeAge)
+			if newer && r.Phrase != e.Phrase && r.Readiness != "current" && r.Readiness != "main" && r.Readiness != "unknown" {
+				e.OtherTest = r.Phrase
+			}
+		}
+	}
 }
 
 // dockChainInput is the configuration-derived part of the chain plus the
@@ -361,6 +555,11 @@ type dockChainInput struct {
 	FailoverOn []string
 	Summary    *fallbacksOut
 	PrimaryUse *usageView
+	// ProbeEvery is the configured interval of scheduled probes; zero when
+	// scheduled probes are off. SwitchBack is whether automatic return to
+	// the first route is configured.
+	ProbeEvery time.Duration
+	SwitchBack bool
 }
 
 // dockInput is everything one loop's view is built from.
@@ -407,7 +606,7 @@ func secondsSince(now, t time.Time) *int64 {
 }
 
 var dockStatePriority = map[string]int{
-	"waiting_for_you": 0, "unknown": 1, "checks_failing": 2, "not_checked_recently": 3, "waiting_on_limit": 4,
+	"waiting_for_you": 0, "unknown": 1, "checks_failing": 2, "not_checked_recently": 3, "waiting_on_limit": 4, "waiting_on_network": 4,
 	"supervising": 5, "outside_hours": 6, "paused": 7, "off": 8, "stopped": 9, "finished": 10,
 }
 
@@ -416,7 +615,7 @@ var dockStatePriority = map[string]int{
 // never be part of an all-clear.
 func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time.Duration, identifiers, registryOK bool, omitted int, complete bool) dockReport {
 	r := dockReport{SchemaVersion: dockSchemaVersion, ReadOnly: true, ReadAt: now, RefreshSeconds: int(refresh / time.Second),
-		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Loops: []dockLoop{}, Routes: []dockRoute{},
+		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Loops: []dockLoop{}, Routes: []dockRoute{}, Allowances: []dockAllowance{},
 		Registry: dockRegistry{Availability: "unavailable"}, Complete: complete}
 	if !registryOK {
 		return r
@@ -441,6 +640,8 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		return strings.ToLower(r.Loops[i].Name) < strings.ToLower(r.Loops[j].Name)
 	})
 	r.Routes = dockRoutes(r.Loops)
+	dockShareAcrossLoops(r.Loops, r.Routes)
+	r.Allowances = dockAllowances(r.Routes)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
 		if a == nil || b == nil {
@@ -553,6 +754,10 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked yet", "It is on, and no check is recorded."
 		case l.LastCheck.Availability == "stale":
 			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked recently", "It is on, and its last recorded check is older than "+dockDuration(staleAfter)+"."
+		case !st.State.NetworkDownSince.IsZero() && !st.State.NetworkDistrusted:
+			// The same record status prints as "network: down at the last
+			// connectivity check".
+			l.State, l.Phrase, l.Detail = "waiting_on_network", "Waiting for the network", "The network was down at the last connectivity check, failing for "+dockDuration(now.Sub(st.State.NetworkDownSince))+". Work that needs the network waits until a check finds it back."
 		case l.LimitWait != nil && !l.LimitWait.Passed:
 			l.State, l.Phrase, l.Detail = "waiting_on_limit", "Waiting for a limit to reset", "A check recorded a provider usage limit with no other route able to take over. The loop is not held and keeps checking."
 		case l.LastCheck.FailedInRow > 0:
@@ -578,6 +783,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	l.Chain = dockHandoffChain(in.Chain, dockUse(l, st), now)
+	l.Away = dockAwayOf(st, in.Chain, in.Timeline, now)
 	return l, need
 }
 
@@ -597,29 +803,29 @@ func dockUse(l dockLoop, st *statusOut) dockRouteUse {
 	}
 	u := dockRouteUse{Target: st.Target}
 	switch l.State {
-	case "supervising", "waiting_on_limit", "checks_failing":
+	case "supervising", "waiting_on_limit", "waiting_on_network", "checks_failing":
 		c := st.State.LastCheck
 		if c != nil && c.At.Equal(st.State.CheckedAt) && c.Target == st.Target {
 			u.InUse, u.Phrase = true, "In use now"
 		} else {
-			u.Phrase = "Recorded route; the last check did not record it"
+			u.Phrase = "Current route, not confirmed by the last check"
 		}
 	case "waiting_for_you":
-		u.Phrase = "Recorded route; loop is held"
+		u.Phrase = "Current route, loop held"
 	case "paused":
-		u.Phrase = "Recorded route; loop is paused"
+		u.Phrase = "Current route, loop paused"
 	case "stopped":
-		u.Phrase = "Recorded route; loop is stopped"
+		u.Phrase = "Current route, loop stopped"
 	case "finished":
-		u.Phrase = "Recorded route; loop is finished"
+		u.Phrase = "Current route, loop finished"
 	case "off":
-		u.Phrase = "Recorded route; loop is off"
+		u.Phrase = "Current route, loop off"
 	case "outside_hours":
-		u.Phrase = "Recorded route; outside its hours"
+		u.Phrase = "Current route, outside its hours"
 	case "not_checked_recently":
-		u.Phrase = "Recorded route; no recent check"
+		u.Phrase = "Current route, no recent check"
 	default:
-		u.Phrase = "Recorded route"
+		u.Phrase = "Current route"
 	}
 	return u
 }
@@ -645,7 +851,7 @@ func dockTool(adapter string) string {
 	case "claude":
 		return "Claude Code"
 	case "codex":
-		return "Codex"
+		return "Codex CLI"
 	case "cursor":
 		return "Cursor"
 	case "process":
@@ -834,13 +1040,13 @@ func dockNextCheck(snap *clientSnapshot) dockNext {
 	d := snap.Daemon
 	switch {
 	case d.State == "skipped":
-		n.Detail = "the local daemon was not asked"
+		n.Detail = "the loop's keepgoing scheduler was not asked"
 	case d.State == "not_recorded":
 		// The only evidence is the absence of an endpoint record. Whether a
 		// scheduler outside keepgoing runs the loop is not inspected.
-		n.Detail = "no keepgoing daemon endpoint is recorded for this loop; a scheduler outside keepgoing is not visible"
+		n.Detail = "no keepgoing scheduler is on record for this loop, and one outside keepgoing is not visible"
 	case d.State != "responsive":
-		n.Detail = "a keepgoing daemon endpoint is recorded for this loop but could not be verified"
+		n.Detail = "a keepgoing scheduler is on record for this loop but did not answer"
 	case d.Phase == "waiting" && d.NextCheckAt != nil:
 		n.Availability, n.At, n.Phrase = "known", d.NextCheckAt, "Due"
 	default:
@@ -980,6 +1186,10 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, now time.Time) dockC
 		if use.Target != "" && cand.ID == use.Target {
 			e.Current, e.InUse, e.Use = true, use.InUse, use.Phrase
 		}
+		e.Enter, e.Source = dockEnter(pos, cand.Agent, in.Primary.Agent), "own"
+		if pos == 0 {
+			e.Source = "loop"
+		}
 		return e
 	}
 	main := entry(0, in.Primary)
@@ -999,6 +1209,10 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, now time.Time) dockC
 			rows[r.ID] = r
 		}
 	}
+	if main.Usage.Availability == "unavailable" && main.Current {
+		main.Usage.Reason = "a loop's current route is not tested"
+	}
+	c.Entries[0] = main
 	for i, cand := range in.Candidates {
 		if len(c.Entries) > dockMaxChain {
 			c.Omitted++
@@ -1006,49 +1220,158 @@ func dockHandoffChain(in *dockChainInput, use dockRouteUse, now time.Time) dockC
 		}
 		e := entry(i+1, cand)
 		row, ok := rows[cand.ID]
+		age := ""
+		if ok && row.Last != nil && !row.Last.At.IsZero() {
+			at := row.Last.At
+			e.ProbedAt, e.ProbeAge = &at, secondsSince(now, at)
+			age = dockDuration(now.Sub(at)) + " ago"
+		}
 		switch {
 		case cand.Disabled:
-			e.Readiness, e.Phrase = "disabled", "Turned off"
+			e.Readiness, e.Phrase = "disabled", "Turned off in its configuration"
 		case in.Summary == nil || !ok:
 			c.Availability = "unknown"
+			e.Phrase = "Readiness unknown: its test history could not be read"
 		case e.Current && (row.Last == nil || row.Last.OK):
 			// The loop's current target is not probed, so an old probe says
 			// nothing against it. Only a recorded failure is a verdict.
 			e.Readiness, e.Phrase = "current", e.Use
-		case row.Healthy:
-			e.Readiness, e.Phrase = "ready", "Ready"
+			if age != "" {
+				e.ProbeNote = "Not tested while it is the loop's route; last tested " + age
+			}
 		case row.Last == nil:
-			e.Readiness, e.Phrase = "not_probed", "Not probed yet"
+			e.Readiness, e.Phrase = "not_probed", "Not tested yet"
+		case row.Healthy:
+			e.Readiness, e.Phrase = "ready", "Ready: passed its test "+age
+			if in.ProbeEvery > 0 && now.Sub(row.Last.At) > in.ProbeEvery {
+				// Still counted ready, but the test is older than its schedule.
+				e.Readiness, e.Phrase = "ready_overdue", "Passed its test "+age+"; a new test is overdue (it is tested every "+dockDuration(in.ProbeEvery)+")"
+			}
 		default:
-			e.Readiness, e.Phrase = "not_ready", dockProbePhrase(row.Last.OK, row.Last.ErrorClass)
+			e.Readiness, e.Phrase = "not_ready", dockProbePhrase(row.Last.OK, row.Last.ErrorClass, age)
 		}
 		if ok {
-			if row.Last != nil && !row.Last.At.IsZero() {
-				at := row.Last.At
-				e.ProbedAt, e.ProbeAge = &at, secondsSince(now, at)
-			}
 			e.Usage = dockUsageOf(row.Usage)
+		}
+		if e.Usage.Availability == "unavailable" {
+			e.Usage.Reason = dockUsageReason(cand, row, ok, e.Current)
 		}
 		c.Entries = append(c.Entries, e)
 	}
 	return c
 }
 
-// dockProbePhrase words the last probe's recorded result for a fallback that
-// is not ready. Each says "at its last probe": it is not a live reading.
-func dockProbePhrase(ok bool, class string) string {
-	if ok {
-		return "Last probe passed, but too long ago to rely on"
+// dockEnter says how a loop gets onto a route, from its configuration alone.
+func dockEnter(pos int, a, first config.Agent) string {
+	switch {
+	case pos == 0:
+		return "first"
+	case a.BB != nil && a.BB.NewThread:
+		return "new_conversation"
+	case a.BB != nil && first.BB != nil && a.BB.Thread != "" && a.BB.Thread == first.BB.Thread:
+		return "same_conversation"
+	case a.BB != nil:
+		return "other_conversation"
+	case a.Adapter == "process":
+		return "command"
 	}
+	return "headless"
+}
+
+// dockUsageReason says why a route has no usage reading, when a record shows
+// it: only the Claude probe, and a failed Codex probe, carry one.
+func dockUsageReason(cand config.Candidate, row candidateRow, known, current bool) string {
+	switch {
+	case cand.Disabled:
+		return "it is turned off, so it is not tested"
+	case !known:
+		return ""
+	case row.Last == nil && current:
+		return "a loop's current route is not tested"
+	case row.Last == nil:
+		return "it has not been tested yet"
+	case row.Last.Kind == "command":
+		return "this kind of test does not report usage"
+	case row.Last.Kind == "codex" && row.Last.OK:
+		return "a passing Codex test does not report usage"
+	}
+	return ""
+}
+
+// dockUsageLimit is the plain-language reason for leaving a route on a limit.
+const dockUsageLimit = "a usage limit"
+
+// dockAwayOf reads what state records about having left the first route. The
+// reason comes from the retained history's newest handoff record; without
+// one, a recorded reset time means a limit (state records it only for one),
+// as does a configuration that hands off on rate limits alone.
+func dockAwayOf(st *statusOut, chain *dockChainInput, tl *timelineReport, now time.Time) *dockAway {
+	if st == nil || !st.TargetConfigured || st.Target == state.Primary || chain == nil {
+		return nil
+	}
+	a := &dockAway{Return: "off"}
+	for i, cand := range chain.Candidates {
+		if cand.ID == st.Target {
+			a.Choice = i + 2
+		}
+	}
+	if t := st.State.LastHandoffAt; !t.IsZero() {
+		a.Since = &t
+	}
+	if t := st.State.PrimaryResetsAt; !t.IsZero() {
+		a.ResetsAt, a.ResetPassed, a.Reason = &t, !now.Before(t), dockUsageLimit
+	}
+	if t := st.State.LastSwitchBackTry; !t.IsZero() {
+		a.LastReturnTry = &t
+	}
+	switch {
+	case st.TakeoverBriefs.SwitchBackStopped:
+		a.Return = "stopped"
+	case chain.SwitchBack:
+		a.Return = "on"
+	}
+	if tl != nil {
+		for i := len(tl.Events) - 1; i >= 0; i-- {
+			r := tl.Events[i].Incident
+			if r == nil || r.Kind != "tick" || r.Action != "handoff" || r.DryRun || r.TargetKeyAfter == r.TargetKey {
+				continue
+			}
+			switch r.Observation.ErrorClass {
+			case "rate_limit":
+				a.Reason = dockUsageLimit
+			case "auth":
+				a.Reason = "a sign-in failure"
+			case "overloaded":
+				a.Reason = "the provider being overloaded"
+			case "network":
+				a.Reason = "a network failure"
+			}
+			return a
+		}
+	}
+	if a.Reason == "" && len(chain.FailoverOn) == 1 && chain.FailoverOn[0] == "rate_limit" {
+		a.Reason = dockUsageLimit
+	}
+	return a
+}
+
+// dockProbePhrase words the last test's recorded result for a route that is
+// not ready. Each is tied to when it was tested: it is not a live reading.
+// "Test" is the interface word for what the configuration calls a probe.
+func dockProbePhrase(ok bool, class, age string) string {
+	if ok {
+		return "Passed its test " + age + ", too long ago to count as ready"
+	}
+	what := "Failed its test"
 	switch class {
 	case "rate_limit":
-		return "Hit a usage limit at its last probe"
+		what = "Hit a usage limit when tested"
 	case "auth":
-		return "Sign-in failed at its last probe"
+		what = "Sign-in failed when tested"
 	case "network":
-		return "Could not be reached at its last probe"
+		what = "Could not be reached when tested"
 	case "overloaded":
-		return "Provider overloaded at its last probe"
+		what = "Provider overloaded when tested"
 	}
-	return "Last probe failed"
+	return what + " " + age
 }

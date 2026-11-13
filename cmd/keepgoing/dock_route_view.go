@@ -447,7 +447,7 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		case timelineLimitWait(r.Cause):
 			ev.Tone = "problem"
 		case r.Action == "wake" || r.Action == "nudge" || r.Action == "reprompt":
-			ev.Detail = "The send returned; receipt is not verified."
+			ev.Detail = "Delivery is not confirmed."
 		}
 		if c := r.Collapsed; c != nil && c.Count > 0 {
 			first := c.FirstAt
@@ -485,22 +485,22 @@ func dockControlPhrase(r incident.Record) string {
 		}
 	}
 	add(b.Enabled, a.Enabled, "turned on", "turned off")
-	add(b.Stop, a.Stop, "stop requested", "stop cleared")
-	add(b.Paused, a.Paused, "paused", "pause cleared")
-	add(b.AwaitingUser, a.AwaitingUser, "held for a person", "hold for a person cleared")
-	add(b.Completed, a.Completed, "marked finished", "finished mark cleared")
+	add(b.Stop, a.Stop, "stop requested", "stop request released")
+	add(b.Paused, a.Paused, "paused", "pause released")
+	add(b.AwaitingUser, a.AwaitingUser, "held for a person", "hold for a person released")
+	add(b.Completed, a.Completed, "marked finished", "finished mark removed")
 	if len(parts) == 0 {
 		return "A control change was saved; no hold changed"
 	}
 	s := strings.Join(parts, ", ")
-	return strings.ToUpper(s[:1]) + s[1:] + " by a control command"
+	return strings.ToUpper(s[:1]) + s[1:] + " by a command"
 }
 
 func dockWordDelivery(ev *dockEvent, d report.Delivery) {
 	event := clip(strings.ReplaceAll(d.Event, "_", " "), 40)
 	switch d.Outcome {
 	case "http_accepted":
-		ev.Phrase, ev.Detail = fmt.Sprintf("Report sent: %s", event), "Accepted by the receiver; whether a person saw it is not verified."
+		ev.Phrase, ev.Detail = fmt.Sprintf("Report sent: %s", event), "Accepted by the receiver; whether a person saw it is not known."
 	case "not_sent":
 		ev.Phrase = fmt.Sprintf("Report not sent for lack of time: %s", event)
 	default:
