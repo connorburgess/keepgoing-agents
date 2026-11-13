@@ -105,10 +105,10 @@ tail -n 40 <state_dir>/runs.jsonl
 
 **Pass**
 
-- While offline and behind the portal, every recorded check has action `none` and the reason `network down; waiting for connectivity` (or `provider is retrying the turn` for the first minutes). None is `reprompt`, `handoff`, `nudge` or `await_user`. In `runs.jsonl`, probes in those checks are `"skipped":"network_down"`, apart from at most one `connectivity verification` probe per hour.
+- While offline and behind the portal, every recorded check has action `none` and the reason `network down; waiting for connectivity` (or `provider is retrying the turn` for the first minutes, or `active` for a turn that hung and never failed, before the outage was noticed). None is `reprompt`, `handoff`, `nudge` or `await_user`. In `runs.jsonl`, probes in those checks are `"skipped":"network_down"`, apart from the occasional `connectivity verification` probe (after one hour offline, then after twice as long each time).
 - `status` while offline shows `network: down at the last connectivity check, failing since <time>`.
 - The loop was not held: `status` does not say `awaiting user`, and `reprompts` is what it was in `before.txt`.
-- The first check after you signed in has `"network":"restored"` with `networkDownFor`, and action `reprompt` (or `wake`). There is exactly one, and the thread in BB received one message, not several. If a child had failed, that message ends with a `[keepgoing:child-errors count=N]` line.
+- The first check after you signed in has `"network":"restored"` with `networkDownFor`, and action `reprompt` (or `wake`, or `none` for a turn that hung and is working again). There is exactly one recovery: for a BB thread the failed turn was retried with no new prompt (`"recovery":"turn_retry"`), followed by one short `[keepgoing:child-errors count=N]` message only if a child had failed; another adapter received one re-prompt, which ends with that line. The task prompt did not arrive again.
 - `timeline` shows the waiting checks as one entry with a first and last time, then the recovery.
 - Recovery started within one check interval of signing in. Note how long it took.
 
