@@ -234,6 +234,10 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 	if !failed {
 		t.Fatalf("unusable claim directory: %s", out.String())
 	}
+	// status says it too, and the check still runs.
+	if code, out, _ := f.run("status"); code != exitOK || !strings.Contains(out, "session:   session claim unavailable (") || !strings.Contains(out, "not protected against another loop") {
+		t.Fatalf("status: %d %s", code, out)
+	}
 	t.Setenv(registryDirEnv, "")
 	t.Setenv("KEEPGOING_SESSION_DIR", "")
 	t.Setenv("HOME", f.dir)
