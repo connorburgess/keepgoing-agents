@@ -139,7 +139,7 @@ const (
 	processTest   = "internal/adapter/process/process_test.go"
 	superTest     = "internal/supervise/supervise_test.go"
 	graphTest     = "internal/supervise/graph_test.go"
-	offlineTest   = "cmd/keepgoing/offline_scenario_test.go"
+	offlineTest   = "internal/scenario/headless_outage_test.go"
 	offlineBBTest = "internal/supervise/offline_scenario_unix_test.go"
 	networkTest   = "internal/supervise/network_test.go"
 	networkDoc    = "docs/operations.md#network-outages"
@@ -175,16 +175,16 @@ var Matrix = []Behaviour{
 	{ID: "reprompt", Title: "Recover a failed turn: re-prompt", What: "After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, fakeDecision + " A real retry exhaustion and explicit resume were observed once.", []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser"), d(providers)}},
-			"claude":  {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"codex":   {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless")}},
+			"claude":  {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
+			"codex":   {Yes, Fixture, "Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"cursor":  {Yes, Fixture, "A failed turn is re-prompted in its verified session.", []Ref{t("internal/adapter/runner/cursor_recovery_test.go", "TestCursorRecoversInitializedSessionAfterWrapperCrash")}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestErrorRepromptsThenAwaitsUser")}},
 		})},
 	{ID: "session_resume", Title: "Recover a failed turn: exact session resume", What: "Continue the same conversation by its saved identifier, never \"the most recent\".",
 		Cells: merge(map[string]Cell{
 			"bb":      {NA, None, "The configured thread is the conversation; every message goes to that thread ID.", nil},
-			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestOfflineScenarioHeadless")}},
-			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestOfflineScenarioHeadless")}},
+			"claude":  {Yes, Fixture, "--resume with the saved session ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestClaudeTurnLifecycle"), t(offlineTest, "TestScenarioHeadlessOutage")}},
+			"codex":   {Yes, Fixture, "exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session.", []Ref{t(runnerTest, "TestCodexResumeArgs"), t(offlineTest, "TestScenarioHeadlessOutage")}},
 			"cursor":  {Yes, Fixture, "--resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified.", []Ref{t(cursorTest, "TestCursorSessionSafety")}},
 			"process": {NA, None, "The resume command owns session identity.", nil},
 		})},
@@ -197,8 +197,8 @@ var Matrix = []Behaviour{
 	{ID: "network", Title: "Connection loss and the network check", What: "Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Fixture, "The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb.", []Ref{t(offlineBBTest, "TestOfflineForAnyLengthThenRecoversOnce"), d(networkDoc)}},
-			"claude":  {Yes, Fixture, "As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless"), d(networkDoc)}},
-			"codex":   {Yes, Fixture, "As for Claude Code.", []Ref{t(offlineTest, "TestOfflineScenarioHeadless"), d(networkDoc)}},
+			"claude":  {Yes, Fixture, "As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
+			"codex":   {Yes, Fixture, "As for Claude Code.", []Ref{t(offlineTest, "TestScenarioHeadlessOutage"), d(networkDoc)}},
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},

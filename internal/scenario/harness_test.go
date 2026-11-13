@@ -22,6 +22,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 )
 
@@ -98,6 +99,8 @@ type World struct {
 	Net     *Connectivity
 	Hooks   *Receiver
 	Threads map[string]*Thread
+	// Headless is the CLI of a headless loop, or "" for a BB loop.
+	Headless string
 
 	bin, world, home string
 	env              []string
@@ -124,6 +127,7 @@ func NewWorld(t *testing.T, start time.Time) *World {
 	}
 	w.install("bb")
 	w.install("claude")
+	w.install("codex")
 	w.linkGit()
 	w.Net = newConnectivity(t)
 	w.Net.world = w.world
@@ -365,6 +369,7 @@ func (w *World) AgentRuns(cmd string, extra ...string) *Step {
 // facet of the step.
 func (w *World) Tick() *Step {
 	w.t.Helper()
+	w.settle()
 	r := w.Run("tick", "-c", w.Config, "--now", w.stamp())
 	var line map[string]any
 	if r.Code == 0 {
@@ -373,6 +378,53 @@ func (w *World) Tick() *Step {
 		}
 	}
 	return w.record("tick", r, line)
+}
+
+// settle waits until a detached headless turn has ended, so a check sees
+// its result rather than the moment it was started. It waits on the turn's
+// own record, not on a timer; the bound only catches a turn that hangs.
+func (w *World) settle() {
+	w.t.Helper()
+	if w.Headless == "" {
+		return
+	}
+	dir := runner.Dir(filepath.Join(filepath.Dir(w.Config), "state", "targets", "primary"))
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		st, err := dir.Status()
+		if err == nil && st.Phase != runner.Running {
+			return
+		}
+		if time.Now().After(deadline) {
+			w.t.Fatalf("the headless turn did not end: %v %+v", err, st)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// InitHeadless creates a headless Claude Code or Codex loop with `keepgoing
+// init`, using the stand-in CLI found on PATH.
+func (w *World) InitHeadless(cli string, events ...string) {
+	w.t.Helper()
+	dir := filepath.Join(w.Root, "setup")
+	w.Must("init", "--non-interactive", "--name", "example-loop", "--agent", cli,
+		"--project", w.Project, "--directory", dir, "--task", scenarioTask)
+	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	w.Headless = cli
+	if len(events) > 0 {
+		w.EditConfig(func(loop map[string]any) {
+			loop["report"] = map[string]any{"events": events, "timeout": "5s"}
+		})
+	}
+}
+
+// HeadlessMode overrides what the next headless turns do (see the
+// stand-in); "" follows the network again.
+func (w *World) HeadlessMode(mode string) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(w.world, "headless.mode"), []byte(mode), 0o600); err != nil {
+		w.t.Fatal(err)
+	}
 }
 
 // Step is everything observable after one command: what was sent to the
@@ -525,6 +577,9 @@ func (r Runs) Attempts() int {
 
 func (w *World) record(label string, r Result, line map[string]any) *Step {
 	w.t.Helper()
+	// A headless turn started by this command runs detached; let it end so
+	// this step records what it sent and the next one sees its result.
+	w.settle()
 	s := &Step{Label: label, At: w.Now, Result: r, Tick: line}
 	var sends []Send
 	readLines(w.t, filepath.Join(w.world, "sends.jsonl"), &sends)
@@ -585,6 +640,13 @@ func (w *World) read(s *Step) {
 // invariants hold after every step of every scenario.
 func (w *World) invariants(s *Step) {
 	w.t.Helper()
+	if s.Label == "tick" && len(w.Journal) > 1 {
+		// Holds win: a check that starts on a hold sends nothing.
+		before := w.Journal[len(w.Journal)-2].Status.Control
+		if (before.AwaitingUser || before.Paused || before.Stop || before.Completed || !before.Enabled) && len(s.Sent) > 0 {
+			w.Failf(s, "a check on a hold sent %s", describeSends(s.Sent))
+		}
+	}
 	if s.Label == "tick" {
 		// A recorded check exits 0 whatever the agent or network did, so an
 		// external scheduler never disables supervision over an outage.
@@ -640,6 +702,10 @@ type Waiting string
 const (
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
+	// WaitResumeEpisode is the reliability lane's decision that an explicit
+	// resume starts a new error episode. Until then resume keeps the spent
+	// re-prompts, so a loop held on an error is held again at once.
+	WaitResumeEpisode Waiting = "resume starts a new error episode, reliability lane"
 )
 
 // Known records an assertion that fails today because of open work. It never
@@ -855,7 +921,7 @@ func (w *World) writeJSON(name string, v any) {
 // whether their provider can be reached.
 type Connectivity struct {
 	URL   string
-	world string       // the stand-ins' state directory
+	world string
 	mode  atomic.Value // "online", "offline" or "portal"
 	hits  atomic.Int64
 }
@@ -893,20 +959,18 @@ func newConnectivity(t *testing.T) *Connectivity {
 
 // Online, Offline and Portal set what the connectivity target and the
 // providers behind it do.
+// The stand-in CLIs read the same state from net.mode.
 func (c *Connectivity) Online()  { c.set("online") }
 func (c *Connectivity) Offline() { c.set("offline") }
 func (c *Connectivity) Portal()  { c.set("portal") }
 
-// set also tells the stand-in claude, which is a separate process: a probe
-// of a provider that cannot be reached must not pass.
 func (c *Connectivity) set(mode string) {
 	c.mode.Store(mode)
-	marker := filepath.Join(c.world, "unreachable")
-	if mode == "online" {
-		os.Remove(marker)
-		return
+	if c.world != "" {
+		tmp := filepath.Join(c.world, "net.mode.tmp")
+		os.WriteFile(tmp, []byte(mode), 0o600)
+		os.Rename(tmp, filepath.Join(c.world, "net.mode"))
 	}
-	os.WriteFile(marker, nil, 0o600)
 }
 
 // Reachable says whether a provider can be reached: not offline and not
