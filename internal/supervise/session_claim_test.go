@@ -443,3 +443,30 @@ func TestTheClaimIsHeldFromObservingToSending(t *testing.T) {
 		t.Fatalf("%+v %v, checked %d", res, err, watcher.checked)
 	}
 }
+
+// A stop with a brief hold in force stops each briefed conversation under
+// the same claim rule as the loop's own stop: it waits only while another
+// loop's live check holds that session, and the next check stops it then.
+func TestBriefStopWaitsForALiveClaimAndRetries(t *testing.T) {
+	w, p, fallbacks := rejectingWorld(t, false)
+	if _, err := control.Update(w.dir, func(f *control.File) {
+		f.Stop, f.AwaitingUser = true, true
+		f.BriefHold = []control.Brief{{Action: "handoff", Target: "claude-other"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := otherLoopClaims(t, w, "thr_claude-other")
+	runTick(t, w, t0)
+	if p.stopped != 1 || fallbacks["claude-other"].stopped != 0 {
+		t.Fatalf("primary %d, claimed fallback %d", p.stopped, fallbacks["claude-other"].stopped)
+	}
+	c.Release()
+	runTick(t, w, t0.Add(time.Minute))
+	if fallbacks["claude-other"].stopped != 1 {
+		t.Fatalf("the waiting stop was not made once the claim was free: %d", fallbacks["claude-other"].stopped)
+	}
+	runTick(t, w, t0.Add(2*time.Minute))
+	if fallbacks["claude-other"].stopped != 1 || p.stopped != 2 {
+		t.Fatalf("stops repeated after the request was done: primary %d, fallback %d", p.stopped, fallbacks["claude-other"].stopped)
+	}
+}

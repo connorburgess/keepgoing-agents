@@ -46,7 +46,7 @@ func TestResumeStartsANewErrorEpisodeAndRefundsNoLoopWideLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4; i++ {
-		if err := state.ReserveSend(dir, 10); err != nil {
+		if err := spendSends(dir, 10); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -293,5 +293,161 @@ func TestCompleteWithNothingHeldRecordsNoOpenQuestion(t *testing.T) {
 	cfg, _ := config.Load(f.cfg)
 	if ctl, _ := control.Load(cfg.Loop.StateDir); ctl.OpenQuestion != nil || !ctl.Completed {
 		t.Fatalf("%+v", ctl)
+	}
+}
+
+// A resume settles the sends recorded by a check that could not save what
+// happened before it starts a new episode, so they count in the episode that
+// is ending. The next check does not count them into the new one. A brief
+// that may have put the task on a second conversation is left for the next
+// check, which holds for a person.
+func TestResumeSettlesUnsavedSendsIntoTheEndingEpisode(t *testing.T) {
+	for _, tc := range []struct {
+		action, target string
+		held           bool
+	}{
+		{"reprompt", state.Primary, false},
+		{"handoff", "fallback-example", true},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
+			if code, _, errs := f.run("enable"); code != 0 {
+				t.Fatal(errs)
+			}
+			cfg, err := config.Load(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := cfg.Loop.StateDir
+			at := time.Now().Add(-time.Hour).UTC()
+			if err := state.Save(dir, state.File{Reprompts: cfg.Loop.Errors.MaxReprompts, LastRepromptAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := state.Reserve(dir, 0, 0, state.SendIntent{At: at.Add(time.Minute), Action: tc.action, Target: tc.target}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := control.Update(dir, func(c *control.File) {
+				c.AwaitingUser, c.EpisodeHold, c.Note = true, true, "error persisted after re-prompts"
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if code, _, errs := f.run("resume"); code != 0 {
+				t.Fatal(errs)
+			}
+			got := f.tick()
+			st, _ := state.Load(dir)
+			if tc.held {
+				if got["action"] != "await_user" || !strings.HasPrefix(fmt.Sprint(got["reason"]), "a handoff brief to fallback-example may have been delivered") {
+					t.Fatalf("%v", got)
+				}
+				return
+			}
+			if got["action"] != "reprompt" || st.Reprompts != 1 || st.UnconfirmedReprompts != 0 {
+				t.Fatalf("the unsaved re-prompt was counted into the new episode: %v reprompts=%d unconfirmed=%d", got, st.Reprompts, st.UnconfirmedReprompts)
+			}
+		})
+	}
+}
+
+// Resuming a hold for a brief that may have been delivered says which brief
+// it settles and where the loop continues: on its current target, with the
+// briefed route spaced like a rejected brief and no route briefed on the
+// next check. After `retarget` to the briefed route, the loop continues
+// there instead.
+func TestResumeOfABriefHoldSaysWhereTheLoopContinues(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.AwaitingUser, c.Note = true, "a handoff brief to fallback-example may have been delivered"
+		c.BriefHold = []control.Brief{{Action: "handoff", Target: "fallback-example"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := f.run("resume")
+	if code != 0 || !strings.Contains(out, "the handoff brief to fallback-example is settled as delivered and not taken") || !strings.Contains(out, "the loop continues on primary; no route is briefed on the next check") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	st, _ := state.Load(dir)
+	if !st.SkipHandoffOnce || st.HandoffBriefs["fallback-example"].Failed != 1 {
+		t.Fatalf("%+v", st)
+	}
+	if ctl, _ := control.Load(dir); ctl.AwaitingUser || len(ctl.BriefHold) != 0 {
+		t.Fatalf("%+v", ctl)
+	}
+}
+
+// resume --keep-stop settles a brief hold and keeps a requested stop, so a
+// person who stopped the loop is not led to undo it.
+func TestResumeKeepStopSettlesABriefHoldAndKeepsTheStop(t *testing.T) {
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != 0 {
+		t.Fatal(errs)
+	}
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := cfg.Loop.StateDir
+	if _, err := control.Update(dir, func(c *control.File) {
+		c.Stop, c.AwaitingUser = true, true
+		c.BriefHold = []control.Brief{{Action: "handoff", Target: "fallback-example"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := f.run("resume", "--keep-stop"); code != 0 || !strings.Contains(out, "is settled as delivered and not taken") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	ctl, _ := control.Load(dir)
+	if !ctl.Stop || ctl.AwaitingUser || len(ctl.BriefHold) != 0 {
+		t.Fatalf("%+v", ctl)
+	}
+	if st, _ := state.Load(dir); len(st.ResumedBriefs) != 1 {
+		t.Fatalf("%+v", st.ResumedBriefs)
+	}
+	if code, _, _ := f.run("pause", "--keep-stop"); code == 0 {
+		t.Fatal("--keep-stop accepted by pause")
+	}
+}
+
+// With max_reprompts 1, a resume of a brief hold must not cap the briefed
+// fallback: a cap of one would leave the loop with no fallback, waiting out
+// a limit with no hold. The fallback is not spaced either; the next check
+// briefs no route. A switch-back brief is spaced by retry_every and never
+// counted toward its cap, so the resume cannot end switch-back by itself.
+func TestResumeOfABriefHoldNeverCapsTheRoute(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := state.Save(dir, state.File{SwitchBackRejected: 0}); err != nil {
+		t.Fatal(err)
+	}
+	briefs := []control.Brief{{Action: "handoff", Target: "fallback-example"}, {Action: "switch_back", Target: "fallback-example-2"}}
+	if err := resumeEpisode(dir, false, at, 1, briefs...); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := state.Load(dir)
+	r := st.HandoffBriefs["fallback-example"]
+	if r.Failed != 0 || !r.LastAt.Equal(at) || st.SwitchBackRejected != 0 || !st.LastSwitchBackTry.Equal(at) || !st.SkipHandoffOnce || len(st.ResumedBriefs) != 2 {
+		t.Fatalf("cap 1: %+v", st)
+	}
+	// With a larger cap the fallback is spaced like a rejected brief. Every
+	// resume clears earlier rejected briefs (a repaired fallback gets fresh
+	// ones), so this one counts from zero.
+	dir = t.TempDir()
+	if err := state.Save(dir, state.File{HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 2, LastAt: at.Add(-time.Hour)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumeEpisode(dir, false, at, 3, briefs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = state.Load(dir); st.HandoffBriefs["fallback-example"].Failed != 1 || !st.HandoffBriefs["fallback-example"].LastAt.Equal(at) {
+		t.Fatalf("cap 3: %+v", st.HandoffBriefs)
 	}
 }
