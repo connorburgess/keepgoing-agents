@@ -284,12 +284,43 @@ A loop that merely shares a name is never a match, and a loop is never its own b
 
 **The owning conversation.** `control.json` records which BB thread owns a loop and its generation; control commands from another conversation are refused. `runs` reports that claim when it validates:
 
-- With `-c` or `--state-dir` the owner is shown as `session:bb/<thread>`, as `status` shows it. With a registry selector it is shown as `owner:<key>`, because registered status withholds the owning thread.
+- With `-c` or `--state-dir` the owner is shown as `session:bb/<thread>`, to any caller, including one that is not the owner. With a registry selector it is shown as `owner:<key>`, because registered status withholds the owning thread.
 - `blocksCaller` is true when the command ran from a different conversation (`BB_THREAD_ID`). The caller's identity is compared and never printed. Reading as a non-owner claims nothing.
 - If the owner is itself a registered loop, that loop and its run are named by the same rule as for a child.
 - An invalid claim or a pending transfer is `unknown`. No claim is `not_recorded`.
 
+**Which thread IDs are printed.** One rule covers the target, the owner and children: a thread ID is printed in a loop's view only when it is part of that loop's own records *and* an existing view of the same loop, reached the same way, already prints it.
+
+| Conversation | With `-c` or `--state-dir` | With a registry selector | Why |
+| --- | --- | --- | --- |
+| The loop's own target | Printed | Printed | `status` and registered status both print it. |
+| The loop's owner | Printed | Key only | The claim is this loop's own control record. `status` prints it, and the refusal a non-owner receives names the owning thread, because a refused caller needs to know which conversation to ask. Registered status withholds it. |
+| A child | Key only | Key only | It is another conversation's identity, held only as a hash, and no existing view of this loop prints it. |
+
+So the owner line shown to a non-owner is consistent with withholding children: the caller already receives that thread ID from the command that refused it, while nothing gives it a child's.
+
 **Not covered.** Who holds `tick.lock` or `daemon.lock` when a check is skipped is not identified: `lock` is always `unavailable`. That needs a holder record that does not exist yet. A child of a child is not followed from here; follow it from the child's own loop.
+
+### Live check: waiting on
+
+One live check has been run, on 2026-11-13, by the project coordinator on a real supervised BB loop whose checks come from an external scheduler. Its installed binary was upgraded to a source build of `main` at `e69e10e` on macOS arm64. No real identifiers are recorded here.
+
+What it showed:
+
+- **Upgrade.** The first scheduled check on the new build upgraded the existing graph and recorded the child listing. The check itself was unchanged: action none, reason child work running, exit 0.
+- **The blocker.** `keepgoing runs -c <config>`, twelve seconds after that check, reported `waiting on: blocked`, with the check's time and age and the last check recorded as `child_busy`. It showed one child, by key, as active and as having held the run at that check.
+- **It matched the provider.** At that moment the supervised conversation had six child threads: one working and five idle. The view listed the one working child and none of the idle ones, which matched BB's own thread list.
+- **No registry.** The child's loop was reported as unavailable because no registry was consulted, as designed.
+- **Owner.** The owner was shown as a chat reference with its generation, and the view said the calling conversation was not the owner and its control commands would be refused. That was true: the caller was a different conversation from the recorded owner.
+- **Lock holder.** Unavailable (`lock_holder_not_identified`).
+- **Following and JSON.** `--id child:<key>` answered `found` and linked `blocks` to the run. `--json` returned schema 2 with `stale` false, and contained two thread IDs in total, the supervised chat and the owner, and none for the child.
+
+What it did not cover, and so rests on fixtures only:
+
+- **A failed or stuck child** in this view. Later the same day a child did fail during an outage and `status` reported one child in error, but `runs` was not captured at that moment.
+- **An incomplete listing** and **a stale listing**.
+- **A child that is itself a registered supervised loop**, and any registry view.
+- **Windows and Linux.**
 
 ### Live check
 
