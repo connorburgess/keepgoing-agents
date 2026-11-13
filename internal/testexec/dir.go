@@ -1,12 +1,14 @@
 package testexec
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // maxLaunches bounds how often RunOnce starts a program the host keeps
@@ -41,6 +43,12 @@ func (e *RefusedError) Unwrap() error { return e.Err }
 // again, up to a bound; the error is then a *RefusedError. Any other failure
 // to start is returned as it is.
 func RunOnce(path string, env []string, args ...string) error {
+	return runOnce(path, env, false, args...)
+}
+
+// runOnce is RunOnce; with mustSucceed, a run that ends on its own with a
+// non-zero exit is an error too, not retried: the program ran, and failed.
+func runOnce(path string, env []string, mustSucceed bool, args ...string) error {
 	var last error
 	for launch := 1; launch <= maxLaunches; launch++ {
 		cmd := exec.Command(path, args...)
@@ -52,12 +60,19 @@ func RunOnce(path string, env []string, args ...string) error {
 			return nil
 		case !errors.As(last, &exit):
 			return fmt.Errorf("testexec: %s could not be started: %w", path, last)
+		case exit.Exited() && mustSucceed:
+			return fmt.Errorf("testexec: %s exited %d on its first run", path, exit.ExitCode())
 		case exit.Exited():
 			return nil
 		}
 	}
 	return &RefusedError{Path: path, Launches: maxLaunches, Err: last}
 }
+
+// buildTimeout bounds one go build. A build that hangs fails the test binary
+// that asked for it instead of running into the CI job's limit; the bound
+// leaves room for a build with a cold cache.
+var buildTimeout = 5 * time.Minute
 
 // Dir is one directory of executables shared by every test of a test binary.
 // Everything put in it is run once as it is added, so no test is the first to
@@ -99,7 +114,12 @@ func (d *Dir) Build(name, pkg string, env []string, args ...string) (string, err
 	if err != nil {
 		gobin = (&Dir{Path: filepath.Join(runtime.GOROOT(), "bin")}).File("go")
 	}
-	if b, err := exec.Command(gobin, "build", "-o", out, pkg).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
+	defer cancel()
+	if b, err := exec.CommandContext(ctx, gobin, "build", "-o", out, pkg).CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("no result after %s: %w", buildTimeout, ctx.Err())
+		}
 		return "", fmt.Errorf("testexec: go build %s: %v\n%s", pkg, err, b)
 	}
 	return out, RunOnce(out, env, args...)

@@ -131,8 +131,10 @@ func warm(t TB, path string) {
 		return
 	}
 	// A launch the host ended by a signal is retried; one refused every time
-	// is reported as an environment failure, not as the test's own.
-	if err := RunOnce(path, append(os.Environ(), warmVariable+"=1")); err != nil {
+	// is reported as an environment failure, not as the test's own. A run
+	// that ends on its own must succeed: the guard exits 0, so anything else
+	// is a broken script, caught here rather than in the test that runs it.
+	if err := runOnce(path, append(os.Environ(), warmVariable+"=1"), true); err != nil {
 		t.Fatalf("testexec: first run of %s: %v", filepath.Base(path), err)
 	}
 }
