@@ -260,6 +260,13 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .lanes { margin-top: 0.6rem; padding: 0.55rem 0.75rem; background: var(--sunk); border-radius: 9px; font-size: 0.875rem; max-width: 34rem; }
 .lanes-label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--ink-2); margin-bottom: 0.15rem; }
 .lanes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.15rem; }
+.route-list:not(.is-ordered) .route { grid-template-columns: minmax(0, 1fr); padding: 1rem 0; }
+.route-list:not(.is-ordered) .route:first-child { padding-top: 0.25rem; }
+.lanes + .lanes { margin-top: 0.4rem; }
+.route-account { font-weight: 450; color: var(--ink-2); }
+.route-summary { margin: 0.9rem 0 0; display: flex; flex-wrap: wrap; gap: 0.3rem 1.25rem; font-size: 0.9rem; font-weight: 600; }
+.route-summary .sub { font-weight: 500; }
+.standby { margin: 0; line-height: 1.7; }
 .lanes a { color: var(--ink); font-weight: 550; text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 0.2em; }
 .lanes a:hover { text-decoration-color: currentColor; }
 
