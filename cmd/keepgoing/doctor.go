@@ -205,6 +205,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	doctorTickBudget(&r, cfg.Loop)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
 }
@@ -222,6 +223,21 @@ func doctorCheckVersion(r *doctorReport, check *state.Check, stateReadable bool)
 	default:
 		r.add("supervisor.version", "unavailable", "Comparable tick build history is unavailable; an empty or dev label cannot identify a build.", "Record a tick from a versioned binary, then compare it with the scheduler's executable.")
 	}
+}
+
+// doctorTickBudget shows the check's time budget, says when an omitted
+// tick_timeout was raised to fit the probe timeout, and warns when a slow
+// check may outlast a five-minute scheduler timeout.
+func doctorTickBudget(r *doctorReport, l config.Loop) {
+	message := fmt.Sprintf("One check's optional work is budgeted at %s.", l.TickTimeout.Duration)
+	if l.TickTimeoutGrown() {
+		message = fmt.Sprintf("One check's optional work is budgeted at %s: tick_timeout is not set and was raised from the %s default to fit fallbacks probe.timeout.", l.TickTimeout.Duration, config.DefaultTickTimeout)
+	}
+	if w := l.TickTimeoutWarning(); w != "" {
+		r.add("supervisor.tick_timeout", "warning", message+" A slow check may outlast a five-minute scheduler timeout.", "With an external scheduler, raise its timeout or lower fallbacks probe.timeout; the daemon and managed services have no such timeout.")
+		return
+	}
+	r.add("supervisor.tick_timeout", "ok", message, "")
 }
 
 // doctorFailedChecks reports consecutive failed checks. A check that could

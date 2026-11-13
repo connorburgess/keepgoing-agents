@@ -266,7 +266,7 @@
         },
         "tick_timeout": {
           "$ref": "#/$defs/duration",
-          "description": "time budget for one check's optional work (fallback probes); default 3m, minimum 30s"
+          "description": "a check ends within this plus 90s; default 3m (or fallbacks probe.timeout plus 90s when longer), minimum 2m40s"
         },
         "daemon": {
           "type": "object",

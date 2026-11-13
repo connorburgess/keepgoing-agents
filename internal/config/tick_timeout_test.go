@@ -13,16 +13,18 @@ func TestTickTimeoutDefaultsAndBounds(t *testing.T) {
 	if err != nil || cfg.Loop.TickTimeout.Duration != 3*time.Minute || cfg.Loop.TickTimeoutWarning() != "" {
 		t.Fatalf("%+v %v", cfg, err)
 	}
-	for value, want := range map[string]time.Duration{"30s": 30 * time.Second, "4m": 4 * time.Minute, "10m": 10 * time.Minute} {
+	for value, want := range map[string]time.Duration{"168s": 168 * time.Second, "3m15s": 195 * time.Second, "4m": 4 * time.Minute, "10m": 10 * time.Minute} {
 		cfg, err := Parse([]byte(valid + "  tick_timeout: " + value + "\n"))
 		if err != nil || cfg.Loop.TickTimeout.Duration != want {
 			t.Fatalf("%s: %v", value, err)
 		}
-		if warned := cfg.Loop.TickTimeoutWarning() != ""; warned != (want > 4*time.Minute) {
+		// A check may take tick_timeout plus 90s; above 3m15s that no longer
+		// leaves a margin under a five-minute scheduler timeout.
+		if warned := cfg.Loop.TickTimeoutWarning() != ""; warned != (want > 195*time.Second) {
 			t.Fatalf("%s: warning=%t", value, warned)
 		}
 	}
-	for _, value := range []string{"29s", "-1m", "soon"} {
+	for _, value := range []string{"167s", "30s", "-1m", "soon"} {
 		if _, err := Parse([]byte(valid + "  tick_timeout: " + value + "\n")); err == nil {
 			t.Fatalf("accepted %q", value)
 		}
@@ -61,7 +63,8 @@ func TestTickTimeoutMustFitOneScheduledProbe(t *testing.T) {
 		{"", "20s", 3 * time.Minute, true},
 		{"3m", "90s", 3 * time.Minute, true},
 		{"179s", "90s", 0, false},
-		{"30s", "", 0, false},
+		{"168s", "", 0, false}, // valid by itself, too short beside a 90s probe
+		{"168s", "70s", 168 * time.Second, true},
 		{"5m", "3m", 5 * time.Minute, true},
 		{"4m", "3m", 0, false},
 	} {
@@ -77,6 +80,25 @@ func TestTickTimeoutMustFitOneScheduledProbe(t *testing.T) {
 		}
 		if cfg.Loop.TickTimeout.Duration != tc.want {
 			t.Fatalf("tick=%q probe=%q: %s", tc.tick, tc.probe, cfg.Loop.TickTimeout.Duration)
+		}
+	}
+}
+
+// The connectivity check is a mandatory step of a check, so its timeout adds
+// to the least tick_timeout; with the check off it does not.
+func TestMinimumTickTimeoutIncludesTheNetworkCheck(t *testing.T) {
+	for _, tc := range []struct {
+		extra string
+		ok    bool
+	}{
+		{"  tick_timeout: 168s\n", true},
+		{"  tick_timeout: 167s\n", false},
+		{"  tick_timeout: 160s\n  network: {check: \"off\"}\n", true},
+		{"  tick_timeout: 180s\n  network: {timeout: 30s}\n", false},
+		{"  tick_timeout: 190s\n  network: {timeout: 30s}\n", true},
+	} {
+		if _, err := Parse([]byte(valid + tc.extra)); (err == nil) != tc.ok {
+			t.Fatalf("%q: %v", tc.extra, err)
 		}
 	}
 }

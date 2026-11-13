@@ -224,7 +224,7 @@ func none(reason string) Decision { return Decision{Action: None, Reason: reason
 const NetworkDownReason = "network down; waiting for connectivity before re-prompting or handing off"
 
 // HandoffDeferredReason is recorded when a due handoff waits for the next check.
-const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed within this check's time budget; the next check retries"
+const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed in this check; the next check retries"
 
 // Decide applies the rules in priority order. Stop and pause always win.
 func Decide(in Input) Decision {
