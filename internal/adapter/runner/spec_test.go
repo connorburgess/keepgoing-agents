@@ -155,10 +155,11 @@ func TestRunnerActsOnAnyReading(t *testing.T) {
 	lookups := 0
 	reading := Reading{}
 	spec := &Spec{
-		Name:     "stand-in",
-		Settings: func(config.Agent) (Settings, bool) { return Settings{CLI: "stand-in-cli"}, true },
-		Argv:     func(config.Agent, string) []string { return []string{"stand-in-cli"} },
-		Read:     func(Status) Reading { return reading },
+		Name:         "stand-in",
+		Capabilities: Capabilities{StructuredWaiting: true},
+		Settings:     func(config.Agent) (Settings, bool) { return Settings{CLI: "stand-in-cli"}, true },
+		Argv:         func(config.Agent, string) []string { return []string{"stand-in-cli"} },
+		Read:         func(Status) Reading { return reading },
 		Limits: &LimitLookup{EvidenceSource: "codex_rate_limits", EvidenceCode: "blocked", Read: func(_ context.Context, cli string, _ []string) (CodexLimits, error) {
 			lookups++
 			if cli != "stand-in-cli" {
@@ -193,6 +194,18 @@ func TestRunnerActsOnAnyReading(t *testing.T) {
 	reading = Reading{Session: "sess-c", Completed: true, Waiting: true, Class: decide.ErrUnknown}
 	if obs := observe(); obs.State != decide.Idle || !obs.AwaitingInput || obs.Evidence.Source != "runner_exit" || h.dir.Session() != "sess-c" || lookups != 0 {
 		t.Fatalf("%+v session=%q lookups=%d", obs, h.dir.Session(), lookups)
+	}
+	// An agent that does not declare structured waiting is not believed.
+	spec.Capabilities.StructuredWaiting = false
+	if obs := observe(); obs.AwaitingInput {
+		t.Fatalf("undeclared waiting was passed on: %+v", obs)
+	}
+	if got := strings.Join(spec.ObservationInputs(), ","); got != "ErrorClass,Evidence,ResetsAt,State" {
+		t.Fatalf("inputs %s", got)
+	}
+	spec.Capabilities.StructuredWaiting = true
+	if got := strings.Join(spec.ObservationInputs(), ","); got != "AwaitingInput,ErrorClass,Evidence,ResetsAt,State" {
+		t.Fatalf("inputs %s", got)
 	}
 	// Completed but a failing exit code is an error.
 	finish("3")

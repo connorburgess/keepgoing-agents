@@ -76,7 +76,7 @@ type Capabilities struct {
 	// StructuredErrors: a failure carries a machine-readable code or status.
 	StructuredErrors bool
 	// StructuredWaiting: the agent reports waiting on a person in a
-	// machine-readable form.
+	// machine-readable form. A reading's Waiting is ignored without it.
 	StructuredWaiting bool
 }
 
@@ -135,6 +135,20 @@ type ProbeVerdict struct {
 	// Detail is a short code, never model output.
 	Detail              string
 	CredentialExpiresAt *time.Time
+}
+
+// ObservationInputs lists the decide.Observation fields a runner built from
+// the specification can set, sorted. The shared runner sets the same three
+// for every agent; the rest follow from what the specification declares.
+func (s *Spec) ObservationInputs() []string {
+	in := []string{"ErrorClass", "Evidence", "State"}
+	if s.Capabilities.StructuredWaiting {
+		in = append([]string{"AwaitingInput"}, in...)
+	}
+	if s.Limits != nil {
+		in = append(in[:len(in)-1], "ResetsAt", "State")
+	}
+	return in
 }
 
 // specs is the registry, in the order agents are listed to people.
@@ -226,9 +240,9 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 	r := h.spec.Read(st)
 	h.dir.SaveSession(r.Session)
 	if r.Completed && st.ExitCode == 0 {
-		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, AwaitingInput: r.Waiting, Evidence: r.Evidence}, nil
+		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, AwaitingInput: h.waiting(r), Evidence: r.Evidence}, nil
 	}
-	obs = decide.Observation{State: decide.Error, ErrorClass: r.Class, AwaitingInput: r.Waiting, Evidence: r.Evidence}
+	obs = decide.Observation{State: decide.Error, ErrorClass: r.Class, AwaitingInput: h.waiting(r), Evidence: r.Evidence}
 	// Some agents report a usage limit only as prose. Ask the agent's own
 	// structured interface instead of reading it.
 	if l := h.spec.Limits; l != nil && obs.ErrorClass == decide.ErrUnknown {
@@ -238,6 +252,12 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 		}
 	}
 	return obs, nil
+}
+
+// waiting honours a reading's Waiting only for an agent that declares it
+// reports that in a structured form.
+func (h *Headless) waiting(r Reading) bool {
+	return r.Waiting && h.spec.Capabilities.StructuredWaiting
 }
 
 // Send starts a turn. A running turn cannot be steered or queued into.
