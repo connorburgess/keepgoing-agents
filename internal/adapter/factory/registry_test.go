@@ -30,6 +30,18 @@ func TestFactoryBuildsRegisteredRunners(t *testing.T) {
 			t.Errorf("%s without settings: %v %v", spec.Name, a, err)
 		}
 	}
+	// An agent defined in configuration runs through the same shared runner.
+	cfg, err := config.Parse([]byte("version: 1\nloop:\n  name: example-loop\n  state_dir: state\n  prompt: Continue.\n  adapter: custom\n  custom:\n    name: example-agent\n    workdir: /example/project\n    definition:\n      start: [example-agent, run]\n      output: {format: json}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined, err := New(cfg.Loop.Agent, t.TempDir(), "primary")
+	if _, shared := defined.(*runner.Headless); err != nil || !shared || defined.Name() != "custom" {
+		t.Errorf("defined agent: %T %v", defined, err)
+	}
+	if a, err := New(config.Agent{Adapter: "custom"}, t.TempDir(), "primary"); a != nil || err == nil || !strings.Contains(err.Error(), "the custom adapter needs its custom settings") {
+		t.Errorf("custom without a definition: %v %v", a, err)
+	}
 	if a, err := New(config.Agent{Adapter: "example-agent"}, t.TempDir(), "primary"); a != nil || err == nil || !strings.Contains(err.Error(), `unknown adapter "example-agent"`) {
 		t.Errorf("unknown adapter: %v %v", a, err)
 	}
