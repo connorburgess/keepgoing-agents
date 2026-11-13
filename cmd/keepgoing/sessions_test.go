@@ -217,8 +217,27 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 	if !strings.Contains(found["registry.directory"], os.Getenv(registryDirEnv)) || !strings.Contains(found["session.directory"], os.Getenv("KEEPGOING_SESSION_DIR")) {
 		t.Fatalf("%v", found)
 	}
+	// A claim directory that cannot be used is an error: every check would
+	// fail without acting.
+	t.Setenv("KEEPGOING_SESSION_DIR", "relative/sessions")
+	out.Reset()
+	doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
+	var bad struct {
+		Checks []doctorCheck `json:"checks"`
+	}
+	failed := false
+	if json.Unmarshal(out.Bytes(), &bad) == nil {
+		for _, c := range bad.Checks {
+			failed = failed || (c.ID == "session.directory" && c.Status == "error")
+		}
+	}
+	if !failed {
+		t.Fatalf("unusable claim directory: %s", out.String())
+	}
 	t.Setenv(registryDirEnv, "")
 	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	t.Setenv("HOME", f.dir)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(f.dir, "state-home"))
 	out.Reset()
 	doctor(env{context.Background(), &out, &errs}, []string{"--json", "-c", f.cfg}, doctorExec)
 	if strings.Contains(out.String(), "registry.directory") || strings.Contains(out.String(), "session.directory") {
