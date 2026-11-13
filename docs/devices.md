@@ -2,11 +2,13 @@
 
 Design and research, 2026-11-13. **Nothing on this page is built.** keepgoing today supervises only the loops configured on the machine it runs on: there is no enrollment, no offer, no hop between devices, no relay and no view of another device. Every sentence below that says what keepgoing "does" across devices describes the design, not the program. Where something exists today, the sentence says so.
 
-This page uses the words in the [glossary](glossary.md): loop, lane, route, device, panel. It builds on three things already decided: the two Engineering rules in [AGENTS.md](../AGENTS.md) (keepgoing never extends its own reach; it is never a way around a provider's safeguards), roadmap item [P9](roadmap.md#preferred-routes-planned) (fleet safety before fleet features), and the research in [the command center](command-center.md), which this page refers to instead of repeating.
+This page uses the words in the [glossary](glossary.md): loop, lane, route, device, fleet, panel. It builds on three things already decided: the two Engineering rules in [AGENTS.md](../AGENTS.md) (keepgoing never extends its own reach; it is never a way around a provider's safeguards), roadmap item [P9](roadmap.md#preferred-routes-planned) (fleet safety before fleet features), and the research in [the command center](command-center.md), which this page refers to instead of repeating.
 
 ## The model
 
-There are three different "wheres", and each has its own word. A **device** is a machine running keepgoing; it holds the agents, their logins and the checkouts, and it supervises the loops that live on it. A **route** is where a turn runs: today a model on an account, later also a model served on a machine the person runs, or a cloud session. A **panel** is where a person looks and acts from. A loop belongs to exactly one device at a time and is always shown with that device. A loop can move to another device by a **hop**: the owning device offers it, an enrolled device that may run it takes it, ownership moves exactly once, and the new device starts a new conversation on its own routes with its own logins. An optional **relay** carries sealed status and control messages between a panel and devices that cannot reach each other; it holds no logins, runs no agents and cannot read what it carries.
+There are three different "wheres", and each has its own word. A **device** is a machine a person has enrolled; the devices one person has enrolled to work together are their **fleet**. Each device has one or more roles: it **runs loops**, it is a **panel**, or it **relays**. A device that runs loops has keepgoing, the agents, their logins and the checkouts on it, and supervises the loops that live on it. A **route** is where a turn runs: today a model on an account, later also a model served on a machine the person runs, or a cloud session. A **panel** is where a person looks and acts from; a laptop that runs loops is usually also a panel, and a phone is a device with the panel role only. A loop belongs to exactly one device at a time, one that runs loops, and is always shown with that device. A loop can move to another device by a **hop**: the owning device offers it, another device in the fleet that may run it takes it, ownership moves exactly once, and the new device starts a new conversation on its own routes with its own logins. A device with the **relay** role, which is optional, carries sealed status and control messages between a panel and devices that cannot reach each other; it holds no logins, runs no agents and cannot read what it carries.
+
+Where this page says "a device" in a sentence about owning, offering or taking a loop, it means a device that runs loops. A device with only the panel role is called a panel, and one with only the relay role a relay.
 
 ```mermaid
 flowchart LR
@@ -37,9 +39,9 @@ Nine rules hold the model together. The threat model below names them by number.
 4. **Ownership moves once.** Each hop advances the loop's owner generation by one; the old owner is fenced before the new one starts.
 5. **Bounds carry over and never reset.** Limits already used cross with the loop; a loop that arrives is bounded even if the origin's bounds were missing.
 6. **Each device's stop is local.** Anything remote may add a hold. Nothing remote may clear a hold set on the device.
-7. **A relay carries and cannot read.** It holds no logins and runs no agents. A request from an agent to its provider goes directly from the device that holds the login, never through a relay.
+7. **A relay carries and cannot read.** A device in the relay role holds no logins, runs no agents and owns no loops, and its key signs nothing that another device acts on. A request from an agent to its provider goes directly from the device that holds the login, never through a relay.
 8. **A refusal or restriction never causes a hop.** It holds for a person, on the device where it happened.
-9. **Enrolled by a person, by name, and recorded.** Devices and panels join only by a person's action on the machine itself. Every enrollment, offer, take and revocation is recorded.
+9. **Enrolled by a person, by name, and recorded.** A device joins the fleet, in whatever role, only by a person's action on the machine itself. Every enrollment, offer, take and revocation is recorded.
 
 ## Four questions, answered plainly
 
@@ -47,7 +49,7 @@ Nine rules hold the model together. The threat model below names them by number.
 
 **What does a hop look like across devices, if it does not all come from the originating device?** The origin's part is small: it stops at the end of a turn, publishes an offer and gives up ownership once. Everything after that is done by the taking device, on its own routes, with its own logins and its own checkout. When the origin cannot be reached, nothing can come from it at all, so by default the loop stays where it is and says so; a loop can be made movable without its origin only by an arrangement set up beforehand ([origin unreachable](#origin-unreachable)).
 
-**Some machines are devices and some are relays; is it like an anonymity network?** There are two roles and they are kept apart: a device runs loops and holds logins, a relay only forwards. The resemblance ends at "a relay forwards what it cannot read". The purpose is the opposite of anonymity: every device is enrolled by name, by a person, and every move is recorded ([contrast](#contrast-an-anonymity-network)).
+**Some machines are devices and some are relays; is it like an anonymity network?** Both are devices in the fleet, with different roles that are kept apart: one runs loops and holds logins, the other only relays. (A third role, the panel, is where a person looks from.) The resemblance ends at "a relay forwards what it cannot read". The purpose is the opposite of anonymity: every device is enrolled by name, by a person, and every move is recorded ([contrast](#contrast-an-anonymity-network)).
 
 **If keepgoing were put on a machine with its own GPUs serving models, would that be a loop?** No. The machine is a device. Each model it serves is a route. Each goal an agent works on there is a loop; with no goal there are no loops. keepgoing does not run a model: it supervises the agent that uses one.
 
@@ -69,13 +71,13 @@ A person works on a laptop named `laptop` and has a virtual machine named `build
 Two different arrangements use the same hardware, and they are different things.
 
 - **keepgoing runs on it.** Then it is a device, say `gpu-box`. A model it serves is a route on that device, reached by an agent running on `gpu-box`. The route has no plan allowance; its limit is the machine's capacity (how many turns it can serve at once, memory, power), which keepgoing has no notion of today ([local or remote model](command-center.md#local-or-remote-model)). Each goal an agent works on there is a loop on `gpu-box`.
-- **It only serves a model to an agent elsewhere.** Then it is not a device. It is the place a route points at: a loop on `laptop` has a route "the local model at an address the person configured". The requests go directly from `laptop` to that address. keepgoing is not installed on the serving machine and knows it only as part of a route.
+- **It only serves a model to an agent elsewhere.** Then it is not a device: nobody enrolled it and it has no role in the fleet. It is the place a route points at: a loop on `laptop` has a route "the local model at an address the person configured". The requests go directly from `laptop` to that address. keepgoing is not installed on the serving machine and knows it only as part of a route.
 
 In both, keepgoing never loads or serves a model. Which agent programs can drive a locally served model was not verified.
 
 ### A phone used only as a panel
 
-The phone runs no keepgoing, holds no logins and owns no loops. It is paired as a **panel**: it holds a signing key, and each device holds the list of what that panel may do. By default a paired panel may view status and add a pause or a stop. It may not start, resume, move a loop, change routes, enroll anything or answer an agent's permission prompt unless the person has allowed that panel to, on the device, per action. Interface text on the phone never says "this device"; it names the device each loop is on.
+The phone is a device with the panel role only. It runs no loops, holds no logins and owns nothing. It is enrolled like any device and holds a signing key; each device that runs loops holds the list of what that panel may do. By default its key can authorize three things: viewing status, adding a pause and adding a stop. It can never authorize starting, resuming, moving a loop, changing routes, enrolling a device or answering an agent's permission prompt, unless the person has allowed that panel to, per action, on the device that runs the loop. Interface text on the phone never says "this device"; it names the device each loop is on.
 
 A phone is the thing most likely to be lost. What a finder can do is in the [threat model](#threat-model).
 
@@ -87,10 +89,10 @@ A small device named `field-unit` runs keepgoing and an agent, and has a connect
 
 The steps below are the cooperative hop, where the origin is alive. It is the only hop proposed for a first version.
 
-1. **A person offers, or a rule they set beforehand does.** A rule names a specific loop and a condition, for example "offer when no route on this device can take it for an hour". A loop that is stopped, or held for a refusal or restriction, cannot be offered (rule 8).
+1. **A person offers.** In a first version only a person may. Later, a rule the person set beforehand may offer: it names a specific loop and a condition, for example "offer when no route on its device can take it for an hour". A loop that is stopped, or held for a refusal or restriction, cannot be offered (rule 8).
 2. **The origin stops at a turn boundary** and places a hold on the loop ("offered"). It does not cancel a running turn to make an offer.
 3. **The origin publishes an offer.** It contains what [crosses](#what-crosses-and-what-never-crosses): the loop's identity and name, the goal and its revision, a reference to the repository (its identity, the branch and the last commit the origin saw on the remote), the brief, the limits already used, the current holds, the owner generation `g`, and an expiry. The origin checks its checkout read-only first and says in the offer how many commits are not pushed and whether the working tree has changes; those do not cross.
-4. **Other devices pull.** Each enrolled device reads offers when it next checks. A device may take an offer only if its own policy allows that loop, it already has a checkout of that repository that the person configured, and it has a route that can run. A device can always decline, and declining needs no reason.
+4. **Other devices pull.** Each device in the fleet that runs loops reads offers when it next checks. A device may take an offer only if its own policy allows that loop, it already has a checkout of that repository that the person configured, and it has a route that can run. A device can always decline, and declining needs no reason.
 5. **One device claims.** The claim names the offer, generation `g` and the claiming device, and is signed by it.
 6. **The origin grants once.** The origin is the arbiter. It first records locally that it no longer owns the loop at any generation above `g` (the fence, the same idea as the pending record and target binding in today's [transfer](transfer.md)); only then does it publish a grant naming one claimant as owner at generation `g+1`. It grants at most one claim per offer.
 7. **The taker starts only after it has read its own grant.** It then records itself as owner at `g+1`, creates the loop locally with the carried bounds, and starts a new conversation from the brief on its most preferred available route. Unless the offer and the taker's own policy both allow starting without a person, the loop arrives held. A taken loop always has a bound (rule 5).
@@ -142,7 +144,7 @@ Both may claim. The origin grants one. The other reads a grant that names a diff
 Three consequences.
 
 - **Work reaches the new device only through the work repository's own remote**, by pushes the agent made. keepgoing does not copy files and does not commit. An offer says what was not pushed so the person can decide.
-- **The new device uses its own settings.** Its routes, its accounts and its agent permission settings are the ones the person configured there. Whether a hop may land on a device whose agent settings are more permissive than the origin's is [undecided](#undecided).
+- **The new device uses its own settings.** Its routes, its accounts and its agent permission settings are the ones the person configured there. The recommended default is that a hop may not land on a device whose agent permission settings are looser than the origin's, unless the person allowed that on the receiving device ([defaults](#decided-and-first-version-defaults)).
 - **The goal and the brief are text written for an agent.** They cross because the work cannot continue without them. They carry no authority: whether a device takes a loop is decided only from structured fields and its own policy, never from that text.
 
 ## Where an offer is published
@@ -151,7 +153,7 @@ Two devices must both see an offer, with no service hosted by the keepgoing proj
 
 **Who decides is separate from where it is published.** While the origin is alive it is the arbiter: it grants once, so the place of publication only has to carry signed messages, and may lose, delay or duplicate them without creating two owners. Only a takeover without the origin needs a place that can itself decide between two writers.
 
-The records are the same in every option: small files, each signed by the device that wrote it, with the goal and brief sealed so that only enrolled devices can open them.
+The records are the same in every option: small files, each signed by the device that wrote it, with the goal and brief sealed so that only the fleet's devices that run loops can open them.
 
 | | Direct connection on a local network | A folder the person configures, synced by a tool of theirs | A private records repository the person configures | A relay |
 | --- | --- | --- | --- | --- |
@@ -175,13 +177,13 @@ One limit of the recommendation: a repository host that showed different histori
 
 ## Enrollment and revocation
 
-**Enrolling a device.** A person runs an enroll command on the new machine. It creates a key pair there; the private key never leaves. The machine shows its name and a short code. On a device that is already enrolled, the person confirms the name and code. The new device is then added to the signed list of enrolled devices, and that addition is reported on every device's panel. The first device starts the list. keepgoing never enrolls a machine from somewhere else, never installs or starts itself on one, and never finds machines by itself.
+**Enrolling a device.** A person runs an enroll command on the new machine. It creates a key pair there; the private key never leaves. The machine shows its name and a short code. On a device that is already enrolled, the person confirms the name and code. The new device is then added to the fleet's signed list with its role or roles, and that addition is reported on every panel. The first device starts the fleet. keepgoing never enrolls a machine from somewhere else, never installs or starts itself on one, and never finds machines by itself.
 
 **Enrolled is not permitted.** A newly enrolled device may take nothing. On each device, the person says which loops or repositories that device may take, and whether a taken loop may start without them. That allowance is stored on the device that would do the work, so no other device can widen it (rule 3).
 
-**Pairing a panel.** The same exchange, with the role "panel". Its key can sign requests; it cannot open sealed goal text unless the person allowed that. What a panel may do is stored on each device, not on the panel.
+**Roles are set at enrollment.** The same exchange enrolls a phone with the panel role only, or a small host with the relay role only. A panel's key can sign requests to view, pause and stop; it cannot open sealed goal text unless the person allowed that, and what else it may do is stored on each device that runs loops, not on the panel. A relay's key identifies it to the devices that connect through it and authorizes nothing. Adding a role to a device later is a new enrollment step, confirmed the same way.
 
-**Revoking.** A person removes a device or panel from the list, on any device they are at. From then on other devices refuse its claims, offers and control requests, and stop sealing records to it. Revocation is of the machine's own key, not of the code used to enroll it, so it does remove the machine; the [fleet research](command-center.md#fleets-of-devices) found that revoking an enrollment secret usually does not. What revocation cannot do:
+**Revoking.** A person removes a device from the fleet's list, on any device they are at that runs loops. From then on other devices refuse its claims, offers and control requests, and stop sealing records to it. Revocation is of the machine's own key, not of the code used to enroll it, so it does remove the machine; the [fleet research](command-center.md#fleets-of-devices) found that revoking an enrollment secret usually does not. What revocation cannot do:
 
 - It cannot reach into the revoked machine. Loops it owns stay with it and are shown as "on a revoked device". An honest device that reads its own revocation holds all its loops; a stolen one may not.
 - It cannot remove the agent logins on that machine. Only the person can do that, with each provider.
@@ -189,7 +191,7 @@ One limit of the recommendation: a repository host that showed different histori
 
 ## The relay
 
-A relay exists for live things: a panel's view of a device it cannot reach directly, and a pause or stop that should arrive promptly. Hops do not need it. Running one is optional, and the person runs it; the [options for remote reach](command-center.md#options-for-the-dock-least-infrastructure-first) put a user's own private network ahead of any relay.
+A relay exists for live things: a panel's view of a device it cannot reach directly, and a pause or stop that should arrive promptly. Hops do not need it. Running one is optional, and the person runs it, on a device they enrolled with the relay role; the [options for remote reach](command-center.md#options-for-the-dock-least-infrastructure-first) put a user's own private network ahead of any relay.
 
 | A relay can | A relay cannot |
 | --- | --- |
@@ -199,11 +201,11 @@ A relay exists for live things: a panel's view of a device it cannot reach direc
 | Go offline | Hold a login, run an agent, own a loop or be offered one |
 | | Carry a request from an agent to its provider |
 
-Because a relay can delay or drop, a remote stop is shown as "sent, not confirmed" until the device acknowledges it, and each device's own stop and bounds do not depend on any relay (rule 6). A relay on the same machine as a device gives little separation: whoever takes the machine has both. Unlike an anonymity network there is one relay, chosen and named by the person, and it sees both ends.
+Because a relay can delay or drop, a remote stop is shown as "sent, not confirmed" until the device acknowledges it, and each device's own stop and bounds do not depend on any relay (rule 6). Giving the relay role to a device that also runs loops gives little separation: whoever takes the machine has both. The relay role belongs on a device that has no other. Unlike an anonymity network there is one relay, chosen and named by the person, and it sees both ends.
 
 ## Lanes on other devices
 
-After lanes are first-class members of a loop (roadmap P6), a lane could be offered and taken exactly as a loop is: pulled by an enrolled device whose own policy allows it, with its own device shown beside it, on that device's routes and logins. The loop itself stays on its device and remains the owner of the goal. The lane receives a share of the loop's bounds with the offer, fixed at that moment, so a lane on a device that later cannot be reached can never use more than its share. Its results return through the work repository's remote, not through keepgoing. None of this should be designed in detail before P6 and the cooperative hop both exist.
+After lanes are first-class members of a loop (roadmap P6), a lane could be offered and taken exactly as a loop is: pulled by a device in the fleet whose own policy allows it, with its own device shown beside it, on that device's routes and logins. The loop itself stays on its device and remains the owner of the goal. The lane receives a share of the loop's bounds with the offer, fixed at that moment, so a lane on a device that later cannot be reached can never use more than its share. Its results return through the work repository's remote, not through keepgoing. None of this should be designed in detail before P6 and the cooperative hop both exist.
 
 ## Threat model
 
@@ -211,7 +213,7 @@ After lanes are first-class members of a loop (roadmap P6), a lane could be offe
 
 | Threat | What it can do | What it cannot do | What stops it |
 | --- | --- | --- | --- |
-| **A lost or stolen phone paired as a panel** | View loop status. Add pauses and stops, which waste time but spend nothing. | Start, resume, move, change routes, enroll, answer permission prompts, read goal text, or reach any login, unless the person had allowed that panel to. | Panel defaults; allowances stored on devices; revocation; rule 6 means its holds are cleared by the person on the device. |
+| **A lost or stolen phone (a device with the panel role only)** | View loop status. Add pauses and stops, which waste time but spend nothing. | Start, resume, move, change routes, enroll, answer permission prompts, read goal text, or reach any login, unless the person had allowed that panel to. | Panel defaults; allowances stored on the devices that run loops; revocation; rule 6 means its holds are cleared by the person on the device. |
 | **A stolen device** | Use the agent logins on it (outside keepgoing's control). Open goals and briefs sealed to it. Publish offers and claim loops its policy on other devices permits, until revoked. Keep running its own loops. | Obtain another device's logins. Make another device run anything that device's own policy does not allow. Clear another device's holds. | Rules 2, 3, 6; revocation. The logins on it must be revoked with each provider by the person. |
 | **A malicious or compromised relay** | Observe who talks to whom and when. Drop or delay messages, including a remote stop. | Read or forge messages, replay one usefully, obtain a login, see provider traffic. | Rule 7; sealing and signatures; acknowledgement of remote controls; local stop and bounds. |
 | **A compromised enrolled device** | Everything a stolen device can. Publish an offer whose goal or brief text is hostile, which a device with a matching allowance would hand to its agent. Lie about limits used. Ignore its own fence and keep working. | Widen what other devices accept. Lower the bounds a taker enforces. Move a loop it does not own. | Rule 3 (allowances name specific loops and live on the taker); rule 5 (a taker enforces the stricter of the carried and its own bounds, and never accepts used counts lower than the last recorded); a changed goal revision arrives held; rule 4. Not fully stopped: see below. |
@@ -234,7 +236,7 @@ Read 2026-11-13. Dates and versions are those the source shows. The [fleet table
 - **File sync.** A Syncthing device ID is derived from the device's own certificate: "the SHA-256 hash of the certificate data in DER form", and a connection from an ID that is not expected is dropped; adding a device "needs to be done twice, once for each side" ([device IDs](https://docs.syncthing.net/dev/device-ids.html), v2.1.0). This is the pattern proposed here: a key made on the machine, and agreement on both sides.
 - **A counter-example.** Syncthing's introducer "lets a device automatically add new devices" ([introducer](https://docs.syncthing.net/users/introducer.html), v2.1.0). It is convenient and it is what rule 9 excludes: a device that can add devices for others.
 - **Mesh network.** Tailnet Lock means no machine joins "unless trusted nodes in your tailnet sign the new node", so "you don't need to trust the Tailscale coordination server for distributing public node keys"; it starts from trust on first use ([Tailnet Lock](https://tailscale.com/kb/1226/tailnet-lock), validated 2025-12-02). This supports a device list signed by enrolled devices and not by whatever stores it.
-- **Build agents.** Registering an Azure Pipelines agent needs a person in the pool's administrator role, and that role "is needed only at the time of registration and isn't persisted on the agent" ([agents](https://learn.microsoft.com/en-us/azure/devops/pipelines/agents/agents), 2026-08-18). GitHub removes a self-hosted runner that "has not connected to GitHub Actions for more than 14 days" ([removing runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/remove-runners)); whether enrolled devices here should lapse is [undecided](#undecided).
+- **Build agents.** Registering an Azure Pipelines agent needs a person in the pool's administrator role, and that role "is needed only at the time of registration and isn't persisted on the agent" ([agents](https://learn.microsoft.com/en-us/azure/devops/pipelines/agents/agents), 2026-08-18). GitHub removes a self-hosted runner that "has not connected to GitHub Actions for more than 14 days" ([removing runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/remove-runners)); whether devices here should lapse from the fleet is [undecided](#undecided).
 - **A narrow credential for one repository.** A deploy key is "an SSH key that grants access to a single repository", read-only unless write access is given ([deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)). It is the kind of credential a records repository would need on each device, set up by the person.
 
 This supports enrolling each machine by name, by a person, with a key made on the machine. Nothing found argues against it; the introducer shows the shortcut to avoid.
@@ -254,7 +256,7 @@ This supports a pulled hop: fetching work over an outbound connection is the com
 - **Sealed storage on a machine that is not trusted.** Syncthing's untrusted devices hide file data, names and structure but not "File sizes" or the folder's ID and label; the feature is marked beta ([untrusted devices](https://docs.syncthing.net/users/untrusted.html)). `age` encrypts one file to several public keys: "Every recipient will be able to decrypt the file" ([age](https://github.com/FiloSottile/age)). Sealing records to the list of enrolled devices is ordinary; sizes and times still leak.
 - **Remote-session relays.** The vendor relays described in [the command center](command-center.md#how-others-do-it) differ on exactly this point. Claude Code Remote Control makes "outbound HTTPS requests only and never opens inbound ports", but "All traffic travels through the Anthropic API over TLS" and the transcript "is stored on Anthropic servers" while connected: that relay can read ([Remote Control](https://code.claude.com/docs/en/remote-control)). Codex names "A secure relay layer" without saying who can read it ([remote connections](https://learn.chatgpt.com/docs/remote-connections)). Happy's README says "what moves between your devices is encrypted" and lists a relay server "for encrypted sync" ([Happy](https://github.com/slopus/happy)).
 
-This supports a relay kept separate from devices: forwarding without reading is established practice, and every source is candid that the relay still learns addresses, identities and volume. The table in [the relay](#the-relay) says the same.
+This supports keeping the relay role apart from the role that runs loops: forwarding without reading is established practice, and every source is candid that the relay still learns addresses, identities and volume. The table in [the relay](#the-relay) says the same.
 
 ### One owner, without split brain
 
@@ -289,16 +291,30 @@ Tor is "designed to anonymize" traffic: a client downloads "a signed directory o
 
 Also weak, and already noted: rule 8 has no structured signal behind it yet; the recommended carrier needs a rule reworded; and work that was not pushed does not cross.
 
+## Decided, and first-version defaults
+
+Decided:
+
+- **The word stays "device".** A device is any machine a person has enrolled, with one or more roles: it runs loops, it is a panel, or it relays. A phone is a device with the panel role only. The devices one person has enrolled to work together are a fleet.
+- **The rule in AGENTS.md stands as written.** keepgoing "never edits, commits to, or merges repositories". The records repository stays a recommendation, to be decided when the first roadmap item for this work (H1) starts. If it is adopted, the suggested wording is: "It never edits, commits to, or merges a work repository or an agent's checkout. The one repository it may write to is a private records repository a person creates only for keepgoing's own records, and it writes only its own record files there."
+
+Recommended defaults for a first version. Each is the coordinator's recommendation and is **to be confirmed by the owner**:
+
+- Only a person may offer a loop. Rules that offer come later.
+- A hop may not land on a device whose agent permission settings are looser than the origin's, unless the person allowed that on the receiving device.
+- Enrolling a device needs a confirmation that the operating system guards, so that a process running as the person cannot complete it.
+- A fleet is one person's devices only.
+- The lease (roadmap H9) stays last and optional. The default for an unreachable origin is that the loop stays put.
+
 ## Undecided
 
-- Whether keepgoing may commit and push to a private records repository, which needs the rule in AGENTS.md reworded, or stays with a folder the person syncs.
+- Whether keepgoing may commit and push to a private records repository, or stays with a folder the person syncs; decided when H1 starts, as above.
 - Whether the lease design should exist at all, given its remaining gap, and if so its times and margins.
-- Whether enrolling or approving on a device should require a confirmation guarded by the operating system, so that a process running as the person cannot complete it.
-- Whether a hop may land on a device whose agent permission settings are more permissive than the origin's, or must be refused or approved each time.
+- Which operating-system confirmation enrollment uses on each platform, and what a device with no screen does.
+- How "looser" is compared between two agents' permission settings, especially across different agent programs.
 - Whether a device keeps a checkout ready by the person's own setup only (assumed here) or keepgoing may ever ask an agent to create one.
-- Whether a rule may offer a loop at all in a first version, or only a person may.
-- Whether enrolled devices lapse after not being seen, and whether a revoked device's loops may be taken by another after a waiting time.
-- Devices that belong to more than one person. Everything here assumes one person, or one organisation's accounts; a loop taken by another person's device would run on that person's account.
-- How records are sealed and signed (formats and key types), and how the list of enrolled devices is protected against being rolled back.
-- The word for an enrolled panel that is not a device, and the words for a pinned and a leased loop in interface text.
+- Whether devices lapse from the fleet after not being seen, and whether a revoked device's loops may be taken by another after a waiting time.
+- Fleets shared by more than one person, or by an organisation's accounts. A loop taken by another person's device would run on that person's account.
+- How records are sealed and signed (formats and key types), and how the fleet's list is protected against being rolled back.
+- The words for a pinned and a leased loop in interface text.
 - Capacity as the bound on a local-model route: keepgoing has no notion of it yet.
