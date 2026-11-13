@@ -14,6 +14,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -26,7 +27,7 @@ func transferApplyFixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := state.Save(dir, state.File{LastPromptSend: &state.PromptSend{Version: 1, CheckAt: now, Target: "primary", Action: "wake", Mode: "auto", Outcome: "adapter_returned"}, ActiveTarget: state.Primary, Fingerprint: "fixture", LastProgressAt: now, LastWakeAt: now, Reprompts: 3, Nudges: 4, Handoffs: 2, SwitchBackRejected: 2, ChildErrorsAnnounced: []string{"fictional-child-hash"}, ChildErrorNoticeFor: "fictional-pending", ChildErrorNoticeAttempts: 1, HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 2, LastAt: now}}, PrimaryResetsAt: now.Add(time.Hour), LastState: "error", StopRequestedSent: true, AwaitingReported: true, StallRetry: &state.StallRetry{Target: "primary", Waiting: true}, LastCheck: &state.Check{At: now, Target: "primary"}, CheckedAt: now}); err != nil {
+	if err := state.Save(dir, state.File{LastPromptSend: &state.PromptSend{Version: 1, CheckAt: now, Target: "primary", Action: "wake", Mode: "auto", Outcome: "adapter_returned"}, ActiveTarget: state.Primary, Fingerprint: "fixture", LastProgressAt: now, LastWakeAt: now, Reprompts: 3, Nudges: 4, Handoffs: 2, SwitchBackRejected: 2, ChildErrorsAnnounced: []decide.CoveredChild{{Hash: "fictional-child-hash", ErroredAt: now}}, ChildErrorsAnnouncedV1: []string{"fictional-older-hash"}, ChildErrorNoticeFor: "fictional-pending", ChildErrorNoticeAttempts: 1, HandoffBriefs: map[string]state.BriefRecord{"fallback-example": {Failed: 2, LastAt: now}}, PrimaryResetsAt: now.Add(time.Hour), LastState: "error", StopRequestedSent: true, AwaitingReported: true, StallRetry: &state.StallRetry{Target: "primary", Waiting: true}, LastCheck: &state.Check{At: now, Target: "primary"}, CheckedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.WriteGoal(dir, "fixture", "thr_source", control.GoalSpec{Title: "PRIVATE-GOAL", ObjectiveRefs: []string{"x"}, AcceptanceRefs: []string{"y"}}, "", 0); err != nil {
@@ -133,7 +134,7 @@ func TestTransferApplyAndRecoveryBoundaries(t *testing.T) {
 			if st.StopRequestedSent || st.AwaitingReported || st.StallRetry != nil || st.LastCheck != nil || st.LastPromptSend != nil || st.LastState != "" || !st.PrimaryResetsAt.IsZero() || !st.CheckedAt.IsZero() {
 				t.Fatal("old observations survived")
 			}
-			if len(st.ChildErrorsAnnounced) != 0 || st.ChildErrorNoticeFor != "" || st.ChildErrorNoticeAttempts != 0 {
+			if len(st.ChildErrorsAnnounced) != 0 || len(st.ChildErrorsAnnouncedV1) != 0 || st.ChildErrorNoticeFor != "" || st.ChildErrorNoticeAttempts != 0 {
 				t.Fatal("child-error announcements for the old thread survived")
 			}
 			if len(st.HandoffBriefs) != 0 || st.SwitchBackRejected != 0 {

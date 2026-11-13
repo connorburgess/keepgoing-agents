@@ -38,7 +38,7 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	}
 	complete := !obs.ChildrenUnverified
 	prev := t.st.ChildErrorReport
-	var covered []decide.ReportedChild
+	var covered []decide.CoveredChild
 	reports := 0
 	if prev != nil {
 		covered, reports = prev.Children, prev.Reports
@@ -46,7 +46,7 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	// A covered child is forgotten only after it has stayed out of error for
 	// min_wake_interval, so a child flapping between error and a provider
 	// retry is one failure, not a report per flap.
-	kept, unreported := decide.ChildReportRecord(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren), covered, complete, t.now, t.loop.Progress.MinWakeInterval.Duration)
+	kept, unreported := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren), covered, complete, t.now, t.loop.Progress.MinWakeInterval.Duration)
 	if len(kept) == 0 && len(unreported) == 0 {
 		t.st.ChildErrorReport = nil // every covered child recovered: the episode is over
 		return
