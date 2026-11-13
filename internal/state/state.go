@@ -86,6 +86,9 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// TurnRetryNoOps counts consecutive checks in which the provider answered
+	// that a retry was already queued while it reported nothing queued.
+	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
 	// NewThreads holds the thread created for each candidate with
 	// bb.new_thread. NewThreadsCreated counts, for
 	// loop.limits.max_new_threads, every creation that produced a thread or
@@ -258,7 +261,8 @@ type Check struct {
 	ObservedState  string    `json:"observedState"`
 	AwaitingInput  bool      `json:"awaitingInput,omitempty"`
 	// RetrySignal is "expired" when the check saw a stale provider retry
-	// notice and stopped honoring it; empty otherwise.
+	// notice and stopped honoring it, "declined" when the provider's retry
+	// service had declined to retry the failure; empty otherwise.
 	RetrySignal string `json:"retrySignal,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is

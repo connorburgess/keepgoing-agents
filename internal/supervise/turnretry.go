@@ -22,7 +22,18 @@ const (
 	// turnRetryNotInError: the provider reported no failed turn and the session
 	// was no longer in error, or its status could not be re-read.
 	turnRetryNotInError = "not_in_error"
+	// turnRetryQueueUnconfirmed: the provider kept answering that a retry was
+	// already queued while reporting nothing queued; see turnRetryMaxNoOps.
+	turnRetryQueueUnconfirmed = "queue_unconfirmed"
 )
+
+// turnRetryMaxNoOps is how many consecutive checks may be answered "a retry
+// is already queued" while the session reports nothing queued. That pair
+// contradicts itself: a retry that is waiting is a queued message, and a
+// session in error with queued messages is not re-prompted at all. Beyond
+// this the answer is treated as unknown and the ordinary error rules apply,
+// so an inconsistent provider cannot be asked on every check for ever.
+const turnRetryMaxNoOps = 3
 
 // turnRetryMode is the send-graph mode of a turn retry: it has no prompt.
 const turnRetryMode = "turn_retry"
@@ -84,6 +95,16 @@ func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Deci
 		} else {
 			outcome = turnRetryNotInError
 		}
+	}
+	if outcome == string(adapter.TurnRetryAlreadyQueued) {
+		t.st.TurnRetryNoOps++
+		if t.st.TurnRetryNoOps > turnRetryMaxNoOps {
+			// Unknown, not "queued": recover with the prompt, counted as usual.
+			outcome, fallBack = turnRetryQueueUnconfirmed, true
+		}
+	}
+	if outcome != string(adapter.TurnRetryAlreadyQueued) {
+		t.st.TurnRetryNoOps = 0
 	}
 	t.incidentTurnRetry = outcome
 	t.st.LastTurnRetry = &state.TurnRetry{CheckAt: t.now, Target: t.res.Target, Outcome: outcome, Attempt: res.Attempt}

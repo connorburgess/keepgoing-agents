@@ -459,3 +459,95 @@ func TestTurnRetryAfterAnOutageOfAnyLength(t *testing.T) {
 		}
 	}
 }
+
+// BB answers "a retry is already queued" while reporting nothing queued. A
+// queued retry is a queued message, so the two contradict each other. A few
+// such checks cost nothing; after that the answer is treated as unknown and
+// the ordinary error rules apply, so the loop still ends in the hold.
+func TestRepeatedAlreadyQueuedWithNothingQueuedFallsBackToTheErrorRules(t *testing.T) {
+	w := newRetryWorld(t, decide.ErrUnknown)
+	w.cfg.Loop.Limits.MaxSends = 10
+	w.a.answer = func(int) (adapter.TurnRetry, error) {
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+	}
+	var got []string
+	for i := 0; i < 14; i++ {
+		res := w.mustTick(t, t0.Add(time.Duration(i)*11*time.Minute))
+		st := savedState(t, w.dir)
+		marker := ""
+		if res.Action == "reprompt" {
+			marker = st.LastTurnRetry.Outcome
+		}
+		got = append(got, fmt.Sprintf("%s/%s/%d", res.Action, marker, st.Reprompts))
+	}
+	// Three no-ops, then a counted prompt; three more, a second prompt; then the hold.
+	want := "reprompt/already_queued/0 reprompt/already_queued/0 reprompt/already_queued/0 reprompt/queue_unconfirmed/1 " +
+		"reprompt/already_queued/1 reprompt/already_queued/1 reprompt/already_queued/1 reprompt/queue_unconfirmed/2 " +
+		"await_user//2 none//2 none//2 none//2 none//2 none//2"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("\n got %s\nwant %s", strings.Join(got, " "), want)
+	}
+	used, _ := state.LoadSends(w.dir)
+	if w.a.retries != 8 || len(w.a.sent) != 2 || used != 2 {
+		t.Fatalf("retries %d prompts %d sends used %d", w.a.retries, len(w.a.sent), used)
+	}
+	j, _ := incident.Load(w.dir)
+	seen := false
+	for _, r := range j.Records {
+		seen = seen || r.TurnRetry == "queue_unconfirmed"
+	}
+	if !seen {
+		t.Fatal("the fallback is not in the incident history")
+	}
+
+	// Any other answer in between starts the count again.
+	w = newRetryWorld(t, decide.ErrUnknown)
+	answers := []adapter.TurnRetryOutcome{adapter.TurnRetryAlreadyQueued, adapter.TurnRetryAlreadyQueued, adapter.TurnRetryAlreadyQueued, adapter.TurnRetryQueued}
+	w.a.answer = func(n int) (adapter.TurnRetry, error) {
+		if n <= len(answers) {
+			return adapter.TurnRetry{Outcome: answers[n-1]}, nil
+		}
+		return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+	}
+	for i := 0; i < 4; i++ {
+		w.mustTick(t, t0.Add(time.Duration(i)*time.Minute))
+	}
+	if st := savedState(t, w.dir); st.TurnRetryNoOps != 0 || st.Reprompts != 1 || len(w.a.sent) != 0 {
+		t.Fatalf("%+v prompts %d", st.TurnRetryNoOps, len(w.a.sent))
+	}
+	// State written before the counter existed starts from zero.
+	if st := (state.File{}); st.TurnRetryNoOps != 0 {
+		t.Fatal(st.TurnRetryNoOps)
+	}
+}
+
+// A check that saw BB decline the retry says so, in the result, in saved
+// state and in the incident history, and then recovers as for any error.
+func TestDeclinedRetryNoticeIsReportedAndRecovered(t *testing.T) {
+	w := newRetryWorld(t, decide.ErrUnknown)
+	w.a.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryExpired: true, RetryDeclined: true, RetryKnown: true}
+	res := w.mustTick(t, t0)
+	if res.RetrySignal != "declined" || res.Action != "reprompt" || res.Recovery != "turn_retry" || w.a.retries != 1 || len(w.a.sent) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	st := savedState(t, w.dir)
+	j, err := incident.Load(w.dir)
+	if err != nil || st.LastCheck.RetrySignal != "declined" || j.Records[0].Observation.Retry != "declined" {
+		t.Fatalf("%+v %v", st.LastCheck, err)
+	}
+	// An aged-out notice still reads as expired.
+	w = newRetryWorld(t, decide.ErrUnknown)
+	w.a.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, RetryExpired: true, RetryKnown: true}
+	if res = w.mustTick(t, t0); res.RetrySignal != "expired" {
+		t.Fatalf("%+v", res)
+	}
+	if j, _ = incident.Load(w.dir); j.Records[0].Observation.Retry != "expired" {
+		t.Fatal(j.Records[0].Observation.Retry)
+	}
+	// A notice still honoured waits, whatever the hold state says later.
+	w = newRetryWorld(t, decide.ErrUnknown)
+	w.a.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Retrying: true, RetryKnown: true}
+	if res = w.mustTick(t, t0); res.Action != "none" || res.RetrySignal != "" || w.a.retries != 0 {
+		t.Fatalf("%+v", res)
+	}
+}

@@ -57,6 +57,11 @@ type Observation struct {
 	// ordinary error or stall handling applies. Its only policy effect is the
 	// bound on a silent active session that has no Git progress tracking.
 	RetryExpired bool
+	// RetryDeclined says why RetryExpired is set before the notice aged out:
+	// the provider's own retry service recorded that it will not retry this
+	// failed turn, and has nothing pending. It is diagnostic; RetryExpired
+	// carries the policy effect.
+	RetryDeclined bool
 	// RetryKnown is diagnostic evidence availability; false does not assert that
 	// retries are absent. It does not change decision policy.
 	RetryKnown bool
@@ -380,6 +385,32 @@ type Counters struct {
 	Reprompts      int
 	LastSendAt     time.Time
 	LastRepromptAt time.Time
+}
+
+// RetryService is what a provider's own retry service says about a failed
+// turn whose retry notice is still fresh. Each fact is false when the service
+// is absent, failed or answered in a shape that was not recognised.
+type RetryService struct {
+	// DecisionKnown: the service's last decision for the session was read.
+	DecisionKnown bool
+	// Declined: that decision was not to retry.
+	Declined bool
+	// ForCurrentTurn: the decision was made at or after the session's latest
+	// turn started, so it is about this failure and not an earlier one.
+	ForCurrentTurn bool
+	// PendingKnown: the service's list of pending retries was read.
+	PendingKnown bool
+	// Pending is how many retries it has waiting for the session.
+	Pending int
+}
+
+// RetryNoticeDead reports whether a fresh retry notice can be dropped now
+// instead of when it ages out. It needs positive evidence of all of: a
+// decision, that it declined, that it is about the current failure, and that
+// nothing is pending. Anything unknown keeps the notice, and the age-based
+// expiry still applies. A pending retry is always waited for.
+func RetryNoticeDead(s RetryService) bool {
+	return s.DecisionKnown && s.Declined && s.ForCurrentTurn && s.PendingKnown && s.Pending == 0
 }
 
 // Recovery is how a re-prompt decision is carried out.

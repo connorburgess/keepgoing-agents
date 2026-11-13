@@ -225,6 +225,7 @@ The re-prompt decision is now carried out with `bb thread retry <thread> --json`
 | error code `no_failed_turn`, and the thread is no longer in error, has something queued, or its status cannot be read | `not_in_error` | sends nothing and counts nothing. BB's own retry or a person restarted it after it was observed; a prompt in auto mode would steer that live turn. |
 | error code `unknown_command` | `unsupported` | sends the prompt: a BB release without `thread retry` behaves exactly as before |
 | error code `retry_already_queued` | `already_queued` | sends nothing and counts nothing: the retry that is waiting is not keepgoing's |
+| `retry_already_queued` on more than three consecutive checks while BB reports nothing queued | `queue_unconfirmed` | sends the prompt, counted as a re-prompt. A retry that is waiting is a queued message, and an errored thread with queued messages is not re-prompted at all, so this pair contradicts itself. It is treated as unknown and the ordinary error rules apply, which ends in the hold instead of asking BB on every check for ever. |
 | any other code, an unreadable result, a timeout, or `ok: true` without a known `delivery` | `refused` | sends nothing, counts the attempt and records the check as failed. An unexplained refusal is not evidence that the turn is gone. |
 
 - **Children in error.** A turn retry has no text to carry the notice about errored children. Where the rules give a re-prompt that notice, the retry is followed in the same check by the short notice-only message that the extra wake for errored children uses. It never contains the task, it is one more send against the allowance, and it is recorded as announced or rejected exactly as when a prompt carries it. Nothing is announced when nothing was retried.
@@ -407,6 +408,27 @@ Unreleased; **fixture-tested only**. A provider can announce a retry and then st
 - **A notice after the failed completion**, with no new turn started, is aged the same way. A failed or interrupted completion with no later notice ends retry intent at once, as before.
 - **Rate limit with a structured reset:** for a notice that is itself classified `rate_limit`, the interval starts at the reset time, so the notice can stand until the reset and one interval after it. A notice of any other class never borrows the reset of an earlier blocked window. On an errored thread the notice is honored only while a retry is actually queued or the reset is within `errors.wait_if_reset_within`; with a far reset and nothing queued the ordinary limit rules decide (a handoff when a fallback is confirmed, a recorded limit wait otherwise), so a notice cannot keep the loop on a limited account past a healthy fallback. A rate-limit notice with no structured reset expires like any other.
 - **A retry BB has queued:** BB's retry plugin schedules its retry of a failed turn as a queued message, and BB counts it in the thread's `queuedMessageCount`. An errored thread with anything queued is left alone under the existing rule (`messages already queued after error`), ahead of any handoff or re-prompt and whether or not a notice has expired. This is what protects a retry that is genuinely scheduled, including one for a rate limit with no reset keepgoing can see (a pooled route). It was established by reading the installed BB 0.48.1 server and plugin code, not by observing a live retry.
+
+#### A notice BB has already declined
+
+Unreleased source; **offline fixtures only**, not verified against a live BB thread.
+
+When a turn fails, BB's `provider-retry` plugin decides whether it will retry it and records that decision. For an error it does not consider retryable it declines, and nothing in BB will retry the turn. keepgoing used to wait out the provider's last retry notice anyway, up to `bb.retry_signal_ttl` (15 minutes by default) after the newest notice, before recovering.
+
+On an errored thread whose notice is still fresh, keepgoing now asks the plugin and drops the notice at once when all of these are certain:
+
+- `bb provider-retry explain <thread> --json` returns a decision of kind `decline`;
+- that decision's `observedAt` is not earlier than BB's time of the thread's latest `turn/started` event, so it is about this failure and not an earlier turn's (both are BB's clock, so skew against this host does not matter);
+- `bb provider-retry status <thread> --json` lists nothing pending.
+
+The check then records `retry signal: declined` and applies the ordinary error rules on the same check, which for a network, overloaded or unknown error is a [retry of the failed turn](#recovering-a-failed-bb-turn-by-retry).
+
+- **A pending retry is waited for.** A decision of kind `retry`, or anything in the pending list, keeps the notice. BB's scheduled retry is a queued message, which already stops recovery on its own.
+- **The plugin is optional.** A BB without it, a failed call, an answer for another thread, a missing field or any shape not listed here is "unknown". Unknown changes nothing: the notice is honoured until it ages out, exactly as before.
+- **Only kinds and times are read.** The decision's reason text is never read, stored or printed.
+- **Cost.** At most two extra `bb` calls on a check, each limited to 5 seconds, and only while a fresh notice sits on an errored thread. The second is made only when the first would drop the notice. An active thread, an idle thread, a thread with no notice and a notice that has already aged out ask nothing.
+- **After an outage of any length.** The plugin matters only while the notice is fresh. A fixture runs the first check 1 minute, 10 minutes, 20 minutes, 4 hours, 3 days and 3 weeks after the last notice: a declined notice is dropped at 1 and 10 minutes, and from 20 minutes on the notice has aged out, the plugin is not asked, and the result is the same recovery.
+- **Limits.** The decision is tied to the failure by time, not by request ID. A cursor written by an older build has no turn-start time, so the plugin's answer is ignored until the next turn starts. A held or stopped loop is not observed and asks nothing.
 
 #### A silent active thread
 

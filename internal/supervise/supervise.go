@@ -89,6 +89,8 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
+	// RetrySignal is "declined" when the provider's own retry service said it
+	// will not retry the failed turn, so a fresh notice was dropped at once.
 	// RetrySignal is "expired" when a stale provider retry notice was seen
 	// and not honored, so ordinary error or stall handling applied.
 	RetrySignal  string     `json:"retrySignal,omitempty"`
@@ -395,6 +397,9 @@ func (t *tick) run() error {
 	}
 	if obs.RetryExpired {
 		res.RetrySignal = "expired"
+	}
+	if obs.RetryDeclined {
+		res.RetrySignal = "declined"
 	}
 	if len(obs.AwaitingChildren) > 0 {
 		// Escalate before probes, fingerprints, and recovery. Child input must
