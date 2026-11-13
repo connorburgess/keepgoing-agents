@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
@@ -83,6 +84,16 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// NewThreads holds the thread created for each candidate with
+	// bb.new_thread. NewThreadsCreated counts, for
+	// loop.limits.max_new_threads, every creation that produced a thread or
+	// whose outcome is unknown; only one proven never to have reached BB is
+	// not counted. LastNewThreadAt is when the latest counted one was asked
+	// for. NewThreadIntent is a creation whose outcome is not yet recorded.
+	NewThreads        map[string]CreatedThread `json:"newThreads,omitempty"`
+	NewThreadsCreated int                      `json:"newThreadsCreated,omitempty"`
+	LastNewThreadAt   time.Time                `json:"lastNewThreadAt,omitempty"`
+	NewThreadIntent   *NewThreadIntent         `json:"newThreadIntent,omitempty"`
 	// ChildErrorReport is set while any child of the supervised thread is in
 	// error, so its report is not repeated by later checks or after a restart.
 	ChildErrorReport *ChildErrorReport `json:"childErrorReport,omitempty"`
@@ -129,6 +140,60 @@ type LimitWaitReport struct {
 	Outcome    string    `json:"outcome"`
 	// Reports counts report attempts in this wait, including this one.
 	Reports int `json:"reports,omitempty"`
+}
+
+// CreatedThread is the BB thread created for a handoff to a candidate with
+// bb.new_thread. It is that candidate's thread until a later handoff to the
+// same candidate creates another.
+type CreatedThread struct {
+	Thread    string    `json:"thread"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"createdAt"`
+	// From is the target alias the loop left; Continues is that target's BB
+	// thread, when it has one.
+	From      string `json:"from"`
+	Continues string `json:"continues,omitempty"`
+}
+
+// NewThreadIntent is saved before a thread is created and cleared once the
+// outcome is known, so a crash or a restart in between can find the thread by
+// its title and never create a second one for the same handoff.
+type NewThreadIntent struct {
+	Candidate   string    `json:"candidate"`
+	Title       string    `json:"title"`
+	Project     string    `json:"project"`
+	Environment string    `json:"environment"`
+	From        string    `json:"from"`
+	Continues   string    `json:"continues,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	RequestedAt time.Time `json:"requestedAt"`
+	// NotStarted records that the bb CLI could not be started for the spawn,
+	// so the hold can say so. The outcome is still treated as unknown.
+	NotStarted bool `json:"notStarted,omitempty"`
+}
+
+// CreatedThreadFor returns the thread created for a candidate, or "".
+func (f File) CreatedThreadFor(candidate string) string {
+	return f.NewThreads[candidate].Thread
+}
+
+// CandidateAgent returns the candidate's agent as it can be used right now.
+// A candidate that starts a new thread at handoff has no thread in its
+// configuration: its thread is the one created for it, and ok is false until
+// there is one. Every other candidate is returned unchanged.
+func (f File) CandidateAgent(c config.Candidate) (a config.Agent, ok bool) {
+	a = c.Agent
+	if a.Adapter != "bb" || a.BB == nil || !a.BB.NewThread {
+		return a, true
+	}
+	thread := f.CreatedThreadFor(c.ID)
+	if thread == "" {
+		return a, false
+	}
+	target := *a.BB
+	target.Thread = thread
+	a.BB = &target
+	return a, true
 }
 
 // BriefRecord is one target's rejected takeover briefs.
