@@ -759,6 +759,15 @@ func (t *tick) run() error {
 			t.st.LastProgressAt = t.now
 			t.st.Nudges = 0
 		}
+		// The uncredited time of the last change, for the no-progress flag. A
+		// first fingerprint, or one from before this field, is a baseline:
+		// no change is known since it, not that one happened then.
+		switch {
+		case previousFingerprint != "" && changed:
+			t.st.ProgressChangedAt, t.st.ProgressBaseline = t.now, false
+		case previousFingerprint == "" || t.st.ProgressChangedAt.IsZero():
+			t.st.ProgressChangedAt, t.st.ProgressBaseline = t.now, true
+		}
 		if t.progress != nil {
 			t.st.LastProgressAt = t.progress.ChangedAt
 		}

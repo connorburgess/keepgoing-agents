@@ -24,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -507,7 +508,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w)
 	}
 	printLimitWait(w, out.LimitWait)
-	fmt.Fprintf(w, "no progress: %s\n", out.NoProgress.Text)
+	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
@@ -700,7 +701,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	if j, err := incident.Load(l.StateDir); err == nil {
 		journal = &j
 	}
-	out.NoProgress = noProgressOf(cfg, st, ctl, journal, now)
+	var graph *rungraph.Graph
+	if g, availability := rungraph.Load(l.StateDir); availability == rungraph.Available {
+		graph = &g
+	}
+	out.NoProgress = noProgressOf(cfg, st, ctl, journal, graph, now)
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {

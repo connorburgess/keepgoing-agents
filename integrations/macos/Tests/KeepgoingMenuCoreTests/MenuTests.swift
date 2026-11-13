@@ -266,14 +266,14 @@ final class MenuTests: XCTestCase {
     }
 
     func testNoProgressIsShownOnTheRowAndIsNeverANeed() throws {
-        let json = #"{"schemaVersion":1,"registry":"available","complete":true,"allClear":true,"needsYou":0,"unread":0,"omitted":0,"loops":[{"key":"l0123456789ab","name":"example-api","state":"supervising","phrase":"Supervising","needsYou":false,"noProgress":"No progress: 8 sends with no recorded change to its repositories in 3 h."},{"key":"l0123456789ac","name":"example-web","state":"supervising","phrase":"Supervising","needsYou":false}]}"#
+        let json = #"{"schemaVersion":1,"registry":"available","complete":true,"allClear":true,"needsYou":0,"unread":0,"omitted":0,"loops":[{"key":"l0123456789ab","name":"example-api","state":"supervising","phrase":"Supervising","needsYou":false,"noProgress":"No progress: 8 messages with no recorded change to its repositories in 3 h."},{"key":"l0123456789ac","name":"example-web","state":"supervising","phrase":"Supervising","needsYou":false}]}"#
         let list = try JSONDecoder().decode(PanelList.self, from: Data(json.utf8))
-        XCTAssertEqual(list.loops[0].noProgress, "No progress: 8 sends with no recorded change to its repositories in 3 h.")
+        XCTAssertEqual(list.loops[0].noProgress, "No progress: 8 messages with no recorded change to its repositories in 3 h.")
         XCTAssertNil(list.loops[1].noProgress)
         let model = MenuBuilder.build(.read(list, at: now), now: now)
         let rows = model.rows.filter { $0.kind == .loop }
         XCTAssertEqual(rows.map { $0.detail }, ["Supervising · no progress", "Supervising"])
-        XCTAssertEqual(rows[0].accessibilityLabel, "example-api, Supervising. No progress: 8 sends with no recorded change to its repositories in 3 h.")
+        XCTAssertEqual(rows[0].accessibilityLabel, "example-api, Supervising. No progress: 8 messages with no recorded change to its repositories in 3 h.")
         // It is never a need: no badge, and the icon says nothing needs you.
         XCTAssertEqual(model.badge, "")
     }

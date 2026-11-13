@@ -154,17 +154,33 @@ The page follows the browser's light or dark setting and text size, works with a
 
 ### The no-progress flag
 
-A loop that keeps being prompted without results is flagged. The flag is built only from recorded facts: the transcript is never read, and no quality is judged. It informs a person and does nothing else. It is never "needs you", never stops "nothing needs you" being said, is never sent in a report or webhook, and never pauses, moves or stops anything. A flagged loop's row in the picker says "no progress", it is listed under "Worth knowing" with the fact that raised the flag, and its page has a Progress card and a Progress line under "Checks and limits". `keepgoing panel list --json` and the macOS menu carry the same sentence. `status` prints it as a "no progress:" line, and `status --json` carries it as `noProgress`, from the same function, so they cannot disagree.
+A loop that keeps being prompted without results is flagged. The flag is built only from recorded facts: the transcript is never read, and no quality is judged. It informs a person and does nothing else. It is never "needs you", never stops "nothing needs you" being said, is never sent in a report or webhook, and never pauses, moves or stops anything.
 
-The facts, all counted after the last recorded change to the loop's progress repositories (or their first fingerprint, so "in 3 h" means no change is recorded in at least that time):
+**Where it shows.**
+- The picker: a flagged loop's row says "no progress", and it is listed under "Worth knowing" with the fact that raised the flag.
+- The loop's page: a Progress card, and a Progress line under "Checks and limits".
+- `keepgoing panel list --json` and the macOS menu carry the same sentence.
+- `status` prints it after the label "progress flag:" (a neutral label, since the line may say "Not available"), and `status --json` carries it as `noProgress`. Both come from the same function as the panel, so they cannot disagree.
 
-- **Sends:** successful wakes, nudges and re-prompts. A failed send and a dry run are not sends. Six raise the flag by default (`progress.flag_after_sends`).
-- **Errors and retries:** checks that found the session in error or re-prompted it. Four raise the flag by default (`progress.flag_after_errors`).
-- **Held for a person:** how long the loop was held waiting for a person in that time, worded "Held for a person for 2 h 10 min of the last 6 h". It comes from the hold changes in the history and the control record now, and it raises nothing. No "working" time is given, because keepgoing sees a session only at its checks.
+It is shown only for a loop that is on. An off, stopped or finished loop reads "Not shown: the loop is stopped" (or off, or finished).
 
-The history is pruned. When it no longer reaches back to the last change for the kind of record a fact counts, the count reads "at least N". Retention keeps the newest pruned time for each tier, so this is exact, not a guess. A run of identical checks that the history folded into one record counts each check when the whole run is after the change, and otherwise reads "at least".
+**The window** starts when a check last saw the repositories' fingerprint change. This time is recorded in the loop's state as `progressChangedAt` and is never moved by `no_progress_timeout`'s credits for sleep or an outage. When no change has been seen since a check first recorded the repositories, that first record starts the window as a baseline, and the flag says "in at least 3 h". A loop whose state predates this field starts a baseline at its next check. A message or check made by the check that recorded the change counts as after it.
 
-Without `progress.repositories` the flag reads "Not available: no progress source is configured". Before any check has fingerprinted the repositories it reads "Not available: no check has recorded its progress repositories yet". With both thresholds at 0 it is off.
+**The facts**, counted in the window:
+
+- **Messages:** each send in the loop's run graph that the adapter returned from. That covers wakes, nudges, re-prompts sent as a prompt, and notices to a parent about failed lanes. A turn retry the provider accepted (`retried` or `queued`) also counts. Not counted: a send the adapter refused, and a re-prompt done as a turn retry that sent nothing (`already_queued`, `not_in_error`, `nothing_to_retry`, `refused`, `unsupported`). A send whose result was never saved (`intent`), or a retry whose queueing was unconfirmed, may have gone out, which makes the count "at least". Six raise the flag by default (`progress.flag_after_sends`).
+- **Errors and retries:** checks that found the session in error, or whose turn retry the provider accepted. Four raise the flag by default (`progress.flag_after_errors`).
+- **Held for a person:** how long the loop was held waiting for a person in the time its history covers, worded "Held for a person for 2 h 10 min of the last 6 h". It raises nothing. No "working" time is given, because keepgoing sees a session only at its checks.
+
+**When the records are short.** The run graph keeps its newest 128 attempts, and the incident history prunes each tier and records the newest pruned time. When either no longer covers the whole window for a fact, that count is "at least N". A lower bound that has reached its threshold still raises the flag. One below it cannot say "clear", so the flag reads "Not enough history to tell: the retained history covers only the last 40 min". Held time is counted only over the covered part, and then says "of the last 40 min, which is as far back as its history covers". A run of identical checks that the history folded into one record counts each check when the whole run is in the window, and is "at least" otherwise.
+
+**Other cases.**
+- Without `progress.repositories`: "Not available: no progress source is configured".
+- Before any check has recorded the repositories: "Not available: no check has recorded its progress repositories yet".
+- With the change time ahead of the computer's clock: "Not available: the progress time is ahead of this computer's clock".
+- Records stamped after the read are not counted.
+- With both thresholds at 0, the flag is off.
+- Thresholds must be whole numbers from 0 to 1000; `2.5` or `"6"` is refused.
 
 Not in this flag:
 - **Lanes:** keepgoing records a loop's lanes only as counts and hashed keys, with no sends or progress of their own, so a lane cannot be flagged until lanes have their own records.

@@ -57,6 +57,8 @@ func TestParseRejects(t *testing.T) {
 		"bad window time":     valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
 		"negative send flag":  valid + "  progress:\n    flag_after_sends: -1\n",
 		"huge error flag":     valid + "  progress:\n    flag_after_errors: 1001\n",
+		"fractional flag":     valid + "  progress:\n    flag_after_sends: 2.5\n",
+		"quoted flag":         valid + "  progress:\n    flag_after_sends: \"6\"\n",
 		"bad exit class": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
 			"  bb:\n    thread: thr_example123\n",
 			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {3: nonsense}\n", 1),

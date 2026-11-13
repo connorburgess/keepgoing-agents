@@ -142,8 +142,24 @@ type Progress struct {
 	// at that many sends, or that many checks that found an error or retried
 	// the turn, with no recorded change to the repositories. Unset means the
 	// default; 0 turns that fact's flag off. The flag only informs a person.
-	FlagAfterSends  *int `yaml:"flag_after_sends,omitempty"`
-	FlagAfterErrors *int `yaml:"flag_after_errors,omitempty"`
+	FlagAfterSends  *FlagCount `yaml:"flag_after_sends,omitempty"`
+	FlagAfterErrors *FlagCount `yaml:"flag_after_errors,omitempty"`
+}
+
+// FlagCount is a whole number of events. YAML would otherwise read 2.5 as 2
+// without saying so; anything but an integer is refused.
+type FlagCount int
+
+func (c *FlagCount) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("line %d: %q is not a whole number", n.Line, n.Value)
+	}
+	var v int
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*c = FlagCount(v)
+	return nil
 }
 
 // Defaults of the no-progress flag's thresholds.
@@ -158,7 +174,7 @@ func (p Progress) SendsFlag() int {
 	if p.FlagAfterSends == nil {
 		return DefaultFlagAfterSends
 	}
-	return *p.FlagAfterSends
+	return int(*p.FlagAfterSends)
 }
 
 // ErrorsFlag is the error-or-retry count that raises the no-progress flag;
@@ -167,7 +183,7 @@ func (p Progress) ErrorsFlag() int {
 	if p.FlagAfterErrors == nil {
 		return DefaultFlagAfterErrors
 	}
-	return *p.FlagAfterErrors
+	return int(*p.FlagAfterErrors)
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -560,7 +576,7 @@ func (c *Config) Validate() error {
 	}
 	for _, f := range []struct {
 		name string
-		v    *int
+		v    *FlagCount
 	}{{"flag_after_sends", l.Progress.FlagAfterSends}, {"flag_after_errors", l.Progress.FlagAfterErrors}} {
 		if f.v != nil && (*f.v < 0 || *f.v > maxFlagAfter) {
 			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
