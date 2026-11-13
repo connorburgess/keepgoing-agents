@@ -97,7 +97,7 @@ func validDelivery(d Delivery) bool {
 		return false
 	}
 	switch d.Outcome {
-	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted":
+	case "prepared", "setup_failed", "body_failed", "sign_failed", "request_failed", "attempt_started", "transport_failed", "http_rejected", "http_accepted", "not_sent":
 	default:
 		return false
 	}
@@ -127,7 +127,7 @@ func validDelivery(d Delivery) bool {
 		}
 	}
 	switch d.Outcome {
-	case "prepared", "setup_failed", "body_failed", "sign_failed":
+	case "prepared", "setup_failed", "body_failed", "sign_failed", "not_sent":
 		return len(d.Attempts) == 0
 	case "request_failed":
 		return true // request construction can fail before a retry
@@ -234,6 +234,24 @@ func (r recorded) Report(ctx context.Context, e Event) error {
 	// Diagnostic failure must never suppress the original request, trigger another
 	// attempt, or alter a hold. Callers report the error after the existing action.
 	return errors.Join(sendErr, historyErr)
+}
+
+// Dropper is implemented by reporters that keep delivery records. Dropped
+// records a subscribed event the caller decided not to send, with no request
+// and no attempt, so the omission is visible beside the deliveries.
+type Dropper interface {
+	Dropped(e Event) error
+}
+
+func (r recorded) Dropped(e Event) error {
+	if !r.cfg.ReportsEvent(e.Type) {
+		return nil
+	}
+	now := time.Now().UTC()
+	if _, err := saveDelivery(r.dir, Delivery{Event: eventName(e.Type), StartedAt: now, UpdatedAt: now, Outcome: "not_sent", Receipt: "unverified", Attempts: []Attempt{}}); err != nil {
+		return ErrDeliveryHistory
+	}
+	return nil
 }
 
 // DeliveryStatus is historical evidence, never endpoint health or send authority.

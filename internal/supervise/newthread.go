@@ -42,6 +42,17 @@ func newThreadTitle(loop string) (string, error) {
 	return fmt.Sprintf("keepgoing: %s (continued, %s)", loop, hex.EncodeToString(b)), nil
 }
 
+// Time for creating a thread. It takes the place of the model switch and send
+// of an ordinary handoff, so its three bb commands together stay within the
+// time a check reserves for those (reserveSend). The lookup made for an
+// unsettled creation at the start of a check comes out of the observation's
+// time instead.
+const (
+	newThreadPlaceTime = 10 * time.Second // read the project and environment
+	newThreadSpawnTime = 30 * time.Second // bb thread spawn
+	newThreadFindTime  = 20 * time.Second // look the thread up by its title
+)
+
 // isNewThread reports whether a candidate starts a new thread at handoff.
 func isNewThread(c config.Candidate) bool {
 	return c.Adapter == "bb" && c.BB != nil && c.BB.NewThread
@@ -104,7 +115,9 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 		if continues == "" {
 			return "", errors.New("no BB conversation to continue: set bb.project and bb.environment on this candidate")
 		}
-		seen, err := creator.PlaceOf(t.ctx, continues)
+		ctx, cancel := context.WithTimeout(t.ctx, newThreadPlaceTime)
+		seen, err := creator.PlaceOf(ctx, continues)
+		cancel()
 		if err != nil {
 			return "", errors.New("could not read the project and environment of the conversation being continued")
 		}
@@ -137,8 +150,10 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	}
 	text += ownershipNote(t.loop.Name)
 	attempt := t.graphBegin(c.ID, "handoff", string(adapter.ModeAuto), brief)
-	thread, err := creator.Spawn(t.ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning,
+	ctx, cancel := context.WithTimeout(t.ctx, newThreadSpawnTime)
+	thread, err := creator.Spawn(ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning,
 		Permission: c.BB.NewThreadPermission(), Title: title, Prompt: text})
+	cancel()
 	outcome := "adapter_returned"
 	if err != nil {
 		outcome = "adapter_error"
@@ -155,7 +170,9 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 		return "", err
 	}
 	// No proof either way: BB may have created the thread and failed after.
-	ids, findErr := creator.FindByTitle(t.ctx, place, title)
+	ctx, cancel = context.WithTimeout(t.ctx, newThreadFindTime)
+	ids, findErr := creator.FindByTitle(ctx, place, title)
+	cancel()
 	if findErr == nil && len(ids) == 1 {
 		t.adoptThread(intent, ids[0]) // created, whatever bb went on to report
 		return ids[0], nil
@@ -226,7 +243,13 @@ func (t *tick) reconcileNewThread() (moved, held bool) {
 	if configured && c.BB != nil {
 		cli = c.BB.CLI
 	}
-	ids, err := t.opts.Threads(cli).FindByTitle(t.ctx, bb.Place{Project: in.Project, Environment: in.Environment}, in.Title)
+	// The lookup's time is taken from the observation that follows, so the
+	// check's hard limit is unchanged.
+	started := t.opts.Clock()
+	ctx, cancel := context.WithTimeout(t.ctx, newThreadFindTime)
+	ids, err := t.opts.Threads(cli).FindByTitle(ctx, bb.Place{Project: in.Project, Environment: in.Environment}, in.Title)
+	cancel()
+	t.observeSpent = min(max(t.opts.Clock().Sub(started), 0), newThreadFindTime)
 	if err != nil || len(ids) != 1 {
 		t.holdForNewThread()
 		return false, true

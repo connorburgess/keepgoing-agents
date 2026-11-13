@@ -13,16 +13,18 @@ func TestTickTimeoutDefaultsAndBounds(t *testing.T) {
 	if err != nil || cfg.Loop.TickTimeout.Duration != 3*time.Minute || cfg.Loop.TickTimeoutWarning() != "" {
 		t.Fatalf("%+v %v", cfg, err)
 	}
-	for value, want := range map[string]time.Duration{"30s": 30 * time.Second, "4m": 4 * time.Minute, "10m": 10 * time.Minute} {
+	for value, want := range map[string]time.Duration{"160s": 160 * time.Second, "3m15s": 195 * time.Second, "4m": 4 * time.Minute, "10m": 10 * time.Minute} {
 		cfg, err := Parse([]byte(valid + "  tick_timeout: " + value + "\n"))
 		if err != nil || cfg.Loop.TickTimeout.Duration != want {
 			t.Fatalf("%s: %v", value, err)
 		}
-		if warned := cfg.Loop.TickTimeoutWarning() != ""; warned != (want > 4*time.Minute) {
+		// A check may take tick_timeout plus 90s; above 3m15s that no longer
+		// leaves a margin under a five-minute scheduler timeout.
+		if warned := cfg.Loop.TickTimeoutWarning() != ""; warned != (want > 195*time.Second) {
 			t.Fatalf("%s: warning=%t", value, warned)
 		}
 	}
-	for _, value := range []string{"29s", "-1m", "soon"} {
+	for _, value := range []string{"159s", "30s", "-1m", "soon"} {
 		if _, err := Parse([]byte(valid + "  tick_timeout: " + value + "\n")); err == nil {
 			t.Fatalf("accepted %q", value)
 		}
@@ -61,7 +63,8 @@ func TestTickTimeoutMustFitOneScheduledProbe(t *testing.T) {
 		{"", "20s", 3 * time.Minute, true},
 		{"3m", "90s", 3 * time.Minute, true},
 		{"179s", "90s", 0, false},
-		{"30s", "", 0, false},
+		{"160s", "", 0, false}, // valid by itself, too short beside a 90s probe
+		{"160s", "70s", 160 * time.Second, true},
 		{"5m", "3m", 5 * time.Minute, true},
 		{"4m", "3m", 0, false},
 	} {

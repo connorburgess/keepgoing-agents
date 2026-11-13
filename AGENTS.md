@@ -42,7 +42,7 @@ Never add an AI trailer, footer, or credit to anything: commits, PR bodies, comm
 ## Engineering
 
 - The tool supervises agent loops. It never edits, commits to, or merges repositories, and it never reads transcript text to make a decision.
-- It creates a conversation in exactly one case: a handoff to a fallback candidate that opted in with `bb.new_thread`, where it creates one BB thread for that handoff, capped per loop. It never creates a thread otherwise, and never stops, archives, re-parents or messages the conversation it leaves.
+- It creates a conversation in exactly one case: a handoff to a fallback candidate that opted in with `bb.new_thread`, where it creates one BB thread for that handoff, capped per loop and spaced at least an hour apart. An attempt whose outcome is unknown counts, holds the loop for a person and is never retried. It never creates a thread otherwise, and never stops, archives, re-parents or messages the conversation it leaves.
 - Limit and error detection comes only from structured sources: exit codes, JSON fields, HTTP status, provider status commands. An unclassified error is `unknown`, and `unknown` never triggers failover.
 - Stop and pause win over every other rule on the next check.
 - The decision engine stays a pure function with table tests. Side effects live in adapters and the command layer.

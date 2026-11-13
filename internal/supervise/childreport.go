@@ -76,6 +76,12 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 		return
 	}
 	rec.Children, rec.Reports = decide.CoverChildren(kept, unreported, t.now, childErrorMaxCovered), reports+1
+	// A report that cannot be sent in this check for lack of time must not use
+	// up its single attempt: nothing is recorded, so the next check sends it.
+	if !t.canReport(childErrorEvent) {
+		t.warn("report %s put off to the next check: no time left in this one (loop.tick_timeout)", childErrorEvent)
+		return
+	}
 	// Intent first, as holds and completions are saved before their reports.
 	// If it cannot be saved nothing is sent, so an unwritable state directory
 	// cannot turn into a report on every check.
@@ -98,7 +104,12 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	if rec.Reports > 1 {
 		text += " More children have failed since the last report for this episode."
 	}
-	err = t.opts.Reporter.Report(t.ctx, report.Event{Type: childErrorEvent, Loop: t.loop.Name, Text: text, At: t.now,
+	ctx, cancel, ok := t.reportContext(childErrorEvent, text)
+	if !ok {
+		return // cannot happen: canReport was checked before the attempt was reserved
+	}
+	defer cancel()
+	err = t.opts.Reporter.Report(ctx, report.Event{Type: childErrorEvent, Loop: t.loop.Name, Text: text, At: t.now,
 		Data: map[string]any{"erroredChildren": rec.Errored, "runningChildren": rec.Running, "listingComplete": complete, "report": rec.Reports}})
 	if err != nil {
 		// One attempt: a failed delivery is recorded, not retried.

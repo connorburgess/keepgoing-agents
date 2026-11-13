@@ -281,6 +281,8 @@ A handoff is allowed only when the healthy, eligible candidates cover at least `
 
 Below the minimum, keepgoing warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
 
+A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, keepgoing probes the handoff's target exactly and hands off without first refreshing the others (unreleased; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
+
 ## Multiple subscriptions
 
 For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; keepgoing selects an existing login and never creates accounts or copies credentials.
@@ -333,7 +335,7 @@ candidates:
     adapter: bb
     provider: claude-code            # required: the new thread's BB provider
     group: claude-example-account
-    bb: {new_thread: true, model: example-model, reasoning: high}
+    bb: {new_thread: true, model: example-model, reasoning: high, permission_mode: accept-edits}
     probe: {model: example-probe-model}
 ```
 
@@ -343,34 +345,46 @@ This is the only case in which keepgoing creates a conversation. It is opt-in pe
 
 - the project and environment of the conversation being continued, read with `bb thread show` (or `bb.project` and `bb.environment` when you set them; they are required when the loop is leaving a target that is not a BB thread);
 - the candidate's `provider`, `model` and `reasoning`;
+- an explicit `--permission-mode` (see below), so the new thread never takes a project default;
 - the title `keepgoing: <loop name> (continued, <token>)`, so you can tell keepgoing started it;
-- the handoff brief as the first prompt, on stdin, ending with a line that references the earlier conversation as `@thread:<id>`.
+- the handoff brief as the first prompt, on stdin, followed by the line `Continue from @thread:<id>.` naming the earlier conversation, and a fixed paragraph on loop ownership (see below).
 
 The new thread then becomes the active target and is supervised like any other. Each handoff to such a candidate creates a fresh thread; an earlier one is left where it is.
 
-**The conversation that was left** is not stopped, archived, re-parented or sent anything. It stays as it was.
+**The conversation that was left** is not stopped, archived, re-parented or sent anything by keepgoing. It stays as it was. Two things follow from that:
 
-**Exactly one thread per handoff.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token. Then:
+- BB may itself retry that conversation later, for example when its provider limit resets. keepgoing does not prevent this and no longer observes that thread, so two conversations can then be active on the task.
+- The new thread works in the **same environment and checkout** as the one it continues. Nothing isolates the two.
+
+**Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it and shows it in the preview.
+
+**Exactly one thread per handoff, and every attempt counts.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token, and counts the attempt against the cap in the same write. Then:
 
 - If bb returns the new thread, it is recorded and the move completes.
-- If bb returns a structured error, nothing was created. That counts as a [rejected takeover brief](operations.md#rejected-takeover-briefs) for that candidate, under the same per-fallback cap and spacing, and the next candidate is tried in the same check.
-- If bb gives no clear answer (it was killed, or the supervisor stopped before recording), a thread may exist. The next check looks for a thread with that exact title in that project and environment before anything else. Exactly one match is the thread, and the handoff is completed. No match means nothing was created, and the handoff goes on normally. Until it knows, keepgoing creates nothing and hands the loop to no other fallback, because a second conversation could be started on the same task. If BB cannot be asked, or more than one thread has the title, for `errors.max_reprompts` checks in a row, the loop is held for a person with the title in the note. `resume` tries again; `retarget` drops the pending creation.
+- If the `bb` CLI rejects the invocation itself (its `unknown_command`, `unknown_option`, `missing_required`, `unexpected_argument`, `invalid_value` or `missing_command` codes), the request never reached BB. This is the only answer treated as "nothing was created": the attempt is uncounted, it counts as a [rejected takeover brief](operations.md#rejected-takeover-briefs) for that candidate under the same per-fallback cap and spacing, and the next candidate is tried in the same check.
+- After **any other** failure (bb was killed or timed out, printed nothing usable, or reported an error from BB or the provider), a thread may exist. keepgoing looks for a thread with that exact title in that project and environment straight away. Exactly one match is the thread, whatever bb went on to report, and the handoff completes.
+- If it is not found, that proves nothing: the thread may have been renamed, archived or not listed yet. The attempt **stays counted**, the loop is **held for a person** with an `await_user` report naming the title, the spawn is not retried, and the loop is handed to no other fallback, because a second conversation could be started on the same task. The same applies when BB cannot be asked or more than one thread has the title, and when the supervisor stopped between asking bb and recording the answer (the next check does the lookup).
+- `resume` looks again: found, the handoff completes; otherwise the loop is held again. `retarget` settles it by hand. It looks for the thread first: found, the thread is put on record for its candidate; not listed, the pending creation is dropped and stays counted; if BB cannot say (an error, or more than one match), `retarget` refuses and changes nothing.
 
-**Cap.** A loop creates at most `loop.limits.max_new_threads` threads (default 3) over the life of its state directory. At the cap a new-thread candidate is skipped without a probe. If another fallback can take the loop it does; if none can, the loop is held for a person. Raise the cap and `resume` to continue; `resume` alone holds again.
+**Cap and spacing.** A loop attempts at most `loop.limits.max_new_threads` thread creations (default 3, never more than 10) over the life of its state directory, counting every attempt not proven refused, and never two less than **one hour** apart. So a loop creates at most 10 threads over its whole life, which is also the most it can create in one day, and never more than one in an hour. At the cap a new-thread candidate is skipped without a probe; if another fallback can take the loop it does, and if none can the loop is held for a person. Raise the cap and `resume` to continue; `resume` alone holds again. Inside the hour the candidate is skipped the same way (`new_thread_spacing`) but no hold is raised for spacing alone: the ordinary error rules apply.
 
-**Bounds and holds.** The creation is one send against `max_sends`. Stop, pause, disabled, awaiting-user and completed win: a held loop asks BB nothing, creates nothing, and does not settle a pending creation until it is resumed. A dry run previews the handoff as `wouldCreateThread` and creates nothing.
+**Bounds and holds.** The creation is one send against `max_sends`. Stop, pause, disabled, awaiting-user and completed win: a held loop asks BB nothing, creates nothing, and does not settle a pending creation until it is resumed. A dry run previews the handoff as `wouldCreateThread` and creates nothing. Reading the place (10s), the spawn (30s) and the lookup (20s) together take the 60 seconds a check reserves for a model switch and send, and the lookup at the start of a later check comes out of the observation's 90 seconds, so the [check time limit](operations.md#check-time-budget) is unchanged.
 
 **Switch-back** works as for any fallback: the loop returns to its primary thread when that is configured and the primary passes its probe. The created thread is left as it was.
 
-**Ownership.** The move does not change who owns the loop. The existing rules for moving supervision apply unchanged: ownership moves only by an explicit `enable --take-over` (or `transfer apply`), never as a side effect. So the owner recorded before the handoff still owns the loop afterwards, even if that owner is the thread that hit its limit. The new thread, like any thread, may pause or stop the loop; to resume it or change it from the new thread, take ownership there first. Work accounting, the goal and holds are kept; observations about the thread that was left are cleared, as on any handoff.
+**Ownership.** The move does not change who owns the loop: the owner recorded before the handoff still owns it afterwards, even if that owner is the thread that hit its limit. Moving ownership as part of the handoff was considered and not done, because with the current ownership checks it would stop supervision: the running daemon exits when the owner or its generation changes under it, and a scheduled check that runs with the earlier owner's identity would be refused. Until those checks can follow a handoff the supervisor made itself, ownership moves only by an explicit `enable --take-over` or `transfer apply`.
+
+The new thread's first prompt therefore ends with fixed wording: it does not own the loop; it may run `keepgoing pause`, `stop`, `await-user` and `complete` for it; and it must not run `resume` or `enable`, or use `--take-over`, unless a person asks. Work accounting, the goal and holds are kept; observations about the thread that was left are cleared, as on any handoff.
 
 **Where it shows.** The tick output's `handoff` has `newThread` and `continues`. `status` shows the created thread as the target's thread and a `new threads:` line with the count against the cap (`newThreads` in JSON). `keepgoing runs` shows both conversations on the run, the new one with source `created_thread`. `timeline` marks the check as `NEW THREAD` without the thread ID. The `handoff` report carries `newThread: true` and no thread ID.
 
 **What BB records about the origin.** `bb thread spawn` in BB 0.48.1 accepts a title but no origin other than `fork`, so BB does not record these threads as started by the keepgoing plugin. The plugin SDK has an origin plugin field for threads a plugin spawns, but the supervisor is a separate CLI process with no channel to the plugin host. The title and keepgoing's own records are what identify the thread.
 
+**The `@thread:<id>` reference.** BB's guide documents `Continue from @thread:<id>` in a spawned thread's prompt as the way to hand off, and describes the result as a new thread that references the source. It does not say whether the referenced thread is notified or woken, and that has not been established here: no BB documentation or read-only command settles it, and nothing was run live. Treat it as unverified until a supervised live handoff shows the earlier thread is left alone.
+
 **Limits to know about.**
 
-- A brief delivered to a thread that bb then failed to report is found by its title. A thread whose title was changed before that check cannot be found; keepgoing then creates another on a later handoff.
+- A thread whose title was changed before keepgoing could find it stays unrecorded. keepgoing never creates a replacement on its own: the loop is held and the attempt stays counted.
 - keepgoing cannot see which account BB uses for the new thread. The probe tests the local CLI's login, as for every BB candidate.
 - Without `model`, BB uses the project's remembered default for that provider.
 - `retarget <id>` to a new-thread candidate works only once a thread exists for it; `retarget` never creates one.

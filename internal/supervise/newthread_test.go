@@ -595,3 +595,99 @@ func TestNewThreadsAreSpacedAnHourApart(t *testing.T) {
 		t.Fatalf("no other fallback: %+v", res)
 	}
 }
+
+// hungThreads is a bb whose thread commands each run until they are stopped.
+// Each charges the fake wall clock the time its context allows.
+type hungThreads struct {
+	*fakeThreads
+	o     *outage
+	spent map[string]time.Duration
+}
+
+func (h hungThreads) hang(ctx context.Context, step string) {
+	limit := 10 * time.Minute // a command with no limit would hold the check open
+	if d, ok := ctx.Deadline(); ok {
+		limit = time.Until(d).Round(time.Second) // the deadline is on the real clock; its length matters
+	}
+	h.o.clock = h.o.clock.Add(limit)
+	h.spent[step] += limit
+}
+
+func (h hungThreads) PlaceOf(ctx context.Context, thread string) (bb.Place, error) {
+	h.hang(ctx, "place")
+	return h.fakeThreads.PlaceOf(ctx, thread)
+}
+
+func (h hungThreads) Spawn(ctx context.Context, r bb.SpawnRequest) (string, error) {
+	h.hang(ctx, "spawn")
+	return h.fakeThreads.Spawn(ctx, r)
+}
+
+func (h hungThreads) FindByTitle(ctx context.Context, p bb.Place, title string) ([]string, error) {
+	h.hang(ctx, "find")
+	return h.fakeThreads.FindByTitle(ctx, p, title)
+}
+
+// Creating a thread, and looking for one whose creation is unsettled, fit
+// inside the check's hard limit with every other step at its maximum too:
+// reading the place, the spawn and the lookup take the time reserved for a
+// model switch and send, and the lookup at the start of a later check comes
+// out of the observation's time.
+func TestNewThreadStepsFitTheCheckTimeLimit(t *testing.T) {
+	for _, found := range []bool{true, false} {
+		t.Run(fmt.Sprintf("found=%t", found), func(t *testing.T) {
+			o := newOutage(t, 2)
+			o.cfg.Loop.TickTimeout = config.Duration{Duration: config.MinTickTimeout}
+			o.cfg.FallbackSet.Probe.Timeout = config.Duration{Duration: 30 * time.Second}
+			o.cfg.FallbackSet.Redundancy.MinHealthy = 1
+			o.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+			o.cfg.Loop.Yield = &config.Yield{BusyCommand: []string{"x"}}
+			o.cfg.FallbackSet.Candidates[0].BB = &config.BB{NewThread: true}
+			o.cfg.Loop.Limits.MaxNewThreads = config.DefaultMaxNewThreads // as config.Load sets it
+			o.probeUp["fallback-1"], o.probeUp["fallback-2"] = true, true
+			f := &fakeThreads{t: t, place: bb.Place{Project: "proj_example", Environment: "env_example"}, titles: map[string][]string{},
+				spawnErr: bb.ErrSpawnUncertain, createdAnyway: true, unlisted: !found}
+			h := hungThreads{f, o, map[string]time.Duration{}}
+			o.threads = h
+			p := o.primary(decide.Observation{State: decide.Idle})
+			limit := config.MinTickTimeout + config.TickTail
+			// A quick first check confirms both fallbacks with scheduled probes.
+			if r, _ := o.next(t, 1); r.Redundancy == nil || !r.Redundancy.Meets {
+				t.Fatalf("first check: %+v", r)
+			}
+			// From here every step is slow. The observation leaves just enough
+			// free time for the exact probe to start.
+			p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
+			o.yieldTime, o.observeTime, o.fingerprintTime = 10*time.Second, observeTimeout-minProbeTime, state.FingerprintTimeout
+			r, took := o.next(t, 2)
+			if len(f.spawned) != 1 || h.spent["place"] != newThreadPlaceTime || h.spent["spawn"] != newThreadSpawnTime || h.spent["find"] != newThreadFindTime ||
+				newThreadPlaceTime+newThreadSpawnTime+newThreadFindTime > reserveSend {
+				t.Fatalf("spawns=%d spent=%v result=%+v handoff=%+v took=%s", len(f.spawned), h.spent, r, r.Handoff, took)
+			}
+			if want := map[bool]string{true: "handoff", false: "await_user"}[found]; r.Action != want || took > limit {
+				t.Fatalf("creating: %+v took %s of %s", r, took, limit)
+			}
+			if found {
+				return
+			}
+			// Resumed while the thread still cannot be found: the lookup alone,
+			// then the hold and its report.
+			control.Update(o.dir, func(c *control.File) { c.AwaitingUser = false })
+			if r, took := o.next(t, 3); r.Action != "await_user" || took > limit || len(f.spawned) != 1 {
+				t.Fatalf("held again: %+v took %s", r, took)
+			}
+			// The thread shows up: the lookup, then a full observation of it
+			// and a wake, all slow.
+			f.titles[f.spawned[0].Title] = []string{"thr_created_1"}
+			o.sendTime, o.activateTime, o.observeTime = 30*time.Second, 30*time.Second, observeTimeout-newThreadFindTime // the most it is now allowed
+			control.Update(o.dir, func(c *control.File) { c.AwaitingUser = false })
+			h.spent["find"] = 0
+			r, took = o.next(t, 4)
+			// Yield, lookup and observation together take what yield and
+			// observation alone may: the lookup is not extra time.
+			if r.Handoff == nil || !r.Handoff.Reconciled || took > limit || h.spent["find"] != newThreadFindTime || o.observeLimit != observeTimeout-newThreadFindTime {
+				t.Fatalf("reconciled: %+v took %s of %s (find %s, observation %s)", r, took, limit, h.spent["find"], o.observeLimit)
+			}
+		})
+	}
+}
