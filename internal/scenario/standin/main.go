@@ -24,6 +24,8 @@
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
 //	kill.<command>         if present, after `thread <command>` has answered, the
 //	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -96,6 +98,13 @@ func main() {
 		os.Exit(exampleAgent(world, os.Args[1:]))
 	}
 	args := os.Args[1:]
+	// killbefore.<command>: the stand-in kills the keepgoing process that
+	// runs `thread <command>` before doing anything, as a crash just before
+	// the call would. The command is not recorded or done. The file is used up.
+	if len(args) > 1 && args[0] == "thread" && os.Remove(filepath.Join(world, "killbefore."+args[1])) == nil {
+		killParent()
+		os.Exit(1)
+	}
 	code := run(world, args)
 	// kill.<command>: once the command has done its work and answered, the
 	// stand-in kills the keepgoing process that ran it, as a crash or a

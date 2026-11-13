@@ -73,18 +73,21 @@ Not covered yet: child failure reports, scheduler death, state upgrades, two sup
 
 `go test ./internal/scenario -run TestFault` breaks the supervisor on purpose, on the built binary, and checks what a restart does.
 
-**Killed partway through a check** (`TestFaultKilledCheck`). A check saves what it did only at its end: `state.json`, then the run graph, the run log and the incident journal. The stand-in `bb` can kill the `keepgoing` process that called it once a command has answered (`kill.<command>` in its directory), and the webhook receiver can kill it while a report is arriving. So a kill can be placed right after something was sent and before anything was saved, or after `state.json` and during a report. The restart runs one minute later.
+**Killed partway through a check** (`TestFaultKilledCheck`). A check records each send in `sends.json` before making it, and saves the rest of what it did at its end: `state.json`, then the run graph, the run log and the incident journal. The stand-in `bb` can kill the `keepgoing` process that called it once a command has answered (`kill.<command>` in its directory) or just before the command does anything (`killbefore.<command>`), and the webhook receiver can kill it while a report is arriving. So a kill can be placed just before a send, right after it and before anything else was saved, or after `state.json` and during a report. The restart runs one minute later.
 
 | Killed | The restart | |
 | --- | --- | --- |
 | while observing, before anything is written | does the interrupted check: one turn retry, counted | enforced |
 | right after a turn retry | waits out the backoff and counts the interrupted retry, found as a recorded send with no recorded outcome | enforced |
 | right after a stop | sends the stop again, once (it cannot tell a stop made from one recorded and not made, and a second stop is harmless); the stop hold is kept | enforced |
+| just before a stop is made | makes the stop; the stop hold is kept | enforced |
+| right after a handoff brief | holds for a person (`a handoff brief to <fallback> may have been delivered ...`) and sends nothing to either conversation | enforced |
+| right after a switch-back brief | holds for a person (`a switch-back brief to the primary may have been delivered ...`), does not wake the fallback and does not brief the primary again | enforced |
 | right after a send, with `max_sends` | the allowance already counts the interrupted send (it is reserved first) | enforced |
 | while the report of a hold is delivered | keeps the hold, sends nothing, runs no `bb` command, does not report again (the hold is saved first) | enforced |
 | while a report with no hold is delivered (a question on the thread) | sends nothing and does not report again | enforced |
 
-Before (unreleased) the turn retry and the report were repeated, because a check saved what it did only at its end; each is now recorded in `sends.json` before it is made, and a record with no saved outcome is counted as sent (see [a send recorded before it is made](operations.md#a-send-recorded-before-it-is-made)). No case lost a hold. Kills inside a single file write cannot be placed from outside; every record is replaced atomically (written to a temporary file, then renamed), so a kill leaves either the old record or the new one.
+Before (unreleased) the turn retry and the report were repeated, because a check saved what it did only at its end; each is now recorded in `sends.json` before it is made, and a record with no saved outcome is counted as sent, or, for a brief that may have put the task on a second conversation, holds for a person (see [a send recorded before it is made](operations.md#a-send-recorded-before-it-is-made)). A new conversation's first prompt is covered by `TestScenarioNewConversationHandoff` and its own record. No case lost a hold or put the task on two conversations; held checks, dry runs and checks that cannot read `sends.json` settle no record, so a kill followed by a pause and a resume still holds (`TestASendRecordedWithoutAnOutcomeAtEachKillPoint`). Kills inside a single file write cannot be placed from outside; every record is replaced atomically (written to a temporary file, then renamed), so a kill leaves either the old record or the new one.
 
 **Damaged records** (`TestFaultDamagedRecord`). Each record is emptied, cut in half or overwritten with bytes that are not JSON, then a check, `status` and `pause` run. No damaged record is rewritten by any of them.
 

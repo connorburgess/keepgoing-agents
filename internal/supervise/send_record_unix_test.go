@@ -132,3 +132,34 @@ func TestUnreadableSendRecordIsReportedOnce(t *testing.T) {
 		t.Fatalf("sends %d, reports %s", len(p.sent), w.reportTypes())
 	}
 }
+
+// Without max_sends a handoff brief and a switch-back brief are each
+// recorded before they are made: with a state directory that cannot be
+// written, neither is sent.
+func TestBriefsNeedTheirRecordWithoutASendLimit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only directory")
+	}
+	w, _, fallbacks := rejectingWorld(t, false)
+	if w.cfg.Loop.Limits.MaxSends != 0 {
+		t.Fatal("this test is about a loop without max_sends")
+	}
+	os.Chmod(w.dir, 0o500)
+	Tick(context.Background(), w.cfg, w.opts(t0))
+	os.Chmod(w.dir, 0o700)
+	for id, f := range fallbacks {
+		if len(f.sent) != 0 {
+			t.Fatalf("handoff brief to %s sent without its record", id)
+		}
+	}
+
+	sw, p, _ := switchBackWorld(t)
+	sw.probeOK["primary"] = true
+	p.obs = decide.Observation{State: decide.Idle}
+	os.Chmod(sw.dir, 0o500)
+	Tick(context.Background(), sw.cfg, sw.opts(t0.Add(2*time.Hour+time.Minute)))
+	os.Chmod(sw.dir, 0o700)
+	if len(p.sent) != 0 {
+		t.Fatal("switch-back brief sent without its record")
+	}
+}

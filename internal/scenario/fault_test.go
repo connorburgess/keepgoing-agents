@@ -23,6 +23,15 @@ func (w *World) killAfter(command string) {
 	}
 }
 
+// killBefore makes the stand-in bb kill the keepgoing process that runs
+// `thread <command>` next, before the command does anything.
+func (w *World) killBefore(command string) {
+	w.t.Helper()
+	if err := os.WriteFile(filepath.Join(w.world, "killbefore."+command), nil, 0o600); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 // failingTurns makes every turn of the thread end in an unclassified error.
 func failingTurns(th *Thread) {
 	fail := func(th *Thread) {
@@ -124,6 +133,83 @@ func TestFaultKilledCheck(t *testing.T) {
 		// and taking an unmade stop as made would break "stop wins".
 		w.Check(s, "the stop is sent again at most once", check(bbCommands(s, "stop") <= 1, "the restart sent the stop %d times", bbCommands(s, "stop")))
 		_ = th
+	})
+
+	t.Run("before a stop is made", func(t *testing.T) {
+		t.Parallel()
+		w := NewWorld(t, scenarioStart)
+		w.Init("await_user", "stop")
+		w.Control("enable")
+		w.Advance(time.Minute)
+		w.Tick() // wakes it; the turn is running
+		w.Control("stop")
+		w.killBefore("stop")
+		w.Advance(time.Minute)
+		s := w.killedTick("killed before the stop")
+		w.Check(s, "the stop was recorded and not made", check(bbCommands(s, "stop") == 0, "bb thread stop ran %d times", bbCommands(s, "stop")))
+		w.Advance(time.Minute)
+		s = w.Tick()
+		// A stop is never taken as made from its record.
+		w.Check(s, "the restart makes the stop", all(holds(s, "stop"), check(bbCommands(s, "stop") == 1, "bb thread stop ran %d times", bbCommands(s, "stop"))))
+	})
+
+	t.Run("after a handoff brief, before the check is saved", func(t *testing.T) {
+		t.Parallel()
+		w := NewWorld(t, scenarioStart)
+		limitLoop(w, existingFallback)
+		primary := w.Thread(primaryThread)
+		w.Control("enable")
+		w.Advance(time.Minute)
+		w.Tick()
+		w.Advance(20 * time.Minute)
+		primary.RateLimited(w.Now.Add(5 * time.Hour))
+		w.killAfter("tell")
+		w.Advance(time.Minute)
+		s := w.killedTick("killed after the handoff brief")
+		w.Check(s, "the brief was sent", sentExactly(s, Send{Kind: "tell", Thread: altThread, Mode: "auto"}))
+		w.Advance(time.Minute)
+		s = w.Tick()
+		// The fallback may have the task: a person looks before anything
+		// else is sent to either conversation.
+		w.Check(s, "the restart holds for a person and sends nothing", all(
+			action(s, "await_user"), holds(s, "awaitingUser"), nothingSent(s),
+			reasonIs(s, "a handoff brief to "+altCandidate+" may have been delivered; check that conversation before resuming"),
+		))
+		w.Advance(10 * time.Minute)
+		s = w.Tick()
+		w.Check(s, "held checks send nothing", all(holds(s, "awaitingUser"), nothingSent(s)))
+	})
+
+	t.Run("after a switch-back brief, before the check is saved", func(t *testing.T) {
+		t.Parallel()
+		w := NewWorld(t, scenarioStart)
+		limitLoop(w, existingFallback)
+		primary, alt := w.Thread(primaryThread), w.Thread(altThread)
+		w.Control("enable")
+		w.Advance(time.Minute)
+		w.Tick()
+		w.Advance(20 * time.Minute)
+		reset := w.Now.Add(5 * time.Hour)
+		primary.RateLimited(reset)
+		w.Advance(time.Minute)
+		s := w.Tick()
+		w.Check(s, "handoff", all(action(s, "handoff"), targetIs(s, altCandidate, altThread)))
+		w.At(reset.Add(10 * time.Minute))
+		w.Commit("feat: fictional work on the fallback")
+		alt.FinishTurn()
+		primary.FinishTurn()
+		w.killAfter("tell")
+		w.Advance(time.Minute)
+		s = w.killedTick("killed after the switch-back brief")
+		w.Check(s, "the switch-back brief was sent", sentExactly(s, Send{Kind: "tell", Thread: primaryThread, Mode: "auto"}))
+		w.Advance(time.Minute)
+		s = w.Tick()
+		// The primary may have the task now: waking the fallback, or briefing
+		// the primary again, could leave two conversations on it.
+		w.Check(s, "the restart holds for a person and sends nothing", all(
+			action(s, "await_user"), holds(s, "awaitingUser"), nothingSent(s),
+			reasonIs(s, "a switch-back brief to the primary may have been delivered; check that conversation before resuming"),
+		))
 	})
 
 	t.Run("with a send allowance, after the send", func(t *testing.T) {

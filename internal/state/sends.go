@@ -45,6 +45,10 @@ type Ledger struct {
 	Used    *int64       `json:"used"`
 	Seq     int64        `json:"seq,omitempty"`
 	Pending []SendIntent `json:"pending,omitempty"`
+	// Settled is the last record whose outcome a check recorded, kept here
+	// beside the records as well as in state.json, so an older binary that
+	// rewrites state.json cannot make settled records look unsettled.
+	Settled int64 `json:"settled,omitempty"`
 }
 
 // maxPending bounds the intents kept. Each check makes at most a few sends,
@@ -62,7 +66,7 @@ func LoadLedger(dir string) (Ledger, error) {
 		return Ledger{Version: 1, Used: &zero}, nil
 	}
 	var l Ledger
-	if err != nil || json.Unmarshal(b, &l) != nil || l.Version != 1 || l.Used == nil || *l.Used < 0 || l.Seq < 0 || len(l.Pending) > maxPending {
+	if err != nil || json.Unmarshal(b, &l) != nil || l.Version != 1 || l.Used == nil || *l.Used < 0 || l.Seq < 0 || l.Settled < 0 || len(l.Pending) > maxPending {
 		return Ledger{}, ErrSendLedger
 	}
 	return l, nil
@@ -101,20 +105,22 @@ func (l Ledger) Unrecorded(applied int64) []SendIntent {
 // Failed or uncertain sends are never refunded. A synced temporary file and
 // atomic rename preserve the record across process restarts; this is not a
 // power-loss/storage guarantee.
-func Reserve(dir string, max, recorded int64, intent SendIntent) (int64, error) {
+func Reserve(dir string, limit, recorded int64, intent SendIntent) (int64, error) {
 	l, err := LoadLedger(dir)
 	if err != nil {
 		return 0, err
 	}
-	if max > 0 && *l.Used >= max {
+	if limit > 0 && *l.Used >= limit {
 		return 0, ErrSendLimit
 	}
 	used := *l.Used
-	if max > 0 {
+	if limit > 0 {
 		used++
 	}
 	l.Used = &used
-	l.Seq++
+	// Numbering never goes back below what is settled, even after the file
+	// was deleted, so a new record cannot be mistaken for a settled one.
+	l.Seq = max(l.Seq, recorded, l.Settled) + 1
 	intent.Seq = l.Seq
 	kept := l.Pending[:0:0]
 	for _, p := range l.Pending {
@@ -126,11 +132,37 @@ func Reserve(dir string, max, recorded int64, intent SendIntent) (int64, error) 
 		kept = kept[len(kept)-maxPending+1:]
 	}
 	l.Pending = append(kept, intent)
+	l.Settled = max(l.Settled, recorded)
 	b, _ := json.Marshal(l)
 	if err := saveAllowance(dir, SendsName, b); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrSendRecord, err)
 	}
 	return intent.Seq, nil
+}
+
+// Settle records, beside the records, that every record up to seq has had
+// its outcome recorded. It only moves forward. Records up to seq are dropped.
+func Settle(dir string, seq int64) error {
+	l, err := LoadLedger(dir)
+	if err != nil {
+		return err
+	}
+	if seq <= l.Settled {
+		return nil
+	}
+	l.Settled = seq
+	kept := l.Pending[:0:0]
+	for _, p := range l.Pending {
+		if p.Seq > seq {
+			kept = append(kept, p)
+		}
+	}
+	l.Pending = kept
+	b, _ := json.Marshal(l)
+	if err := saveAllowance(dir, SendsName, b); err != nil {
+		return ErrSendLedger
+	}
+	return nil
 }
 
 // RefundSend gives back the reservation seq. It is only for an attempt the

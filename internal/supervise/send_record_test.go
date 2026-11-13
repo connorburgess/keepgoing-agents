@@ -1,6 +1,9 @@
 package supervise
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,17 +88,70 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 			t.Fatal("not held")
 		}
 	})
-	t.Run("switch-back: spaced by retry_every", func(t *testing.T) {
-		w, p, _ := switchBackWorld(t) // retry_every 30m
+	t.Run("switch-back: held for a person, the fallback not woken", func(t *testing.T) {
+		w, p, fb := switchBackWorld(t)
 		w.probeOK["primary"] = true
 		p.obs = decide.Observation{State: decide.Idle}
+		sentBefore := len(fb.sent)
 		after := t0.Add(2*time.Hour + time.Minute)
 		unsaved(t, w, after, "switch_back", state.Primary)
-		if r := runTick(t, w, after.Add(time.Minute)); len(p.sent) != 0 || r.Target == state.Primary {
-			t.Fatalf("second brief a minute later: %+v", r)
+		r := runTick(t, w, after.Add(time.Minute))
+		if r.Action != "await_user" || r.Reason != "a switch-back brief to the primary may have been delivered; check that conversation before resuming" || len(p.sent) != 0 || len(fb.sent) != sentBefore {
+			t.Fatalf("%s (%s) primary=%d fallback=%d", r.Action, r.Reason, len(p.sent), len(fb.sent)-sentBefore)
 		}
-		if st, _ := state.Load(w.dir); st.SwitchBackRejected != 1 || !st.LastSwitchBackTry.Equal(after) {
-			t.Fatalf("%+v", st)
+	})
+	t.Run("handoff, then held by pause and resumed: still held, no second brief", func(t *testing.T) {
+		w, _, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		control.Update(w.dir, func(f *control.File) { f.Paused = true })
+		runTick(t, w, t0.Add(time.Minute)) // held: does not read the records
+		control.Update(w.dir, func(f *control.File) { f.Paused = false })
+		if r := runTick(t, w, t0.Add(2*time.Minute)); r.Action != "await_user" || !strings.HasPrefix(r.Reason, "a handoff brief to claude-other") {
+			t.Fatalf("%s (%s)", r.Action, r.Reason)
+		}
+		for id, f := range fallbacks {
+			if len(f.sent) != 0 {
+				t.Fatalf("%s was briefed", id)
+			}
+		}
+	})
+	t.Run("handoff, then a stop request: held, not consumed by the stop", func(t *testing.T) {
+		w, p, fallbacks := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		control.Update(w.dir, func(f *control.File) { f.Stop = true })
+		if r := runTick(t, w, t0.Add(time.Minute)); r.Action != "await_user" || p.stopped != 0 {
+			t.Fatalf("%s (%s) stopped=%d", r.Action, r.Reason, p.stopped)
+		}
+		for id, f := range fallbacks {
+			if len(f.sent) != 0 {
+				t.Fatalf("%s was briefed", id)
+			}
+		}
+	})
+	t.Run("handoff, then a dry run: previewed, not settled", func(t *testing.T) {
+		w, _, _ := rejectingWorld(t, false)
+		unsaved(t, w, t0, "handoff", "claude-other")
+		opts := w.opts(t0.Add(time.Minute))
+		opts.DryRun = true
+		if r, _ := Tick(context.Background(), w.cfg, opts); r.Action != "await_user" {
+			t.Fatalf("dry run: %s (%s)", r.Action, r.Reason)
+		}
+		if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
+			t.Fatal("a dry run raised the hold")
+		}
+		if r := runTick(t, w, t0.Add(2*time.Minute)); r.Action != "await_user" {
+			t.Fatalf("the dry run settled the record: %s (%s)", r.Action, r.Reason)
+		}
+	})
+	t.Run("a deleted sends.json does not reuse settled numbers", func(t *testing.T) {
+		w := newWorld(t, true, false)
+		w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+		runTick(t, w, t0)
+		os.Remove(filepath.Join(w.dir, state.SendsName))
+		unsaved(t, w, t0.Add(11*time.Minute), "reprompt", state.Primary)
+		runTick(t, w, t0.Add(12*time.Minute))
+		if st, _ := state.Load(w.dir); st.Reprompts != 2 {
+			t.Fatalf("an interrupted re-prompt after the file was deleted was not counted: %d", st.Reprompts)
 		}
 	})
 	t.Run("the waiting-on-a-person report: not repeated", func(t *testing.T) {
@@ -147,15 +203,18 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 // recorded before they are made.
 func TestBriefsAreRecordedWithoutASendLimit(t *testing.T) {
 	w, p, _ := switchBackWorld(t) // made a handoff to claude-other
+	// Each send gets a numbered record, settled once the check saves.
 	l, err := state.LoadLedger(w.dir)
-	if err != nil || len(l.Pending) == 0 || l.Pending[len(l.Pending)-1].Action != "handoff" || *l.Used != 0 {
+	if err != nil || l.Seq != 1 || l.Settled != 1 || *l.Used != 0 {
 		t.Fatalf("handoff: %+v %v", l, err)
 	}
 	w.probeOK["primary"] = true
 	p.obs = decide.Observation{State: decide.Idle}
-	runTick(t, w, t0.Add(2*time.Hour+time.Minute))
+	if r := runTick(t, w, t0.Add(2*time.Hour+time.Minute)); r.Target != state.Primary || len(p.sent) != 1 {
+		t.Fatalf("no switch-back: %+v", r)
+	}
 	l, _ = state.LoadLedger(w.dir)
-	if len(l.Pending) == 0 || l.Pending[len(l.Pending)-1].Action != "switch_back" || *l.Used != 0 {
+	if l.Seq < 2 || l.Settled != l.Seq || *l.Used != 0 {
 		t.Fatalf("switch-back: %+v", l)
 	}
 }

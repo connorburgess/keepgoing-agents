@@ -203,7 +203,7 @@ type tick struct {
 	probeSucceeded      bool          // a fallback probe passed in this check
 	sessionRecovered    bool          // the target was observed and is not in error
 	savedSends          int64         // the last intended send state.json recorded when this check began
-	unsettledHandoff    string        // a handoff brief recorded by an earlier check, outcome unknown
+	unsettledBrief      string        // the hold for a brief an earlier check recorded, outcome unknown
 	quietFailure        bool          // a failure already reported by an earlier check
 	observeSpent        time.Duration // observation time used by a lookup for an unsettled thread creation
 	lateReports         int           // reports started after the budget was spent
@@ -377,8 +377,8 @@ func (t *tick) run() error {
 		res.State, res.Window, res.Reason = "not observed", "not checked", "send record unreadable; no automatic provider work"
 		return t.record(err)
 	}
-	if id := t.unsettledHandoff; id != "" {
-		d := decide.Decision{Action: decide.AwaitUser, Reason: "a handoff brief to " + id + " may have been delivered; check that conversation before resuming"}
+	if reason := t.unsettledBrief; reason != "" {
+		d := decide.Decision{Action: decide.AwaitUser, Reason: reason}
 		res.Action, res.Reason = string(d.Action), d.Reason
 		res.State, res.Window = "not observed", "not checked"
 		var actErr error
@@ -826,6 +826,18 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	res.State = string(obs.State)
 	if err := t.countUnrecordedSends(); err != nil {
 		t.warn("%v", err)
+	}
+	if reason := t.unsettledBrief; reason != "" {
+		// The task may be on another conversation now; stopping this one
+		// may stop nothing. A person looks first. The stop stays requested.
+		d := decide.Decision{Action: decide.AwaitUser, Reason: reason}
+		res.Action, res.Reason = string(d.Action), d.Reason
+		var actErr error
+		if !t.opts.DryRun {
+			actErr = t.act(nil, d)
+		}
+		t.st.LastState = string(obs.State)
+		return t.record(actErr)
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
 	if d.Action == decide.Stop && t.st.StopRequestedSent {
@@ -1328,6 +1340,15 @@ func (t *tick) record(actErr error) error {
 		// send it refused to make is the cause, and the save its symptom.
 		return errors.Join(actErr, err)
 	}
+	// The outcomes are recorded: settle them beside the records too, so an
+	// older binary that rewrites state.json cannot unsettle them. Only a
+	// check that read the records, or made sends of its own, has moved
+	// SendsRecorded past the point it started from.
+	if !t.opts.DryRun && t.st.SendsRecorded > t.savedSends {
+		if err := state.Settle(t.loop.StateDir, t.st.SendsRecorded); err != nil {
+			t.warn("the send records were recorded in state.json but could not be marked settled in sends.json: %v", err)
+		}
+	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
 	t.graphClose()
@@ -1439,15 +1460,22 @@ func (t *tick) countUnrecordedSends() error {
 	if err != nil {
 		return t.sendRecordUnreadable(err)
 	}
-	t.st.SendRecordUnreadable = false
-	for _, p := range l.Unrecorded(t.st.SendsRecorded) {
-		t.st.SendsRecorded = p.Seq
-		// A check that saved its state at or after the send's time recorded
-		// its outcome. This covers a state.json written by an older binary,
-		// which does not keep SendsRecorded.
-		if !t.st.CheckedAt.IsZero() && !t.st.CheckedAt.Before(p.At) {
-			continue
+	if !t.opts.DryRun {
+		t.st.SendRecordUnreadable = false
+	}
+	settled := max(t.st.SendsRecorded, l.Settled)
+	t.savedSends = settled
+	for _, p := range l.Unrecorded(settled) {
+		switch p.Action {
+		case "handoff":
+			t.unsettledBrief = "a handoff brief to " + p.Target + " may have been delivered; check that conversation before resuming"
+		case "switch_back":
+			t.unsettledBrief = "a switch-back brief to the primary may have been delivered; check that conversation before resuming"
 		}
+		if t.opts.DryRun {
+			continue // a dry run previews the hold and settles nothing
+		}
+		t.st.SendsRecorded = max(t.st.SendsRecorded, p.Seq)
 		agentSend := true
 		switch decide.Action(p.Action) {
 		case decide.Wake, decide.Nudge, decide.Reprompt:
@@ -1458,15 +1486,12 @@ func (t *tick) countUnrecordedSends() error {
 			if p.Action == string(decide.Reprompt) {
 				t.st.UnconfirmedReprompts++
 			}
-		case "handoff":
-			// The fallback may have the task. Briefing another one, or the
-			// same one again, could put two conversations on it: a person
-			// looks first, as for a new conversation whose outcome is unknown.
-			t.unsettledHandoff = p.Target
-		case "switch_back":
-			// An attempt: spaced by retry_every and counted toward the cap.
-			t.st.SwitchBackRejected++
-			t.st.LastSwitchBackTry = p.At
+		case "handoff", "switch_back":
+			// Settled by the hold this check raises: a person looks first.
+		case "new_thread":
+			// Settled by its own record in state.json, saved before the
+			// conversation was created (see createThread).
+			agentSend = false
 		case "child_notice":
 			if t.st.ChildErrorNoticeFor != p.Key {
 				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
@@ -1477,6 +1502,7 @@ func (t *tick) countUnrecordedSends() error {
 			// sent, and a second stop is harmless. Only a confirmed stop sets
 			// StopRequestedSent.
 			agentSend = false
+			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
 		case "report:degraded", "report:recovered":
@@ -1487,7 +1513,7 @@ func (t *tick) countUnrecordedSends() error {
 		if agentSend && p.At.After(t.st.LastWakeAt) {
 			t.st.LastWakeAt = p.At
 		}
-		if agentSend || p.Action == "stop" {
+		if agentSend {
 			t.warn("a %s to %s was recorded at %s but that check could not save what happened, so it may have been sent; it is counted as sent", p.Action, p.Target, p.At.Format(time.RFC3339))
 		}
 	}
