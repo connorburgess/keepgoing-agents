@@ -55,6 +55,7 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
+  dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
@@ -148,6 +149,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return timelineCommand(e, rest)
 	case "runs":
 		return runsCommand(e, rest)
+	case "dock":
+		return dockCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
