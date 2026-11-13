@@ -68,6 +68,7 @@ Reliability of supervision comes before new features: a day of live supervision 
    - a notice to the parent and a report to the owner when lanes fail, per-fallback caps on rejected handoff briefs, a single report for a long limit wait ([R8](#priority-reliability-checkpoints)), and tiered event history ([R7](#priority-reliability-checkpoints));
    - an explicit `resume` starts a new error episode (#173);
    - never two loops acting on one session at once (#195), and every send recorded before it is made and settled only from a check that read it (#196), with killed-check, full-disk and unwritable-state-directory scenarios ([T2, T3](#test-suites)). Both had an independent review by the coordinator before merge, with its findings fixed before merge;
+   - #200 merged: a check that cannot observe its session sends one error report, not two (fixture-tested);
    - the timing-test and Windows record fixes.
    Still open:
    - **Prove recovery live.** Cut the network on a supervised loop with child threads for longer than the provider's own retries, with nobody watching, and record whether the loop and its children come back. Until this passes once, the items above are fixture evidence only.
