@@ -289,6 +289,9 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			return err
 		}
 		r.ControlSave = "confirmed"
+		if resumeNewEpisode(entry.StateDir) != nil {
+			r.Issues = append(r.Issues, "new_episode_unconfirmed")
+		}
 		r.Controls = &clientControls{f.Enabled, f.Paused, f.Stop, f.AwaitingUser, f.Completed}
 		if errors.Is(err, errControlHistory) {
 			r.Issues = append(r.Issues, "incident_history_unavailable")

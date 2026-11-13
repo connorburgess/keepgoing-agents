@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -711,6 +712,24 @@ func when(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// resumeNewEpisode is the second half of an explicit resume. A person
+// resuming is saying "try again", so the per-episode counts start over: a
+// loop held on spent re-prompts or nudges would otherwise be held again by
+// the next check, and resume would do nothing. Loop-wide limits are not
+// refunded. The caller holds the tick lock.
+func resumeNewEpisode(stateDir string) error {
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return err
+	}
+	before := st
+	st.NewEpisode()
+	if reflect.DeepEqual(before, st) {
+		return nil
+	}
+	return state.Save(stateDir, st)
+}
+
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
 		l, err := lock.Acquire(cfg.Loop.StateDir)
@@ -734,6 +753,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 				completionDeclaredAt = time.Now().UTC()
 			}
 			f.Completed = true
+			// The task is done, so nothing is waiting on a person any more.
+			// A stop or pause is the operator's and stays.
+			f.AwaitingUser = false
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
@@ -750,13 +772,14 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 				return err
 			}
 		}
+		wasAwaiting := f.AwaitingUser
 		if !transfer {
 			fn(f)
 		} // Transferring ownership preserves disabled too.
 		if note != "" {
 			f.Note = note
-		} else if cmd == "resume" {
-			f.Note = ""
+		} else if cmd == "resume" || (cmd == "complete" && wasAwaiting) {
+			f.Note = "" // the note described the hold that has just ended
 		}
 		return nil
 	}, suppliedRoutine(e.ctx))
@@ -772,16 +795,8 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		return exitFailed
 	}
 	if cmd == "resume" {
-		// Resume is the operator saying "try again": a fallback or primary
-		// that was repaired gets fresh takeover briefs. The tick lock is held.
-		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
-			e.errf("warning: could not clear rejected takeover briefs: %v", err)
-		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 || st.ChildErrorNoticeAttempts > 0 {
-			st.ClearBriefs()
-			st.ChildErrorNoticeAttempts = 0 // a child-error notice that was given up is tried again
-			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
-				e.errf("warning: could not clear rejected takeover briefs: %v", err)
-			}
+		if err := resumeNewEpisode(cfg.Loop.StateDir); err != nil {
+			e.errf("warning: could not start a new error episode; the loop may hold again on its spent re-prompts or nudges: %v", err)
 		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {

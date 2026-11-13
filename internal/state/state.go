@@ -250,6 +250,19 @@ func (f *File) ClearBriefs() {
 	f.ClearDeferrals()
 }
 
+// NewEpisode starts a new error episode at a person's request (`resume`).
+// It clears what is counted per episode or per stalled turn: re-prompts and
+// their backoff, nudges, the silent-retry clock, rejected handoff and
+// switch-back briefs, handoffs put off, and child-error notice attempts.
+// It never touches a loop-wide limit: sends used, the deadline, the
+// no-progress ledger and the new-thread cap live elsewhere and stay spent.
+func (f *File) NewEpisode() {
+	f.Reprompts, f.LastRepromptAt, f.Nudges = 0, time.Time{}, 0
+	f.SilentRetry = nil
+	f.ChildErrorNoticeAttempts = 0
+	f.ClearBriefs()
+}
+
 // ClearDeferrals forgets handoffs put off for lack of time.
 func (f *File) ClearDeferrals() {
 	f.HandoffDeferrals, f.ExactCut = 0, nil

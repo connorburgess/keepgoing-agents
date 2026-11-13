@@ -702,10 +702,6 @@ type Waiting string
 const (
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
-	// WaitResumeEpisode is the reliability lane's decision that an explicit
-	// resume starts a new error episode. Until then resume keeps the spent
-	// re-prompts, so a loop held on an error is held again at once.
-	WaitResumeEpisode Waiting = "resume starts a new error episode, reliability lane"
 )
 
 // Known records an assertion that fails today because of open work. It never
