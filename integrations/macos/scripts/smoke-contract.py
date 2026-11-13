@@ -25,7 +25,8 @@ with tempfile.TemporaryDirectory(prefix="keepgoing-menu-smoke-") as temporary:
         "prompt": "Fictional local contract fixture"
     }}))
     registry = work / "registry with spaces"
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(work)}
+    # A zone that is not UTC: a review's times are this computer's, named.
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(work), "TZ": "Asia/Bangkok"}
     subprocess.run([str(cli), "registry", "add", "-c", str(config), "--directory", str(registry), "--json"],
                    env=env, check=True, stdout=subprocess.DEVNULL)
     def snapshot():

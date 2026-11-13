@@ -122,7 +122,7 @@ final class MenuTests: XCTestCase {
 
     // The whole allow-list, one assertion per command the menu can run.
     func testCommandsRunOnlyTheAllowList() {
-        let key = "l0123456789ab", expect = String(repeating: "ab", count: 32)
+        let key = "l0123456789ab", expect = "r1.1893499320." + String(repeating: "ab", count: 32) + "." + String(repeating: "cd", count: 16)
         XCTAssertEqual(MenuBuilder.arguments(.readList), ["panel", "list", "--json"])
         XCTAssertEqual(MenuBuilder.arguments(.readStatus), ["panel", "status", "--json"])
         XCTAssertEqual(MenuBuilder.arguments(.openPanel), ["panel"])
@@ -149,7 +149,7 @@ final class MenuTests: XCTestCase {
             XCTAssertNil(MenuBuilder.arguments(.review(.stop, key: bad)), bad)
             XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: bad, expect: expect, lanes: false, immediately: false)), bad)
         }
-        for bad in ["", "--immediately", String(repeating: "AB", count: 32), String(repeating: "a", count: 63), expect + " --lanes"] {
+        for bad in ["", "--immediately", String(repeating: "ab", count: 32), String(repeating: "AB", count: 32), "r1.1." + String(repeating: "a", count: 63) + "." + String(repeating: "c", count: 32), expect + " --lanes"] {
             XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: key, expect: bad, lanes: false, immediately: false)), bad)
         }
     }

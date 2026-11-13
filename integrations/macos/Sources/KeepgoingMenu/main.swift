@@ -366,23 +366,35 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Opens the panel so its page can make changes. Starting one, or
     /// restarting a read-only one, is asked first, with the footer's own
-    /// statement of who can then make changes.
+    /// statement of who can then make changes. Whether the panel runs, and in
+    /// which mode, is read again first, off the main thread: the menu's last
+    /// read can be minutes old, and a panel may have stopped by itself since.
     func openWithControls() {
-        // Offered only with the footer's statement, which is always shown.
-        guard let status = panel, status.exposure != nil else { return }
-        if let confirmation = ConfirmationBuilder.openWithControls(status) {
-            guard ask(confirmation) != nil else { return }
-        }
-        let restart = status.running && status.changesAllowed != true
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            if restart, (try? client.open(.stopPanel)) == nil {
-                DispatchQueue.main.async { [self] in
-                    tell("The keepgoing panel could not be stopped", "Run keepgoing panel stop in a terminal to see why, then keepgoing panel --allow-changes. Your loops are not affected.")
-                    refresh()
+            let fresh = try? client.panelStatus()
+            DispatchQueue.main.async { [self] in
+                panel = fresh
+                render()
+                // Offered only with the footer's statement, which is always shown.
+                guard let status = fresh, status.exposure != nil else {
+                    tell("The keepgoing panel could not be read", "Nothing was started. Run keepgoing panel status in a terminal to see why. Your loops are not affected.")
+                    return
                 }
-                return
+                if let confirmation = ConfirmationBuilder.openWithControls(status) {
+                    guard ask(confirmation) != nil else { return }
+                }
+                let restart = status.running && status.changesAllowed != true
+                DispatchQueue.global(qos: .userInitiated).async { [self] in
+                    if restart, (try? client.open(.stopPanel)) == nil {
+                        DispatchQueue.main.async { [self] in
+                            tell("The keepgoing panel could not be stopped", "Run keepgoing panel stop in a terminal to see why, then keepgoing panel --allow-changes. Your loops are not affected.")
+                            refresh()
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async { [self] in run(.openPanelWithChanges) }
+                }
             }
-            DispatchQueue.main.async { [self] in run(.openPanelWithChanges) }
         }
     }
 

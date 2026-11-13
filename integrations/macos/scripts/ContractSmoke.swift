@@ -36,7 +36,8 @@ import Foundation
         }
         // A review reads and changes nothing; the caller checks the files.
         guard case .review(let review) = try client.review(.stop, key: list.loops[0].key), review.title == "Stop example-menu-loop?",
-              review.lines.contains(where: { $0.hasPrefix("The loop's next check carries out the stop") }) else {
+              review.lines.contains(where: { $0.hasPrefix("The loop's next check carries out the stop") }),
+              review.lines.last?.hasSuffix(" +07).") == true else {
             fatalError("review contract mismatch")
         }
         let confirmation = ConfirmationBuilder.build(review)

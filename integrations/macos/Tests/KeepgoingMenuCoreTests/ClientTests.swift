@@ -59,7 +59,7 @@ final class ClientTests: XCTestCase {
     // A review and its confirmation run only their allowed arguments, and a
     // lost or unreadable reply to a confirmation is uncertain, never retried.
     func testReviewAndApplyPassOnlyAllowedArguments() throws {
-        let key = "l0123456789ab", expect = String(repeating: "c1", count: 32)
+        let key = "l0123456789ab", expect = "r1.1893499320." + String(repeating: "c1", count: 32) + "." + String(repeating: "d2", count: 16)
         let review = "{\"schemaVersion\":1,\"preview\":{\"action\":\"stop\",\"key\":\"\(key)\",\"title\":\"Stop example-api?\",\"lines\":[\"Now: Supervising.\"],\"confirm\":\"Stop example-api\",\"expect\":\"\(expect)\",\"expiresAt\":\"2030-01-01T12:02:00Z\",\"lost\":\"fictional lost\",\"refused\":\"fictional refused\",\"expired\":\"fictional expired\"}}"
         let (binary, client) = try fixture("printf '%s\\n' \"$@\" >> \"$0.args\"\ncat \"$0.reply\"\n")
         func args() throws -> [String] { try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init) }
@@ -84,7 +84,10 @@ final class ClientTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
         // A CLI that cannot be started did nothing.
         let missing = LocalClient(executable: URL(fileURLWithPath: "/nonexistent/keepgoing"))
-        XCTAssertEqual(missing.apply(command, review: r), ChangeResult(outcome: "refused", text: "fictional refused"))
+        XCTAssertEqual(missing.apply(command, review: r), ChangeResult(outcome: "refused", text: "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."))
+        // A keepgoing that refuses the arguments (exit 2, no reply) ran nothing.
+        let (_, usage) = try fixture("exit 2\n")
+        XCTAssertEqual(usage.apply(command, review: r), ChangeResult(outcome: "refused", text: "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."))
     }
 
     // Every command is given the panel server's environment and nothing

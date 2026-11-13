@@ -72,17 +72,23 @@ public struct LocalClient {
     /// say so. A command that could not be started did nothing.
     public func apply(_ command: MenuCommand, review: Review) -> ChangeResult {
         guard case .apply = command, let arguments = MenuBuilder.arguments(command) else {
-            return ChangeResult(outcome: "refused", text: Contract.text(review.refused))
+            return ChangeResult(outcome: "refused", text: LocalClient.notAccepted)
         }
         do {
-            let (data, _) = try run(arguments, timeout: 25)
-            return (try? Contract.applied(data)) ?? ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+            let (data, code) = try run(arguments, timeout: 25)
+            if let result = try? Contract.applied(data) { return result }
+            // A usage error is refused before anything runs: this keepgoing
+            // does not take these arguments.
+            if code == 2 && data.isEmpty { return ChangeResult(outcome: "refused", text: LocalClient.notAccepted) }
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
         } catch ClientFailure.unavailable {
-            return ChangeResult(outcome: "refused", text: Contract.text(review.refused))
+            return ChangeResult(outcome: "refused", text: LocalClient.notStarted)
         } catch {
             return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
         }
     }
+    static let notStarted = "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."
+    static let notAccepted = "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."
     public func registry() throws -> [Registration] {
         let (data, code) = try run(["registry", "list", "--json"])
         return try Contract.registry(data, exit: code)

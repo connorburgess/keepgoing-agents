@@ -3,7 +3,7 @@ import XCTest
 
 final class ControlsTests: XCTestCase {
     let key = "l0123456789ab"
-    let expect = String(repeating: "c1", count: 32)
+    let expect = "r1.1893499320." + String(repeating: "c1", count: 32) + "." + String(repeating: "d2", count: 16)
     let lines = ["Now: Supervising. Last check: 2 min ago.",
                  "The loop's next check carries out the stop; this review cannot confirm that the session stopped. Nothing is sent until it is resumed.",
                  "This stops the conversation only: its lanes, if it has any, keep running.",
@@ -44,7 +44,10 @@ final class ControlsTests: XCTestCase {
         let invalid: [(Data, Int32, LoopAction)] = [
             (reviewJSON(key: "l000000000000"), 0, .stop), (reviewJSON(action: "pause"), 0, .stop), (reviewJSON(expect: "abc"), 0, .stop),
             (reviewJSON(expect: String(repeating: "C1", count: 32)), 0, .stop), (reviewJSON(), 1, .stop), (refused, 0, .stop),
-            (reviewJSON(action: "pause", stop: "{\"lanes\":2,\"immediately\":true}"), 0, .pause), (reviewJSON(stop: "{\"lanes\":-1,\"immediately\":true}"), 0, .stop),
+            (reviewJSON(action: "pause", stop: conversation), 0, .pause), (reviewJSON(stop: "{\"immediately\":true,\"options\":[]}"), 0, .stop),
+            (reviewJSON(stop: "{\"immediately\":true,\"options\":[{\"label\":\"\\u0007\",\"lanes\":false}]}"), 0, .stop),
+            (reviewJSON(stop: "{\"immediately\":true,\"options\":[{\"label\":\"A\",\"lanes\":true},{\"label\":\"B\",\"lanes\":true}]}"), 0, .stop),
+            (reviewJSON(expect: String(repeating: "c1", count: 32)), 0, .stop),
             (Data("{\"schemaVersion\":1,\"result\":{\"outcome\":\"maybe\",\"text\":\"x\"}}".utf8), 1, .stop),
             (Data("fictional-private-bad-json".utf8), 0, .stop), (Data(), 0, .stop),
         ]
@@ -69,18 +72,22 @@ final class ControlsTests: XCTestCase {
         XCTAssertNotNil(MenuBuilder.arguments(c.buttons[1].command!))
     }
 
-    // Once the CLI offers lanes and stopping now, a stop offers the
-    // conversation alone, or with its lanes, and always runs now.
-    func testAStopWithLanesOffersBothAndRunsNow() throws {
-        let c = ConfirmationBuilder.build(try review("{\"lanes\":3,\"immediately\":true}"))
+    let conversation = "{\"immediately\":true,\"options\":[{\"label\":\"Stop the Conversation\",\"lanes\":false},{\"label\":\"Stop It and Its 3 Lanes\",\"lanes\":true}]}"
+
+    // Once the CLI offers lanes and stopping at once, a stop offers each of
+    // its options in the CLI's own words, and always runs immediately.
+    func testAStopWithLanesOffersTheCLIsOptionsAndRunsImmediately() throws {
+        let c = ConfirmationBuilder.build(try review(conversation))
         XCTAssertEqual(c.buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its 3 Lanes"])
         XCTAssertEqual(c.buttons.map(\.destructive), [false, true, true])
         XCTAssertEqual(c.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
         XCTAssertEqual(c.buttons[2].command, .apply(.stop, key: key, expect: expect, lanes: true, immediately: true))
         XCTAssertEqual(MenuBuilder.arguments(c.buttons[2].command!), ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--immediately", "--json"])
-        XCTAssertEqual(ConfirmationBuilder.build(try review("{\"lanes\":1,\"immediately\":true}")).buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its Lane"])
-        // No lanes: one stop, now.
-        let none = ConfirmationBuilder.build(try review("{\"lanes\":0,\"immediately\":true}"))
+        // The words are the CLI's: this app writes none of them.
+        let other = ConfirmationBuilder.build(try review("{\"immediately\":true,\"options\":[{\"label\":\"Fictional words A\",\"lanes\":false},{\"label\":\"Fictional words B\",\"lanes\":true}]}"))
+        XCTAssertEqual(other.buttons.map(\.title), ["Cancel", "Fictional words A", "Fictional words B"])
+        // One option: one stop, immediately.
+        let none = ConfirmationBuilder.build(try review("{\"immediately\":true,\"options\":[{\"label\":\"Stop example-api\",\"lanes\":false}]}"))
         XCTAssertEqual(none.buttons.map(\.title), ["Cancel", "Stop example-api"])
         XCTAssertEqual(none.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
     }

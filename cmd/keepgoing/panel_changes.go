@@ -331,25 +331,28 @@ func (c *panelChanges) confirm(session, key, action, value string) panelChangeRe
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
-	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, f.digest)
+	// The page acts as no BB thread, as a terminal outside BB does.
+	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, "", f.digest)
 	// The next read shows the change, not a cached picture from before it.
 	c.reader.forget()
 	res := panelOutcome(action, r)
 	return panelChangeReply{Result: &res}
 }
 
-// panelApply makes one reviewed change, as no BB thread. Each save is
-// refused, inside the control lock, if the control record is not the one
-// reviewed (expect). client apply calls it too, with no origin.
-func panelApply(ctx context.Context, registryDir, id, action, origin, expect string) clientHoldReport {
+// panelApply makes one reviewed change. Each save is refused, inside the
+// control lock, if the control record is not the one reviewed (expect). A
+// resume is refused, as client resume refuses it, when caller (a BB thread,
+// or "" for none) may not resume a loop another thread owns. Pause and stop
+// never check the owner. client apply calls it too, with no origin.
+func panelApply(ctx context.Context, registryDir, id, action, origin, caller, expect string) clientHoldReport {
 	if action == "resume" {
 		// The same preparation and resume as client prepare-resume and
-		// resume.
-		prepared, _ := clientResume(ctx, registryDir, id, "prepare-resume", "", false, "", origin, "", time.Now, nil)
+		// resume, with the expect check before the ticket is prepared.
+		prepared, _ := clientResume(ctx, registryDir, id, "prepare-resume", "", false, caller, origin, expect, time.Now, nil)
 		if prepared.Ticket == "" {
 			return prepared.clientHoldReport
 		}
-		done, _ := clientResume(ctx, registryDir, id, "resume", prepared.Ticket, false, "", origin, expect, time.Now, nil)
+		done, _ := clientResume(ctx, registryDir, id, "resume", prepared.Ticket, false, caller, origin, expect, time.Now, nil)
 		return done.clientHoldReport
 	}
 	r, _ := applyClientHoldFrom(ctx, registryDir, id, action, origin, expect)

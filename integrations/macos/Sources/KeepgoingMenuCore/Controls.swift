@@ -11,14 +11,24 @@ public enum LoopAction: String, Equatable, CaseIterable {
     case pause, stop, resume
 }
 
-/// How a stop may be made, when the CLI offers a choice. A CLI that offers
-/// none (today's) stops the conversation only, at its next check.
+/// How a stop may be made, when the CLI offers a choice: `stop` in the
+/// review. A CLI that offers none (today's) stops the conversation only, at
+/// its next check. The words on each button come from the CLI, never from
+/// this app.
 public struct StopOptions: Decodable, Equatable {
-    /// How many lanes a stop with lanes would stop.
-    public let lanes: Int
-    /// Whether the stop can be carried out now rather than at the next check.
+    /// Whether the stop is carried out at once (`--immediately`) rather than
+    /// at the loop's next check.
     public let immediately: Bool
-    public init(lanes: Int, immediately: Bool) { self.lanes = lanes; self.immediately = immediately }
+    /// One button each, in order: its words, and whether it also stops the
+    /// loop's lanes (`--lanes`).
+    public let options: [StopOption]
+    public init(immediately: Bool, options: [StopOption]) { self.immediately = immediately; self.options = options }
+}
+
+public struct StopOption: Decodable, Equatable {
+    public let label: String
+    public let lanes: Bool
+    public init(label: String, lanes: Bool) { self.label = label; self.lanes = lanes }
 }
 
 /// The review `keepgoing client review ACTION --loop KEY --json` prints.
@@ -59,8 +69,10 @@ public enum ReviewReading: Equatable {
 
 extension Contract {
     static let outcomes: Set<String> = ["done", "refused", "review_again", "uncertain"]
+    /// A review's expect value: its expiry, the record's digest and a check
+    /// over the loop and the action. Passed back only when it matches.
     static func validExpect(_ value: String) -> Bool {
-        value.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+        value.range(of: "^r1\\.[0-9]{1,12}\\.[0-9a-f]{64}\\.[0-9a-f]{32}$", options: .regularExpression) != nil
     }
 
     private static func reply(_ data: Data) throws -> ReviewReply {
@@ -87,7 +99,7 @@ extension Contract {
         if let p = r.preview, r.result == nil, exit == 0 {
             guard p.action == action.rawValue, p.key == key, validExpect(p.expect), !text(p.title).isEmpty, !text(p.confirm).isEmpty,
                   p.lines.count <= 40, p.lines.allSatisfy({ !text($0).isEmpty }), !text(p.lost).isEmpty, !text(p.refused).isEmpty, !text(p.expired).isEmpty,
-                  (p.stop?.lanes ?? 0) >= 0, (p.stop?.lanes ?? 0) <= 10_000, action == .stop || p.stop == nil else {
+                  action == .stop || p.stop == nil, validStop(p.stop) else {
                 throw ClientFailure.invalidResponse
             }
             return .review(p)
@@ -96,6 +108,14 @@ extension Contract {
             return .refused(res)
         }
         throw ClientFailure.invalidResponse
+    }
+
+    /// Stop options, when given, are one to four buttons with words, no two
+    /// alike in what they stop.
+    static func validStop(_ stop: StopOptions?) -> Bool {
+        guard let stop else { return true }
+        return (1...4).contains(stop.options.count) && stop.options.allSatisfy({ !text($0.label).isEmpty && text($0.label).count <= 60 })
+            && Set(stop.options.map(\.lanes)).count == stop.options.count
     }
 
     /// What client apply said. Its exit code is not needed: the outcome says it.
@@ -126,10 +146,10 @@ public struct Confirmation: Equatable {
 }
 
 public enum ConfirmationBuilder {
-    /// The buttons for a stop: the conversation only, and, when the CLI
-    /// offers it, the conversation and its lanes. A stop is carried out now
-    /// whenever the CLI can; otherwise it waits for the loop's next check and
-    /// stops the conversation only, which the review itself says.
+    /// The buttons for a stop: one per option the CLI offers, in its words
+    /// (the conversation, or it and its lanes), carried out at once when the
+    /// CLI says it can be; otherwise the one stop, which waits for the loop's
+    /// next check and stops the conversation only, as the review itself says.
     public static func build(_ review: Review) -> Confirmation {
         let name = Contract.text(review.confirm)
         var buttons = [ConfirmButton(title: "Cancel", destructive: false, command: nil)]
@@ -139,11 +159,11 @@ public enum ConfirmationBuilder {
         let lines = review.lines.map(Contract.text)
         if action == .stop {
             let immediately = review.stop?.immediately ?? false
-            if let lanes = review.stop?.lanes, lanes > 0 {
-                buttons.append(ConfirmButton(title: "Stop the Conversation", destructive: true,
-                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, immediately: immediately)))
-                buttons.append(ConfirmButton(title: lanes == 1 ? "Stop It and Its Lane" : "Stop It and Its \(lanes) Lanes", destructive: true,
-                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: true, immediately: immediately)))
+            if let options = review.stop?.options, !options.isEmpty {
+                for option in options {
+                    buttons.append(ConfirmButton(title: Contract.text(option.label), destructive: true,
+                                                 command: .apply(.stop, key: review.key, expect: review.expect, lanes: option.lanes, immediately: immediately)))
+                }
             } else {
                 buttons.append(ConfirmButton(title: name, destructive: true,
                                              command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, immediately: immediately)))
