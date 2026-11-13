@@ -51,7 +51,6 @@ func (w *World) nextTurns(outcomes ...string) {
 func TestDefinedAgentJourney(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
-	w.install("example-agent")
 	w.Headless = "example-agent" // steps wait for its detached turns to end
 	dir := filepath.Join(w.Root, "setup")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -133,7 +132,6 @@ func TestDefinedAgentJourney(t *testing.T) {
 func TestDefinedAgentOutage(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
-	w.install("example-agent")
 	w.Headless = "example-agent"
 	dir := filepath.Join(w.Root, "setup")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
