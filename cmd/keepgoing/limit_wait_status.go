@@ -76,7 +76,7 @@ func describeTurnRetry(last *state.TurnRetry) turnRetryStatus {
 		return r
 	}
 	switch last.Outcome {
-	case "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "refused", "unsupported":
+	case "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported":
 	default:
 		return r
 	}
@@ -101,6 +101,8 @@ func printTurnRetry(w io.Writer, r turnRetryStatus) {
 		fmt.Fprintln(w, "  the provider reported no failed turn, so the prompt was sent instead")
 	case "not_in_error":
 		fmt.Fprintln(w, "  the provider reported no failed turn and the session was no longer in error (or its status could not be read); nothing was sent and no attempt was counted")
+	case "queue_unconfirmed":
+		fmt.Fprintln(w, "  the provider kept answering that a retry was already queued while reporting nothing queued, so the prompt was sent instead")
 	case "unsupported":
 		fmt.Fprintln(w, "  this provider version cannot retry a turn, so the prompt was sent instead")
 	case "already_queued":
