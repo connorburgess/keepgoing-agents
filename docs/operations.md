@@ -236,7 +236,7 @@ The re-prompt decision is now carried out with `bb thread retry <thread> --json`
 - **After an outage of any length.** Nothing in this path depends on how long the thread sat failed. BB applies no age limit to a retry: it needs only the thread in `error` and its last turn request stored. Fixtures run the first check 20 minutes, 4 hours, 3 days and 3 weeks after the failure, with no check in between, and require one recovery attempt, no hold and nothing else spent, for each answer BB can give. If the provider session itself is gone after a long gap, the retried turn fails again, each attempt is counted, and the loop ends in the ordinary hold with its one `await_user` report; it does not stay silent.
 - **An unknown error that is really a limit.** A provider failure that carries no recognised code is `unknown`. If it is in fact a usage limit the provider did not label, the retry runs into the same limit and fails again, as a re-prompt did, until the cap is spent and the loop holds.
 - **Run graph.** A turn retry is recorded as a `reprompt` send with mode `turn_retry` and no goal reference, since no prompt was composed. A build without this change treats a graph containing that mode as unreadable.
-- **What this does not do.** It does not know whether the network is back. A retry made while the connection is still down is accepted by BB, fails again and spends an attempt, exactly as a re-prompt did. Not spending recovery into a dead network is a separate change (the connectivity gate, pull request #154); until that lands, checks that run during an outage can use up `max_reprompts`. It also does not restart failed child threads.
+- **What this does not do.** It does not know whether the network is back. A retry made while the connection is still down is accepted by BB, fails again and spends an attempt, exactly as a re-prompt did. Not spending recovery into a dead network is a separate change (the connectivity gate, pull request #154); until that lands, checks that run during an outage can use up `max_reprompts`. It also does not restart failed child threads; that is [lane recovery](#lane-recovery), which is opt-in.
 
 ### Rejected takeover briefs
 
@@ -394,7 +394,7 @@ Idle wakes, stop, pause and every other hold do not trigger it. To change it, se
 
 **When it returns.** The first check whose connectivity check passes acts as usual: it recovers the session if it is still in error (subject to `errors.backoff` from any earlier attempt) and runs the probes that were left due. Nothing is retried faster than the ordinary check interval.
 
-For a BB thread, a recovery after an outage is therefore one [turn retry](#recovering-a-failed-bb-turn-by-retry), with no new prompt, plus one notice-only message when direct children are still in error: a retry has no text to carry the [child-error notice](#children-in-error), so the count is sent on its own. The notice never contains the task, is sent once per newly failed child, and is one more send against the allowance. With no child in error the retry is the only thing the session receives. Other adapters receive one re-prompt, which carries the notice itself.
+For a BB thread, a recovery after an outage is therefore one [turn retry](#recovering-a-failed-bb-turn-by-retry), with no new prompt, plus one notice-only message when direct children are still in error: a retry has no text to carry the [child-error notice](#children-in-error), so the count is sent on its own. The notice never contains the task, is sent once per newly failed child, and is one more send against the allowance. With no child in error the retry is the only thing the session receives. Other adapters receive one re-prompt, which carries the notice itself. With [lane recovery](#lane-recovery) switched on, the children that were working when the network dropped are retried on that same check, and a child being recovered is not announced, so the session receives the turn retry alone.
 
 **A long outage, and a check that is wrong.** Two cases look the same from the check: a real outage, which may last weeks, and a check target that this machine cannot reach while the provider works (a DNS filter or blocked host, a scheduler environment without its proxy settings, a proxy that refuses the connection, a TLS-inspecting gateway whose certificate is not trusted). The first must be waited out; the second must not hold a loop in silence. So after `network.verify_after` (default `1h`) of failed checks keepgoing looks more closely: it asks the provider directly, with the one exact probe a switch-back would use for the current target. It looks again after twice as long each time (2h, 4h, 8h and so on, up to a week), so a three-week outage costs about nine probes.
 
@@ -599,7 +599,7 @@ A direct child whose status is `error` is not running work. It does not keep the
 
 Unreleased source tells the session that owns the children, and records the count:
 
-- Each BB check lists the verified direct children in error, from the status field alone. keepgoing never reads a child's log or messages, and never sends to, stops, retries or restarts a child.
+- Each BB check lists the verified direct children in error, from the status field alone. keepgoing never sends to a child, stops one or creates one. Unless [lane recovery](#lane-recovery) is switched on, it also never retries a child and never reads a child's log; with it on, it may ask BB to retry a failed child's turn, and to decide that it reads the typed fields of that child's log, never its message text.
 - When the parent is woken, or re-prompted after an error of its own, and a child has newly entered error, that message ends with a fixed notice: a `[keepgoing:child-errors count=N]` line, then one sentence saying N direct child threads were in error, that keepgoing has not touched them, and that the session should decide whether to retry or replace that work. The notice holds the count only: no child ID, title, task text or error detail.
 - Only growth is announced. keepgoing keeps a short hash of each child it has announced, never the IDs. A child not in that record triggers the notice; a set that only shrinks does not, so retrying one child, or archiving or deleting an errored one, says nothing.
 - A recovered child is forgotten slowly. A child stays in the record until it has been out of error for `progress.min_wake_interval` (default `60m`). Failing again before that is the same failure and says nothing, so a child that flaps between error and a provider retry is announced once, not on every re-failure, and does not cause a wake each time. A child that has been out of error that long and fails again is announced again. This is the same rule, in the same code, as the owner report below; the two keep separate records only because they are told at different times.
@@ -634,6 +634,64 @@ Unreleased source; **offline fixtures only**. The notice above reaches the paren
 The payload carries the loop name, the number of children in error, the number still running, whether the listing was complete, and the report's number within the episode. It carries no child ID, title, task text or transcript.
 
 Evidence is offline: adapter fixtures for listing errored children and for asking a child nothing but its status and pending interactions; a decision table over every enumerated input, with and without enough time since the last send, showing errored children change the chosen action only in the one case above and the notice follows only a wake; tables for growth-only announcement; supervisor fixtures for a shrinking set, a child that fails again, the notice-only wake and its spacing, the cap on rejected sends, blocked wakes, the send limit, dry runs, restart, partial scans and target moves; and a CLI journey against a fake `bb`. No live child thread failed or was retried for these tests.
+
+### Lane recovery
+
+Unreleased source; **offline fixtures only**, and **off by default**. No live lane has been retried by keepgoing. This is the only thing keepgoing ever does to a lane (a direct child conversation of the supervised BB thread), and it does it only when the loop's BB target sets:
+
+```yaml
+bb:
+  thread: thr_example123
+  children:
+    retry_errored: true
+    max_per_check: 5      # default; 1 to 20
+    max_per_episode: 20   # default; 1 to 100
+```
+
+With the option on, a lane that a check saw working and a later check finds in error has its failed turn retried with `bb thread retry <lane> --reason "keepgoing: recover the failed turn" --json`: BB runs the same turn again by reference. No message is composed or sent.
+
+**What it can do to a lane.** Ask BB to retry the lane's failed turn, and read the lane's status, pending interactions and the typed fields of its event log to decide whether to.
+
+**What it cannot do to a lane.** It never messages a lane (`thread tell`), stops one, creates one, moves, renames, archives or deletes one, or changes its model or settings. It never falls back to a prompt when BB says there is nothing to retry. It never acts on the lanes of a lane: only direct children of the supervised thread, verified by ID and parent on every attempt.
+
+**Which lanes.**
+
+- **Seen working first.** A lane is retried only if an earlier check, made with the option on, saw it `active`. This excludes a lane that had already failed before the loop first saw it active. In particular it excludes every lane that was already in error when the option was switched on, including when it is switched on in the middle of an outage: those lanes stay as they are until something else makes them work again, after which a later failure is recoverable. The rule exists so that opting in cannot restart work the session had abandoned.
+- **Every fact established, on a fresh inspection.** Just before a retry, keepgoing reads the lane again: it must still be a direct child of the supervised thread, not archived or deleted, in `error`, with nothing queued, with no pending interaction, and with a failure that reads as `network`, `overloaded` or `unknown`. Anything that cannot be read leaves the lane alone.
+- **Never a lane waiting on a person.** A pending permission or question on a lane raises the loop's hold before any lane work, as before. A lane whose interactions cannot be read is treated as waiting on a person.
+- **Never a rate-limited lane or one that needs a login.** A retry would run into the same limit or the same sign-in. These lanes are left alone, announced to the session as before, and counted in the owner report below.
+- **Not while BB is still retrying it.** A fresh provider retry notice on the lane is honoured, with the same expiry and the same question to BB's `provider-retry` plugin as for the supervised thread.
+
+**How the failure is read.** The lane's status alone does not say why it failed, so keepgoing reads the lane's event log with the same reader it uses for the supervised thread. It decodes typed fields only: event type, sequence and time, the error category, HTTP status and provider code, the will-retry flag, rate-limit windows and reset times. It never decodes message text, titles, tool input or output, and a test fails if any of those reaches what keepgoing stores, reports or prints. `bb thread log --json` does return those fields to the process; they are discarded by the decoder and never kept. This replaces the earlier statement that a child's log is never read: with the option off it still is not.
+
+**What is kept.** Per lane, under a hash of its ID and never the ID: when it was last seen working, the number of retries, their times, the last outcome, and the position reached in its log (in `bb-lanes.json`, with the provider reference hashed). A log longer than 2,000 events is read over several checks, and the lane is not retried until its end has been read.
+
+**Bounds.**
+
+| Bound | Default | Set by |
+| --- | --- | --- |
+| Lanes worked on per check | 5 | `bb.children.max_per_check` |
+| Retries per lane | 3 | `errors.max_reprompts` |
+| Spacing between retries, and between inspections, of one lane | 10m | `errors.backoff` |
+| Retries for one failure (an episode), across all lanes | 20 | `bb.children.max_per_episode` |
+| Time for one lane | 40s | fixed |
+| Time left in the check below which no further lane is started | 30s | fixed |
+
+Each retry also uses one send from `limits.max_sends`. When the allowance is spent lane work stops; lanes raise no hold of their own. A lane's count is kept until it has stayed out of error for `progress.min_wake_interval`, so a lane that fails again straight after a retry spends the same three attempts, and an episode ends when every lane's count has been forgotten. When too little of the check's time is left, the remaining lanes are recorded as deferred and taken first on the next check.
+
+**Giving up.** A lane that has used its retries and is still in error after the spacing is given up, and so is every lane still due once the episode's retries are spent. A given-up lane is not retried again in that episode.
+
+**Order in a check.** Lane work happens after the session is observed and before the check's own action. A stopped, paused, disabled, completed or awaiting-user loop is not observed, so nothing is retried. A check that raises a hold, stops the session, hands off or switches back, falls outside the window, finds the session itself waiting on a person, or is a dry run leaves every lane alone. A handoff, switch-back, `retarget` or transfer forgets the record: no lane of the conversation that was left is retried afterwards.
+
+**The network.** A lane retry needs the network, so the [connectivity check](#network-outages) is made first. While it fails nothing is asked of BB, nothing is counted and no send is used, however long the outage lasts; fixtures run 20 minutes, 4 hours, 3 days and 3 weeks. The first check after it passes retries each eligible lane once, within the bounds. BB applies no age limit to a retry. If BB answers that there is nothing to retry, or that a retry is already queued, nothing is counted and the lane is left alone.
+
+**What the session is told.** A lane keepgoing is recovering is not announced: there is nothing for the session to do about it yet. It is announced, by the [notice](#children-in-error), once it is given up, and at once if it is not retryable. When the notice goes out while other lanes are being recovered it says so: its first line is `[keepgoing:child-errors count=N retried=M]`, and it says keepgoing has asked BB to retry the failed turn of M of them, by reference and without a message, and that the session should check each child before retrying or replacing it so the same work is not started twice.
+
+**What the owner is told.** A `child_recovery` report, once per lane, when lanes are given up or are left alone because they are rate limited or need a login. It carries counts only (`givenUp`, `rateLimited`, `authFailed`, `retried`), never an ID. At most three are sent per episode, each makes one attempt, and the record is saved before the request. `child_recovery` is in the default `report.events`; a loop with an explicit list receives it only after naming it or `all`. The `child_error` report is unchanged.
+
+**Where it shows.** The check's JSON has a `lanes` object with `retried`, `givenUp`, `deferred`, `notRetried` (a count per reason) and `waiting: network`. `status` prints a `lane recovery:` block (`laneRecovery` in JSON), `timeline --kind child_retry` shows each check that did lane work, `incidents.json` stores the three counts, and `runs` lists each retry as a `child_retry` send against the loop's target. All of it is counts: no lane is named anywhere.
+
+**What this does not establish.** That a retried lane's turn succeeded: BB accepting a retry is not proof of that. Whether the work a given-up lane was doing should be redone is still for the session or a person to decide.
 
 ## One owner per loop
 

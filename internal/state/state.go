@@ -108,6 +108,9 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// Lanes is the record of lane recovery (bb.children.retry_errored). It
+	// holds hashes of lane IDs, never the IDs.
+	Lanes *LaneRecovery `json:"lanes,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -148,6 +151,58 @@ type ChildErrorReport struct {
 	Errored  int  `json:"errored"`
 	Running  int  `json:"running"`
 	Complete bool `json:"complete"`
+}
+
+// LaneRecovery is what the supervisor remembers about the lanes of the
+// current target, for bb.children.retry_errored. Every key is a hash of a
+// lane ID; no ID, title or text is stored.
+type LaneRecovery struct {
+	// SeenActive is when each lane was last seen working. A lane absent from
+	// it is never retried.
+	SeenActive map[string]time.Time `json:"seenActive,omitempty"`
+	// Retries holds the lanes that were retried or looked at and not yet forgotten.
+	Retries map[string]LaneRetry `json:"retries,omitempty"`
+	// EpisodeRetries counts retries since Retries was last empty.
+	EpisodeRetries int `json:"episodeRetries,omitempty"`
+	// Reports counts child_recovery reports in the same episode.
+	Reports int `json:"reports,omitempty"`
+	// Deferred lists lanes the last check did not reach for lack of time;
+	// the next check takes them first.
+	Deferred []string `json:"deferred,omitempty"`
+	// Last summarizes the latest check that did lane work, for status.
+	Last *LaneCheck `json:"last,omitempty"`
+}
+
+// LaneRetry is one lane's record.
+type LaneRetry struct {
+	Attempts int       `json:"attempts,omitempty"`
+	LastAt   time.Time `json:"lastAt,omitempty"`
+	// LookedAt is when the lane was last inspected and left alone. It spaces
+	// inspections the way LastAt spaces retries.
+	LookedAt time.Time `json:"lookedAt,omitempty"`
+	// Outcome is the provider's answer to the last retry, or the reason the
+	// lane was last not retried.
+	Outcome string `json:"outcome,omitempty"`
+	GivenUp bool   `json:"givenUp,omitempty"`
+	// Reported: a child_recovery report has covered this lane's give-up or
+	// its failure class.
+	Reported bool `json:"reported,omitempty"`
+	// HealthySince is when the lane was first seen out of error since its
+	// last failure. The record is dropped once that has lasted
+	// progress.min_wake_interval.
+	HealthySince time.Time `json:"healthySince,omitempty"`
+}
+
+// LaneCheck is the lane work of one check. Counts only.
+type LaneCheck struct {
+	At       time.Time `json:"at"`
+	Retried  int       `json:"retried,omitempty"`
+	Deferred int       `json:"deferred,omitempty"`
+	GivenUp  int       `json:"givenUp,omitempty"`
+	// NotRetried counts lanes looked at and left alone, by reason.
+	NotRetried map[string]int `json:"notRetried,omitempty"`
+	// Waiting is "network" when the connectivity check failed.
+	Waiting string `json:"waiting,omitempty"`
 }
 
 // TurnRetry records the last time a failed turn was retried by reference
@@ -245,6 +300,8 @@ type BriefRecord struct {
 func (f *File) ClearChildErrors() {
 	f.ChildErrorsAnnounced, f.ChildErrorsAnnouncedV1, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, nil, "", 0
 	f.ChildErrorReport = nil
+	// The lanes belong to the conversation that was left.
+	f.Lanes = nil
 }
 
 // ClearBriefs starts a new episode for handoff and switch-back briefs.

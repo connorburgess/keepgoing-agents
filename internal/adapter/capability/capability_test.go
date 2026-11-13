@@ -229,6 +229,11 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		if listed := byID("turn_retry").Cells[a.ID].Status == Yes; retries != a.TurnRetrier || retries != listed {
 			t.Errorf("%s: TurnRetrier=%v; the capability table says %v and the turn_retry row says %v", a.ID, retries, a.TurnRetrier, listed)
 		}
+		// And the child_recovery row with whether it can act on a lane at all.
+		_, lanes := impl.(adapter.LaneRecoverer)
+		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
+			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
+		}
 	}
 	// A process loop can stop only through a configured command.
 	if _, unsupported := process.New(config.Process{}).Stop(t.Context()).(adapter.ErrUnsupported); !unsupported || byID("stop").Cells["process"].Status != Partial {

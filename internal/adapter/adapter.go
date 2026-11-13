@@ -76,6 +76,21 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// LaneRecoverer is implemented by adapters that can recover a failed lane: a
+// direct child conversation of the supervised session. The supervisor uses
+// it only when the loop has opted in. It is the only way the supervisor acts
+// on a lane, and neither method sends text, stops, creates or re-parents
+// anything.
+type LaneRecoverer interface {
+	// InspectLane re-reads one lane and reports what is established about
+	// it. It reads the lane's status, its pending interactions and the typed
+	// fields of its error events. It never decodes or stores message text.
+	InspectLane(ctx context.Context, id string) decide.LaneFacts
+	// RetryLane asks the provider to retry the lane's failed turn by
+	// reference. Errors mean what they mean for TurnRetrier.RetryFailedTurn.
+	RetryLane(ctx context.Context, id string) (TurnRetry, error)
+}
+
 // TurnRetryOutcome is what the provider reported for a retry request.
 type TurnRetryOutcome string
 

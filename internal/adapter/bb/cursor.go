@@ -2,6 +2,8 @@ package bb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,8 +26,12 @@ const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
 type Cursor struct {
-	RetrySchema     int    `json:"retrySchema,omitempty"`
-	ProviderThread  string `json:"providerThread,omitempty"`
+	RetrySchema    int    `json:"retrySchema,omitempty"`
+	ProviderThread string `json:"providerThread,omitempty"`
+	// HashRefs makes the summary keep a hash of the provider thread reference
+	// in place of the reference. It is set for a lane's summary, which must
+	// hold no identifier of the lane.
+	HashRefs        bool   `json:"hashRefs,omitempty"`
 	ChildOutcomeSeq int64  `json:"childOutcomeSeq,omitempty"`
 	Thread          string `json:"thread"`
 	LastSeq         int64  `json:"lastSeq"`
@@ -42,6 +48,16 @@ type Cursor struct {
 	// ScannedAt the local time of the last complete scan. See eventTime.
 	LastEventAt time.Time `json:"lastEventAt,omitempty"`
 	ScannedAt   time.Time `json:"scannedAt,omitempty"`
+}
+
+// ref returns a provider reference as the summary keeps it: as given, or as a
+// short hash when HashRefs is set.
+func (c *Cursor) ref(id string) string {
+	if !c.HashRefs || id == "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "h:" + hex.EncodeToString(sum[:12])
 }
 
 // eventTime bounds BB's createdAt for an event by what this supervisor knows
@@ -128,7 +144,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			ProviderThread string `json:"providerThreadId"`
 		}
 		_ = json.Unmarshal(e.Data, &d)
-		c.ProviderThread = d.ProviderThread
+		c.ProviderThread = c.ref(d.ProviderThread)
 	case e.Type == "provider/error":
 		var d struct {
 			ProviderThread string `json:"providerThreadId"`
@@ -140,11 +156,11 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			} `json:"errorInfo"`
 		}
 		if json.Unmarshal(e.Data, &d) == nil {
-			if d.ProviderThread != "" && c.ProviderThread != "" && d.ProviderThread != c.ProviderThread {
+			if d.ProviderThread != "" && c.ProviderThread != "" && c.ref(d.ProviderThread) != c.ProviderThread {
 				return
 			}
 			if c.ProviderThread == "" {
-				c.ProviderThread = d.ProviderThread
+				c.ProviderThread = c.ref(d.ProviderThread)
 			}
 			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
 		}
@@ -160,7 +176,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 				Type string `json:"type"`
 			} `json:"item"`
 		}
-		if json.Unmarshal(e.Data, &d) != nil || c.ProviderThread == "" || d.ProviderThread != c.ProviderThread || c.Error == nil {
+		if json.Unmarshal(e.Data, &d) != nil || c.ProviderThread == "" || c.ref(d.ProviderThread) != c.ProviderThread || c.Error == nil {
 			return
 		}
 		switch {

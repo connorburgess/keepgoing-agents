@@ -99,8 +99,12 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	if !complete {
 		listing = "The child listing was incomplete, so both counts are lower bounds."
 	}
-	text := fmt.Sprintf("%s: %d direct child thread(s) of the supervised thread are in error and %d are still running. %s keepgoing does not retry, message or stop child threads; whether that work is retried or replaced is up to the supervised session or a person.",
-		t.loop.Name, rec.Errored, rec.Running, listing)
+	does := "keepgoing does not retry, message or stop child threads"
+	if t.laneRecoveryOn {
+		does = "keepgoing does not message or stop child threads; under bb.children.retry_errored it asks BB to retry the failed turn of one it saw working, a bounded number of times"
+	}
+	text := fmt.Sprintf("%s: %d direct child thread(s) of the supervised thread are in error and %d are still running. %s %s; whether that work is retried or replaced is up to the supervised session or a person.",
+		t.loop.Name, rec.Errored, rec.Running, listing, does)
 	if rec.Reports > 1 {
 		text += " More children have failed since the last report for this episode."
 	}

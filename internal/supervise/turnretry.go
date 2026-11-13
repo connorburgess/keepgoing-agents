@@ -176,7 +176,7 @@ func (t *tick) childNoticeAfterRetry(a adapter.Adapter, d decide.Decision) error
 		t.warn("errored-children notice not sent after the turn retry: %v", err)
 		return nil
 	}
-	err := t.send(a, prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren), adapter.ModeAuto, t.res.Target, string(d.Action))
+	err := t.send(a, prompt.ChildErrorsOnlyRetried(childErrors, t.decisionInput.Obs.ActiveChildren, t.lanesRetried), adapter.ModeAuto, t.res.Target, string(d.Action))
 	t.childNoticeSent(childErrors, err)
 	if err != nil {
 		t.warn("errored-children notice after the turn retry: %v", err)

@@ -46,6 +46,9 @@ loop:
 | `new_thread` | `false` | Fallback candidates only, unreleased source. Instead of `thread`: a handoff to this candidate creates a new BB thread on the candidate's `provider`, with `model` and `reasoning`. Requires `provider`. See [hand off to a new conversation](fallbacks.md#hand-off-to-a-new-conversation). |
 | `project`, `environment` | the continued conversation's | With `new_thread` only: where the new thread is created. |
 | `permission_mode` | `accept-edits` | With `new_thread` only: `accept-edits`, `auto` or `full`. Always passed to `bb thread spawn`, so the new thread never takes a project default. `accept-edits` asks before anything but file edits. |
+| `children.retry_errored` | `false` | Unreleased source. Opt in to [lane recovery](operations.md#lane-recovery): ask BB to retry the failed turn of a direct child thread that was seen working and then failed with a connection, overload or unknown error. Nothing else is ever done to a child. Per lane it uses `errors.max_reprompts` attempts spaced by `errors.backoff`. |
+| `children.max_per_check` | `5` | With `retry_errored`: lanes worked on in one check. `1` to `20`; `0` means the default. |
+| `children.max_per_episode` | `20` | With `retry_errored`: retries for one failure across all lanes. `1` to `100`; `0` means the default. |
 | `cli` | `bb` | Path to the bb executable. |
 | `model`, `reasoning` | none | Applied with `bb thread update` before the first message after a handoff to this agent. |
 | `retry_signal_ttl` | `15m` | How long a provider `willRetry` notice keeps suppressing recovery without newer evidence: the newest notice on an errored thread, the newest provider or system log event on an active one, or a rate-limit notice's structured reset. Minimum `1m`. See [stale retry notices](operations.md#stale-retry-notices). |
@@ -192,7 +195,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait` and `child_error` are unreleased source) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, child_error, child_recovery, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `child_error` and `child_recovery` are unreleased source; `child_recovery` is sent only by a loop with `bb.children.retry_errored`) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -110,4 +111,58 @@ func printTurnRetry(w io.Writer, r turnRetryStatus) {
 	default:
 		fmt.Fprintln(w, "  the provider refused the retry or its result could not be read; nothing was sent")
 	}
+}
+
+// lanesStatus shows the lane recovery record: counts and times only, from
+// the last check that did lane work. It is historical.
+type lanesStatus struct {
+	Enabled bool             `json:"enabled"`
+	Last    *state.LaneCheck `json:"last,omitempty"`
+	// Tracked is how many lanes have a retry record, and GivenUp how many of
+	// those were given up.
+	Tracked int `json:"tracked"`
+	GivenUp int `json:"givenUp"`
+	// EpisodeRetries is how many retries this failure has used of the
+	// episode limit.
+	EpisodeRetries int `json:"episodeRetries"`
+	EpisodeLimit   int `json:"episodeLimit"`
+}
+
+func describeLanes(l *state.LaneRecovery, bb *config.BB) lanesStatus {
+	out := lanesStatus{Enabled: bb.RetryErroredLanes(), EpisodeLimit: bb.LanesPerEpisode()}
+	if l == nil {
+		return out
+	}
+	out.Last, out.Tracked, out.EpisodeRetries = l.Last, len(l.Retries), l.EpisodeRetries
+	for _, r := range l.Retries {
+		if r.GivenUp {
+			out.GivenUp++
+		}
+	}
+	return out
+}
+
+func printLanes(w io.Writer, s lanesStatus) {
+	if !s.Enabled {
+		return
+	}
+	if s.Last == nil {
+		fmt.Fprintln(w, "lane recovery: on (bb.children.retry_errored); no lane has been retried or looked at yet")
+		return
+	}
+	c := s.Last
+	fmt.Fprintf(w, "lane recovery: on; last lane work at the check of %s: asked BB to retry %d lane(s), gave up on %d, put off %d for lack of time", when(c.At), c.Retried, c.GivenUp, c.Deferred)
+	if c.Waiting == "network" {
+		fmt.Fprint(w, "; waiting for the network")
+	}
+	fmt.Fprintln(w)
+	reasons := make([]string, 0, len(c.NotRetried))
+	for reason := range c.NotRetried {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	for _, reason := range reasons {
+		fmt.Fprintf(w, "  left alone: %d (%s)\n", c.NotRetried[reason], reason)
+	}
+	fmt.Fprintf(w, "  %d of at most %d retries used for this failure; %d lane(s) have a retry record, %d of them given up. A retry re-runs the lane's failed turn by reference; no lane is messaged, stopped or created, and whether a retried turn succeeded is unverified\n", s.EpisodeRetries, s.EpisodeLimit, s.Tracked, s.GivenUp)
 }

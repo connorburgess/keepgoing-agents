@@ -37,16 +37,35 @@ func ComposeWake(loop config.Loop) (Message, error) {
 // WithChildErrors appends a fixed notice that n direct child threads are in
 // error. The wording never varies and carries only the count: no child ID,
 // title, task text or error detail.
-func WithChildErrors(m Message, n int) Message {
+func WithChildErrors(m Message, n int) Message { return WithChildErrorsRetried(m, n, 0) }
+
+// WithChildErrorsRetried is WithChildErrors for a loop that recovers lanes.
+// retried is how many of the n children keepgoing has asked BB to retry and
+// has not given up on. With retried zero the wording is WithChildErrors'.
+func WithChildErrorsRetried(m Message, n, retried int) Message {
 	if n <= 0 {
 		return m
 	}
-	m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
+	if retried <= 0 {
+		m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
+			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
+			"keepgoing has not retried, messaged or stopped them and has not read their content. "+
+			"You own that work: decide whether to retry or replace it. "+
+			"This notice is sent once when a child newly enters an error state.\n", n, n)
+		return m
+	}
+	m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d retried=%d]\n"+
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
-		"keepgoing has not retried, messaged or stopped them and has not read their content. "+
-		"You own that work: decide whether to retry or replace it. "+
-		"This notice is sent once when a child newly enters an error state.\n", n, n)
+		"%s "+
+		"You own that work: check each child before you retry or replace it, so the same work is not started twice. "+
+		"This notice is sent once when a child newly enters an error state.\n", n, retried, n, retriedSentence(retried))
 	return m
+}
+
+// retriedSentence says, with counts only, what keepgoing did to the children.
+func retriedSentence(retried int) string {
+	return fmt.Sprintf("keepgoing has asked BB to retry the failed turn of %d of them, by reference and without sending a message. "+
+		"It has not messaged or stopped any of them and has not read their content.", retried)
 }
 
 // ChildErrorsOnly is the whole message of the wake that errored children cause
@@ -54,12 +73,26 @@ func WithChildErrors(m Message, n int) Message {
 // context: the session is waiting on purpose, and a "continue" instruction
 // would invite the duplicate work that waiting avoids. Fixed wording, counts only.
 func ChildErrorsOnly(errored, running int) Message {
-	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+	return ChildErrorsOnlyRetried(errored, running, 0)
+}
+
+// ChildErrorsOnlyRetried is ChildErrorsOnly for a loop that recovers lanes;
+// see WithChildErrorsRetried.
+func ChildErrorsOnlyRetried(errored, running, retried int) Message {
+	if retried <= 0 {
+		return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
+			"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
+			"This is not an instruction to continue the task: the running children are still working. "+
+			"You own the errored work: decide whether to retry or replace it. "+
+			"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
+	}
+	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d retried=%d]\n"+
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
-		"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
+		"%s "+
 		"This is not an instruction to continue the task: the running children are still working. "+
-		"You own the errored work: decide whether to retry or replace it. "+
-		"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
+		"You own the errored work: check each child before you retry or replace it, so the same work is not started twice. "+
+		"This notice is sent once when a child newly enters an error state.\n", errored, running, retried, errored, running, retriedSentence(retried))}
 }
 
 // WithGoal adds only the latest revision, including private text and references,

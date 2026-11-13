@@ -42,6 +42,52 @@ type BB struct {
 	// RetrySignalTTL bounds how long a provider retry notice on an errored
 	// thread suppresses error recovery. Zero uses the adapter default (15m).
 	RetrySignalTTL Duration `yaml:"retry_signal_ttl,omitempty"`
+	// Children configures what keepgoing may do about the supervised thread's
+	// lanes (its direct child threads). Nil, or retry_errored false, is the
+	// default: lanes are observed and announced, never acted on.
+	Children *BBChildren `yaml:"children,omitempty"`
+}
+
+// BBChildren is the opt-in recovery of failed lanes.
+type BBChildren struct {
+	// RetryErrored lets keepgoing ask BB to retry a lane's failed turn by
+	// reference. It is the only action keepgoing ever takes on a lane.
+	RetryErrored bool `yaml:"retry_errored,omitempty"`
+	// MaxPerCheck is how many lanes one check may work on. Zero means the default.
+	MaxPerCheck int `yaml:"max_per_check,omitempty"`
+	// MaxPerEpisode is how many lane retries one episode may make, where an
+	// episode lasts until every retried lane has stayed out of error for
+	// progress.min_wake_interval. Zero means the default.
+	MaxPerEpisode int `yaml:"max_per_episode,omitempty"`
+}
+
+// Lane recovery defaults and ceilings.
+const (
+	DefaultLanesPerCheck   = 5
+	DefaultLanesPerEpisode = 20
+	MaxLanesPerCheck       = 20
+	MaxLanesPerEpisode     = 100
+)
+
+// RetryErroredLanes reports whether lane recovery is switched on.
+func (b *BB) RetryErroredLanes() bool {
+	return b != nil && b.Children != nil && b.Children.RetryErrored
+}
+
+// LanesPerCheck is the configured or default number of lanes per check.
+func (b *BB) LanesPerCheck() int {
+	if b == nil || b.Children == nil || b.Children.MaxPerCheck <= 0 {
+		return DefaultLanesPerCheck
+	}
+	return b.Children.MaxPerCheck
+}
+
+// LanesPerEpisode is the configured or default number of lane retries per episode.
+func (b *BB) LanesPerEpisode() int {
+	if b == nil || b.Children == nil || b.Children.MaxPerEpisode <= 0 {
+		return DefaultLanesPerEpisode
+	}
+	return b.Children.MaxPerEpisode
 }
 
 // DefaultNewThreadPermission is the permission mode of a thread keepgoing
@@ -174,6 +220,14 @@ func (a Agent) validate(where string) []error {
 		}
 		if d := a.BB.RetrySignalTTL.Duration; d != 0 && d < time.Minute {
 			add("bb.retry_signal_ttl must be at least 1m")
+		}
+		if c := a.BB.Children; c != nil {
+			if c.MaxPerCheck < 0 || c.MaxPerCheck > MaxLanesPerCheck {
+				add("bb.children.max_per_check must be between 0 and %d (zero means %d)", MaxLanesPerCheck, DefaultLanesPerCheck)
+			}
+			if c.MaxPerEpisode < 0 || c.MaxPerEpisode > MaxLanesPerEpisode {
+				add("bb.children.max_per_episode must be between 0 and %d (zero means %d)", MaxLanesPerEpisode, DefaultLanesPerEpisode)
+			}
 		}
 	case a.Adapter == "process" && a.Process != nil:
 		if len(a.Process.StatusCommand) == 0 {

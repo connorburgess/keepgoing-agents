@@ -52,6 +52,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
+| [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
 | [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture |
@@ -160,6 +161,17 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Cursor headless:** n/a. No child conversations.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. No child identities are reported.
+
+### Lane recovery: retry a failed child's turn
+
+Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
+
+- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. A lane is never messaged, stopped, created or moved, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/keepgoing/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
+- **Claude Code headless:** missing, evidence none. No child conversations to recover.
+- **Codex headless:** missing, evidence none. No child conversations to recover.
+- **Cursor headless:** missing, evidence none. No child conversations to recover.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. No child identities are reported.
 
 ### Handoff away from it
 
