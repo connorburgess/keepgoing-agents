@@ -56,24 +56,29 @@ type File struct {
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
 	// until the check itself passes or the session is seen active or idle.
-	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
-	NetworkVerifications int            `json:"networkVerifications,omitempty"`
-	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`
-	NetworkDistrusted    bool           `json:"networkDistrusted,omitempty"`
-	FailedChecks         int            `json:"failedChecks,omitempty"`
-	FailedSince          time.Time      `json:"failedSince,omitempty"`
-	HandoffDeferrals     int            `json:"handoffDeferrals,omitempty"`
-	ExactCut             map[string]int `json:"exactCut,omitempty"`
-	Fingerprint          string         `json:"fingerprint,omitempty"`
-	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
-	LastWakeAt           time.Time      `json:"lastWakeAt,omitempty"`
-	CheckedAt            time.Time      `json:"checkedAt,omitempty"`
-	LastState            string         `json:"lastState,omitempty"`
-	LastCheck            *Check         `json:"lastCheck,omitempty"`
-	Reprompts            int            `json:"reprompts,omitempty"`
-	Nudges               int            `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt       time.Time      `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent    bool           `json:"stopSent,omitempty"`
+	NetworkVerifiedAt    time.Time `json:"networkVerifiedAt,omitempty"`
+	NetworkVerifications int       `json:"networkVerifications,omitempty"`
+	NetworkReportedAt    time.Time `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted    bool      `json:"networkDistrusted,omitempty"`
+	// StartRefused records that the adapter refused to start a turn before
+	// anything could reach the agent, since when, and its fixed reason. It
+	// is cleared by the next send the adapter accepts or fails in any other
+	// way. Nothing is counted while it stands.
+	StartRefused      *StartRefused  `json:"startRefused,omitempty"`
+	FailedChecks      int            `json:"failedChecks,omitempty"`
+	FailedSince       time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals  int            `json:"handoffDeferrals,omitempty"`
+	ExactCut          map[string]int `json:"exactCut,omitempty"`
+	Fingerprint       string         `json:"fingerprint,omitempty"`
+	LastProgressAt    time.Time      `json:"lastProgressAt,omitempty"`
+	LastWakeAt        time.Time      `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time      `json:"checkedAt,omitempty"`
+	LastState         string         `json:"lastState,omitempty"`
+	LastCheck         *Check         `json:"lastCheck,omitempty"`
+	Reprompts         int            `json:"reprompts,omitempty"`
+	Nudges            int            `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time      `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool           `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -403,4 +408,11 @@ func Append(stateDir string, e Event) error {
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// StartRefused is a standing refusal to start turns. Reason is one of the
+// adapter's fixed texts, never agent output.
+type StartRefused struct {
+	Since  time.Time `json:"since"`
+	Reason string    `json:"reason"`
 }

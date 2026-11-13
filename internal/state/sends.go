@@ -60,8 +60,9 @@ func ReserveSend(dir string, max int64) error {
 }
 
 // RefundSend gives back one reservation. It is only for an attempt the
-// provider answered, in a structured result, that it did not act on at all:
-// nothing was sent and nothing was started. A failed or uncertain send is
+// provider answered, in a structured result, that it did not act on at all,
+// or that the adapter refused on this machine before anything could reach
+// the agent: nothing was sent and nothing was started. A failed or uncertain send is
 // never refunded. A zero cap, or an empty ledger, changes nothing.
 func RefundSend(dir string, max int64) error {
 	if max == 0 {

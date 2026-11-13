@@ -63,6 +63,7 @@ Read-only inspection of Cursor CLI `2026.09.18-9a7762b` on macOS 26.4 (arm64): i
 | Why did a turn fail? | Nothing structured. The source prints the error text to stderr and exits 1 (130 when interrupted). No error record, code or class. Observed live for an untrusted directory and for a usage limit. | Every failure is `unknown`. Stderr is never read. |
 | Rate limit, quota, reset time? | Nothing structured, in the stream or in any command. A live usage-limit failure was one stderr line after `init` and `user` records. | Unavailable. Never inferred. |
 | Connection trouble inside a turn? | Unpublished `connection` records (`reconnecting` with an attempt number, `reconnected`) and `retry` records (`starting`, `resuming`) in `stream-json` output. | Diagnostic only; see [connection loss](#connection-loss-during-a-turn). |
+| A turn whose wrapper never started | keepgoing's own record: the turn is marked abandoned under the turn lock, so no process ran it. | The next send starts normally, as after a turn that was never started. |
 | Workspace trust, permissions? | Nothing structured. An untrusted directory prints a notice to stderr and exits 1 with empty stdout (observed live). | Unavailable. Exit 1 with empty output on a verified version allows a later fresh start. |
 
 ## Why Cursor is not a fallback candidate
