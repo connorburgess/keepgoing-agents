@@ -91,3 +91,25 @@ func TestFingerprintTracksOnlyMetadata(t *testing.T) {
 		}
 	}
 }
+
+// State written before turn retries existed loads unchanged, and a recorded
+// retry survives a save and load.
+func TestTurnRetryRecordLoadsFromOlderStateAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"reprompts":1,"lastRepromptAt":"2030-01-01T00:00:00Z","activeTarget":"primary"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Load(dir)
+	if err != nil || st.LastTurnRetry != nil || st.Reprompts != 1 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	at := time.Date(2030, 1, 1, 0, 10, 0, 0, time.UTC)
+	st.LastTurnRetry = &TurnRetry{CheckAt: at, Target: Primary, Outcome: "retried", Attempt: 2}
+	if err := Save(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil || got.LastTurnRetry == nil || *got.LastTurnRetry != *st.LastTurnRetry || got.Reprompts != 1 {
+		t.Fatalf("%+v %v", got.LastTurnRetry, err)
+	}
+}
