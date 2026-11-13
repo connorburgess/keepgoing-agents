@@ -6,13 +6,14 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 )
 
 // Unlike an update error, this means the control mutation was saved. Callers
 // must not undo it or suppress already-authorized completion/report processing.
 var errControlHistory = errors.New("control saved; incident history write failed; diagnostic evidence is incomplete")
 
-func updateControlWithHistory(dir, operation string, fn func(*control.File) error) (control.File, error) {
+func updateControlWithHistory(dir, operation string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
 	var r incident.Record
 	f, err := control.UpdateChecked(dir, func(f *control.File) error {
 		r = incident.Record{Kind: "control", CheckStartedAt: time.Now().UTC(), Build: version,
@@ -31,7 +32,7 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 	if err != nil {
 		return f, err // A rejected or failed save is not a persisted transition.
 	}
-	recordRunBoundary(dir, operation)
+	recordRunBoundary(dir, operation, routine...)
 	// This bounds observation of the successful save, not its exact timestamp.
 	// The control lock is released before acquiring the diagnostic lock.
 	r.ControlChange.SaveObservedAt = time.Now().UTC()

@@ -124,24 +124,41 @@ func (g *Graph) Relate(l Link) (bool, error) {
 	return true, nil
 }
 
-// Register records that an accepted control operation reached this loop
-// through a registry reference. It is evidence that the reference named this
-// loop then, not that it is still registered: the registry owns that. When
-// the list is full the oldest reference is dropped and counted.
-func (g *Graph) Register(id string, at time.Time) (bool, error) {
-	if _, err := rd.Register(rd.State{LoopID: g.LoopID}, id, at); err != nil {
-		return false, err
+// Register records a registry reference for this loop. source says why:
+// SourceRegistered when an accepted control operation reached the loop through
+// the reference, SourceRegistryAdd when `registry add` found an existing
+// graph. A reference first recorded by an add is upgraded when a control
+// operation later uses it. It is evidence that the reference named this loop
+// then, not that it is still registered: the registry owns that.
+//
+// When the list is full the oldest add-only reference is dropped first, so
+// repeated remove/add cannot push out a reference a control operation used.
+// With none left, the oldest reference goes. Drops are counted.
+func (g *Graph) Register(id string, source Source, at time.Time) (bool, error) {
+	if _, err := rd.Register(rd.State{LoopID: g.LoopID}, id, at); err != nil || (source != SourceRegistered && source != SourceRegistryAdd) {
+		return false, rd.ErrInvalid
 	}
-	for _, r := range g.Registrations {
+	for i, r := range g.Registrations {
 		if r.ID == id {
+			if r.Source == SourceRegistryAdd && source == SourceRegistered {
+				g.Registrations[i].Source = SourceRegistered
+				return true, nil
+			}
 			return false, nil
 		}
 	}
 	if len(g.Registrations) >= MaxRegistrations {
-		g.Registrations = g.Registrations[1:]
+		drop := 0
+		for i, r := range g.Registrations {
+			if r.Source == SourceRegistryAdd {
+				drop = i
+				break
+			}
+		}
+		g.Registrations = append(g.Registrations[:drop], g.Registrations[drop+1:]...)
 		g.Dropped.Registrations++
 	}
-	g.Registrations = append(g.Registrations, Registration{ID: id, RecordedAt: at, Source: SourceRegistered})
+	g.Registrations = append(g.Registrations, Registration{ID: id, RecordedAt: at, Source: source})
 	return true, nil
 }
 
@@ -161,5 +178,41 @@ func (g *Graph) Skip(target, reason string, at time.Time) (bool, error) {
 		g.Dropped.Unrecorded++
 	}
 	g.Unrecorded = append(g.Unrecorded, Unrecorded{Run: g.CurrentRun, Target: target, Reason: reason, RecordedAt: at})
+	return true, nil
+}
+
+// Trigger records that an externally identified routine invocation arrived
+// while a run was open. It never opens, reopens or closes a run: with no open
+// run nothing is recorded. The invocation that opened the run is already on
+// the run and is not recorded again. A routine that supplies no invocation ID
+// has one link per run, because its triggers cannot be told apart.
+//
+// Triggers have their own bound. A run keeps its first trigger and its newest
+// MaxTriggersPerRun-1; the ones between are dropped and counted, so a
+// scheduler that sends a new ID on every check cannot push out a chat link,
+// a goal link or an earlier run.
+func (g *Graph) Trigger(r rd.RoutineRef, at time.Time) (bool, error) {
+	run := g.run(g.CurrentRun)
+	if run == nil || g.Completed {
+		return false, nil
+	}
+	if run.Routine != nil && routineRef(run.Routine) == r {
+		return false, nil
+	}
+	changed, err := g.Relate(Link{Kind: rd.InvocationLink, Routine: routineOf(r), Source: SourceExternal, RecordedAt: at})
+	if err != nil || !changed {
+		return changed, err
+	}
+	var own []int
+	for i, l := range g.Links {
+		if l.Run == run.ID && l.Kind == rd.InvocationLink {
+			own = append(own, i)
+		}
+	}
+	if len(own) > MaxTriggersPerRun {
+		drop := own[1] // the oldest after the first
+		g.Links = append(g.Links[:drop], g.Links[drop+1:]...)
+		g.Dropped.Triggers++
+	}
 	return true, nil
 }

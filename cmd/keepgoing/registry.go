@@ -109,6 +109,7 @@ func registryCommand(e env, args []string) int {
 		if err != nil {
 			return fail(err)
 		}
+		recordRegistrationInExistingGraph(entry.StateDir, entry.ID)
 		output.Entries = append(output.Entries, registrySummary{ID: entry.ID, Loop: entry.Loop})
 	case "remove":
 		if err := registry.Remove(dir, *id); err != nil {

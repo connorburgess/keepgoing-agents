@@ -66,7 +66,9 @@ Reproduce before changing anything: repeat the one test with `-count`, then add 
 
 `go test -race ./cmd/keepgoing -run '^TestRuns'` exercises the `runs` reader against graphs written in temporary directories: loop, registry and exact-reference views, a text-mode walk of every documented path, evidence labels including a superseded chat, bounds, unreadable graphs answering `unavailable`, absent records, a stale registry binding, two registered loops with one name, held loops with the tick, control and graph locks held, and byte-for-byte unchanged files. The Windows CI job runs these natively. A Unix-only test follows real `enable`/`tick` commands with the reader and checks the stand-in provider was not called.
 
-Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity, and any GUI reader. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
+Routine identities are covered at each layer: parsing in `internal/rundiscovery`, routine and invocation lookup in `internal/rungraph`, a supplied identity that leaves a check's action unchanged in `internal/supervise`, and `--routine` on real `enable`, `tick` and `resume` commands in the Unix-only command tests. Those compare the whole check line, exit code and sends with and without the flag from identical state, and show a check still runs, with one warning, when the value cannot be recorded. A store test sends 400 distinct triggers at a graph with six runs and checks that no run, send, chat link or goal link is dropped. `registry add` recording a reference only when a graph exists is in `^TestRuns`.
+
+Not exercised: a service-managed daemon restart, a host reboot, power loss (the flush before replacement is not tested), a real provider session, a real scheduler supplying a routine identity (only the flag was exercised), and any GUI reader. Those need D4–D6 fixtures and live evidence where applicable. README artwork stays deferred.
 
 ## On a machine with Go
 
