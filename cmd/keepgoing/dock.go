@@ -447,7 +447,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 				for _, c := range fb.Candidates {
 					_, in.Chain.Due[c.ID] = reg.Due(c, fb.Probe, now)
 				}
-				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now)
+				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now, projectionRules(fb))
 				in.Chain.PrimaryUse = &use
 			}
 		}

@@ -622,7 +622,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if b := out.TakeoverBriefs; b.SwitchBackStopped {
 		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
 	}
-	printUsage(w, "usage:     ", out.Usage)
+	printUsage(w, "usage:     ", "projected: ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }
@@ -748,7 +748,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
 		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
-			out.Usage = append(out.Usage, usageOf(reg, c, now))
+			out.Usage = append(out.Usage, usageOf(reg, c, now, projectionRules(fb)))
 		}
 		if err == nil {
 			group := l.Group

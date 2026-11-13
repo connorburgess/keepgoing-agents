@@ -256,7 +256,7 @@ func sessionClaimText(cfg *config.Config, now time.Time) string {
 	}
 	dir, err := session.Dir()
 	if err != nil {
-		return ""
+		return fmt.Sprintf("session claim unavailable (%v); checks are not protected against another loop acting on the same session at the same moment. Set HOME, or KEEPGOING_SESSION_DIR to a private directory", err)
 	}
 	h := session.Peek(dir, id)
 	if h == nil || h.PID == os.Getpid() {

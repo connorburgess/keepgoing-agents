@@ -103,7 +103,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	// A check acts on its session only after claiming it; without a usable
 	// claim directory every check fails without acting.
 	if _, err := session.Dir(); err != nil {
-		r.add("session.directory", "error", "Session claims cannot be kept: "+err.Error()+". Every check will fail without observing or acting.", "Run keepgoing with HOME set, or set KEEPGOING_SESSION_DIR to a private directory.")
+		r.add("session.directory", "error", "Session claims cannot be kept: "+err.Error()+". Checks still run, but are not protected against another loop acting on the same session at the same moment.", "Run keepgoing with HOME set, or set KEEPGOING_SESSION_DIR to a private directory.")
 	} else if dir := os.Getenv(session.DirEnv); dir != "" {
 		r.add("session.directory", "ok", "KEEPGOING_SESSION_DIR is set: session claims are kept in "+dir+". Loops given other directories do not see each other's claims.", "Unset it so every loop uses the default directory.")
 	}

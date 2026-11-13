@@ -79,6 +79,10 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// ClaimUnavailable is set while checks run without a session claim
+	// because the claim directory cannot be used; its start and end are
+	// reported once each.
+	ClaimUnavailable bool `json:"claimUnavailable,omitempty"`
 	// PrimaryResetsAt is when the primary's limit was reported to lift at the
 	// handoff away from it; switch-back waits for it.
 	PrimaryResetsAt   time.Time `json:"primaryResetsAt,omitempty"`

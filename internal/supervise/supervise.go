@@ -340,25 +340,40 @@ func (t *tick) claim(a config.Agent) error {
 }
 
 // claimActive claims the session this check is about to observe. Another
-// loop's claim ends the check: nothing is observed, decided, sent or
+// loop's live claim ends the check: nothing is observed, decided, sent or
 // recorded, and the caller skips it as a busy check. A claim that cannot be
-// taken at all fails the check without acting.
+// taken for any other reason (no user state directory, a directory that is
+// not private or not writable) does not stop the check: a check that failed
+// on every run would get an external scheduler to switch itself off. The
+// check goes ahead unprotected, says so, and the start and end of such a
+// stretch are reported once each.
 func (t *tick) claimActive(a config.Agent) error {
 	err := t.claim(a)
 	var claimed *session.ClaimedError
-	switch {
-	case err == nil:
-		if id, ok := session.Of(a); ok && !t.opts.DryRun && t.cfg.Path() != "" {
-			// Best effort: lets enable and status name this loop to others.
-			_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now})
-		}
-		return nil
-	case errors.As(err, &claimed):
+	if errors.As(err, &claimed) {
 		t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "another loop is acting on this session"
 		return err
 	}
-	t.res.State, t.res.Window, t.res.Reason = "not observed", "not checked", "session claim unavailable; no action taken"
-	return t.record(fmt.Errorf("session claim: %w", err))
+	if _, ok := session.Of(a); !ok {
+		return nil // no fixed session, nothing to claim
+	}
+	unavailable := err != nil
+	if unavailable {
+		t.warn("session claim unavailable (%v); this check is not protected against another loop acting on the same session at the same moment", err)
+	} else if !t.opts.DryRun && t.cfg.Path() != "" {
+		// Best effort: lets enable and status name this loop to others.
+		id, _ := session.Of(a)
+		_ = session.Note(t.sessionDir, id, session.Supervisor{Loop: t.loop.Name, Config: t.cfg.Path(), StateDir: t.loop.StateDir, SeenAt: t.now})
+	}
+	if unavailable != t.st.ClaimUnavailable && !t.opts.DryRun {
+		t.st.ClaimUnavailable = unavailable
+		if unavailable {
+			t.report("degraded", fmt.Sprintf("%s: session claims are unavailable (%v); checks are not protected against another loop acting on the same session at the same moment", t.loop.Name, err), map[string]any{"sessionClaim": "unavailable"})
+		} else {
+			t.report("recovered", fmt.Sprintf("%s: session claims are available again", t.loop.Name), map[string]any{"sessionClaim": "available"})
+		}
+	}
+	return nil
 }
 
 // claimOther claims a session this check may move to. It returns another
@@ -1088,14 +1103,14 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 		}
 		// The probe asked the account, not the session. Before anything is
 		// sent to the session, it is claimed: a fallback whose session
-		// another loop is acting on right now is not sent a brief.
-		if claimed, err := t.claimOther(c.Agent); err != nil || claimed != nil {
-			why := "its session claim is unavailable"
-			if claimed != nil {
-				why = "another loop is acting on its session"
-			}
-			note.Skipped = append(note.Skipped, id+": "+why)
+		// another loop is acting on right now is not sent a brief. A claim
+		// that cannot be taken at all does not stop the handoff, as it does
+		// not stop the check.
+		if claimed, err := t.claimOther(c.Agent); claimed != nil {
+			note.Skipped = append(note.Skipped, id+": another loop is acting on its session")
 			continue
+		} else if err != nil {
+			t.warn("handoff to %s is not protected by a session claim: %v", id, err)
 		}
 		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
@@ -1219,12 +1234,12 @@ func (t *tick) switchBack(from string) (bool, error) {
 	}
 	// The primary's session is not sent to while another loop is acting on
 	// it; the switch-back waits for a later check.
-	if claimed, err := t.claimOther(t.loop.Agent); err != nil || claimed != nil {
-		if claimed != nil {
-			t.warn("switch-back waits: %v", claimed)
-		}
+	if claimed, err := t.claimOther(t.loop.Agent); claimed != nil {
+		t.warn("switch-back waits: %v", claimed)
 		t.switchBackDeferred = true
 		return false, nil
+	} else if err != nil {
+		t.warn("switch-back is not protected by a session claim: %v", err)
 	}
 	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {
