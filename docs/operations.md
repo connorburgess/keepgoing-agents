@@ -333,7 +333,7 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait` and `child_error`, are included in the default event list on `main`; an explicit event list must include them or `all`. All four make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `hung_turn` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait`, `child_error` and `hung_turn`, are included in the default event list on `main`; an explicit event list must include them or `all`. All four make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 
@@ -428,6 +428,22 @@ The probe is the only thing sent during an outage, and it is a real request when
 - With `tick_timeout` at its minimum there is no room for the check in the time accounting. It is then not made, and `validate`, `status` and `doctor` say so; raise `tick_timeout` to `2m48s` or more to have it.
 - `doctor` tests the target from the environment `doctor` runs in, which may differ from a scheduler's.
 - Recovery starts at the first check after connectivity returns, so up to one scheduler or daemon interval after a portal is cleared. Reacting to a wake or a network change sooner is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+### A turn that hung through an outage
+
+Unreleased; **fixture-tested only**; BB threads only. A host that sleeps in the middle of a model request leaves the turn active and silent for good: BB still shows it running, it never fails, and nothing ends it. Before, the stall rule queued three nudges behind it, which would all arrive later if the turn ever resumed, and then held with `no progress after 3 nudges`, which did not say what happened.
+
+keepgoing now watches an active turn through an outage. It waits on the turn, instead of nudging it, while all of these hold:
+
+1. A connectivity check found the network down while this turn was active. A silent turn is checked when it has been silent for `stall_after`, the moment a nudge would have checked anyway. A gap with no check at all is not enough.
+2. It is still the same turn (BB's latest `turn/started`).
+3. It has logged nothing since before the outage, and the network has been back for a full `stall_after`.
+4. It is waiting on the model, not on a tool: every tool item it started (`commandExecution`, `fileRead`, `fileChange`, `toolCall`, `backgroundTask`, `webSearch`, `mcpToolCall`) has completed. An item without an ID or type, an item type keepgoing does not know, or more than 64 open items, makes the bookkeeping uncertain, and the turn is then treated as slow, not hung. Items the model itself produces (`reasoning`, `agentMessage`, `userMessage`) do not count: an open one is where a hung request stops.
+5. Nothing else explains the silence: nothing queued, no child running or unverified, no person asked, no provider retry, no Git change.
+
+While they hold, each check records `turn silent since before a network outage; it may be hung; keepgoing has not stopped it` and sends nothing, and one `hung_turn` report is sent when the wait begins. The wait ends by itself the moment any of them stops holding: the turn logs something, ends (an ordinary wake, or recovery of a failed turn), something is queued, a child starts, a notice arrives or Git changes. If it lasts as long as the nudges would have taken, `max_nudges` times `stall_after` (1h30m at the defaults), the loop is held for a person with the same reason and the two ways out: `keepgoing stop` then `keepgoing resume`, or retry the turn in BB. So the hold arrives no later than before, with no queued nudges and a true reason.
+
+Stop, pause, the other holds and the loop-wide limits come first, as for every rule; nothing is evaluated while the network is down. Covered by `TestHungTurnIsWaitedOnThenHeldAtAnyOutageLength`, `TestHungTurnWaitEndsWhenTheTurnResumesOrFails` (20 minutes, 4 hours, 3 days and 3 weeks), `TestHungTurnNeedsEverySign`, `TestHungTurnWaitYieldsToControlsAndTheNetworkGate`, `TestHungTurnWaitInTheEngine` and, for the item bookkeeping built from a real BB 0.48 log's event shapes, `TestTurnActivityFromRealItemShapes`. Not verified on a real hung turn.
 
 ### A long time offline
 

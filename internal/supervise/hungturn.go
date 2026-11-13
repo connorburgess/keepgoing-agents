@@ -11,8 +11,7 @@ import (
 // hungTurnEvent is the report sent once when a hung-turn wait begins.
 const hungTurnEvent = "hung_turn"
 
-// hungTurn watches an active turn through a network outage, or a gap in
-// which no check ran, and reports whether it now shows every sign of having
+// hungTurn watches an active turn through a network outage and reports whether it now shows every sign of having
 // hung. A host that sleeps in the middle of a model request leaves the turn
 // active and silent for good, and nothing would ever end it: the stall rule
 // would queue nudges behind it and then hold, with a reason that does not
@@ -21,7 +20,9 @@ const hungTurnEvent = "hung_turn"
 // All of these must hold, from structured evidence only:
 //
 //  1. A connectivity check found the network down while this turn was
-//     active, or a gap with no check was judged missed time.
+//     active. A gap in which no check ran is not enough: the stall clock
+//     already pauses for it, and without a failed check nothing shows the
+//     network was down.
 //  2. It is still the same turn.
 //  3. It has logged nothing since before the outage, and the network has
 //     been back for a full stall_after.
@@ -50,17 +51,18 @@ func (t *tick) hungTurn(obs decide.Observation, progressed bool) (bool, time.Dur
 		w = nil // another turn: whatever the old one did, this one is new
 	}
 	if w == nil {
-		outageAt := time.Time{}
-		switch {
-		case t.networkGated:
-			outageAt = t.st.NetworkDownSince
-			if outageAt.IsZero() {
-				outageAt = t.now
-			}
-		case t.missedTime() > 0 && !t.st.CheckedAt.IsZero():
-			outageAt = t.st.CheckedAt // the last check before the gap
-		default:
-			return false, 0
+		// A turn that has been silent for stall_after would be nudged, and
+		// a nudge checks connectivity first; check now, once, so a silent
+		// turn's outage is seen whatever is decided next.
+		if since := obs.Turn.LastActivityAt; !since.IsZero() && t.now.Sub(since) >= t.loop.Progress.StallAfter.Duration {
+			t.networkDown()
+		}
+		if !t.networkGated {
+			return false, 0 // no outage seen during this turn
+		}
+		outageAt := t.st.NetworkDownSince
+		if outageAt.IsZero() {
+			outageAt = t.now
 		}
 		w = &state.HungTurn{Turn: obs.Turn.ID, OutageAt: outageAt}
 	} else {

@@ -108,8 +108,8 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
-	// HungTurn watches an active turn through a network outage or a gap with
-	// no check, for signs that it hung. See the supervisor's hungTurn.
+	// HungTurn watches an active turn through a network outage for signs
+	// that it hung. See the supervisor's hungTurn.
 	HungTurn *HungTurn `json:"hungTurn,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.

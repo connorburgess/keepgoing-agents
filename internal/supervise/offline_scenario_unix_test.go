@@ -14,6 +14,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
@@ -298,7 +299,8 @@ func TestOfflineForAnyLengthThenRecoversOnce(t *testing.T) {
 // and no retry notice, for as long as the network is gone. A turn that looks
 // stalled while offline is not nudged and not held, at any length; the
 // outage is recorded; no_progress_timeout does not count it; and when the
-// network is back the turn gets stall_after of active time before a nudge.
+// network is back the turn gets stall_after of active time, then is waited
+// on as a turn that may have hung, not nudged.
 func TestOfflineWithAHungTurnForAnyLength(t *testing.T) {
 	for _, outage := range []time.Duration{20 * time.Minute, 4 * time.Hour, 3 * 24 * time.Hour, 21 * 24 * time.Hour} {
 		t.Run(outage.String(), func(t *testing.T) {
@@ -395,9 +397,11 @@ func TestOfflineWithAHungTurnForAnyLength(t *testing.T) {
 					t.Fatalf("+%s after the outage: %+v", after, r)
 				}
 			}
-			// Half an hour of active time with no Git change is a stall, as ever.
-			if r, _ := check(back.Add(30 * time.Minute)); r.Action != "nudge" || sends() != 1 {
-				t.Fatalf("an ordinary stall is no longer nudged: %+v sends=%d", r, sends())
+			// Half an hour after the network is back, the turn has logged
+			// nothing since before the outage: it may be hung, through the real
+			// BB adapter and its log. It is waited on, not nudged.
+			if r, _ := check(back.Add(30 * time.Minute)); r.Action != "none" || r.Reason != decide.HungTurnReason || sends() != 0 {
+				t.Fatalf("a turn silent since before the outage was not waited on: %+v sends=%d", r, sends())
 			}
 		})
 	}
