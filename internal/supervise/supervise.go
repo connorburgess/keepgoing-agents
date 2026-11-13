@@ -1708,16 +1708,17 @@ func (t *tick) releaseNetworkReserve() {
 }
 
 // stallSinceActive keeps the stall clock from counting time in which the
-// session could not have been working: while it was idle or in error, while
-// the network was down, and while no check ran. A session is stalled when it
-// has been active with no Git change for stall_after, so the clock starts
-// when it is seen active again, not at the last Git change before an outage.
+// session could not have been working: while it was in error, while the
+// network was down, and while no check ran. After any of those the clock
+// starts when the session is seen active again, not at the last Git change
+// before the outage. A session woken from idle is timed as before, from its
+// last Git change, with min_wake_interval spacing the nudge from the wake.
 func (t *tick) stallSinceActive(obs decide.Observation, unchanged time.Duration) time.Duration {
 	since := t.st.ActiveSince
 	switch {
 	case obs.State != decide.Active:
 		since = time.Time{}
-	case t.st.LastState != string(decide.Active) || t.missedTime() > 0 || t.networkGated:
+	case t.st.LastState == string(decide.Error) || t.missedTime() > 0 || t.networkGated:
 		since = t.now
 	}
 	if !t.opts.DryRun {

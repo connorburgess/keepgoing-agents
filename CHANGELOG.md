@@ -8,7 +8,7 @@
 
 - **Behavior change: `loop.limits.no_progress_timeout` no longer counts time in which nothing could run.** A gap in which no check of any kind ran counts only up to an ordinary interval (`30m`, or three times `daemon.interval`), so a host that slept or a stopped scheduler does not use it up, and neither does time in which the connectivity check found the network down. With an external scheduler that runs less often than every half hour, set `daemon.interval` to its interval. Pauses and holds while checks run still count. It used to count all host-clock time and held a loop that woke after a long sleep. `loop.limits.deadline` is unchanged and absolute. See [a long time offline](docs/operations.md#a-long-time-offline).
 
-- The stall clock no longer counts time in which the session was idle or in error, the network was down, or no check ran: it starts when the session is seen active again. A turn that worked again after a long outage was nudged at once for the whole outage.
+- The stall clock no longer counts time in which the session was in error, the network was down, or no check ran: after any of those it starts when the session is seen active again. A session woken from idle is timed as before. A turn that worked again after a long outage was nudged at once for the whole outage.
 
 - `limit_wait` and `child_error` reports, which make one attempt, are no longer attempted while the connectivity check is failing; the first check after it passes sends them.
 

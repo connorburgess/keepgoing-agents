@@ -45,7 +45,7 @@ type File struct {
 	CheckInterval time.Duration `json:"checkIntervalNs,omitempty"`
 	LastCheckGap  time.Duration `json:"lastCheckGapNs,omitempty"`
 	// ActiveSince is when the target was first seen active after it was seen
-	// in another state, after an outage, or after a gap with no check. The
+	// in error, after an outage, or after a gap with no check. The
 	// stall clock does not reach back past it. Zero means unknown.
 	ActiveSince      time.Time `json:"activeSince,omitempty"`
 	NetworkDownSince time.Time `json:"networkDownSince,omitempty"`
