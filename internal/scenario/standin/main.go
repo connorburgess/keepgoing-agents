@@ -67,6 +67,9 @@ func main() {
 		if len(os.Args) > 1 && os.Args[1] == "app-server" {
 			os.Exit(1) // no structured limit snapshot
 		}
+		if isCodexProbe(os.Args[1:]) {
+			os.Exit(codexProbe(world, os.Args[1:]))
+		}
 		os.Exit(turn(world, name, os.Args[1:]))
 	}
 	os.Exit(run(world, os.Args[1:]))
@@ -74,6 +77,17 @@ func main() {
 
 func run(world string, args []string) int {
 	appendLine(filepath.Join(world, "calls.jsonl"), args)
+	// BB's optional retry plugin: its last decision for a thread, from
+	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
+	if len(args) >= 3 && args[0] == "provider-retry" {
+		switch args[1] {
+		case "explain":
+			b, _ := json.Marshal(map[string]any{"threadId": args[2], "diagnostic": nil})
+			return emit(world, args[2]+".retry-decision", string(b))
+		case "status":
+			return emit(world, args[2]+".retries", `{"retries":[]}`)
+		}
+	}
 	if len(args) < 2 || args[0] != "thread" {
 		fmt.Println(`{"ok":true}`)
 		return 0
@@ -164,13 +178,18 @@ func nextMode(path string) string {
 	return strings.TrimSpace(lines[0])
 }
 
-// claude answers a probe: a success, or a structured rate limit when
-// probe-limited.<model> exists.
+// claude answers a probe: a success, a structured rate limit when
+// probe-limited.<model> exists, or nothing structured when net.mode says the
+// provider is unreachable.
 func claude(world string, args []string) int {
 	appendLine(filepath.Join(world, "probes.jsonl"), args)
 	model := flagValue(args, "--model")
 	if model == "" {
 		model = "default"
+	}
+	if readMode(filepath.Join(world, "net.mode"), "online") != "online" {
+		fmt.Fprintln(os.Stderr, "fictional: could not connect")
+		return 1
 	}
 	if _, err := os.Stat(filepath.Join(world, "probe-limited."+model)); err == nil {
 		fmt.Println(`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"result":"fictional limit"}`)
@@ -269,6 +288,29 @@ func retry(world, thread string) int {
 
 // HeadlessSession is the session every stand-in headless turn reports.
 const HeadlessSession = "00000000-0000-4000-8000-0000000000aa"
+
+// isCodexProbe tells a probe (an ephemeral exec) from a headless turn.
+func isCodexProbe(args []string) bool {
+	for _, a := range args {
+		if a == "--ephemeral" {
+			return true
+		}
+	}
+	return false
+}
+
+// codexProbe answers a probe: a completed turn, or nothing structured when
+// net.mode says the provider is unreachable. It is not a turn of the
+// supervised session and is recorded with the probes.
+func codexProbe(world string, args []string) int {
+	appendLine(filepath.Join(world, "probes.jsonl"), args)
+	if readMode(filepath.Join(world, "net.mode"), "online") != "online" {
+		fmt.Fprintln(os.Stderr, "fictional: could not connect")
+		return 1
+	}
+	fmt.Println(`{"type":"turn.completed"}`)
+	return 0
+}
 
 // isClaudeTurn tells a headless turn (prompt on stdin, JSON output) from a
 // probe (prompt as the argument after -p).
