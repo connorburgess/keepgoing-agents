@@ -41,6 +41,9 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 		fmt.Fprintln(e.stdout, "ownership: validation only; use enable --take-over to transfer the claim")
 	}
 	fmt.Fprintf(e.stdout, "ok: %s (loop %s, %s)\n", path, l.Name, l.Describe())
+	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
+		e.errf("warning: %s", w)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
 	}
@@ -187,13 +190,40 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
+		}
+		// Stop wins: a stop that was skipped (another loop's check held the
+		// session, or another tick held the lock) is tried again at the next
+		// control poll, not after a whole interval.
+		if code == exitSkipped && stopRequested(cfg.Loop.StateDir) {
+			if !sleepContext(e.ctx, cfg.Loop.Daemon.ControlPoll.Duration) {
+				return exitOK
+			}
+			continue
 		}
 		if !waitForNext(e.ctx, cfg, sig, monitor, lease) {
 			return exitOK
 		}
+	}
+}
+
+// stopRequested reports whether the loop's control record asks for a stop.
+func stopRequested(stateDir string) bool {
+	f, err := control.Load(stateDir)
+	return err == nil && f.Stop
+}
+
+// sleepContext waits d, and reports false when ctx ended first.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
@@ -288,6 +318,12 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	// SharedWith lists, in words, other enabled loops that share this loop's
+	// session, a fallback's session, its working directory or a repository.
+	SharedWith []string `json:"sharedWith,omitempty"`
+	// SessionClaim describes a check of another loop acting on this loop's
+	// primary session right now, or one that is stuck holding it.
+	SessionClaim      string                   `json:"sessionClaim,omitempty"`
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	TurnRetry         turnRetryStatus          `json:"turnRetry"`
@@ -422,6 +458,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		return exitFailed
 	}
 	ctl, st := out.Control, out.State
+	out.SharedWith = sharedLoopWarnings(cfg, findOtherLoops(cfg))
+	out.SessionClaim = sessionClaimText(cfg, now)
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
@@ -429,6 +467,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	for _, s := range out.SharedWith {
+		fmt.Fprintf(w, "shared:    %s\n", s)
+	}
+	if out.SessionClaim != "" {
+		fmt.Fprintf(w, "session:   %s\n", out.SessionClaim)
+	}
 	if ctl.PendingTransfer != nil {
 		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
 	}
@@ -605,7 +649,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if b := out.TakeoverBriefs; b.SwitchBackStopped {
 		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
 	}
-	printUsage(w, "usage:     ", out.Usage)
+	printUsage(w, "usage:     ", "projected: ", out.Usage)
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }
@@ -731,7 +775,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
 		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
-			out.Usage = append(out.Usage, usageOf(reg, c, now))
+			out.Usage = append(out.Usage, usageOf(reg, c, now, projectionRules(fb)))
 		}
 		if err == nil {
 			group := l.Group

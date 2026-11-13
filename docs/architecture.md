@@ -152,7 +152,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, retry/recovery stall grace, last check decision/outcome and build label; latest returned automatic prompt provenance |
-| `health.json` | the tool | probe evidence per candidate |
+| `health.json` | the tool | probe evidence, the latest usage reading and its history per candidate |
 | `probe-failures/<id>/` | the tool | raw output of the last few failed probes, for mapping new error shapes; never read for decisions |
 | `runs.jsonl` | the tool | append-only events |
 | `graph.json`, `graph.lock` | run reference writer | versioned run, attempt and link records and the last verified child listing (32 runs/128 attempts/256 links/200 children/256 KiB); independent lock and flushed atomic replacement; a failed write never fails a tick; never a decision input |

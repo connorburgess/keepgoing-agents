@@ -1228,66 +1228,60 @@ func TestPanelConcurrentCommandsEndWithOneServer(t *testing.T) {
 	}
 }
 
+// The real background process exits by itself when nothing uses it, with a
+// clean exit, its record and socket removed and no loop file changed. Which
+// requests count as use, and the 30-minute rule itself, are tested on the
+// server's own clock in TestPanelIdleRuleOnAFakeClock: a real process has
+// only wall time, so this test makes no request at all once the server is
+// up, and nothing in it races the idle limit.
 func TestPanelServerExitsWhenIdleAndLeavesLoopsAlone(t *testing.T) {
 	w := newPanelProcessWorld(t)
 	before := treeDigest(t, w.root)
-	cmd, _, _ := w.command("__panel-server", "--panel-directory", w.dir, "--directory", w.registry, "--idle", "1500ms", "--offline")
+	cmd, _, _ := w.command("__panel-server", "--panel-directory", w.dir, "--directory", w.registry, "--idle", "3s", "--offline")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	var rec panelRecord
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var ok bool
-		if rec, ok = panelLive(context.Background(), w.dir); ok {
+	// Ready by its own signal: it holds its lock and answers on its socket.
+	// Under heavy load it may even go idle and exit before that is seen;
+	// then the exit is checked the same way.
+	var exitErr error
+	ended := false
+	for deadline := time.Now().Add(30 * time.Second); !ended; time.Sleep(20 * time.Millisecond) {
+		select {
+		case exitErr = <-exited:
+			ended = true
+			continue
+		default:
+		}
+		if _, ok := panelLive(context.Background(), w.dir); ok {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the server did not start")
+			t.Fatal("the server neither answered nor exited")
 		}
 	}
-	// Page requests keep it alive past its idle limit.
-	page, c := panelSession(t, w.dir, rec)
-	for end := time.Now().Add(2500 * time.Millisecond); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-		if resp, _ := dockRequest(t, http.MethodGet, page+dockAPIPath, withCookie(c)); resp.StatusCode != http.StatusOK {
-			t.Fatalf("in use: %d", resp.StatusCode)
-		}
-	}
-	select {
-	case err := <-exited:
-		t.Fatalf("exited while in use: %v", err)
-	default:
-	}
-	idleFrom := time.Now()
-	for {
+	if !ended {
 		select {
-		case err := <-exited:
-			if err != nil {
-				t.Fatalf("idle exit was not clean: %v", err)
-			}
-			if waited := time.Since(idleFrom); waited < time.Second {
-				t.Fatalf("exited %s after its last request", waited)
-			}
-			for _, name := range []string{panelRecordName, panelSocketName} {
-				if _, err := os.Lstat(filepath.Join(w.dir, name)); !os.IsNotExist(err) {
-					t.Fatalf("%s was left behind: %v", name, err)
-				}
-			}
-			if treeDigest(t, w.root) != before {
-				t.Fatal("a file in the registry or a loop's directory changed across start, use and idle exit")
-			}
-			return
-		case <-time.After(150 * time.Millisecond):
-			// Asking for status, loading a static file and being refused
-			// are not use.
-			_, _ = panelControl(context.Background(), w.dir, panelRequest{Op: "status"})
-			dockRequest(t, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/panel.css", rec.Port), nil)
-			dockRequest(t, http.MethodGet, page, nil)
-			if time.Since(idleFrom) > 8*time.Second {
-				t.Fatal("still running 8 seconds after its last request")
-			}
+		case exitErr = <-exited:
+		case <-time.After(60 * time.Second):
+			t.Fatal("still running a minute after it was last used")
 		}
+	}
+	if exitErr != nil {
+		t.Fatalf("idle exit was not clean: %v", exitErr)
+	}
+	for _, name := range []string{panelRecordName, panelSocketName} {
+		if _, err := os.Lstat(filepath.Join(w.dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was left behind: %v", name, err)
+		}
+	}
+	if panelServerHeld(w.dir) {
+		t.Fatal("the lock is still held after the idle exit")
+	}
+	if treeDigest(t, w.root) != before {
+		t.Fatal("a file in the registry or a loop's directory changed across start and idle exit")
 	}
 }
 
@@ -1326,22 +1320,40 @@ func TestPanelIdleRuleOnAFakeClock(t *testing.T) {
 	if rec.IdleSeconds != 1800 || !rec.StartedAt.Equal(now) {
 		t.Fatalf("record: %+v", rec)
 	}
-	// tick asks the idle question once and reports whether the server exited.
+	// tick asks the idle question once. The check runs only when told, so
+	// each answer is about the fake clock alone: after a tick that must not
+	// end the server, it is asked a second time, which it can take only once
+	// it has finished the first.
 	tick := func() bool {
+		t.Helper()
+		for i := 0; i < 2; i++ {
+			select {
+			case ticks <- clock():
+			case code := <-done:
+				done <- code
+				return true
+			case <-time.After(30 * time.Second):
+				t.Fatal("the idle check is not running")
+			}
+		}
+		return false
+	}
+	// exits waits for the exit a tick has caused.
+	exits := func() bool {
 		t.Helper()
 		select {
 		case ticks <- clock():
 		case code := <-done:
 			done <- code
 			return true
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("the idle check is not running")
 		}
 		select {
 		case code := <-done:
 			done <- code
 			return true
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(30 * time.Second):
 			return false
 		}
 	}
@@ -1392,7 +1404,7 @@ func TestPanelIdleRuleOnAFakeClock(t *testing.T) {
 		t.Fatal("exited before 30 minutes after an opening address was made")
 	}
 	advance(time.Second)
-	if !tick() {
+	if !exits() {
 		t.Fatal("still running 30 minutes after the last use")
 	}
 	if code := <-done; code != exitOK {
