@@ -243,19 +243,25 @@ func TestRepromptCapSurvivesActiveChecksBetweenFailures(t *testing.T) {
 }
 
 // The episode ends, and the allowance starts over, when a turn finishes
-// without an error or the active session makes verified Git progress.
+// without an error or the session makes verified Git progress. Progress
+// first seen on a check that finds the session in error again counts: the
+// check re-prompts at once, as the first attempt of a new episode, where an
+// error without progress is still backing off.
 func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
 	for _, tc := range []struct {
 		name      string
 		obs       decide.Observation
 		print     string
+		action    string
 		reprompts int
 	}{
-		{"active_no_progress", decide.Observation{State: decide.Active}, "same", 1},
-		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", 0},
-		{"idle", decide.Observation{State: decide.Idle}, "same", 0},
-		{"error_git_progress", decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, "changed", 1},
-		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", 1},
+		{"active_no_progress", decide.Observation{State: decide.Active}, "same", "none", 1},
+		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", "none", 0},
+		{"idle", decide.Observation{State: decide.Idle}, "same", "wake", 0},
+		{"error_no_progress", failed, "same", "none", 1},
+		{"error_git_progress", failed, "changed", "reprompt", 1},
+		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", "none", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t, true, false)
@@ -274,11 +280,53 @@ func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
 				t.Fatalf("%+v", r)
 			}
 			p.obs = tc.obs
-			run(time.Minute, tc.print)
-			if st, _ := state.Load(w.dir); st.Reprompts != tc.reprompts {
-				t.Fatalf("reprompts=%d", st.Reprompts)
+			r := run(time.Minute, tc.print)
+			if st, _ := state.Load(w.dir); r.Action != tc.action || st.Reprompts != tc.reprompts {
+				t.Fatalf("%s (%s) reprompts=%d", r.Action, r.Reason, st.Reprompts)
 			}
 		})
+	}
+}
+
+// A session that is re-prompted, works and commits, and fails again before
+// the next check has started a new error episode. The check that finds it in
+// error is the only one that sees the commit: the fingerprint is taken there,
+// so a later check sees no change. Before, the count was left alone and the
+// second, unrelated failure inherited the first one's spent attempts.
+func TestGitProgressFirstSeenOnAnErroredCheckStartsANewEpisode(t *testing.T) {
+	w := newWorld(t, true, false) // max_reprompts 2, backoff 10m
+	w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
+	p := w.primary(failed)
+	if err := state.Save(w.dir, state.File{Fingerprint: "one", LastProgressAt: t0, HandoffDeferrals: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []struct {
+		minute    int
+		print     string
+		action    string
+		reprompts int
+	}{
+		{0, "one", "reprompt", 1},
+		{11, "one", "reprompt", 2},   // it failed again with nothing done: the same episode
+		{22, "two", "reprompt", 1},   // it worked, committed and failed again: a new episode
+		{23, "two", "none", 1},       // backing off; the commit is not counted twice
+		{33, "two", "reprompt", 2},   //
+		{44, "two", "await_user", 2}, // the new episode is bounded like the first
+	} {
+		opts := w.opts(t0.Add(time.Duration(c.minute) * time.Minute))
+		opts.Fingerprint = func([]string) (string, error) { return c.print, nil }
+		r, err := Tick(context.Background(), w.cfg, opts)
+		st, _ := state.Load(w.dir)
+		if err != nil || r.Action != c.action || st.Reprompts != c.reprompts {
+			t.Fatalf("check %d (+%dm): %s (%s) reprompts=%d %v", i, c.minute, r.Action, r.Reason, st.Reprompts, err)
+		}
+		if c.minute == 22 && st.HandoffDeferrals != 0 {
+			t.Fatalf("handoffs put off were kept across the new episode: %d", st.HandoffDeferrals)
+		}
+	}
+	if len(p.sent) != 4 {
+		t.Fatalf("sends=%d", len(p.sent))
 	}
 }
 
@@ -327,8 +375,10 @@ func TestExpiredRetryOnActiveThreadUsesOrdinaryStallBounds(t *testing.T) {
 }
 
 // A rate-limit retry notice on an errored target is honored only while a
-// retry is queued or the reset is within wait_if_reset_within (30m here).
-// With a far reset and nothing queued the ordinary limit rules decide.
+// retry is queued. With a structured reset ahead and nothing queued the
+// ordinary limit rules decide: a far reset hands off or waits, and a reset
+// within wait_if_reset_within (30m here) is recorded as a limit wait, where
+// it used to be recorded as "provider is retrying the turn".
 func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -342,8 +392,9 @@ func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 		{"far reset, no fallback", false, 5 * time.Hour, 0, "none", "limit resets in 5h0m0s; no confirmed fallback"},
 		{"far reset, queued retry, healthy fallback", true, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
 		{"far reset, queued retry, no fallback", false, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
-		{"near reset, healthy fallback", true, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
-		{"near reset, no fallback", false, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
+		{"near reset, healthy fallback", true, 20 * time.Minute, 0, "none", "limit resets in 20m0s; waiting"},
+		{"near reset, no fallback", false, 20 * time.Minute, 0, "none", "limit resets in 20m0s; waiting"},
+		{"near reset, queued retry", true, 20 * time.Minute, 1, "none", "provider is retrying the turn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t, true, tc.fallbacks)
@@ -358,6 +409,7 @@ func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 			if r.Action != tc.action || r.Reason != tc.reason || len(p.sent) != 0 || st.Reprompts != 0 || (r.Handoff != nil) != (tc.action == "handoff") {
 				t.Fatalf("%+v", r)
 			}
+
 		})
 	}
 }

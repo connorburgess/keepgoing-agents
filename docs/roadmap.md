@@ -61,7 +61,6 @@ Reliability of supervision comes before new features: a day of live supervision 
    Still open, in this order:
    - **Prove recovery live.** Cut the network on a supervised loop with child threads for longer than the provider's own retries, with nobody watching, and record whether the loop and its children come back. Until this passes once, the items above are fixture evidence only.
    - **Network-aware sending.** Do not spend re-prompts or probes into a dead network; record "network down" as its own waiting reason and act on the first check after it returns.
-   - **Follow-ups from review of the stale-notice and tick-budget changes**: requested input re-arming an expired notice, a notice kept after recovery into a long tool call, the deferral counter reset, scheduled probes ahead of a due handoff, and a measured worst-case check time.
    - **Scheduler independence.** An external scheduler can still stop by itself; add the "no check has run for N intervals" self-check and make the built-in service the recommended path.
    - **Recovering failed children.** Today the parent is told and the owner can be told; nothing restarts a failed child. Decide whether keepgoing should, and under what bound. See [BB child awareness](#3-bb-child-awareness-and-loop-ownership).
    - **Reacting faster than the check interval** to a hard limit, and noticing a limit that was lifted early.
