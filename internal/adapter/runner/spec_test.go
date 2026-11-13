@@ -137,7 +137,7 @@ func TestSpecificationReadings(t *testing.T) {
 		{"claude rate limit", "claude", finished(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-a","api_error_status":429}`, 1), "sess-a", false, decide.ErrRateLimit, "claude_result"},
 		{"claude no result object", "claude", finished(`fictional text`, 1), "", false, decide.ErrUnknown, ""},
 		{"codex ok", "codex", finished(`{"type":"thread.started","thread_id":"sess-b"}`+"\n"+`{"type":"turn.completed"}`, 0), "sess-b", true, decide.ErrUnknown, "codex_events"},
-		{"codex coded failure", "codex", finished(codexFailedCoded, 1), "t", false, decide.ErrRateLimit, "codex_events"},
+		{"codex coded failure", "codex", finished(`{"type":"thread.started","thread_id":"sess-b"}`+"\n"+`{"type":"error","message":"x","code":"rate_limit_exceeded"}`+"\n"+`{"type":"turn.failed","error":{"message":"x","code":"usage_limit_reached"}}`, 1), "sess-b", false, decide.ErrRateLimit, "codex_events"},
 		{"codex nothing structured", "codex", finished(`fictional text`, 1), "", false, decide.ErrUnknown, ""},
 	} {
 		spec, _ := SpecFor(tc.kind)
