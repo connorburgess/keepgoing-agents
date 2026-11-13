@@ -103,6 +103,8 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// LastTurnRetry is the last recovery made by retrying a failed turn.
+	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
 	// NewThreads holds the thread created for each candidate with
 	// bb.new_thread. NewThreadsCreated counts, for
 	// loop.limits.max_new_threads, every creation that produced a thread or
@@ -140,6 +142,17 @@ type ChildErrorReport struct {
 	Errored  int  `json:"errored"`
 	Running  int  `json:"running"`
 	Complete bool `json:"complete"`
+}
+
+// TurnRetry records the last time a failed turn was retried by reference
+// instead of being prompted again. Outcome is the provider's structured
+// result, or "refused" when it refused or could not be read. It is saved with
+// the completed check and proves neither delivery nor that the turn ran.
+type TurnRetry struct {
+	CheckAt time.Time `json:"checkAt"`
+	Target  string    `json:"target"`
+	Outcome string    `json:"outcome"`
+	Attempt int       `json:"attempt,omitempty"`
 }
 
 // LimitWaitReport outcomes.

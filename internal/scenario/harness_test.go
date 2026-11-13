@@ -553,9 +553,6 @@ func (w *World) Check(s *Step, name string, err error) {
 type Waiting string
 
 const (
-	// WaitTurnRetry is the lane recovering a failed BB turn with
-	// `bb thread retry` instead of a new prompt (branch cb/bb-retry-failed-turn).
-	WaitTurnRetry Waiting = "turn retry, in progress"
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
 )

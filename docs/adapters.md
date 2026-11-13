@@ -48,7 +48,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a |
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · fixture | missing · none | n/a |
-| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a |
@@ -121,7 +121,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 
 Ask the provider to retry the failed turn itself, instead of sending a new prompt.
 
-- **BB thread:** missing, evidence none. The provider's own scheduled retry is waited for. keepgoing never asks for one.
+- **BB thread:** yes, evidence fixture. A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by keepgoing. [`TestRetryFailedTurnReadsOnlyTheStructuredResult`](../internal/adapter/bb/turn_retry_test.go) [`TestFailedTurnIsRetriedByReferenceNotPromptedAgain`](../internal/supervise/turnretry_test.go) [`TestTurnRetryAfterAnOutageOfAnyLength`](../internal/supervise/turnretry_test.go) [`TestTickRetriesAFailedBBTurnByReference`](../cmd/keepgoing/turn_retry_test.go) [operations.md#recovering-a-failed-bb-turn-by-retry](operations.md#recovering-a-failed-bb-turn-by-retry)
 - **Claude Code headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Codex headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.

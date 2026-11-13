@@ -67,12 +67,13 @@ var outages = []outage{
 
 // What still fails at every length. The network check waits the outage out,
 // through the captive portal, without a send, a hold or a report, and the
-// loop recovers without a person. It recovers with a new prompt, though, not
-// by retrying the failed turn, and the child's failed turn is not retried.
+// loop recovers without a person by retrying the failed turn once. The
+// child's failed turn is not retried, so the child is still in error and the
+// retry is followed by the count-only child-error notice: a third message.
 var outageKnown = map[string][]Waiting{
-	expectRecoveredOnce:  Waits(WaitTurnRetry),
+	expectRecoveredOnce:  Waits(WaitChildRecovery),
 	expectChildRecovered: Waits(WaitChildRecovery),
-	expectTwoSends:       Waits(WaitTurnRetry),
+	expectTwoSends:       Waits(WaitChildRecovery),
 }
 
 // TestScenarioOutage is the owner's outage: the network drops in the middle

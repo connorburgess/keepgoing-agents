@@ -404,6 +404,35 @@ type Counters struct {
 	LastRepromptAt time.Time
 }
 
+// Recovery is how a re-prompt decision is carried out.
+type Recovery string
+
+// Recovery methods.
+const (
+	// RecoverByPrompt sends the wake text again.
+	RecoverByPrompt Recovery = "prompt"
+	// RecoverByTurnRetry asks the provider to re-run the failed turn by
+	// reference, with no new text.
+	RecoverByTurnRetry Recovery = "turn_retry"
+)
+
+// RecoverBy chooses the method for a re-prompt decision. A turn retry is used
+// only for a session in error whose class a retry can plausibly fix: network,
+// overloaded or unknown. A rate limit is not cured by running the same turn
+// again and an auth error needs a person, so those keep the existing prompt
+// path (auth is held before it gets here). Anything that is not a re-prompt
+// of an errored session on a provider that can retry is a prompt.
+func RecoverBy(d Decision, obs Observation, canRetryTurn bool) Recovery {
+	if d.Action != Reprompt || !canRetryTurn || obs.State != Error {
+		return RecoverByPrompt
+	}
+	switch obs.ErrorClass {
+	case ErrNetwork, ErrOverloaded, ErrUnknown, ErrNone, "":
+		return RecoverByTurnRetry
+	}
+	return RecoverByPrompt
+}
+
 // Attempted returns the counters after the command layer has called the
 // adapter for a wake, nudge or re-prompt at the given time. It deliberately
 // takes no outcome: a send that failed, was unsupported or is uncertain may

@@ -247,7 +247,13 @@ func (a Attempt) Valid() bool {
 		if a.Mode != "queue" {
 			return false
 		}
-	case "wake", "reprompt", "handoff", "switch_back":
+	case "reprompt":
+		// A re-prompt is either a prompt or a retry of the failed turn by
+		// reference, which sends no prompt.
+		if a.Mode != "auto" && a.Mode != "turn_retry" {
+			return false
+		}
+	case "wake", "handoff", "switch_back":
 		if a.Mode != "auto" {
 			return false
 		}
