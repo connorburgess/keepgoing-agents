@@ -41,10 +41,11 @@ func MaybeRunTurn() {
 	if err != nil {
 		os.Exit(2)
 	}
-	// Hold the turn lock for the wrapper's whole life. The operating system
+	// Hold the turn lock until the exit code is published. The operating system
 	// releases it when this process ends, so a reader never has to trust a
 	// saved PID. Start holds the lock while it sets this turn up, so wait for it,
 	// then write this turn's key so Start knows which wrapper has it.
+	turnKey = key
 	if !holdTurnLock(dir) || os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
 		os.Exit(2)
 	}
@@ -92,7 +93,7 @@ func runTurn(dir string, argv []string) int {
 	}
 	tmp := filepath.Join(dir, "exit.tmp")
 	if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
-		os.Rename(tmp, filepath.Join(dir, "exit"))
+		publishExit(dir, tmp)
 	}
 	return code
 }
@@ -141,11 +142,37 @@ func wrapperCommand(argv []string, workdir, dir string, env []string, acp string
 	return cmd, nil
 }
 
-// turnLockHeld keeps the lock referenced for the life of the process.
-var turnLockHeld *lock.Lock
+// turnLockHeld keeps the lock referenced until the exit code is published.
+// turnKey is this wrapper's own turn key.
+var (
+	turnLockHeld *lock.Lock
+	turnKey      string
+)
 
 func holdTurnLock(dir string) bool {
 	held, err := acquireTurnLock(dir)
 	turnLockHeld = held
 	return err == nil
+}
+
+// publishExit makes the recorded exit code visible, after letting go of the
+// turn lock. Once a reader can see the exit code the wrapper holds nothing
+// open in the directory that the lock added, so the directory can be removed
+// at once on every platform. The finishing marker covers the moment between
+// the two: a reader that finds the lock free and no exit code yet waits for
+// the code instead of calling the turn crashed.
+func publishExit(dir, tmp string) error {
+	finishing := filepath.Join(dir, finishingName)
+	os.WriteFile(finishing, []byte(turnKey), 0o600)
+	if turnLockHeld != nil {
+		turnLockHeld.Release()
+		turnLockHeld = nil
+	}
+	err := os.Rename(tmp, filepath.Join(dir, "exit"))
+	// Remove only this turn's own marker: by now a later turn may have
+	// started and written its own.
+	if b, readErr := os.ReadFile(finishing); readErr == nil && string(b) == turnKey {
+		os.Remove(finishing)
+	}
+	return err
 }

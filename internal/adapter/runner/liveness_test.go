@@ -93,3 +93,32 @@ func TestLegacyTurnRecordIsStillJudgedByItsPID(t *testing.T) {
 		t.Fatalf("%+v %v", st, err)
 	}
 }
+
+// The wrapper lets go of the lock just before it publishes its exit code. A
+// read that lands between the two waits for the code; it does not report a
+// crash, which would be re-prompted while the turn was in fact finishing.
+func TestAReadDuringExitPublicationWaitsForTheCode(t *testing.T) {
+	d := writeRecord(t, Record{PID: 0, StartedAt: time.Now(), Argv0: "stand-in", Liveness: livenessLock})
+	if err := os.WriteFile(filepath.Join(string(d), finishingName), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(filepath.Join(string(d), "exit"), []byte("0\n"), 0o600)
+	}()
+	if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 0 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	// A wrapper that died while publishing never produces the code: after
+	// the bounded wait the turn is crashed.
+	previous := finishingWait
+	finishingWait = 50 * time.Millisecond
+	defer func() { finishingWait = previous }()
+	dead := writeRecord(t, Record{PID: 0, StartedAt: time.Now(), Argv0: "stand-in", Liveness: livenessLock})
+	if err := os.WriteFile(filepath.Join(string(dead), finishingName), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := dead.Status(); err != nil || st.Phase != Crashed {
+		t.Fatalf("%+v %v", st, err)
+	}
+}

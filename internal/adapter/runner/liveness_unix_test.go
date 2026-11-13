@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
 // Start returns only once the wrapper holds its lock or has finished, so the
@@ -87,6 +89,28 @@ func TestBackToBackTurnsNeverReadAsCrashed(t *testing.T) {
 			if st.Phase == Finished {
 				break
 			}
+		}
+	}
+}
+
+// Once a turn's exit code can be seen, the wrapper has let go of the lock, so
+// the turn's directory can be removed at once. On Windows a held lock file
+// would block that removal, which an existing Cursor fixture depends on.
+func TestFinishedTurnHoldsNothingInItsDirectory(t *testing.T) {
+	cli := fakeCLI(t, "exit 0")
+	for i := 0; i < 20; i++ {
+		d := Dir(filepath.Join(t.TempDir(), "target"))
+		if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", nil); err != nil {
+			t.Fatal(err)
+		}
+		waitPhase(t, d, Finished)
+		held, err := lock.AcquireNamed(string(d), turnLock)
+		if err != nil {
+			t.Fatalf("turn %d: the lock is still held after the exit code was published: %v", i, err)
+		}
+		held.Release()
+		if err := os.RemoveAll(string(d)); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

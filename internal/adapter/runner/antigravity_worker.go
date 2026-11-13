@@ -53,7 +53,7 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 		}
 		tmp := d.path("exit.tmp-" + spec.Turn)
 		if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
-			if !current() || os.Rename(tmp, d.path("exit")) != nil {
+			if !current() || publishExit(dir, tmp) != nil {
 				os.Remove(tmp)
 			}
 		}

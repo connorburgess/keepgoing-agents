@@ -35,7 +35,8 @@ type Record struct {
 	StartedAt time.Time `json:"startedAt"`
 	Argv0     string    `json:"argv0"`
 	// Liveness says how to tell that this turn's wrapper is still running.
-	// "lock" means the wrapper holds turn.lock for its whole life, so the
+	// "lock" means the wrapper holds turn.lock until it publishes its exit
+	// code, and loses it if it ends any other way, so the
 	// operating system releases it when the wrapper ends, however it ends.
 	// A record without it was written by an older build, whose wrapper holds
 	// no lock; only for those is the saved PID still consulted.
@@ -83,8 +84,16 @@ func acquireTurnLock(dir string) (*lock.Lock, error) {
 }
 
 // startedName is the file a wrapper writes, holding its turn key, once it
-// holds the turn lock.
-const startedName = "turn.started"
+// holds the turn lock. finishingName is the file it writes just before it
+// lets go of the lock to publish its exit code.
+const (
+	startedName   = "turn.started"
+	finishingName = "turn.finishing"
+)
+
+// finishingWait bounds how long a reader waits for an exit code a wrapper
+// was in the middle of publishing.
+var finishingWait = 2 * time.Second
 
 // awaitWrapper returns once this turn's own wrapper has taken the lock, or
 // the turn has already finished. It matches the turn key, so the previous
@@ -151,6 +160,18 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 		st.Phase = Running
 		return st, nil
 	}
+	// The wrapper lets go of the lock just before it publishes its exit code.
+	// If it was doing that, wait for the code instead of reading a crash.
+	if _, err := os.Stat(d.path(finishingName)); err == nil {
+		for deadline := time.Now().Add(finishingWait); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+			if _, err := os.Stat(d.path("exit")); err == nil {
+				return d.statusWithOutputLimit(limit)
+			}
+		}
+	} else if _, err := os.Stat(d.path("exit")); err == nil {
+		// Published between the first look and the lock check.
+		return d.statusWithOutputLimit(limit)
+	}
 	st.Phase = Crashed
 	st.Stdout, err = d.readOutput(limit)
 	return st, err
@@ -204,7 +225,7 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 		return "", notSpawned{err}
 	}
 	defer setup.Release()
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName} {
+	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName} {
 		os.Remove(d.path(name))
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
