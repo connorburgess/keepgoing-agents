@@ -197,13 +197,14 @@ type tick struct {
 	budgetWarned        bool
 	networkChecked      bool // connectivity was checked in this check
 	reserveNetwork      time.Duration
-	networkOffline      bool          // the check failed
-	networkGated        bool          // and is still believed, so work that needs the network waits
-	progressCounted     time.Duration // time since the last check counted toward no_progress_timeout
-	probeSucceeded      bool          // a fallback probe passed in this check
-	sessionRecovered    bool          // the target was observed and is not in error
-	observeSpent        time.Duration // observation time used by a lookup for an unsettled thread creation
-	lateReports         int           // reports started after the budget was spent
+	networkOffline      bool           // the check failed
+	networkGated        bool           // and is still believed, so work that needs the network waits
+	progressCounted     time.Duration  // time since the last check counted toward no_progress_timeout
+	probeSucceeded      bool           // a fallback probe passed in this check
+	sessionRecovered    bool           // the target was observed and is not in error
+	failure             *failureReport // wording for the one error report of a failed check
+	observeSpent        time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports         int            // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -432,7 +433,9 @@ func (t *tick) run() error {
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason, res.Window = string(decide.Unknown), "could not verify state; no action taken", "not checked"
-		t.report("error", fmt.Sprintf("%s: could not observe %s", loop.Name, target), map[string]any{"target": target})
+		// One failure, one report: record sends it, with the target named
+		// and the cause, in place of its general "tick failed" text.
+		t.failure = &failureReport{text: fmt.Sprintf("%s: could not observe %s: %v", loop.Name, target, err), data: map[string]any{"target": target}}
 		return t.record(err)
 	}
 	res.State = string(obs.State)
@@ -1250,6 +1253,13 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	return err
 }
 
+// failureReport is the error report a failed check sends, worded by the step
+// that failed.
+type failureReport struct {
+	text string
+	data map[string]any
+}
+
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
 	t.st.CheckedAt = t.now
@@ -1290,7 +1300,13 @@ func (t *tick) record(actErr error) error {
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
-		t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		// A failed check sends one error report. A step that knows more than
+		// the error itself (which target could not be observed) words it.
+		if f := t.failure; f != nil {
+			t.report("error", f.text, f.data)
+		} else {
+			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
+		}
 	}
 	if t.res.DryRun {
 		extra["dryRun"] = true
