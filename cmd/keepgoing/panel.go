@@ -230,21 +230,21 @@ func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(dir, panelSocketName))
 	if err != nil {
-		return reply, errors.New("the panel server did not answer on its private socket")
+		return reply, errors.New("the panel did not answer on its private socket")
 	}
 	defer c.Close()
 	deadline, _ := ctx.Deadline()
 	_ = c.SetDeadline(deadline)
 	req.At = time.Now()
 	if err := json.NewEncoder(c).Encode(req); err != nil {
-		return reply, errors.New("the panel server did not accept the request")
+		return reply, errors.New("the panel did not accept the request")
 	}
 	if json.NewDecoder(io.LimitReader(c, 4096)).Decode(&reply) != nil {
-		return panelReply{}, errors.New("the panel server's answer could not be read")
+		return panelReply{}, errors.New("the panel's answer could not be read")
 	}
 	if !reply.OK {
 		if reply.Error == "" {
-			reply.Error = "the panel server refused the request"
+			reply.Error = "the panel refused the request"
 		}
 		return reply, errors.New(reply.Error)
 	}
@@ -347,7 +347,7 @@ func panelServerEnvironment() []string {
 	return env
 }
 
-const panelNotAnsweringText = "a panel server is running but not answering. Try again in a moment; keepgoing panel status says whether it has recovered"
+const panelNotAnsweringText = "the panel is running but not answering. Try again in a moment; keepgoing panel status says whether it has recovered"
 
 // panelEnsure returns a running server, starting one when none is running.
 // The caller holds the panel-open lock.
@@ -373,7 +373,7 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	panelRemoveLeftovers(o.dir)
 	exe, err := os.Executable()
 	if err != nil {
-		return panelRecord{}, false, errors.New("cannot find this executable to start the panel server")
+		return panelRecord{}, false, errors.New("cannot find this executable to start the panel")
 	}
 	// The registry directory is passed resolved, so the server does not
 	// depend on the caller's environment or working directory to find it.
@@ -396,7 +396,7 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	cmd.Dir = o.dir
 	panelCloseInheritedOnExec()
 	if err := cmd.Start(); err != nil {
-		return panelRecord{}, false, errors.New("cannot start the panel server")
+		return panelRecord{}, false, errors.New("cannot start the panel")
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
@@ -412,12 +412,12 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 			if rec, ok := panelLive(ctx, o.dir); ok {
 				return rec, false, nil
 			}
-			return panelRecord{}, false, errors.New("the panel server exited while starting")
+			return panelRecord{}, false, errors.New("the panel exited while starting")
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 	_ = cmd.Process.Kill()
-	return panelRecord{}, false, errors.New("the panel server did not answer within 10 seconds")
+	return panelRecord{}, false, errors.New("the panel did not answer within 10 seconds")
 }
 
 // panelRemoveLeftovers deletes the runtime files of a server that is gone.
@@ -443,7 +443,7 @@ func panelRequestOpening(ctx context.Context, dir string, rec panelRecord, key s
 	if err != nil {
 		return "", err
 	}
-	bad := errors.New("the panel server's answer was not an opening for this panel")
+	bad := errors.New("the panel's answer was not an opening for this page")
 	if !asFile {
 		code, ok := strings.CutPrefix(reply.Address, "http://127.0.0.1:"+strconv.Itoa(rec.Port)+"/open/")
 		if !ok || !panelCodePattern.MatchString(code) || reply.File != "" {
@@ -500,8 +500,8 @@ const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m
        keepgoing panel list [--json] [--directory private-registry]
 
 Open the keepgoing panel, the read-only page about every registered loop, in
-your browser. A background server for this computer only is started when none
-is running and stops by itself when unused. Supervision is not affected by
+your browser. The panel's background process, for this computer only, is started
+when none is running and stops by itself when unused. Supervision is not affected by
 starting, stopping or closing it.`
 
 func panelCommand(e env, args []string) int {
@@ -523,7 +523,7 @@ func panelCommand(e env, args []string) int {
 	fs.SetOutput(io.Discard)
 	loop := fs.String("loop", "", "open this loop's page: its name, registration ID or key")
 	noOpen := fs.Bool("no-open", false, "print the opening address and do not start a browser")
-	idle := fs.Duration("idle", panelDefaultIdle, "stop the background server after this long without a request (1m to 24h)")
+	idle := fs.Duration("idle", panelDefaultIdle, "stop the panel's background process after this long without a request (1m to 24h)")
 	directory := fs.String("directory", "", "private registry directory")
 	panelDir := fs.String("panel-directory", "", "private directory for the panel's runtime record and socket")
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "how often the page reads again (5s to 10m)")
@@ -591,7 +591,7 @@ func panelCommand(e env, args []string) int {
 		return exitFailed
 	}
 	if browser == nil {
-		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", opening)
+		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the panel's background process; supervision is not affected.\n", opening)
 		return exitOK
 	}
 	// The browser is given the path of a private page that goes to the
@@ -719,7 +719,7 @@ func panelStopCommand(e env, args []string) int {
 			return exitOK
 		}
 	}
-	e.errf("panel stop: the panel server was asked to stop and has not finished")
+	e.errf("panel stop: the panel was asked to stop and has not finished")
 	return exitFailed
 }
 
