@@ -2,7 +2,7 @@
 
 Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
-This is a data and navigation model in progress. Three parts exist in source and are unreleased: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased), the [persisted reference graph](#persisted-reference-graph-d2-unreleased) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3-unreleased) that shows it. There is no provider-link resolver, blocker lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 is checked, D2 is partial, D3 is implemented and awaiting check-off, and D4–D6 are planned. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
+This is a data and navigation model in progress. Three parts exist in source and are unreleased: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal-unreleased), the [persisted reference graph](#persisted-reference-graph-d2-unreleased) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3-unreleased) that shows it. There is no provider-link resolver, blocker lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 and D3 are checked, D2 is partial and D4–D6 are planned. D3 has one [live check](#live-check) on a BB target; the rest of its evidence is from fixtures. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
@@ -233,6 +233,25 @@ A lookup answers `found`, `not_recorded`, `not_recorded_or_expired` when retenti
 Output holds identifiers, target aliases, action names, sources and times. It holds no prompt, goal text, control note, path or URL. Chat and session IDs are the ones `status` and registered status already show.
 
 Exit codes: 0 for an answer, including a missing graph, a hold or a reference that is not recorded; 1 when a graph, control or state record exists but cannot be read, a registry binding no longer holds, or the registry or registration is unavailable, with whatever was readable still printed; 2 for usage or unreadable configuration.
+
+### Live check
+
+One live check has been run, on 2026-11-13, by the project coordinator against a real supervised loop. The loop's installed binary was upgraded to a source build of `main` at `0d1e967` on macOS arm64. Its active target was a BB Claude Code thread, reached earlier by a handoff from a rate-limited primary, and its checks came from an external scheduler. No real identifiers are recorded here.
+
+What it showed:
+
+- **Adoption on upgrade.** The first scheduled check on the new build created the graph in the existing state directory and recorded one open run with origin `adopted_existing`. The check itself was unchanged: action none, exit 0.
+- **Current work and its chat.** `keepgoing runs -c <config>` showed the loop, the durable loop reference, control available (enabled), the saved active target recorded as the fallback, the current run, and one chat/session reference labelled `configured` for that target. The coordinator compared that reference with the thread's own ID: it was the conversation actually being supervised.
+- **Following references.** `--id session:bb/<thread>` answered `found` and linked to the run. `--id run_<id>` answered `found` and linked to the loop. An unknown run reference did not answer `found`.
+- **JSON and read-only.** `--json` returned `schemaVersion` 1, and `control.json` was byte-identical before and after the reads.
+
+What it did not cover, and so rests on fixtures only:
+
+- **Sends.** None had been recorded on the new build yet, so send → chat was not walked live.
+- **A headless target** and its `observed` label.
+- **Two loops with one name**, and any registry view.
+- **History before adoption.** The earlier handoff predates the graph, so the run shows nothing before it was adopted.
+- **Windows and Linux.**
 
 ## Record once, resolve by reference
 
