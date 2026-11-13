@@ -47,9 +47,9 @@ var outages = []outage{
 			expectNoSendOffline:  Waits(WaitNetworkGate),
 			expectWaitsAtPortal:  Waits(WaitCaptivePortal),
 			expectNetworkShown:   Waits(WaitNetworkGate),
-			expectRecoveredOnce:  Waits(WaitTurnRetry),
+			expectRecoveredOnce:  Waits(WaitNetworkGate),
 			expectChildRecovered: Waits(WaitChildRecovery),
-			expectTwoSends:       Waits(WaitNetworkGate, WaitTurnRetry),
+			expectTwoSends:       Waits(WaitNetworkGate),
 		},
 	},
 	{
@@ -80,13 +80,13 @@ var longOutageKnown = map[string][]Waiting{
 	expectNoHoldOffline:   Waits(WaitNetworkGate),
 	expectNetworkShown:    Waits(WaitNetworkGate),
 	expectNoReportOffline: Waits(WaitNetworkGate),
-	expectRecoveredOnce:   Waits(WaitNetworkGate, WaitTurnRetry),
+	expectRecoveredOnce:   Waits(WaitNetworkGate),
 	expectWaitsAtPortal:   Waits(WaitNetworkGate, WaitCaptivePortal),
 	expectNotHeldOnline:   Waits(WaitNetworkGate),
 	expectNoPerson:        Waits(WaitNetworkGate),
 	expectNoNudge:         Waits(WaitStallClock),
 	expectChildRecovered:  Waits(WaitChildRecovery),
-	expectTwoSends:        Waits(WaitNetworkGate, WaitTurnRetry),
+	expectTwoSends:        Waits(WaitNetworkGate),
 	expectOnlyComplete:    Waits(WaitNetworkGate),
 }
 

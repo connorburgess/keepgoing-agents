@@ -59,6 +59,31 @@ func ReserveSend(dir string, max int64) error {
 	return nil
 }
 
+// RefundSend gives back one reservation. It is only for an attempt the
+// provider answered, in a structured result, that it did not act on at all:
+// nothing was sent and nothing was started. A failed or uncertain send is
+// never refunded. A zero cap, or an empty ledger, changes nothing.
+func RefundSend(dir string, max int64) error {
+	if max == 0 {
+		return nil
+	}
+	used, err := LoadSends(dir)
+	if err != nil {
+		return err
+	}
+	if used == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(struct {
+		Version int   `json:"version"`
+		Used    int64 `json:"used"`
+	}{1, used - 1})
+	if err := saveAllowance(dir, SendsName, b); err != nil {
+		return ErrSendLedger
+	}
+	return nil
+}
+
 // saveAllowance syncs the replacement before publishing it. Callers hold tick.lock.
 // As with other runtime records, this is not a power-loss/storage guarantee.
 func saveAllowance(dir, name string, b []byte) error {

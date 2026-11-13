@@ -222,6 +222,11 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		if activates != a.Activator || polls != a.WakePoller {
 			t.Errorf("%s: Activator=%v WakePoller=%v; the capability table says %v and %v", a.ID, activates, polls, a.Activator, a.WakePoller)
 		}
+		// The turn_retry row must agree with what the adapter can actually do.
+		_, retries := impl.(adapter.TurnRetrier)
+		if listed := byID("turn_retry").Cells[a.ID].Status == Yes; retries != a.TurnRetrier || retries != listed {
+			t.Errorf("%s: TurnRetrier=%v; the capability table says %v and the turn_retry row says %v", a.ID, retries, a.TurnRetrier, listed)
+		}
 	}
 	// A process loop can stop only through a configured command.
 	if _, unsupported := process.New(config.Process{}).Stop(t.Context()).(adapter.ErrUnsupported); !unsupported || byID("stop").Cells["process"].Status != Partial {

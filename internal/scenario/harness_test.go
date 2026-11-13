@@ -556,9 +556,6 @@ const (
 	// WaitNetworkGate is pull request #154: wait for connectivity before
 	// re-prompting or handing off.
 	WaitNetworkGate Waiting = "network gating, PR #154"
-	// WaitTurnRetry is the lane recovering a failed BB turn with
-	// `bb thread retry` instead of a new prompt (branch cb/bb-retry-failed-turn).
-	WaitTurnRetry Waiting = "turn retry, in progress"
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
 	// WaitCaptivePortal has no open work: PR #154 counts any HTTP answer,
