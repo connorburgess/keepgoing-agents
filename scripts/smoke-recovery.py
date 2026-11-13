@@ -171,6 +171,10 @@ class Loop:
             "RECOVERY_SECRET": "fictional-recovery-key",
             # The connectivity check must not reach the real network.
             "KEEPGOING_NET_PROBE": "exit 0",
+            # A home of its own: session claims live under the user's state
+            # directory, and a check without one acts on nothing.
+            "HOME": str(root / "home"),
+            "XDG_STATE_HOME": str(root / "home" / "state"),
         }
         for name, adapter in (("bb", "bb"), ("claude", "claude"), ("codex", "codex"), ("agent", "cursor")):
             stub = self.commands / name
