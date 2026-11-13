@@ -508,6 +508,8 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		cfg.FallbackSet, _ = config.ParseFallbacks(files["fallbacks.yaml"])
 	}
 	files["keepgoing.yaml"] = b
+	// The marker is what later lets `loop remove` delete this directory.
+	files[loopMarkerName] = newLoopMarker(o.name)
 	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, "keepgoing.yaml")))
 	if o.withGoal {
 		files["task.md"] = []byte(o.task + "\n")

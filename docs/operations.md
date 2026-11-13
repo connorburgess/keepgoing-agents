@@ -335,6 +335,39 @@ keepgoing report test             # deliver it
 
 Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `child_error` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, `limit_wait` and `child_error` (unreleased source) are included in the default event list on `main`; an explicit event list must include them or `all`. All three make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
+## Removing a loop
+
+Unreleased source; fixture-tested only.
+
+```sh
+keepgoing loop remove -c /private/example-loop/keepgoing.yaml          # preview: removes nothing
+keepgoing loop remove -c /private/example-loop/keepgoing.yaml --yes    # remove what the preview listed
+```
+
+`loop remove` deletes a switched-off loop that `keepgoing init` created: the state directory inside its setup directory, its registry entry, and the setup directory with the files keepgoing wrote there (`keepgoing.yaml`, `fallbacks.yaml`, `prompt.md`, `task.md` and the marker). It cannot be undone. It never touches the agent's conversation, the work repository, an account directory, or anything else a configuration value points at.
+
+**Preview first.** Without `--yes` it prints exactly what would be removed and changes nothing: no file, lock or record is created. `--json` gives the same as a `loop_removal` object, for the preview and for the removal. Private paths are shown, and kept in the removal record, only with `--private`.
+
+**Only what keepgoing marked.** `init` now writes a small marker file, `.keepgoing-loop`, into the setup directory it creates. `loop remove` deletes a directory only when it carries that marker for the loop named in the configuration. A path in a configuration value is never enough. It also refuses when the setup directory is a symlink, is inside a Git checkout, or holds anything keepgoing did not write (move it out first), and when the state directory is anywhere but inside the setup directory. The setup directory itself is removed without recursion, so nothing unexpected can go with it.
+
+**Setups created before the marker existed** carry none and are refused. Nothing distinguishes such a directory from one a person assembled by hand: it holds the same file names. keepgoing does not guess. Until there is a deliberate way to mark an existing setup, remove such a loop by hand: `keepgoing registry remove`, then delete the setup directory yourself.
+
+It refuses, and `--force` does not change it, while:
+
+- a daemon is responding for the loop or holds its daemon lock;
+- a check is running;
+- a turn is in progress on any target, or a turn record cannot be read;
+- a managed service is installed for the loop (`keepgoing service remove` first);
+- a BB transfer is pending;
+- the caller is a BB thread that does not own the loop;
+- the configuration cannot be loaded, so what belongs to the loop is not known.
+
+It refuses unless `--force` when the loop is switched on (`keepgoing disable` first) or held for a person with an open question.
+
+**Order and partial failure.** The state directory goes first, then the registry entry, then the setup directory's files, with the configuration and the marker last. Removal stops at the first failure and the command exits 1, saying what was removed and what was not. Because the configuration and marker are still there, running the same command again finishes the job. The checks run just before removal and their locks are released before deleting, so a check started in that instant could recreate the state directory; the command would then report the setup directory as not empty, and can be run again.
+
+**Record.** Each removal with `--yes` appends a line to `removals.jsonl` in the private registry directory, which survives the loop: the time, the loop's name, what was removed, whether it completed, and who ran it (`thread` with the BB thread ID, or `terminal`). `--registry DIR` names another registry directory.
+
 ## Situations that need a person
 
 - **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.

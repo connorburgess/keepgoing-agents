@@ -55,6 +55,8 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
+  loop remove              Remove a switched-off loop that init created: its setup directory,
+                           state and registry entry. Previews by default; --yes removes
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
@@ -132,6 +134,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return clientCommand(e, rest)
 	case "registry":
 		return registryCommand(e, rest)
+	case "loop":
+		return loopCommand(e, rest)
 	case "transfer":
 		return transferCommand(e, rest, doctorExec)
 	case "goal":

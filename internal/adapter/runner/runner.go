@@ -171,6 +171,13 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 	return key, nil
 }
 
+// Running reports whether the latest turn is still in progress. It reads the
+// turn's record only, never its output.
+func (d Dir) Running() (bool, error) {
+	st, err := d.statusWithOutputLimit(skipOutput)
+	return st.Phase == Running, err
+}
+
 // Stop asks the live wrapper to stop its own turn. Saved PIDs never authorize signals.
 func (d Dir) Stop() error {
 	// Only the turn's phase and key are needed: its output is not read.
