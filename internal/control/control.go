@@ -153,6 +153,12 @@ func CheckControlPath(stateDir string) error {
 }
 
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeAtomicSync(path, data, mode, false)
+}
+
+// writeAtomicSync optionally flushes the temporary file before it replaces the
+// target, so a power loss cannot leave the target name on unwritten data.
+func writeAtomicSync(path string, data []byte, mode os.FileMode, sync bool) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
@@ -166,6 +172,12 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
+	}
+	if sync {
+		if err := tmp.Sync(); err != nil {
+			tmp.Close()
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return err

@@ -120,6 +120,8 @@ type tick struct {
 	res                 *Result
 	st                  state.File
 	reg                 *health.Registry
+	graphFailed         bool
+	graphClosed         bool
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -158,7 +160,9 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
+	t.graphSync()
 	err := t.run()
+	t.graphClose()
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
@@ -828,11 +832,13 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 // send records only a returned adapter call. It is persisted with the completed
 // tick, not a durable pre-send intent or an acknowledgement of agent execution.
 func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode, target, action string) error {
+	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
 	if err != nil {
 		outcome = "adapter_error"
 	}
+	t.graphFinish(attempt, outcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
@@ -855,6 +861,9 @@ func (t *tick) record(actErr error) error {
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err
 	}
+	// After the state save, so graph work never delays it, and before the
+	// event is built, so a graph warning reaches runs.jsonl.
+	t.graphClose()
 	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target}
 	extra := map[string]any{}
 	if actErr != nil {
