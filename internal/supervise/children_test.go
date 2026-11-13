@@ -10,8 +10,10 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
+// A parent in error is not held by its children: see
+// TestErroredParentIsRecoveredWhileChildrenWork.
 func TestActiveChildAcrossStallIntervalsDoesNotSpendBudgets(t *testing.T) {
-	for _, parent := range []decide.State{decide.Idle, decide.Active, decide.Error} {
+	for _, parent := range []decide.State{decide.Idle, decide.Active} {
 		t.Run(string(parent), func(t *testing.T) {
 			w := newWorld(t, true, false)
 			w.cfg.Loop.Progress.MaxNudges = 2

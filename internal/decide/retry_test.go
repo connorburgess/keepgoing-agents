@@ -90,7 +90,7 @@ func TestExpiredRetrySignalUsesOrdinaryErrorHandling(t *testing.T) {
 		{"send cap", func(i *Input) { i.SendLimitReached = true }, AwaitUser, ""},
 		{"child input", func(i *Input) { i.Obs.AwaitingChildren = []string{"thr_child"} }, AwaitUser, ""},
 		{"pending interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None, "waiting on a person (pending interaction)"},
-		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None, "child work running"},
+		{"active child does not hold back an errored parent", func(i *Input) { i.Obs.ActiveChildren = 1 }, Reprompt, "error: unknown"},
 		{"outside window", func(i *Input) { i.InWindow = false }, None, "outside window"},
 		{"scan failed", func(i *Input) { i.Obs.RetryUnverified = true }, None, "provider retry state unverified"},
 		{"fresh notice still suppresses", func(i *Input) { i.Obs.Retrying = true }, None, "provider is retrying the turn"},
