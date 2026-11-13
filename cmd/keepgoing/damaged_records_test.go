@@ -133,16 +133,19 @@ func TestStopAndPauseWorkWithAnUnreadableControlRecord(t *testing.T) {
 	}
 }
 
-// A marker that is itself damaged is a stop.
-func TestADamagedHoldMarkerIsAStop(t *testing.T) {
+// A damaged marker beside a damaged control record does not stand in for
+// it: the check fails and sends nothing, as with no marker. Beside a readable
+// record it is a stop (see TestAMarkerThatHoldsNothingIsAStop).
+func TestADamagedHoldMarkerDoesNotStandInForTheRecord(t *testing.T) {
 	f := newFixture(t)
 	f.run("enable")
 	f.tick()
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
 	damageControl(t, f, "")
 	write(t, filepath.Join(f.dir, "state", control.HoldFileName), "{", 0o600)
-	if v := f.tick(); v["action"] != "stop" {
-		t.Fatalf("%v", v)
+	before := f.read("calls")
+	if code, _, _ := f.run("tick"); code != exitFailed || strings.Contains(strings.TrimPrefix(f.read("calls"), before), "thread") {
+		t.Fatalf("exit %d, calls %q", code, strings.TrimPrefix(f.read("calls"), before))
 	}
 }
 
@@ -283,5 +286,140 @@ func TestADamagedStateRecordStillFailsTheCheck(t *testing.T) {
 	os.WriteFile(filepath.Join(f.dir, "state", "state.json"), []byte("{"), 0o600)
 	if code, _, _ := f.run("tick"); code != exitFailed {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// The marker may only make keepgoing do less. One that parses but holds
+// nothing, or holds anything other than exactly a version 1 stop or pause,
+// is a stop. With control.json damaged it does not let a check past the
+// owner and transfer checks: the check sends nothing, probes nothing and
+// fails as it would with no marker at all.
+func TestAMarkerThatHoldsNothingIsAStop(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty object": `{}`, "null": `null`, "another version": `{"version":99}`,
+		"enabled and no hold":   `{"stop":false,"paused":false,"enabled":true}`,
+		"version 1 and no hold": `{"version":1,"stop":false,"paused":false}`,
+		"an unknown field":      `{"version":1,"paused":true,"enabled":true}`,
+		"two values":            `{"version":1,"paused":true} {"version":1}`,
+		"oversized":             strings.Repeat(" ", 5000) + `{"version":1,"paused":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.run("enable")
+			f.tick()
+			damageControl(t, f, "{")
+			write(t, filepath.Join(f.dir, "state", control.HoldFileName), body, 0o600)
+			told, probes := f.read("thr_primary.told"), f.read("probes")
+			code, out, _ := f.run("tick")
+			if code != exitFailed || f.read("thr_primary.told") != told || f.read("probes") != probes {
+				t.Fatalf("a check with an unusable marker did work: exit %d %s\nprobes %q", code, out, f.read("probes"))
+			}
+			if _, out, _ := f.run("status"); !strings.Contains(out, "control:   stopped (control record unreadable)") || strings.Contains(out, "since never") {
+				t.Fatalf("status:\n%s", out)
+			}
+		})
+	}
+	// With control.json readable, such a marker stops a running session.
+	f := newFixture(t)
+	f.run("enable")
+	f.tick()
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+	write(t, filepath.Join(f.dir, "state", control.HoldFileName), `{"stop":false,"enabled":true}`, 0o600)
+	if v := f.tick(); v["action"] != "stop" {
+		t.Fatalf("a readable control record with an unusable marker: %v", v)
+	}
+}
+
+// A marker that is not a small regular file is a stop, and is not opened.
+func TestAMarkerThatIsNotARegularFileIsAStop(t *testing.T) {
+	for _, kind := range []string{"named pipe", "link to a device", "link to a valid marker"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFixture(t)
+			f.run("enable")
+			f.tick()
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+			marker := filepath.Join(f.dir, "state", control.HoldFileName)
+			switch kind {
+			case "named pipe":
+				if err := mkfifo(marker); err != nil {
+					t.Skip("not run: named pipes are not available here:", err)
+				}
+			case "link to a device":
+				if err := os.Symlink("/dev/zero", marker); err != nil {
+					t.Fatal(err)
+				}
+			case "link to a valid marker":
+				elsewhere := filepath.Join(f.dir, "elsewhere.json")
+				write(t, elsewhere, `{"version":1,"paused":true}`, 0o600)
+				if err := os.Symlink(elsewhere, marker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			start := time.Now()
+			v := f.tick()
+			if v["action"] != "stop" || time.Since(start) > 5*time.Second {
+				t.Fatalf("%s: %v after %s", kind, v, time.Since(start))
+			}
+		})
+	}
+}
+
+// The daemon's early-wake poll queries nothing while a marker holds the loop.
+func TestTheWakePollQueriesNothingUnderAMarker(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	f.tick()
+	if _, err := control.SaveHold(filepath.Join(f.dir, "state"), false, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadFixture(t, f.cfg)
+	before := f.read("calls")
+	if pollWake(context.Background(), cfg) {
+		t.Fatal("the poll asked for an early check")
+	}
+	if got := strings.TrimPrefix(f.read("calls"), before); got != "" {
+		t.Fatalf("the poll queried the provider under a pause marker:\n%s", got)
+	}
+}
+
+// Stops racing each other on a damaged control record either save the hold
+// or say to try again (75); none reports a failure.
+func TestConcurrentStopsWithADamagedControlRecord(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	damageControl(t, f, "{")
+	codes := make(chan int, 16)
+	for i := 0; i < 16; i++ {
+		go func() { c, _, _ := f.run("stop"); codes <- c }()
+	}
+	for i := 0; i < 16; i++ {
+		if c := <-codes; c != 0 && c != exitSkipped {
+			t.Errorf("a stop exited %d", c)
+		}
+	}
+	if h, err := control.LoadHold(filepath.Join(f.dir, "state")); err != nil || h == nil || !h.Stop {
+		t.Fatalf("marker: %+v %v", h, err)
+	}
+}
+
+// Both records damaged: the check fails, nothing is overwritten, and no
+// degraded report is sent, because the check's own work was not saved.
+func TestDamagedStateAndJournalTogetherFailTheCheck(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	f.tick()
+	state, journal := filepath.Join(f.dir, "state", "state.json"), filepath.Join(f.dir, "state", "incidents.json")
+	os.WriteFile(state, []byte("{"), 0o600)
+	os.WriteFile(journal, []byte("{"), 0o600)
+	if code, _, _ := f.run("tick"); code != exitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	for _, p := range []string{state, journal} {
+		if b, _ := os.ReadFile(p); string(b) != "{" {
+			t.Errorf("%s was overwritten", filepath.Base(p))
+		}
+	}
+	if strings.Contains(f.hooks.types(), "degraded") {
+		t.Fatalf("reports: %s", f.hooks.types())
 	}
 }

@@ -38,11 +38,11 @@ func TestHoldMarker(t *testing.T) {
 	if h.Summary() != "stopped (control record unreadable)" {
 		t.Fatal(h.Summary())
 	}
-	if err := RemoveHold(dir); err != nil {
+	if err := ReleaseHold(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveHold(dir); err != nil {
-		t.Fatal("removing an absent marker is not an error:", err)
+	if err := ReleaseHold(dir); err != nil {
+		t.Fatal("releasing an absent marker is not an error:", err)
 	}
 	var none *Hold
 	none.Apply(&f) // a nil marker changes nothing
@@ -58,5 +58,22 @@ func TestADamagedHoldMarkerReadsAsAStop(t *testing.T) {
 	h, err := LoadHold(dir)
 	if err == nil || h == nil || !h.Stop {
 		t.Fatalf("%+v %v", h, err)
+	}
+}
+
+// The marker is released only while control.json can be read.
+func TestReleaseHoldNeedsAReadableControlRecord(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := SaveHold(dir, true, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseHold(dir); err == nil {
+		t.Fatal("released while control.json is unreadable")
+	}
+	if h, err := LoadHold(dir); h == nil || err != nil {
+		t.Fatalf("the marker is gone: %+v %v", h, err)
 	}
 }

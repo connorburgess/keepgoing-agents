@@ -525,7 +525,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintln(w)
 	if h := out.ControlHold; h != nil {
-		fmt.Fprintf(w, "hold:      %s holds the loop %s since %s; it is released by resume once control.json can be read\n", control.HoldFileName, map[bool]string{true: "stopped", false: "paused"}[h.Stop], when(h.At))
+		since := "an unknown time"
+		if !h.At.IsZero() {
+			since = when(h.At)
+		}
+		fmt.Fprintf(w, "hold:      %s holds the loop %s since %s; it is released by resume once control.json can be read\n", control.HoldFileName, map[bool]string{true: "stopped", false: "paused"}[h.Stop], since)
 	}
 	if !st.HistoryUnavailableSince.IsZero() {
 		fmt.Fprintf(w, "HISTORY:   incidents.json cannot be written since %s. Checks carry on and exit 0, but timeline shows nothing new. Restore incidents.json from a copy of the state directory, or move it aside to start a new history.\n", when(st.HistoryUnavailableSince))
@@ -826,6 +830,10 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		switch cmd {
 		case "stop", "pause":
 			h, err := control.SaveHold(dir, cmd == "stop", cmd == "pause", time.Now())
+			if errors.Is(err, lock.ErrHeld) {
+				e.errf("another control command is saving a change; try again")
+				return exitSkipped
+			}
 			if err != nil {
 				e.errf("%s could not be read (%v), and the hold could not be saved in %s either: %v", control.FileName, loadErr, control.HoldFileName, err)
 				return exitFailed
@@ -903,11 +911,11 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		// The control record can be read again, so a hold that had to be
 		// kept beside it is released with the others.
 		if h, _ := control.LoadHold(dir); h != nil {
-			if err := control.RemoveHold(dir); err != nil {
-				e.errf("warning: resumed, but %s could not be removed, so checks still honour it: %v", control.HoldFileName, err)
-			} else {
-				e.errf("released the hold saved in %s", control.HoldFileName)
+			if err := control.ReleaseHold(dir); err != nil {
+				e.errf("the other holds are released, but %s could not be: %v. Checks still honour it; run resume again.", control.HoldFileName, err)
+				return exitFailed
 			}
+			e.errf("released the hold saved in %s", control.HoldFileName)
 		}
 	}
 	if cmd == "resume" {

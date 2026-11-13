@@ -1,8 +1,10 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -31,22 +33,57 @@ type Hold struct {
 	At      time.Time `json:"at"`
 }
 
-// LoadHold reads the hold marker. It returns nil when there is none. A marker
-// that exists but cannot be read is a stop: it was written to hold the loop,
-// and a damaged one must not release it.
+// maxHoldBytes bounds the hold marker. A real one is well under 200 bytes.
+const maxHoldBytes = 4096
+
+// ErrHoldNotValid says the hold marker exists but is not exactly a version 1
+// stop or pause. Such a marker is a stop: the marker may only ever make
+// keepgoing do less.
+var ErrHoldNotValid = errors.New(HoldFileName + " is not a valid hold; treated as a stop")
+
+// LoadHold reads the hold marker. It returns nil when there is none.
+//
+// The marker may only ever make keepgoing do less. A marker is a pause or a
+// stop only when it is a small regular file holding exactly version 1 with
+// stop or paused set. Anything else that exists under its name (a link, a
+// pipe, a directory, an oversized or unreadable file, other versions or
+// fields, or neither hold set) is returned as a stop together with an error,
+// without being followed or opened when it is not a regular file. Callers
+// that would let a marker stand in for the control record (to skip the owner
+// and transfer checks) must require a nil error.
 func LoadHold(stateDir string) (*Hold, error) {
-	b, err := snapshot.ReadFile(filepath.Join(stateDir, HoldFileName))
+	path := filepath.Join(stateDir, HoldFileName)
+	stop := &Hold{Version: 1, Stop: true}
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	h := &Hold{}
-	if err == nil {
-		err = json.Unmarshal(b, h)
-	}
 	if err != nil {
-		return &Hold{Version: 1, Stop: true}, err
+		return stop, err
 	}
-	return h, nil
+	if !info.Mode().IsRegular() || info.Size() > maxHoldBytes {
+		return stop, ErrHoldNotValid
+	}
+	f, err := snapshot.Open(path)
+	if err != nil {
+		return stop, err
+	}
+	defer f.Close()
+	// The file opened must be the regular file just examined.
+	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return stop, ErrHoldNotValid
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxHoldBytes+1))
+	if err != nil || len(b) > maxHoldBytes {
+		return stop, ErrHoldNotValid
+	}
+	var h Hold
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if d.Decode(&h) != nil || d.More() || h.Version != 1 || !(h.Stop || h.Paused) {
+		return stop, ErrHoldNotValid
+	}
+	return &h, nil
 }
 
 // SaveHold adds a stop or a pause to the hold marker, under the control lock.
@@ -59,7 +96,7 @@ func SaveHold(stateDir string, stop, paused bool, now time.Time) (Hold, error) {
 	defer l.Release()
 	h := Hold{Version: 1}
 	if old, _ := LoadHold(stateDir); old != nil {
-		h = *old
+		h = *old // an unusable marker is a stop, and stays one
 	}
 	h.Version, h.At = 1, now.UTC()
 	h.Stop = h.Stop || stop
@@ -71,10 +108,20 @@ func SaveHold(stateDir string, stop, paused bool, now time.Time) (Hold, error) {
 	return h, nil
 }
 
-// RemoveHold deletes the hold marker. Only resume calls it, once
-// control.json can be read again.
-func RemoveHold(stateDir string) error {
-	err := os.Remove(filepath.Join(stateDir, HoldFileName))
+// ReleaseHold deletes the hold marker, under the control lock, and only
+// while control.json can be read: the marker stands in for the control
+// record, so it is released only when the record is back. Only resume calls
+// it.
+func ReleaseHold(stateDir string) error {
+	l, err := lock.AcquireNamed(stateDir, lock.Control)
+	if err != nil {
+		return err
+	}
+	defer l.Release()
+	if _, err := Load(stateDir); err != nil {
+		return err
+	}
+	err = os.Remove(filepath.Join(stateDir, HoldFileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

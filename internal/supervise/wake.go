@@ -18,6 +18,10 @@ import (
 // reports, or progress/budget updates occur here. Tick rechecks all gates before
 // acting; a notification does not authorize an action by itself.
 func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) bool {
+	// A hold marker, valid or not, is a stop or a pause: query nothing.
+	if h, _ := control.LoadHold(cfg.Loop.StateDir); h != nil {
+		return false
+	}
 	ctl, err := control.Load(cfg.Loop.StateDir)
 	if err != nil || !ctl.Enabled || ctl.Stop || ctl.Paused || ctl.Completed || ctl.AwaitingUser {
 		return false

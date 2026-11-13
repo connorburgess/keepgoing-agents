@@ -371,14 +371,17 @@ func (t *tick) run() error {
 	}
 	ctl, err := control.Load(loop.StateDir)
 	if err != nil {
-		if hold == nil {
+		// Only a valid stop or pause may stand in for the control record, and
+		// then this check may only stop the session once or do nothing.
+		if hold == nil || holdErr != nil {
 			return err
 		}
-		// The loop is held, so it is known what this check may do: stop the
-		// session once, or nothing.
 		t.warn("control.json could not be read (%v); held by %s until it is restored and the loop is resumed", err, control.HoldFileName)
 		ctl = control.File{Enabled: true}
 		hold.Apply(&ctl)
+		if !ctl.Stop && !ctl.Paused {
+			return err
+		}
 		res.Control = hold.Summary()
 	} else {
 		hold.Apply(&ctl)

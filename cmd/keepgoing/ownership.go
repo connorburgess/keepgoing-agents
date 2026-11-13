@@ -57,7 +57,9 @@ func checkOwnershipForCheck(stateDir string, lease *ownerLease) error {
 	if _, loadErr := control.Load(stateDir); loadErr == nil {
 		return err
 	}
-	if h, _ := control.LoadHold(stateDir); h != nil {
+	// Only a valid stop or pause may stand in for the record; an unusable
+	// marker is a stop, which never widens what a check may do.
+	if h, holdErr := control.LoadHold(stateDir); h != nil && holdErr == nil {
 		return nil
 	}
 	return err
