@@ -29,6 +29,7 @@ type fakeAdapter struct {
 	noStop      bool
 	activated   int
 	activateErr error
+	onSend      func() // runs after a send is recorded by the fake
 	observed    int
 }
 
@@ -40,6 +41,9 @@ func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {
 	f.sent = append(f.sent, p)
 	f.modes = append(f.modes, m)
+	if f.onSend != nil {
+		f.onSend()
+	}
 	return f.sendErr
 }
 func (f *fakeAdapter) Stop(context.Context) error {

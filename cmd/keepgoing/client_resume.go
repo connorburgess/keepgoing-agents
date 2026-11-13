@@ -107,7 +107,7 @@ func clearForResume(f *control.File) resumeEffect {
 	e := resumeEffect{Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed,
 		Note: f.Note != "", OpenQuestion: f.OpenQuestion != nil, NewEpisode: f.EpisodeHold}
 	f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-	f.Note, f.EpisodeHold, f.OpenQuestion = "", false, nil
+	f.Note, f.EpisodeHold, f.OpenQuestion, f.BriefHold = "", false, nil, nil
 	return e
 }
 
@@ -321,7 +321,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			// Before the holds are cleared: if the counts cannot be reset the
 			// resume fails with the holds intact, like any failure after the
 			// ticket was consumed.
-			if resumeEpisode(entry.StateDir, f.EpisodeHold, at) != nil {
+			if resumeEpisode(entry.StateDir, f.EpisodeHold, at, cfg.Loop.Errors.MaxReprompts, f.BriefHold...) != nil {
 				return fail("new_episode_unconfirmed")
 			}
 			newEpisode = clearForResume(f).NewEpisode
