@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The keepgoing panel says which build serves it, in its footer and as `version` in `api/v1/server`. Each loop's page says which build ran its last check, from that check's own record. A loop whose last check ran a different build is listed under "Worth knowing" (never as a need). Labels are compared whole, so two dev builds of one release are different builds. A `dev` label without a version makes it "unknown". Older or newer is said only between two plain releases. Fixtures only. See [the panel](docs/dock.md).
+
 - New: the no-progress flag. A loop with `progress.repositories` is flagged when it keeps being prompted with no recorded change to its repositories:
   - at `progress.flag_after_sends` messages actually sent (default 6): each send in the run graph by its own result, with turn retries counted only when the provider accepted them, so a re-prompt that sent nothing is not counted;
   - or at `progress.flag_after_errors` checks that found an error or retried the turn (default 4).
