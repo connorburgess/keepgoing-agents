@@ -202,7 +202,7 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
-	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold the parent while conversations it started are still working, and say which.",
+	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Live, "Direct child threads are listed and verified on each check.", []Ref{d(waitingLive), t("internal/adapter/bb/children_test.go", "TestObserveActiveChildSuppressesParentUntilFinished")}},
 		}, same(Cell{NA, None, "A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.", nil}, headless...),
