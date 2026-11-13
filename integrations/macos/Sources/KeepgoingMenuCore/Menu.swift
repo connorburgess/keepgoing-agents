@@ -110,8 +110,9 @@ public struct MenuRow: Equatable {
 
 public struct MenuModel: Equatable {
     public let rows: [MenuRow]
-    /// Beside the menu bar icon: the count of loops that need a person, "?"
-    /// when keepgoing could not be read, or empty.
+    /// Beside the menu bar icon: the count of loops that need a person; "?"
+    /// when keepgoing could not be read or not every loop was; and empty only
+    /// when a complete read found that nothing needs a person.
     public let badge: String
     public let iconAccessibilityLabel: String
 }
@@ -222,6 +223,12 @@ public enum MenuBuilder {
                 rows.append(action(needs, .openPanel, symbol: held > 0 ? "exclamationmark.circle.fill" : "questionmark.circle", help: "Opens the panel on what needs you."))
                 badge = list.needsYou > 99 ? "99+" : String(list.needsYou)
                 iconLabel = "keepgoing, " + needs
+            } else if !list.allClear {
+                // The icon is plain only when the CLI says every loop was
+                // read and none needs a person. An unreadable registry or a
+                // read that was cut off is not "nothing needs you".
+                badge = "?"
+                iconLabel = list.registry == "available" ? "keepgoing, not every loop was read" : "keepgoing, the list of loops can't be read"
             }
             if !list.loops.isEmpty { rows.append(separator) }
             for loop in list.loops.prefix(maxLoops) {

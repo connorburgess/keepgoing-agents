@@ -8,7 +8,7 @@ final class MenuTests: XCTestCase {
         PanelLoop(key: String(format: "l%012x", index), name: name, state: state, phrase: phrase, needsYou: needsYou)
     }
     func list(_ loops: [PanelLoop], needsYou: Int = 0, unread: Int = 0, complete: Bool = true, registry: String = "available", omitted: Int = 0) -> PanelList {
-        PanelList(schemaVersion: 1, registry: registry, complete: complete, allClear: complete && needsYou == 0, needsYou: needsYou, unread: unread, omitted: omitted, loops: loops)
+        PanelList(schemaVersion: 1, registry: registry, complete: complete, allClear: registry == "available" && complete && needsYou == 0, needsYou: needsYou, unread: unread, omitted: omitted, loops: loops)
     }
     var three: PanelList {
         list([loop(1, "example-api", "waiting_for_you", "Waiting for you", needsYou: true),
@@ -144,6 +144,18 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(model(3, 2).rows[1].symbol, "exclamationmark.circle.fill")
         XCTAssertEqual(model(3, 2).badge, "3")
         XCTAssertEqual(model(250, 0).badge, "99+")
+        // The icon is plain only when a complete read found nothing: the CLI's
+        // allClear, never a count of zero alone.
+        func badge(_ l: PanelList) -> String { MenuBuilder.build(.read(l, at: now), now: now).badge }
+        XCTAssertEqual(badge(list(three.loops)), "")
+        XCTAssertEqual(badge(list([])), "", "no loops registered, read completely, is all clear")
+        XCTAssertEqual(badge(list([], registry: "unavailable")), "?")
+        XCTAssertEqual(MenuBuilder.build(.read(list([], registry: "unavailable"), at: now), now: now).iconAccessibilityLabel, "keepgoing, the list of loops can't be read")
+        XCTAssertEqual(badge(list(three.loops, complete: false)), "?")
+        XCTAssertEqual(MenuBuilder.build(.read(list(three.loops, complete: false), at: now), now: now).iconAccessibilityLabel, "keepgoing, not every loop was read")
+        XCTAssertEqual(badge(PanelList(schemaVersion: 1, registry: "available", complete: true, allClear: false, needsYou: 0, unread: 0, omitted: 3, loops: three.loops)), "?",
+                       "a list that leaves loops out cannot say all clear unless the CLI does")
+        XCTAssertEqual(badge(list(three.loops, needsYou: 2, complete: false)), "2", "a count is shown whenever there is one")
         // Nothing is claimed before a read. A failed read shows on the icon,
         // so it cannot be taken for "nothing needs you".
         for reading in [MenuReading.notRead, .reading] {
