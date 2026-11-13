@@ -69,7 +69,8 @@ func clientResumeCommand(e env, args []string) int {
 		e.errf("client: prepare-resume requires --id; resume requires --id and --ticket; --private is for preparation only")
 		return exitUsage
 	}
-	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, time.Now, nil)
+	// The CLI acts as the BB thread it runs in, or as nobody outside BB.
+	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, os.Getenv("BB_THREAD_ID"), time.Now, nil)
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(r) != nil {
 			return exitFailed
@@ -167,9 +168,11 @@ func clientResumeBinding(entry registry.Entry, cfg *config.Config, caller string
 	return hex.EncodeToString(h[:]), ctl, nil
 }
 
-// afterConsume is nil in production; tests simulate process exit at the durable
-// consume-before-save boundary. There is deliberately no automatic recovery.
-func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
+// caller is the BB thread the request acts as, "" for none; the ticket is
+// bound to it. afterConsume is nil in production; tests simulate process exit
+// at the durable consume-before-save boundary. There is deliberately no
+// automatic recovery.
+func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, caller string, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
 	r := clientResumeReport{clientHoldReport: clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}}
 	reject := errors.New("client resume rejected")
 	fail := func(code string) error { r.Issues = append(r.Issues, code); return reject }
@@ -181,7 +184,6 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 	if operation != "prepare-resume" && operation != "resume" {
 		return r, exitUsage
 	}
-	caller := os.Getenv("BB_THREAD_ID")
 	err = registry.WithEntry(dir, id, func(entry registry.Entry) error {
 		if ctx.Err() != nil {
 			return fail("cancelled")
