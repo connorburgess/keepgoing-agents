@@ -135,7 +135,7 @@ func updateGraph(dir string, now time.Time, create bool, fn func(*Graph) (bool, 
 	if err != nil || !changed {
 		return err
 	}
-	g.UpdatedAt = now.UTC()
+	g.UpdatedAt, g.SchemaVersion = now.UTC(), SchemaVersion
 	g.trim()
 	g.index = nil
 	// Keep empty collections as [] in the file.
@@ -144,6 +144,9 @@ func updateGraph(dir string, now time.Time, create bool, fn func(*Graph) (bool, 
 	g.Attempts = append([]Attempt{}, g.Attempts...)
 	g.Links = append([]Link{}, g.Links...)
 	g.Unrecorded = append([]Unrecorded{}, g.Unrecorded...)
+	if g.Waiting != nil {
+		g.Waiting.Children = append([]Child{}, g.Waiting.Children...)
+	}
 	if !g.valid() {
 		return ErrUnavailable
 	}

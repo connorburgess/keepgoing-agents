@@ -17,6 +17,7 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // running work. Only the status field decides this; no child log, message or
 // title is read.
 func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting, errored []string) {
+	a.activeChildIDs = nil
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
@@ -86,6 +87,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		switch t.Status {
 		case "active":
 			active++
+			a.activeChildIDs = append(a.activeChildIDs, child.ID)
 		case "error":
 			errored = append(errored, child.ID)
 		case "idle", "pending", "starting", "stopping":

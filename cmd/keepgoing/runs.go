@@ -29,7 +29,7 @@ import (
 // earlier: nothing is a live observation.
 
 const (
-	runsSchemaVersion = 1
+	runsSchemaVersion = 2
 	runsDefaultLimit  = 10
 	runsMaxLimit      = 256
 	runsLatestSends   = 3
@@ -74,16 +74,16 @@ type runsLoop struct {
 	// Binding is set with a registry selector: available when the registered
 	// configuration still names this loop and runtime directory, otherwise
 	// unavailable, and then nothing is read from the registered directory.
-	Binding      string          `json:"binding,omitempty"`
-	Loop         string          `json:"loop,omitempty"`
-	Graph        runsGraph       `json:"graph"`
-	Control      runsControl     `json:"control"`
-	Conflict     string          `json:"conflict,omitempty"`
-	ActiveTarget runsTarget      `json:"activeTarget"`
-	Current      *runsRun        `json:"current,omitempty"`
-	Recent       []runsRun       `json:"recent"`
-	OmittedRuns  int             `json:"omittedRuns"`
-	Blocker      runsUnavailable `json:"blocker"`
+	Binding      string      `json:"binding,omitempty"`
+	Loop         string      `json:"loop,omitempty"`
+	Graph        runsGraph   `json:"graph"`
+	Control      runsControl `json:"control"`
+	Conflict     string      `json:"conflict,omitempty"`
+	ActiveTarget runsTarget  `json:"activeTarget"`
+	Current      *runsRun    `json:"current,omitempty"`
+	Recent       []runsRun   `json:"recent"`
+	OmittedRuns  int         `json:"omittedRuns"`
+	Blocker      runsBlocker `json:"blocker"`
 }
 
 type runsGraph struct {
@@ -225,7 +225,7 @@ type runsEdge struct {
 var runsLimitations = []string{
 	"Everything here was recorded by an earlier check or control command; nothing is a live observation, and a session reference does not show that the conversation exists or can be resumed.",
 	"A session link is unavailable: no provider link format is validated yet.",
-	"Blocker navigation is unavailable until a validated blocked-by relationship is recorded.",
+	"A blocker is what the last check that observed child threads verified, and who owns the loop. It is not a live view of the other conversation, and showing it grants no control over it. Who holds the tick or daemon lock is not identified.",
 	"The saved active target is what the last check recorded. Target moves are in keepgoing timeline, not here.",
 }
 
@@ -236,7 +236,7 @@ func runsCommand(e env, args []string) int {
 	dir := fs.String("state-dir", "", "read this directory without loading configuration")
 	registration := fs.String("registry-id", "", "select a registered loop by its loop_ reference")
 	all := fs.Bool("all", false, "list every registered loop with its current run")
-	directory := fs.String("directory", "", "private registry directory, with --registry-id or --all")
+	directory := fs.String("directory", "", "private registry directory: required reading for --registry-id and --all, and with -c or --state-dir consulted only to name a blocking conversation's loop")
 	ref := fs.String("id", "", "show one recorded reference and what it links to")
 	limit := fs.Int("limit", runsDefaultLimit, "recent runs, edges or registered loops to print (1-256)")
 	asJSON := fs.Bool("json", false, "print the versioned report")
@@ -259,9 +259,9 @@ func runsCommand(e env, args []string) int {
 	}
 	registered := set["registry-id"] || *all
 	if fs.NArg() != 0 || selectors > 1 || *limit < 1 || *limit > runsMaxLimit || (set["state-dir"] && *dir == "") ||
-		(set["registry-id"] && !clientRegistrationID.MatchString(*registration)) || (set["directory"] && !registered) ||
+		(set["registry-id"] && !clientRegistrationID.MatchString(*registration)) ||
 		(*all && set["id"]) || (set["id"] && !runsRefPattern.MatchString(*ref)) {
-		e.errf("runs: select one of -c, --state-dir, --registry-id or --all; --directory needs a registry selector; --id needs one loop; limit 1-256; no positional arguments")
+		e.errf("runs: select one of -c, --state-dir, --registry-id or --all; --id needs one loop; limit 1-256; no positional arguments")
 		return exitUsage
 	}
 	r := runsReport{SchemaVersion: runsSchemaVersion, ReadAt: time.Now().UTC(), View: "loop", Loops: []runsLoop{}, Limitations: runsLimitations}
@@ -278,6 +278,9 @@ func runsCommand(e env, args []string) int {
 			e.errf("runs: registry or registration unavailable; list the registry before retrying")
 			return exitFailed
 		}
+		// Every entry of this registry may be consulted to see whether a
+		// blocking conversation is itself a registered loop.
+		allEntries, _ := runsEntries(regDir, "", true)
 		if *all {
 			r.View = "registry"
 		}
@@ -298,13 +301,15 @@ func runsCommand(e env, args []string) int {
 				failed = true
 				r.Loops = append(r.Loops, runsLoop{RegistrationID: entry.ID, Loop: entry.Loop, Binding: recordUnavailable, Registration: recordUnavailable,
 					Graph: runsGraph{Availability: recordUnavailable}, Control: runsControl{Availability: recordUnavailable}, ActiveTarget: runsTarget{Availability: recordUnavailable},
-					Recent: []runsRun{}, Blocker: runsUnavailable{Availability: recordUnavailable, Reason: "no_validated_blocker_relationship"}})
+					Recent: []runsRun{}, Blocker: runsBlocker{Availability: blockerUnknown, Reason: "binding_unavailable", Children: []runsChild{},
+						Owner: runsOwner{Availability: blockerUnknown, Reason: "binding_unavailable", Supervised: runsSupervised{Availability: "registry_not_consulted"}},
+						Lock:  runsUnavailable{Availability: recordUnavailable, Reason: "lock_holder_not_identified"}}})
 				if set["id"] {
 					r.View, r.Node = "node", &runsNode{Ref: *ref, Status: recordUnavailable, Edges: []runsEdge{}}
 				}
 				continue
 			}
-			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit}
+			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit, registry: allEntries, registryKnown: true, viaRegistry: true}
 			loop, bad := c.readLoop(limitRuns)
 			loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
 			loop.Registration = recordUnavailable
@@ -322,6 +327,19 @@ func runsCommand(e env, args []string) int {
 		}
 	default:
 		c := runsContext{dir: *dir, limit: *limit}
+		if set["directory"] {
+			// An explicitly named registry is consulted only to see whether a
+			// blocking conversation is itself a registered loop.
+			regDir, err := registryDirectory(*directory)
+			if err != nil {
+				e.errf("runs: registry unavailable; inspect the private registry")
+				return exitFailed
+			}
+			if c.registry, c.registryKnown = runsEntries(regDir, "", true); !c.registryKnown {
+				e.errf("runs: registry unavailable; inspect the private registry")
+				return exitFailed
+			}
+		}
 		name := ""
 		if *dir == "" {
 			cfg, err := config.Load(*path)
@@ -373,6 +391,11 @@ type runsContext struct {
 	g         rungraph.Graph
 	available rungraph.Availability
 	active    string
+	// registry is consulted only to resolve a blocking conversation to a
+	// registered loop. viaRegistry selects the registered-view display rules.
+	registry      []registry.Entry
+	registryKnown bool
+	viaRegistry   bool
 }
 
 // absent reports whether a record file does not exist, without creating or
@@ -386,17 +409,19 @@ func absent(dir, name string) bool {
 // none is locked and none is created. A file that does not exist is reported
 // as not_recorded, never as the default it would be read as.
 func (c *runsContext) readLoop(limitRuns int) (runsLoop, bool) {
-	loop := runsLoop{Recent: []runsRun{}, Blocker: runsUnavailable{Availability: recordUnavailable, Reason: "no_validated_blocker_relationship"}}
+	loop := runsLoop{Recent: []runsRun{}}
 	c.g, c.available = rungraph.Load(c.dir)
 	failed := c.available == rungraph.Unsupported || c.available == rungraph.Corrupt
 	loop.Graph = runsGraph{Availability: c.available}
-	switch st, err := state.Load(c.dir); {
+	st, err := state.Load(c.dir)
+	stateKnown := false
+	switch {
 	case absent(c.dir, state.FileName):
 		loop.ActiveTarget = runsTarget{Availability: recordNotRecorded}
 	case err != nil:
 		loop.ActiveTarget, failed = runsTarget{Availability: recordUnavailable}, true
 	default:
-		c.active = st.Target()
+		c.active, stateKnown = st.Target(), true
 		loop.ActiveTarget = runsTarget{Availability: recordRecorded, Alias: c.active}
 	}
 	ctl, err := control.Load(c.dir)
@@ -409,6 +434,7 @@ func (c *runsContext) readLoop(limitRuns int) (runsLoop, bool) {
 	default:
 		loop.Control, controlKnown = runsControl{Availability: recordAvailable, State: ctl.Summary()}, true
 	}
+	loop.Blocker = c.blocker(st, stateKnown, ctl, controlKnown)
 	if c.available != rungraph.Available {
 		return loop, failed
 	}
@@ -686,7 +712,7 @@ func printRuns(w io.Writer, r runsReport) {
 				fmt.Fprintf(w, "retention dropped: %d runs, %d attempts, %d links, %d triggers, %d registry references\n", d.Runs, d.Attempts, d.Links, d.Triggers, d.Registrations)
 			}
 		}
-		fmt.Fprintf(w, "blocker: %s (%s)\n", l.Blocker.Availability, l.Blocker.Reason)
+		printBlocker(w, l.Blocker)
 	}
 	if r.Omitted > 0 {
 		fmt.Fprintf(w, "\n%d registered loops not shown; raise --limit\n", r.Omitted)
@@ -781,4 +807,60 @@ func printAttempt(w io.Writer, a runsAttempt) {
 		chat = "chat/session ambiguous (its target named more than one chat in the run)"
 	}
 	fmt.Fprintf(w, "    %s  %s to %s  %s  %s  run %s  %s\n", a.ID, runsSafe(a.Action), runsSafe(a.Target), a.Outcome, a.RecordedAt.Format(time.RFC3339), a.Run, chat)
+}
+
+func printSupervised(w io.Writer, s runsSupervised) {
+	switch s.Availability {
+	case recordRecorded:
+		fmt.Fprintf(w, "      a registered loop: %s (%s)", s.RegistrationID, runsSafe(s.Loop))
+		if s.Run != "" {
+			fmt.Fprintf(w, "  run %s", s.Run)
+		} else {
+			fmt.Fprintf(w, "  run unavailable (%s)", s.RunReason)
+		}
+		if s.Session != "" {
+			fmt.Fprintf(w, "  chat/session %s", runsSafe(s.Session))
+		}
+		fmt.Fprintln(w)
+	case "registry_not_consulted":
+		fmt.Fprintln(w, "      its run: unavailable (no registry consulted; pass --directory or a registry selector)")
+	default:
+		fmt.Fprintf(w, "      its run: unavailable (%s)\n", s.Availability)
+	}
+}
+
+func printBlocker(w io.Writer, b runsBlocker) {
+	fmt.Fprintf(w, "waiting on: %s", b.Availability)
+	if b.Reason != "" {
+		fmt.Fprintf(w, " (%s)", b.Reason)
+	}
+	if b.CheckedAt != nil {
+		fmt.Fprintf(w, "  as of the check at %s", b.CheckedAt.Format(time.RFC3339))
+	}
+	fmt.Fprintln(w)
+	for _, child := range b.Children {
+		holds := "holds the run"
+		if !child.Holds {
+			holds = "does not hold the run"
+		}
+		fmt.Fprintf(w, "  child %s  %s  %s\n", child.Ref, child.Status, holds)
+		printSupervised(w, child.Supervised)
+	}
+	if b.OmittedChildren > 0 {
+		fmt.Fprintf(w, "  %d more children not shown; raise --limit\n", b.OmittedChildren)
+	}
+	switch o := b.Owner; o.Availability {
+	case recordRecorded:
+		fmt.Fprintf(w, "owner: %s (generation %d)", runsSafe(o.Ref), o.Generation)
+		if o.BlocksCaller {
+			fmt.Fprint(w, "  this conversation is not the owner: its control commands are refused")
+		}
+		fmt.Fprintln(w)
+		printSupervised(w, o.Supervised)
+	case recordNotRecorded:
+		fmt.Fprintln(w, "owner: not recorded")
+	default:
+		fmt.Fprintf(w, "owner: unknown (%s)\n", o.Reason)
+	}
+	fmt.Fprintf(w, "lock holder: %s (%s)\n", b.Lock.Availability, b.Lock.Reason)
 }

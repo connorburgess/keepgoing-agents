@@ -406,7 +406,7 @@ func TestStoredRecordIsPrivateVersionedAndReplaceableUnderAnOpenReader(t *testin
 	}
 	b, _ := os.ReadFile(path)
 	var raw map[string]any
-	if json.Unmarshal(b, &raw) != nil || raw["schemaVersion"] != float64(1) || raw["attempts"] == nil || raw["links"] == nil || raw["registrations"] == nil {
+	if json.Unmarshal(b, &raw) != nil || raw["schemaVersion"] != float64(SchemaVersion) || raw["attempts"] == nil || raw["links"] == nil || raw["registrations"] == nil {
 		t.Fatalf("%s", b)
 	}
 	// A reader holding the previous snapshot does not block replacement.
@@ -449,7 +449,7 @@ func TestUnusableRecordsStayExplicitAndAreNeverRewritten(t *testing.T) {
 		body []byte
 		want Availability
 	}{
-		"newer schema":            {edit(func(v map[string]any) { v["schemaVersion"] = 2; v["future"] = true }), Unsupported},
+		"newer schema":            {edit(func(v map[string]any) { v["schemaVersion"] = 99; v["future"] = true }), Unsupported},
 		"schema zero":             {edit(func(v map[string]any) { v["schemaVersion"] = 0 }), Corrupt},
 		"not JSON":                {[]byte("{"), Corrupt},
 		"empty":                   {nil, Corrupt},
@@ -490,6 +490,18 @@ func TestUnusableRecordsStayExplicitAndAreNeverRewritten(t *testing.T) {
 		}), Corrupt},
 		"registration with an unrelated source": {edit(func(v map[string]any) {
 			v["registrations"] = []any{map[string]any{"id": registration, "recordedAt": at, "source": "goal_record"}}
+		}), Corrupt},
+		"waiting for another run": {edit(func(v map[string]any) {
+			v["waiting"] = map[string]any{"run": id("run_", 9), "target": "primary", "checkedAt": at, "listing": "complete", "children": []any{}, "source": "child_listing"}
+		}), Corrupt},
+		"waiting with a thread ID": {edit(func(v map[string]any) {
+			v["waiting"] = map[string]any{"run": id("run_", 1), "target": "primary", "checkedAt": at, "listing": "complete", "children": []any{map[string]any{"key": "thr_example_child", "status": "active"}}, "source": "child_listing"}
+		}), Corrupt},
+		"incomplete listing with children": {edit(func(v map[string]any) {
+			v["waiting"] = map[string]any{"run": id("run_", 1), "target": "primary", "checkedAt": at, "listing": "incomplete", "children": []any{map[string]any{"key": key(1), "status": "active"}}, "source": "child_listing"}
+		}), Corrupt},
+		"waiting from another source": {edit(func(v map[string]any) {
+			v["waiting"] = map[string]any{"run": id("run_", 1), "target": "primary", "checkedAt": at, "listing": "complete", "children": []any{}, "source": "external"}
 		}), Corrupt},
 		"malformed registration": {edit(func(v map[string]any) {
 			v["registrations"] = []any{map[string]any{"id": "loop_bad", "recordedAt": at, "source": "registered_control"}}
@@ -894,5 +906,140 @@ func TestUpdateExistingNeverCreatesARuntimeFile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "{" {
 		t.Fatal("UpdateExisting rewrote an unusable graph")
+	}
+}
+
+func key(n int) string { return fmt.Sprintf("%024x", n) }
+
+// The waiting record is one check's verified child listing for the open run.
+func TestWaitingRecordIsReplacedWholeAndBelongsToTheOpenRun(t *testing.T) {
+	dir := t.TempDir()
+	wait := func(listing string, children ...Child) error {
+		return Update(dir, at, func(g *Graph) (bool, error) { return g.Wait("primary", listing, children, at) })
+	}
+	// No run: nothing is recorded and no graph is created.
+	if err := wait(ListingComplete, Child{Key: key(1), Status: ChildActive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, availability := Load(dir); availability != Missing {
+		t.Fatal("a child listing with no run created a graph")
+	}
+	sync(t, dir, enabled, "start", 1)
+	if err := wait(ListingComplete, Child{Key: key(1), Status: ChildActive}, Child{Key: key(2), Status: ChildAwaiting}, Child{Key: key(3), Status: ChildErrored}); err != nil {
+		t.Fatal(err)
+	}
+	g := load(t, dir)
+	run, _ := g.Current()
+	if g.SchemaVersion != 2 || g.Waiting == nil || g.Waiting.Run != id("run_", 1) || g.Waiting.Source != SourceChildren || len(g.Waiting.Children) != 3 {
+		t.Fatalf("%#v", g.Waiting)
+	}
+	var blockedBy, listed []string
+	for _, e := range run.Edges {
+		switch e.Type {
+		case EdgeBlockedBy:
+			blockedBy = append(blockedBy, e.To)
+		case EdgeChild:
+			listed = append(listed, e.To)
+		}
+	}
+	if strings.Join(blockedBy, " ") != ChildRef(key(1))+" "+ChildRef(key(2)) || strings.Join(listed, " ") != ChildRef(key(3)) {
+		t.Fatalf("%v %v", blockedBy, listed)
+	}
+	child, status := g.Lookup(ChildRef(key(1)))
+	if status != Found || child.Type != ChildNode || len(child.Edges) != 1 || child.Edges[0].Type != EdgeBlocks || child.Edges[0].To != id("run_", 1) || child.Edges[0].Target != "primary" {
+		t.Fatalf("%s %#v", status, child)
+	}
+	// A new listing replaces the old one; a child no longer listed is not recorded.
+	if err := wait(ListingComplete, Child{Key: key(2), Status: ChildActive}); err != nil {
+		t.Fatal(err)
+	}
+	g = load(t, dir)
+	if _, status := g.Lookup(ChildRef(key(1))); status != NotRecorded || len(g.Waiting.Children) != 1 {
+		t.Fatal(status)
+	}
+	// An incomplete listing stores no child and no blocked-by edge.
+	if err := wait("partial", Child{Key: key(2), Status: ChildActive}); err != nil {
+		t.Fatal(err)
+	}
+	g = load(t, dir)
+	run, _ = g.Current()
+	if g.Waiting.Listing != ListingIncomplete || len(g.Waiting.Children) != 0 || len(g.Follow(run, EdgeBlockedBy)) != 0 {
+		t.Fatalf("%#v", g.Waiting)
+	}
+	// Refused records leave the earlier one in place.
+	many := make([]Child, MaxChildren+1)
+	for i := range many {
+		many[i] = Child{Key: key(1000 + i), Status: ChildActive}
+	}
+	for name, children := range map[string][]Child{
+		"thread ID as key": {{Key: "thr_example_child", Status: ChildActive}},
+		"unknown status":   {{Key: key(1), Status: "idle"}},
+		"duplicate key":    {{Key: key(1), Status: ChildActive}, {Key: key(1), Status: ChildErrored}},
+		"too many":         many,
+	} {
+		if err := wait(ListingComplete, children...); !errors.Is(err, rd.ErrInvalid) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Wait("", ListingComplete, nil, at) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("a listing without a target was recorded")
+	}
+	if g = load(t, dir); g.Waiting.Listing != ListingIncomplete {
+		t.Fatal("a refused listing replaced the record")
+	}
+	// The record belongs to the open run: closing or reopening clears it.
+	if err := wait(ListingComplete, Child{Key: key(1), Status: ChildActive}); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, dir, Gate{Enabled: true, Paused: true}, "pause", 9) // a hold keeps the run and the record
+	if g = load(t, dir); g.Waiting == nil {
+		t.Fatal("a hold cleared the waiting record")
+	}
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 9)
+	if g = load(t, dir); g.Waiting != nil {
+		t.Fatal("the waiting record outlived its run")
+	}
+	if err := wait(ListingComplete, Child{Key: key(1), Status: ChildActive}); err != nil || load(t, dir).Waiting != nil {
+		t.Fatal("a listing was recorded for a closed run")
+	}
+	sync(t, dir, enabled, "resume", 2)
+	if g = load(t, dir); g.Waiting != nil {
+		t.Fatal("the reopened run inherited a waiting record")
+	}
+}
+
+// A graph written before the waiting record existed is read as it is and
+// upgraded by its next write. A version 1 file cannot carry the record.
+func TestSchemaVersionOneIsReadAndUpgraded(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	path := filepath.Join(dir, FileName)
+	b, _ := os.ReadFile(path)
+	old := bytes.Replace(b, []byte(`"schemaVersion":2`), []byte(`"schemaVersion":1`), 1)
+	if bytes.Equal(old, b) {
+		t.Fatal("fixture did not change")
+	}
+	if err := os.WriteFile(path, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := load(t, dir)
+	if g.SchemaVersion != 1 || g.CurrentRun != id("run_", 1) {
+		t.Fatalf("%#v", g)
+	}
+	// An unchanged update leaves the old file alone.
+	update(t, dir, func(g *Graph) (bool, error) { return false, nil })
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, old) {
+		t.Fatal("a version 1 graph was rewritten without a change")
+	}
+	update(t, dir, func(g *Graph) (bool, error) { return g.Wait("primary", ListingComplete, nil, at) })
+	if g = load(t, dir); g.SchemaVersion != 2 || g.Waiting == nil || g.CurrentRun != id("run_", 1) {
+		t.Fatalf("%#v", g)
+	}
+	withWaiting, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, bytes.Replace(withWaiting, []byte(`"schemaVersion":2`), []byte(`"schemaVersion":1`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, availability := Load(dir); availability != Corrupt {
+		t.Fatalf("a version 1 file with a waiting record is %s", availability)
 	}
 }

@@ -341,3 +341,91 @@ func TestSuppliedRoutineIsRecordedAndNeverChangesTheCheck(t *testing.T) {
 		t.Fatalf("%s %+v", availability, off)
 	}
 }
+
+// A check records which child threads its BB target was waiting on, by key.
+// The thread IDs never reach the graph, and nothing is listed unless the
+// whole picture was verified.
+func TestCheckRecordsTheVerifiedChildPictureByKeyOnly(t *testing.T) {
+	keyOf := func(id string) string { return decide.ChildHashes([]string{id})[0] }
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle, ActiveChildren: 2, ActiveChildIDs: []string{"thr_child_working", "thr_child_both"},
+		AwaitingChildren: []string{"thr_child_both"}, ErroredChildren: []string{"thr_child_failed"}})
+	runTick(t, w, t0)
+	g := loadGraph(t, w.dir)
+	st, _ := state.Load(w.dir)
+	wt := g.Waiting
+	if wt == nil || wt.Listing != rungraph.ListingComplete || wt.Run != g.CurrentRun || wt.Target != state.Primary || !wt.CheckedAt.Equal(st.LastCheck.At) || len(wt.Children) != 3 {
+		t.Fatalf("%#v", wt)
+	}
+	got := map[string]string{}
+	for _, c := range wt.Children {
+		got[c.Key] = c.Status
+	}
+	// A child that needs a person is stuck, whatever else it is.
+	if got[keyOf("thr_child_working")] != rungraph.ChildActive || got[keyOf("thr_child_both")] != rungraph.ChildAwaiting || got[keyOf("thr_child_failed")] != rungraph.ChildErrored {
+		t.Fatalf("%v", got)
+	}
+	b, _ := os.ReadFile(filepath.Join(w.dir, rungraph.FileName))
+	if strings.Contains(string(b), "thr_child") {
+		t.Fatal("a child thread ID reached the graph")
+	}
+	// The child waiting on a person put the loop on hold; clear it so later
+	// checks observe again.
+	if _, err := control.Update(w.dir, func(f *control.File) { f.AwaitingUser = false }); err != nil {
+		t.Fatal(err)
+	}
+	// An incomplete listing, a count that disagrees with the IDs, and a
+	// failed observation each record that the picture is unknown.
+	clock := t0
+	for name, change := range map[string]func(){
+		"incomplete listing": func() {
+			p.obs = decide.Observation{State: decide.Idle, ActiveChildren: 1, ActiveChildIDs: []string{"thr_child_working"}, ChildrenUnverified: true}
+		},
+		"count without IDs": func() {
+			p.obs = decide.Observation{State: decide.Idle, ActiveChildren: 2, ActiveChildIDs: []string{"thr_child_working"}}
+		},
+		"observation failed": func() { p.obsErr = errors.New("fictional observation failure") },
+	} {
+		change()
+		clock = clock.Add(time.Hour)
+		Tick(context.Background(), w.cfg, w.opts(clock))
+		if wt = loadGraph(t, w.dir).Waiting; wt == nil || wt.Listing != rungraph.ListingIncomplete || len(wt.Children) != 0 || !wt.CheckedAt.Equal(clock) {
+			t.Fatalf("%s: %#v", name, wt)
+		}
+		p.obs, p.obsErr = decide.Observation{State: decide.Idle, ActiveChildren: 1, ActiveChildIDs: []string{"thr_child_working"}}, nil
+		clock = clock.Add(time.Hour)
+		runTick(t, w, clock)
+		if wt = loadGraph(t, w.dir).Waiting; wt.Listing != rungraph.ListingComplete || len(wt.Children) != 1 {
+			t.Fatalf("%s: the next complete listing did not replace it: %#v", name, wt)
+		}
+	}
+	// A held check observes nothing and leaves the record, now older than the
+	// last check; a dry run records nothing.
+	recorded := loadGraph(t, w.dir).Waiting.CheckedAt
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Paused = true }); err != nil {
+		t.Fatal(err)
+	}
+	runTick(t, w, clock.Add(time.Hour))
+	st, _ = state.Load(w.dir)
+	if wt = loadGraph(t, w.dir).Waiting; !wt.CheckedAt.Equal(recorded) || st.LastCheck.At.Equal(recorded) {
+		t.Fatalf("a held check refreshed the record: %#v", wt)
+	}
+	control.Update(w.dir, func(f *control.File) { f.Paused = false })
+	o := w.opts(clock.Add(2 * time.Hour))
+	o.DryRun = true
+	Tick(context.Background(), w.cfg, o)
+	if wt = loadGraph(t, w.dir).Waiting; !wt.CheckedAt.Equal(recorded) {
+		t.Fatal("a dry run recorded a child listing")
+	}
+}
+
+// Only a BB target has child threads. Other adapters record no listing.
+func TestHeadlessTargetRecordsNoChildListing(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Agent = config.Agent{Adapter: "claude", Provider: "claude-code"}
+	w.primary(decide.Observation{State: decide.Idle, ActiveChildren: 1, ActiveChildIDs: []string{"thr_child_working"}})
+	runTick(t, w, t0)
+	if g := loadGraph(t, w.dir); g.Waiting != nil {
+		t.Fatalf("%#v", g.Waiting)
+	}
+}

@@ -85,6 +85,9 @@ type Observation struct {
 	// in one case only, childErrorWake; ChildErrorNote says when a wake should
 	// mention them.
 	ErroredChildren []string
+	// ActiveChildIDs names the children counted in ActiveChildren, for the
+	// run graph only. It is diagnostic and never changes Decide policy.
+	ActiveChildIDs []string
 }
 
 // Control is the operator's gate.

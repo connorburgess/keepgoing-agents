@@ -3,9 +3,11 @@ package supervise
 import (
 	"errors"
 	"path/filepath"
+	"sort"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
@@ -77,6 +79,7 @@ func (t *tick) graphClose() {
 	}
 	t.graphClosed = true
 	t.graphSession()
+	t.graphWait()
 	if t.graphFailed {
 		t.warn("run reference record unavailable; discovery evidence is incomplete")
 	}
@@ -156,4 +159,66 @@ func (t *tick) graphFinish(id, outcome string) {
 		return
 	}
 	t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Finish(id, rd.Outcome(outcome), t.now) })
+}
+
+// graphWaiting is one check's verified picture of the target's direct child
+// threads. Only keys are kept: a child's thread ID never reaches the graph.
+type graphWaiting struct {
+	target   string
+	listing  string
+	children []rungraph.Child
+}
+
+// graphChildren keeps what this check's observation said about child threads.
+// Only a BB target has them. A failed observation or an incomplete listing is
+// kept as incomplete, so the graph says the answer is unknown.
+func (t *tick) graphChildren(adapterKind, target string, obs decide.Observation, failed bool) {
+	if adapterKind != "bb" || t.opts.DryRun {
+		return
+	}
+	w := &graphWaiting{target: target, listing: rungraph.ListingIncomplete}
+	t.waiting = w
+	if failed || obs.ChildrenUnverified {
+		return
+	}
+	// A child that needs a person is stuck even if its status is active or error.
+	status := map[string]string{}
+	for _, id := range obs.ErroredChildren {
+		status[id] = rungraph.ChildErrored
+	}
+	for _, id := range obs.ActiveChildIDs {
+		status[id] = rungraph.ChildActive
+	}
+	for _, id := range obs.AwaitingChildren {
+		status[id] = rungraph.ChildAwaiting
+	}
+	// The observation carries a count and the IDs separately. If they
+	// disagree the picture is not the verified one, so nothing is listed.
+	if len(obs.ActiveChildIDs) != obs.ActiveChildren || len(status) > rungraph.MaxChildren {
+		return
+	}
+	byKey := map[string]string{}
+	for id, st := range status {
+		byKey[decide.ChildHashes([]string{id})[0]] = st
+	}
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		w.children = append(w.children, rungraph.Child{Key: key, Status: byKey[key]})
+	}
+	w.listing = rungraph.ListingComplete
+}
+
+// graphWait records the child picture of a check that observed a BB target.
+// A check that observed nothing leaves the earlier record, which a reader
+// then sees is older than the last check.
+func (t *tick) graphWait() {
+	w := t.waiting
+	if w == nil || t.opts.DryRun {
+		return
+	}
+	t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Wait(w.target, w.listing, w.children, t.now) })
 }

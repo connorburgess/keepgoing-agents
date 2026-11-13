@@ -127,12 +127,12 @@ func snapshotTree(t *testing.T, dir string) string {
 func TestRunsLoopViewResolvesCurrentWorkAndItsChat(t *testing.T) {
 	dir := runsFixture(t)
 	code, r, raw := runsExec(t, "--state-dir", dir)
-	if code != exitOK || r.SchemaVersion != 1 || r.View != "loop" || len(r.Loops) != 1 || r.Node != nil || len(r.Limitations) == 0 {
+	if code != exitOK || r.SchemaVersion != 2 || r.View != "loop" || len(r.Loops) != 1 || r.Node != nil || len(r.Limitations) == 0 {
 		t.Fatalf("%d %s", code, raw)
 	}
 	l := r.Loops[0]
 	if l.Graph.Availability != rungraph.Available || !strings.HasPrefix(l.Graph.LoopID, "supervision_") || l.Graph.UpdatedAt == nil || l.Control.State != "enabled" ||
-		l.ActiveTarget != (runsTarget{Availability: "recorded", Alias: "primary"}) || l.Conflict != "" || l.Blocker.Availability != "unavailable" {
+		l.ActiveTarget != (runsTarget{Availability: "recorded", Alias: "primary"}) || l.Conflict != "" || l.Blocker.Availability != blockerUnknown || l.Blocker.Reason != "no_child_evidence_recorded" || l.Blocker.Lock.Availability != recordUnavailable {
 		t.Fatalf("%+v", l)
 	}
 	cur := l.Current
@@ -487,7 +487,6 @@ func TestRunsRejectsAmbiguousOrOutOfRangeArguments(t *testing.T) {
 		{"--state-dir", dir, "--id", "run_1\nforged: line"},
 		{"--state-dir", dir, "--id", "run_1\x1b[2Jcleared"},
 		{"--state-dir", dir, "--id", "two words"},
-		{"--state-dir", dir, "--directory", dir},
 		{"--registry-id", "example-loop"},
 		{"--all", "--id", runsID("run_", 1)},
 		{"--state-dir", dir, "extra"},
@@ -508,18 +507,18 @@ func TestRunsRejectsAmbiguousOrOutOfRangeArguments(t *testing.T) {
 // A corrupt, newer-schema or unreadable record must never answer a lookup
 // with not_recorded: the reference may be in it.
 func TestRunsLookupInAnUnreadableGraphIsUnavailableNotUnrecorded(t *testing.T) {
-	for name, body := range map[string]string{"truncated": `{"schemaVersion":1,"loopId":"superv`, "newer schema": `{"schemaVersion":2}`, "empty": ""} {
+	for name, body := range map[string]string{"truncated": `{"schemaVersion":1,"loopId":"superv`, "newer schema": `{"schemaVersion":99}`, "empty": ""} {
 		dir := runsFixture(t)
 		if err := os.WriteFile(filepath.Join(dir, rungraph.FileName), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		code, r, raw := runsExec(t, "--state-dir", dir, "--id", runsID("run_", 2))
-		if code != exitFailed || r.Node.Status != recordUnavailable || strings.Contains(raw, "not_recorded") {
+		if code != exitFailed || r.Node.Status != recordUnavailable || r.Loops[0].Blocker.Reason != "graph_unavailable" {
 			t.Fatalf("%s: %d %s", name, code, raw)
 		}
 		var text, errs bytes.Buffer
 		run(context.Background(), []string{"runs", "--state-dir", dir, "--id", runsID("run_", 2)}, &text, &errs)
-		if !strings.Contains(text.String(), "reference "+runsID("run_", 2)+": unavailable") || strings.Contains(text.String(), "not_recorded") {
+		if !strings.Contains(text.String(), "reference "+runsID("run_", 2)+": unavailable") || strings.Contains(text.String(), ": not_recorded") {
 			t.Fatalf("%s: %s", name, text.String())
 		}
 	}
@@ -878,5 +877,348 @@ func TestRunsShowsRoutineInvocationsAndTriggers(t *testing.T) {
 	}
 	if _, r, _ = runsExec(t, "--state-dir", dir, "--id", "routine:example-scheduler/weekly"); r.Node.Status != rungraph.NotRecorded {
 		t.Fatal(r.Node.Status)
+	}
+}
+
+func childKey(thread string) string { return childKeyOf(thread) }
+
+// runsWait records a check at runsAt that observed the given children, and
+// makes it the last recorded check.
+func runsWait(t *testing.T, dir, listing string, children ...rungraph.Child) {
+	t.Helper()
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Wait("primary", listing, children, runsAt) })
+	if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt, Target: "primary", ObservedState: "active", Action: "none", Reason: "child work running", Outcome: "succeeded"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunsBlockerComesOnlyFromACurrentCompleteChildListing(t *testing.T) {
+	dir := runsFixture(t)
+	working, stuck, failed := childKey("thr_child_working"), childKey("thr_child_stuck"), childKey("thr_child_failed")
+	blocker := func() runsBlocker {
+		t.Helper()
+		code, r, raw := runsExec(t, "--state-dir", dir)
+		if code != exitOK {
+			t.Fatal(code, raw)
+		}
+		for _, id := range []string{"thr_child_working", "thr_child_stuck", "thr_child_failed"} {
+			if strings.Contains(raw, id) {
+				t.Fatalf("child thread ID %s in output", id)
+			}
+		}
+		return r.Loops[0].Blocker
+	}
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: working, Status: rungraph.ChildActive}, rungraph.Child{Key: stuck, Status: rungraph.ChildAwaiting}, rungraph.Child{Key: failed, Status: rungraph.ChildErrored})
+	b := blocker()
+	if b.Availability != blockerBlocked || b.Reason != "" || b.CheckedAt == nil || !b.CheckedAt.Equal(runsAt) || b.Target != "primary" || len(b.Children) != 3 {
+		t.Fatalf("%+v", b)
+	}
+	for i, want := range []runsChild{
+		{Ref: "child:" + working, Status: "active", Holds: true}, {Ref: "child:" + stuck, Status: "awaiting_input", Holds: true}, {Ref: "child:" + failed, Status: "error", Holds: false},
+	} {
+		got := b.Children[i]
+		if got.Ref != want.Ref || got.Status != want.Status || got.Holds != want.Holds || got.Supervised != (runsSupervised{Availability: "registry_not_consulted"}) {
+			t.Fatalf("%+v", got)
+		}
+	}
+	// The run links to the children that hold it, and each links back.
+	_, r, _ := runsExec(t, "--state-dir", dir, "--id", runsID("run_", 2))
+	var blockedBy, listed []string
+	for _, e := range r.Node.Edges {
+		switch e.Type {
+		case rungraph.EdgeBlockedBy:
+			blockedBy = append(blockedBy, e.To)
+		case rungraph.EdgeChild:
+			listed = append(listed, e.To)
+		}
+	}
+	if strings.Join(blockedBy, " ") != "child:"+working+" child:"+stuck || strings.Join(listed, " ") != "child:"+failed {
+		t.Fatalf("%v %v", blockedBy, listed)
+	}
+	_, r, _ = runsExec(t, "--state-dir", dir, "--id", "child:"+stuck)
+	if r.Node.Status != rungraph.Found || r.Node.Type != rungraph.ChildNode || len(r.Node.Edges) != 1 || r.Node.Edges[0].Type != rungraph.EdgeBlocks || r.Node.Edges[0].To != runsID("run_", 2) || r.Node.Source != rungraph.SourceChildren {
+		t.Fatalf("%+v", r.Node)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
+	for _, want := range []string{"waiting on: blocked", "child child:" + working + "  active  holds the run", "child child:" + failed + "  error  does not hold the run", "lock holder: unavailable"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("lacks %q:\n%s", want, text.String())
+		}
+	}
+
+	// Only errored children, or none: every child was verified and none holds the run.
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: failed, Status: rungraph.ChildErrored})
+	if b = blocker(); b.Availability != blockerNone || len(b.Children) != 1 || b.Children[0].Holds {
+		t.Fatalf("%+v", b)
+	}
+	runsWait(t, dir, rungraph.ListingComplete)
+	if b = blocker(); b.Availability != blockerNone || len(b.Children) != 0 {
+		t.Fatalf("%+v", b)
+	}
+	// An incomplete listing is unknown and names no child, even a verified one.
+	runsWait(t, dir, rungraph.ListingIncomplete, rungraph.Child{Key: working, Status: rungraph.ChildActive})
+	if b = blocker(); b.Availability != blockerUnknown || b.Reason != "child_listing_incomplete" || len(b.Children) != 0 {
+		t.Fatalf("%+v", b)
+	}
+	// A later check that did not refresh the record leaves it stale: unknown.
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: working, Status: rungraph.ChildActive})
+	for name, later := range map[string]state.File{
+		"a later check":      {LastCheck: &state.Check{At: runsAt.Add(10 * time.Minute)}},
+		"an earlier check":   {LastCheck: &state.Check{At: runsAt.Add(-time.Second)}},
+		"another target":     {ActiveTarget: "example-fallback", LastCheck: &state.Check{At: runsAt}},
+		"no check on record": {},
+	} {
+		if err := state.Save(dir, later); err != nil {
+			t.Fatal(err)
+		}
+		want := "not_refreshed_by_the_last_check"
+		if later.LastCheck == nil {
+			want = "last_check_not_recorded"
+		}
+		if b = blocker(); b.Availability != blockerUnknown || b.Reason != want || len(b.Children) != 0 {
+			t.Fatalf("%s: %+v", name, b)
+		}
+	}
+	// A closed run waits on nothing that is recorded.
+	runsSync(t, dir, true, "complete", 0)
+	if b = blocker(); b.Availability != blockerUnknown || b.Reason != "no_open_run" || b.CheckedAt != nil {
+		t.Fatalf("%+v", b)
+	}
+	if g, _ := rungraph.Load(dir); g.Waiting != nil {
+		t.Fatal("the waiting record outlived its run")
+	}
+}
+
+func runsLoopConfig(t *testing.T, name, thread string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "keepgoing.yaml")
+	body := fmt.Sprintf("version: 1\nloop:\n  name: %s\n  state_dir: state\n  adapter: bb\n  provider: example\n  bb: {thread: %s, cli: nonexistent-provider-fixture}\n  prompt: Continue the fictional loop.\n", name, thread)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Two supervised loops run at once: the parent waits on a child conversation
+// that is itself a registered loop. The reader names that loop's run and chat,
+// and reading it changes nothing in either loop.
+func TestRunsBlockerResolvesToTheBlockingLoopsRunAndChat(t *testing.T) {
+	regDir := filepath.Join(t.TempDir(), "registry")
+	add := func(name, thread string) registry.Entry {
+		t.Helper()
+		cfg := runsLoopConfig(t, name, thread)
+		if code, out, errs := registryRun(t, regDir, "add", "-c", cfg); code != 0 {
+			t.Fatal(out, errs)
+		}
+		f, _ := registry.Load(regDir)
+		return f.Entries[len(f.Entries)-1]
+	}
+	start := func(entry registry.Entry, thread string, run int) {
+		t.Helper()
+		if err := control.Save(entry.StateDir, control.File{Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		runsSync(t, entry.StateDir, false, "start", run)
+		runsUpdate(t, entry.StateDir, func(g *rungraph.Graph) (bool, error) {
+			return g.Relate(rtSession("primary", "bb", thread, rungraph.SourceConfigured))
+		})
+	}
+	parent, child := add("example-parent", "thr_example_parent"), add("example-child", "thr_example_child")
+	// A loop that shares the child's name but supervises another conversation
+	// must never be taken for it.
+	decoy := add("example-child", "thr_example_other")
+	start(parent, "thr_example_parent", 1)
+	start(child, "thr_example_child", 2)
+	start(decoy, "thr_example_other", 3)
+	key := childKey("thr_example_child")
+	runsWait(t, parent.StateDir, rungraph.ListingComplete, rungraph.Child{Key: key, Status: rungraph.ChildActive}, rungraph.Child{Key: childKey("thr_example_unsupervised"), Status: rungraph.ChildAwaiting})
+	before := snapshotTree(t, regDir) + snapshotTree(t, parent.StateDir) + snapshotTree(t, child.StateDir) + snapshotTree(t, decoy.StateDir)
+
+	for name, args := range map[string][]string{
+		"registry selector":       {"--registry-id", parent.ID, "--directory", regDir},
+		"state dir with registry": {"--state-dir", parent.StateDir, "--directory", regDir},
+	} {
+		code, r, raw := runsExec(t, args...)
+		b := r.Loops[0].Blocker
+		if code != exitOK || b.Availability != blockerBlocked || len(b.Children) != 2 {
+			t.Fatalf("%s: %d %s", name, code, raw)
+		}
+		blocking := b.Children[0]
+		if blocking.Ref != "child:"+key {
+			blocking = b.Children[1]
+		}
+		want := runsSupervised{Availability: recordRecorded, RegistrationID: child.ID, Loop: "example-child", Session: "session:bb/thr_example_child", Run: runsID("run_", 2)}
+		if blocking.Supervised != want {
+			t.Fatalf("%s: %+v", name, blocking.Supervised)
+		}
+		for _, c := range b.Children {
+			if c.Ref != "child:"+key && c.Supervised != (runsSupervised{Availability: "not_registered"}) {
+				t.Fatalf("%s: an unsupervised child was resolved: %+v", name, c)
+			}
+		}
+		if strings.Contains(raw, "thr_example_unsupervised") || strings.Contains(raw, decoy.ID) || strings.Contains(raw, parent.StateDir) || strings.Contains(raw, child.StateDir) {
+			t.Fatalf("%s: %s", name, raw)
+		}
+	}
+	// Following the link: the blocking loop's run and its chat resolve through its own reference.
+	code, r, _ := runsExec(t, "--registry-id", child.ID, "--directory", regDir, "--id", runsID("run_", 2))
+	if code != exitOK || r.Node.Status != rungraph.Found || r.Node.Run.Sessions[0].Ref != "session:bb/thr_example_child" {
+		t.Fatal(code, r.Node)
+	}
+	// Without a registry the child is still shown, but no loop is named.
+	_, r, _ = runsExec(t, "--state-dir", parent.StateDir)
+	if got := r.Loops[0].Blocker.Children[0].Supervised; got != (runsSupervised{Availability: "registry_not_consulted"}) {
+		t.Fatalf("%+v", got)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--registry-id", parent.ID, "--directory", regDir}, &text, &errs)
+	for _, want := range []string{"a registered loop: " + child.ID + " (example-child)  run " + runsID("run_", 2) + "  chat/session session:bb/thr_example_child", "its run: unavailable (not_registered)"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("lacks %q:\n%s", want, text.String())
+		}
+	}
+	if after := snapshotTree(t, regDir) + snapshotTree(t, parent.StateDir) + snapshotTree(t, child.StateDir) + snapshotTree(t, decoy.StateDir); after != before {
+		t.Fatal("reading a blocker changed a registry or a loop")
+	}
+
+	// The blocking loop has no open run for that conversation: the loop is
+	// named, the run is not.
+	runsSync(t, child.StateDir, true, "complete", 0)
+	_, r, _ = runsExec(t, "--registry-id", parent.ID, "--directory", regDir)
+	for _, c := range r.Loops[0].Blocker.Children {
+		if c.Ref == "child:"+key && (c.Supervised.Availability != recordRecorded || c.Supervised.Run != "" || c.Supervised.RunReason == "" || c.Supervised.RegistrationID != child.ID) {
+			t.Fatalf("%+v", c.Supervised)
+		}
+	}
+	// Two registered loops name the same conversation: ambiguous, none picked.
+	add("example-duplicate", "thr_example_child")
+	_, r, _ = runsExec(t, "--registry-id", parent.ID, "--directory", regDir)
+	for _, c := range r.Loops[0].Blocker.Children {
+		if c.Ref == "child:"+key && c.Supervised != (runsSupervised{Availability: "ambiguous"}) {
+			t.Fatalf("%+v", c.Supervised)
+		}
+	}
+	// A blocking loop whose binding no longer validates is not a match.
+	f, _ := registry.Load(regDir)
+	for _, e := range f.Entries {
+		if e.Loop == "example-duplicate" || e.ID == child.ID {
+			os.Remove(e.ConfigPath)
+		}
+	}
+	_, r, _ = runsExec(t, "--registry-id", parent.ID, "--directory", regDir)
+	for _, c := range r.Loops[0].Blocker.Children {
+		if c.Ref == "child:"+key && c.Supervised != (runsSupervised{Availability: "not_registered"}) {
+			t.Fatalf("%+v", c.Supervised)
+		}
+	}
+}
+
+// The owner is read from the validated claim in control.json. A command run
+// from another conversation is told it is refused; nothing is claimed.
+func TestRunsShowsTheOwningConversationWithoutGrantingControl(t *testing.T) {
+	dir := runsFixture(t)
+	save := func(f control.File) {
+		t.Helper()
+		f.Enabled = true
+		if err := control.Save(dir, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := func(args ...string) (runsOwner, string) {
+		t.Helper()
+		code, r, raw := runsExec(t, append([]string{"--state-dir", dir}, args...)...)
+		if code != exitOK {
+			t.Fatal(code, raw)
+		}
+		return r.Loops[0].Blocker.Owner, raw
+	}
+	t.Setenv("BB_THREAD_ID", "")
+	if o, _ := owner(); o.Availability != recordNotRecorded || o.BlocksCaller || o.Ref != "" {
+		t.Fatalf("%+v", o)
+	}
+	save(control.File{Ownership: &control.Ownership{ThreadID: "thr_example_owner", Generation: 3}})
+	before := snapshotTree(t, dir)
+	o, _ := owner()
+	if o.Availability != recordRecorded || o.Ref != "session:bb/thr_example_owner" || o.Generation != 3 || o.BlocksCaller || o.Supervised.Availability != "registry_not_consulted" {
+		t.Fatalf("%+v", o)
+	}
+	// Run from another conversation: refused, and the caller is not printed.
+	t.Setenv("BB_THREAD_ID", "thr_example_caller")
+	o, raw := owner()
+	if !o.BlocksCaller || strings.Contains(raw, "thr_example_caller") {
+		t.Fatalf("%+v %s", o, raw)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
+	if !strings.Contains(text.String(), "owner: session:bb/thr_example_owner (generation 3)  this conversation is not the owner") || strings.Contains(text.String(), "thr_example_caller") {
+		t.Fatal(text.String())
+	}
+	t.Setenv("BB_THREAD_ID", "thr_example_owner")
+	if o, _ = owner(); o.BlocksCaller {
+		t.Fatal("the owner was told it is refused")
+	}
+	// Reading as a non-owner claims nothing and changes nothing.
+	t.Setenv("BB_THREAD_ID", "thr_example_caller")
+	owner("--id", "session:bb/thr_example_a")
+	ctl, _ := control.Load(dir)
+	if snapshotTree(t, dir) != before || ctl.Ownership.ThreadID != "thr_example_owner" || ctl.Ownership.Generation != 3 {
+		t.Fatal("a read changed ownership or runtime records")
+	}
+	// Evidence that does not validate is unknown, never a guess.
+	for name, f := range map[string]control.File{
+		"generation zero":  {Ownership: &control.Ownership{ThreadID: "thr_example_owner"}},
+		"malformed owner":  {Ownership: &control.Ownership{ThreadID: "not a thread", Generation: 1}},
+		"transfer pending": {Ownership: &control.Ownership{ThreadID: "thr_example_owner", Generation: 3}, PendingTransfer: &control.PendingBBTransfer{}},
+	} {
+		save(f)
+		if o, raw := owner(); o.Availability != blockerUnknown || o.Reason == "" || o.Ref != "" || o.BlocksCaller || strings.Contains(raw, "not a thread") {
+			t.Fatalf("%s: %+v", name, o)
+		}
+	}
+}
+
+// Registered views withhold the owning thread, so the registry selectors show
+// it by key. When the owner is itself a registered loop, that loop is named.
+func TestRunsRegistryViewWithholdsTheOwnerButNamesItsLoop(t *testing.T) {
+	regDir := filepath.Join(t.TempDir(), "registry")
+	var entries []registry.Entry
+	for _, l := range [][2]string{{"example-owned", "thr_example_owned"}, {"example-owner", "thr_example_owner"}} {
+		if code, out, errs := registryRun(t, regDir, "add", "-c", runsLoopConfig(t, l[0], l[1])); code != 0 {
+			t.Fatal(out, errs)
+		}
+		f, _ := registry.Load(regDir)
+		entries = append(entries, f.Entries[len(f.Entries)-1])
+	}
+	owned, owner := entries[0], entries[1]
+	if err := control.Save(owned.StateDir, control.File{Enabled: true, Ownership: &control.Ownership{ThreadID: "thr_example_owner", Generation: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.Save(owner.StateDir, control.File{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	runsSync(t, owner.StateDir, false, "start", 7)
+	runsUpdate(t, owner.StateDir, func(g *rungraph.Graph) (bool, error) {
+		return g.Relate(rtSession("primary", "bb", "thr_example_owner", rungraph.SourceConfigured))
+	})
+	t.Setenv("BB_THREAD_ID", "thr_example_caller")
+	for _, args := range [][]string{{"--registry-id", owned.ID}, {"--all"}} {
+		code, r, raw := runsExec(t, append(args, "--directory", regDir)...)
+		o := r.Loops[0].Blocker.Owner
+		want := runsSupervised{Availability: recordRecorded, RegistrationID: owner.ID, Loop: "example-owner", Run: runsID("run_", 7)}
+		if code != exitOK || o.Ref != "owner:"+childKey("thr_example_owner") || o.Generation != 2 || !o.BlocksCaller || o.Supervised != want {
+			t.Fatalf("%v: %d %+v", args, code, o)
+		}
+		// The caller is never printed. Selecting only the owned loop must not
+		// print the owning thread either; --all also lists the owner's own
+		// loop, whose chat reference is its own to show.
+		if strings.Contains(raw, "thr_example_caller") || (args[0] == "--registry-id" && strings.Contains(raw, "thr_example_owner")) {
+			t.Fatalf("%v: a withheld thread was printed: %s", args, raw)
+		}
+	}
+	// With a configuration selector the owner is shown, as status shows it.
+	_, r, _ := runsExec(t, "--state-dir", owned.StateDir, "--directory", regDir)
+	if o := r.Loops[0].Blocker.Owner; o.Ref != "session:bb/thr_example_owner" || o.Supervised.Session != "session:bb/thr_example_owner" || o.Supervised.Run != runsID("run_", 7) {
+		t.Fatalf("%+v", o)
 	}
 }

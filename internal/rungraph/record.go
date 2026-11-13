@@ -62,6 +62,8 @@ func (g *Graph) Sync(b Boundary) (bool, error) {
 		return false, err
 	}
 	g.Completed = next.Completed
+	// The picture of what a run waits on belongs to that open run only.
+	g.Waiting = nil
 	if next.Current.ID == s.Current.ID {
 		if r := g.run(s.Current.ID); r != nil && r.ClosedAt.IsZero() && !next.Current.ClosedAt.IsZero() {
 			r.ClosedAt, r.ClosedSource = next.Current.ClosedAt, source
@@ -213,6 +215,28 @@ func (g *Graph) Trigger(r rd.RoutineRef, at time.Time) (bool, error) {
 		drop := own[1] // the oldest after the first
 		g.Links = append(g.Links[:drop], g.Links[drop+1:]...)
 		g.Dropped.Triggers++
+	}
+	return true, nil
+}
+
+// Wait replaces the record of what the open run's target is waiting on with
+// one check's verified child listing. An incomplete listing stores no child:
+// the answer is then unknown, not the part that happened to be verified. With
+// no open run nothing is recorded. Keys are short hashes, never thread IDs.
+func (g *Graph) Wait(target, listing string, children []Child, at time.Time) (bool, error) {
+	if g.run(g.CurrentRun) == nil || g.Completed {
+		return false, nil
+	}
+	if listing != ListingComplete {
+		listing, children = ListingIncomplete, nil
+	}
+	w := &Waiting{Run: g.CurrentRun, Target: target, CheckedAt: at, Listing: listing, Children: append([]Child{}, children...), Source: SourceChildren}
+	// The record needs schema 2; an older graph is upgraded by this write.
+	previous, version := g.Waiting, g.SchemaVersion
+	g.Waiting, g.SchemaVersion = w, SchemaVersion
+	if !g.valid() {
+		g.Waiting, g.SchemaVersion = previous, version
+		return false, rd.ErrInvalid
 	}
 	return true, nil
 }

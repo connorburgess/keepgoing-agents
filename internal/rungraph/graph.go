@@ -7,16 +7,25 @@
 package rungraph
 
 import (
+	"regexp"
 	"time"
 
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 )
 
+// childKey is the short hash decide.ChildHashes produces.
+var childKey = regexp.MustCompile(`^[0-9a-f]{24}$`)
+
 // FileName of the graph record inside the state directory.
 const FileName = "graph.json"
 
-// SchemaVersion written by this build. Older builds ignore the file.
-const SchemaVersion = 1
+// SchemaVersion written by this build. Version 2 adds the waiting record.
+// Version 1 files are read and upgraded by their next write; a build that
+// only knows version 1 reports a version 2 file as unsupported and leaves it.
+const SchemaVersion = 2
+
+// oldestSchemaVersion is the oldest version this build reads.
+const oldestSchemaVersion = 1
 
 // Bounds. The oldest closed runs go first, with their attempts and links.
 const (
@@ -29,7 +38,9 @@ const (
 	// MaxTriggersPerRun bounds trigger links separately from every other
 	// link: a run keeps its first trigger and its newest ones.
 	MaxTriggersPerRun = 8
-	maxTarget         = 128
+	// MaxChildren matches the most direct children a check will inspect.
+	MaxChildren = 200
+	maxTarget   = 128
 )
 
 // Source says which structured input produced a record. None is a transcript.
@@ -45,11 +56,12 @@ const (
 	SourceRegistered  Source = "registered_control"  // a control operation made through a registry reference
 	SourceRegistryAdd Source = "registry_add"        // registry add found an existing graph; no control operation used the reference
 	SourceExternal    Source = "external"            // supplied by a structured integration
+	SourceChildren    Source = "child_listing"       // a check's verified listing of the target's direct child threads
 )
 
 func (s Source) valid() bool {
 	switch s {
-	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceGoal, SourceRegistered, SourceRegistryAdd, SourceExternal:
+	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceGoal, SourceRegistered, SourceRegistryAdd, SourceExternal, SourceChildren:
 		return true
 	}
 	return false
@@ -67,7 +79,10 @@ type Graph struct {
 	Attempts      []Attempt      `json:"attempts"`
 	Links         []Link         `json:"links"`
 	Unrecorded    []Unrecorded   `json:"unrecorded"`
-	Dropped       Dropped        `json:"dropped"`
+	// Waiting is what the newest check that observed the target's child
+	// threads found. It is replaced whole and cleared when the run closes.
+	Waiting *Waiting `json:"waiting,omitempty"`
+	Dropped Dropped  `json:"dropped"`
 
 	index map[string]*Node
 }
@@ -83,6 +98,49 @@ type Dropped struct {
 	// are never counted in Links and never cause another record to be dropped.
 	Triggers uint64 `json:"triggers"`
 }
+
+// Child statuses. Active and awaiting-input children hold the parent: a check
+// sends it nothing while they exist. An errored child is not running work and
+// does not hold the parent; it is listed because the check reported it.
+const (
+	ChildActive   = "active"
+	ChildAwaiting = "awaiting_input"
+	ChildErrored  = "error"
+)
+
+// Child listings.
+const (
+	// ListingComplete: every direct child was verified, so the children
+	// listed are all of them.
+	ListingComplete = "complete"
+	// ListingIncomplete: discovery could not establish the whole picture.
+	// No child is stored, because a partial list would read as the answer.
+	ListingIncomplete = "incomplete"
+)
+
+// Child is one direct child thread of the observed target. Key is a short
+// hash of its thread ID, the same one state.json uses; the ID itself is never
+// stored here.
+type Child struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
+}
+
+// Waiting records the child threads one check verified for the open run's
+// target. CheckedAt is that check's time, which is also the time state.json
+// records for it: a reader treats the record as current only when the two are
+// equal, so a later check that could not refresh it leaves it visibly stale.
+type Waiting struct {
+	Run       string    `json:"run"`
+	Target    string    `json:"target"`
+	CheckedAt time.Time `json:"checkedAt"`
+	Listing   string    `json:"listing"`
+	Children  []Child   `json:"children"`
+	Source    Source    `json:"source"`
+}
+
+// Holds reports whether a child status keeps the parent from being prompted.
+func Holds(status string) bool { return status == ChildActive || status == ChildAwaiting }
 
 // ReasonSessionID: the target's chat/session identifier is outside the
 // characters the contract accepts, so no session link can be stored for it.
@@ -203,7 +261,7 @@ func (g *Graph) state() rd.State {
 // valid checks the whole record against the contract. A record that fails is
 // reported as corrupt and never rewritten.
 func (g *Graph) valid() bool {
-	if g.SchemaVersion != SchemaVersion || g.LoopID == "" || g.UpdatedAt.IsZero() ||
+	if g.SchemaVersion < oldestSchemaVersion || g.SchemaVersion > SchemaVersion || g.LoopID == "" || g.UpdatedAt.IsZero() || (g.SchemaVersion < 2 && g.Waiting != nil) ||
 		len(g.Runs) > MaxRuns || len(g.Attempts) > MaxAttempts || len(g.Links) > MaxLinks ||
 		len(g.Registrations) > MaxRegistrations || len(g.Unrecorded) > MaxUnrecorded {
 		return false
@@ -247,6 +305,20 @@ func (g *Graph) valid() bool {
 	for _, u := range g.Unrecorded {
 		if !runs[u.Run] || u.Target == "" || len(u.Target) > maxTarget || u.Reason != ReasonSessionID || u.RecordedAt.IsZero() {
 			return false
+		}
+	}
+	if w := g.Waiting; w != nil {
+		open := g.run(g.CurrentRun)
+		if open == nil || g.Completed || w.Run != g.CurrentRun || w.Target == "" || len(w.Target) > maxTarget || w.CheckedAt.IsZero() || w.Source != SourceChildren ||
+			len(w.Children) > MaxChildren || (w.Listing != ListingComplete && w.Listing != ListingIncomplete) || (w.Listing == ListingIncomplete && len(w.Children) != 0) {
+			return false
+		}
+		keys := map[string]bool{}
+		for _, c := range w.Children {
+			if !childKey.MatchString(c.Key) || keys[c.Key] || (c.Status != ChildActive && c.Status != ChildAwaiting && c.Status != ChildErrored) {
+				return false
+			}
+			keys[c.Key] = true
 		}
 	}
 	return true

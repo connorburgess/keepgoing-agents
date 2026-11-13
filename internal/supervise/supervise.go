@@ -137,6 +137,8 @@ type tick struct {
 	reg                 *health.Registry
 	graphFailed         bool
 	graphClosed         bool
+	// waiting is the child picture this check observed, for the run graph.
+	waiting *graphWaiting
 }
 
 func (t *tick) warn(format string, a ...any) {
@@ -296,6 +298,7 @@ func (t *tick) run() error {
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
@@ -540,6 +543,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	t.observedTarget = target
 	obs, err := a.Observe(t.ctx)
+	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {

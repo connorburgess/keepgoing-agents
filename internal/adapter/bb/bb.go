@@ -26,6 +26,9 @@ type Adapter struct {
 	// run and now are swapped in tests.
 	run func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 	now func() time.Time
+	// activeChildIDs is the verified active children of the last childWork
+	// call, kept beside its count for the run graph.
+	activeChildIDs []string
 }
 
 // New returns an adapter for the thread.
@@ -95,6 +98,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		return obs, nil
 	}
 	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren = a.childWork(ctx)
+	obs.ActiveChildIDs = a.activeChildIDs
 	if len(obs.AwaitingChildren) > 0 {
 		if obs.State == decide.Error {
 			obs.ErrorClass = decide.ErrUnknown
