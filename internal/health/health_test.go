@@ -204,3 +204,50 @@ func TestHealthFilesWithoutOrWithBadUsageStillLoad(t *testing.T) {
 		}
 	}
 }
+
+// Every probe that carries a reading adds it to the candidate's history for
+// that window instance; a probe without one adds nothing, and a probe of
+// another account starts over. The history survives a save and load.
+func TestUsageHistoryAccumulatesPerAccount(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Candidates: map[string]*Entry{}}
+	resets := now.Add(72 * time.Hour)
+	probeAt := func(at time.Time, identity string, used float64) probe.Result {
+		res := ok(at)
+		res.UsageIdentity = identity
+		if used >= 0 {
+			res.Usage = &probe.Usage{At: at, Source: probe.UsageSourceClaude, Identity: identity, Windows: []probe.UsageWindow{{Key: "seven_day", Used: used, ResetsAt: &resets}}}
+		}
+		return res
+	}
+	r.Record("claude-alt", probeAt(now.Add(-12*time.Hour), "account-a", 0.1))
+	r.Record("claude-alt", probeAt(now.Add(-8*time.Hour), "account-a", -1))
+	r.Record("claude-alt", probeAt(now.Add(-6*time.Hour), "account-a", 0.15))
+	r.Record("claude-alt", probeAt(now, "account-a", 0.2))
+	if err := r.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := got.Candidates["claude-alt"].UsageHistory
+	if s := h.Find("seven_day"); !h.For("account-a") || s == nil || len(s.Samples) != 3 || s.Samples[2].Used != 0.2 || !s.ResetsAt.Equal(resets) {
+		t.Fatalf("history: %+v", h)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if strings.Count(string(b), `"usageHistory"`) != 1 {
+		t.Fatalf("stored record: %s", b)
+	}
+	got.Record("claude-alt", probeAt(now.Add(time.Hour), "account-b", -1))
+	if got.Candidates["claude-alt"].UsageHistory != nil {
+		t.Fatal("history kept after the account identity changed")
+	}
+	// A stored history that is not one loads as absent and leaves health intact.
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"candidates":{"claude-alt":{"last":{"at":"2026-11-09T11:00:00Z","tier":"scheduled","kind":"claude","ok":true,"latencyMs":5,"exitCode":0},"usageHistory":"seven_day 20%"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(dir); err != nil || got.Candidates["claude-alt"].UsageHistory != nil || !got.Healthy("claude-alt", now, 6*time.Hour) {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

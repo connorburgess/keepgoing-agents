@@ -164,7 +164,10 @@ func TestCursorFailuresRemainUnknown(t *testing.T) {
 		name, out, exit string
 		retry           bool
 	}{
-		{"stderr only", "", "1", false},
+		// Nothing on stdout and a known nonzero exit: no conversation began, so a
+		// retry may start one. A live untrusted-workspace failure has this shape.
+		{"stderr only", "", "1", true},
+		{"whitespace only", "\n", "1", false},
 		{"apparent success nonzero", cursorSuccess, "1", true},
 		{"partial init", cursorInit, "1", true},
 		{"missing terminal zero", cursorInit, "0", true},
@@ -336,5 +339,213 @@ func TestCursorMissingOutputIsUnknown(t *testing.T) {
 	}
 	if err := c.Send(context.Background(), "fixture", adapter.ModeAuto); err == nil {
 		t.Fatal("missing output silently created a new session")
+	}
+}
+
+// A fresh conversation after a turn with no session is allowed for one shape
+// only: exit code 1, an existing empty output file, and a verified CLI version
+// recorded when that turn started. Everything else keeps the refusal,
+// including a stand-in that swallowed the prompt and exited with another code,
+// and a CLI that was updated to a verified version after the turn ran.
+func TestCursorFreshStartNeedsExactShapeAndVerifiedVersion(t *testing.T) {
+	const inspected, other = "2026.09.18-9a7762b", "2030.01.02-abcdef0"
+	shape := func(exit, stdout, version string) map[string]string {
+		files := map[string]string{"run.json": "{}", "exit": exit, "stdout": stdout}
+		if version != "" {
+			files[cursorTurnVersionName] = version
+		}
+		return files
+	}
+	for _, tc := range []struct {
+		name     string
+		files    map[string]string
+		current  string // what the CLI answers now; never consulted for the rule
+		extra    []string
+		retry    bool
+		resume   bool
+		explains bool
+	}{
+		{"empty_output_exit_1", shape("1", "", inspected+"\n"), "", nil, true, false, false},
+		{"empty_output_exit_2", shape("2", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_127", shape("127", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_130", shape("130", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_143", shape("143", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_exit_0", shape("0", "", inspected+"\n"), "", nil, false, false, false},
+		{"empty_output_unreadable_exit", shape("not-a-number", "", inspected+"\n"), "", nil, false, false, false},
+		{"some_output_exit_1", shape("1", "rate limit\n", inspected+"\n"), "", nil, false, false, false},
+		{"whitespace_only_output_exit_1", shape("1", " \n", inspected+"\n"), "", nil, false, false, false},
+		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", cursorTurnVersionName: inspected + "\n"}, "", nil, false, false, false},
+		{"no_exit_record", map[string]string{"run.json": "{}", "stdout": "", cursorTurnVersionName: inspected + "\n"}, "", nil, false, false, false},
+		{"unverified_version", shape("1", "", other+"\n"), "", nil, false, false, true},
+		{"unverified_version_listed", shape("1", "", other+"\n"), "", []string{"2031.01.01-0000000", other}, true, false, false},
+		{"another_version_listed", shape("1", "", other+"\n"), "", []string{"2031.01.01-0000000"}, false, false, true},
+		// The turn ran on an unverified version; the CLI has since been updated
+		// to a verified one. The turn is judged by the version that ran it.
+		{"updated_since_to_verified", shape("1", "", other+"\n"), inspected, nil, false, false, true},
+		// And the reverse: a turn that ran on the verified version stays allowed.
+		{"updated_since_to_unverified", shape("1", "", inspected+"\n"), other, nil, true, false, false},
+		{"version_not_recorded", shape("1", "", ""), inspected, []string{other}, false, false, true},
+		{"version_record_not_a_token", shape("1", "", inspected+" extra\n"), inspected, nil, false, false, true},
+		{"version_record_empty", shape("1", "", "\n"), inspected, nil, false, false, true},
+		// A verified session never needs the exception, whatever the version.
+		{"initialized_exit_1", shape("1", cursorInit+"\n", other+"\n"), other, nil, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
+			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = tc.current
+			c.cfg.FreshStartVersions = tc.extra
+			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range tc.files {
+				if err := os.WriteFile(c.dir.path(name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := c.Send(context.Background(), "fixture", adapter.ModeAuto)
+			if (err == nil) != tc.retry {
+				t.Fatalf("send error %v", err)
+			}
+			if !tc.retry {
+				if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
+					t.Fatal("refused send still started a turn")
+				}
+				// The reason names the version rule only when that is what refused it,
+				// and never the version, the path or the prompt.
+				if strings.Contains(err.Error(), "fresh_start_versions") != tc.explains || strings.Contains(err.Error(), other) || strings.Contains(err.Error(), "fixture") {
+					t.Fatalf("refusal reason: %v", err)
+				}
+				return
+			}
+			got := readCursorCapture(t, capture)
+			want := []string{"-p", "--output-format", "stream-json", "--model", "example-model"}
+			if tc.resume {
+				want = append(want, "--resume="+cursorSession)
+			}
+			if !reflect.DeepEqual(got.Args, want) {
+				t.Fatalf("argv %q", got.Args)
+			}
+			// The new turn's record names the CLI that is running it now.
+			current := tc.current
+			if current == "" {
+				current = inspected
+			}
+			if b, err := os.ReadFile(c.dir.path(cursorTurnVersionName)); err != nil || string(b) != current+"\n" {
+				t.Fatalf("recorded version %q %v", b, err)
+			}
+			waitFor(t, c.dir, Finished)
+		})
+	}
+
+	t.Run("unreadable_version_leaves_no_record", func(t *testing.T) {
+		for _, answer := range []string{"fail", "not a version"} {
+			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
+			c.cfg.Env["KEEPGOING_CURSOR_FIXTURE_VERSION"] = answer
+			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// A record left by an earlier turn must not survive into this one.
+			if err := os.WriteFile(c.dir.path(cursorTurnVersionName), []byte(inspected+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Send(context.Background(), "fixture", adapter.ModeAuto); err != nil {
+				t.Fatal(err)
+			}
+			readCursorCapture(t, capture)
+			if _, err := os.Stat(c.dir.path(cursorTurnVersionName)); !os.IsNotExist(err) {
+				t.Fatalf("stale or invalid version record kept (%s): %v", answer, err)
+			}
+			waitFor(t, c.dir, Finished)
+		}
+	})
+}
+
+const cursorReconnecting = `{"type":"connection","subtype":"reconnecting","session_id":"` + cursorSession + `","timestamp_ms":1893456000000,"attempt":1,"endpoint_url":"https://example.com/fictional"}`
+const cursorReconnected = `{"type":"connection","subtype":"reconnected","session_id":"` + cursorSession + `","timestamp_ms":1893456001000}`
+const cursorRetry = `{"type":"retry","subtype":"starting","session_id":"` + cursorSession + `","timestamp_ms":1893456002000,"attempt":1,"is_resume":true}`
+
+// Connection and retry records are structured but unpublished. They may add
+// diagnostic evidence; they must never decide success, identity or error class.
+func TestCursorConnectionRecordsAreDiagnosticOnly(t *testing.T) {
+	other := strings.ReplaceAll(cursorReconnecting, cursorSession, "00000000-0000-4000-8000-0000000000c2")
+	quoted := `{"type":"assistant","session_id":"` + cursorSession + `","message":{"content":[{"text":"{\"type\":\"connection\",\"subtype\":\"reconnecting\"}"}]}}`
+	for _, tc := range []struct {
+		name, raw     string
+		success, lost bool
+		session       string
+	}{
+		{"lost_then_no_result", cursorInit + "\n" + cursorReconnecting + "\n" + cursorRetry + "\n" + cursorReconnecting, false, true, cursorSession},
+		{"recovered_then_success", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorRetry + "\n" + cursorResult, true, false, cursorSession},
+		{"recovered_then_no_result", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected, false, false, cursorSession},
+		{"lost_again", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorReconnecting, false, true, cursorSession},
+		// A success record still decides the turn; the wrapper's exit decides the rest.
+		{"lost_but_result_present", cursorInit + "\n" + cursorReconnecting + "\n" + cursorResult, true, true, cursorSession},
+		{"retry_alone", cursorInit + "\n" + cursorRetry, false, false, cursorSession},
+		{"other_session", cursorInit + "\n" + other, false, false, cursorSession},
+		{"before_init", cursorReconnecting + "\n" + cursorInit, false, false, cursorSession},
+		{"missing_session", cursorInit + "\n" + `{"type":"connection","subtype":"reconnecting"}`, false, false, cursorSession},
+		{"non_string_subtype", cursorInit + "\n" + `{"type":"connection","subtype":1,"session_id":"` + cursorSession + `"}`, false, false, cursorSession},
+		{"unknown_subtype", cursorInit + "\n" + strings.Replace(cursorReconnecting, "reconnecting", "degraded", 1), false, false, cursorSession},
+		{"model_text_is_not_a_record", cursorInit + "\n" + quoted, false, false, cursorSession},
+		{"unsafe_stream_reports_nothing", cursorInit + "\n" + cursorReconnecting + "\n" + `{"type":`, false, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseCursorEvents([]byte(tc.raw))
+			if got.Success != tc.success || got.ConnectionLost != tc.lost || got.SessionID != tc.session {
+				t.Fatalf("got %+v", got)
+			}
+		})
+	}
+}
+
+// What the inspected CLI does when the connection is lost mid-turn, as far as
+// its source shows: reconnecting records, then exit 1 with text on stderr and
+// no result record. The turn stays an unknown error, the session is kept, and
+// the next send resumes exactly that session with the prompt given once.
+func TestCursorConnectionLossKeepsSessionAndStaysUnknown(t *testing.T) {
+	ctx := context.Background()
+	lost := cursorInit + "\n" + `{"type":"user","session_id":"` + cursorSession + `","message":{"role":"user"}}` + "\n" + cursorReconnecting + "\n" + cursorRetry + "\n" + cursorReconnecting + "\n"
+	c, capture, _ := cursorFixture(t, lost, "1", false)
+	if err := c.Send(ctx, "first prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, c.dir, Finished)
+	for i := 0; i < 3; i++ {
+		obs, err := c.Observe(ctx)
+		if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
+			t.Fatalf("observation %+v %v", obs, err)
+		}
+		if obs.Evidence.Source != "cursor_events" || obs.Evidence.Category != "connection_error" || obs.Retrying || !obs.ResetsAt.IsZero() {
+			t.Fatalf("evidence %+v", obs)
+		}
+	}
+	if id, err := c.dir.InspectSession(); err != nil || id != cursorSession {
+		t.Fatalf("session %q %v", id, err)
+	}
+	// A reconstructed adapter, as after a supervisor restart, resumes it.
+	if err := os.Remove(capture); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorResult + "\n"
+	env := map[string]string{}
+	for k, v := range c.cfg.Env {
+		env[k] = v
+	}
+	env["KEEPGOING_CURSOR_FIXTURE_STDOUT"], env["KEEPGOING_CURSOR_FIXTURE_EXIT"] = recovered, "0"
+	cfg := c.cfg
+	cfg.Env = env
+	restarted := NewCursor(cfg, string(c.dir))
+	if err := restarted.Send(ctx, "second prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	got := readCursorCapture(t, capture)
+	want := []string{"-p", "--output-format", "stream-json", "--model", "example-model", "--resume=" + cursorSession}
+	if !reflect.DeepEqual(got.Args, want) || got.Prompt != "second prompt" {
+		t.Fatalf("resume argv %q prompt %q", got.Args, got.Prompt)
+	}
+	waitFor(t, c.dir, Finished)
+	obs, err := restarted.Observe(ctx)
+	if err != nil || obs.State != decide.Idle || obs.ErrorClass != decide.ErrNone || obs.Evidence.Category == "connection_error" {
+		t.Fatalf("recovered turn %+v %v", obs, err)
 	}
 }

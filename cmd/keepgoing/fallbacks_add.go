@@ -327,11 +327,11 @@ func fallbackAddAccountKey(kind string) string {
 func fallbackAddLogins(cfg *config.Config) []fallbackAddLogin {
 	var out []fallbackAddLogin
 	add := func(owner string, a config.Agent) {
-		spec, ok := runner.SpecFor(a.Adapter)
-		if !ok {
+		// Only built-in headless agents have an account directory variable.
+		if _, builtin := runner.SpecFor(a.Adapter); !builtin {
 			return
 		}
-		set, ok := spec.Settings(a)
+		_, set, ok := runner.Resolve(a)
 		if !ok {
 			return
 		}

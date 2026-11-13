@@ -31,7 +31,7 @@ type initOptions struct {
 	fallbacks                                      []initFallback
 	stall, wake, backoff, interval                 time.Duration
 	nudges, reprompts, probeCap                    int
-	nonInteractive, dryRun, withGoal               bool
+	nonInteractive, dryRun, withGoal, allowShare   bool
 }
 
 type initFallback struct {
@@ -78,6 +78,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fs.IntVar(&o.probeCap, "probe-daily-cap", 2, "scheduled probes per fallback per UTC day; exact/manual probes are additional")
 	fs.BoolVar(&o.nonInteractive, "non-interactive", false, "require missing inputs as flags; do not prompt")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "preview the resolved setup without writing files")
+	fs.BoolVar(&o.allowShare, "allow-second-loop", false, "set up this loop even though another enabled loop supervises the same session")
 	fs.BoolVar(&asJSON, "json", false, "print a versioned setup result; requires --non-interactive")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -111,6 +112,19 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	if err != nil {
 		e.errf("init: %v", err)
 		return exitUsage
+	}
+	// Setting up a loop on a session another enabled loop supervises is
+	// refused here, in the preview too, rather than at the first start.
+	others := findOtherLoops(cfg)
+	if msg := refuseSecondLoop(cfg, others, "init"); msg != "" && !o.allowShare {
+		e.errf("%s", msg)
+		if asJSON {
+			printSecondLoopRefusal(e, secondLoopConflict(cfg, others))
+		}
+		return exitFailed
+	}
+	for _, w := range sharedLoopWarnings(cfg, others) {
+		e.errf("warning: %s", w)
 	}
 	var goal *control.Goal
 	if asJSON {

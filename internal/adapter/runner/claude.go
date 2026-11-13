@@ -24,33 +24,29 @@ var claudeSpec = &Spec{
 	SettingNames: []string{"cli", "workdir", "model", "effort", "permission_mode", "max_budget_usd", "extra_args", "env"},
 	Prompt:       PromptStdin,
 	Capabilities: Capabilities{ExactResume: true, Stoppable: true, StructuredErrors: true},
-	Settings: func(a config.Agent) (Settings, bool) {
-		if a.Claude == nil {
-			return Settings{}, false
-		}
-		return Settings{CLI: a.Claude.CLI, Workdir: a.Claude.Workdir, Model: a.Claude.Model, Env: a.Claude.Env}, true
-	},
-	Argv: func(a config.Agent, session string) []string { return claudeArgv(*a.Claude, session) },
+	Argv:         func(set Settings, session, _ string) []string { return claudeArgv(set, session) },
 	Read: func(turn Status) Reading {
 		r, ok := ParseClaudeResult(turn.Stdout)
 		if !ok {
 			return Reading{Class: decide.ErrUnknown}
 		}
-		return Reading{Session: r.SessionID, Completed: !r.IsError, Class: r.Class(), Evidence: r.evidence(turn)}
+		return Reading{Session: r.SessionID, Completed: !r.IsError && turn.ExitCode == 0, Class: r.Class(), Evidence: r.evidence(turn)}
 	},
 	Probe: ProbeSpec{
 		// stream-json carries the same final result object as json, plus the
 		// usage events the probe reads. Print mode requires --verbose with it.
-		Argv: func(cli, model, prompt string) []string {
-			argv := []string{cli, "-p", prompt, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+		Command: func(p ProbeRequest) ([]string, string) {
+			argv := []string{p.CLI, "-p", p.Prompt, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
 				"--restricted", "--strict-mcp-config", "--tools", "", "--max-turns", "1"}
-			if model != "" {
-				argv = append(argv, "--model", model)
+			if p.Model != "" {
+				argv = append(argv, "--model", p.Model)
 			}
-			return argv
+			return argv, ""
 		},
-		Judge: judgeClaudeProbe,
-		Trim:  dropClaudeInit,
+		Judge:       judgeClaudeProbe,
+		Trim:        dropClaudeInit,
+		Usage:       ClaudeUsageReadings,
+		UsageSource: "claude_rate_limit_event",
 	},
 }
 
@@ -116,25 +112,88 @@ func (r ClaudeResult) Class() decide.ErrorClass {
 	return adapter.ClassifyCode(r.Subtype)
 }
 
+// claudeSettings reads the loop's claude settings.
+func claudeSettings(a config.Agent) (Settings, bool) {
+	c := a.Claude
+	if c == nil {
+		return Settings{}, false
+	}
+	set := Settings{CLI: c.CLI, Workdir: c.Workdir, Model: c.Model, Env: c.Env, ExtraArgs: c.ExtraArgs, Options: map[string]string{}}
+	if c.Effort != "" {
+		set.Options["effort"] = c.Effort
+	}
+	if c.PermissionMode != "" {
+		set.Options["permission_mode"] = c.PermissionMode
+	}
+	if c.MaxBudgetUSD > 0 {
+		set.Options["max_budget_usd"] = strconv.FormatFloat(c.MaxBudgetUSD, 'f', -1, 64)
+	}
+	return set, true
+}
+
 // claudeArgv builds the claude argv for one turn.
-func claudeArgv(cfg config.Claude, session string) []string {
-	args := []string{cfg.CLI, "-p", "--output-format", "json"}
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
+func claudeArgv(set Settings, session string) []string {
+	args := []string{set.CLI, "-p", "--output-format", "json"}
+	if set.Model != "" {
+		args = append(args, "--model", set.Model)
 	}
-	if cfg.Effort != "" {
-		args = append(args, "--effort", cfg.Effort)
-	}
-	if cfg.PermissionMode != "" {
-		args = append(args, "--permission-mode", cfg.PermissionMode)
-	}
-	if cfg.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", strconv.FormatFloat(cfg.MaxBudgetUSD, 'f', -1, 64))
+	for _, o := range []struct{ key, flag string }{{"effort", "--effort"}, {"permission_mode", "--permission-mode"}, {"max_budget_usd", "--max-budget-usd"}} {
+		if v := set.Options[o.key]; v != "" {
+			args = append(args, o.flag, v)
+		}
 	}
 	if session != "" {
 		args = append(args, "--resume", session)
 	}
-	return append(args, cfg.ExtraArgs...)
+	return append(args, set.ExtraArgs...)
+}
+
+// ClaudeUsageReadings reads the quota windows from rate_limit_event messages
+// in Claude Code stream-json output. Later events override earlier ones per
+// window. The event is not a documented contract, so anything unexpected
+// (no event, another shape) yields no window for that part and never an
+// error. Only utilization is required: a reset time or status that is
+// missing or of another type is left out and the window kept.
+func ClaudeUsageReadings(stdout []byte) []UsageReading {
+	var windows []UsageReading
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var event struct {
+			Type string `json:"type"`
+			Info struct {
+				Windows map[string]json.RawMessage `json:"unifiedWindows"`
+			} `json:"rate_limit_info"`
+		}
+		if json.Unmarshal(line, &event) != nil || event.Type != "rate_limit_event" {
+			continue
+		}
+		for key, raw := range event.Info.Windows {
+			var w struct {
+				Utilization json.RawMessage `json:"utilization"`
+				ResetsAt    json.RawMessage `json:"resetsAt"`
+				Status      json.RawMessage `json:"status"`
+			}
+			var used, resets float64
+			if json.Unmarshal(raw, &w) != nil || json.Unmarshal(w.Utilization, &used) != nil || string(w.Utilization) == "null" {
+				continue
+			}
+			window := UsageReading{Key: key, Used: used}
+			// Epoch seconds; refuse values that are not a plausible time.
+			if json.Unmarshal(w.ResetsAt, &resets) == nil && resets > 0 && resets < 1e11 {
+				t := time.Unix(int64(resets), 0).UTC()
+				window.ResetsAt = &t
+			}
+			var status string
+			if json.Unmarshal(w.Status, &status) == nil {
+				window.Status = status
+			}
+			windows = append(windows, window)
+		}
+	}
+	return windows
 }
 
 // judgeClaudeProbe reads a probe's result object.
