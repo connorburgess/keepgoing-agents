@@ -43,51 +43,37 @@ var outages = []outage{
 		// One check just after the drop, then the host sleeps until the
 		// network is back.
 		checks: []time.Duration{3 * time.Minute},
-		known: map[string][]Waiting{
-			expectNoSendOffline:  Waits(WaitNetworkGate),
-			expectWaitsAtPortal:  Waits(WaitCaptivePortal),
-			expectNetworkShown:   Waits(WaitNetworkGate),
-			expectRecoveredOnce:  Waits(WaitNetworkGate),
-			expectChildRecovered: Waits(WaitChildRecovery),
-			expectTwoSends:       Waits(WaitNetworkGate),
-		},
+		known:  outageKnown,
 	},
 	{
 		name:   "4h",
 		length: 4 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 50 * time.Minute, 51 * time.Minute, 2*time.Hour + 40*time.Minute, 3*time.Hour + 59*time.Minute},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 	{
 		name:   "3d",
 		length: 72 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 9 * time.Hour, 9*time.Hour + time.Minute, 30 * time.Hour, 30*time.Hour + 2*time.Minute, 71 * time.Hour},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 	{
 		name:   "3w",
 		length: 21 * 24 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 48 * time.Hour, 48*time.Hour + time.Minute, 9 * 24 * time.Hour, 15 * 24 * time.Hour, 15*24*time.Hour + 5*time.Minute, 20*24*time.Hour + 23*time.Hour},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 }
 
-// On main the default allowance of three re-prompts is spent into the dead
-// network and the loop is held for a person, so it stays stopped when the
-// network returns.
-var longOutageKnown = map[string][]Waiting{
-	expectNoSendOffline:   Waits(WaitNetworkGate),
-	expectNoHoldOffline:   Waits(WaitNetworkGate),
-	expectNetworkShown:    Waits(WaitNetworkGate),
-	expectNoReportOffline: Waits(WaitNetworkGate),
-	expectRecoveredOnce:   Waits(WaitNetworkGate),
-	expectWaitsAtPortal:   Waits(WaitNetworkGate, WaitCaptivePortal),
-	expectNotHeldOnline:   Waits(WaitNetworkGate),
-	expectNoPerson:        Waits(WaitNetworkGate),
-	expectNoNudge:         Waits(WaitStallClock),
-	expectChildRecovered:  Waits(WaitChildRecovery),
-	expectTwoSends:        Waits(WaitNetworkGate),
-	expectOnlyComplete:    Waits(WaitNetworkGate),
+// What still fails at every length. The network check waits the outage out,
+// through the captive portal, without a send, a hold or a report, and the
+// loop recovers without a person by retrying the failed turn once. The
+// child's failed turn is not retried, so the child is still in error and the
+// retry is followed by the count-only child-error notice: a third message.
+var outageKnown = map[string][]Waiting{
+	expectRecoveredOnce:  Waits(WaitChildRecovery),
+	expectChildRecovered: Waits(WaitChildRecovery),
+	expectTwoSends:       Waits(WaitChildRecovery),
 }
 
 // TestScenarioOutage is the owner's outage: the network drops in the middle
@@ -281,4 +267,93 @@ func noTellTo(s *Step, thread string) error {
 		}
 	}
 	return nil
+}
+
+// TestScenarioOutageHungTurn is the same outage with a turn that never
+// fails: the host sleeps in the middle of a request, so BB still shows the
+// turn as active when the network is gone. A session that looks stalled
+// while offline is neither nudged nor held; the outage is shown once it has
+// been noticed; and when the network is back the turn is not nudged for the
+// time it could not work.
+func TestScenarioOutageHungTurn(t *testing.T) {
+	t.Parallel()
+	for _, o := range outages {
+		t.Run(o.name, func(t *testing.T) {
+			t.Parallel()
+			w := NewWorld(t, scenarioStart)
+			w.Init("await_user", "complete", "stop")
+			primary := w.Thread(primaryThread)
+
+			w.Control("enable")
+			w.Advance(time.Minute)
+			s := w.Tick()
+			w.Check(s, "first wake", all(action(s, "wake"), sentExactly(s, Send{Kind: "tell", Thread: primaryThread, Mode: "auto"})))
+			w.Advance(4 * time.Minute)
+			s = w.Tick()
+			w.Check(s, "working", all(action(s, "none"), nothingSent(s)))
+
+			// The network drops mid-turn and the turn hangs, still active.
+			w.Advance(2 * time.Minute)
+			drop := w.Now
+			w.Net.Offline()
+			noticed := false
+			for _, at := range o.checks {
+				w.At(drop.Add(at))
+				s = w.Tick()
+				w.Check(s, "offline with a hung turn: nothing sent, no hold, no report", all(action(s, "none"), nothingSent(s), holds(s), noReports(s)))
+				if s.Tick["network"] == "down" {
+					noticed = true
+				} else if noticed {
+					w.Failf(s, "the outage was noticed and then forgotten while it lasted: network %v", s.Tick["network"])
+				}
+			}
+			if o.length >= 4*time.Hour && !noticed {
+				w.Failf(s, "the outage was never shown in %s offline", o.length)
+			}
+
+			// Behind the captive portal the loop still waits.
+			w.At(drop.Add(o.length))
+			w.Net.Portal()
+			for _, d := range []time.Duration{time.Minute, 2 * time.Minute} {
+				w.Advance(d)
+				s = w.Tick()
+				w.Check(s, "behind the portal: nothing sent, no hold", all(action(s, "none"), nothingSent(s), holds(s)))
+			}
+
+			// The portal clears and the hung request goes through.
+			w.Advance(3 * time.Minute)
+			w.Net.Online()
+			w.Advance(time.Minute)
+			s = w.Tick()
+			w.Check(s, "not nudged for the time the network was down", all(action(s, "none"), nothingSent(s), holds(s)))
+			w.Advance(10 * time.Minute)
+			s = w.Tick()
+			w.Check(s, "still not nudged ten minutes on", all(action(s, "none"), nothingSent(s), holds(s)))
+
+			w.Advance(5 * time.Minute)
+			w.Commit("feat: fictional work after the outage")
+			primary.FinishTurn()
+			s = w.AgentRuns("complete", "--note", "Fictional task verified")
+			w.Check(s, "complete", all(exit(s, 0), holds(s, "completed"), reported(s, "keepgoing.complete")))
+
+			var toPrimary []Send
+			var reports []Report
+			for _, st := range w.Journal {
+				reports = append(reports, st.Reports...)
+				for _, m := range st.Sent {
+					toPrimary = append(toPrimary, Send{Kind: m.Kind, Thread: m.Thread, Mode: m.Mode})
+				}
+			}
+			var err error
+			if fmt.Sprint(toPrimary) != fmt.Sprint([]Send{{Kind: "tell", Thread: primaryThread, Mode: "auto"}}) {
+				err = fmt.Errorf("the agent received %s", describeSends(toPrimary))
+			}
+			w.Check(s, "the agent receives one thing in the whole journey: the wake", err)
+			err = nil
+			if got := reportTypes(reports); fmt.Sprint(got) != fmt.Sprint([]string{"keepgoing.complete"}) {
+				err = fmt.Errorf("reported %v", got)
+			}
+			w.Check(s, "the only report in the whole journey is the completion", err)
+		})
+	}
 }

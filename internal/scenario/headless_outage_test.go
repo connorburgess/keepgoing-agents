@@ -17,33 +17,10 @@ const (
 	expectThreeTurns     = "the agent runs three turns in the whole journey: the first, the one the outage broke, and one re-prompt"
 )
 
-// headlessKnown lists, per outage length, the assertions that fail on main.
-// They are the same for Claude Code and Codex: an outage is an error the
-// supervisor re-prompts into, whatever its class.
-var headlessKnown = map[string]map[string][]Waiting{
-	// Re-prompts are spent into the outage and the captive portal; the
-	// re-prompt allowance is not used up, so the loop recovers by itself,
-	// late and after extra turns.
-	"20m": {
-		expectNoSendOffline: Waits(WaitNetworkGate),
-		expectWaitsAtPortal: Waits(WaitNetworkGate, WaitCaptivePortal),
-		expectRecoveredOnce: Waits(WaitNetworkGate),
-		expectThreeTurns:    Waits(WaitNetworkGate),
-	},
-	// The allowance is spent and the loop is held; resume alone holds again.
-	"long": {
-		expectNoSendOffline:   Waits(WaitNetworkGate),
-		expectNoHoldOffline:   Waits(WaitNetworkGate),
-		expectNoReportOffline: Waits(WaitNetworkGate),
-		expectWaitsAtPortal:   Waits(WaitNetworkGate, WaitCaptivePortal),
-		expectRecoveredOnce:   Waits(WaitNetworkGate),
-		expectNotHeldOnline:   Waits(WaitNetworkGate),
-		expectResumeRecovers:  Waits(WaitResumeEpisode),
-		expectNoPerson:        Waits(WaitNetworkGate),
-		expectThreeTurns:      Waits(WaitNetworkGate),
-		expectOnlyComplete:    Waits(WaitNetworkGate),
-	},
-}
+// headlessKnown lists the assertions that still fail. The connectivity check
+// waits the outage and the portal out without a re-prompt, a hold or a
+// report, so no loop is held and nothing here waits on it any more.
+var headlessKnown = map[string][]Waiting{}
 
 // TestScenarioHeadlessOutage is the owner's outage on a headless Claude Code
 // or Codex loop: a turn breaks when the network drops, the host sleeps so
@@ -55,11 +32,7 @@ func TestScenarioHeadlessOutage(t *testing.T) {
 		for _, o := range outages {
 			t.Run(cli+"/"+o.name, func(t *testing.T) {
 				t.Parallel()
-				known := headlessKnown["long"]
-				if o.name == "20m" {
-					known = headlessKnown["20m"]
-				}
-				runHeadlessOutage(t, cli, o, known)
+				runHeadlessOutage(t, cli, o, headlessKnown)
 			})
 		}
 	}

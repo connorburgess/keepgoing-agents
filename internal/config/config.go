@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,6 +63,7 @@ type Loop struct {
 	Report    *Report    `yaml:"report,omitempty"`
 	Yield     *Yield     `yaml:"yield,omitempty"`
 	Daemon    Daemon     `yaml:"daemon"`
+	Network   Network    `yaml:"network,omitempty"`
 	// TickTimeout bounds the optional work of one check (fallback probes), so
 	// a check records its result and exits well inside an external
 	// scheduler's own timeout.
@@ -177,6 +179,67 @@ type Yield struct {
 	Timeout     Duration `yaml:"timeout,omitempty"`
 }
 
+// Network configures the connectivity check made before work that needs the
+// network: an error re-prompt, a handoff and fallback probes. With Check off
+// nothing is checked and that work is attempted as before.
+type Network struct {
+	// Check is "on" (the default) or "off".
+	Check string `yaml:"check,omitempty"`
+	// URL answers an HTTP GET when the network is up. Any response counts.
+	URL string `yaml:"url,omitempty"`
+	// Command exits 0 when the network is up. It replaces the URL.
+	Command []string `yaml:"command,omitempty"`
+	Timeout Duration `yaml:"timeout,omitempty"`
+	// VerifyAfter: once the check has failed this long, and again at this
+	// interval, the provider is tested directly with one probe and a report
+	// is attempted, so a check that is wrong cannot hold a loop in silence.
+	VerifyAfter Duration `yaml:"verify_after,omitempty"`
+}
+
+// Enabled reports whether connectivity is checked. A loop built in code
+// without defaults has no check.
+func (n Network) Enabled() bool { return n.Check == "on" }
+
+// NetworkCheckTimeout is the time one connectivity check may use, or zero
+// when it is not made. The check is a mandatory step of a check's time
+// accounting, so it may use only what tick_timeout has beyond MinTickTimeout:
+// a file with the smallest tick_timeout still loads and simply has no room
+// for it.
+func (l Loop) NetworkCheckTimeout() time.Duration {
+	if !l.Network.Enabled() {
+		return 0
+	}
+	room := l.TickTimeout.Duration - MinTickTimeout
+	if room < time.Second {
+		return 0
+	}
+	return min(l.Network.Timeout.Duration, room)
+}
+
+// NetworkCheckWarning is non-empty when the check is on but cannot be made,
+// or is given less time than configured.
+func (l Loop) NetworkCheckWarning() string {
+	if !l.Network.Enabled() {
+		return ""
+	}
+	got, want := l.NetworkCheckTimeout(), l.Network.Timeout.Duration
+	switch {
+	case got == 0:
+		return fmt.Sprintf("loop.tick_timeout (%s) leaves no room for the connectivity check, so it is not made and nothing waits for the network; set tick_timeout to at least %s", l.TickTimeout.Duration, MinTickTimeout+want)
+	case got < want:
+		return fmt.Sprintf("loop.tick_timeout (%s) leaves %s for the connectivity check instead of network.timeout (%s); set tick_timeout to at least %s", l.TickTimeout.Duration, got, want, MinTickTimeout+want)
+	}
+	return ""
+}
+
+// DefaultNetworkTimeout bounds one connectivity check, and
+// DefaultNetworkVerifyAfter how long a failing check is waited on before the
+// provider is tested directly and a report attempted.
+const (
+	DefaultNetworkTimeout     = 8 * time.Second
+	DefaultNetworkVerifyAfter = time.Hour
+)
+
 // Daemon configures `keepgoing daemon`.
 type Daemon struct {
 	Interval    Duration `yaml:"interval,omitempty"`
@@ -210,12 +273,12 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "limit_wait", "child_error", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "child_error", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -258,6 +321,7 @@ func Load(path string) (*Config, error) {
 	if l.Probe.Workdir != "" {
 		l.Probe.Workdir = resolve(base, l.Probe.Workdir)
 	}
+	resolveArgv(base, l.Network.Command)
 	if l.Yield != nil {
 		resolveArgv(base, l.Yield.BusyCommand)
 	}
@@ -396,6 +460,11 @@ func (c *Config) applyDefaults() {
 		}
 		setDur(&r.Timeout, DefaultReportTimeout)
 	}
+	if l.Network.Check == "" {
+		l.Network.Check = "on"
+	}
+	setDur(&l.Network.Timeout, DefaultNetworkTimeout)
+	setDur(&l.Network.VerifyAfter, DefaultNetworkVerifyAfter)
 	if y := l.Yield; y != nil {
 		setDur(&y.Timeout, DefaultYieldTimeout)
 	}
@@ -528,6 +597,28 @@ func (c *Config) Validate() error {
 		if l.Fallbacks == "" {
 			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
 		}
+	}
+	switch l.Network.Check {
+	case "on", "off":
+	default:
+		add("loop.network.check must be on or off")
+	}
+	if l.Network.URL != "" && len(l.Network.Command) > 0 {
+		add("loop.network: set url or command, not both")
+	}
+	if raw := l.Network.URL; raw != "" {
+		if u, err := url.Parse(raw); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			add("loop.network.url must be an http or https URL with a host")
+		}
+	}
+	if c := l.Network.Command; len(c) > 0 && strings.TrimSpace(c[0]) == "" {
+		add("loop.network.command must name a program")
+	}
+	if d := l.Network.VerifyAfter.Duration; d < time.Minute {
+		add("loop.network.verify_after must be at least 1m")
+	}
+	if d := l.Network.Timeout.Duration; d < time.Second || d > 30*time.Second {
+		add("loop.network.timeout must be between 1s and 30s")
 	}
 	if y := l.Yield; y != nil && len(y.BusyCommand) == 0 {
 		add("loop.yield.busy_command is required when yield is set")

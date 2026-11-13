@@ -164,6 +164,8 @@ class Loop:
             "RECOVERY_FIXTURE": str(root),
             "RECOVERY_URL": f"http://127.0.0.1:{receiver.server.server_port}",
             "RECOVERY_SECRET": "fictional-recovery-key",
+            # The connectivity check must not reach the real network.
+            "KEEPGOING_NET_PROBE": "exit 0",
         }
         for name, adapter in (("bb", "bb"), ("claude", "claude"), ("codex", "codex"), ("agent", "cursor")):
             stub = self.commands / name

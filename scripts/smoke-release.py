@@ -42,6 +42,8 @@ def main():
             "BB_THREAD_ID": "thr_smoke_owner",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
+            # The connectivity check must not reach the real network.
+            "KEEPGOING_NET_PROBE": "exit 0",
         })
 
         def run(command, *, owner="thr_smoke_owner", expected=0, stdin=None):

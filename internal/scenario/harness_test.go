@@ -703,18 +703,8 @@ func (w *World) Check(s *Step, name string, err error) {
 type Waiting string
 
 const (
-	// WaitNetworkGate is pull request #154: wait for connectivity before
-	// re-prompting or handing off.
-	WaitNetworkGate Waiting = "network gating, PR #154"
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
-	// WaitCaptivePortal has no open work: PR #154 counts any HTTP answer,
-	// including a captive portal's, as online.
-	WaitCaptivePortal Waiting = "captive portal detection, no open work"
-	// WaitStallClock has no open work: the stall clock keeps running while
-	// the network is down, so a turn that works again after a long outage
-	// is nudged at once.
-	WaitStallClock Waiting = "stall clock across an outage, no open work"
 	// WaitResumeEpisode is the reliability lane's decision that an explicit
 	// resume starts a new error episode. Until then resume keeps the spent
 	// re-prompts, so a loop held on an error is held again at once.
