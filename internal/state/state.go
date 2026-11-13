@@ -41,8 +41,8 @@ type File struct {
 	// NetworkDownSince is when a connectivity check first failed in the
 	// current run of failures; zero once a check did not find it down.
 	// RecentCheckGaps are the times between the last few checks, newest last.
-	// Their median is the loop's usual interval, which tells a gap in which no
-	// check ran from a scheduler that is simply slow.
+	// The longest of them is the loop's usual interval, which tells a gap in
+	// which no check ran from a scheduler that is simply slow.
 	RecentCheckGaps []time.Duration `json:"recentCheckGapsNs,omitempty"`
 	// ActiveSince is the earliest moment the stall clock may count from: when
 	// the target was seen active again after an error or an outage, or the
@@ -55,7 +55,7 @@ type File struct {
 	// when the outage was last reported.
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
-	// until the check itself passes.
+	// until the check itself passes or the session is seen active or idle.
 	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
 	NetworkVerifications int            `json:"networkVerifications,omitempty"`
 	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`

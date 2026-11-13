@@ -397,7 +397,7 @@ For a BB thread, a recovery after an outage is therefore one [turn retry](#recov
 
 **A long outage, and a check that is wrong.** Two cases look the same from the check: a real outage, which may last weeks, and a check target that this machine cannot reach while the provider works (a DNS filter or blocked host, a scheduler environment without its proxy settings, a proxy that refuses the connection, a TLS-inspecting gateway whose certificate is not trusted). The first must be waited out; the second must not hold a loop in silence. So after `network.verify_after` (default `1h`) of failed checks keepgoing looks more closely: it asks the provider directly, with the one exact probe a switch-back would use for the current target. It looks again after twice as long each time (2h, 4h, 8h and so on, up to a week), so a three-week outage costs about nine probes.
 
-- **Positive evidence that the provider was reached** sets the check aside for this outage: the tick line has `"network":"down_untrusted"`, a warning and `status` say so, and the ordinary error rules apply again. The check is believed again only after it has itself passed. What counts, by probe result:
+- **Positive evidence that the provider was reached** sets the check aside for this outage: the tick line has `"network":"down_untrusted"`, a warning and `status` say so, and the ordinary error rules apply again. The check is believed again once it has itself passed, or once the session has been seen active or idle, which ends the episode: a later outage is judged afresh, so a target that is still blocked costs one `verify_after` per error episode. What counts, by probe result:
 
   | Probe result | Evidence of connectivity? | Why |
   | --- | --- | --- |

@@ -322,6 +322,46 @@ func TestWrongCheckTargetIsSetAsideWhenTheProviderAnswers(t *testing.T) {
 	}
 }
 
+// Setting the check aside lasts for one episode. A loop with no fallbacks
+// makes no connectivity check while its session is healthy, so nothing would
+// ever pass and end the distrust: seeing the session healthy ends it. A real
+// outage days later is then believed and waited out.
+func TestDistrustEndsWhenTheSessionIsSeenHealthy(t *testing.T) {
+	reachable := true
+	w, p, check := probeWorld(t, func() probe.Result {
+		if reachable {
+			return probe.Result{OK: true}
+		}
+		return probe.Result{ErrorClass: "unknown", Detail: "timeout", TimedOut: true}
+	})
+	if w.cfg.FallbackSet != nil {
+		t.Fatal("this loop is meant to have no fallbacks")
+	}
+	failed := p.obs
+	// A blocked check target: set aside after an hour, and the session is
+	// re-prompted and recovers.
+	check(0, false)
+	if r, st := check(60, false); r.Network != "down_untrusted" || !st.NetworkDistrusted || r.Action != "reprompt" {
+		t.Fatalf("%+v", r)
+	}
+	p.obs = decide.Observation{State: decide.Active}
+	if _, st := check(70, false); st.NetworkDistrusted || !st.NetworkDownSince.IsZero() {
+		t.Fatalf("distrust kept after the session was seen healthy: %+v", st)
+	}
+	// Three healthy days later the network really is down.
+	sent := len(p.sent)
+	reachable = false
+	p.obs = failed
+	for _, minute := range []int{3 * 24 * 60, 3*24*60 + 10, 3*24*60 + 70, 3*24*60 + 200} {
+		if r, st := check(minute, false); r.Network != "down" || r.Action != "none" || st.NetworkDistrusted || len(p.sent) != sent {
+			t.Fatalf("+%dm: a real outage was not believed: %+v", minute, r)
+		}
+	}
+	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
+		t.Fatal("held offline")
+	}
+}
+
 // A probe result that is not positive evidence of connectivity leaves the
 // loop waiting. A CLI can find its stored login expired without making a
 // request, so auth says nothing about the network; network and unknown say

@@ -1742,8 +1742,12 @@ func (t *tick) noteNetwork() {
 		}
 	case t.sessionRecovered:
 		// No check was needed and the session is not in error: whatever the
-		// last check said, nothing is waiting for the network now.
-		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt, t.st.NetworkVerifications = time.Time{}, time.Time{}, time.Time{}, 0
+		// last check said, nothing is waiting for the network now. The
+		// episode in which the check was not believed is over too: without
+		// this a loop with no fallback probes, which makes no connectivity
+		// check while its session is healthy, would keep disbelieving the
+		// check, and a real outage days later would be re-prompted into.
+		t.st.NetworkDownSince, t.st.NetworkVerifiedAt, t.st.NetworkReportedAt, t.st.NetworkDistrusted, t.st.NetworkVerifications = time.Time{}, time.Time{}, time.Time{}, false, 0
 	}
 }
 
