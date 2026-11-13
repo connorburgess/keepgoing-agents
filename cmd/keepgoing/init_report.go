@@ -58,24 +58,27 @@ func readInitTask(ctx context.Context, input io.Reader) (string, error) {
 // account-directory paths, and raw configuration never enter this report.
 // Next commands are argv arrays, not shell strings, and are never executed here.
 type initReport struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Version       string            `json:"version"`
-	Outcome       string            `json:"outcome"` // preview or created
-	Loop          string            `json:"loop"`
-	Project       string            `json:"project"`
-	ConfigPath    string            `json:"configPath"`
-	StateDir      string            `json:"stateDir"`
-	PromptPath    string            `json:"promptPath"`
-	TaskPath      string            `json:"taskPath,omitempty"`
-	Goal          *initGoalReport   `json:"goal,omitempty"`
-	TaskSource    string            `json:"taskSource"`  // stdin, file, inline
-	TaskBinding   string            `json:"taskBinding"` // snapshot
-	Primary       initTarget        `json:"primary"`
-	Fallbacks     []initFallbackRef `json:"fallbacks"`
-	Limits        initLimits        `json:"limits"`
-	Probes        *initProbePolicy  `json:"probes,omitempty"`
-	Next          initNextCommands  `json:"next"`
-	Limitations   []string          `json:"limitations"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Version       string `json:"version"`
+	Outcome       string `json:"outcome"` // preview or created
+	// StartJSON says this build's start accepts --background --json, which
+	// reports a refusal as a code and the other loop's name.
+	StartJSON   bool              `json:"startJson"`
+	Loop        string            `json:"loop"`
+	Project     string            `json:"project"`
+	ConfigPath  string            `json:"configPath"`
+	StateDir    string            `json:"stateDir"`
+	PromptPath  string            `json:"promptPath"`
+	TaskPath    string            `json:"taskPath,omitempty"`
+	Goal        *initGoalReport   `json:"goal,omitempty"`
+	TaskSource  string            `json:"taskSource"`  // stdin, file, inline
+	TaskBinding string            `json:"taskBinding"` // snapshot
+	Primary     initTarget        `json:"primary"`
+	Fallbacks   []initFallbackRef `json:"fallbacks"`
+	Limits      initLimits        `json:"limits"`
+	Probes      *initProbePolicy  `json:"probes,omitempty"`
+	Next        initNextCommands  `json:"next"`
+	Limitations []string          `json:"limitations"`
 }
 
 type initTarget struct {
@@ -122,7 +125,7 @@ func initTargetOf(a config.Agent) initTarget {
 func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal) int {
 	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
 	r := initReport{
-		SchemaVersion: 1, Version: version, Outcome: "created", Loop: o.name,
+		SchemaVersion: 1, Version: version, Outcome: "created", StartJSON: true, Loop: o.name,
 		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,
 		PromptPath: filepath.Join(o.directory, "prompt.md"), TaskSource: "inline", TaskBinding: "snapshot",
 		Primary: initTargetOf(cfg.Loop.Agent), Fallbacks: []initFallbackRef{},

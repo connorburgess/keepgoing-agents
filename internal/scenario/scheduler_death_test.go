@@ -110,9 +110,7 @@ func TestScenarioSchedulerDeathAndRestart(t *testing.T) {
 			exit(s, 0), action(s, "none"), outcome(s, "failed"), nothingSent(s), holds(s),
 			onlyErrorReports(s), failedChecks(s, i), failedSince(s, firstFailure),
 		))
-		// One failure, one report. Today the check reports it twice: once as
-		// "could not observe" and once as "tick failed".
-		w.Known(s, Waits(WaitDuplicateErrorReport), "a failed check sends one error report", reported(s, "keepgoing.error"))
+		w.Check(s, "a failed check sends one error report", reported(s, "keepgoing.error"))
 	}
 	w.Check(s, "the scheduler is still running after three failed checks", check(!sch.disabled && sch.failures == 0, "disabled=%t failures=%d", sch.disabled, sch.failures))
 
@@ -185,11 +183,6 @@ func TestScenarioSchedulerDeathAndRestart(t *testing.T) {
 	w.Check(s, "the session it woke is left to work", all(action(s, "none"), reasonIs(s, "active"), nothingSent(s), noReports(s)))
 	w.Check(s, "three wakes in the whole journey", journeySends(w, primaryThread, "tell", "tell", "tell"))
 }
-
-// WaitDuplicateErrorReport: a check that cannot observe its session sends two
-// error reports for the one failure, where the documentation promises one
-// per failed check. Reported from this scenario; not assigned yet.
-const WaitDuplicateErrorReport Waiting = "duplicate error report for an unobservable session, unassigned"
 
 // onlyErrorReports: the step reported at least once, and only errors.
 func onlyErrorReports(s *Step) error {

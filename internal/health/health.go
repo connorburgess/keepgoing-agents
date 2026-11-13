@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/allowance"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
@@ -32,6 +33,10 @@ type Entry struct {
 	// with its own observation time. A later probe without a reading leaves
 	// it in place, so it can be older than Last. No decision reads it.
 	Usage *probe.Usage `json:"usage,omitempty"`
+	// UsageHistory is every recorded reading of this candidate's account per
+	// window instance, bounded, for projecting use at a window's reset. Like
+	// Usage it belongs to one account identity, and no decision reads it.
+	UsageHistory *allowance.History `json:"usageHistory,omitempty"`
 }
 
 // Registry is health.json.
@@ -59,6 +64,9 @@ func Load(stateDir string) (*Registry, error) {
 		// A stored reading that did not load cleanly is simply absent.
 		if e != nil && !e.Usage.Available() {
 			e.Usage = nil
+		}
+		if e != nil && e.UsageHistory != nil && len(e.UsageHistory.Windows) == 0 {
+			e.UsageHistory = nil
 		}
 	}
 	return r, nil
@@ -109,9 +117,13 @@ func (r *Registry) Record(id string, res probe.Result) {
 	if e.Usage != nil && res.UsageIdentity != "" && e.Usage.Identity != res.UsageIdentity {
 		e.Usage = nil
 	}
+	if e.UsageHistory != nil && res.UsageIdentity != "" && e.UsageHistory.Identity != res.UsageIdentity {
+		e.UsageHistory = nil
+	}
 	if res.Usage.Available() {
 		u := *res.Usage
 		e.Usage = &u
+		e.UsageHistory = allowance.Add(e.UsageHistory, &u)
 	}
 	e.History = append([]probe.Result{res}, e.History...)
 	if len(e.History) > historyLen {

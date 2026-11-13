@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +110,10 @@ func newFixture(t *testing.T) *fixture {
 	testexec.Shared(t, filepath.Join(bin, "claude"), fakeClaude)
 	testexec.Shared(t, filepath.Join(bin, "codex"), fakeCodex)
 	t.Setenv("FAKE_BB", bbDir)
+	// Each fixture has its own registry and session claims: fixtures share
+	// fictional thread IDs.
+	t.Setenv(registryDirEnv, filepath.Join(dir, "registry"))
+	t.Setenv(session.DirEnv, filepath.Join(dir, "sessions"))
 
 	h := &hooks{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

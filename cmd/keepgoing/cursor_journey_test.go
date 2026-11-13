@@ -432,15 +432,11 @@ func TestCursorCommandRefusalBeforeStartIsRetriedWithinBoundsThenHeld(t *testing
 	if id, err := j.target.InspectSession(); err != nil || id != "" {
 		t.Fatalf("a session was recorded: %q %v", id, err)
 	}
-	// Resuming alone holds again: the error episode has not ended, so its
-	// re-prompt count stands. This is the supervisor's rule for every adapter.
-	j.resume()
-	j.expectAction("await_user")
-	j.count(3)
-	// The directory is trusted, and the operator allows one more re-prompt and
-	// resumes: a new conversation starts, and later turns resume it.
+	// The directory is trusted and the operator resumes. The hold was raised
+	// for the spent re-prompt cap, so the resume starts a new error episode
+	// (this is the supervisor's rule for every adapter): the next check
+	// re-prompts, a new conversation starts, and later turns resume it.
 	j.mark("refuse-before-start", "", false)
-	j.editConfig(func(c *config.Config) { c.Loop.Errors.MaxReprompts = 3 })
 	j.resume()
 	j.expectAction("reprompt")
 	j.capture(4, false)

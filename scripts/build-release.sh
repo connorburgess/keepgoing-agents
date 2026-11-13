@@ -5,6 +5,9 @@ set -euo pipefail
 version=${1:?version, for example v0.1.0}
 root=$(cd "$(dirname "$0")/.." && pwd)
 dist="$root/dist"
+# A release never ships without the notices of everything in the executable:
+# this fails when a module was added and THIRD_PARTY_NOTICES was not updated.
+"$root/scripts/third-party-notices.sh" --check
 rm -rf "$dist" && mkdir -p "$dist"
 targets="darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64"
 for t in $targets; do
@@ -17,8 +20,9 @@ for t in $targets; do
     -ldflags "-s -w -X main.version=$version" -o "$work/keepgoing$ext" ./cmd/keepgoing)
   # LICENSE is the Sustainable Use License: everyone who gets the executable
   # gets its terms. The file points to LICENSING.md and the preserved Apache
-  # text, so both ship beside it.
-  cp "$root/LICENSE" "$root/LICENSING.md" "$root/README.md" "$work/"
+  # text, so both ship beside it. THIRD_PARTY_NOTICES carries the terms of
+  # the Go runtime and the modules inside the executable.
+  cp "$root/LICENSE" "$root/LICENSING.md" "$root/THIRD_PARTY_NOTICES" "$root/README.md" "$work/"
   mkdir -p "$work/LICENSES" && cp "$root/LICENSES/Apache-2.0.txt" "$work/LICENSES/"
   if [ "$os" = windows ]; then
     (cd "$dist" && zip -qr "$name.zip" "$name")

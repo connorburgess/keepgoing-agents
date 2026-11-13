@@ -296,36 +296,15 @@ func runsCommand(e env, args []string) int {
 			if *all {
 				limitRuns = 0 // The registry view shows each loop's current run only.
 			}
-			// Revalidate the binding as registered status does. If the
-			// configuration now names another loop or runtime directory, the
-			// registered directory's runs are not printed under this name.
-			cfg, bound := clientConfig(entry)
-			if !bound {
-				failed = true
-				r.Loops = append(r.Loops, runsLoop{RegistrationID: entry.ID, Loop: entry.Loop, Binding: recordUnavailable, Registration: recordUnavailable,
-					Graph: runsGraph{Availability: recordUnavailable}, Control: runsControl{Availability: recordUnavailable}, ActiveTarget: runsTarget{Availability: recordUnavailable},
-					Recent: []runsRun{}, Blocker: runsBlocker{Availability: blockerUnknown, Reason: "binding_unavailable", Children: []runsChild{},
-						Owner: runsOwner{Availability: blockerUnknown, Reason: "binding_unavailable", Supervised: runsSupervised{Availability: "registry_not_consulted"}},
-						Lock:  runsUnavailable{Availability: recordUnavailable, Reason: "lock_holder_not_identified"}}})
-				if set["id"] {
-					r.View, r.Node = "node", &runsNode{Ref: *ref, Status: recordUnavailable, Edges: []runsEdge{}}
-				}
-				continue
-			}
-			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit, staleAfter: *stale, registry: allEntries, registryKnown: allKnown, viaRegistry: true}
-			loop, bad := c.readLoop(limitRuns)
-			loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
-			loop.Registration = recordUnavailable
-			if loop.Graph.Availability == rungraph.Available || loop.Graph.Availability == rungraph.Missing {
-				loop.Registration = recordNotRecorded
-				if n, status := c.g.Lookup(entry.ID); status == rungraph.Found && n.Type == rungraph.RegistrationNode {
-					loop.Registration = recordRecorded
-				}
-			}
+			loop, c, bad := readRegisteredRuns(entry, allEntries, allKnown, *limit, limitRuns, *stale)
 			failed = failed || bad
 			r.Loops = append(r.Loops, loop)
 			if set["id"] {
-				r.View, r.Node = "node", c.readNode(*ref)
+				if c == nil {
+					r.View, r.Node = "node", &runsNode{Ref: *ref, Status: recordUnavailable, Edges: []runsEdge{}}
+				} else {
+					r.View, r.Node = "node", c.readNode(*ref)
+				}
 			}
 		}
 	default:
@@ -376,6 +355,45 @@ func runsCommand(e env, args []string) int {
 	return exitOK
 }
 
+// readRegisteredRuns reads one registered loop's runs as runs --registry-id
+// and --all do. It revalidates the binding as registered status does: if the
+// configuration now names another loop or runtime directory, the registered
+// directory's runs are not reported under this name and the context is nil.
+func readRegisteredRuns(entry registry.Entry, allEntries []registry.Entry, allKnown bool, limit, limitRuns int, stale time.Duration) (runsLoop, *runsContext, bool) {
+	return readRegisteredRunsWith(entry, allEntries, allKnown, limit, limitRuns, stale, nil)
+}
+
+// readRegisteredRunsWith is readRegisteredRuns with configurations the caller
+// has already validated for every registry entry; nil validates on demand.
+func readRegisteredRunsWith(entry registry.Entry, allEntries []registry.Entry, allKnown bool, limit, limitRuns int, stale time.Duration, validated map[string]*config.Config) (runsLoop, *runsContext, bool) {
+	var cfg *config.Config
+	var bound bool
+	if validated == nil {
+		cfg, bound = clientConfig(entry)
+	} else {
+		cfg = validated[entry.ID]
+		bound = cfg != nil
+	}
+	if !bound {
+		return runsLoop{RegistrationID: entry.ID, Loop: entry.Loop, Binding: recordUnavailable, Registration: recordUnavailable,
+			Graph: runsGraph{Availability: recordUnavailable}, Control: runsControl{Availability: recordUnavailable}, ActiveTarget: runsTarget{Availability: recordUnavailable},
+			Recent: []runsRun{}, Blocker: runsBlocker{Availability: blockerUnknown, Reason: "binding_unavailable", Children: []runsChild{},
+				Owner: runsOwner{Availability: blockerUnknown, Reason: "binding_unavailable", Supervised: runsSupervised{Availability: "registry_not_consulted"}},
+				Lock:  runsUnavailable{Availability: recordUnavailable, Reason: "lock_holder_not_identified"}}}, nil, true
+	}
+	c := &runsContext{dir: entry.StateDir, cfg: cfg, limit: limit, staleAfter: stale, registry: allEntries, registryKnown: allKnown, viaRegistry: true, validated: validated}
+	loop, bad := c.readLoop(limitRuns)
+	loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
+	loop.Registration = recordUnavailable
+	if loop.Graph.Availability == rungraph.Available || loop.Graph.Availability == rungraph.Missing {
+		loop.Registration = recordNotRecorded
+		if n, status := c.g.Lookup(entry.ID); status == rungraph.Found && n.Type == rungraph.RegistrationNode {
+			loop.Registration = recordRecorded
+		}
+	}
+	return loop, c, bad
+}
+
 func runsEntries(dir, id string, all bool) ([]registry.Entry, bool) {
 	if !all {
 		entry, ok := clientEntry(dir, id)
@@ -403,6 +421,10 @@ type runsContext struct {
 	// candidateList is the registry's validated BB loops, built once.
 	candidateList    []runsCandidate
 	candidatesLoaded bool
+	// validated, when not nil, holds every registry entry's configuration
+	// already validated by the caller (nil for an entry that did not
+	// validate), so a read of many loops loads each configuration once.
+	validated map[string]*config.Config
 	// waiting is the one blocker answer every view of this loop uses.
 	waiting runsBlocker
 }

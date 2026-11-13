@@ -46,7 +46,17 @@ func TestActiveRetryRecoveryEvidence(t *testing.T) {
 		{"failed", `{"type":"turn/completed","data":{"providerThreadId":"p1","status":"failed"}}`, false},
 		{"interrupted", `{"type":"turn/completed","data":{"providerThreadId":"p1","status":"interrupted"}}`, false},
 		{"new_turn", turnStarted, false},
+		// A provider that recovers straight into a tool call starts a tool
+		// item and may write no message for a long time.
+		{"tool_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, false},
+		{"reasoning_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"reasoning"}}}`, false},
+		{"user_message_item", `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"userMessage"}}}`, true},
+		{"unhandled_provider_event", `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`, true},
+		{"item_without_identity", `{"type":"item/started","data":{"providerThreadId":"p1","item":{}}}`, true},
+		{"item_of_another_provider_thread", `{"type":"item/started","data":{"providerThreadId":"other","item":{"id":"item_example","type":"commandExecution"}}}`, true},
+		{"tool_item_finished", `{"type":"item/completed","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, true},
 		{"queued_input", `{"type":"client/turn/requested","data":{}}`, true},
+		{"acknowledged_input", `{"type":"turn/input/accepted","data":{"providerThreadId":"p1","clientRequestId":"req_example"}}`, true},
 		{"tool_output", `{"type":"item/commandExecution/outputDelta","data":{"providerThreadId":"p1","itemId":"item_example"}}`, true},
 		{"wrong_provider", `{"type":"item/agentMessage/delta","data":{"providerThreadId":"other","itemId":"item_example"}}`, true},
 		{"missing_identity", `{"type":"item/agentMessage/delta","data":{}}`, true},

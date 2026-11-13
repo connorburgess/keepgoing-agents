@@ -25,6 +25,16 @@
 //	bb.down                if present, every bb command fails with no output
 //	standin.started,       one byte per stand-in process started and per one
 //	standin.ended          that ended on its own; they differ when one was killed
+//	standin.held,          one byte per stand-in held at the show gate and per
+//	standin.released       one let through it, so the harness can tell one
+//	                       still waiting there from one that was killed
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
+//	show.gate              if present, holds a number N: each `thread show`
+//	                       records its arrival in show.arrived and waits until N
+//	                       have arrived or show.open exists, then answers
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -64,9 +74,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
+	// A scenario may run keepgoing with no room to write (a zero file-size
+	// limit, which is how a full disk looks to a program). The stand-in
+	// is not the program under test: it lifts its own limit, so it can
+	// still record what it was sent.
+	liftFileSizeLimit()
 	world := os.Getenv("SCENARIO_WORLD")
 	if world == "" {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
@@ -110,7 +126,29 @@ func play(world, name string, args []string) int {
 	if name == "example-agent" {
 		return exampleAgent(world, args)
 	}
-	return run(world, args)
+	// killbefore.<command>: the stand-in kills the keepgoing process that
+	// runs `thread <command>` before doing anything, as a crash just before
+	// the call would. The command is not recorded or done. The file is used up.
+	// In both, the stand-in counts itself ended before the kill: the harness
+	// looks as soon as keepgoing has died, and this one ends on its own.
+	if len(args) > 1 && args[0] == "thread" && os.Remove(filepath.Join(world, "killbefore."+args[1])) == nil {
+		mark(world, "standin.ended")
+		killParent()
+		os.Exit(1)
+	}
+	code := run(world, args)
+	// kill.<command>: once the command has done its work and answered, the
+	// stand-in kills the keepgoing process that ran it, as a crash or a
+	// power cut would at that moment. The file is used up.
+	if len(args) > 1 && args[0] == "thread" {
+		if os.Remove(filepath.Join(world, "kill."+args[1])) == nil {
+			os.Stdout.Sync()
+			mark(world, "standin.ended")
+			killParent()
+			os.Exit(code)
+		}
+	}
+	return code
 }
 
 func run(world string, args []string) int {
@@ -137,6 +175,10 @@ func run(world string, args []string) int {
 	}
 	switch args[1] {
 	case "show":
+		if !gate(world) {
+			fmt.Fprintln(os.Stderr, "standin: the show gate was never opened")
+			return 1
+		}
 		return emit(world, arg(args, 2)+".show", `{"thread":{"status":"idle"}}`)
 	case "list":
 		if p := flagValue(args, "--parent-thread"); p != "" {
@@ -444,4 +486,36 @@ func readMode(path, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// gate holds `thread show` while show.gate exists, until as many calls as
+// it names have arrived or show.open is created. It lets a test put two
+// checks in the same moment, or keep one check in the middle of its work
+// while another starts. It gives up after 30 seconds.
+func gate(world string) bool {
+	b, err := os.ReadFile(filepath.Join(world, "show.gate"))
+	if err != nil {
+		return true
+	}
+	want, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	// A stand-in held here is still running on purpose; the harness counts
+	// it apart from one that was killed.
+	mark(world, "standin.held")
+	defer mark(world, "standin.released")
+	f, err := os.OpenFile(filepath.Join(world, "show.arrived"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err == nil {
+		f.Write([]byte{'.'})
+		f.Close()
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(world, "show.open")); err == nil {
+			return true
+		}
+		if info, err := os.Stat(filepath.Join(world, "show.arrived")); err == nil && want > 0 && info.Size() >= int64(want) {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }

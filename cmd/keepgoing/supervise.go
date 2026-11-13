@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 		fmt.Fprintln(e.stdout, "ownership: validation only; use enable --take-over to transfer the claim")
 	}
 	fmt.Fprintf(e.stdout, "ok: %s (loop %s, %s)\n", path, l.Name, l.Describe())
+	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
+		e.errf("warning: %s", w)
+	}
 	if fb := cfg.FallbackSet; fb != nil {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
 	}
@@ -186,13 +190,40 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
+		}
+		// Stop wins: a stop that was skipped (another loop's check held the
+		// session, or another tick held the lock) is tried again at the next
+		// control poll, not after a whole interval.
+		if code == exitSkipped && stopRequested(cfg.Loop.StateDir) {
+			if !sleepContext(e.ctx, cfg.Loop.Daemon.ControlPoll.Duration) {
+				return exitOK
+			}
+			continue
 		}
 		if !waitForNext(e.ctx, cfg, sig, monitor, lease) {
 			return exitOK
 		}
+	}
+}
+
+// stopRequested reports whether the loop's control record asks for a stop.
+func stopRequested(stateDir string) bool {
+	f, err := control.Load(stateDir)
+	return err == nil && f.Stop
+}
+
+// sleepContext waits d, and reports false when ctx ended first.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
@@ -287,6 +318,12 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 }
 
 type statusOut struct {
+	// SharedWith lists, in words, other enabled loops that share this loop's
+	// session, a fallback's session, its working directory or a repository.
+	SharedWith []string `json:"sharedWith,omitempty"`
+	// SessionClaim describes a check of another loop acting on this loop's
+	// primary session right now, or one that is stuck holding it.
+	SessionClaim      string                   `json:"sessionClaim,omitempty"`
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	TurnRetry         turnRetryStatus          `json:"turnRetry"`
@@ -297,15 +334,18 @@ type statusOut struct {
 	Notifications     report.DeliveryStatus    `json:"notifications"`
 	ProgressAllowance *progressAllowanceStatus `json:"progressAllowance,omitempty"`
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
-	Loop              string                   `json:"loop"`
-	Primary           string                   `json:"primary"`
-	Target            string                   `json:"target"`
-	Control           control.File             `json:"control"`
-	ControlState      string                   `json:"controlState"`
-	Deadline          string                   `json:"deadline,omitempty"`
-	DeadlineReached   bool                     `json:"deadlineReached"`
-	WorkBounds        workBoundsStatus         `json:"workBounds"`
-	TickBudget        tickBudgetStatus         `json:"tickBudget"`
+	// SendRecord is set when sends.json, the record every send is made
+	// through, cannot be read: nothing is sent until it is restored.
+	SendRecord      string           `json:"sendRecord,omitempty"`
+	Loop            string           `json:"loop"`
+	Primary         string           `json:"primary"`
+	Target          string           `json:"target"`
+	Control         control.File     `json:"control"`
+	ControlState    string           `json:"controlState"`
+	Deadline        string           `json:"deadline,omitempty"`
+	DeadlineReached bool             `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus `json:"workBounds"`
+	TickBudget      tickBudgetStatus `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -380,6 +420,11 @@ type progressAllowanceStatus struct {
 	BaselinePending bool       `json:"baselinePending,omitempty"`
 }
 
+// sendRecordProblem is what status and doctor say when sends.json cannot be
+// read. Deleting it would lose the record of sends not yet counted and reset
+// the count against max_sends.
+const sendRecordProblem = "sends.json cannot be read, so no check sends anything; restore it from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends"
+
 // sendAllowanceStatus omits unknown counts when accounting cannot be read.
 type sendAllowanceStatus struct {
 	Max       int64  `json:"max"`
@@ -415,21 +460,226 @@ func refOf(a config.Agent) agentRef {
 }
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
+	out, err := readStatus(e.ctx, cfg, now, staleAfter, inspectDaemon)
+	if err != nil {
+		e.errf("%v", err)
+		return exitFailed
+	}
+	ctl, st := out.Control, out.State
+	out.SharedWith = sharedLoopWarnings(cfg, findOtherLoops(cfg))
+	out.SessionClaim = sessionClaimText(cfg, now)
+	if asJSON {
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Fprintln(e.stdout, string(b))
+		return exitOK
+	}
+	w := e.stdout
+	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
+	for _, s := range out.SharedWith {
+		fmt.Fprintf(w, "shared:    %s\n", s)
+	}
+	if out.SessionClaim != "" {
+		fmt.Fprintf(w, "session:   %s\n", out.SessionClaim)
+	}
+	if ctl.PendingTransfer != nil {
+		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
+	}
+	if ctl.BBTarget != "" {
+		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
+	}
+	if out.Goal != nil {
+		printGoal(e, *out.Goal, false)
+	}
+	if out.GoalError != "" {
+		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
+	}
+	printPromptSend(w, out.PromptSend)
+	if n := out.NewThreads; n.Created > 0 || n.Pending {
+		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
+		if n.Active != nil {
+			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
+		}
+		if n.Pending {
+			fmt.Fprint(w, "; one creation could not be confirmed: nothing is created or handed off until a person settles it with retarget")
+		}
+		fmt.Fprintln(w)
+	}
+	printLimitWait(w, out.LimitWait)
+	printTurnRetry(w, out.TurnRetry)
+	printChildReport(w, out.ChildErrorReport)
+	fmt.Fprintf(w, "task:      %s", out.TaskSource)
+	if out.TaskFile != "" {
+		fmt.Fprintf(w, " (%s)", out.TaskFile)
+	}
+	fmt.Fprintln(w, "; task text withheld")
+	fmt.Fprintf(w, "primary:   %s\n", out.Primary)
+	fmt.Fprintf(w, "target:    %s", out.Target)
+	if st.Handoffs > 0 {
+		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
+	}
+	fmt.Fprintln(w)
+	if s := out.TargetSession; s != nil {
+		fmt.Fprintf(w, "session:   %s", s.State)
+		if s.ID != "" {
+			fmt.Fprintf(w, " (%s)", s.ID)
+		}
+		fmt.Fprintf(w, "; %s\n", s.Message)
+	}
+	if out.TargetConfigured {
+		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
+		if out.TargetAgent.BBThread != "" {
+			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
+		}
+	} else {
+		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
+	}
+	if ctl.Ownership != nil {
+		fmt.Fprintf(w, "owner:     %s (generation %d)\n", ctl.Ownership.ThreadID, ctl.Ownership.Generation)
+		if p := ctl.Ownership.Previous; p != nil {
+			fmt.Fprintf(w, "previous owner: %s (%s)\n", p.ThreadID, p.Status)
+		}
+	}
+	fmt.Fprintf(w, "control:   %s", out.ControlState)
+	if ctl.Note != "" {
+		fmt.Fprintf(w, " (%s)", ctl.Note)
+	}
+	fmt.Fprintln(w)
+	if q := ctl.OpenQuestion; q != nil {
+		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
+	}
+	printDeliveryStatus(w, out.Notifications)
+	fmt.Fprintf(w, "window:    %s\n", out.Window)
+	tickBudget := out.TickBudget.Timeout
+	if out.TickBudget.Grown {
+		tickBudget += fmt.Sprintf(" (tick_timeout is not set; raised from the %s default to fit fallbacks probe.timeout)", config.DefaultTickTimeout)
+	}
+	fmt.Fprintf(w, "check budget: %s\n", tickBudget)
+	if out.TickBudget.Warning != "" {
+		fmt.Fprintf(w, "check budget: warning: %s\n", out.TickBudget.Warning)
+	}
+	if out.WorkBounds.Unbounded {
+		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
+	} else {
+		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
+	}
+	if out.SendRecord != "" {
+		fmt.Fprintf(w, "send record: %s\n", out.SendRecord)
+	}
+	if a := out.SendAllowance; a != nil {
+		if a.Error != "" {
+			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
+		} else {
+			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
+		}
+	}
+	if a := out.ProgressAllowance; a != nil {
+		switch {
+		case a.Error != "":
+			fmt.Fprintf(w, "progress:  unavailable (%s)\n", a.Error)
+		case a.BaselinePending:
+			fmt.Fprintf(w, "progress:  %s timeout; awaiting first verified baseline\n", a.Timeout)
+		default:
+			fmt.Fprintf(w, "progress:  %s timeout; last verified change %s (due: %t; next tick rechecks Git)\n", a.Timeout, a.ChangedAt.Format(time.RFC3339), a.Due)
+		}
+	}
+	if out.Deadline != "" {
+		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
+	}
+	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
+	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
+	if c := st.LastCheck; c != nil {
+		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
+		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
+		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
+		if c.RetrySignal == "declined" {
+			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
+		}
+		if c.RetrySignal == "expired" {
+			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
+		}
+		if c.ErroredChildren > 0 {
+			count := fmt.Sprintf("%d", c.ErroredChildren)
+			if c.ErroredChildrenPartial {
+				count = "at least " + count + " (child discovery was incomplete)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+		}
+		if c.ChildErrorNoticeStopped {
+			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
+		}
+		if c.DryRun {
+			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
+		}
+	} else {
+		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	switch {
+	case st.NetworkDownSince.IsZero():
+	case st.NetworkDistrusted:
+		fmt.Fprintf(w, "network:   the connectivity check has failed since %s, but the provider answered a probe, so it is not believed and the ordinary rules apply. Run doctor to test loop.network\n", st.NetworkDownSince.Format(time.RFC3339))
+	default:
+		reported := "not reported yet"
+		if !st.NetworkReportedAt.IsZero() {
+			reported = "reported " + st.NetworkReportedAt.Format(time.RFC3339)
+		} else if !st.NetworkVerifiedAt.IsZero() {
+			reported = "provider last tested " + st.NetworkVerifiedAt.Format(time.RFC3339) + ", report not delivered yet"
+		}
+		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
+	}
+	if warning := cfg.Loop.NetworkCheckWarning(); warning != "" {
+		fmt.Fprintf(w, "network:   warning: %s\n", warning)
+	}
+	if st.FailedChecks > 0 {
+		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
+	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
+	if out.Daemon.State == "responsive" {
+		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
+	}
+	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
+	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
+	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	if st.Reprompts > 0 {
+		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
+	}
+	if st.ResumeEpisodes > 0 {
+		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
+	}
+	if r := out.Redundancy; r != nil {
+		verdict := "handoffs allowed"
+		if !r.Meets {
+			verdict = "handoffs refused"
+		}
+		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
+	}
+	if b := out.TakeoverBriefs; len(b.Capped) > 0 {
+		fmt.Fprintf(w, "handoff briefs: %s rejected %d and will not be tried again this error episode; resume or retarget clears this\n", strings.Join(b.Capped, ", "), b.Cap)
+	}
+	if b := out.TakeoverBriefs; b.SwitchBackStopped {
+		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
+	}
+	printUsage(w, "usage:     ", "projected: ", out.Usage)
+	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
+	return exitOK
+}
+
+// readStatus builds the status report. It reads local records and the existing
+// daemon endpoint through query; it never queries a provider or writes.
+func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAfter time.Duration, query clientDaemonQuery) (statusOut, error) {
 	l := cfg.Loop
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	st, err := state.Load(l.StateDir)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	in, why, err := window.Inside(l.Window, now)
 	if err != nil {
-		e.errf("%v", err)
-		return exitFailed
+		return statusOut{}, err
 	}
 	if ctl.BBTarget != "" && !transferThreadID.MatchString(ctl.BBTarget) {
 		ctl.BBTarget = "unavailable"
@@ -453,6 +703,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
+	if _, err := state.LoadLedger(l.StateDir); err != nil {
+		out.SendRecord = sendRecordProblem
+	}
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -521,8 +774,8 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
-	queryCtx, cancel := context.WithTimeout(e.ctx, time.Second)
-	out.Daemon = inspectDaemon(queryCtx, l.StateDir, version, false)
+	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
+	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
 	if out.Daemon.State == "responsive" {
 		out.Runtime.NextCheck = out.Daemon.NextCheck
@@ -536,7 +789,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
 		for _, c := range append([]config.Candidate{l.PrimaryCandidate()}, fb.Candidates...) {
-			out.Usage = append(out.Usage, usageOf(reg, c, now))
+			out.Usage = append(out.Usage, usageOf(reg, c, now, projectionRules(fb)))
 		}
 		if err == nil {
 			group := l.Group
@@ -547,186 +800,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			out.Redundancy = &s
 		}
 	}
-	if asJSON {
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Fprintln(e.stdout, string(b))
-		return exitOK
-	}
-	w := e.stdout
-	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
-	if ctl.PendingTransfer != nil {
-		fmt.Fprintf(w, "transfer: pending %s (%s -> %s); use transfer recover\n", ctl.PendingTransfer.ID, ctl.PendingTransfer.From, ctl.PendingTransfer.To)
-	}
-	if ctl.BBTarget != "" {
-		fmt.Fprintf(w, "bound BB target: %s\n", ctl.BBTarget)
-	}
-	if out.Goal != nil {
-		printGoal(e, *out.Goal, false)
-	}
-	if out.GoalError != "" {
-		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
-	}
-	printPromptSend(w, out.PromptSend)
-	if n := out.NewThreads; n.Created > 0 || n.Pending {
-		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
-		if n.Active != nil {
-			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
-		}
-		if n.Pending {
-			fmt.Fprint(w, "; one creation could not be confirmed: nothing is created or handed off until a person settles it with retarget")
-		}
-		fmt.Fprintln(w)
-	}
-	printLimitWait(w, out.LimitWait)
-	printTurnRetry(w, out.TurnRetry)
-	printChildReport(w, out.ChildErrorReport)
-	fmt.Fprintf(w, "task:      %s", out.TaskSource)
-	if out.TaskFile != "" {
-		fmt.Fprintf(w, " (%s)", out.TaskFile)
-	}
-	fmt.Fprintln(w, "; task text withheld")
-	fmt.Fprintf(w, "primary:   %s\n", out.Primary)
-	fmt.Fprintf(w, "target:    %s", out.Target)
-	if st.Handoffs > 0 {
-		fmt.Fprintf(w, " (%d handoffs, last %s)", st.Handoffs, when(st.LastHandoffAt))
-	}
-	fmt.Fprintln(w)
-	if s := out.TargetSession; s != nil {
-		fmt.Fprintf(w, "session:   %s", s.State)
-		if s.ID != "" {
-			fmt.Fprintf(w, " (%s)", s.ID)
-		}
-		fmt.Fprintf(w, "; %s\n", s.Message)
-	}
-	if out.TargetConfigured {
-		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
-		if out.TargetAgent.BBThread != "" {
-			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
-		}
-	} else {
-		fmt.Fprintln(w, "target configuration: missing or disabled; run doctor before resuming")
-	}
-	if ctl.Ownership != nil {
-		fmt.Fprintf(w, "owner:     %s (generation %d)\n", ctl.Ownership.ThreadID, ctl.Ownership.Generation)
-		if p := ctl.Ownership.Previous; p != nil {
-			fmt.Fprintf(w, "previous owner: %s (%s)\n", p.ThreadID, p.Status)
-		}
-	}
-	fmt.Fprintf(w, "control:   %s", out.ControlState)
-	if ctl.Note != "" {
-		fmt.Fprintf(w, " (%s)", ctl.Note)
-	}
-	fmt.Fprintln(w)
-	printDeliveryStatus(w, out.Notifications)
-	fmt.Fprintf(w, "window:    %s\n", out.Window)
-	tickBudget := out.TickBudget.Timeout
-	if out.TickBudget.Grown {
-		tickBudget += fmt.Sprintf(" (tick_timeout is not set; raised from the %s default to fit fallbacks probe.timeout)", config.DefaultTickTimeout)
-	}
-	fmt.Fprintf(w, "check budget: %s\n", tickBudget)
-	if out.TickBudget.Warning != "" {
-		fmt.Fprintf(w, "check budget: warning: %s\n", out.TickBudget.Warning)
-	}
-	if out.WorkBounds.Unbounded {
-		fmt.Fprintf(w, "bounds:    warning: %s\n", out.WorkBounds.Warning)
-	} else {
-		fmt.Fprintf(w, "bounds:    %s\n", strings.Join(out.WorkBounds.Limits, ", "))
-	}
-	if a := out.SendAllowance; a != nil {
-		if a.Error != "" {
-			fmt.Fprintf(w, "sends:     unavailable (%s)\n", a.Error)
-		} else {
-			fmt.Fprintf(w, "sends:     %d/%d attempts reserved; %d remaining (reached: %t)\n", *a.Used, a.Max, *a.Remaining, a.Reached)
-		}
-	}
-	if a := out.ProgressAllowance; a != nil {
-		switch {
-		case a.Error != "":
-			fmt.Fprintf(w, "progress:  unavailable (%s)\n", a.Error)
-		case a.BaselinePending:
-			fmt.Fprintf(w, "progress:  %s timeout; awaiting first verified baseline\n", a.Timeout)
-		default:
-			fmt.Fprintf(w, "progress:  %s timeout; last verified change %s (due: %t; next tick rechecks Git)\n", a.Timeout, a.ChangedAt.Format(time.RFC3339), a.Due)
-		}
-	}
-	if out.Deadline != "" {
-		fmt.Fprintf(w, "deadline:  %s (reached: %t; evaluated on next check)\n", out.Deadline, out.DeadlineReached)
-	}
-	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
-	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
-	if c := st.LastCheck; c != nil {
-		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
-		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
-		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
-		if c.RetrySignal == "declined" {
-			fmt.Fprintln(w, "retry signal: declined; BB's retry plugin recorded that it will not retry the failed turn and had nothing pending, so the provider retry notice was not waited out and ordinary error handling applied")
-		}
-		if c.RetrySignal == "expired" {
-			fmt.Fprintln(w, "retry signal: expired; a stale provider retry notice was not honored, so ordinary error or stall handling applied")
-		}
-		if c.ErroredChildren > 0 {
-			count := fmt.Sprintf("%d", c.ErroredChildren)
-			if c.ErroredChildrenPartial {
-				count = "at least " + count + " (child discovery was incomplete)"
-			}
-			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
-		}
-		if c.ChildErrorNoticeStopped {
-			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
-		}
-		if c.DryRun {
-			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
-		}
-	} else {
-		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
-	}
-	switch {
-	case st.NetworkDownSince.IsZero():
-	case st.NetworkDistrusted:
-		fmt.Fprintf(w, "network:   the connectivity check has failed since %s, but the provider answered a probe, so it is not believed and the ordinary rules apply. Run doctor to test loop.network\n", st.NetworkDownSince.Format(time.RFC3339))
-	default:
-		reported := "not reported yet"
-		if !st.NetworkReportedAt.IsZero() {
-			reported = "reported " + st.NetworkReportedAt.Format(time.RFC3339)
-		} else if !st.NetworkVerifiedAt.IsZero() {
-			reported = "provider last tested " + st.NetworkVerifiedAt.Format(time.RFC3339) + ", report not delivered yet"
-		}
-		fmt.Fprintf(w, "network:   down at the last connectivity check, failing since %s (%s); work that needs the network waits\n", st.NetworkDownSince.Format(time.RFC3339), reported)
-	}
-	if warning := l.NetworkCheckWarning(); warning != "" {
-		fmt.Fprintf(w, "network:   warning: %s\n", warning)
-	}
-	if st.FailedChecks > 0 {
-		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
-	}
-	fmt.Fprintf(w, "build:     %s (last recorded check versus this process)\n", out.Runtime.BinaryComparison)
-	fmt.Fprintf(w, "daemon:    %s; %s\n", out.Daemon.State, out.Daemon.Message)
-	if out.Daemon.State == "responsive" {
-		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
-	}
-	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
-	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
-	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
-	if st.Reprompts > 0 {
-		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
-	}
-	if r := out.Redundancy; r != nil {
-		verdict := "handoffs allowed"
-		if !r.Meets {
-			verdict = "handoffs refused"
-		}
-		fmt.Fprintf(w, "fallbacks: %d healthy, %d distinct by %s, need %d: %s\n", len(r.Healthy), r.Distinct, r.Span, r.Min, verdict)
-	}
-	if b := out.TakeoverBriefs; len(b.Capped) > 0 {
-		fmt.Fprintf(w, "handoff briefs: %s rejected %d and will not be tried again this error episode; resume or retarget clears this\n", strings.Join(b.Capped, ", "), b.Cap)
-	}
-	if b := out.TakeoverBriefs; b.SwitchBackStopped {
-		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
-	}
-	printUsage(w, "usage:     ", out.Usage)
-	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
-	return exitOK
+	return out, nil
 }
 
 func when(t time.Time) string {
@@ -734,6 +808,96 @@ func when(t time.Time) string {
 		return "never"
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// saveEpisodeState is swapped in tests to make the save fail.
+var saveEpisodeState = state.Save
+
+// resumeEpisode is the state half of an explicit resume. A person resuming a
+// loop that keepgoing held because a per-episode allowance was spent is
+// saying "try again", so those counts start over: otherwise the next check
+// finds the same spent count and raises the same hold, and resume does
+// nothing.
+//
+// Only that hold starts a new episode. A resume with nothing held, or of a
+// hold a command created (pause, stop, await-user, complete), would
+// otherwise refund the running episode: hold and resume before every check,
+// by anyone who can run the commands, and a session in error is re-prompted
+// at every check with no backoff, cap or hold. Such a resume still gives a
+// repaired fallback or primary fresh takeover briefs, as it always has.
+//
+// Loop-wide limits are never refunded. It runs inside the control update,
+// before the holds are cleared, with the tick lock held: if the counts
+// cannot be saved the resume fails and changes nothing.
+func resumeEpisode(stateDir string, episodeHold bool, at time.Time, maxBriefs int, briefs ...control.Brief) error {
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return err
+	}
+	before := st
+
+	if episodeHold {
+		// Sends recorded by a check that could not save what happened belong
+		// to the episode that is ending: settle them first, so the next
+		// check does not count them into the new one.
+		if err := state.SettleIntoEpisode(stateDir, &st); err != nil {
+			return err
+		}
+		st.NewEpisode(at)
+	} else {
+		st.RetryRepaired()
+	}
+	// After the counts are cleared, which clears rejected briefs too.
+	// A brief to another conversation, recorded and not confirmed, which
+	// a person has now looked at. The loop stays on its current target. A
+	// brief to another target is counted as one delivered and not taken, so
+	// that route is spaced like any rejected brief, and no route is briefed
+	// on the next check: the person resumed to keep the loop where it is.
+	for _, b := range briefs {
+		// The record of the brief is settled by the next check, from this.
+		st.ResumedBriefs = append(st.ResumedBriefs, state.Brief(b))
+		if b.Target == st.Target() {
+			continue
+		}
+		if b.Action == "switch_back" {
+			// Spaced by switch_back.retry_every; not counted toward its cap,
+			// so the person's resume cannot by itself end switch-back.
+			st.LastSwitchBackTry = at
+			continue
+		}
+		// Spaced like a rejected brief, but never capped by the resume: with
+		// a cap of one, that would leave the loop with no fallback. With a
+		// cap of one it is not spaced either; the next check still briefs
+		// no route.
+		if st.HandoffBriefs == nil {
+			st.HandoffBriefs = map[string]state.BriefRecord{}
+		}
+		r := st.HandoffBriefs[b.Target]
+		st.HandoffBriefs[b.Target] = state.BriefRecord{Failed: max(0, min(r.Failed+1, maxBriefs-1)), LastAt: at}
+	}
+	if len(briefs) > 0 {
+		st.SkipHandoffOnce = true
+	}
+	if reflect.DeepEqual(before, st) {
+		return nil
+	}
+	return saveEpisodeState(stateDir, st)
+}
+
+// errEpisodeState marks a resume refused because the saved counts could not
+// be reset.
+var errEpisodeState = errors.New("the saved re-prompt and nudge counts could not be reset")
+
+// controlCaller is who is running a control command, as a role.
+func controlCaller(f control.File) string {
+	caller := os.Getenv("BB_THREAD_ID")
+	switch {
+	case caller == "":
+		return "terminal"
+	case f.Ownership != nil && f.Ownership.ThreadID == caller:
+		return "owner_thread"
+	}
+	return "other_thread"
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
@@ -752,17 +916,33 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		"enable":  func(f *control.File) { f.Enabled = true },
 		"disable": func(f *control.File) { f.Enabled = false },
 		"pause":   func(f *control.File) { f.Paused = true },
-		"resume":  func(f *control.File) { f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false },
-		"stop":    func(f *control.File) { f.Stop = true },
+		"resume": func(f *control.File) {
+			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
+			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
+			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
+		},
+		"stop": func(f *control.File) { f.Stop = true },
 		"complete": func(f *control.File) {
 			if !f.Completed {
 				completionDeclaredAt = time.Now().UTC()
 			}
 			f.Completed = true
+			// The task is done, so the loop is shown as completed and not as
+			// waiting on a person. What the person was being asked is kept:
+			// the hold may have been raised by a check, for a child waiting
+			// on a person, and its note is stored nowhere else. A stop or
+			// pause is the operator's and stays.
+			if f.AwaitingUser {
+				f.OpenQuestion = &control.OpenQuestion{Note: f.Note, At: time.Now().UTC()}
+			}
+			f.AwaitingUser = false
 		},
 		"await-user": func(f *control.File) { f.AwaitingUser = true },
 	}[cmd]
-	f, err := updateControlWithHistory(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+	newEpisode, openQuestion := false, false
+	var settledBriefs []control.Brief
+	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
+		newEpisode, openQuestion, settledBriefs = false, false, nil
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -774,16 +954,24 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			if err := control.CheckOwner(*f, os.Getenv("BB_THREAD_ID"), false); err != nil {
 				return err
 			}
+			if err := resumeEpisode(cfg.Loop.StateDir, f.EpisodeHold, time.Now().UTC(), cfg.Loop.Errors.MaxReprompts, f.BriefHold...); err != nil {
+				return fmt.Errorf("%w, so nothing was changed and the loop is still %s: %v", errEpisodeState, f.Summary(), err)
+			}
+			newEpisode, settledBriefs = f.EpisodeHold, f.BriefHold
 		}
+		wasAwaiting := f.AwaitingUser
 		if !transfer {
 			fn(f)
 		} // Transferring ownership preserves disabled too.
+		openQuestion = cmd == "complete" && wasAwaiting
 		if note != "" {
 			f.Note = note
-		} else if cmd == "resume" {
-			f.Note = ""
+		} else if cmd == "resume" || openQuestion {
+			f.Note = "" // the note described the hold that has just ended
 		}
 		return nil
+	}, func(f control.File, c *incident.ControlChange) {
+		c.Caller, c.NewEpisode = controlCaller(f), newEpisode
 	}, suppliedRoutine(e.ctx))
 	historyFailed := errors.Is(err, errControlHistory)
 	if historyFailed {
@@ -795,19 +983,6 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
-	}
-	if cmd == "resume" {
-		// Resume is the operator saying "try again": a fallback or primary
-		// that was repaired gets fresh takeover briefs. The tick lock is held.
-		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
-			e.errf("warning: could not clear rejected takeover briefs: %v", err)
-		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 || st.ChildErrorNoticeAttempts > 0 {
-			st.ClearBriefs()
-			st.ChildErrorNoticeAttempts = 0 // a child-error notice that was given up is tried again
-			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
-				e.errf("warning: could not clear rejected takeover briefs: %v", err)
-			}
-		}
 	}
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
@@ -833,6 +1008,27 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		}
 	}
 	fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, f.Summary())
+	if openQuestion && f.OpenQuestion != nil {
+		// The note is not repeated here; status shows it, as it shows any note.
+		fmt.Fprintln(e.stdout, "a question to a person was still open when completion was declared; `status` keeps it and its note until a resume")
+	}
+	if cmd == "resume" && len(settledBriefs) > 0 {
+		current := state.Primary
+		if st, err := state.Load(cfg.Loop.StateDir); err == nil {
+			current = st.Target()
+		}
+		for _, b := range settledBriefs {
+			if b.Target == current {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered: the loop is on %s\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, current)
+			} else {
+				fmt.Fprintf(e.stdout, "the %s brief to %s is settled as delivered and not taken; %s is spaced like a rejected brief\n", strings.ReplaceAll(b.Action, "_", "-"), b.Target, b.Target)
+			}
+		}
+		fmt.Fprintf(e.stdout, "the loop continues on %s; no route is briefed on the next check\n", current)
+	}
+	if cmd == "resume" && newEpisode {
+		fmt.Fprintln(e.stdout, "a new error episode starts: the re-prompt and nudge counts start over; loop-wide limits are unchanged")
+	}
 	if cmd == "enable" && f.Ownership != nil {
 		fmt.Fprintf(e.stdout, "owner: %s (generation %d)\n", f.Ownership.ThreadID, f.Ownership.Generation)
 	}
@@ -840,6 +1036,14 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// noteSuffix renders an optional note.
+func noteSuffix(note string) string {
+	if note == "" {
+		return ""
+	}
+	return ": " + note
 }
 
 // retargetFind looks a created thread up by its generated title. Swapped in tests.

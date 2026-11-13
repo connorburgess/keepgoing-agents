@@ -131,8 +131,14 @@ type World struct {
 	Net     *Connectivity
 	Hooks   *Receiver
 	Threads map[string]*Thread
+	// otherLoops is set when another loop sends to the same stand-ins, so
+	// this loop's runs do not account for every send.
+	otherLoops bool
 	// Headless is the CLI of a headless loop, or "" for a BB loop.
 	Headless string
+	// sendsUnrecordable is set when the scenario makes keepgoing unable to
+	// write its records, so its run history cannot account for every send.
+	sendsUnrecordable bool
 
 	bin, world, home string
 	env              []string
@@ -444,8 +450,12 @@ func standinTrouble(world, stderr string) string {
 		return info.Size()
 	}
 	started, ended := size("standin.started"), size("standin.ended")
+	// A stand-in a test holds at the show gate is still running on purpose.
+	held := size("standin.held") - size("standin.released")
 	switch {
-	case started != ended:
+	case started-ended != held && held > 0:
+		return fmt.Sprintf("%d stand-in processes started and %d ended on their own, with %d held at the show gate", started, ended, held)
+	case started-ended != held:
 		return fmt.Sprintf("%d stand-in processes started and %d ended on their own", started, ended)
 	case strings.Contains(stderr, "signal: killed"):
 		return "a process the command ran was killed: " + strings.TrimSpace(stderr)
@@ -730,7 +740,7 @@ func (w *World) invariants(s *Step) {
 	}
 	// Every delivery is recorded as an attempt. An attempt that failed
 	// before anything arrived (a refused creation) has no delivery.
-	if got := s.Runs.Attempts(); got < w.sendsTotal {
+	if got := s.Runs.Attempts(); got < w.sendsTotal && !w.sendsUnrecordable && !w.otherLoops {
 		w.Failf(s, "runs records %d send attempts; the agents received %d", got, w.sendsTotal)
 	}
 	for _, c := range s.Calls {
@@ -763,10 +773,6 @@ type Waiting string
 const (
 	// WaitChildRecovery is the lane recovering a direct child's failed turn.
 	WaitChildRecovery Waiting = "child recovery, in progress"
-	// WaitResumeEpisode is the reliability lane's decision that an explicit
-	// resume starts a new error episode. Until then resume keeps the spent
-	// re-prompts, so a loop held on an error is held again at once.
-	WaitResumeEpisode Waiting = "resume starts a new error episode, reliability lane"
 )
 
 // Known records an assertion that fails today because of open work. It never
@@ -1052,7 +1058,11 @@ func (c *Connectivity) take() int { return int(c.hits.Swap(0)) }
 // Receiver is the fake webhook receiver. It accepts only correctly signed
 // reports.
 type Receiver struct {
-	URL    string
+	URL string
+	// onReport, when set, runs as each report arrives, before it is
+	// answered; fault injection uses it to kill the sender mid-delivery.
+	onReport func(typ string)
+
 	mu     sync.Mutex
 	events []Report
 	bad    int
@@ -1082,6 +1092,9 @@ func newReceiver(t *testing.T) *Receiver {
 		json.Unmarshal(body, &v)
 		typ, _ := v["type"].(string)
 		r.events = append(r.events, Report{Type: typ, Body: v})
+		if r.onReport != nil {
+			r.onReport(typ)
+		}
 		rw.WriteHeader(http.StatusAccepted)
 	}))
 	t.Cleanup(srv.Close)
@@ -1094,6 +1107,14 @@ func newReceiver(t *testing.T) *Receiver {
 	})
 	r.URL = srv.URL
 	return r
+}
+
+// OnReport sets a function run, under the receiver's lock, as each report
+// arrives and before it is answered.
+func (r *Receiver) OnReport(f func(typ string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onReport = f
 }
 
 // Events returns every report delivered so far.
