@@ -409,3 +409,20 @@ func TestClientResumeExpiryDuringConsumption(t *testing.T) {
 		t.Fatal("consumption lost")
 	}
 }
+
+// The registered resume, used by local clients, is the same explicit act and
+// starts a new episode too.
+func TestClientResumeStartsANewErrorEpisode(t *testing.T) {
+	f := newResumeFixture(t)
+	if err := state.Save(f.entry.StateDir, state.File{Reprompts: 3, Nudges: 2, HandoffDeferrals: 1, NewThreadsCreated: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p := f.prepare(t)
+	if r, c := f.call("resume", p.Ticket, false, nil); c != 0 || r.ControlSave != "confirmed" || len(r.Issues) != 0 {
+		t.Fatal(c, r)
+	}
+	st, err := state.Load(f.entry.StateDir)
+	if err != nil || st.Reprompts != 0 || st.Nudges != 0 || st.HandoffDeferrals != 0 || st.NewThreadsCreated != 1 {
+		t.Fatalf("%+v %v", st, err)
+	}
+}

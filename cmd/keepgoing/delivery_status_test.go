@@ -143,8 +143,10 @@ func TestNotificationStatusUnavailableAndSetupFailure(t *testing.T) {
 		t.Fatal("corrupt ledger caused replay")
 	}
 	ctl, err := control.Load(cfg.Loop.StateDir)
-	if err != nil || !ctl.Completed || !ctl.AwaitingUser {
-		t.Fatal("diagnostic failure cleared holds")
+	// Completion is saved despite the diagnostic failure, and it ends the
+	// wait on a person.
+	if err != nil || !ctl.Completed || ctl.AwaitingUser {
+		t.Fatal("diagnostic failure lost the completion, or the wait on a person outlived it")
 	}
 }
 
