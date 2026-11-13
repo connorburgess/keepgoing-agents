@@ -234,7 +234,7 @@ func dockServeHandler(ctx context.Context, ln net.Listener, h http.Handler, stde
 		if errors.Is(err, http.ErrServerClosed) {
 			return exitOK
 		}
-		fmt.Fprintln(stderr, "dock: the server stopped unexpectedly")
+		fmt.Fprintln(stderr, "dock: the page stopped being served unexpectedly")
 		return exitFailed
 	}
 }
