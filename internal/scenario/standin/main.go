@@ -23,6 +23,8 @@
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
 //	bb.down                if present, every bb command fails with no output
+//	standin.started,       one byte per stand-in process started and per one
+//	standin.ended          that ended on its own; they differ when one was killed
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -57,23 +59,42 @@ func main() {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
 		os.Exit(97)
 	}
-	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+	// One byte when a stand-in starts and one when it ends on its own, so the
+	// harness can tell when the operating system, or anything else, ended one
+	// early. A stand-in never ends itself any other way.
+	mark(world, "standin.started")
+	code := play(world, strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe"), os.Args[1:])
+	mark(world, "standin.ended")
+	os.Exit(code)
+}
+
+func mark(world, name string) {
+	f, err := os.OpenFile(filepath.Join(world, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	f.Write([]byte{'.'})
+	f.Close()
+}
+
+// play is the part the stand-in was run as.
+func play(world, name string, args []string) int {
 	switch name {
 	case "claude":
-		if isClaudeTurn(os.Args[1:]) {
-			os.Exit(turn(world, name, os.Args[1:]))
+		if isClaudeTurn(args) {
+			return turn(world, name, args)
 		}
-		os.Exit(claude(world, os.Args[1:]))
+		return claude(world, args)
 	case "codex":
-		if len(os.Args) > 1 && os.Args[1] == "app-server" {
-			os.Exit(1) // no structured limit snapshot
+		if len(args) > 0 && args[0] == "app-server" {
+			return 1 // no structured limit snapshot
 		}
-		if isCodexProbe(os.Args[1:]) {
-			os.Exit(codexProbe(world, os.Args[1:]))
+		if isCodexProbe(args) {
+			return codexProbe(world, args)
 		}
-		os.Exit(turn(world, name, os.Args[1:]))
+		return turn(world, name, args)
 	}
-	os.Exit(run(world, os.Args[1:]))
+	return run(world, args)
 }
 
 func run(world string, args []string) int {
