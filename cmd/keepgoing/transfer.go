@@ -15,6 +15,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -219,7 +220,8 @@ func readTransferRecord(dir, name string, dst any) error {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return errors.New("record unavailable")
 	}
-	f, err := os.Open(p)
+	// Never block a concurrent control or state save (Windows).
+	f, err := snapshot.Open(p)
 	if err != nil {
 		return errors.New("record unavailable")
 	}

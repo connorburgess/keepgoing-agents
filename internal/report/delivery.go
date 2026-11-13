@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 const DeliveryFile = "deliveries.json"
@@ -68,7 +69,7 @@ func LoadDeliveries(dir string) (DeliveryHistory, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxDeliveryBytes {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
-	f, err := os.Open(path)
+	f, err := snapshot.Open(path)
 	if err != nil {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
@@ -188,7 +189,7 @@ func saveDelivery(dir string, d Delivery) (uint64, error) {
 	if err = f.Close(); err != nil {
 		return 0, ErrDeliveryHistory
 	}
-	if os.Rename(name, filepath.Join(dir, DeliveryFile)) != nil {
+	if snapshot.Replace(name, filepath.Join(dir, DeliveryFile)) != nil {
 		return 0, ErrDeliveryHistory
 	}
 	return d.Sequence, nil

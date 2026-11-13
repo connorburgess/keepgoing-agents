@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 const FileName = "incidents.json"
@@ -110,7 +111,7 @@ func Load(dir string) (Journal, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
 	}
-	f, err := os.Open(path)
+	f, err := snapshot.Open(path)
 	if err != nil {
 		return Journal{}, ErrUnavailable
 	}
@@ -231,7 +232,7 @@ func Append(dir string, r Record) error {
 	if err = f.Close(); err != nil {
 		return ErrUnavailable
 	}
-	if err = os.Rename(name, filepath.Join(dir, FileName)); err != nil {
+	if err = snapshot.Replace(name, filepath.Join(dir, FileName)); err != nil {
 		return ErrUnavailable
 	}
 	return nil

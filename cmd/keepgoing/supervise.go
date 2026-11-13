@@ -180,6 +180,11 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 		case <-ctx.Done():
 			return false
 		case now := <-t.C:
+			// Both cases can be ready at once and select picks at random. Never
+			// poll, and so never consume a wake notice, after cancellation.
+			if ctx.Err() != nil {
+				return false
+			}
 			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
 			}

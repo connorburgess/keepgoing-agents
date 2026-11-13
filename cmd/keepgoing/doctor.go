@@ -22,6 +22,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -307,7 +308,11 @@ func doctorFile(r *doctorReport, id, path string, directory bool) {
 		r.add(id, "error", "Configured path has the wrong file type.", "Use a directory for state and regular files for configuration, task, and records.")
 		return
 	}
-	f, err := os.Open(path)
+	open := os.Open
+	if !directory {
+		open = snapshot.Open // never block a concurrent save of a runtime record (Windows)
+	}
+	f, err := open(path)
 	if err != nil {
 		r.add(id, "error", "Configured path could not be opened for reading.", "Review its access permissions.")
 		return
