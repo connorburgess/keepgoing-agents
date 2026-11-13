@@ -56,7 +56,18 @@ func cursorJourneyHelper() {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if mode, err := os.ReadFile(filepath.Join(turn, "release")); err == nil {
-			if string(mode) == "success" {
+			reconnecting := fmt.Sprintf("{\"type\":\"connection\",\"subtype\":\"reconnecting\",\"session_id\":%q,\"attempt\":1}\n", journeyCursorSession)
+			switch string(mode) {
+			case "success":
+				fmt.Printf("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":%q}\n", journeyCursorSession)
+				os.Exit(0)
+			case "connection-lost":
+				// The inspected CLI's shape for a connection it could not restore:
+				// reconnecting records, no result record, text on stderr, exit 1.
+				fmt.Print(reconnecting, reconnecting)
+			case "reconnected":
+				fmt.Print(reconnecting)
+				fmt.Printf("{\"type\":\"connection\",\"subtype\":\"reconnected\",\"session_id\":%q}\n", journeyCursorSession)
 				fmt.Printf("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":%q}\n", journeyCursorSession)
 				os.Exit(0)
 			}
@@ -281,4 +292,53 @@ func TestCursorCommandUnknownRecoveryIsBounded(t *testing.T) {
 	j.expectAction("none")
 	j.expectAction("none")
 	j.count(3)
+}
+
+// Connection loss mid-turn, through the real commands with state reloaded and
+// the adapter rebuilt on every invocation. Recovery is the ordinary bounded
+// re-prompt: one new turn per decision, always the saved session, never a new
+// conversation, a handoff or a probe.
+func TestCursorCommandConnectionLossResumesExactSessionOnce(t *testing.T) {
+	j := newCursorJourney(t)
+	j.expectAction("wake")
+	j.capture(1, false)
+	// Nothing is sent to a turn that is still running.
+	if got := j.expectAction("none"); got.State != "active" {
+		t.Fatalf("running turn: %+v", got)
+	}
+	j.count(1)
+	j.release(1, "connection-lost")
+	got := j.expectAction("reprompt")
+	if got.ErrorClass != "unknown" || got.Handoff != nil || len(got.Probes) != 0 || got.ResetsAt != nil {
+		t.Fatalf("connection loss classified, probed or failed over: %+v", got)
+	}
+	j.capture(2, true)
+	j.count(2)
+	// The recovery turn is running: repeated checks send nothing more.
+	j.expectAction("none")
+	j.expectAction("none")
+	j.count(2)
+	// A second loss inside the backoff waits, then spends the last re-prompt.
+	j.release(2, "connection-lost")
+	if got := j.expectAction("none"); got.Reason != "backing off after error" {
+		t.Fatalf("backoff: %+v", got)
+	}
+	j.count(2)
+	j.now = j.now.Add(time.Minute)
+	j.expectAction("reprompt")
+	j.capture(3, true)
+	j.count(3)
+	// The CLI reconnects by itself and the turn succeeds: an ordinary idle wake
+	// follows on the same session, and the retry budget is available again.
+	j.release(3, "reconnected")
+	got = j.expectAction("wake")
+	if got.ErrorClass != "" || got.Reprompts != 0 {
+		t.Fatalf("recovered turn: %+v", got)
+	}
+	j.capture(4, true)
+	j.count(4)
+	if id, err := j.target.InspectSession(); err != nil || id != journeyCursorSession {
+		t.Fatalf("session %q %v", id, err)
+	}
+	j.release(4, "success")
 }

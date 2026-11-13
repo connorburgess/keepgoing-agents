@@ -286,27 +286,144 @@ func TestDoctorVersionAndOutputLimit(t *testing.T) {
 	}
 }
 
-func TestDoctorCursorUsesOnlyVersionAndKeepsAuthUnknown(t *testing.T) {
+func cursorDoctorFixture(t *testing.T, cursor map[string]any) *doctorFixture {
+	t.Helper()
+	// Presence of either variable in the process would skip the status query.
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("CURSOR_AUTH_TOKEN", "")
 	f := newDoctorFixture(t)
 	delete(f.loop, "bb")
 	f.loop["adapter"] = "cursor"
 	f.loop["provider"] = "cursor"
-	f.loop["cursor"] = map[string]any{"cli": f.executable, "workdir": f.root, "env": map[string]string{"CURSOR_API_KEY": doctorPrivate}}
+	cursor["cli"], cursor["workdir"] = f.executable, f.root
+	f.loop["cursor"] = cursor
 	f.save(t)
-	calls := 0
-	code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, env map[string]string, dir string) ([]byte, error) {
-		calls++
-		if !reflect.DeepEqual(args, []string{"--version"}) || dir != f.root || env["CURSOR_API_KEY"] != doctorPrivate {
-			t.Fatal("unexpected diagnostic command or environment")
-		}
-		return []byte("2030.01.02-abcdef0\n"), nil
-	})
-	if code != 0 || calls != 1 || doctorCheckByID(t, r, "agent.primary.version").Status != "ok" || doctorCheckByID(t, r, "agent.primary.login").Status != "unavailable" || doctorCheckByID(t, r, "agent.primary.capabilities").Status != "unavailable" {
-		t.Fatalf("%d calls=%d %+v", code, calls, r)
+	return f
+}
+
+func TestDoctorCursorWithEnvironmentCredentialQueriesOnlyVersion(t *testing.T) {
+	for _, source := range []string{"config", "process", "token"} {
+		t.Run(source, func(t *testing.T) {
+			cursor := map[string]any{}
+			if source == "config" {
+				cursor["env"] = map[string]string{"CURSOR_API_KEY": doctorPrivate}
+			}
+			f := cursorDoctorFixture(t, cursor)
+			switch source {
+			case "process":
+				t.Setenv("CURSOR_API_KEY", doctorPrivate)
+			case "token":
+				t.Setenv("CURSOR_AUTH_TOKEN", doctorPrivate)
+			}
+			calls := 0
+			code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, env map[string]string, dir string) ([]byte, error) {
+				calls++
+				if !reflect.DeepEqual(args, []string{"--version"}) || dir != f.root || (source == "config" && env["CURSOR_API_KEY"] != doctorPrivate) {
+					t.Fatal("unexpected diagnostic command or environment")
+				}
+				return []byte("2030.01.02-abcdef0\n"), nil
+			})
+			login := doctorCheckByID(t, r, "agent.primary.login")
+			if code != 0 || calls != 1 || login.Status != "unavailable" || !strings.Contains(login.Message, "API key or token") {
+				t.Fatalf("%d calls=%d %+v", code, calls, r)
+			}
+		})
 	}
 	for _, bad := range []string{"2030.01.02-abcdef0\n" + doctorPrivate, "2030.01.02-secret", ""} {
 		if doctorAgentVersion("cursor", []byte(bad)) != "" {
 			t.Fatal("unrecognized version surfaced")
 		}
 	}
+}
+
+func TestDoctorCursorLoginVersionAndUnavailableCapabilities(t *testing.T) {
+	// Fictional identity: none of it may reach the report.
+	const identity = `"userInfo":{"email":"person@example.com","userId":424242,"firstName":"Example","lastName":"Person","createdAt":"2030-01-02T03:04:05.000Z"}`
+	failed := errors.New("exit status 1")
+	for _, tc := range []struct {
+		name, status string
+		err          error
+		want, text   string
+	}{
+		{"signed_in", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,` + identity + `}`, nil, "ok", "signed-in account"},
+		{"signed_in_user_id_only", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"userInfo":{"userId":424242}}`, nil, "ok", "signed-in account"},
+		// The CLI answers "authenticated" from stored tokens even when the account lookup failed.
+		{"tokens_without_identity", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"message":"` + doctorPrivate + `"}`, nil, "unavailable", "not confirmed"},
+		{"empty_identity", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,"userInfo":{"email":"","userId":null}}`, nil, "unavailable", "not confirmed"},
+		{"signed_in_but_command_failed", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,` + identity + `}`, failed, "unavailable", "could not be established"},
+		{"signed_out", `{"status":"unauthenticated","isAuthenticated":false,"hasAccessToken":false,"hasRefreshToken":false,"message":"` + doctorPrivate + `"}`, nil, "warning", "no usable stored login"},
+		{"signed_out_nonzero_exit", `{"status":"unauthenticated","isAuthenticated":false,"hasAccessToken":false,"hasRefreshToken":false}`, failed, "warning", "no usable stored login"},
+		{"partial", `{"status":"partially-authenticated","isAuthenticated":false,"hasAccessToken":true,"hasRefreshToken":false}`, nil, "warning", "no usable stored login"},
+		{"status_contradicts_flag", `{"status":"authenticated","isAuthenticated":false,"hasAccessToken":true,"hasRefreshToken":true,` + identity + `}`, nil, "unavailable", "could not be established"},
+		{"flag_contradicts_status", `{"status":"unauthenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}`, nil, "unavailable", "could not be established"},
+		{"missing_token_flag", `{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,` + identity + `}`, nil, "unavailable", "could not be established"},
+		{"unknown_status", `{"status":"` + doctorPrivate + `","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true,` + identity + `}`, nil, "unavailable", "could not be established"},
+		{"error_object", `{"status":"error","message":"` + doctorPrivate + `"}`, failed, "unavailable", "could not be established"},
+		{"text_form", "✓ Logged in as person@example.com\n", nil, "unavailable", "could not be established"},
+		{"not_an_object", `["authenticated"]`, nil, "unavailable", "could not be established"},
+		{"empty", ``, failed, "unavailable", "could not be established"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cursorDoctorFixture(t, map[string]any{"model": "example-model"})
+			var calls [][]string
+			code, r, raw := f.run(t, func(_ context.Context, _ string, args []string, _ map[string]string, dir string) ([]byte, error) {
+				calls = append(calls, args)
+				if dir != f.root {
+					t.Fatal("diagnostic ran outside the configured project")
+				}
+				if reflect.DeepEqual(args, []string{"--version"}) {
+					return []byte("2026.09.18-9a7762b\n"), nil
+				}
+				return []byte(tc.status), tc.err
+			})
+			if code != 0 || !reflect.DeepEqual(calls, [][]string{{"--version"}, {"status", "--format", "json"}}) {
+				t.Fatalf("code=%d calls=%v", code, calls)
+			}
+			login := doctorCheckByID(t, r, "agent.primary.login")
+			if login.Status != tc.want || !strings.Contains(login.Message, tc.text) {
+				t.Fatalf("login %+v", login)
+			}
+			for _, private := range []string{"person@example.com", "424242", "Example", "2030-01-02T03"} {
+				if strings.Contains(raw, private) {
+					t.Fatalf("report contains account detail %q", private)
+				}
+			}
+			version := doctorCheckByID(t, r, "agent.primary.version")
+			if version.Status != "ok" || !strings.Contains(version.Message, "2026.09.18-9a7762b") || !strings.Contains(version.Message, "no live turn") {
+				t.Fatalf("version %+v", version)
+			}
+			// Never guessed, whatever the login says.
+			for id, text := range map[string]string{"agent.primary.account": "quota", "agent.primary.models": "not checked against the account", "agent.primary.workspace": "trust", "agent.primary.capabilities": "permission"} {
+				if c := doctorCheckByID(t, r, id); c.Status != "unavailable" || !strings.Contains(strings.ToLower(c.Message), strings.ToLower(text)) {
+					t.Fatalf("%s %+v", id, c)
+				}
+			}
+		})
+	}
+
+	t.Run("other_version_and_default_model", func(t *testing.T) {
+		f := cursorDoctorFixture(t, map[string]any{})
+		code, r, _ := f.run(t, func(_ context.Context, _ string, args []string, _ map[string]string, _ string) ([]byte, error) {
+			if reflect.DeepEqual(args, []string{"--version"}) {
+				return []byte("2030.01.02-abcdef0\n"), nil
+			}
+			return nil, failed
+		})
+		version := doctorCheckByID(t, r, "agent.primary.version")
+		models := doctorCheckByID(t, r, "agent.primary.models")
+		if code != 0 || version.Status != "warning" || !strings.Contains(version.Message, "unverified") || models.Status != "unavailable" || !strings.Contains(models.Message, "Cursor's own default") {
+			t.Fatalf("%d %+v %+v", code, version, models)
+		}
+	})
+
+	t.Run("offline_queries_nothing", func(t *testing.T) {
+		f := cursorDoctorFixture(t, map[string]any{})
+		code, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
+			t.Fatal("offline doctor executed the CLI")
+			return nil, nil
+		}, "--offline")
+		if code != 0 || doctorCheckByID(t, r, "agent.primary.login").Status != "unavailable" || doctorCheckByID(t, r, "agent.primary.version").Status != "unavailable" {
+			t.Fatalf("%d %+v", code, r)
+		}
+	})
 }

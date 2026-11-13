@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -31,6 +32,11 @@ type CursorOutcome struct {
 	SessionID     string
 	Success       bool
 	UnsafeSession bool
+	// ConnectionLost means the stream's last connection record for this
+	// session said the CLI was reconnecting. It is diagnostic evidence from a
+	// structured record seen in one inspected CLI version. It never changes
+	// the error class, which stays unknown.
+	ConnectionLost bool
 }
 
 const cursorMaxOutput = 8 << 20
@@ -73,6 +79,17 @@ func ParseCursorEvents(stdout []byte) CursorOutcome {
 		}
 		documented := lifecycle || typ == "user" || typ == "assistant" || typ == "tool_call"
 		if !documented {
+			// Connection records are not part of the published schema. Read only
+			// their subtype, only for the initialized session, and never let one
+			// invalidate the turn.
+			if typ == "connection" && initialized && cursorString(fields, "session_id", &session) && session == out.SessionID && cursorString(fields, "subtype", &subtype) {
+				switch subtype {
+				case "reconnecting":
+					out.ConnectionLost = true
+				case "reconnected":
+					out.ConnectionLost = false
+				}
+			}
 			continue
 		}
 		if !cursorString(fields, "session_id", &session) || !sessionIDPattern.MatchString(session) || (initialized && out.SessionID != session) {
@@ -105,6 +122,7 @@ func ParseCursorEvents(stdout []byte) CursorOutcome {
 	out.Success = out.Success && !malformed && !out.UnsafeSession
 	if out.UnsafeSession {
 		out.SessionID = ""
+		out.ConnectionLost = false
 	}
 	return out
 }
@@ -196,6 +214,12 @@ func (c *Cursor) Observe(ctx context.Context) (decide.Observation, error) {
 	if st.Phase == Finished && st.ExitCodeKnown && st.ExitCode == 0 && out.Success {
 		return decide.Observation{State: decide.Idle, ErrorClass: decide.ErrNone, Evidence: detail}, nil
 	}
+	if out.ConnectionLost {
+		// Diagnostic only: the class below stays unknown, so this can never
+		// make a failure eligible for failover.
+		detail.Category = "connection_error"
+		detail = evidence.Clean(detail)
+	}
 	return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown, Evidence: detail}, nil
 }
 
@@ -228,10 +252,25 @@ func (c *Cursor) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 	if err != nil {
 		return err
 	}
-	if st.Phase != NeverRun && session == "" {
+	if st.Phase != NeverRun && session == "" && !c.exitedBeforeStarting(st) {
 		return errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
 	}
 	return c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env))
+}
+
+// cursorExitedBeforeStarting recognises the one earlier turn that provably
+// began no conversation: it finished with a known nonzero exit and wrote
+// nothing at all to stdout. The CLI writes its initialization and the user
+// record before it makes a request, so an empty stream means none was made.
+// A live run showed this is how an untrusted workspace fails. A crashed
+// wrapper, an unknown exit, any output, or an output file that is missing
+// rather than empty keeps the refusal.
+func (c *Cursor) exitedBeforeStarting(st Status) bool {
+	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode == 0 || len(st.Stdout) != 0 {
+		return false
+	}
+	info, err := os.Lstat(c.dir.path("stdout"))
+	return err == nil && info.Mode().IsRegular() && info.Size() == 0
 }
 
 func (c *Cursor) Stop(ctx context.Context) error {

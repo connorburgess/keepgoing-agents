@@ -164,7 +164,10 @@ func TestCursorFailuresRemainUnknown(t *testing.T) {
 		name, out, exit string
 		retry           bool
 	}{
-		{"stderr only", "", "1", false},
+		// Nothing on stdout and a known nonzero exit: no conversation began, so a
+		// retry may start one. A live untrusted-workspace failure has this shape.
+		{"stderr only", "", "1", true},
+		{"whitespace only", "\n", "1", false},
 		{"apparent success nonzero", cursorSuccess, "1", true},
 		{"partial init", cursorInit, "1", true},
 		{"missing terminal zero", cursorInit, "0", true},
@@ -336,5 +339,147 @@ func TestCursorMissingOutputIsUnknown(t *testing.T) {
 	}
 	if err := c.Send(context.Background(), "fixture", adapter.ModeAuto); err == nil {
 		t.Fatal("missing output silently created a new session")
+	}
+}
+
+// Only a turn that provably wrote nothing may be followed by a fresh
+// conversation. An output file that is absent, or a wrapper that died without
+// recording an exit, proves nothing.
+func TestCursorFreshStartNeedsEmptyOutputAndKnownFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		files  map[string]string
+		retry  bool
+		resume bool
+	}{
+		{"empty_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": ""}, true, false},
+		{"empty_output_exit_2", map[string]string{"run.json": "{}", "exit": "2", "stdout": ""}, true, false},
+		{"missing_output_exit_1", map[string]string{"run.json": "{}", "exit": "1"}, false, false},
+		{"empty_output_exit_0", map[string]string{"run.json": "{}", "exit": "0", "stdout": ""}, false, false},
+		{"empty_output_unreadable_exit", map[string]string{"run.json": "{}", "exit": "not-a-number", "stdout": ""}, false, false},
+		{"empty_output_no_exit_record", map[string]string{"run.json": "{}", "stdout": ""}, false, false},
+		{"some_output_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": "rate limit\n"}, false, false},
+		{"initialized_exit_1", map[string]string{"run.json": "{}", "exit": "1", "stdout": cursorInit + "\n"}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, capture, _ := cursorFixture(t, cursorSuccess, "0", false)
+			if err := os.MkdirAll(string(c.dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range tc.files {
+				if err := os.WriteFile(c.dir.path(name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := c.Send(context.Background(), "fixture", adapter.ModeAuto)
+			if (err == nil) != tc.retry {
+				t.Fatalf("send error %v", err)
+			}
+			if !tc.retry {
+				if _, statErr := os.Stat(capture); !os.IsNotExist(statErr) {
+					t.Fatal("refused send still started the CLI")
+				}
+				return
+			}
+			got := readCursorCapture(t, capture)
+			want := []string{"-p", "--output-format", "stream-json", "--model", "example-model"}
+			if tc.resume {
+				want = append(want, "--resume="+cursorSession)
+			}
+			if !reflect.DeepEqual(got.Args, want) {
+				t.Fatalf("argv %q", got.Args)
+			}
+			waitFor(t, c.dir, Finished)
+		})
+	}
+}
+
+const cursorReconnecting = `{"type":"connection","subtype":"reconnecting","session_id":"` + cursorSession + `","timestamp_ms":1893456000000,"attempt":1,"endpoint_url":"https://example.com/fictional"}`
+const cursorReconnected = `{"type":"connection","subtype":"reconnected","session_id":"` + cursorSession + `","timestamp_ms":1893456001000}`
+const cursorRetry = `{"type":"retry","subtype":"starting","session_id":"` + cursorSession + `","timestamp_ms":1893456002000,"attempt":1,"is_resume":true}`
+
+// Connection and retry records are structured but unpublished. They may add
+// diagnostic evidence; they must never decide success, identity or error class.
+func TestCursorConnectionRecordsAreDiagnosticOnly(t *testing.T) {
+	other := strings.ReplaceAll(cursorReconnecting, cursorSession, "00000000-0000-4000-8000-0000000000c2")
+	quoted := `{"type":"assistant","session_id":"` + cursorSession + `","message":{"content":[{"text":"{\"type\":\"connection\",\"subtype\":\"reconnecting\"}"}]}}`
+	for _, tc := range []struct {
+		name, raw     string
+		success, lost bool
+		session       string
+	}{
+		{"lost_then_no_result", cursorInit + "\n" + cursorReconnecting + "\n" + cursorRetry + "\n" + cursorReconnecting, false, true, cursorSession},
+		{"recovered_then_success", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorRetry + "\n" + cursorResult, true, false, cursorSession},
+		{"recovered_then_no_result", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected, false, false, cursorSession},
+		{"lost_again", cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorReconnecting, false, true, cursorSession},
+		// A success record still decides the turn; the wrapper's exit decides the rest.
+		{"lost_but_result_present", cursorInit + "\n" + cursorReconnecting + "\n" + cursorResult, true, true, cursorSession},
+		{"retry_alone", cursorInit + "\n" + cursorRetry, false, false, cursorSession},
+		{"other_session", cursorInit + "\n" + other, false, false, cursorSession},
+		{"before_init", cursorReconnecting + "\n" + cursorInit, false, false, cursorSession},
+		{"missing_session", cursorInit + "\n" + `{"type":"connection","subtype":"reconnecting"}`, false, false, cursorSession},
+		{"non_string_subtype", cursorInit + "\n" + `{"type":"connection","subtype":1,"session_id":"` + cursorSession + `"}`, false, false, cursorSession},
+		{"unknown_subtype", cursorInit + "\n" + strings.Replace(cursorReconnecting, "reconnecting", "degraded", 1), false, false, cursorSession},
+		{"model_text_is_not_a_record", cursorInit + "\n" + quoted, false, false, cursorSession},
+		{"unsafe_stream_reports_nothing", cursorInit + "\n" + cursorReconnecting + "\n" + `{"type":`, false, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseCursorEvents([]byte(tc.raw))
+			if got.Success != tc.success || got.ConnectionLost != tc.lost || got.SessionID != tc.session {
+				t.Fatalf("got %+v", got)
+			}
+		})
+	}
+}
+
+// What the inspected CLI does when the connection is lost mid-turn, as far as
+// its source shows: reconnecting records, then exit 1 with text on stderr and
+// no result record. The turn stays an unknown error, the session is kept, and
+// the next send resumes exactly that session with the prompt given once.
+func TestCursorConnectionLossKeepsSessionAndStaysUnknown(t *testing.T) {
+	ctx := context.Background()
+	lost := cursorInit + "\n" + `{"type":"user","session_id":"` + cursorSession + `","message":{"role":"user"}}` + "\n" + cursorReconnecting + "\n" + cursorRetry + "\n" + cursorReconnecting + "\n"
+	c, capture, _ := cursorFixture(t, lost, "1", false)
+	if err := c.Send(ctx, "first prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, c.dir, Finished)
+	for i := 0; i < 3; i++ {
+		obs, err := c.Observe(ctx)
+		if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
+			t.Fatalf("observation %+v %v", obs, err)
+		}
+		if obs.Evidence.Source != "cursor_events" || obs.Evidence.Category != "connection_error" || obs.Retrying || !obs.ResetsAt.IsZero() {
+			t.Fatalf("evidence %+v", obs)
+		}
+	}
+	if id, err := c.dir.InspectSession(); err != nil || id != cursorSession {
+		t.Fatalf("session %q %v", id, err)
+	}
+	// A reconstructed adapter, as after a supervisor restart, resumes it.
+	if err := os.Remove(capture); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cursorInit + "\n" + cursorReconnecting + "\n" + cursorReconnected + "\n" + cursorResult + "\n"
+	env := map[string]string{}
+	for k, v := range c.cfg.Env {
+		env[k] = v
+	}
+	env["KEEPGOING_CURSOR_FIXTURE_STDOUT"], env["KEEPGOING_CURSOR_FIXTURE_EXIT"] = recovered, "0"
+	cfg := c.cfg
+	cfg.Env = env
+	restarted := NewCursor(cfg, string(c.dir))
+	if err := restarted.Send(ctx, "second prompt", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	got := readCursorCapture(t, capture)
+	want := []string{"-p", "--output-format", "stream-json", "--model", "example-model", "--resume=" + cursorSession}
+	if !reflect.DeepEqual(got.Args, want) || got.Prompt != "second prompt" {
+		t.Fatalf("resume argv %q prompt %q", got.Args, got.Prompt)
+	}
+	waitFor(t, c.dir, Finished)
+	obs, err := restarted.Observe(ctx)
+	if err != nil || obs.State != decide.Idle || obs.ErrorClass != decide.ErrNone || obs.Evidence.Category == "connection_error" {
+		t.Fatalf("recovered turn %+v %v", obs, err)
 	}
 }
