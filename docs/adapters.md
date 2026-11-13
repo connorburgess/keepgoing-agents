@@ -93,7 +93,7 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 
 Stop honouring a provider's "retrying" notice when nothing fresh stands behind it.
 
-- **BB thread:** yes, evidence live. Running on one live loop. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go)
+- **BB thread:** yes, evidence live. The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only. [operations.md#bb-retry-and-stall-handling](operations.md#bb-retry-and-stall-handling) [`TestStaleRetryNoticeOnErroredThreadExpires`](../internal/adapter/bb/stale_retry_test.go) [`TestDeclinedRetryNoticeIsDroppedAtOnce`](../internal/adapter/bb/retry_plugin_test.go)
 - **Claude Code headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Codex headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
@@ -123,7 +123,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 - **Cursor headless:** yes, evidence fixture. --resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified. [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command owns session identity.
-- **Agent defined in configuration:** partial, evidence fixture. With exact_resume: the resume command with the saved session identifier, read from a declared field or file. Without it every turn starts a new session. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionSessionFile`](../internal/adapter/runner/definition_test.go)
+- **Agent defined in configuration:** partial, evidence fixture. With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionSessionFile`](../internal/adapter/runner/definition_test.go)
 
 ### Recover a failed turn: retry the turn
 
@@ -147,11 +147,11 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 - **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
-- **Agent defined in configuration:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **Agent defined in configuration:** yes, evidence fixture. As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent. [`TestDefinedAgentOutage`](../internal/scenario/defined_agent_test.go) [operations.md#network-outages](operations.md#network-outages)
 
 ### Child-work awareness
 
-Hold the parent while conversations it started are still working, and say which.
+Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.
 
 - **BB thread:** yes, evidence live. Direct child threads are listed and verified on each check. [run-discovery.md#live-check-waiting-on](run-discovery.md#live-check-waiting-on) [`TestObserveActiveChildSuppressesParentUntilFinished`](../internal/adapter/bb/children_test.go)
 - **Claude Code headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.

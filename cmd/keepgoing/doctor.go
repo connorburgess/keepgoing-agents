@@ -452,10 +452,36 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		} else {
 			r.add(prefix+".workdir", "ok", "The defined agent's working directory exists.", "")
 		}
-		if _, err := exec.LookPath(set.CLI); err != nil {
-			r.add(prefix+".cli", "error", "The defined agent's executable is missing or not executable.", "Install it or correct the first argument of the definition's start command and the scheduler PATH.")
-		} else {
-			r.add(prefix+".cli", "ok", "The defined agent's executable resolves. It was not run.", "")
+		// Every command the definition names is checked, not only start.
+		d := a.Custom.Definition
+		commands := []struct {
+			id, name string
+			argv     config.Argv
+		}{{".cli", "start", d.Start}, {".cli.resume", "resume", d.Resume}}
+		if d.Probe != nil {
+			commands = append(commands, struct {
+				id, name string
+				argv     config.Argv
+			}{".cli.probe", "probe", d.Probe.Argv})
+		}
+		if d.Limits != nil {
+			commands = append(commands, struct {
+				id, name string
+				argv     config.Argv
+			}{".cli.limits", "limits", d.Limits.Argv})
+		}
+		for _, c := range commands {
+			if len(c.argv) == 0 || len(c.argv[0].Parts) != 1 {
+				continue
+			}
+			if c.id != ".cli" && c.argv[0].Parts[0] == set.CLI {
+				continue // the same executable as start, already checked
+			}
+			if _, err := exec.LookPath(c.argv[0].Parts[0]); err != nil {
+				r.add(prefix+c.id, "error", "The defined agent's "+c.name+" executable is missing or not executable.", "Install it or correct the first argument of the definition's "+c.name+" command and the scheduler PATH. A path resolves against the configuration file.")
+			} else {
+				r.add(prefix+c.id, "ok", "The defined agent's "+c.name+" executable resolves. It was not run.", "")
+			}
 		}
 		can, cannot := spec.Abilities()
 		r.add(prefix+".capabilities", "ok", "Defined agent "+spec.Provider+". keepgoing can: "+strings.Join(can, "; ")+".", "")

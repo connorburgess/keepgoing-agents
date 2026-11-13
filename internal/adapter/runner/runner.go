@@ -173,7 +173,8 @@ func (d Dir) startTurn(argv []string, workdir, prompt string, env []string, acp 
 
 // Stop asks the live wrapper to stop its own turn. Saved PIDs never authorize signals.
 func (d Dir) Stop() error {
-	st, err := d.Status()
+	// Only the turn's phase and key are needed: its output is not read.
+	st, err := d.statusWithOutputLimit(skipOutput)
 	if err != nil || st.Phase != Running {
 		return err
 	}
@@ -211,7 +212,13 @@ func envList(env map[string]string) []string {
 	return entries
 }
 
+// skipOutput, as an output limit, reads no output at all.
+const skipOutput = -1
+
 func (d Dir) readOutput(limit int64) ([]byte, error) {
+	if limit == skipOutput {
+		return nil, nil
+	}
 	if limit == 0 {
 		b, _ := os.ReadFile(d.path("stdout"))
 		return b, nil

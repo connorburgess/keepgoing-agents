@@ -131,7 +131,15 @@ func TestCustomAgentDefinitionRefusals(t *testing.T) {
 		"mapping a code to none":          {"classes: {quota_exceeded: rate_limit}", "classes: {quota_exceeded: none}", "unknown error class"},
 		"a field path with a wildcard":    {"field: error.code", "field: \"error.*\"", "not a field path"},
 		"a field without values":          {"waiting: {field: status, equals: [needs_input]}", "waiting: {field: status}", "field and equals go together"},
-		"a waiting rule with nothing":     {"waiting: {field: status, equals: [needs_input]}", "waiting: {}", "matches turns that finished also matches"},
+		"a shell with a command string":   {"start: [example-agent, run,", "start: [sh, -c,", "a shell given a command string"},
+		"a shell by its path":             {"start: [example-agent, run,", "start: [/bin/bash, -c,", "a shell given a command string"},
+		"a Windows shell":                 {"start: [example-agent, run,", "start: ['C:\\Windows\\System32\\cmd.exe', /C,", "a shell given a command string"},
+		"PowerShell with a command":       {"start: [example-agent, run,", "start: [powershell, -command,", "a shell given a command string"},
+		"a shell for the probe":           {"probe: {argv: [example-agent, check, --json]}", "probe: {argv: [zsh, -c, check]}", "a shell given a command string"},
+		"waiting identical to finished":   {"waiting: {field: status, equals: [needs_input]}", "waiting: {exit_codes: [0], field: status, equals: [ok]}", "so no turn could finish"},
+		"waiting on every finished value": {"waiting: {field: status, equals: [needs_input]}", "waiting: {field: status, equals: [needs_input, ok]}", "so no turn could finish"},
+		"waiting on the exit code alone":  {"waiting: {field: status, equals: [needs_input]}", "waiting: {exit_codes: [0]}", "so no turn could finish"},
+		"a waiting rule with nothing":     {"waiting: {field: status, equals: [needs_input]}", "waiting: {}", "so no turn could finish"},
 		"two session sources":             {"session: {field: session}", "session: {field: session, file: .example/session}", "exactly one of field and file"},
 		"a session file outside":          {"session: {field: session}", "session: {file: ../session}", "inside the working directory"},
 		"an absolute session file":        {"session: {field: session}", "session: {file: /tmp/session}", "inside the working directory"},
@@ -153,12 +161,6 @@ func TestCustomAgentDefinitionRefusals(t *testing.T) {
 		"resume without the capability":  {"exact_resume: true, ", "", "resume and session are used only with capabilities.exact_resume"},
 		"an empty argument":              {"start: [example-agent, run,", "start: [example-agent, \"\", run,", "an argument is empty"},
 		"an empty optional argument":     {"[--model, \"{model}\"]]", "[--model, \"\"]]", "an argument is empty"},
-		"a shell as the executable":      {"start: [example-agent, run,", "start: [sh, -c,", "the executable is a shell"},
-		"a shell by its path":            {"start: [example-agent, run,", "start: [/bin/bash, -c,", "the executable is a shell"},
-		"a Windows shell":                {"start: [example-agent, run,", "start: ['C:\\Windows\\System32\\cmd.exe', /c,", "the executable is a shell"},
-		"a shell for the probe":          {"probe: {argv: [example-agent, check, --json]}", "probe: {argv: [zsh, -c, check]}", "the executable is a shell"},
-		"waiting identical to finished":  {"waiting: {field: status, equals: [needs_input]}", "waiting: {exit_codes: [0], field: status, equals: [ok]}", "matches turns that finished also matches"},
-		"waiting on the finished value":  {"waiting: {field: status, equals: [needs_input]}", "waiting: {field: status, equals: [needs_input, ok]}", "matches turns that finished also matches"},
 		"an error code that is finished": {"finished: {exit_codes: [0], field: status, equals: [ok]}", "finished: {field: error.code, equals: [quota_exceeded]}", "is also a finished value"},
 		"an unknown key":                 {"      session: {field: session}\n", "      session: {field: session}\n      shell: \"example-agent | tee log\"\n", "field shell not found"},
 		"a second agent block":           {"  adapter: custom\n", "  adapter: custom\n  claude: {workdir: /example/project}\n", "claude is set but the adapter is custom"},
@@ -227,6 +229,7 @@ func TestCustomExecutablesResolveAgainstTheConfigurationFile(t *testing.T) {
 		"start: [example-agent,", "start: [./bin/example-agent,",
 		"resume: [example-agent,", "resume: [../tools/example-agent,",
 		"argv: [example-agent, limits,", "argv: [bin/example-limits,",
+		"probe: {argv: [example-agent, check,", "probe: {argv: [./bin/example-probe, check,",
 		"workdir: /example/project", "workdir: project",
 	).Replace(customLoop)
 	path := filepath.Join(dir, "keepgoing.yaml")
@@ -242,7 +245,7 @@ func TestCustomExecutablesResolveAgainstTheConfigurationFile(t *testing.T) {
 		d.Start[0].Parts[0]:       filepath.Join(dir, "bin", "example-agent"),
 		d.Resume[0].Parts[0]:      filepath.Join(filepath.Dir(dir), "tools", "example-agent"),
 		d.Limits.Argv[0].Parts[0]: filepath.Join(dir, "bin", "example-limits"),
-		d.Probe.Argv[0].Parts[0]:  "example-agent", // a bare name: looked up on PATH
+		d.Probe.Argv[0].Parts[0]:  filepath.Join(dir, "bin", "example-probe"),
 		cfg.Loop.Custom.Workdir:   filepath.Join(dir, "project"),
 	} {
 		if got != want {
@@ -252,6 +255,11 @@ func TestCustomExecutablesResolveAgainstTheConfigurationFile(t *testing.T) {
 	// Only the executable is a path: other arguments are left as written.
 	if d.Start[1].Parts[0] != "run" {
 		t.Errorf("an argument was resolved: %q", d.Start[1].Parts[0])
+	}
+	// A bare name is left for PATH.
+	bare, err := Parse([]byte(customLoop))
+	if err != nil || bare.Loop.Custom.Definition.Probe.Argv[0].Parts[0] != "example-agent" {
+		t.Errorf("a bare executable name was changed: %v", err)
 	}
 }
 
@@ -283,5 +291,28 @@ func TestCustomFailoverMappingsAreSaidInWords(t *testing.T) {
 	}
 	if got := c.FailoverMappings(nil); len(got) != 0 {
 		t.Fatalf("nothing fails over, but: %v", got)
+	}
+}
+
+// Rules the guards must not refuse. The shell check is a guard against an
+// obvious mistake (a shell given a command string), not a security boundary:
+// it does not look inside wrappers or other interpreters.
+func TestCustomDefinitionsThatAreAllowed(t *testing.T) {
+	for name, tc := range map[string]struct{ old, new string }{
+		"an executable merely named cmd":            {"start: [example-agent, run,", "start: [./bin/cmd, run,"},
+		"PowerShell running a script file":          {"start: [example-agent, run,", "start: [powershell, -File, agent.ps1,"},
+		"a shell running a script file":             {"start: [example-agent, run,", "start: [sh, ./agent.sh,"},
+		"an agent with its own -c flag":             {"start: [example-agent, run,", "start: [example-agent, -c, run,"},
+		"a wrapper the guard does not look inside":  {"start: [example-agent, run,", "start: [env, sh, -c, run,"},
+		"finished by exit code beside a field wait": {"finished: {exit_codes: [0], field: status, equals: [ok]}", "finished: {exit_codes: [0]}"},
+		"waiting and finished on different fields":  {"waiting: {field: status, equals: [needs_input]}", "waiting: {field: pending, equals: [\"true\"]}"},
+		"waiting on some finished values":           {"finished: {exit_codes: [0], field: status, equals: [ok]}", "finished: {exit_codes: [0], field: status, equals: [ok, needs_input]}"},
+	} {
+		if !strings.Contains(customLoop, tc.old) {
+			t.Fatalf("%s: the valid definition has no %q", name, tc.old)
+		}
+		if _, err := Parse([]byte(strings.Replace(customLoop, tc.old, tc.new, 1))); err != nil {
+			t.Errorf("%s was refused: %v", name, err)
+		}
 	}
 }

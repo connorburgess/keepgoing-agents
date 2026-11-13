@@ -93,6 +93,17 @@ func main() {
 
 func run(world string, args []string) int {
 	appendLine(filepath.Join(world, "calls.jsonl"), args)
+	// BB's optional retry plugin: its last decision for a thread, from
+	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
+	if len(args) >= 3 && args[0] == "provider-retry" {
+		switch args[1] {
+		case "explain":
+			b, _ := json.Marshal(map[string]any{"threadId": args[2], "diagnostic": nil})
+			return emit(world, args[2]+".retry-decision", string(b))
+		case "status":
+			return emit(world, args[2]+".retries", `{"retries":[]}`)
+		}
+	}
 	if len(args) < 2 || args[0] != "thread" {
 		fmt.Println(`{"ok":true}`)
 		return 0
@@ -311,6 +322,10 @@ func exampleAgent(world string, args []string) int {
 			outcome = lines[0]
 			os.WriteFile(path, []byte(strings.Join(lines[1:], "\n")+"\n"), 0o600)
 		}
+	}
+	// With the network down the agent's turn fails with nothing structured.
+	if outcome == "ok" && readMode(filepath.Join(world, "net.mode"), "online") != "online" {
+		outcome = "failed"
 	}
 	status, code := "ok", 0
 	switch outcome {

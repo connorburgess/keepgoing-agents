@@ -218,8 +218,10 @@ func (c *Custom) resolvePaths(base string) {
 	}
 }
 
-// customShells are command interpreters. A definition runs the agent itself;
-// a shell as the executable would make an argument a command line.
+// customShells are command interpreters. A shell given a command string
+// would make an argument a command line. Refusing that is a guard against an
+// obvious mistake, not a security boundary: a wrapper script or another
+// interpreter can do the same and is not detected.
 var customShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "csh": true, "tcsh": true, "ash": true,
 	"cmd": true, "powershell": true, "pwsh": true}
 
@@ -229,6 +231,19 @@ func customShell(executable string) bool {
 		name = strings.TrimSuffix(name, ext)
 	}
 	return customShells[name]
+}
+
+// commandString reports whether an argument is a flag that makes a shell run
+// the next argument as a command line.
+func commandString(argv Argv) bool {
+	for _, arg := range argv[1:] {
+		for _, part := range arg.Parts {
+			if part == "-c" || strings.EqualFold(part, "/c") || strings.EqualFold(part, "-Command") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // classWords says an error class in plain words.
@@ -322,8 +337,8 @@ func (c Custom) validate(add func(format string, args ...any)) {
 		}
 		if first := argv[0]; first.Optional || len(first.Parts) != 1 || first.Parts[0] == "" || strings.ContainsAny(first.Parts[0], "{}") {
 			add("%s: the first argument is the executable, written out", where)
-		} else if customShell(first.Parts[0]) {
-			add("%s: the executable is a shell; name the agent's own executable, so that no argument is a command line", where)
+		} else if customShell(first.Parts[0]) && commandString(argv) {
+			add("%s: the executable is a shell given a command string; name the agent's own executable, so that no argument is a command line", where)
 		}
 		usesFile := false
 		for _, arg := range argv {
@@ -428,10 +443,13 @@ func (c Custom) validate(add func(format string, args ...any)) {
 	}
 	if d.Waiting != nil {
 		checkMatch("custom.definition.waiting", *d.Waiting, false)
-		// Waiting is read first, so a turn both rules match would be a wait.
-		if w := *d.Waiting; intersects(intStrings(w.ExitCodes), intStrings(d.Finished.ExitCodes)) &&
-			(w.Field == "" || d.Finished.Field == "" || (w.Field == d.Finished.Field && intersects(w.Equals, d.Finished.Equals))) {
-			add("custom.definition.waiting matches turns that finished also matches; give them different exit codes or values")
+		// Waiting is read first, so a turn both rules match is a wait. That
+		// is a fault only when it leaves finished nothing to match: every
+		// finished exit code is a waiting one, and waiting has no field, or
+		// the same field with every finished value.
+		if w, f := *d.Waiting, d.Finished; subset(intStrings(f.ExitCodes), intStrings(w.ExitCodes)) &&
+			(w.Field == "" || (w.Field == f.Field && subset(f.Equals, w.Equals))) {
+			add("custom.definition.waiting matches every turn finished matches, so no turn could finish; give them different exit codes or values")
 		}
 	}
 	observesErrors := false
@@ -539,13 +557,14 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-func intersects(a, b []string) bool {
+// subset reports whether every element of a is in b.
+func subset(a, b []string) bool {
 	for _, v := range a {
-		if containsString(b, v) {
-			return true
+		if !containsString(b, v) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func intStrings(in []int) []string {

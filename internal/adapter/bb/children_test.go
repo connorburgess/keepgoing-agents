@@ -127,7 +127,15 @@ func TestObserveActiveChildSuppressesParentUntilFinished(t *testing.T) {
 					t.Fatalf("%+v %v", obs, err)
 				}
 				in.Obs, in.UnchangedFor, in.SinceWake = obs, time.Duration(i+1)*time.Hour, time.Duration(i+1)*time.Hour
-				if d := decide.Decide(in); d.Action != decide.None || d.Reason != "child work running" {
+				d := decide.Decide(in)
+				if parentStatus == "error" {
+					// A parent in error is recovered whatever its children do.
+					if d.Action != decide.Reprompt {
+						t.Fatalf("%+v", d)
+					}
+					continue
+				}
+				if d.Action != decide.None || d.Reason != "child work running" {
 					t.Fatalf("%+v", d)
 				}
 			}

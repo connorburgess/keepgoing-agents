@@ -146,7 +146,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. In unreleased source a session that is itself in error is recovered whether or not its BB children are working.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **Preserves control and ownership.** Stop and holds take precedence on checks. A different BB thread needs explicit takeover; transfer keeps the loop held until explicitly resumed. Invalid or stale configuration can withhold provider operations, including stop, until repaired/reloaded.

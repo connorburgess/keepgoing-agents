@@ -340,7 +340,7 @@ func TestSharedRunnerInputsAreAllDeclarable(t *testing.T) {
 		}
 		return true
 	})
-	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := sorted(used), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the shared runner refers to Observation fields %v, want %v", got, want)
 	}
 }
@@ -517,17 +517,24 @@ func TestDefinedAgentsSetOnlyWhatTheyDeclare(t *testing.T) {
 	// The same turns, read by a definition that declares everything and by
 	// one that declares nothing. The limit lookup's command does not exist,
 	// so no reset time is produced here; the runner's own fixture covers it.
-	turns := []struct{ out, exit string }{
-		{`{"status":"ok","session":"sess_example_1"}`, "0"},
-		{`{"status":"needs_input","session":"sess_example_1"}`, "2"},
-		{`{"status":"failed","error":{"code":"quota_exceeded"}}`, "1"},
-		{`fictional text`, "1"},
+	// The last turn's saved session file is damaged and the turn reported
+	// none, so the conversation to continue cannot be named.
+	turns := []struct{ out, exit, session string }{
+		{`{"status":"ok","session":"sess_example_1"}`, "0", ""},
+		{`{"status":"needs_input","session":"sess_example_1"}`, "2", ""},
+		{`{"status":"failed","error":{"code":"quota_exceeded"}}`, "1", ""},
+		{`fictional text`, "1", ""},
+		{`fictional text`, "1", "--not-a-session"},
 	}
 	observed := func(extra string) []string {
 		set := map[string]bool{}
 		for _, turn := range turns {
 			dir := t.TempDir()
-			for name, content := range map[string]string{"run.json": `{"pid":1,"stopKey":"k","startedAt":"2026-01-01T00:00:00Z","argv0":"absent"}`, "exit": turn.exit + "\n", "stdout": turn.out} {
+			files := map[string]string{"run.json": `{"pid":1,"stopKey":"k","startedAt":"2026-01-01T00:00:00Z","argv0":"absent"}`, "exit": turn.exit + "\n", "stdout": turn.out}
+			if turn.session != "" {
+				files["session"] = turn.session + "\n"
+			}
+			for name, content := range files {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -545,7 +552,7 @@ func TestDefinedAgentsSetOnlyWhatTheyDeclare(t *testing.T) {
 		}
 		return sorted(set)
 	}
-	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "State"}; !reflect.DeepEqual(got, want) {
+	if got, want := observed(definedFull), []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "State"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("a full definition's runner set %v, want %v", got, want)
 	}
 	if got, want := observed(""), []string{"ErrorClass", "Evidence", "State"}; !reflect.DeepEqual(got, want) {

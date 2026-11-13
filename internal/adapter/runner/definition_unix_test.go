@@ -319,35 +319,96 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if h.dir.Session() != "" {
 		t.Fatalf("a session was taken from unread output: %q", h.dir.Session())
 	}
-	// The next turn can be started; it does not need the file removed.
+	// Stop needs only the turn's record, so it does not read the output.
+	if st, err := h.dir.statusWithOutputLimit(skipOutput); err != nil || st.Phase != Finished || st.Stdout != nil {
+		t.Fatalf("%+v %v", st, err)
+	}
+	// The next turn can be started; it does not need the file removed. The
+	// part of the unread output that fits holds a session line; it is not
+	// taken by the send either.
 	if err := h.Send(context.Background(), "again", adapter.ModeAuto); err != nil {
 		t.Fatalf("could not send after oversize output: %v", err)
+	}
+	if h.dir.Session() != "" {
+		t.Fatalf("the send took a session from unread output: %q", h.dir.Session())
 	}
 	waitPhase(t, Dir(string(h.dir)), Running)
 	h.dir.Stop()
 }
 
-// A saved session is checked again when it is read: a value the definition
-// would not have saved is not passed back as an argument.
-func TestDefinedAgentSavedSessionIsRevalidated(t *testing.T) {
-	h, _ := exampleRunner(t, "cat > /dev/null", nil)
-	for saved, resumes := range map[string]bool{exampleSessionToken: true, "--dangerous-flag": false, "two words": false, "": false} {
-		if err := os.MkdirAll(string(h.dir), 0o700); err != nil {
+// A saved session is checked again when it is read. One that is not a
+// token the definition would have saved (the file was changed or damaged) is
+// never passed to the agent, and no new conversation is started in its
+// place: the loop is held for a person, as it is when a built-in agent
+// cannot resume. A finished turn that reported its session repairs it.
+func TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother(t *testing.T) {
+	ctx := context.Background()
+	damage := func(h *Headless, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(string(h.dir), "session"), []byte(content+"\n"), 0o600); err != nil {
 			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(string(h.dir), "session"), []byte(saved+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		args := strings.Join(h.Args(), "\n")
-		if got := strings.Contains(args, "--session"); got != resumes || (!resumes && saved != "" && strings.Contains(args, saved)) {
-			t.Errorf("saved %q: args %q", saved, args)
 		}
 	}
-	// The built-in agents keep their own rule: whatever was saved is used.
-	dir := t.TempDir()
-	c := NewClaude(config.Claude{CLI: "claude", Workdir: dir}, filepath.Join(dir, "target"))
+	// The last turn failed without reporting a session, and the file is
+	// damaged: nothing says which conversation to continue.
+	h, dir := exampleRunner(t, `cat > /dev/null; echo x >> "$PWD/turns"; echo '{"type":"result","status":"failed"}'; exit 1`, func(c *config.Custom) { c.Definition.Limits = nil })
+	if err := h.Send(ctx, "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, h.dir, Finished)
+	for _, bad := range []string{"--dangerous-flag", "two words", "{"} {
+		damage(h, bad)
+		obs, err := h.Observe(ctx)
+		if err != nil || !obs.Gone {
+			t.Fatalf("saved %q: %+v %v", bad, obs, err)
+		}
+		if args := strings.Join(h.Args(), "\n"); strings.Contains(args, bad) || strings.Contains(args, "--session") {
+			t.Fatalf("saved %q reached argv: %q", bad, args)
+		}
+		if err := h.Send(ctx, "again", adapter.ModeAuto); err == nil || !strings.Contains(err.Error(), "refusing to start a new conversation") {
+			t.Fatalf("saved %q: a new conversation was started: %v", bad, err)
+		}
+	}
+	if turns, _ := os.ReadFile(filepath.Join(dir, "turns")); strings.Count(string(turns), "x") != 1 {
+		t.Fatalf("turns started: %q", turns)
+	}
+	// A person restores it (or removes the file to start over on purpose).
+	damage(h, exampleSessionToken)
+	if obs, _ := h.Observe(ctx); obs.Gone || !strings.Contains(strings.Join(h.Args(), "\n"), exampleSessionToken) {
+		t.Fatalf("restored: %+v %q", obs, h.Args())
+	}
+	os.Remove(filepath.Join(string(h.dir), "session"))
+	if obs, _ := h.Observe(ctx); obs.Gone || strings.Contains(strings.Join(h.Args(), "\n"), "--session") {
+		t.Fatalf("removed: %+v %q", obs, h.Args())
+	}
+
+	// The last turn did report its session: observing it saves it again.
+	h, _ = exampleRunner(t, `cat > /dev/null; echo '`+exampleLine("ok", "")+`'`, nil)
+	if err := h.Send(ctx, "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, h.dir, Finished)
+	damage(h, "--dangerous-flag")
+	if obs, err := h.Observe(ctx); err != nil || obs.Gone || obs.State != decide.Idle || h.dir.Session() != exampleSessionToken {
+		t.Fatalf("%+v %v session %q", obs, err, h.dir.Session())
+	}
+
+	// Without exact resume there is no session to lose, and the built-in
+	// agents keep their own rule: whatever was saved is used.
+	bare, _ := exampleRunner(t, "cat > /dev/null", func(c *config.Custom) {
+		d := &c.Definition
+		d.Session, d.Resume = nil, nil
+		d.Capabilities.ExactResume = false
+	})
+	os.MkdirAll(string(bare.dir), 0o700)
+	damage(bare, "--dangerous-flag")
+	if obs, _ := bare.Observe(ctx); obs.Gone || strings.Contains(strings.Join(bare.Args(), " "), "--dangerous-flag") {
+		t.Fatalf("bare: %+v %q", obs, bare.Args())
+	}
+	claudeDir := t.TempDir()
+	c := NewClaude(config.Claude{CLI: "claude", Workdir: claudeDir}, filepath.Join(claudeDir, "target"))
 	c.dir.SaveSession("sess-1")
-	if !strings.Contains(strings.Join(c.Args(), " "), "--resume sess-1") {
-		t.Errorf("claude args %q", c.Args())
+	if obs, _ := c.Observe(ctx); obs.Gone || !strings.Contains(strings.Join(c.Args(), " "), "--resume sess-1") {
+		t.Errorf("claude: %+v %q", obs, c.Args())
 	}
 }

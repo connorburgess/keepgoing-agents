@@ -57,6 +57,11 @@ type Observation struct {
 	// ordinary error or stall handling applies. Its only policy effect is the
 	// bound on a silent active session that has no Git progress tracking.
 	RetryExpired bool
+	// RetryDeclined says why RetryExpired is set before the notice aged out:
+	// the provider's own retry service recorded that it will not retry this
+	// failed turn, and has nothing pending. It is diagnostic; RetryExpired
+	// carries the policy effect.
+	RetryDeclined bool
 	// RetryKnown is diagnostic evidence availability; false does not assert that
 	// retries are absent. It does not change decision policy.
 	RetryKnown bool
@@ -75,7 +80,9 @@ type Observation struct {
 	DeferredInteraction bool
 	// ActiveChildren is verified direct child work. ChildrenUnverified means
 	// discovery could not establish the complete picture. Neither permits a
-	// parent prompt or target move; control holds and stop retain precedence.
+	// wake, nudge or switch-back of a parent that is not in error. Neither
+	// holds back the error rules for a parent that is: see Decide. Control
+	// holds and stop retain precedence.
 	ActiveChildren     int
 	ChildrenUnverified bool
 	// AwaitingChildren contains verified child IDs with pending human input.
@@ -270,14 +277,24 @@ func Decide(in Input) Decision {
 	if o.AwaitingInput {
 		return none("waiting on a person (pending interaction)")
 	}
-	if o.ActiveChildren > 0 {
-		if childErrorWake(in) {
-			return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+	// Child work keeps a parent that is idle, active or of unknown state from
+	// being woken, nudged or moved: it may be waiting on its children. A parent
+	// that is itself in error is not waiting on anything. It cannot take its
+	// children's results, so holding back its recovery would stall the loop
+	// until a person acted. The error rules below therefore apply whatever its
+	// children are doing, and whether or not the child scan completed: recovery
+	// never messages, stops or answers a child, and a child waiting on a person
+	// has already held the loop above whenever a scan can see it.
+	if o.State != Error {
+		if o.ActiveChildren > 0 {
+			if childErrorWake(in) {
+				return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
+			}
+			return none("child work running")
 		}
-		return none("child work running")
-	}
-	if o.ChildrenUnverified {
-		return none("child status unverified")
+		if o.ChildrenUnverified {
+			return none("child status unverified")
+		}
 	}
 	if !in.InWindow {
 		return none("outside window")
@@ -405,6 +422,32 @@ type Counters struct {
 	Reprompts      int
 	LastSendAt     time.Time
 	LastRepromptAt time.Time
+}
+
+// RetryService is what a provider's own retry service says about a failed
+// turn whose retry notice is still fresh. Each fact is false when the service
+// is absent, failed or answered in a shape that was not recognised.
+type RetryService struct {
+	// DecisionKnown: the service's last decision for the session was read.
+	DecisionKnown bool
+	// Declined: that decision was not to retry.
+	Declined bool
+	// ForCurrentTurn: the decision was made at or after the session's latest
+	// turn started, so it is about this failure and not an earlier one.
+	ForCurrentTurn bool
+	// PendingKnown: the service's list of pending retries was read.
+	PendingKnown bool
+	// Pending is how many retries it has waiting for the session.
+	Pending int
+}
+
+// RetryNoticeDead reports whether a fresh retry notice can be dropped now
+// instead of when it ages out. It needs positive evidence of all of: a
+// decision, that it declined, that it is about the current failure, and that
+// nothing is pending. Anything unknown keeps the notice, and the age-based
+// expiry still applies. A pending retry is always waited for.
+func RetryNoticeDead(s RetryService) bool {
+	return s.DecisionKnown && s.Declined && s.ForCurrentTurn && s.PendingKnown && s.Pending == 0
 }
 
 // Recovery is how a re-prompt decision is carried out.

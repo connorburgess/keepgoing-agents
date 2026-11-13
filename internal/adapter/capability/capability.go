@@ -81,7 +81,7 @@ var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
+			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -101,13 +101,13 @@ var Adapters = []Adapter{
 	// definition can produce; a definition that declares less produces less.
 	{ID: "custom", Title: "Agent defined in configuration", Registered: true,
 		Files:  []string{"internal/adapter/runner/definition.go", "internal/adapter/runner/spec.go"},
-		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "State"}},
+		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "Gone", "ResetsAt", "State"}},
 }
 
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
 var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
+	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -174,7 +174,7 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{
-			"bb": {Yes, Live, "Running on one live loop.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires")}},
+			"bb": {Yes, Live, "The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires"), t("internal/adapter/bb/retry_plugin_test.go", "TestDeclinedRetryNoticeIsDroppedAtOnce")}},
 		}, same(Cell{NA, None, "A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.", nil}, headless...),
 			same(Cell{NA, None, "The status contract has no retry notice.", nil}, "process"))},
 	{ID: "reprompt", Title: "Recover a failed turn: re-prompt", What: "After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.",
@@ -207,7 +207,7 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 			"process": {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
 		})},
-	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold the parent while conversations it started are still working, and say which.",
+	{ID: "child_awareness", Title: "Child-work awareness", What: "Hold a parent that is not in error while conversations it started are still working, and say which. A parent in error is recovered regardless.",
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Live, "Direct child threads are listed and verified on each check.", []Ref{d(waitingLive), t("internal/adapter/bb/children_test.go", "TestObserveActiveChildSuppressesParentUntilFinished")}},
 		}, same(Cell{NA, None, "A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.", nil}, headless...),
@@ -303,9 +303,9 @@ var customCells = map[string]Cell{
 	"error_classes":    {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
 	"retry_expiry":     {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
 	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
-	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. Without it every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedReadTest, "TestDefinitionSessionFile")}},
+	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother"), t(definedReadTest, "TestDefinitionSessionFile")}},
 	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
-	"network":          {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
+	"network":          {Yes, Fixture, "As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentOutage"), d(networkDoc)}},
 	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
 	"child_notice":     {NA, None, "No child conversations.", nil},
 	"handoff_source":   {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},

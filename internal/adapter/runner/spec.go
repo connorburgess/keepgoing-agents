@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
@@ -216,11 +217,15 @@ type ProbeVerdict struct {
 func (s *Spec) ObservationInputs() []string {
 	in := []string{"ErrorClass", "Evidence", "State"}
 	if s.Capabilities.StructuredWaiting {
-		in = append([]string{"DeferredInteraction"}, in...)
+		in = append(in, "DeferredInteraction")
 	}
 	if s.Limits != nil {
-		in = append(in[:len(in)-1], "ResetsAt", "State")
+		in = append(in, "ResetsAt")
 	}
+	if s.ValidSession != nil {
+		in = append(in, "Gone")
+	}
+	sort.Strings(in)
 	return in
 }
 
@@ -342,7 +347,8 @@ func (h *Headless) Spec() *Spec { return h.spec }
 
 // Args builds the argv for the next turn.
 func (h *Headless) Args() []string {
-	return h.spec.Argv(h.set, h.session(), h.dir.path("prompt"))
+	session, _ := h.session()
+	return h.spec.Argv(h.set, session, h.dir.path("prompt"))
 }
 
 // status reads the latest turn within the specification's output bound. A
@@ -357,16 +363,21 @@ func (h *Headless) status() (st Status, unread bool, err error) {
 	return st, false, err
 }
 
-// session is the saved session to resume, or "" when there is none or the
-// saved value is not one the specification would have saved. A session
-// becomes an argument, so it is checked again when it is read.
-func (h *Headless) session() string {
+// session is the saved session to resume, or "" when there is none. A
+// session becomes an argument, so it is checked again when it is read: lost
+// says a session is saved but is not one the specification would have saved
+// (the file was changed or damaged). It is then never passed to the agent,
+// and no new conversation is started in its place.
+func (h *Headless) session() (session string, lost bool) {
 	s := h.dir.Session()
-	if h.spec.ValidSession != nil && !h.spec.ValidSession(s) {
-		return ""
+	if s != "" && h.spec.ValidSession != nil && !h.spec.ValidSession(s) {
+		return "", true
 	}
-	return s
+	return s, false
 }
+
+// errSessionLost refuses a send that would silently start a new conversation.
+var errSessionLost = errors.New("the saved session is not usable; refusing to start a new conversation in its place")
 
 // Observe implements adapter.Adapter.
 func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err error) {
@@ -377,6 +388,13 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 	defer func() {
 		if obs.Evidence.Source == "" {
 			obs.Evidence = runnerEvidence(st)
+		}
+		// The conversation the loop was continuing can no longer be named.
+		// Starting another in its place would lose the agent's context
+		// without anyone deciding to, so a person is asked instead. A
+		// finished turn that reported its session has saved it again by now.
+		if _, lost := h.session(); lost && err == nil && st.Phase != Running {
+			obs.Gone = true
 		}
 	}()
 	switch st.Phase {
@@ -429,6 +447,9 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 	}
 	if st.Phase == Finished && !unread {
 		h.dir.SaveSession(h.spec.Read(st).Session)
+	}
+	if _, lost := h.session(); lost {
+		return errSessionLost
 	}
 	if h.spec.Prompt == PromptFile {
 		return h.dir.StartWithPromptFile(h.Args(), h.set.Workdir, prompt, envList(h.set.Env))

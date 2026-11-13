@@ -125,3 +125,53 @@ func TestDefinedAgentJourney(t *testing.T) {
 	s = w.Tick()
 	w.Check(s, "after completion", all(action(s, "none"), nothingSent(s), holds(s, "completed")))
 }
+
+// TestDefinedAgentOutage runs the network gate with an agent defined in
+// configuration: the turn that runs into the outage is spent, every check
+// while the network is down sends nothing and raises nothing, and the first
+// check after it returns re-prompts once, in the same session.
+func TestDefinedAgentOutage(t *testing.T) {
+	t.Parallel()
+	w := NewWorld(t, scenarioStart)
+	w.install("example-agent")
+	w.Headless = "example-agent"
+	dir := filepath.Join(w.Root, "setup")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	if err := os.WriteFile(w.Config, []byte(fmt.Sprintf(definedAgentConfig, w.BinPath("example-agent"), w.Project, scenarioTask)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.Control("enable")
+
+	w.Advance(time.Minute)
+	s := w.Tick()
+	w.Check(s, "first turn", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent"})))
+
+	// The network drops; the next turn runs into it and fails unclassified.
+	w.Net.Offline()
+	w.Advance(10 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "the turn the outage breaks", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession})))
+
+	// While it is down nothing is sent, held or reported, however long.
+	for i, wait := range []time.Duration{time.Minute, 10 * time.Minute, time.Hour, 6 * time.Hour, 48 * time.Hour} {
+		w.Advance(wait)
+		s = w.Tick()
+		w.Check(s, fmt.Sprintf("offline check %d", i+1), all(nothingSent(s), holds(s), noReports(s)))
+		if a := s.action(); a == "reprompt" || a == "await_user" {
+			w.Failf(s, "offline check %d acted: %s", i+1, a)
+		}
+	}
+
+	// It returns: one re-prompt, in the same session, and the loop goes on.
+	w.Net.Online()
+	w.Advance(5 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "first check after the outage", all(action(s, "reprompt"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
+	w.Commit("feat: fictional step after the outage")
+	w.Advance(5 * time.Minute)
+	s = w.Tick()
+	w.Check(s, "back to normal", all(action(s, "wake"), sentExactly(s, Send{Kind: "turn", Thread: "example-agent", Mode: exampleSession}), holds(s), noReports(s)))
+}

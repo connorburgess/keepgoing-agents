@@ -31,7 +31,7 @@ func customAgentFixture(t *testing.T) string {
         exit_codes: {3: rate_limit}
       probe: {argv: [./bin/example-agent, run, --json]}
       limits:
-        argv: [./bin/example-agent, limits]
+        argv: [./bin/example-limits, status]
         blocked: {field: blocked, equals: ["true"]}
       capabilities: {structured_errors: true}
 `
@@ -107,6 +107,14 @@ func TestDoctorOnADefinedAgent(t *testing.T) {
 	if got := c["agent.primary.cli"]; got.Status != "error" {
 		t.Errorf("a missing executable: %+v", got)
 	}
+	// Each command's executable is checked; one shared with start is not
+	// reported twice.
+	if got := c["agent.primary.cli.limits"]; got.Status != "error" || !strings.Contains(got.Message, "limits executable") {
+		t.Errorf("a missing limits executable: %+v", got)
+	}
+	if _, twice := c["agent.primary.cli.probe"]; twice {
+		t.Errorf("the probe shares start's executable and was reported again: %+v", c["agent.primary.cli.probe"])
+	}
 	if got := c["agent.primary.workdir"]; got.Status != "ok" {
 		t.Errorf("workdir: %+v", got)
 	}
@@ -132,8 +140,13 @@ func TestDoctorOnADefinedAgent(t *testing.T) {
 	}
 	writeCustom(t, filepath.Join(dir, "bin", "example-agent"), "#!/bin/sh\necho ran >> "+filepath.Join(dir, "ran")+"\n", 0o755)
 	t.Chdir(t.TempDir())
-	if got := doctor()["agent.primary.cli"]; got.Status != "ok" {
+	writeCustom(t, filepath.Join(dir, "bin", "example-limits"), "#!/bin/sh\necho ran >> "+filepath.Join(dir, "ran")+"\n", 0o755)
+	found := doctor()
+	if got := found["agent.primary.cli"]; got.Status != "ok" {
 		t.Errorf("an executable beside the configuration: %+v", got)
+	}
+	if got := found["agent.primary.cli.limits"]; got.Status != "ok" {
+		t.Errorf("the limits executable beside the configuration: %+v", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ran")); !os.IsNotExist(err) {
 		t.Error("doctor ran the defined agent")
