@@ -689,7 +689,7 @@ func (t *tick) run() error {
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
-		moved, err := t.handoff(target, agent, obs.ErrorClass, summary)
+		moved, err := t.handoff(target, agent, obs, summary)
 		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
 			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
 		}
@@ -765,8 +765,8 @@ func (t *tick) run() error {
 	}
 	t.reserve = reserveReports + t.reserveNetwork // the action, if any, has been taken
 	if handoffFirst && !handoffAttempted && inWindow && !t.opts.DryRun && t.reg != nil {
-		// The handoff did not happen after all (a limit wait, a hold, busy
-		// children): the scheduled probes it was put ahead of run now.
+		// The handoff did not happen after all (a limit wait, a hold): the
+		// scheduled probes it was put ahead of run now.
 		t.lateScheduledProbes(t.st.Target(), agent.Group)
 	}
 	if t.reg != nil && !t.opts.DryRun {
@@ -859,7 +859,18 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 
 // handoff tries healthy candidates in order. Each must pass an exact-target
 // probe right now before it receives the brief.
-func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorClass, summary health.Summary) (bool, error) {
+// childrenLeft is what the brief says about the children of the conversation
+// being left. A candidate in the same BB thread continues that conversation:
+// its children stay listed, so nothing is said.
+func childrenLeft(obs decide.Observation, from config.Agent, to config.Candidate) handoff.ChildrenLeft {
+	if from.BB != nil && to.Agent.BB != nil && !to.Agent.BB.NewThread && from.BB.Thread != "" && from.BB.Thread == to.Agent.BB.Thread {
+		return handoff.ChildrenLeft{}
+	}
+	return handoff.ChildrenLeft{Working: obs.ActiveChildren, Unverified: obs.ChildrenUnverified}
+}
+
+func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observation, summary health.Summary) (bool, error) {
+	class := obs.ErrorClass
 	note := &HandoffNote{From: from, Reason: string(class), DryRun: t.opts.DryRun}
 	t.res.Handoff = note
 	if t.opts.DryRun {
@@ -908,7 +919,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			note.Skipped = append(note.Skipped, id+": "+why)
 			continue
 		}
-		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class)})
+		brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: id + " (" + c.Describe() + ")", Reason: string(class), Children: childrenLeft(obs, fromAgent, c)})
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}

@@ -5,7 +5,11 @@ import (
 	"time"
 )
 
-func TestChildrenDoNotOverrideControlsOrPermitRecovery(t *testing.T) {
+// Child work suppresses wakes, nudges and switch-backs of a parent that is not
+// in error, and never overrides a control. An errored parent is recovered
+// whatever its children do; TestErroredParentIsRecoveredWhateverItsChildrenDo
+// has the full table.
+func TestChildrenDoNotOverrideControlsOrPermitWakes(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mut    func(*Input)
@@ -14,11 +18,13 @@ func TestChildrenDoNotOverrideControlsOrPermitRecovery(t *testing.T) {
 	}{
 		{"idle", func(*Input) {}, None, "child work running"},
 		{"stalled", func(i *Input) { i.Obs.State = Active; i.UnchangedFor = time.Hour; i.Nudges, i.MaxNudges = 3, 3 }, None, "child work running"},
-		{"reprompt", func(i *Input) { i.Obs.State = Error }, None, "child work running"},
-		{"handoff", func(i *Input) {
+		{"unknown_state", func(i *Input) { i.Obs.State = Unknown }, None, "child work running"},
+		{"pending", func(i *Input) { i.Obs.State = Pending }, None, "child work running"},
+		{"errored_parent_is_reprompted", func(i *Input) { i.Obs.State = Error }, Reprompt, "error: unknown"},
+		{"errored_parent_hands_off", func(i *Input) {
 			i.Obs.State, i.Obs.ErrorClass = Error, ErrRateLimit
 			i.Failover = Failover{Eligible: true, Available: true}
-		}, None, "child work running"},
+		}, Handoff, "error: rate_limit"},
 		{"switch_back", func(i *Input) { i.SwitchBackReady = true }, None, "child work running"},
 		{"unknown_children", func(i *Input) { i.Obs.ActiveChildren = 0; i.Obs.ChildrenUnverified = true }, None, "child status unverified"},
 		{"stop_active", func(i *Input) { i.Control.Stop = true; i.Obs.State = Active }, Stop, "stop requested"},
