@@ -168,7 +168,12 @@ It is shown only for a loop that is on. An off, stopped or finished loop reads "
 
 **The facts**, counted in the window:
 
-- **Messages:** each send in the loop's run graph that the adapter returned from. That covers wakes, nudges, re-prompts sent as a prompt, and notices to a parent about failed lanes. A turn retry the provider accepted (`retried` or `queued`) also counts. Not counted: a send the adapter refused, and a re-prompt done as a turn retry that sent nothing (`already_queued`, `not_in_error`, `nothing_to_retry`, `refused`, `unsupported`). A send whose result was never saved (`intent`), or a retry whose queueing was unconfirmed, may have gone out, which makes the count "at least". Six raise the flag by default (`progress.flag_after_sends`).
+- **Messages:** each send in the loop's run graph that the adapter returned from. That covers wakes, nudges, re-prompts sent as a prompt, notices to a parent about failed lanes, and the brief sent when the loop moves to another route or back to its first.
+  - **Turn retries** count only when the provider accepted them (`retried` or `queued`), and that is read from the check's recorded answer. The run graph records every turn retry as returned, whatever the provider answered, so those attempts are not counted from it.
+  - **Not counted:** a send the adapter refused, and a turn retry that sent nothing (`already_queued`, `not_in_error`, `refused`). A turn retry that fell back to a prompt (`nothing_to_retry`, `unsupported`) counts once, as the prompt.
+  - **"At least":** a check that recorded a send with no matching attempt in the run graph (its write failed), a send whose result was never saved (`intent`), or a retry whose queueing was unconfirmed makes the count "at least".
+
+  Six raise the flag by default (`progress.flag_after_sends`).
 - **Errors and retries:** checks that found the session in error, or whose turn retry the provider accepted. Four raise the flag by default (`progress.flag_after_errors`).
 - **Held for a person:** how long the loop was held waiting for a person in the time its history covers, worded "Held for a person for 2 h 10 min of the last 6 h". It raises nothing. No "working" time is given, because keepgoing sees a session only at its checks.
 
@@ -178,9 +183,12 @@ It is shown only for a loop that is on. An off, stopped or finished loop reads "
 - Without `progress.repositories`: "Not available: no progress source is configured".
 - Before any check has recorded the repositories: "Not available: no check has recorded its progress repositories yet".
 - With the change time ahead of the computer's clock: "Not available: the progress time is ahead of this computer's clock".
-- Records stamped after the read are not counted.
+- With any record it reads dated after the clock (the clock stepped back): "Not available: some of its records are dated after this computer's clock". No count or span measured to now could be exact then.
+- A window under a minute reads "in the last minute".
 - With both thresholds at 0, the flag is off.
 - Thresholds must be whole numbers from 0 to 1000; `2.5` or `"6"` is refused.
+- The flag reads the run graph, then the history, then the loop's state, without a lock, so it is not one snapshot. The state that sets the window is read last. A read made while a check is writing can therefore leave that check's own records out for one refresh, but it cannot make a change look like no change.
+- **Rolling back** to a binary from before this flag: it drops `progressChangedAt` when it saves the loop's state, which only means the flag starts a new baseline after upgrading again. It also refuses a configuration that sets `progress.flag_after_sends` or `progress.flag_after_errors` as unknown fields, so remove them first. `examples/keepgoing.bb.yaml` sets both.
 
 Not in this flag:
 - **Lanes:** keepgoing records a loop's lanes only as counts and hashed keys, with no sends or progress of their own, so a lane cannot be flagged until lanes have their own records.

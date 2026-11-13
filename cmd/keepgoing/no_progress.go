@@ -20,8 +20,9 @@ import (
 //     check last saw the fingerprint change (or first recorded it, a
 //     baseline: then no change is known in "at least" that long);
 //   - messages are the run graph's send attempts in that window by their own
-//     outcome (the adapter returned), plus turn retries the provider
-//     accepted; a re-prompt that sent nothing is not one;
+//     outcome (the adapter returned), except turn retries, which the graph
+//     marks returned whatever the provider answered: those count from the
+//     incident history's outcome, only when the provider accepted them;
 //   - errors are the incident history's checks that found an error or
 //     retried the turn;
 //   - held time is the time the records cover in which the loop was held for
@@ -105,6 +106,11 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 	case j == nil || g == nil:
 		v.Availability, v.Reason, v.Text = "not_available", "history_unavailable", "Not available: its history could not be read."
 		return v
+	case noProgressLatest(j, g).After(now):
+		// The clock stepped back past records it wrote: no count from them
+		// can be exact, and no span measured to now is.
+		v.Availability, v.Reason, v.Text = "not_available", "clock_behind", "Not available: some of its records are dated after this computer's clock."
+		return v
 	}
 	v.Since, v.SinceSeconds, v.Baseline = &since, secondsSince(now, since), st.ProgressBaseline
 	window := now.Sub(since)
@@ -162,8 +168,13 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 			msgs.coveredFrom = g.Attempts[0].RecordedAt
 		}
 	}
+	// The checks that made a send attempt, by the time the graph records it.
+	attempted := map[time.Time]bool{}
 	for _, a := range g.Attempts {
-		if !in(a.RecordedAt) {
+		attempted[a.RecordedAt] = true
+		// A turn retry is recorded as returned whatever the provider answered;
+		// it counts below, from the check's recorded outcome.
+		if !in(a.RecordedAt) || a.Mode == "turn_retry" {
 			continue
 		}
 		switch a.Outcome {
@@ -198,12 +209,18 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		if r.Action == "reprompt" {
 			switch {
 			case retried:
-				// A turn retry the provider accepted prompts the turn again; it
-				// is not among the run graph's sends.
+				// A turn retry the provider accepted prompts the turn again.
 				msgs.Count += n
 			case r.TurnRetry == "queue_unconfirmed":
 				msgs.AtLeast = true
 			}
+		}
+		// A check that recorded a prompt being sent, with no attempt in the
+		// run graph (its write failed): that send is not counted above, so the
+		// count is a lower bound.
+		prompted := r.Action == "wake" || r.Action == "nudge" || (r.Action == "reprompt" && (r.TurnRetry == "none" || r.TurnRetry == "" || r.TurnRetry == "nothing_to_retry" || r.TurnRetry == "unsupported"))
+		if prompted && r.Outcome == "succeeded" && !attempted[r.CheckStartedAt] {
+			msgs.AtLeast = true
 		}
 		if r.Observation.State == "error" || retried {
 			errs.Count += n
@@ -218,8 +235,18 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 	v.Held = noProgressHeldOf(j, ctl, covered(incident.TierKey), since, now)
 
 	span := dockSpan(window)
+	// "the last 3 h", and for a window under a minute "the last minute".
+	last := func(d time.Duration) string {
+		if d < 45*time.Second {
+			return "the last minute"
+		}
+		return "the last " + dockSpan(d)
+	}
 	inSpan := "in " + span
-	if v.Baseline {
+	switch {
+	case window < 45*time.Second:
+		inSpan = "in the last minute"
+	case v.Baseline:
 		inSpan = "in at least " + span
 	}
 	count := func(f *noProgressFact, one, many string) string {
@@ -235,13 +262,16 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		}
 		return fmt.Sprintf("the flag is raised at %d", f.FlagAfter)
 	}
-	if v.Baseline {
+	switch {
+	case v.Baseline && window < 45*time.Second:
+		v.Lines = append(v.Lines, "No change to its progress repositories since a check first recorded them, just now.")
+	case v.Baseline:
 		v.Lines = append(v.Lines, "No change to its progress repositories in at least "+span+", since a check first recorded them.")
-	} else {
+	default:
 		v.Lines = append(v.Lines, "Its progress repositories last changed "+dockAgo(now, since)+".")
 	}
 	v.Lines = append(v.Lines,
-		dockCapital(count(msgs, "message", "messages"))+" sent since then (wakes, nudges, re-prompts and notices about failed lanes); "+flagAt(msgs)+".",
+		dockCapital(count(msgs, "message", "messages"))+" sent since then (wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back); "+flagAt(msgs)+".",
 		dockCapital(count(errs, "check", "checks"))+" since then found an error or retried the turn; "+flagAt(errs)+".")
 	if h := v.Held; h != nil {
 		held := dockSpan(time.Duration(h.Seconds) * time.Second)
@@ -249,9 +279,9 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 			held = "no time"
 		}
 		if h.AtLeast {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of the last "+dockSpan(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers.")
+			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(time.Duration(h.CoveredSeconds)*time.Second)+", which is as far back as its history covers.")
 		} else {
-			v.Lines = append(v.Lines, "Held for a person for "+held+" of the last "+span+".")
+			v.Lines = append(v.Lines, "Held for a person for "+held+" of "+last(window)+".")
 		}
 	}
 	raised := []string{}
@@ -278,7 +308,7 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		}
 		v.Availability = "not_enough_history"
 		if from.After(since) {
-			v.Text = "Not enough history to tell: the retained history covers only the last " + dockSpan(now.Sub(from)) + "."
+			v.Text = "Not enough history to tell: the retained history covers only " + last(now.Sub(from)) + "."
 		} else {
 			v.Text = "Not enough history to tell: whether some messages were sent could not be confirmed."
 		}
@@ -287,6 +317,35 @@ func noProgressOf(cfg *config.Config, st state.File, ctl control.File, j *incide
 		v.Text = "Clear: " + count(msgs, "message", "messages") + " and " + count(errs, "check", "checks") + " with an error or retry " + inSpan + " with no recorded change to its repositories."
 	}
 	return v
+}
+
+// noProgressLatest is the latest time any record the flag reads is dated:
+// an incident record, a pruned tier's newest record, or a send attempt.
+func noProgressLatest(j *incident.Journal, g *rungraph.Graph) time.Time {
+	var latest time.Time
+	later := func(t time.Time) {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	for _, r := range j.Records {
+		later(r.CheckStartedAt)
+		if c := r.ControlChange; c != nil {
+			later(c.SaveObservedAt)
+		}
+		if c := r.Collapsed; c != nil {
+			later(c.LastAt)
+		}
+	}
+	for _, tp := range []incident.TierPruned{j.Pruned.Key, j.Pruned.Condition, j.Pruned.Activity, j.Pruned.Routine} {
+		if tp.NewestAt != nil {
+			later(*tp.NewestAt)
+		}
+	}
+	for _, a := range g.Attempts {
+		later(a.RecordedAt)
+	}
+	return latest
 }
 
 // noProgressHeldOf is how long the loop was held for a person in the part of

@@ -71,7 +71,7 @@ type File struct {
 	// is known before then). Unlike LastProgressAt it is never moved forward
 	// by the no-progress timeout's credits for sleep or an outage. The panel's
 	// no-progress flag counts from it.
-	ProgressChangedAt time.Time `json:"progressChangedAt,omitempty"`
+	ProgressChangedAt time.Time `json:"progressChangedAt,omitzero"`
 	ProgressBaseline  bool      `json:"progressBaseline,omitempty"`
 	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
 	CheckedAt         time.Time `json:"checkedAt,omitempty"`

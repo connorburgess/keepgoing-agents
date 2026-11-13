@@ -57,6 +57,17 @@ func npGraph(outcome rd.Outcome, times ...time.Time) *rungraph.Graph {
 	return g
 }
 
+// npRetryGraph is what the real writer leaves for turn retries: one
+// attempt per retry, mode turn_retry, marked returned whatever the
+// provider answered.
+func npRetryGraph(times ...time.Time) *rungraph.Graph {
+	g := npGraph(rd.AdapterReturned, times...)
+	for i := range g.Attempts {
+		g.Attempts[i].Action, g.Attempts[i].Mode = "reprompt", "turn_retry"
+	}
+	return g
+}
+
 func npEvery(n int, from time.Time) []time.Time {
 	out := []time.Time{}
 	for i := range n {
@@ -102,8 +113,13 @@ func TestNoProgressFollowsTheRecords(t *testing.T) {
 		{"no check has fingerprinted yet", npConfig(nil, nil), state.File{}, npOn, empty, none, "not_available", "Not available: no check has recorded its progress repositories yet.", "", ""},
 		{"an older binary's state, with only the credited time", npConfig(nil, nil), state.File{Fingerprint: "x", LastProgressAt: npSince}, npOn, empty, none, "not_available", "Not available: no check has recorded its progress repositories yet.", "", ""},
 		{"the progress time ahead of the clock", npConfig(nil, nil), ahead, npOn, empty, npGraph(rd.AdapterReturned, npEvery(6, dockNow.Add(-time.Hour))...), "not_available", "Not available: the progress time is ahead of this computer's clock.", "", ""},
-		{"sends recorded after now (a clock stepped back) do not count", npConfig(nil, nil), npState(), npOn, empty, npGraph(rd.AdapterReturned, npEvery(9, dockNow)...), "clear",
-			"Clear: 0 messages and 0 checks with an error or retry in 3 h with no recorded change to its repositories.", "0/false/false", "0/false/false"},
+		// A change at 10:00, sends from 10:10 to 11:30, the clock stepped back
+		// to 11:00: nothing measured to now can be exact.
+		{"sends dated after now (a clock stepped back)", npConfig(nil, nil), npState(), npOn, empty, npGraph(rd.AdapterReturned, npEvery(9, dockNow.Add(-40*time.Minute))...), "not_available",
+			"Not available: some of its records are dated after this computer's clock.", "", ""},
+		{"a pruned record dated after now", npConfig(nil, nil), npState(), npOn,
+			&incident.Journal{Pruned: incident.Pruned{Routine: incident.TierPruned{Count: 5, NewestAt: dockPtr(dockNow.Add(2 * time.Hour))}}}, none, "not_available",
+			"Not available: some of its records are dated after this computer's clock.", "", ""},
 		{"history unreadable", npConfig(nil, nil), npState(), npOn, nil, none, "not_available", "Not available: its history could not be read.", "", ""},
 		{"run graph unreadable", npConfig(nil, nil), npState(), npOn, empty, nil, "not_available", "Not available: its history could not be read.", "", ""},
 		{"below the default thresholds", npConfig(nil, nil), npState(), npOn, empty, npGraph(rd.AdapterReturned, npEvery(5, npSince)...), "clear",
@@ -121,17 +137,31 @@ func TestNoProgressFollowsTheRecords(t *testing.T) {
 			"Clear: 0 messages and 0 checks with an error or retry in 3 h with no recorded change to its repositories.", "0/false/false", "0/false/false"},
 		// The review's case: re-prompts as turn retries BB answered with
 		// nothing to do sent nothing; they still found the session in error.
+		// The graph has a returned turn_retry attempt for every one, as the
+		// real writer leaves it; only the provider's answer says what was sent.
 		{"re-prompts that sent nothing are not messages", npConfig(nil, npInt(0)), npState(), npOn, &incident.Journal{Records: []incident.Record{
 			npRetry(npSince.Add(1*time.Minute), "already_queued"), npRetry(npSince.Add(2*time.Minute), "already_queued"), npRetry(npSince.Add(3*time.Minute), "not_in_error"),
-			npRetry(npSince.Add(4*time.Minute), "nothing_to_retry"), npRetry(npSince.Add(5*time.Minute), "refused"), npRetry(npSince.Add(6*time.Minute), "unsupported")}}, none, "clear",
-			"Clear: 0 messages and 6 checks with an error or retry in 3 h with no recorded change to its repositories.", "0/false/false", "6/false/false"},
-		{"turn retries the provider accepted are messages", npConfig(npInt(2), nil), npState(), npOn, &incident.Journal{Records: []incident.Record{
-			npRetry(npSince.Add(time.Minute), "retried"), npRetry(npSince.Add(2*time.Minute), "queued")}}, none, "flagged",
+			func() incident.Record { r := npRetry(npSince.Add(4*time.Minute), "refused"); r.Outcome = "failed"; return r }()}},
+			npRetryGraph(npSince.Add(1*time.Minute), npSince.Add(2*time.Minute), npSince.Add(3*time.Minute), npSince.Add(4*time.Minute)), "clear",
+			"Clear: 0 messages and 4 checks with an error or retry in 3 h with no recorded change to its repositories.", "0/false/false", "4/false/false"},
+		// A retry with nothing to retry, or a provider without retry, falls
+		// back to a prompt: one message, the prompt, not the retry as well.
+		{"a fallback prompt counts once", npConfig(nil, npInt(0)), npState(), npOn, &incident.Journal{Records: []incident.Record{
+			npRetry(npSince.Add(1*time.Minute), "nothing_to_retry"), npRetry(npSince.Add(2*time.Minute), "unsupported")}},
+			npMerge(npRetryGraph(npSince.Add(1*time.Minute), npSince.Add(2*time.Minute)), npGraph(rd.AdapterReturned, npSince.Add(1*time.Minute), npSince.Add(2*time.Minute))), "clear",
+			"Clear: 2 messages and 2 checks with an error or retry in 3 h with no recorded change to its repositories.", "2/false/false", "2/false/false"},
+		{"turn retries the provider accepted are messages, once each", npConfig(npInt(2), nil), npState(), npOn, &incident.Journal{Records: []incident.Record{
+			npRetry(npSince.Add(time.Minute), "retried"), npRetry(npSince.Add(2*time.Minute), "queued")}}, npRetryGraph(npSince.Add(time.Minute), npSince.Add(2*time.Minute)), "flagged",
 			"No progress: 2 messages with no recorded change to its repositories in 3 h.", "2/false/true", "2/false/false"},
 		{"an unconfirmed retry queue: a lower bound", npConfig(nil, nil), npState(), npOn, &incident.Journal{Records: []incident.Record{npRetry(npSince.Add(time.Minute), "queue_unconfirmed")}}, none, "not_enough_history",
 			"Not enough history to tell: whether some messages were sent could not be confirmed.", "0/true/false", "1/false/false"},
 		{"a send whose result was never saved: a lower bound", npConfig(nil, nil), npState(), npOn, empty, npMerge(npGraph(rd.AdapterReturned, npEvery(6, npSince)...), npGraph(rd.Intent, dockNow.Add(-time.Minute))), "flagged",
 			"No progress: at least 6 messages with no recorded change to its repositories in 3 h.", "6/true/true", "0/false/false"},
+		// A check recorded a wake, but its send attempt is not in the graph.
+		{"a recorded send missing from the graph: a lower bound", npConfig(nil, nil), npState(), npOn, &incident.Journal{Records: []incident.Record{npTick(npSince.Add(time.Minute), "wake", "succeeded", "idle")}}, none, "not_enough_history",
+			"Not enough history to tell: whether some messages were sent could not be confirmed.", "0/true/false", "0/false/false"},
+		{"a window under a minute", npConfig(nil, nil), func() state.File { s := npState(); s.ProgressChangedAt = dockNow.Add(-20 * time.Second); return s }(), npOn, empty, none, "clear",
+			"Clear: 0 messages and 0 checks with an error or retry in the last minute with no recorded change to its repositories.", "0/false/false", "0/false/false"},
 		{"dry runs are neither", npConfig(npInt(1), npInt(1)), npState(), npOn, &incident.Journal{Records: []incident.Record{func() incident.Record {
 			r := npRetry(npSince.Add(time.Minute), "retried")
 			r.DryRun = true
@@ -189,7 +219,7 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 	v := noProgressOf(npConfig(nil, nil), npState(), npOn, &incident.Journal{Records: records}, npGraph(rd.AdapterReturned, npEvery(6, npSince)...), dockNow)
 	want := []string{
 		"Its progress repositories last changed 3 h ago.",
-		"6 messages sent since then (wakes, nudges, re-prompts and notices about failed lanes); the flag is raised at 6.",
+		"6 messages sent since then (wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back); the flag is raised at 6.",
 		"0 checks since then found an error or retried the turn; the flag is raised at 4.",
 		"Held for a person for 2 h 10 min of the last 3 h.",
 	}
@@ -231,7 +261,7 @@ func TestNoProgressLinesAndHeldTime(t *testing.T) {
 	}
 	// A threshold of 0 says it does not raise the flag.
 	v = noProgressOf(npConfig(npInt(0), nil), npState(), npOn, &incident.Journal{}, &rungraph.Graph{}, dockNow)
-	if v.Lines[1] != "0 messages sent since then (wakes, nudges, re-prompts and notices about failed lanes); this does not raise the flag." {
+	if v.Lines[1] != "0 messages sent since then (wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back); this does not raise the flag." {
 		t.Errorf("%q", v.Lines[1])
 	}
 }

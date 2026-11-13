@@ -697,15 +697,23 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
-	var journal *incident.Journal
-	if j, err := incident.Load(l.StateDir); err == nil {
-		journal = &j
-	}
+	// The flag's three reads are not one snapshot. The send attempts and the
+	// history are read before the state that sets the window, so a check
+	// that runs during the read can only leave its own records out, for one
+	// refresh; it cannot make a change look like no change.
 	var graph *rungraph.Graph
 	if g, availability := rungraph.Load(l.StateDir); availability == rungraph.Available {
 		graph = &g
 	}
-	out.NoProgress = noProgressOf(cfg, st, ctl, journal, graph, now)
+	var journal *incident.Journal
+	if j, err := incident.Load(l.StateDir); err == nil {
+		journal = &j
+	}
+	flagState := st
+	if latest, err := state.Load(l.StateDir); err == nil {
+		flagState = latest
+	}
+	out.NoProgress = noProgressOf(cfg, flagState, ctl, journal, graph, now)
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {
