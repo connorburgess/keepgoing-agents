@@ -144,14 +144,15 @@ func TestRegisteredLoopsAreFoundAndStartAndInitRefuse(t *testing.T) {
 		t.Fatal("the refused loop was started")
 	}
 	var out, ierr bytes.Buffer
-	project := newSetupFixture(t).project
-	code = initLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	sf := newSetupFixture(t)
+	project := sf.project
+	code = setupLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")}, strings.NewReader(""), sf.lookPath)
 	if code != exitFailed || !strings.Contains(ierr.String(), "init: loop example-loop (") {
 		t.Fatalf("init: %d %s %s", code, out.String(), ierr.String())
 	}
 	out.Reset()
 	ierr.Reset()
-	code = initLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--allow-second-loop", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	code = setupLoop(env{context.Background(), &out, &ierr}, []string{"--non-interactive", "--dry-run", "--allow-second-loop", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")}, strings.NewReader(""), sf.lookPath)
 	if code != exitOK || !strings.Contains(ierr.String(), "warning: loop example-loop (") {
 		t.Fatalf("init allowed: %d %s %s", code, out.String(), ierr.String())
 	}
@@ -233,9 +234,10 @@ func TestJSONRefusalsNameTheOtherLoopOnly(t *testing.T) {
 		t.Fatal("enable")
 	}
 	want := `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"example-loop"}}` + "\n"
-	project := newSetupFixture(t).project
+	sf := newSetupFixture(t)
+	project := sf.project
 	var out, errs bytes.Buffer
-	code := initLoop(env{context.Background(), &out, &errs}, []string{"--non-interactive", "--json", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	code := setupLoop(env{context.Background(), &out, &errs}, []string{"--non-interactive", "--json", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")}, strings.NewReader(""), sf.lookPath)
 	if code == exitOK || out.String() != want || !strings.Contains(errs.String(), "init: loop example-loop (") {
 		t.Fatalf("init --json: %d %q %s", code, out.String(), errs.String())
 	}
@@ -267,13 +269,14 @@ func TestJSONRefusalsNameTheOtherLoopOnly(t *testing.T) {
 func TestInitJSONAdvertisesStartJSON(t *testing.T) {
 	f := newFixture(t)
 	for _, dryRun := range []bool{true, false} {
-		project := newSetupFixture(t).project
+		sf := newSetupFixture(t)
+		project := sf.project
 		args := []string{"--non-interactive", "--json", "--name", "example-loop-d", "--agent", "bb", "--thread", "thr_example_d", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-d", map[bool]string{true: "preview", false: "created"}[dryRun])}
 		if dryRun {
 			args = append(args, "--dry-run")
 		}
 		var out, errs bytes.Buffer
-		if code := initLoop(env{context.Background(), &out, &errs}, args); code != exitOK {
+		if code := setupLoop(env{context.Background(), &out, &errs}, args, strings.NewReader(""), sf.lookPath); code != exitOK {
 			t.Fatalf("init: %d %s", code, errs.String())
 		}
 		var r map[string]any
