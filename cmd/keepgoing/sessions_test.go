@@ -261,3 +261,24 @@ func TestJSONRefusalsNameTheOtherLoopOnly(t *testing.T) {
 		t.Fatalf("start --json, no configuration: %d %q", code, out.String())
 	}
 }
+
+// The setup result says whether start accepts --background --json, so a
+// program can decide from that field alone, in a preview and on creation.
+func TestInitJSONAdvertisesStartJSON(t *testing.T) {
+	f := newFixture(t)
+	for _, dryRun := range []bool{true, false} {
+		project := newSetupFixture(t).project
+		args := []string{"--non-interactive", "--json", "--name", "example-loop-d", "--agent", "bb", "--thread", "thr_example_d", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-d", map[bool]string{true: "preview", false: "created"}[dryRun])}
+		if dryRun {
+			args = append(args, "--dry-run")
+		}
+		var out, errs bytes.Buffer
+		if code := initLoop(env{context.Background(), &out, &errs}, args); code != exitOK {
+			t.Fatalf("init: %d %s", code, errs.String())
+		}
+		var r map[string]any
+		if err := json.Unmarshal(out.Bytes(), &r); err != nil || r["startJson"] != true || r["schemaVersion"] != float64(1) {
+			t.Fatalf("dry run %v: %v %s", dryRun, err, out.String())
+		}
+	}
+}
