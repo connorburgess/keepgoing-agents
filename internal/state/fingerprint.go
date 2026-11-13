@@ -24,15 +24,14 @@ const (
 	gitWaitDelay       = 2 * time.Second
 )
 
-const fingerprintPrefix = "kg2"
+const fingerprintPrefix = "kg3"
 
 // Fingerprint summarises the working state of every worktree of the given
 // repositories. It reads only Git metadata and the size and modification
 // time of tracked files that differ from HEAD, never file contents.
 //
 // The result holds one digest per worktree, keyed by a hash of its path, so
-// two observations can be compared over the worktrees present in both: see
-// SameProgress. A worktree that Git itself marks prunable and whose directory
+// two observations can be compared worktree by worktree: see SameProgress. A worktree that Git itself marks prunable and whose directory
 // is gone (it is not locked) has no working state and is left out and
 // counted: see MissingWorktrees. Any other worktree that cannot be read,
 // including a locked one whose volume is absent, is an error, because an
@@ -70,21 +69,34 @@ func Fingerprint(repositories []string) (string, error) {
 	return b.String(), nil
 }
 
+// treeDigest describes one worktree as "<commit time>.<c|d>.<hash>": the
+// committer time of HEAD in Unix seconds, whether tracked files differ from
+// HEAD (d) or not (c), and a hash of HEAD, the status and the metadata of the
+// changed files. The first two parts let a worktree seen for the first time
+// be judged: see SameProgress.
 func treeDigest(ctx context.Context, tree string) (string, error) {
 	h := sha256.New()
-	for _, args := range [][]string{
-		{"rev-parse", "HEAD"},
-		{"status", "--porcelain", "--untracked-files=no"},
-	} {
-		out, err := git(ctx, tree, args...)
-		if err != nil {
-			return "", fmt.Errorf("%s: git %s: %w", tree, args[0], err)
-		}
-		fmt.Fprintf(h, "%s\x00", out)
+	head, err := git(ctx, tree, "log", "-1", "--format=%H %ct")
+	if err != nil {
+		return "", fmt.Errorf("%s: git log: %w", tree, err)
 	}
+	commit, committed, ok := strings.Cut(head, " ")
+	if _, err := strconv.ParseInt(committed, 10, 64); !ok || err != nil {
+		return "", fmt.Errorf("%s: git log: unexpected output", tree)
+	}
+	fmt.Fprintf(h, "%s\x00", commit)
+	status, err := git(ctx, tree, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return "", fmt.Errorf("%s: git status: %w", tree, err)
+	}
+	fmt.Fprintf(h, "%s\x00", status)
 	out, err := git(ctx, tree, "diff", "--name-only", "-z", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("%s: git diff: %w", tree, err)
+	}
+	dirty := "c"
+	if status != "" || out != "" {
+		dirty = "d"
 	}
 	for _, name := range strings.Split(out, "\x00") {
 		if name == "" {
@@ -100,7 +112,17 @@ func treeDigest(ctx context.Context, tree string) (string, error) {
 		}
 		fmt.Fprintf(h, "%s:%d:%d\x00", name, info.Size(), info.ModTime().UnixNano())
 	}
-	return hex.EncodeToString(h.Sum(nil)[:16]), nil
+	return committed + "." + dirty + "." + hex.EncodeToString(h.Sum(nil)[:16]), nil
+}
+
+// digestParts splits a tree digest. ok is false for anything else.
+func digestParts(digest string) (committed int64, dirty bool, ok bool) {
+	parts := strings.Split(digest, ".")
+	if len(parts) != 3 || (parts[1] != "c" && parts[1] != "d") || parts[2] == "" {
+		return 0, false, false
+	}
+	committed, err := strconv.ParseInt(parts[0], 10, 64)
+	return committed, parts[1] == "d", err == nil
 }
 
 // parseFingerprint splits a structured fingerprint. ok is false for any other
@@ -125,12 +147,19 @@ func parseFingerprint(fp string) (missing int, digests map[string]string, ok boo
 	return missing, digests, true
 }
 
-// SameProgress reports whether two fingerprints show no progress. Structured
-// fingerprints are compared over the worktrees present in both, so a worktree
-// that disappears, returns or is newly registered is not progress by itself;
-// its later changes are. A fingerprint from an older build cannot be compared
-// with a structured one, and that change of format is not progress either.
-// Two unstructured values are compared as they are.
+// SameProgress reports whether two fingerprints show no progress.
+//
+// A worktree present in both observations is progress when its digest
+// changed. A worktree that disappeared is not progress. A worktree seen for
+// the first time is progress only when it shows work of its own: tracked
+// files that differ from HEAD, or a HEAD commit newer than every commit seen
+// in the previous observation. A fresh checkout of an existing commit, a
+// returning worktree and a newly registered one are therefore not progress by
+// themselves, while a commit made in a new worktree is.
+//
+// A fingerprint from an older build cannot be compared with a structured one,
+// and that change of format is not progress either. Two unstructured values
+// are compared as they are.
 func SameProgress(previous, current string) bool {
 	_, was, wasOK := parseFingerprint(previous)
 	_, is, isOK := parseFingerprint(current)
@@ -140,8 +169,21 @@ func SameProgress(previous, current string) bool {
 	if wasOK != isOK {
 		return true
 	}
-	for key, digest := range was {
-		if now, shared := is[key]; shared && now != digest {
+	var newest int64
+	for _, digest := range was {
+		if committed, _, ok := digestParts(digest); ok && committed > newest {
+			newest = committed
+		}
+	}
+	for key, digest := range is {
+		before, shared := was[key]
+		if shared {
+			if before != digest {
+				return false
+			}
+			continue
+		}
+		if committed, dirty, ok := digestParts(digest); ok && len(was) > 0 && (dirty || committed > newest) {
 			return false
 		}
 	}

@@ -292,6 +292,12 @@ func (l *Loop) fitTickTimeout(probeTimeout time.Duration) error {
 // TickTimeoutWarning is non-empty when a check's worst case may outlast a
 // five-minute scheduler timeout. The daemon and managed services have no
 // such timeout.
+// TickTimeoutGrown reports whether an omitted tick_timeout was raised above
+// its default to fit the fallback probe timeout.
+func (l Loop) TickTimeoutGrown() bool {
+	return l.tickTimeoutDefaulted && l.TickTimeout.Duration > DefaultTickTimeout
+}
+
 func (l Loop) TickTimeoutWarning() string {
 	if l.TickTimeout.Duration <= TickTimeoutSchedulerNote {
 		return ""

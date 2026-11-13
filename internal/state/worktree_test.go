@@ -91,9 +91,43 @@ func TestFingerprintSkipsRegisteredWorktreeMissingFromDisk(t *testing.T) {
 		t.Fatal("a change in the returned worktree was not progress")
 	}
 
+	// A commit made in a worktree before it is first observed is progress on
+	// that first observation; a fresh checkout of an older commit is not.
+	before := fp()
+	fresh := filepath.Join(t.TempDir(), "fresh")
+	run("worktree", "add", "-q", "--detach", fresh, "HEAD")
+	if !SameProgress(before, fp()) {
+		t.Fatal("a fresh checkout of an existing commit counted as progress")
+	}
+	run("worktree", "remove", "--force", fresh)
+	worked := filepath.Join(t.TempDir(), "worked")
+	run("worktree", "add", "-q", "-b", "worked", worked)
+	os.WriteFile(filepath.Join(worked, "b.txt"), []byte("new\n"), 0o644)
+	later := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-a", "--allow-empty", "-m", "work")
+	later.Dir = worked
+	later.Env = append(os.Environ(), "GIT_COMMITTER_DATE=2038-01-01T00:00:00Z", "GIT_AUTHOR_DATE=2038-01-01T00:00:00Z")
+	if out, err := later.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+	if SameProgress(before, fp()) {
+		t.Fatal("a commit in a newly registered worktree was not progress on its first observation")
+	}
+	run("worktree", "remove", "--force", worked)
+	edited := filepath.Join(t.TempDir(), "edited")
+	run("worktree", "add", "-q", "--detach", edited, "HEAD")
+	os.WriteFile(filepath.Join(edited, "a.txt"), []byte("uncommitted\n"), 0o644)
+	if SameProgress(before, fp()) {
+		t.Fatal("uncommitted work in a newly registered worktree was not progress")
+	}
+	run("worktree", "remove", "--force", edited)
+
 	// A fingerprint saved by an older build cannot be compared: adopting the
 	// new format is not progress. Unstructured values compare as they are.
 	legacy := "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+	previousFormat := "kg2|m=0|aaaaaaaaaaaaaaaa=1111"
+	if !SameProgress(previousFormat, both) || !SameProgress(both, previousFormat) || MissingWorktrees(previousFormat) != 0 {
+		t.Fatal("the previous structured format was compared instead of adopted")
+	}
 	if !SameProgress(legacy, both) || !SameProgress(both, legacy) || !SameProgress("same", "same") || SameProgress("same", "changed") || MissingWorktrees(legacy) != 0 {
 		t.Fatal("format change or unstructured comparison is wrong")
 	}

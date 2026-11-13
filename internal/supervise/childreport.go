@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
@@ -98,7 +99,13 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	if rec.Reports > 1 {
 		text += " More children have failed since the last report for this episode."
 	}
-	err = t.opts.Reporter.Report(t.ctx, report.Event{Type: childErrorEvent, Loop: t.loop.Name, Text: text, At: t.now,
+	ctx, cancel, ok := t.reportContext(childErrorEvent)
+	if !ok {
+		ctx, cancel = context.WithCancel(t.ctx)
+		cancel() // no time left: recorded as a failed delivery below
+	}
+	defer cancel()
+	err = t.opts.Reporter.Report(ctx, report.Event{Type: childErrorEvent, Loop: t.loop.Name, Text: text, At: t.now,
 		Data: map[string]any{"erroredChildren": rec.Errored, "runningChildren": rec.Running, "listingComplete": complete, "report": rec.Reports}})
 	if err != nil {
 		// One attempt: a failed delivery is recorded, not retried.

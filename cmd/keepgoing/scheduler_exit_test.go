@@ -195,3 +195,51 @@ func TestTickSurvivesRegisteredWorktreeMissingFromDisk(t *testing.T) {
 		t.Fatalf("after prune: %v", r)
 	}
 }
+
+// An omitted tick_timeout grows with a long probe timeout. That must be
+// visible where people look, not only in validate.
+func TestGrownCheckBudgetIsShownByStatusAndDoctor(t *testing.T) {
+	for _, tc := range []struct {
+		probe, status, doctor string
+		warn                  bool
+	}{
+		{"10s", "check budget: 3m0s\n", `"status": "ok"`, false},
+		{"2m", "check budget: 3m30s (tick_timeout is not set; raised from the 3m0s default to fit fallbacks probe.timeout)\n", "raised from the 3m0s default", false},
+		{"3m", "check budget: 4m30s (tick_timeout is not set; raised from the 3m0s default to fit fallbacks probe.timeout)\n", "may outlast a five-minute scheduler timeout", true},
+	} {
+		t.Run(tc.probe, func(t *testing.T) {
+			f := newFixture(t)
+			fb := filepath.Join(f.dir, "fallbacks.yaml")
+			b, err := os.ReadFile(fb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, fb, strings.Replace(string(b), "timeout: 10s", "timeout: "+tc.probe, 1), 0600)
+			f.run("enable")
+			_, status, _ := f.run("status")
+			if !strings.Contains(status, tc.status) || strings.Contains(status, "check budget: warning:") != tc.warn {
+				t.Fatalf("status:\n%s", status)
+			}
+			_, statusJSON, _ := f.run("status", "--json")
+			var view struct {
+				TickBudget struct {
+					Timeout string `json:"timeout"`
+					Grown   bool   `json:"grown"`
+					Warning string `json:"warning"`
+				} `json:"tickBudget"`
+			}
+			if err := json.Unmarshal([]byte(statusJSON), &view); err != nil || view.TickBudget.Grown != (tc.probe != "10s") || (view.TickBudget.Warning != "") != tc.warn {
+				t.Fatalf("%v %+v", err, view)
+			}
+			_, doctor, _ := f.run("doctor", "--json")
+			i := strings.Index(doctor, `"supervisor.tick_timeout"`)
+			if i < 0 || !strings.Contains(doctor[i:min(len(doctor), i+700)], tc.doctor) {
+				t.Fatalf("doctor:\n%s", doctor)
+			}
+			_, _, errs := f.run("validate")
+			if strings.Contains(errs, "loop.tick_timeout is") != tc.warn {
+				t.Fatalf("validate: %s", errs)
+			}
+		})
+	}
+}

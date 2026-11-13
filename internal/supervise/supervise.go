@@ -157,6 +157,7 @@ type tick struct {
 	probesDeferred      bool      // a needed probe was skipped for lack of time
 	switchBackDeferred  bool
 	budgetWarned        bool
+	lateReports         int // reports started after the budget was spent
 	graphFailed         bool
 	graphClosed         bool
 }
@@ -169,9 +170,10 @@ func (t *tick) report(typ, text string, data map[string]any) {
 	if t.opts.DryRun {
 		return
 	}
-	// A report is part of recording the check, so it is still attempted after
-	// the budget is spent, but briefly.
-	ctx, cancel := context.WithTimeout(t.ctx, max(t.deadline.Sub(t.opts.Clock()), minReportTime))
+	ctx, cancel, ok := t.reportContext(typ)
+	if !ok {
+		return
+	}
 	defer cancel()
 	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
@@ -391,13 +393,19 @@ func (t *tick) run() error {
 
 	// Fallback health: scheduled probes, then the redundancy picture.
 	var summary health.Summary
+	handoffFirst := false
 	if t.fb != nil {
 		if t.reg, err = health.Load(loop.StateDir); err != nil {
 			t.reg = nil
 			res.Reason = "could not read fallback health; no action taken"
 			return t.record(err)
 		}
-		if inWindow && !t.opts.DryRun {
+		// When a handoff looks due on what is already known, the budget goes
+		// to the exact probes that handoff needs; the scheduled probes wait
+		// until after the decision, and run then if no handoff was attempted.
+		handoffFirst = obs.State == decide.Error && contains(loop.Errors.FailoverOn, string(obs.ErrorClass)) &&
+			health.Evaluate(t.fb, t.reg, t.now, target, agent.Group).Meets
+		if inWindow && !t.opts.DryRun && !handoffFirst {
 			t.scheduledProbes(target, agent.Group)
 		}
 		summary = health.Evaluate(t.fb, t.reg, t.now, target, agent.Group)
@@ -465,6 +473,10 @@ func (t *tick) run() error {
 	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.st.HandoffBriefs = nil
+		// Handoffs put off for lack of time belong to the same episode. A
+		// check that merely sees the session active must not clear them, or a
+		// session alternating between error and active is put off forever.
+		t.st.ClearDeferrals()
 	}
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
@@ -524,9 +536,7 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
-	if d.Action != decide.Handoff && !t.opts.DryRun {
-		t.st.ClearDeferrals() // no handoff is due, so none is being put off
-	}
+	handoffAttempted := d.Action == decide.Handoff
 	res.Action, res.Reason = string(d.Action), d.Reason
 	res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
 
@@ -599,6 +609,11 @@ func (t *tick) run() error {
 	}
 	if errors.Is(actErr, state.ErrSendLimit) || errors.Is(actErr, state.ErrSendLedger) {
 		actErr = t.sendAllowanceFailure(actErr)
+	}
+	if handoffFirst && !handoffAttempted && inWindow && !t.opts.DryRun && t.reg != nil {
+		// The handoff did not happen after all (a limit wait, a hold, busy
+		// children): the scheduled probes it was put ahead of run now.
+		t.scheduledProbes(t.st.Target(), agent.Group)
 	}
 	if t.reg != nil && !t.opts.DryRun {
 		if err := t.reg.Save(loop.StateDir); err != nil && actErr == nil {
@@ -1176,7 +1191,7 @@ func (t *tick) deferralCap() int {
 // health registry, the probe cap or incident history as a failure.
 func (t *tick) skipProbe(id string, tier probe.Tier, why string) {
 	t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: tier, Skipped: why})
-	if !t.budgetWarned {
+	if !t.budgetWarned && why == "tick_timeout" {
 		t.budgetWarned = true
 		t.warn("the check's time budget (loop.tick_timeout) left no room for every fallback probe; skipped probes stay due")
 	}
@@ -1193,4 +1208,35 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 		err = fmt.Errorf("observation exceeded %s", observeTimeout)
 	}
 	return obs, err
+}
+
+// essentialReports are the events a person or a dashboard acts on. The rest
+// (a failed probe, a change in redundancy, an ordinary wake, nudge or
+// re-prompt) describe routine work.
+var essentialReports = map[string]bool{
+	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true,
+}
+
+// maxLateReports bounds how many reports a check may start after its budget
+// is spent, each for at most minReportTime.
+const maxLateReports = 3
+
+// reportContext gives a report its time. Before the budget is spent a report
+// may use what is left of it. Afterwards a routine report is not sent, and an
+// essential one gets minReportTime, for at most maxLateReports of them, so
+// reports cannot extend a check without limit.
+func (t *tick) reportContext(typ string) (context.Context, context.CancelFunc, bool) {
+	left := t.deadline.Sub(t.opts.Clock())
+	if left >= minReportTime {
+		ctx, cancel := context.WithTimeout(t.ctx, left)
+		return ctx, cancel, true
+	}
+	if !essentialReports[typ] || t.lateReports >= maxLateReports {
+		t.warn("report %s not sent: the check's time budget (loop.tick_timeout) was spent", typ)
+		return nil, nil, false
+	}
+	t.lateReports++
+	ctx, cancel := context.WithTimeout(t.ctx, minReportTime)
+	return ctx, cancel, true
 }

@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -119,7 +120,13 @@ func (t *tick) reportLongLimitWait(target string, obs decide.Observation) {
 	if rec.Reports > 1 {
 		text += " The reported reset has moved later since the last report for this wait."
 	}
-	err = t.opts.Reporter.Report(t.ctx, report.Event{Type: limitWaitEvent, Loop: t.loop.Name, Text: text, At: t.now,
+	ctx, cancel, ok := t.reportContext(limitWaitEvent)
+	if !ok {
+		ctx, cancel = context.WithCancel(t.ctx)
+		cancel() // no time left: recorded as a failed delivery below
+	}
+	defer cancel()
+	err = t.opts.Reporter.Report(ctx, report.Event{Type: limitWaitEvent, Loop: t.loop.Name, Text: text, At: t.now,
 		Data: map[string]any{"target": target, "resetsAt": rec.ResetsAt, "reason": string(cause), "reportWaitAfter": threshold.String(), "report": rec.Reports}})
 	if err != nil {
 		// One attempt: a failed delivery is recorded, not retried.
