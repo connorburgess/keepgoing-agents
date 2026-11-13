@@ -10,7 +10,7 @@
 
   var TONES = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", checks_failing: "warn",
-    not_checked_recently: "warn", paused: "calm", stopped: "calm", finished: "calm", off: "calm", unknown: "unknown"
+    not_checked_recently: "warn", outside_hours: "calm", paused: "calm", stopped: "calm", finished: "calm", off: "calm", unknown: "unknown"
   };
   // Icons: one 20px grid, one stroke weight.
   var ICONS = {
@@ -29,7 +29,7 @@
   };
   var STATE_ICON = {
     supervising: "good", waiting_for_you: "attn", waiting_on_limit: "limit", checks_failing: "warn", not_checked_recently: "warn",
-    paused: "paused", stopped: "stopped", finished: "finished", off: "off", unknown: "unknown"
+    outside_hours: "limit", paused: "paused", stopped: "stopped", finished: "finished", off: "off", unknown: "unknown"
   };
 
   function $(id) { return document.getElementById(id); }
@@ -100,7 +100,7 @@
     return f;
   }
 
-  var READY_TONE = { main: "calm", ready: "good", not_ready: "warn", not_probed: "unknown", disabled: "calm", unknown: "unknown" };
+  var READY_TONE = { ready: "good", not_ready: "warn", not_probed: "unknown", disabled: "calm", unknown: "unknown" };
 
   // Routing: "#/" is the overview, "#/loop/<key>" one loop, "#/routes" every route.
   function route() {
@@ -212,7 +212,7 @@
     var name = el("h3", "route-name", o.name);
     if (o.account) name.appendChild(el("span", "route-account", " on " + o.account));
     top.appendChild(name);
-    if (o.active) top.appendChild(el("span", "in-use", o.activeLabel || "In use now"));
+    if (o.use) top.appendChild(el("span", o.active ? "in-use" : "in-use is-recorded", o.use));
     if (o.readiness) top.appendChild(el("span", "ready tone-" + (READY_TONE[o.readiness] || "unknown"), o.phrase));
     body.appendChild(top);
     var meta = el("div", "sub route-meta");
@@ -247,7 +247,8 @@
     var li = el("li", "need");
     var head = el("div", "need-head");
     if (link) head.appendChild(el("h3", null, n.loop));
-    head.appendChild(el("span", "waited", n.waitedSeconds == null ? "Waiting time unknown" : (n.sinceEvidence === "hold_recorded" ? "Waiting " : "Waiting at least ") + span(n.waitedSeconds)));
+    if (n.kind === "unreadable") head.appendChild(el("span", "waited", "Could not be read"));
+    else head.appendChild(el("span", "waited", n.waitedSeconds == null ? "Waiting time unknown" : (n.sinceEvidence === "hold_recorded" ? "Waiting " : "Waiting at least ") + span(n.waitedSeconds)));
     li.appendChild(head);
     li.appendChild(el("p", "reason", n.reason));
     if (n.note) {
@@ -255,6 +256,8 @@
       note.appendChild(el("span", "note-label", "Note left with the hold"));
       note.appendChild(document.createTextNode("\u201C" + n.note + "\u201D"));
       li.appendChild(note);
+    } else if (n.noteWithheld) {
+      li.appendChild(el("p", "sub", "A note was left with the hold. It is shown with identifiers and notes."));
     }
     var todo = el("p", "todo");
     todo.appendChild(el("span", "todo-label", "What to do"));
@@ -273,17 +276,26 @@
     var nav = $("picker");
     nav.replaceChildren();
     var needs = el("a", "pick pick-needs" + (d.needsYou.length ? "" : " is-clear"));
+    needs.setAttribute("aria-label", "Needs you");
     needs.href = "#/";
     if (r.view === "home") needs.setAttribute("aria-current", "page");
+    var held = d.needsYou.length - d.unread;
     if (d.registry.availability !== "available") {
       needs.appendChild(icon("unknown"));
       needs.appendChild(el("span", null, "Needs you: unknown"));
     } else if (d.needsYou.length) {
       needs.appendChild(el("span", "count", String(d.needsYou.length)));
-      needs.appendChild(el("span", null, d.needsYou.length === 1 ? "loop needs you" : "loops need you"));
-    } else {
+      var words = [];
+      if (held) words.push(held === 1 ? "loop needs you" : "loops need you");
+      if (d.unread) words.push((held ? d.unread + " " : "") + "could not be read");
+      needs.appendChild(el("span", null, words.join(", ")));
+    } else if (d.allClear) {
       needs.appendChild(icon("check"));
       needs.appendChild(el("span", null, "Nothing needs you"));
+    } else {
+      // Not every loop was read, so an all-clear cannot be given.
+      needs.appendChild(icon("unknown"));
+      needs.appendChild(el("span", null, "Needs you: not fully read"));
     }
     needs.appendChild(icon("chevron"));
     nav.appendChild(needs);
@@ -367,15 +379,19 @@
       return;
     }
     var n = d.loops.length, sup = d.loops.filter(function (l) { return l.state === "supervising"; }).length;
-    pane.appendChild(el("p", "lede", n + (n === 1 ? " loop" : " loops") + (sup ? ", " + sup + " supervising" : "") + ". Read from keepgoing's own records; nothing here is a live view of a conversation."));
+    pane.appendChild(el("p", "lede", n + (n === 1 ? " loop" : " loops") + (sup ? ", " + sup + " supervising" : "") + (d.unread ? ", " + d.unread + " could not be read" : "") + ". Read from keepgoing's own records; nothing here is a live view of a conversation."));
     if (!n) {
       pane.appendChild(emptyBox("No loops are registered yet.", "Register one with keepgoing registry add -c path/to/keepgoing.yaml, and it appears here on the next read."));
+      return;
+    }
+    if (!d.needsYou.length && !d.allClear) {
+      pane.appendChild(emptyBox("Not every loop was read.", "So this cannot say that nothing needs you. It reads again shortly."));
       return;
     }
     if (!d.needsYou.length) {
       var p = el("p", "clear panel");
       p.appendChild(icon("check"));
-      p.appendChild(document.createTextNode("Nothing needs you right now. Pick a loop to see its routes."));
+      p.appendChild(document.createTextNode("Nothing needs you: every registered loop was read and none is held. Pick a loop to see its routes."));
       pane.appendChild(p);
       return;
     }
@@ -412,31 +428,31 @@
     // The ordered preferred routes are the main structure.
     var c = l.chain, f = l.fallbacks;
     var brief = null;
-    if (c.availability === "none_configured") brief = el("span", "sub", "No fallbacks set up");
-    else if (f.availability === "known") brief = el("span", "chain-ready" + (f.eligible > 0 && !f.enough ? " is-short" : ""), f.eligible ? f.ready + " of " + f.eligible + " fallbacks ready" : "No fallback can take over");
-    else brief = unknown("Fallback readiness unknown");
+    if (c.availability === "none_configured") brief = el("span", "sub", "No other routes set up");
+    else if (f.availability === "known") brief = el("span", "chain-ready" + (f.eligible > 0 && !f.enough ? " is-short" : ""), f.eligible ? f.ready + " of " + f.eligible + " other routes ready" : "No other route is eligible to take over");
+    else brief = unknown("Readiness of other routes unknown");
     var routing = panel("Preferred routes", [brief]);
     var count = Math.max(0, c.entries.length - 1) + c.omitted;
     var how = !c.entries.length ? "Unknown: its configuration could not be read." :
-      c.availability === "none_configured" ? "Nothing takes over if the main target cannot continue." :
-      c.handoffOn.length ? "In order of preference. Hands off automatically on " + c.handoffOn.map(function (x) { return x.replace(/_/g, " ") + "s"; }).join(", ") + ", to the first ready fallback below." :
-      "In order of preference. Automatic handoff is off; " + count + (count === 1 ? " fallback is" : " fallbacks are") + " set up for a manual move.";
+      c.availability === "none_configured" ? "Nothing takes over if the first route cannot continue." :
+      c.handoffOn.length ? "In order of preference. Moves automatically on " + c.handoffOn.map(function (x) { return x.replace(/_/g, " ") + "s"; }).join(", ") + ", to the first ready route below." :
+      "In order of preference. Automatic moves are off; " + count + (count === 1 ? " other route is" : " other routes are") + " set up for a manual move.";
     routing.appendChild(el("p", "sub chain-how", how));
     var ol = el("ol", "route-list is-ordered");
     c.entries.forEach(function (e) {
       var lanes = [];
-      if (e.active) lanes.push(lanesBox("Lanes on this route", children(l.children)));
+      if (e.current) lanes.push(lanesBox(e.inUse ? "Lanes on this route" : "Lanes, as last listed", children(l.children)));
       var item = routeItem({
-        id: e.id, position: e.position, badge: e.position === 0 ? "Main" : String(e.position), name: routeName(e), account: e.account, active: e.active, off: e.disabled,
-        readiness: e.position > 0 && e.readiness !== "in_use" ? e.readiness : "", phrase: e.phrase, meta: [e.position === 0 ? "Main target" : "Fallback " + e.id].concat(routeMeta(e)),
-        probeAgeSeconds: e.probeAgeSeconds, usage: e.usage, lanes: lanes
+        id: e.id, position: e.position, badge: String(e.position + 1), name: routeName(e), account: e.account, active: e.inUse, use: e.use, off: e.disabled,
+        readiness: e.position > 0 && e.readiness !== "current" ? e.readiness : "", phrase: e.phrase,
+        meta: ["configured as " + e.id].concat(routeMeta(e)), probeAgeSeconds: e.probeAgeSeconds, usage: e.usage, lanes: lanes
       });
-      item.setAttribute("aria-label", (e.position === 0 ? "Main target" : "Fallback " + e.position) + ": " + routeName(e) + (e.active ? ", in use now" : ""));
+      item.setAttribute("aria-label", "Route " + (e.position + 1) + ": " + routeName(e) + (e.use ? ", " + e.use : ""));
       ol.appendChild(item);
     });
     routing.appendChild(ol);
     if (c.omitted) routing.appendChild(el("p", "sub", c.omitted + " more not shown"));
-    if (!c.entries.length || !c.entries.some(function (e) { return e.active; })) {
+    if (!c.entries.length || !c.entries.some(function (e) { return e.current; })) {
       routing.appendChild(lanesBox("Lanes", children(l.children)));
     }
     pane.appendChild(routing);
@@ -507,18 +523,21 @@
           if (i) p.appendChild(document.createTextNode(", "));
           var a = el("a", null, x.loop);
           a.href = "#/loop/" + x.key;
-          a.title = x.position > 0 ? "Fallback " + x.position + " for " + x.loop : "Main target of " + x.loop;
+          a.title = "Route " + (x.position + 1) + " of " + x.loop;
           p.appendChild(a);
         });
         return p;
       }
       var lanes = [];
       if (n.runningNow.length) lanes.push(lanesBox("Running on it now", running(n.runningNow)));
-      if (n.preferredBy.length) lanes.push(lanesBox("On standby for " + n.preferredBy.length + (n.preferredBy.length === 1 ? " loop" : " loops"), standby(n.preferredBy)));
+      if (n.recordedFor.length) lanes.push(lanesBox("Current route of loops that are not in use now", running(n.recordedFor)));
+      if (n.standbyFor.length) lanes.push(lanesBox("On standby for " + n.standbyFor.length + (n.standbyFor.length === 1 ? " loop" : " loops"), standby(n.standbyFor)));
+      if (n.unknownFor.length) lanes.push(lanesBox("Listed by " + n.unknownFor.length + (n.unknownFor.length === 1 ? " loop" : " loops") + " whose current route is unknown", standby(n.unknownFor)));
       if (n.omitted) lanes.push(el("p", "sub", n.omitted + " more loops not shown"));
       ol.appendChild(routeItem({
-        name: routeName(n), account: n.account, active: n.runningNow.length > 0, activeLabel: n.runningNow.length + (n.runningNow.length === 1 ? " loop on it now" : " loops on it now"),
-        readiness: n.readiness === "in_use" || (n.readiness === "unknown" && n.runningNow.length) ? "" : n.readiness, phrase: n.phrase, meta: routeMeta(n), probeAgeSeconds: n.probeAgeSeconds, usage: n.usage, lanes: lanes
+        name: routeName(n), account: n.account, active: n.runningNow.length > 0,
+        use: n.runningNow.length ? n.runningNow.length + (n.runningNow.length === 1 ? " loop on it now" : " loops on it now") : "",
+        readiness: n.readiness === "current" || (n.readiness === "unknown" && n.probeAgeSeconds == null) ? "" : n.readiness, phrase: n.phrase, meta: routeMeta(n), probeAgeSeconds: n.probeAgeSeconds, usage: n.usage, lanes: lanes
       }));
     });
     box.appendChild(ol);
@@ -566,6 +585,8 @@
 
   function load() {
     if (state.busy) return;
+    // A hidden tab does not poll; it reads again when it is shown.
+    if (document.hidden && state.data) { schedule(); return; }
     state.busy = true;
     var btn = $("refresh");
     btn.setAttribute("aria-busy", "true");
@@ -574,13 +595,13 @@
       .then(function (d) {
         if (!d || d.schemaVersion !== SCHEMA) throw new Error("schema");
         state.data = d; state.lastOk = Date.now(); state.failed = false;
-        banner("");
+        banner(d.complete ? "" : "This read was cut off before every loop was read. Loops that were not read are listed as could not be read; it reads again shortly.");
         render(false);
       })
       .catch(function (err) {
         state.failed = true;
         var schema = err && err.message === "schema";
-        banner(schema ? "This page does not understand the server's reply. Reload the page, or restart keepgoing dock." :
+        banner(schema ? "This page does not understand the reply it was sent. Reload the page, or restart keepgoing dock." :
           state.data ? "The last read failed, so what you see may be out of date. keepgoing dock may have stopped; it tries again shortly." :
           "Could not read from keepgoing dock. It may have stopped; start it again and open the new address it prints.");
         renderReadline();
@@ -597,7 +618,7 @@
     $("identifiers").addEventListener("click", function () {
       state.identifiers = !state.identifiers;
       this.setAttribute("aria-pressed", String(state.identifiers));
-      this.querySelector("span").textContent = state.identifiers ? "Hide identifiers" : "Show identifiers";
+      this.querySelector("span").textContent = state.identifiers ? "Hide identifiers and notes" : "Show identifiers and notes";
       this.title = this.querySelector("span").textContent;
       clearTimeout(state.timer);
       load();

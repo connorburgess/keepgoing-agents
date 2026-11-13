@@ -136,7 +136,7 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 ### The keepgoing panel: one page for every loop
 
-`keepgoing dock` serves a read-only page on this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and shows which loops need you and why. Picking a loop shows its preferred routes in order (its main target, then each fallback), the one in use, each route's readiness and usage reading, its lanes, last check and limits. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. Unreleased and tested with fixtures only; controls and configuration from the page are planned. See [the panel](docs/dock.md).
+`keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its preferred routes in order (`primary`, then each fallback), the one its records name as current, each route's readiness and usage reading, its lanes, last check and limits. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. Unreleased and tested with fixtures only; controls and configuration from the page are planned. See [the panel](docs/dock.md).
 
 ### Optional macOS menu preview
 

@@ -360,7 +360,20 @@ func runsCommand(e env, args []string) int {
 // configuration now names another loop or runtime directory, the registered
 // directory's runs are not reported under this name and the context is nil.
 func readRegisteredRuns(entry registry.Entry, allEntries []registry.Entry, allKnown bool, limit, limitRuns int, stale time.Duration) (runsLoop, *runsContext, bool) {
-	cfg, bound := clientConfig(entry)
+	return readRegisteredRunsWith(entry, allEntries, allKnown, limit, limitRuns, stale, nil)
+}
+
+// readRegisteredRunsWith is readRegisteredRuns with configurations the caller
+// has already validated for every registry entry; nil validates on demand.
+func readRegisteredRunsWith(entry registry.Entry, allEntries []registry.Entry, allKnown bool, limit, limitRuns int, stale time.Duration, validated map[string]*config.Config) (runsLoop, *runsContext, bool) {
+	var cfg *config.Config
+	var bound bool
+	if validated == nil {
+		cfg, bound = clientConfig(entry)
+	} else {
+		cfg = validated[entry.ID]
+		bound = cfg != nil
+	}
 	if !bound {
 		return runsLoop{RegistrationID: entry.ID, Loop: entry.Loop, Binding: recordUnavailable, Registration: recordUnavailable,
 			Graph: runsGraph{Availability: recordUnavailable}, Control: runsControl{Availability: recordUnavailable}, ActiveTarget: runsTarget{Availability: recordUnavailable},
@@ -368,7 +381,7 @@ func readRegisteredRuns(entry registry.Entry, allEntries []registry.Entry, allKn
 				Owner: runsOwner{Availability: blockerUnknown, Reason: "binding_unavailable", Supervised: runsSupervised{Availability: "registry_not_consulted"}},
 				Lock:  runsUnavailable{Availability: recordUnavailable, Reason: "lock_holder_not_identified"}}}, nil, true
 	}
-	c := &runsContext{dir: entry.StateDir, cfg: cfg, limit: limit, staleAfter: stale, registry: allEntries, registryKnown: allKnown, viaRegistry: true}
+	c := &runsContext{dir: entry.StateDir, cfg: cfg, limit: limit, staleAfter: stale, registry: allEntries, registryKnown: allKnown, viaRegistry: true, validated: validated}
 	loop, bad := c.readLoop(limitRuns)
 	loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
 	loop.Registration = recordUnavailable
@@ -408,6 +421,10 @@ type runsContext struct {
 	// candidateList is the registry's validated BB loops, built once.
 	candidateList    []runsCandidate
 	candidatesLoaded bool
+	// validated, when not nil, holds every registry entry's configuration
+	// already validated by the caller (nil for an entry that did not
+	// validate), so a read of many loops loads each configuration once.
+	validated map[string]*config.Config
 	// waiting is the one blocker answer every view of this loop uses.
 	waiting runsBlocker
 }

@@ -11,42 +11,52 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // The dock view is a plain-language projection of reads that already exist:
-// registered status, status and runs. It adds no evidence of its own and
-// never fills a gap with a default: what is missing is "unknown", and what is
-// old is "stale".
+// registered status, status, runs and fallbacks list. It adds no evidence of
+// its own and never fills a gap with a default: what is missing is "unknown",
+// and what is old is "stale". Every phrase it can produce says only what the
+// record behind it says; TestDockPhrasesFollowEvidence maps each record to
+// its phrase, so a phrase that guesses has to be added there to pass.
 
 const (
 	dockSchemaVersion = 1
 	dockMaxLoops      = registry.MaxEntries
-	dockMaxNote       = 280 // runes of an owner's hold note
-	dockMaxWindows    = 8   // windows per candidate
+	dockMaxNote       = 280 // runes of a hold note
+	dockMaxWindows    = 8   // usage windows per route
 	dockMaxIssues     = 8
 	dockMaxText       = 120 // runes of a name, alias, model or provider label
-	dockMaxChain      = 32  // handoff chain entries per loop
-	dockMaxRoutes     = 128 // routes in the route view
+	dockMaxChain      = 32  // fallbacks listed per loop
+	dockMaxRoutes     = 128 // routes in the view across loops
 	dockMaxRouteLoops = 64  // loops listed under one route, per list
 )
 
 type dockReport struct {
 	SchemaVersion int `json:"schemaVersion"`
 	// ReadOnly is true for every response of this schema: the page offers no
-	// control and the server has no write endpoint.
+	// control and there is no write endpoint.
 	ReadOnly          bool         `json:"readOnly"`
 	ReadAt            time.Time    `json:"readAt"`
 	RefreshSeconds    int          `json:"refreshSeconds"`
 	StaleAfterSeconds int          `json:"staleAfterSeconds"`
 	Identifiers       bool         `json:"identifiers"`
 	Registry          dockRegistry `json:"registry"`
-	NeedsYou          []dockNeed   `json:"needsYou"`
-	Loops             []dockLoop   `json:"loops"`
+	// Complete is false when the read was cut off before every loop was read.
+	// AllClear is true only when the registry was read, every loop in it was
+	// read, and none needs a person: a page may say "nothing needs you" only
+	// then. Unread counts loops that could not be read.
+	Complete bool       `json:"complete"`
+	AllClear bool       `json:"allClear"`
+	Unread   int        `json:"unread"`
+	NeedsYou []dockNeed `json:"needsYou"`
+	Loops    []dockLoop `json:"loops"`
 	// Routes is the same data grouped by route: a model on an account, as
-	// configured (provider, quota group and model). Each loop's chain entries
-	// name their route by key, so the two views are one feed.
+	// configured. Each loop's chain entries name their route by key, so the
+	// two views are one feed.
 	Routes []dockRoute `json:"routes"`
 }
 
@@ -56,14 +66,20 @@ type dockRegistry struct {
 	Omitted      int    `json:"omitted"`
 }
 
-// dockNeed is one loop that is waiting on a person.
+// dockNeed is one loop a person should look at. Kind is held (it waits on a
+// person) or unreadable (it could not be read, so whether it is held is
+// unknown).
 type dockNeed struct {
+	Kind   string `json:"kind"`
 	Key    string `json:"key"`
 	Loop   string `json:"loop"`
 	Reason string `json:"reason"`
-	// Note is the hold's note, in the words of whoever set it.
-	Note  string     `json:"note,omitempty"`
-	Since *time.Time `json:"since,omitempty"`
+	// Note is the hold's note, in the words of whoever set it. Registered
+	// status withholds notes, so it is included only with identifiers;
+	// NoteWithheld says one exists.
+	Note         string     `json:"note,omitempty"`
+	NoteWithheld bool       `json:"noteWithheld,omitempty"`
+	Since        *time.Time `json:"since,omitempty"`
 	// SinceEvidence is hold_recorded when Since is the time the hold was
 	// saved, or control_changed when only the last control change is known,
 	// which makes WaitedSeconds a lower bound.
@@ -76,22 +92,25 @@ type dockLoop struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
 	// State is one of supervising, waiting_for_you, waiting_on_limit,
-	// checks_failing, paused, stopped, finished, off, not_checked_recently
-	// or unknown. Phrase is its label, Detail one sentence about it.
-	State       string           `json:"state"`
-	Phrase      string           `json:"phrase"`
-	Detail      string           `json:"detail"`
-	Evidence    string           `json:"evidence"` // available, partial or unavailable
-	RunningOn   dockTarget       `json:"runningOn"`
-	Children    dockChildren     `json:"children"`
-	LastCheck   dockCheck        `json:"lastCheck"`
-	NextCheck   dockNext         `json:"nextCheck"`
-	Fallbacks   dockFallbacks    `json:"fallbacks"`
-	Chain       dockChain        `json:"chain"`
-	Limits      []dockLimit      `json:"limits"`
-	LimitWait   *dockLimitWait   `json:"limitWait,omitempty"`
-	Issues      []string         `json:"issues"`
-	Identifiers *dockIdentifiers `json:"identifiers,omitempty"`
+	// checks_failing, paused, stopped, finished, off, outside_hours,
+	// not_checked_recently or unknown. Phrase is its label, Detail one
+	// sentence about it.
+	State    string `json:"state"`
+	Phrase   string `json:"phrase"`
+	Detail   string `json:"detail"`
+	Evidence string `json:"evidence"` // available, partial or unavailable
+	// CurrentRoute is the target the loop's records name as current. It says
+	// nothing about activity: see InUse on the chain entry.
+	CurrentRoute dockTarget       `json:"currentRoute"`
+	Children     dockChildren     `json:"children"`
+	LastCheck    dockCheck        `json:"lastCheck"`
+	NextCheck    dockNext         `json:"nextCheck"`
+	Fallbacks    dockFallbacks    `json:"fallbacks"`
+	Chain        dockChain        `json:"chain"`
+	Limits       []dockLimit      `json:"limits"`
+	LimitWait    *dockLimitWait   `json:"limitWait,omitempty"`
+	Issues       []string         `json:"issues"`
+	Identifiers  *dockIdentifiers `json:"identifiers,omitempty"`
 }
 
 type dockTarget struct {
@@ -103,15 +122,18 @@ type dockTarget struct {
 	Model        string `json:"model,omitempty"`
 }
 
+// dockChildren is the loop's lanes, which keepgoing knows only as counts.
 type dockChildren struct {
 	// current, held, stale, none_recorded or unknown.
-	Availability string     `json:"availability"`
-	Working      int        `json:"working"`
-	Stuck        int        `json:"stuck"`
-	Failed       int        `json:"failed"`
-	CheckedAt    *time.Time `json:"checkedAt,omitempty"`
-	AgeSeconds   *int64     `json:"ageSeconds,omitempty"`
-	Phrase       string     `json:"phrase"`
+	Availability string `json:"availability"`
+	// Holding: the last check recorded lane work or lane input as its reason.
+	Holding    bool       `json:"holding"`
+	Working    int        `json:"working"`
+	Stuck      int        `json:"stuck"`
+	Failed     int        `json:"failed"`
+	CheckedAt  *time.Time `json:"checkedAt,omitempty"`
+	AgeSeconds *int64     `json:"ageSeconds,omitempty"`
+	Phrase     string     `json:"phrase"`
 }
 
 type dockCheck struct {
@@ -177,11 +199,11 @@ type dockIdentifiers struct {
 	Thread         string `json:"thread,omitempty"`
 }
 
-// dockChain is the loop's handoff order as fallbacks list reads it: the main
-// target first, then each fallback in configured order. Credentials, account
-// directories, commands and paths are never part of it. Each entry carries a
-// stable position and ID so later slices can add reorder, add and remove
-// controls that call the guided fallbacks commands.
+// dockChain is the loop's routes in order of preference, as fallbacks list
+// reads them: the main target first, then each fallback in configured order.
+// Credentials, account directories, commands and paths are never part of it.
+// Each entry carries a stable position and ID so later slices can add
+// reorder, add and remove controls that call the guided fallbacks commands.
 type dockChain struct {
 	// known, none_configured or unknown.
 	Availability string `json:"availability"`
@@ -195,17 +217,22 @@ type dockChain struct {
 type dockChainEntry struct {
 	Position int    `json:"position"` // 0 is the main target
 	ID       string `json:"id"`
-	// Route is the key of this target's route in the report's routes.
+	// Route is the key of this entry's route in the report's routes.
 	Route    string `json:"route"`
 	Account  string `json:"account,omitempty"` // the configured quota group
 	Tool     string `json:"tool,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
-	Active   bool   `json:"active"`
+	// Current: the loop's records name this entry as its current target.
+	// InUse: also the loop is on with no hold, its last check is recent, and
+	// that check recorded this target. Use says which, in plain words.
+	Current  bool   `json:"current"`
+	InUse    bool   `json:"inUse"`
+	Use      string `json:"use,omitempty"`
 	Disabled bool   `json:"disabled,omitempty"`
 	// Readiness is ready, not_ready, not_probed, disabled, unknown, main for
-	// the main target, or in_use for a fallback the loop is running on, which
-	// carries no verdict because the route in use is not probed.
+	// the main target, or current for a fallback that is the loop's current
+	// target, which carries no verdict because that route is not probed.
 	Readiness string          `json:"readiness"`
 	Phrase    string          `json:"phrase"`
 	ProbedAt  *time.Time      `json:"probedAt,omitempty"`
@@ -213,30 +240,35 @@ type dockChainEntry struct {
 	Usage     dockUsageTarget `json:"usage"`
 }
 
-// dockRoute is one route across every loop that names it. keepgoing
-// knows it from configuration only: it does not verify which account or model
-// a BB thread is actually using. Child conversations are not attributed to a
-// route, because keepgoing records a loop's children only as counts.
+// dockRoute is one route across every loop that names it. keepgoing knows it
+// from configuration only: it does not verify which account or model a BB
+// thread is actually using. Lanes are not attributed to a route, because
+// keepgoing records a loop's lanes only as counts.
 type dockRoute struct {
 	Key      string `json:"key"`
 	Provider string `json:"provider,omitempty"`
 	Account  string `json:"account,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Tool     string `json:"tool,omitempty"`
-	// Readiness is ready, not_ready, not_probed or unknown: the newest probe
-	// result any loop holds for this route. A route used only as a main target
-	// is never probed and reads unknown.
+	// Readiness is ready, not_ready, not_probed, disabled, current or
+	// unknown: the newest probe result any loop holds for this route. A
+	// route used only as a main target is never probed and reads unknown.
 	Readiness string          `json:"readiness"`
 	Phrase    string          `json:"phrase"`
 	ProbeAge  *int64          `json:"probeAgeSeconds,omitempty"`
 	Usage     dockUsageTarget `json:"usage"` // the newest reading any loop holds
-	// RunningNow are loops whose current target is this route; PreferredBy
-	// are loops that list it without using it now.
+	// RunningNow are loops in use on this route (see dockChainEntry.InUse).
+	// RecordedFor are loops whose records name it as current but that are not
+	// in use: off, held, finished or not checked recently. StandbyFor are
+	// loops that list it and are on another route. UnknownFor are loops that
+	// list it but whose current route could not be read.
 	RunningNow  []dockRouteLoop `json:"runningNow"`
-	PreferredBy []dockRouteLoop `json:"preferredBy"`
+	RecordedFor []dockRouteLoop `json:"recordedFor"`
+	StandbyFor  []dockRouteLoop `json:"standbyFor"`
+	UnknownFor  []dockRouteLoop `json:"unknownFor"`
 	Omitted     int             `json:"omitted"`
-	// ChildLanes is always unknown in this schema.
-	ChildLanes string `json:"childLanes"`
+	// Lanes is always unknown in this schema.
+	Lanes string `json:"lanes"`
 }
 
 type dockRouteLoop struct {
@@ -245,11 +277,14 @@ type dockRouteLoop struct {
 	State    string `json:"state"`
 	Phrase   string `json:"phrase"`
 	Position int    `json:"position"`
-	Working  int    `json:"childrenWorking"`
+	Working  int    `json:"lanesWorking"`
 }
 
-func dockRouteKey(provider, account, model, tool string) string {
-	h := sha256.Sum256([]byte(strings.Join([]string{"keepgoing-dock-route", provider, account, model, tool}, "\x00")))
+// dockRouteKey includes the probe's usage identity (a hash of what selects
+// the account a probe reads), so two accounts configured under one group are
+// two routes and never share a reading.
+func dockRouteKey(provider, account, model, tool, usageIdentity string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{"keepgoing-dock-route", provider, account, model, tool, usageIdentity}, "\x00")))
 	return "r" + hex.EncodeToString(h[:6])
 }
 
@@ -267,14 +302,15 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 				i = len(routes)
 				index[e.Route] = i
 				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Tool: e.Tool, Readiness: "unknown", Phrase: "Unknown",
-					Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}, RunningNow: []dockRouteLoop{}, PreferredBy: []dockRouteLoop{}, ChildLanes: "unknown"})
+					Usage:      dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}},
+					RunningNow: []dockRouteLoop{}, RecordedFor: []dockRouteLoop{}, StandbyFor: []dockRouteLoop{}, UnknownFor: []dockRouteLoop{}, Lanes: "unknown"})
 			}
 			n := &routes[i]
 			switch {
 			case e.ProbeAge != nil && (n.ProbeAge == nil || *e.ProbeAge < *n.ProbeAge):
 				n.Readiness, n.Phrase, n.ProbeAge = e.Readiness, e.Phrase, e.ProbeAge
 			case e.Position > 0 && n.ProbeAge == nil && n.Readiness == "unknown":
-				// Never probed anywhere: say why (turned off, or not checked yet).
+				// Never probed anywhere: say why (turned off, or not probed yet).
 				n.Readiness, n.Phrase = e.Readiness, e.Phrase
 			}
 			if u := e.Usage; u.AgeSeconds != nil && (n.Usage.AgeSeconds == nil || *u.AgeSeconds < *n.Usage.AgeSeconds) {
@@ -282,12 +318,17 @@ func dockRoutes(loops []dockLoop) []dockRoute {
 				n.Usage.Name = ""
 			}
 			ref := dockRouteLoop{Key: l.Key, Loop: l.Name, State: l.State, Phrase: l.Phrase, Position: e.Position}
-			list := &n.PreferredBy
-			if e.Active {
+			list := &n.StandbyFor
+			switch {
+			case l.CurrentRoute.Availability != "known":
+				list = &n.UnknownFor
+			case e.InUse:
 				list = &n.RunningNow
 				if l.Children.Availability == "current" {
 					ref.Working = l.Children.Working
 				}
+			case e.Current:
+				list = &n.RecordedFor
 			}
 			if len(*list) >= dockMaxRouteLoops {
 				n.Omitted++
@@ -310,7 +351,7 @@ type dockChainInput struct {
 	PrimaryUse *usageView
 }
 
-// dockInput is everything one loop's card is built from.
+// dockInput is everything one loop's view is built from.
 type dockInput struct {
 	Entry     registry.Entry
 	Client    clientStatusReport
@@ -323,9 +364,11 @@ type dockInput struct {
 
 // dockHold is the retained history record of an awaiting-user hold starting.
 type dockHold struct {
-	At     time.Time
-	Cause  string // fixed vocabulary of incident.Cause
-	Manual bool   // set by a person or agent with the await-user command
+	At    time.Time
+	Cause string // fixed vocabulary of incident.Cause; empty for a control command
+	// Marked: the await-user command set it. Other control operations that
+	// set the flag stay unexplained.
+	Marked bool
 }
 
 // dockHoldFrom finds the newest record in which the awaiting-user flag was
@@ -345,7 +388,7 @@ func dockHoldFrom(j incident.Journal) *dockHold {
 		}
 		h := &dockHold{At: r.CheckStartedAt, Cause: r.Cause}
 		if c := r.ControlChange; c != nil {
-			h.Manual = true
+			h.Cause, h.Marked = "", c.Operation == "await-user"
 			if !c.SaveObservedAt.IsZero() {
 				h.At = c.SaveObservedAt
 			}
@@ -376,14 +419,16 @@ func secondsSince(now, t time.Time) *int64 {
 
 var dockStatePriority = map[string]int{
 	"waiting_for_you": 0, "unknown": 1, "checks_failing": 2, "not_checked_recently": 3, "waiting_on_limit": 4,
-	"supervising": 5, "paused": 6, "off": 7, "stopped": 8, "finished": 9,
+	"supervising": 5, "outside_hours": 6, "paused": 7, "off": 8, "stopped": 9, "finished": 10,
 }
 
 // buildDockReport sorts loops so the ones that want attention come first.
-func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time.Duration, identifiers bool, registryOK bool, omitted int) dockReport {
+// complete is false when the read was cut off, so that an unread loop can
+// never be part of an all-clear.
+func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time.Duration, identifiers, registryOK bool, omitted int, complete bool) dockReport {
 	r := dockReport{SchemaVersion: dockSchemaVersion, ReadOnly: true, ReadAt: now, RefreshSeconds: int(refresh / time.Second),
 		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Loops: []dockLoop{}, Routes: []dockRoute{},
-		Registry: dockRegistry{Availability: "unavailable"}}
+		Registry: dockRegistry{Availability: "unavailable"}, Complete: complete}
 	if !registryOK {
 		return r
 	}
@@ -393,8 +438,12 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		r.Loops = append(r.Loops, loop)
 		if need != nil {
 			r.NeedsYou = append(r.NeedsYou, *need)
+			if need.Kind == "unreadable" {
+				r.Unread++
+			}
 		}
 	}
+	r.AllClear = complete && omitted == 0 && len(r.NeedsYou) == 0
 	sort.SliceStable(r.Loops, func(i, j int) bool {
 		a, b := dockStatePriority[r.Loops[i].State], dockStatePriority[r.Loops[j].State]
 		if a != b {
@@ -411,6 +460,20 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		return *a > *b
 	})
 	return r
+}
+
+// dockUnreadable is the entry for a loop whose hold state could not be read.
+// Such a loop is never left out of what needs a person.
+func dockUnreadable(issues []string) *dockNeed {
+	n := &dockNeed{Kind: "unreadable", Reason: "It could not be read, so whether it needs you is unknown.",
+		Action: "Look at it: run keepgoing status with its configuration."}
+	switch code := firstIssue(issues); code {
+	case "transfer_pending":
+		n.Reason, n.Action = "A move to another conversation is in progress, which holds it.", "Finish the move with keepgoing transfer recover."
+	case "binding_unavailable", "binding_changed", "registration_changed", "registration_unavailable", "target_binding_mismatch", "control_unavailable", "state_unavailable", "cancelled":
+		n.Reason = dockIssue(code) + " Whether it needs you is unknown."
+	}
+	return n
 }
 
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
@@ -430,86 +493,81 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		l.Issues = append(l.Issues, "Its full status could not be read; some details are unknown.")
 	}
 
-	// What it is running on.
-	l.RunningOn = dockTarget{Availability: "unknown"}
-	switch {
-	case st != nil && st.TargetConfigured:
+	// The target its records name as current.
+	l.CurrentRoute = dockTarget{Availability: "unknown"}
+	if st != nil && st.TargetConfigured {
 		a := st.TargetAgent
-		l.RunningOn = dockTarget{Availability: "known", Role: dockRole(st.Target), Name: clip(st.Target, dockMaxText), Tool: dockTool(a.Adapter),
+		l.CurrentRoute = dockTarget{Availability: "known", Role: dockRole(st.Target), Name: clip(st.Target, dockMaxText), Tool: dockTool(a.Adapter),
 			Provider: clip(a.Provider, dockMaxText), Model: clip(a.Model, dockMaxText)}
 		if identifiers && a.BBThread != "" && transferThreadID.MatchString(a.BBThread) {
 			l.Identifiers.Thread = a.BBThread
 		}
-	case snap != nil && snap.Target != nil:
-		l.RunningOn = dockTarget{Availability: "known", Role: dockRole(snap.Target.Alias), Name: clip(snap.Target.Alias, dockMaxText), Tool: dockTool(snap.Target.Adapter)}
-		if identifiers && snap.Target.BBThread != "" {
-			l.Identifiers.Thread = snap.Target.BBThread
-		}
 	}
 
-	active := ""
-	if st != nil {
-		active = st.Target
-	}
-	l.Chain = dockHandoffChain(in.Chain, active, now)
 	l.Children = dockChildWork(in.Runs, in.RunsKnown)
 	l.LastCheck = dockLastCheck(st, now, staleAfter)
 	l.NextCheck = dockNextCheck(snap)
+	l.Fallbacks = dockFallbackReadiness(st, in.Chain)
 	if st != nil {
-		l.Fallbacks = dockFallbackReadiness(st)
 		l.Limits = dockLimits(st, now)
 		if w := st.LimitWait; w.State != "none" && w.ResetsAt != nil {
 			l.LimitWait = &dockLimitWait{Target: clip(w.Target, dockMaxText), ResetsAt: w.ResetsAt, Passed: w.ResetPassed}
 		}
-	} else {
-		l.Fallbacks = dockFallbacks{Availability: "unknown", Phrase: "Unknown"}
 	}
 
-	// State, in one phrase.
+	// State, in one phrase. Each case names the record it rests on.
 	var need *dockNeed
 	switch {
 	case snap == nil:
-		l.State, l.Phrase = "unknown", "Can't be read"
-		l.Detail = "keepgoing could not read this loop, so nothing about it is shown."
-		if code := firstIssue(in.Client.Issues); code == "binding_unavailable" || code == "registration_changed" || code == "binding_changed" {
-			need = &dockNeed{Reason: "Its registration no longer matches its configuration file.",
-				Action: "Check that the configuration still exists and names this loop. If it moved, remove the registration and add it again."}
-		}
+		// Registered status returned no snapshot.
+		l.State, l.Phrase, l.Detail = "unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown."
+		need = dockUnreadable(in.Client.Issues)
 	case snap.Controls == nil:
-		l.State, l.Phrase = "unknown", "Unknown"
-		l.Detail = "Its control record could not be read, so whether it is on, paused or stopped is unknown."
+		// control.json could not be read.
+		l.State, l.Phrase, l.Detail = "unknown", "Unknown", "Its control record could not be read, so whether it is on, held or stopped is unknown."
+		need = dockUnreadable([]string{"control_unavailable"})
 	default:
 		c := snap.Controls
 		switch {
 		case c.Stop:
-			l.State, l.Phrase, l.Detail = "stopped", "Stopped", "A stop was requested. keepgoing sends nothing more until it is resumed."
+			l.State, l.Phrase, l.Detail = "stopped", "Stopped", "A stop is requested. Nothing is sent until it is resumed."
 		case c.Completed:
-			l.State, l.Phrase, l.Detail = "finished", "Finished", "Marked finished. keepgoing will not wake it again unless it is resumed."
+			l.State, l.Phrase, l.Detail = "finished", "Finished", "Marked finished, which is a declaration and is not verified. Nothing is sent until it is resumed."
 		case c.AwaitingUser:
 			l.State, l.Phrase = "waiting_for_you", "Waiting for you"
-			need = dockHoldNeed(st, in.Hold)
+			need = dockHoldNeed(st, in.Hold, identifiers)
 			l.Detail = need.Reason
 		case c.Paused:
-			l.State, l.Phrase, l.Detail = "paused", "Paused", "Paused by a person. Nothing is sent until it is resumed."
+			l.State, l.Phrase, l.Detail = "paused", "Paused", "Paused. Nothing is sent until it is resumed."
 		case !c.Enabled:
-			l.State, l.Phrase, l.Detail = "off", "Off", "Supervision is turned off for this loop."
+			l.State, l.Phrase, l.Detail = "off", "Off", "Supervision is off for this loop."
+		case st == nil:
+			// On, but state.json or the rest of status could not be read.
+			l.State, l.Phrase, l.Detail = "unknown", "Unknown", "It is on, but its check history could not be read."
+			need = dockUnreadable([]string{"state_unavailable"})
+		case !st.InWindow:
+			// The same answer status gives as outside_window.
+			l.State, l.Phrase, l.Detail = "outside_hours", "Outside its hours", "It is on, and the time is outside its configured operating hours."
 		case l.LastCheck.Availability == "never":
-			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked yet", "It is on, but no check has been recorded. Its scheduler may not be running."
-		case l.LastCheck.Availability == "stale" || l.LastCheck.Availability == "unknown":
-			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked recently", "It is on, but the last check is old. Its scheduler or daemon may have stopped."
+			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked yet", "It is on, and no check is recorded."
+		case l.LastCheck.Availability == "stale":
+			l.State, l.Phrase, l.Detail = "not_checked_recently", "Not checked recently", "It is on, and its last recorded check is older than "+dockDuration(staleAfter)+"."
 		case l.LimitWait != nil && !l.LimitWait.Passed:
-			l.State, l.Phrase, l.Detail = "waiting_on_limit", "Waiting for a limit to reset", "The provider's usage limit was reached and no fallback could take over. It resumes on its own after the reset."
+			l.State, l.Phrase, l.Detail = "waiting_on_limit", "Waiting for a limit to reset", "A check recorded a provider usage limit with no other route able to take over. The loop is not held and keeps checking."
 		case l.LastCheck.FailedInRow > 0:
-			l.State, l.Phrase, l.Detail = "checks_failing", "Checks are failing", "Checks are running but could not observe or act on the session."
+			l.State, l.Phrase, l.Detail = "checks_failing", "Checks are failing", "Checks are running but could not observe or act."
 		default:
-			l.State, l.Phrase, l.Detail = "supervising", "Supervising", "On, and checked recently."
-			if l.Children.Availability == "current" && l.Children.Working > 0 {
-				l.Detail = "On, and waiting while its child work runs."
+			l.State, l.Phrase, l.Detail = "supervising", "Supervising", "On, with a recent check."
+			if l.Children.Holding {
+				l.Detail = "On. Its last check sent nothing because lanes are working or waiting."
+			}
+			if c := st.State.LastCheck; c != nil && c.At.Equal(st.State.CheckedAt) && (c.DryRun || c.Outcome == "dry_run") {
+				l.Detail = "On, in dry-run mode: its last check decided and sent nothing."
 			}
 		}
 	}
 	if st != nil && st.NewThreads.Pending && need == nil {
-		need = &dockNeed{Reason: "A new conversation it tried to create for a handoff could not be confirmed.",
+		need = &dockNeed{Kind: "held", Reason: "A new conversation it tried to create for a move to another route could not be confirmed.",
 			Action: "Find that conversation in BB, then settle it with keepgoing retarget."}
 	}
 	if need != nil {
@@ -518,7 +576,51 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 			need.WaitedSeconds = secondsSince(now, *need.Since)
 		}
 	}
+	l.Chain = dockHandoffChain(in.Chain, dockUse(l, st), now)
 	return l, need
+}
+
+// dockRouteUse says how the loop's current target is being used.
+type dockRouteUse struct {
+	Target string // empty when the current target is unknown
+	InUse  bool
+	Phrase string
+}
+
+// dockUse decides whether the current target is in use. It is in use only
+// when the loop is on with no hold, its last check is recent, and that check
+// recorded this target. Otherwise the phrase says what is recorded.
+func dockUse(l dockLoop, st *statusOut) dockRouteUse {
+	if st == nil || !st.TargetConfigured {
+		return dockRouteUse{}
+	}
+	u := dockRouteUse{Target: st.Target}
+	switch l.State {
+	case "supervising", "waiting_on_limit", "checks_failing":
+		c := st.State.LastCheck
+		if c != nil && c.At.Equal(st.State.CheckedAt) && c.Target == st.Target {
+			u.InUse, u.Phrase = true, "In use now"
+		} else {
+			u.Phrase = "Recorded route; the last check did not record it"
+		}
+	case "waiting_for_you":
+		u.Phrase = "Recorded route; loop is held"
+	case "paused":
+		u.Phrase = "Recorded route; loop is paused"
+	case "stopped":
+		u.Phrase = "Recorded route; loop is stopped"
+	case "finished":
+		u.Phrase = "Recorded route; loop is finished"
+	case "off":
+		u.Phrase = "Recorded route; loop is off"
+	case "outside_hours":
+		u.Phrase = "Recorded route; outside its hours"
+	case "not_checked_recently":
+		u.Phrase = "Recorded route; no recent check"
+	default:
+		u.Phrase = "Recorded route"
+	}
+	return u
 }
 
 func firstIssue(issues []string) string {
@@ -563,10 +665,10 @@ var dockIssues = map[string]string{
 	"target_binding_mismatch":  "Its configured conversation does not match the one it was moved to.",
 	"control_unavailable":      "Its control record could not be read.",
 	"state_unavailable":        "Its check history could not be read.",
-	"target_unavailable":       "Its current target is not in its configuration.",
+	"target_unavailable":       "Its current route is not in its configuration.",
 	"window_unavailable":       "Its operating hours could not be evaluated.",
 	"goal_unavailable":         "Its goal record could not be read.",
-	"cancelled":                "The read was cancelled.",
+	"cancelled":                "The read was cut off before this loop was read.",
 }
 
 func dockIssue(code string) string {
@@ -577,13 +679,13 @@ func dockIssue(code string) string {
 }
 
 // dockHoldNeed explains an awaiting-user hold from the fixed cause recorded
-// when it started, and carries the note left with it. Nothing is inferred
-// from the note's text.
-func dockHoldNeed(st *statusOut, hold *dockHold) *dockNeed {
-	n := &dockNeed{Reason: "It is held for a person.", Action: "Look at the conversation, then resume the loop when it is ready to continue."}
+// when it started. Nothing is inferred from the note's text, and the note is
+// included only with identifiers, as registered status withholds it.
+func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
+	n := &dockNeed{Kind: "held", Reason: "It is held for a person.", Action: "Look at the conversation, then resume the loop when it is ready to continue."}
 	cause := ""
 	switch {
-	case hold != nil && hold.Manual:
+	case hold != nil && hold.Marked:
 		n.Reason = "It was marked as waiting for a person."
 	case hold != nil:
 		cause = hold.Cause
@@ -592,17 +694,17 @@ func dockHoldNeed(st *statusOut, hold *dockHold) *dockNeed {
 	}
 	switch cause {
 	case "child_input":
-		n.Reason, n.Action = "A child conversation is waiting for an answer.", "Answer it in that conversation, then resume the loop."
+		n.Reason, n.Action = "A lane is waiting for an answer.", "Answer it in that conversation, then resume the loop."
 	case "input":
-		n.Reason, n.Action = "The agent asked a question or for permission.", "Answer it in the conversation, then resume the loop."
+		n.Reason, n.Action = "The agent is waiting on a question or a permission request.", "Answer it in the conversation, then resume the loop."
 	case "deadline":
 		n.Reason, n.Action = "It reached its deadline.", "Mark it finished, or extend the deadline in its configuration and resume."
 	case "send_limit":
-		n.Reason, n.Action = "It used every message it was allowed to send.", "Review the work, then raise the send limit or mark it finished."
+		n.Reason, n.Action = "It reached its limit on messages sent.", "Review the work, then raise the limit or mark it finished."
 	case "git_limit":
-		n.Reason, n.Action = "No Git progress within its time limit.", "See why it stalled, then resume or mark it finished."
+		n.Reason, n.Action = "No Git progress within its time limit.", "See why, then resume or mark it finished."
 	case "stall_limit":
-		n.Reason, n.Action = "No progress after repeated nudges.", "See why it stalled, then resume or mark it finished."
+		n.Reason, n.Action = "No progress after repeated nudges.", "See why, then resume or mark it finished."
 	}
 	if hold != nil && !hold.At.IsZero() {
 		at := hold.At
@@ -612,7 +714,11 @@ func dockHoldNeed(st *statusOut, hold *dockHold) *dockNeed {
 		return n
 	}
 	if note := strings.TrimSpace(st.Control.Note); note != "" {
-		n.Note = clip(note, dockMaxNote)
+		if identifiers {
+			n.Note = clip(note, dockMaxNote)
+		} else {
+			n.NoteWithheld = true
+		}
 	}
 	if t := st.Control.UpdatedAt; n.Since == nil && !t.IsZero() {
 		since := t
@@ -630,7 +736,7 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 	c.CheckedAt, c.AgeSeconds = b.CheckedAt, b.AgeSeconds
 	switch b.Availability {
 	case blockerBlocked, blockerHeld, blockerListed, blockerNone:
-		c.Availability = "current"
+		c.Availability, c.Holding = "current", b.Availability == blockerBlocked
 		if b.Availability == blockerHeld {
 			c.Availability = "held"
 		}
@@ -644,25 +750,22 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 				c.Failed++
 			}
 		}
-		total := c.Working + c.Stuck + c.Failed + b.OmittedChildren
-		switch {
-		case total == 0:
-			c.Phrase = "None running"
-		default:
-			parts := []string{}
-			if c.Working > 0 {
-				parts = append(parts, fmt.Sprintf("%d working", c.Working))
-			}
-			if c.Stuck > 0 {
-				parts = append(parts, fmt.Sprintf("%d waiting for an answer", c.Stuck))
-			}
-			if c.Failed > 0 {
-				parts = append(parts, fmt.Sprintf("%d failed", c.Failed))
-			}
-			if b.OmittedChildren > 0 {
-				parts = append(parts, fmt.Sprintf("%d more not itemized", b.OmittedChildren))
-			}
-			c.Phrase = strings.Join(parts, ", ")
+		parts := []string{}
+		if c.Working > 0 {
+			parts = append(parts, fmt.Sprintf("%d working", c.Working))
+		}
+		if c.Stuck > 0 {
+			parts = append(parts, fmt.Sprintf("%d waiting for an answer", c.Stuck))
+		}
+		if c.Failed > 0 {
+			parts = append(parts, fmt.Sprintf("%d failed", c.Failed))
+		}
+		if b.OmittedChildren > 0 {
+			parts = append(parts, fmt.Sprintf("%d more not itemized", b.OmittedChildren))
+		}
+		c.Phrase = strings.Join(parts, ", ")
+		if len(parts) == 0 {
+			c.Phrase = "None at the last check"
 		}
 		if b.Availability == blockerHeld {
 			c.Phrase += " (as of the check that held it)"
@@ -672,7 +775,7 @@ func dockChildWork(r runsLoop, known bool) dockChildren {
 		case "no_open_run", "no_child_evidence_recorded":
 			c.Availability, c.Phrase = "none_recorded", "None recorded"
 		case "last_check_older_than_stale_after":
-			c.Availability, c.Phrase = "stale", "Stale: the last listing is too old to trust"
+			c.Availability, c.Phrase = "stale", "Stale: the last listing is too old to show as current"
 		}
 	}
 	return c
@@ -701,21 +804,23 @@ func dockLastCheck(st *statusOut, now time.Time, staleAfter time.Duration) dockC
 	return c
 }
 
+// dockAction words the recorded action and outcome of a check. A send that
+// returned is not proof the agent received or acted on it.
 func dockAction(c *state.Check) string {
 	verb := map[string]string{
-		"none": "Looked; nothing needed", "wake": "Woke the agent", "nudge": "Nudged the agent", "reprompt": "Asked the agent to try again",
-		"await_user": "Held it for you", "stop": "Stopped the session", "handoff": "Handed off to a fallback", "switch_back": "Switched back to the main target",
+		"none": "Checked; sent nothing", "wake": "Sent a wake", "nudge": "Sent a nudge", "reprompt": "Sent a re-prompt or retried the turn",
+		"await_user": "Held the loop for a person", "stop": "Stopped the session", "handoff": "Moved to another route", "switch_back": "Returned to the first route",
 	}[c.Action]
 	if verb == "" {
 		verb = "Checked"
 	}
 	switch {
 	case c.DryRun || c.Outcome == "dry_run":
-		return verb + " (dry run)"
+		return verb + " (dry run: nothing was sent)"
 	case c.Outcome == "failed" && c.Action == "none":
-		return "Could not observe the session"
+		return "The check failed"
 	case c.Outcome == "failed":
-		return verb + ", but it failed"
+		return verb + ", which failed"
 	}
 	return verb
 }
@@ -730,11 +835,11 @@ func dockNextCheck(snap *clientSnapshot) dockNext {
 	case d.State == "skipped":
 		n.Detail = "the local daemon was not asked"
 	case d.State == "not_recorded":
-		// Nothing says a daemon runs this loop. Its checks may come from a
-		// scheduler outside keepgoing, which is not inspected or inferred.
-		n.Detail = "no keepgoing daemon runs this loop; a scheduler outside keepgoing is not visible"
+		// The only evidence is the absence of an endpoint record. Whether a
+		// scheduler outside keepgoing runs the loop is not inspected.
+		n.Detail = "no keepgoing daemon endpoint is recorded for this loop; a scheduler outside keepgoing is not visible"
 	case d.State != "responsive":
-		n.Detail = "a keepgoing daemon is recorded for this loop but did not answer"
+		n.Detail = "a keepgoing daemon endpoint is recorded for this loop but could not be verified"
 	case d.Phase == "waiting" && d.NextCheckAt != nil:
 		n.Availability, n.At, n.Phrase = "known", d.NextCheckAt, "Due"
 	default:
@@ -743,23 +848,20 @@ func dockNextCheck(snap *clientSnapshot) dockNext {
 	return n
 }
 
-func dockFallbackReadiness(st *statusOut) dockFallbacks {
+func dockFallbackReadiness(st *statusOut, chain *dockChainInput) dockFallbacks {
 	switch {
-	case st.Redundancy != nil:
+	case chain != nil && len(chain.Candidates) == 0:
+		return dockFallbacks{Availability: "none_configured", Phrase: "None set up"}
+	case st != nil && st.Redundancy != nil:
 		s := st.Redundancy
 		f := dockFallbacks{Availability: "known", Ready: len(s.Healthy), Eligible: len(s.Eligible), Needed: s.Min, Enough: s.Meets}
-		switch {
-		case f.Eligible == 0:
-			f.Phrase = "None can take over right now"
-		default:
-			f.Phrase = fmt.Sprintf("%d of %d ready", f.Ready, f.Eligible)
+		f.Phrase = fmt.Sprintf("%d of %d ready", f.Ready, f.Eligible)
+		if f.Eligible == 0 {
+			f.Phrase = "None eligible to take over"
 		}
 		return f
-	case len(st.Usage) == 0:
-		// Usage rows are listed exactly when fallbacks are configured.
-		return dockFallbacks{Availability: "none_configured", Phrase: "None set up"}
 	}
-	return dockFallbacks{Availability: "unknown", Phrase: "Unknown: probe history could not be read"}
+	return dockFallbacks{Availability: "unknown", Phrase: "Unknown"}
 }
 
 func dockWindowName(key string) string {
@@ -832,8 +934,7 @@ func dockDuration(d time.Duration) string {
 	case m < 48*60:
 		return fmt.Sprintf("%d h", m/60) + part(m%60, "min")
 	}
-	days := "days"
-	return fmt.Sprintf("%d %s", m/(24*60), days) + part(m%(24*60)/60, "h")
+	return fmt.Sprintf("%d days", m/(24*60)) + part(m%(24*60)/60, "h")
 }
 
 // dockLimitDuration formats a configured duration string; one that does not
@@ -860,7 +961,7 @@ func dockUsageOf(v usageView) dockUsageTarget {
 	return t
 }
 
-func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChain {
+func dockHandoffChain(in *dockChainInput, use dockRouteUse, now time.Time) dockChain {
 	c := dockChain{Availability: "unknown", HandoffOn: []string{}, Entries: []dockChainEntry{}}
 	if in == nil {
 		return c
@@ -870,13 +971,17 @@ func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChai
 	}
 	entry := func(pos int, cand config.Candidate) dockChainEntry {
 		ref := refOf(cand.Agent)
-		return dockChainEntry{Position: pos, ID: clip(cand.ID, dockMaxText), Tool: dockTool(ref.Adapter), Provider: clip(ref.Provider, dockMaxText),
-			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, ref.Adapter), Account: clip(ref.Group, dockMaxText),
-			Model: clip(ref.Model, dockMaxText), Active: cand.ID == active, Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown",
+		e := dockChainEntry{Position: pos, ID: clip(cand.ID, dockMaxText), Tool: dockTool(ref.Adapter), Provider: clip(ref.Provider, dockMaxText),
+			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, ref.Adapter, probe.UsageIdentity(cand)), Account: clip(ref.Group, dockMaxText),
+			Model: clip(ref.Model, dockMaxText), Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown",
 			Usage: dockUsageTarget{Name: clip(cand.ID, dockMaxText), Availability: "unavailable", Windows: []dockUsageWindow{}}}
+		if use.Target != "" && cand.ID == use.Target {
+			e.Current, e.InUse, e.Use = true, use.InUse, use.Phrase
+		}
+		return e
 	}
 	main := entry(0, in.Primary)
-	main.Readiness, main.Phrase = "main", "Main target"
+	main.Readiness, main.Phrase = "main", "First route"
 	if in.PrimaryUse != nil {
 		main.Usage = dockUsageOf(*in.PrimaryUse)
 	}
@@ -904,14 +1009,14 @@ func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChai
 			e.Readiness, e.Phrase = "disabled", "Turned off"
 		case in.Summary == nil || !ok:
 			c.Availability = "unknown"
-		case e.Active && (row.Last == nil || row.Last.OK):
-			// The route doing the work is not probed, so an old probe says
+		case e.Current && (row.Last == nil || row.Last.OK):
+			// The loop's current target is not probed, so an old probe says
 			// nothing against it. Only a recorded failure is a verdict.
-			e.Readiness, e.Phrase = "in_use", "In use now"
+			e.Readiness, e.Phrase = "current", e.Use
 		case row.Healthy:
 			e.Readiness, e.Phrase = "ready", "Ready"
 		case row.Last == nil:
-			e.Readiness, e.Phrase = "not_probed", "Not checked yet"
+			e.Readiness, e.Phrase = "not_probed", "Not probed yet"
 		default:
 			e.Readiness, e.Phrase = "not_ready", dockProbePhrase(row.Last.OK, row.Last.ErrorClass)
 		}
@@ -927,19 +1032,21 @@ func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChai
 	return c
 }
 
+// dockProbePhrase words the last probe's recorded result for a fallback that
+// is not ready. Each says "at its last probe": it is not a live reading.
 func dockProbePhrase(ok bool, class string) string {
 	if ok {
-		return "Last check passed, but too long ago to rely on"
+		return "Last probe passed, but too long ago to rely on"
 	}
 	switch class {
 	case "rate_limit":
-		return "At its usage limit"
+		return "Hit a usage limit at its last probe"
 	case "auth":
-		return "Needs signing in again"
+		return "Sign-in failed at its last probe"
 	case "network":
-		return "Could not be reached"
+		return "Could not be reached at its last probe"
 	case "overloaded":
-		return "Provider overloaded"
+		return "Provider overloaded at its last probe"
 	}
-	return "Last check failed"
+	return "Last probe failed"
 }
