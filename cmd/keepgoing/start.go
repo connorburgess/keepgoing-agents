@@ -30,6 +30,7 @@ func startCommand(e env, args []string, ready startReady) int {
 	foreground := fs.Bool("foreground", false, "run in this terminal (default)")
 	background := fs.Bool("background", false, "detach the daemon; return after startup succeeds")
 	allowShare := fs.Bool("allow-second-loop", false, "start this loop even though another enabled loop supervises the same session")
+	asJSON := fs.Bool("json", false, "with --background: print the result as one JSON object")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -40,7 +41,48 @@ func startCommand(e env, args []string, ready startReady) int {
 		e.errf("start: choose --foreground or --background, with no positional arguments")
 		return exitUsage
 	}
-	abs, err := filepath.Abs(*path)
+	if *asJSON && !*background {
+		e.errf("start: --json is supported with --background only")
+		return exitUsage
+	}
+	if *asJSON {
+		// Every outcome is one object on stdout; people still get stderr.
+		out := &startJSONWriter{}
+		code := startResolved(env{e.ctx, out, e.stderr}, *path, true, *allowShare, nil)
+		if out.written {
+			_, _ = e.stdout.Write(out.buf.Bytes())
+		} else if code != exitOK {
+			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "failed", ExitCode: code})
+		}
+		return code
+	}
+	return startResolved(e, *path, *background, *allowShare, ready)
+}
+
+// startJSON is start --json's result. A refusal for a second loop on a
+// session is a refusedResult instead.
+type startJSON struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Outcome       string `json:"outcome"` // started or failed
+	PID           int    `json:"pid,omitempty"`
+	Control       string `json:"control,omitempty"`
+	ExitCode      int    `json:"exitCode,omitempty"`
+}
+
+// startJSONWriter holds what --json prints until the command ends, so a
+// failure that printed nothing still gets an object.
+type startJSONWriter struct {
+	buf     bytes.Buffer
+	written bool
+}
+
+func (w *startJSONWriter) Write(p []byte) (int, error) {
+	w.written = true
+	return w.buf.Write(p)
+}
+
+func startResolved(e env, path string, background, allowShare bool, ready startReady) int {
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		e.errf("start: cannot resolve config path")
 		return exitUsage
@@ -50,15 +92,21 @@ func startCommand(e env, args []string, ready startReady) int {
 		e.errf("start: configuration or fallbacks cannot be read or validated; run doctor for diagnostics")
 		return exitUsage
 	}
-	if *background {
+	_, asJSON := e.stdout.(*startJSONWriter)
+	if background {
+		// Checked here as well as in the daemon it starts, so the refusal
+		// can be reported in the caller's own words and as JSON.
+		if !checkSecondLoop(e, cfg, "start", allowShare, asJSON) {
+			return exitFailed
+		}
 		executable, err := os.Executable()
 		if err != nil {
 			e.errf("start: cannot locate the keepgoing executable")
 			return exitFailed
 		}
-		return startBackground(e, executable, abs, *allowShare)
+		return startBackground(e, executable, abs, allowShare)
 	}
-	return startForeground(e, cfg, abs, ready, *allowShare)
+	return startForeground(e, cfg, abs, ready, allowShare)
 }
 
 func startForeground(e env, cfg *config.Config, path string, ready startReady, allowShare bool) int {
@@ -282,6 +330,10 @@ func startBackground(e env, executable, path string, allowShare bool) int {
 			return exitFailed
 		}
 		started = true
+		if _, asJSON := e.stdout.(*startJSONWriter); asJSON {
+			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "started", PID: r.reply.PID, Control: r.reply.Control})
+			return exitOK
+		}
 		fmt.Fprintf(e.stdout, "started background daemon (PID %d); control: %s\nUse status to inspect, pause to hold, or stop to stop the agent. No service was installed.\n", r.reply.PID, r.reply.Control)
 		return exitOK
 	}

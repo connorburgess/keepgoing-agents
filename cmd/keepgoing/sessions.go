@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -152,20 +153,50 @@ func findOtherLoops(cfg *config.Config) []otherLoop {
 	return out
 }
 
-// refuseSecondLoop returns the refusal for turning on this loop, or "" when
-// no other enabled loop has the same primary session. The message names the
-// other loop and how to proceed.
-func refuseSecondLoop(cfg *config.Config, others []otherLoop, command string) string {
-	primary, ok := session.Of(cfg.Loop.Agent)
-	if !ok {
-		return ""
+// secondLoopConflict returns the other enabled loop whose primary session is
+// this loop's, or nil.
+func secondLoopConflict(cfg *config.Config, others []otherLoop) *otherLoop {
+	if _, ok := session.Of(cfg.Loop.Agent); !ok {
+		return nil
 	}
-	for _, o := range others {
-		if o.Primary {
-			return fmt.Sprintf("%s: loop %s (%s) already supervises %s. Two loops on one session would both prompt it. Disable that loop first, or pass --allow-second-loop to %s this one anyway", command, o.Loop, o.Config, primary.Describe(), command)
+	for i := range others {
+		if others[i].Primary {
+			return &others[i]
 		}
 	}
-	return ""
+	return nil
+}
+
+// refuseSecondLoop returns the refusal for turning on this loop, or "" when
+// no other enabled loop has the same primary session. The message is for a
+// person: it names the other loop, its configuration and how to proceed.
+func refuseSecondLoop(cfg *config.Config, others []otherLoop, command string) string {
+	o := secondLoopConflict(cfg, others)
+	if o == nil {
+		return ""
+	}
+	primary, _ := session.Of(cfg.Loop.Agent)
+	return fmt.Sprintf("%s: loop %s (%s) already supervises %s. Two loops on one session would both prompt it. Disable that loop first, or pass --allow-second-loop to %s this one anyway", command, o.Loop, o.Config, primary.Describe(), command)
+}
+
+// refusedResult is what init --json and start --json print when they refuse:
+// the reason as a code and the other loop's name, never its path, so a
+// program can show it without parsing prose.
+type refusedResult struct {
+	SchemaVersion int            `json:"schemaVersion"`
+	Outcome       string         `json:"outcome"`
+	Refusal       sessionRefusal `json:"refusal"`
+}
+
+type sessionRefusal struct {
+	Code      string `json:"code"`
+	OtherLoop string `json:"otherLoop"`
+}
+
+const refusalSecondLoop = "second_loop_on_session"
+
+func printSecondLoopRefusal(e env, other *otherLoop) {
+	_ = json.NewEncoder(e.stdout).Encode(refusedResult{SchemaVersion: 1, Outcome: "refused", Refusal: sessionRefusal{Code: refusalSecondLoop, OtherLoop: other.Loop}})
 }
 
 // sharedLoopWarnings are the warnings status, validate and enable print.
@@ -198,11 +229,15 @@ func noteSupervisor(cfg *config.Config) {
 }
 
 // checkSecondLoop is run by enable and start before they turn a loop on. It
-// prints the warnings, and returns false after printing the refusal.
-func checkSecondLoop(e env, cfg *config.Config, command string, allow bool) bool {
+// prints the warnings, and returns false after printing the refusal: always
+// for people on stderr, and with asJSON also as a refusedResult on stdout.
+func checkSecondLoop(e env, cfg *config.Config, command string, allow bool, asJSON ...bool) bool {
 	others := findOtherLoops(cfg)
 	if msg := refuseSecondLoop(cfg, others, command); msg != "" && !allow {
 		e.errf("%s", msg)
+		if len(asJSON) > 0 && asJSON[0] {
+			printSecondLoopRefusal(e, secondLoopConflict(cfg, others))
+		}
 		return false
 	}
 	for _, w := range sharedLoopWarnings(cfg, others) {

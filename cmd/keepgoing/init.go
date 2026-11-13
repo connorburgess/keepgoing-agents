@@ -118,6 +118,9 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	others := findOtherLoops(cfg)
 	if msg := refuseSecondLoop(cfg, others, "init"); msg != "" && !o.allowShare {
 		e.errf("%s", msg)
+		if asJSON {
+			printSecondLoopRefusal(e, secondLoopConflict(cfg, others))
+		}
 		return exitFailed
 	}
 	for _, w := range sharedLoopWarnings(cfg, others) {

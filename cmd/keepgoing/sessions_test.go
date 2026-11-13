@@ -224,3 +224,40 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 		t.Fatal("named a directory that was not moved")
 	}
 }
+
+// init --json and start --json refuse with a code and the other loop's name
+// only: never its path, so a program can show it as it is.
+func TestJSONRefusalsNameTheOtherLoopOnly(t *testing.T) {
+	f := newFixture(t)
+	if code, _, _ := f.run("enable"); code != exitOK {
+		t.Fatal("enable")
+	}
+	want := `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"example-loop"}}` + "\n"
+	project := newSetupFixture(t).project
+	var out, errs bytes.Buffer
+	code := initLoop(env{context.Background(), &out, &errs}, []string{"--non-interactive", "--json", "--name", "example-loop-c", "--agent", "bb", "--thread", "thr_primary", "--provider", "claude-code", "--project", project, "--task", "Fictional task", "--directory", filepath.Join(f.dir, "setup-c")})
+	if code == exitOK || out.String() != want || !strings.Contains(errs.String(), "init: loop example-loop (") {
+		t.Fatalf("init --json: %d %q %s", code, out.String(), errs.String())
+	}
+	if _, err := os.Lstat(filepath.Join(f.dir, "setup-c")); !os.IsNotExist(err) {
+		t.Fatal("a refused init wrote files")
+	}
+	other := secondLoop(t, f, "example-loop-b", nil)
+	out.Reset()
+	errs.Reset()
+	code = startCommand(env{context.Background(), &out, &errs}, []string{"--background", "--json", "-c", other}, nil)
+	if code == exitOK || out.String() != want || !strings.Contains(errs.String(), "start: loop example-loop (") {
+		t.Fatalf("start --json: %d %q %s", code, out.String(), errs.String())
+	}
+	if strings.Contains(out.String(), f.dir) {
+		t.Fatal("a path is in the JSON")
+	}
+	// --json goes with --background; other failures are an object too.
+	if code := startCommand(env{context.Background(), &out, &errs}, []string{"--json", "-c", other}, nil); code != exitUsage {
+		t.Fatalf("start --json in the foreground: %d", code)
+	}
+	out.Reset()
+	if code := startCommand(env{context.Background(), &out, &errs}, []string{"--background", "--json", "-c", filepath.Join(f.dir, "missing.yaml")}, nil); code != exitUsage || strings.TrimSpace(out.String()) != `{"schemaVersion":1,"outcome":"failed","exitCode":2}` {
+		t.Fatalf("start --json, no configuration: %d %q", code, out.String())
+	}
+}
