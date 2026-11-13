@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -45,20 +43,19 @@ func recordRunBoundary(dir, operation string, routine ...rd.RoutineRef) {
 // through a registry reference.
 func recordRegistration(stateDir, id string) {
 	now := time.Now().UTC()
-	_ = rungraph.Update(stateDir, now, func(g *rungraph.Graph) (bool, error) { return g.Register(id, now) })
+	_ = rungraph.Update(stateDir, now, func(g *rungraph.Graph) (bool, error) {
+		return g.Register(id, rungraph.SourceRegistered, now)
+	})
 }
 
 // recordRegistrationInExistingGraph maps a registry reference at
-// `registry add` when the loop already has a graph. Registry commands never
-// create a runtime file: with no graph or no graph lock there is nothing to
-// claim and nothing is written. Repeating `registry add` after the loop's
-// first run records the reference then.
+// `registry add` when the loop already has a graph, labelled as an add: no
+// control operation used the reference. Registry commands never create a
+// runtime file, so with no graph nothing is written. Repeating `registry add`
+// after the loop's first run records the reference then.
 func recordRegistrationInExistingGraph(stateDir, id string) {
-	if _, availability := rungraph.Load(stateDir); availability != rungraph.Available {
-		return
-	}
-	if info, err := os.Lstat(filepath.Join(stateDir, "graph.lock")); err != nil || !info.Mode().IsRegular() {
-		return
-	}
-	recordRegistration(stateDir, id)
+	now := time.Now().UTC()
+	_ = rungraph.UpdateExisting(stateDir, now, func(g *rungraph.Graph) (bool, error) {
+		return g.Register(id, rungraph.SourceRegistryAdd, now)
+	})
 }

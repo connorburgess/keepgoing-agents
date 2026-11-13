@@ -222,7 +222,7 @@ func TestLookupResolvesRecordedReferencesDirectly(t *testing.T) {
 				return false, err
 			}
 		}
-		if _, err := g.Register(registration, at); err != nil {
+		if _, err := g.Register(registration, SourceRegistered, at); err != nil {
 			return false, err
 		}
 		return true, g.Begin(attempt)
@@ -337,7 +337,7 @@ func TestLinksAreValidatedAgainstTheCurrentRun(t *testing.T) {
 		t.Fatalf("%#v", g)
 	}
 	for name, ref := range map[string]string{"durable ID": id("supervision_", 1), "malformed": "loop_bad"} {
-		if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Register(ref, at) }); !errors.Is(err, rd.ErrInvalid) {
+		if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Register(ref, SourceRegistered, at) }); !errors.Is(err, rd.ErrInvalid) {
 			t.Fatalf("%s accepted as a registry reference", name)
 		}
 	}
@@ -389,7 +389,7 @@ func TestRetentionIsBoundedAndExpiryStaysExplicit(t *testing.T) {
 		t.Fatal("the newest attempt was dropped")
 	}
 	for n := 0; n < MaxRegistrations+3; n++ {
-		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), at) })
+		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), SourceRegistered, at) })
 	}
 	if g = load(t, dir); len(g.Registrations) != MaxRegistrations || g.Registrations[0].ID != id("loop_", 3) || g.Dropped.Registrations != 3 {
 		t.Fatalf("%d registrations, dropped %d", len(g.Registrations), g.Dropped.Registrations)
@@ -481,6 +481,16 @@ func TestUnusableRecordsStayExplicitAndAreNeverRewritten(t *testing.T) {
 			v["unrecorded"] = []any{map[string]any{"run": id("run_", 1), "target": "primary", "reason": "guessed", "recordedAt": at}}
 		}), Corrupt},
 		"attempt ID reused as run": {edit(func(v map[string]any) { first(v, "attempts")["run"] = id("attempt_", 1) }), Corrupt},
+		"more triggers than the bound": {edit(func(v map[string]any) {
+			var links []any
+			for n := 0; n <= MaxTriggersPerRun; n++ {
+				links = append(links, map[string]any{"run": id("run_", 1), "kind": "invocation", "routine": map[string]any{"source": "example", "routine": "nightly", "invocation": fmt.Sprintf("inv-%d", n)}, "source": "external", "recordedAt": at})
+			}
+			v["links"] = links
+		}), Corrupt},
+		"registration with an unrelated source": {edit(func(v map[string]any) {
+			v["registrations"] = []any{map[string]any{"id": registration, "recordedAt": at, "source": "goal_record"}}
+		}), Corrupt},
 		"malformed registration": {edit(func(v map[string]any) {
 			v["registrations"] = []any{map[string]any{"id": "loop_bad", "recordedAt": at, "source": "registered_control"}}
 		}), Corrupt},
@@ -564,13 +574,13 @@ func TestNewIDAndGate(t *testing.T) {
 // A dropped registry reference must not read as one that was never used.
 func TestDroppedRegistryReferenceIsExpiredNotUnrecorded(t *testing.T) {
 	dir := t.TempDir()
-	update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", 0), at) })
+	update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", 0), SourceRegistered, at) })
 	g := load(t, dir)
 	if _, status := g.Lookup(id("loop_", 99)); status != NotRecorded {
 		t.Fatal(status)
 	}
 	for n := 1; n <= MaxRegistrations; n++ {
-		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), at) })
+		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), SourceRegistered, at) })
 	}
 	g = load(t, dir)
 	if _, status := g.Lookup(id("loop_", 0)); status != NotRecordedOrExpired || g.Dropped.Registrations != 1 {
@@ -740,5 +750,149 @@ func TestRoutineResolvesToItsInvocationsAndRuns(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(filepath.Join(dir, FileName)); !bytes.Equal(before, after) {
 		t.Fatal("a refused trigger changed the graph")
+	}
+}
+
+// A scheduler that sends a new invocation ID on every check must not push
+// out an earlier run, a chat link or a goal link.
+func TestTriggersAreBoundedOnTheirOwnAndEvictNothingElse(t *testing.T) {
+	dir := t.TempDir()
+	trigger := func(n int) {
+		t.Helper()
+		update(t, dir, func(g *Graph) (bool, error) {
+			return g.Trigger(rd.RoutineRef{Source: "example-scheduler", Routine: "nightly", Invocation: fmt.Sprintf("inv-%d", n)}, at)
+		})
+	}
+	sync(t, dir, enabled, "start", 0)
+	for n := 1; n <= 5; n++ {
+		update(t, dir, func(g *Graph) (bool, error) {
+			g.Relate(session("primary", "bb", "thr_example_a", SourceConfigured))
+			g.Relate(Link{Kind: rd.GoalLink, GoalID: goal, GoalRevision: 1, Source: SourceGoal, RecordedAt: at})
+			return true, g.Begin(Attempt{ID: id("attempt_", n), Target: "primary", Action: "wake", Mode: "auto", RecordedAt: at})
+		})
+		trigger(1000 + n)
+		sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 0)
+		sync(t, dir, enabled, "resume", n)
+	}
+	update(t, dir, func(g *Graph) (bool, error) {
+		g.Relate(session("primary", "bb", "thr_example_a", SourceConfigured))
+		return g.Relate(Link{Kind: rd.GoalLink, GoalID: goal, GoalRevision: 1, Source: SourceGoal, RecordedAt: at})
+	})
+	const checks = 400 // more than every link bound
+	for n := 0; n < checks; n++ {
+		trigger(n)
+	}
+	g := load(t, dir)
+	current, _ := g.Current()
+	var kept []string
+	for _, e := range current.Edges {
+		if e.Type == EdgeInvocation {
+			kept = append(kept, strings.TrimPrefix(e.To, "routine:example-scheduler/nightly/"))
+		}
+	}
+	// The first trigger and the newest seven stay; the rest are counted.
+	if strings.Join(kept, " ") != "inv-0 inv-393 inv-394 inv-395 inv-396 inv-397 inv-398 inv-399" || g.Dropped.Triggers != checks-MaxTriggersPerRun {
+		t.Fatalf("kept %v, dropped %+v", kept, g.Dropped)
+	}
+	// Nothing else moved: every run, send, chat link and goal link is still there.
+	if len(g.Runs) != 6 || len(g.Attempts) != 5 || g.Dropped.Runs != 0 || g.Dropped.Links != 0 || g.Dropped.Attempts != 0 {
+		t.Fatalf("runs=%d attempts=%d dropped=%+v", len(g.Runs), len(g.Attempts), g.Dropped)
+	}
+	for _, r := range g.Runs {
+		n, _ := g.Lookup(r.ID)
+		if len(g.Follow(n, EdgeSession)) != 1 || len(g.Follow(n, EdgeGoalRevision)) != 1 {
+			t.Fatalf("%s lost its chat or goal link", r.ID)
+		}
+	}
+	// A dropped trigger is expired, not never recorded.
+	if _, status := g.Lookup("routine:example-scheduler/nightly/inv-200"); status != NotRecordedOrExpired {
+		t.Fatal(status)
+	}
+	// When the shared link bound is reached by chat links, triggers go first
+	// and the chat links stay.
+	for n := 0; n < MaxLinks; n++ {
+		update(t, dir, func(g *Graph) (bool, error) {
+			return g.Relate(session("primary", "bb", fmt.Sprintf("thr_fill_%d", n), SourceConfigured))
+		})
+	}
+	g = load(t, dir)
+	triggers, fill := 0, 0
+	for _, l := range g.Links {
+		if l.Kind == rd.InvocationLink {
+			triggers++
+		}
+		if strings.HasPrefix(l.Session, "thr_fill_") {
+			fill++
+		}
+	}
+	if triggers != 0 || len(g.Links) != MaxLinks || fill == 0 {
+		t.Fatalf("triggers=%d links=%d fill=%d", triggers, len(g.Links), fill)
+	}
+}
+
+func TestRegistryAddRecordsNeverEvictControlRecordsAndAreUpgraded(t *testing.T) {
+	dir := t.TempDir()
+	sync(t, dir, enabled, "start", 1)
+	register := func(n int, source Source) {
+		t.Helper()
+		update(t, dir, func(g *Graph) (bool, error) { return g.Register(id("loop_", n), source, at) })
+	}
+	register(1, SourceRegistered)
+	register(2, SourceRegistered)
+	// Repeated remove/add: many add-only references.
+	for n := 100; n < 100+3*MaxRegistrations; n++ {
+		register(n, SourceRegistryAdd)
+	}
+	g := load(t, dir)
+	if len(g.Registrations) != MaxRegistrations || g.Registrations[0].ID != id("loop_", 1) || g.Registrations[1].ID != id("loop_", 2) ||
+		g.Registrations[0].Source != SourceRegistered || g.Dropped.Registrations != uint64(2*MaxRegistrations+2) {
+		t.Fatalf("%d kept, first %s, dropped %d", len(g.Registrations), g.Registrations[0].ID, g.Dropped.Registrations)
+	}
+	// A control operation through an add-only reference upgrades it; a later
+	// add of a control-recorded reference changes nothing.
+	last := 100 + 3*MaxRegistrations - 1
+	register(last, SourceRegistered)
+	register(1, SourceRegistryAdd)
+	g = load(t, dir)
+	n, _ := g.Lookup(id("loop_", last))
+	first, _ := g.Lookup(id("loop_", 1))
+	if n.Registration.Source != SourceRegistered || first.Registration.Source != SourceRegistered {
+		t.Fatalf("%s %s", n.Registration.Source, first.Registration.Source)
+	}
+	if err := Update(dir, at, func(g *Graph) (bool, error) { return g.Register(id("loop_", 9), SourceGoal, at) }); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal("a registry reference was recorded with an unrelated source")
+	}
+}
+
+func TestUpdateExistingNeverCreatesARuntimeFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "never-started")
+	record := func() error {
+		return UpdateExisting(dir, at, func(g *Graph) (bool, error) { return g.Register(registration, SourceRegistryAdd, at) })
+	}
+	if err := record(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("UpdateExisting created the directory")
+	}
+	sync(t, dir, enabled, "start", 1)
+	if err := record(); err != nil || len(load(t, dir).Registrations) != 1 {
+		t.Fatal(err)
+	}
+	// The lock file exists but the graph is gone or unusable: nothing is written.
+	path := filepath.Join(dir, FileName)
+	os.Remove(path)
+	if err := record(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("UpdateExisting recreated a removed graph")
+	}
+	os.WriteFile(path, []byte("{"), 0o600)
+	if err := record(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "{" {
+		t.Fatal("UpdateExisting rewrote an unusable graph")
 	}
 }

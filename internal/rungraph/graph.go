@@ -26,26 +26,30 @@ const (
 	MaxLinks         = 256
 	MaxRegistrations = 16
 	MaxUnrecorded    = 16
-	maxTarget        = 128
+	// MaxTriggersPerRun bounds trigger links separately from every other
+	// link: a run keeps its first trigger and its newest ones.
+	MaxTriggersPerRun = 8
+	maxTarget         = 128
 )
 
 // Source says which structured input produced a record. None is a transcript.
 type Source string
 
 const (
-	SourceControl    Source = "control_command"     // an accepted control operation
-	SourceReconciled Source = "control_state"       // saved control state seen by a later check
-	SourceAdapter    Source = "adapter_call"        // a send intent and its returned call
-	SourceConfigured Source = "configured_target"   // the target's configured chat ID
-	SourceRunnerFile Source = "runner_session_file" // a headless runner's saved resume ID
-	SourceGoal       Source = "goal_record"         // the loop's goal.json
-	SourceRegistered Source = "registered_control"  // a control operation made through a registry reference
-	SourceExternal   Source = "external"            // supplied by a structured integration
+	SourceControl     Source = "control_command"     // an accepted control operation
+	SourceReconciled  Source = "control_state"       // saved control state seen by a later check
+	SourceAdapter     Source = "adapter_call"        // a send intent and its returned call
+	SourceConfigured  Source = "configured_target"   // the target's configured chat ID
+	SourceRunnerFile  Source = "runner_session_file" // a headless runner's saved resume ID
+	SourceGoal        Source = "goal_record"         // the loop's goal.json
+	SourceRegistered  Source = "registered_control"  // a control operation made through a registry reference
+	SourceRegistryAdd Source = "registry_add"        // registry add found an existing graph; no control operation used the reference
+	SourceExternal    Source = "external"            // supplied by a structured integration
 )
 
 func (s Source) valid() bool {
 	switch s {
-	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceGoal, SourceRegistered, SourceExternal:
+	case SourceControl, SourceReconciled, SourceAdapter, SourceConfigured, SourceRunnerFile, SourceGoal, SourceRegistered, SourceRegistryAdd, SourceExternal:
 		return true
 	}
 	return false
@@ -75,6 +79,9 @@ type Dropped struct {
 	Links         uint64 `json:"links"`
 	Registrations uint64 `json:"registrations"`
 	Unrecorded    uint64 `json:"unrecorded"`
+	// Triggers counts routine trigger links dropped by their own bound. They
+	// are never counted in Links and never cause another record to be dropped.
+	Triggers uint64 `json:"triggers"`
 }
 
 // ReasonSessionID: the target's chat/session identifier is outside the
@@ -220,13 +227,19 @@ func (g *Graph) valid() bool {
 		}
 		attempts[a.ID] = true
 	}
+	triggers := map[string]int{}
 	for _, l := range g.Links {
 		if !runs[l.Run] || !l.contract().Valid() || !l.Source.valid() || len(l.Target) > maxTarget || (l.Kind != rd.SessionLink && l.Target != "") {
 			return false
 		}
+		if l.Kind == rd.InvocationLink {
+			if triggers[l.Run]++; triggers[l.Run] > MaxTriggersPerRun {
+				return false
+			}
+		}
 	}
 	for _, r := range g.Registrations {
-		if _, err := rd.Register(rd.State{LoopID: g.LoopID}, r.ID, r.RecordedAt); err != nil || registrations[r.ID] || !r.Source.valid() {
+		if _, err := rd.Register(rd.State{LoopID: g.LoopID}, r.ID, r.RecordedAt); err != nil || registrations[r.ID] || (r.Source != SourceRegistered && r.Source != SourceRegistryAdd) {
 			return false
 		}
 		registrations[r.ID] = true
@@ -242,6 +255,16 @@ func (g *Graph) valid() bool {
 // trim applies the retention bounds. A run leaves with its attempts and links,
 // so no retained record refers to a dropped run except a reopen predecessor.
 func (g *Graph) trim() {
+	// Trigger links go first, oldest first, and are counted on their own. They
+	// never push out a run, a chat/session link or a goal link.
+	for i := 0; len(g.Links) > MaxLinks && i < len(g.Links); {
+		if g.Links[i].Kind != rd.InvocationLink {
+			i++
+			continue
+		}
+		g.Links = append(g.Links[:i], g.Links[i+1:]...)
+		g.Dropped.Triggers++
+	}
 	for len(g.Runs) > MaxRuns || len(g.Attempts) > MaxAttempts || len(g.Links) > MaxLinks {
 		if len(g.Runs) > 1 && g.Runs[0].ID != g.CurrentRun {
 			id := g.Runs[0].ID
@@ -258,7 +281,9 @@ func (g *Graph) trim() {
 			g.Attempts = attempts
 			links := g.Links[:0]
 			for _, l := range g.Links {
-				if l.Run == id {
+				if l.Run == id && l.Kind == rd.InvocationLink {
+					g.Dropped.Triggers++
+				} else if l.Run == id {
 					g.Dropped.Links++
 				} else {
 					links = append(links, l)

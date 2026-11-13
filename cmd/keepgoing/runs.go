@@ -683,7 +683,7 @@ func printRuns(w io.Writer, r runsReport) {
 				fmt.Fprintf(w, "%d earlier runs not shown; raise --limit\n", l.OmittedRuns)
 			}
 			if d := l.Graph.Dropped; d != nil && *d != (rungraph.Dropped{}) {
-				fmt.Fprintf(w, "retention dropped: %d runs, %d attempts, %d links, %d registry references\n", d.Runs, d.Attempts, d.Links, d.Registrations)
+				fmt.Fprintf(w, "retention dropped: %d runs, %d attempts, %d links, %d triggers, %d registry references\n", d.Runs, d.Attempts, d.Links, d.Triggers, d.Registrations)
 			}
 		}
 		fmt.Fprintf(w, "blocker: %s (%s)\n", l.Blocker.Availability, l.Blocker.Reason)

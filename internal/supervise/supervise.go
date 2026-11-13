@@ -42,6 +42,9 @@ type Options struct {
 	// Routine is the scheduler identity supplied with this check, if any. It
 	// is recorded in the run graph only and never reaches a decision.
 	Routine rd.RoutineRef
+	// RoutineIgnored says the caller supplied an identity that could not be
+	// recorded. The check runs as usual and says so once.
+	RoutineIgnored bool
 }
 
 // ProbeNote summarises a probe that ran during the tick.
@@ -172,6 +175,9 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
+	if opts.RoutineIgnored {
+		t.warn("routine identity ignored: --routine takes source/routine or source/routine/invocation; this check ran without it")
+	}
 	t.graphSync()
 	err := t.run()
 	t.graphClose()

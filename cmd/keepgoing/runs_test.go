@@ -185,7 +185,9 @@ func TestRunsLoopViewResolvesCurrentWorkAndItsChat(t *testing.T) {
 
 func TestRunsFollowsExactReferencesInBothDirections(t *testing.T) {
 	dir := runsFixture(t)
-	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Register(runsID("loop_", 7), runsAt) })
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) {
+		return g.Register(runsID("loop_", 7), rungraph.SourceRegistered, runsAt)
+	})
 	g, _ := rungraph.Load(dir)
 	node := func(ref string) *runsNode {
 		t.Helper()
@@ -427,7 +429,7 @@ func TestRunsRegistryViewSeparatesLoopsWithTheSameName(t *testing.T) {
 	runsSync(t, entries[0].StateDir, false, "start", 1)
 	runsUpdate(t, entries[0].StateDir, func(g *rungraph.Graph) (bool, error) {
 		g.Relate(rtSession("primary", "bb", "thr_example", rungraph.SourceConfigured))
-		return g.Register(entries[0].ID, runsAt)
+		return g.Register(entries[0].ID, rungraph.SourceRegistered, runsAt)
 	})
 	before := snapshotTree(t, regDir) + snapshotTree(t, entries[0].StateDir)
 	code, r, raw := runsExec(t, "--all", "--directory", regDir)
@@ -658,7 +660,9 @@ func TestRunsRegistrySelectorsRefuseAStaleBinding(t *testing.T) {
 // a reference printed by the step before.
 func TestRunsTextModeWalksEveryDocumentedPath(t *testing.T) {
 	dir := runsFixture(t)
-	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Register(runsID("loop_", 7), runsAt) })
+	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) {
+		return g.Register(runsID("loop_", 7), rungraph.SourceRegistered, runsAt)
+	})
 	text := func(args ...string) string {
 		t.Helper()
 		var out, errs bytes.Buffer
@@ -793,7 +797,7 @@ func TestRunsRegistryAddRecordsTheReferenceOnceAGraphExists(t *testing.T) {
 		t.Fatal("repeating registry add did not record the reference")
 	}
 	g, _ := rungraph.Load(entry.StateDir)
-	if len(g.Registrations) != 1 || g.Registrations[0].ID != entry.ID || g.Registrations[0].Source != rungraph.SourceRegistered || len(g.Runs) != 1 {
+	if len(g.Registrations) != 1 || g.Registrations[0].ID != entry.ID || g.Registrations[0].Source != rungraph.SourceRegistryAdd || len(g.Runs) != 1 {
 		t.Fatalf("%#v", g.Registrations)
 	}
 	// Removing and adding again creates a new reference. It is recorded as
@@ -809,7 +813,18 @@ func TestRunsRegistryAddRecordsTheReferenceOnceAGraphExists(t *testing.T) {
 	if len(f.Entries) != 1 || f.Entries[0].ID == entry.ID || len(g.Registrations) != 2 || g.Registrations[1].ID != f.Entries[0].ID {
 		t.Fatalf("%#v %#v", f.Entries, g.Registrations)
 	}
-	// An unusable graph is left alone.
+	// A control operation through the reference upgrades its label; a later
+	// add does not downgrade it.
+	current := f.Entries[0]
+	if r, code := applyClientHold(context.Background(), regDir, current.ID, "pause"); code != 0 {
+		t.Fatal(code, r)
+	}
+	registryRun(t, regDir, "add", "-c", entry.ConfigPath)
+	if g, _ = rungraph.Load(entry.StateDir); g.Registrations[0].Source != rungraph.SourceRegistryAdd || g.Registrations[1].Source != rungraph.SourceRegistered {
+		t.Fatalf("%#v", g.Registrations)
+	}
+	// An unusable graph is left alone, and a graph removed after its lock
+	// was created is not recreated.
 	path := filepath.Join(entry.StateDir, rungraph.FileName)
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
@@ -819,6 +834,13 @@ func TestRunsRegistryAddRecordsTheReferenceOnceAGraphExists(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "{" {
 		t.Fatal("registry add rewrote an unusable graph")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	registryRun(t, regDir, "add", "-c", entry.ConfigPath)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("registry add created a graph")
 	}
 }
 

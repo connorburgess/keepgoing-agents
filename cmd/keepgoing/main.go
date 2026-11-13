@@ -109,6 +109,9 @@ type env struct {
 // context. It is recorded in the run graph only.
 type routineKey struct{}
 
+// routineIgnoredKey marks a tick whose --routine value could not be recorded.
+type routineIgnoredKey struct{}
+
 func suppliedRoutine(ctx context.Context) rd.RoutineRef {
 	r, _ := ctx.Value(routineKey{}).(rd.RoutineRef)
 	return r
@@ -197,18 +200,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		e.errf("daemon --take-over cannot be combined with --dry-run; use validate --take-over to preview")
 		return exitUsage
 	}
-	if *f.routine != "" {
+	routineSet := false
+	fs.Visit(func(fl *flag.Flag) { routineSet = routineSet || fl.Name == "routine" })
+	if routineSet {
 		// Never echo the value: it is supplied by another program.
 		if cmd != "enable" && cmd != "resume" && cmd != "tick" {
 			e.errf("--routine is only supported by enable, resume, and tick")
 			return exitUsage
 		}
 		r, err := rd.ParseRoutine(*f.routine)
-		if err != nil {
+		switch {
+		case err == nil:
+			e.ctx = context.WithValue(e.ctx, routineKey{}, r)
+		case cmd == "tick":
+			// The identity is diagnostic only. A scheduled check must still
+			// run when its scheduler sends a value keepgoing cannot record.
+			e.ctx = context.WithValue(e.ctx, routineIgnoredKey{}, true)
+		default:
 			e.errf("--routine takes source/routine or source/routine/invocation; each part is 1-128 letters, digits and . _ : @ -, starting with a letter or digit")
 			return exitUsage
 		}
-		e.ctx = context.WithValue(e.ctx, routineKey{}, r)
 	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {

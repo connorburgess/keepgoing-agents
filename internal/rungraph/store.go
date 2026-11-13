@@ -86,6 +86,21 @@ func Load(dir string) (Graph, Availability) {
 // changed anything; an unchanged graph is not rewritten. An unsupported or
 // corrupt record is left exactly as it is.
 func Update(dir string, now time.Time, fn func(*Graph) (bool, error)) error {
+	return updateGraph(dir, now, true, fn)
+}
+
+// UpdateExisting is Update for callers that must never create a runtime
+// file: it does nothing unless the graph lock file and a readable graph both
+// already exist. The graph is checked again under the lock, so a graph removed
+// in between is not recreated.
+func UpdateExisting(dir string, now time.Time, fn func(*Graph) (bool, error)) error {
+	if info, err := os.Lstat(filepath.Join(dir, lockName+".lock")); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return updateGraph(dir, now, false, fn)
+}
+
+func updateGraph(dir string, now time.Time, create bool, fn func(*Graph) (bool, error)) error {
 	var l *lock.Lock
 	var err error
 	for try := 0; ; try++ {
@@ -101,6 +116,9 @@ func Update(dir string, now time.Time, fn func(*Graph) (bool, error)) error {
 	g, availability := Load(dir)
 	switch availability {
 	case Missing:
+		if !create {
+			return nil
+		}
 		id, err := NewID("supervision_")
 		if err != nil {
 			return err
@@ -108,6 +126,9 @@ func Update(dir string, now time.Time, fn func(*Graph) (bool, error)) error {
 		g = Graph{SchemaVersion: SchemaVersion, LoopID: id}
 	case Available:
 	default:
+		if !create {
+			return nil
+		}
 		return ErrUnavailable
 	}
 	changed, err := fn(&g)
