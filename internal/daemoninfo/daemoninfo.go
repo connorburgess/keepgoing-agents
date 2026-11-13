@@ -101,6 +101,16 @@ func Start(stateDir, version string, dryRun bool) (*Server, error) {
 	return s, nil
 }
 
+// StartedAt is when this daemon started; zero for a nil server.
+func (s *Server) StartedAt() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot.StartedAt
+}
+
 func (s *Server) Update(phase string, next *time.Time) {
 	if s == nil {
 		return

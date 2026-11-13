@@ -97,7 +97,10 @@ func TestCheckGapIsNotRecordedWhenNotSubscribed(t *testing.T) {
 			t.Fatalf("recorded %+v", p)
 		}
 	}
-	if st, _ := state.Load(w.dir); !st.CheckGapReported.IsZero() {
-		t.Fatalf("marked reported: %v", st.CheckGapReported)
+	if st, _ := state.Load(w.dir); st.CheckGapPending != nil {
+		t.Fatalf("a gap was kept to report: %+v", st.CheckGapPending)
+	}
+	if strings.Contains(w.reportTypes(), "check_gap") {
+		t.Fatalf("sent while not subscribed: %s", w.reportTypes())
 	}
 }

@@ -278,7 +278,7 @@ var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "check_gap", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)

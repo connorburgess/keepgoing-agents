@@ -59,6 +59,10 @@ type Options struct {
 	// RoutineIgnored says the caller supplied an identity that could not be
 	// recorded. The check runs as usual and says so once.
 	RoutineIgnored bool
+	// DaemonStartedAt is when the daemon running this check started; zero
+	// when it is not run by a daemon. A daemon that ran the last check too
+	// was running through any gap since: the computer slept.
+	DaemonStartedAt time.Time
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
@@ -219,11 +223,13 @@ type tick struct {
 	stopRequested       bool            // a stop is requested in control.json
 	stopsMade           []string        // targets this check sent a stop to
 	enabled             bool            // the loop is enabled in control.json
-	stBeforeRecords     state.File      // state before the records were handled, to undo them
-	quietFailure        bool            // a failure already reported by an earlier check
-	failure             *failureReport  // wording for the one error report of a failed check
-	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
-	lateReports         int             // reports started after the budget was spent
+	schedule            state.ScheduleInput
+	gap                 *state.Gap     // a gap this check is the first after, to report once recorded
+	stBeforeRecords     state.File     // state before the records were handled, to undo them
+	quietFailure        bool           // a failure already reported by an earlier check
+	failure             *failureReport // wording for the one error report of a failed check
+	observeSpent        time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports         int            // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -530,7 +536,11 @@ func (t *tick) run() error {
 	}
 	t.incidentStateLoaded = true
 	t.savedSends = t.st.SendsRecorded
-	t.reportCheckGap()
+	// Whether a check was overdue is judged from the records as they were
+	// before this check, and nothing is sent or reserved for it here: the
+	// report goes out after this check is saved (see record).
+	t.schedule = t.scheduleInput(ctl)
+	t.gap = t.gapToReport()
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -1642,6 +1652,8 @@ type failureReport struct {
 
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
+	state.NoteScheduleGap(&t.st, t.schedule, t.now)
+	reportGap := t.markCheckGap()
 	t.st.CheckedAt = t.now
 	// The count is of consecutive checks. Any check that did not end in that
 	// answer breaks the run, including one that was held or sent nothing.
@@ -1670,9 +1682,11 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
-	if r := t.opts.Routine; r.Source != "" {
+	// A dry run leaves the identity of the last real check: it is the one
+	// a later gap is about.
+	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
 		t.st.StartedBy = &state.Routine{Source: r.Source, Routine: r.Routine}
-	} else {
+	} else if !t.opts.DryRun {
 		t.st.StartedBy = nil // started without a scheduler identity
 	}
 	if t.st.UnconfirmedReprompts > t.st.Reprompts {
@@ -1691,6 +1705,9 @@ func (t *tick) record(actErr error) error {
 		if err := state.Settle(t.loop.StateDir, t.st.SendsRecorded); err != nil {
 			t.warn("the send records were recorded in state.json but could not be marked settled in sends.json: %v", err)
 		}
+	}
+	if reportGap {
+		t.reportCheckGap()
 	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
@@ -1849,35 +1866,93 @@ func copyState(f state.File) state.File {
 	return c
 }
 
-// reportCheckGap sends one check_gap report when this check is the first
-// after the loop went overdue: no check had run for longer than the overdue
-// rule allows (state.ScheduleOf), so its scheduler had probably stopped. It is
-// sent once per gap, keyed on the time of the last check before it, and
-// recorded before it is sent. status, doctor and the panel say the same while
-// the gap lasts; this tells the owner afterwards if nobody was looking.
+// scheduleInput is what the overdue rule needs besides state.json.
+func (t *tick) scheduleInput(ctl control.File) state.ScheduleInput {
+	return ScheduleInput(&t.loop, ctl, t.opts.DaemonStartedAt)
+}
+
+// ScheduleInput is what the overdue rule needs besides state.json, for the
+// supervisor and for everything that reads a loop's status, so they judge
+// alike. daemonStartedAt is when a daemon verified to be running this loop
+// started; zero when there is none.
+func ScheduleInput(loop *config.Loop, ctl control.File, daemonStartedAt time.Time) state.ScheduleInput {
+	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
+		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, ControlChangedAt: ctl.UpdatedAt,
+		DaemonStartedAt: daemonStartedAt, TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}
+	if w := loop.Window; w != nil {
+		in.InWindow = func(from, to time.Time) time.Duration {
+			if d, err := window.Overlap(w, from, to); err == nil {
+				return d
+			}
+			return to.Sub(from)
+		}
+	}
+	return in
+}
+
+// gapToReport is the gap this check is the first after, if it has not been
+// reported: one a dry run saw, or the one the overdue rule finds before
+// this check.
+func (t *tick) gapToReport() *state.Gap {
+	if g := t.st.CheckGapPending; g != nil {
+		c := *g
+		return &c
+	}
+	sch := state.ScheduleOf(t.st, t.schedule, t.now)
+	if !sch.Overdue {
+		return nil
+	}
+	return &state.Gap{From: sch.LastCheckAt, To: t.now, For: sch.For, Usual: sch.Usual, StartedBy: sch.StartedBy, Blocked: sch.Blocked}
+}
+
+// markCheckGap settles the gap in the state about to be saved: that save
+// also records this check's time, which ends the gap, so no later check
+// reports it. A dry run reports nothing and leaves it for the next real
+// check. It says whether to report it after the save.
+func (t *tick) markCheckGap() bool {
+	g := t.gap
+	if g == nil || !t.loop.Report.ReportsEvent(checkGapEvent) {
+		if !t.opts.DryRun {
+			t.st.CheckGapPending = nil
+		}
+		return false
+	}
+	if t.opts.DryRun {
+		t.st.CheckGapPending = g
+		return false
+	}
+	t.st.CheckGapPending = nil
+	return true
+}
+
+// reportCheckGap sends the check_gap report for a gap already saved as
+// reported. Killed before the save, nothing was sent and the next check
+// reports it; killed after, it is marked, and never sent twice.
 func (t *tick) reportCheckGap() {
-	sch := state.ScheduleOf(t.st, t.loop.Daemon.Interval.Duration, t.enabled, t.now)
-	if !sch.Overdue || t.opts.DryRun || t.st.CheckGapReported.Equal(sch.LastCheckAt) || !t.loop.Report.ReportsEvent(checkGapEvent) {
-		return
+	g := t.gap
+	text := fmt.Sprintf("%s: no check ran from %s to %s (%s%s)", t.loop.Name, g.From.UTC().Format(time.RFC3339), g.To.UTC().Format(time.RFC3339), state.ShortDuration(g.For), usualClause(g.Usual))
+	switch r := g.StartedBy; {
+	case g.Blocked:
+		text += ": checks were started, but each found an earlier check still running, which may have hung."
+	case r != nil && r.Source == state.RoutineBBAutomation:
+		text += ": the computer may have slept, or the BB automation that runs this loop (" + r.Routine + ") may have disabled itself and been turned back on; check it in BB's Automations."
+	default:
+		text += ": the computer may have slept, or the scheduler that runs keepgoing tick had stopped."
 	}
-	// The gap is reported by the first check after it, or not at all: the
-	// next check finds a recent check before it.
-	if !t.canReport(checkGapEvent) {
-		t.warn("report %s not sent: no time is left in this check", checkGapEvent)
-		return
+	text += " Checks are running again."
+	data := map[string]any{"lastCheckAt": g.From, "gap": state.ShortDuration(g.For)}
+	if g.Usual > 0 {
+		data["usual"] = state.ShortDuration(g.Usual)
 	}
-	key := sch.LastCheckAt.UTC().Format(time.RFC3339Nano)
-	if _, err := t.reserveSend("report:check_gap", t.st.Target(), key); err != nil {
-		t.warn("report check_gap not sent, because the record of sending it could not be saved: %v", err)
-		return
+	t.report(checkGapEvent, text, data)
+}
+
+// usualClause says what the gap is measured against.
+func usualClause(usual time.Duration) string {
+	if usual <= 0 {
+		return fmt.Sprintf(", longer than the %s a loop may go without a check before its usual interval is known", state.ShortDuration(state.FallbackOverdue))
 	}
-	t.st.CheckGapReported = sch.LastCheckAt
-	text := fmt.Sprintf("%s: no check ran from %s to %s (%s, where checks normally run every %s), so the loop's scheduler had probably stopped. Checks are running again.",
-		t.loop.Name, sch.LastCheckAt.UTC().Format(time.RFC3339), t.now.UTC().Format(time.RFC3339), sch.For.Truncate(time.Minute), sch.Usual)
-	if r := sch.StartedBy; r != nil && r.Source == state.RoutineBBAutomation {
-		text += " The BB automation that runs it (" + r.Routine + ") may have disabled itself and been turned back on."
-	}
-	t.report(checkGapEvent, text, map[string]any{"lastCheckAt": sch.LastCheckAt, "gap": sch.For.String(), "usual": sch.Usual.String()})
+	return ", where checks normally run every " + state.ShortDuration(usual)
 }
 
 // checkGapEvent is the report event for a gap in which no check ran.
@@ -1957,11 +2032,6 @@ func (t *tick) countUnrecordedSends() error {
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
-		case "report:check_gap":
-			if at, err := time.Parse(time.RFC3339Nano, p.Key); err == nil {
-				t.st.CheckGapReported = at
-			}
-			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":

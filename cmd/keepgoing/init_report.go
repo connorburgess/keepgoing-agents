@@ -113,7 +113,8 @@ type initNextCommands struct {
 	Doctor          []string `json:"doctor"`
 	StartForeground []string `json:"startForeground"`
 	StartBackground []string `json:"startBackground"`
-	// Service is the recommended way to keep checks running, on macOS and
+	// Service is the recommended way to keep checks running, instead of
+	// start: it does not enable the loop, so `enable` comes first. On macOS and
 	// Linux: a service the operating system restarts. Absent elsewhere.
 	Service []string `json:"service,omitempty"`
 }

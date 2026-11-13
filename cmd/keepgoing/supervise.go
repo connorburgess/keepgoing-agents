@@ -86,11 +86,17 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	return exitOK
 }
 
+// daemonStartedKey carries the start time of the daemon running a pass.
+type daemonStartedKey struct{}
+
 // tickOnce runs one pass under the tick lock.
 func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another tick holds the lock; skipping")
+		// Best effort, so the overdue rule can tell a hung check from a
+		// stopped scheduler: this check was started and turned away.
+		_ = state.NoteTurnedAway(cfg.Loop.StateDir, time.Now())
 		return exitSkipped
 	}
 	if err != nil {
@@ -106,6 +112,9 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitSkipped
 	}
 	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx), RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil}
+	if started, ok := e.ctx.Value(daemonStartedKey{}).(time.Time); ok {
+		opts.DaemonStartedAt = started
+	}
 	if fixedNow {
 		opts.Now = now
 	}
@@ -190,7 +199,11 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		pass := e
+		if started := monitor.StartedAt(); !started.IsZero() {
+			pass.ctx = context.WithValue(e.ctx, daemonStartedKey{}, started)
+		}
+		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
@@ -778,10 +791,10 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
-	out.Schedule = describeSchedule(st, l.Daemon.Interval.Duration, ctl.Enabled, now)
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
+	out.Schedule = describeSchedule(&l, st, ctl, &out.Daemon, now)
 	if out.Daemon.State == "responsive" {
 		out.Runtime.NextCheck = out.Daemon.NextCheck
 	}

@@ -106,10 +106,11 @@ The page has two levels, so opening it never starts with a list of facts. The pa
 
 **Needs you.** With nothing picked, the page lists every loop a person should look at:
 
+- A loop whose [checks have stopped](operations.md#external-schedulers-can-stop-on-their-own): enabled, not held, and with no check for longer than the overdue rule allows, with the sentence `status` gives and what to do.
 - A loop held for a person, with the reason from the fixed cause recorded when the hold began, how long it has waited, and what to do. The wait is measured from the retained history record of the hold starting; when retention has dropped that record the page says "waiting at least" and counts from the last control change. A loop whose new-conversation move could not be confirmed is listed the same way.
 - A loop that could not be read: its control record or check history is unreadable, its registration no longer matches its configuration, a move to another conversation is in progress, or the read was cut off. Whether such a loop is held is unknown, so it is listed as "could not be read" with what to do, never left out.
 
-"Nothing needs you" is shown only when the registry was read, every loop in it was read, and none is held. Otherwise the line counts what needs you and what could not be read.
+"Nothing needs you" is shown only when the registry was read, every loop in it was read, and none is held or has stopped checking. Otherwise the line counts what needs you and what could not be read.
 
 Below that, **Worth knowing** lists loops that do not need a person but are not routine: waiting on a limit or the network, checks failing, not checked recently, outside their hours, or running on a later route, each with the recorded reason in one line.
 

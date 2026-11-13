@@ -10,6 +10,9 @@ export const runtimeSchema = z.object({
 });
 export const scheduleSchema = z.object({
   overdue: z.boolean(), message: z.string().optional(),
+  // Present from the CLI that judges held loops and a fallback: "usual"
+  // only when the loop's usual interval is known.
+  judging: z.boolean().optional(), basis: z.string().optional(), slept: z.boolean().optional(),
 });
 export const daemonSchema = z.object({
   state: z.string(), phase: z.string().optional(), observedAt: z.string().optional(),
@@ -62,8 +65,9 @@ export function diagnosticLines(d: StatusDetails | undefined, target: string, su
     lines.push(`Daemon: ${daemon?.state ?? "unavailable from this build"}; running supervisor not confirmed`);
   }
   if (d.schedule?.overdue) lines.push(`Schedule: ${d.schedule.message ?? "no check has run for longer than usual; the loop's scheduler may have stopped"}`);
-  else if (d.schedule) lines.push("Schedule: checks are running at their usual interval");
-  else lines.push("External scheduler health: not inspected; a daemon reply does not establish agent health");
+  // Only a judged loop whose usual interval is known is said to be on time.
+  else if (d.schedule?.judging && d.schedule.basis === "usual" && !d.schedule.slept) lines.push("Schedule: checks are running at their usual interval");
+  else if (!d.schedule) lines.push("External scheduler health: not inspected; a daemon reply does not establish agent health");
   const check = d.lastCheck;
   lines.push(check
     ? `Last recorded action: ${check.action} · ${check.outcome}${check.dryRun ? " · dry run" : ""} · target ${check.target} · ${dateLabel(check.at)}`

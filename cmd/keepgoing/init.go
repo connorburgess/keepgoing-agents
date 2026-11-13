@@ -188,7 +188,8 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 	fmt.Fprintf(e.stdout, "  %s start --foreground -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
 	fmt.Fprintln(e.stdout, "Or choose --background to keep the daemon running after this terminal closes. Start validates local setup and enables the loop; existing holds remain. No service is installed.")
 	if svc := serviceInstallCommand(cfgPath); svc != nil {
-		fmt.Fprintln(e.stdout, "To keep checks running across restarts, the recommended way is a service the operating system restarts (see docs/services.md):")
+		fmt.Fprintln(e.stdout, "Or, instead of start, keep checks running across restarts with a service the operating system restarts, the recommended way (see Services in the keepgoing documentation). A service does not enable the loop, so enable it first:")
+		fmt.Fprintf(e.stdout, "  %s enable -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
 		fmt.Fprintf(e.stdout, "  %s service install -c %s\n", initCommandPrefix(), commandQuote(cfgPath))
 	}
 	return exitOK

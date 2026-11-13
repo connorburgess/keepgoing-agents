@@ -207,6 +207,7 @@ func clientAlias(cfg *config.Config, alias string) string {
 }
 func readClientStatus(ctx context.Context, directory, id string, private, offline bool, staleAfter time.Duration, now time.Time, query clientDaemonQuery) clientStatusReport {
 	r := clientStatusReport{SchemaVersion: 1, RegistrationID: id, ReadAt: now, Outcome: "unavailable", Issues: []string{}}
+	var scheduleOf func(*daemonStatus) scheduleStatus // set once the loop's records are read
 	unavailable := func(issue string) clientStatusReport {
 		r.Outcome = "unavailable"
 		r.Snapshot = nil
@@ -282,8 +283,8 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 				issue("window_unavailable")
 			} else {
 				rt := describeRuntime(ctl, st, in, configured, now, staleAfter, version)
-				sch := describeSchedule(st, cfg.Loop.Daemon.Interval.Duration, ctl.Enabled, now)
-				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt), sch.Overdue, sch.Message}
+				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt), false, ""}
+				scheduleOf = func(d *daemonStatus) scheduleStatus { return describeSchedule(&cfg.Loop, st, ctl, d, now) }
 			}
 		}
 		if c := st.LastCheck; c != nil {
@@ -309,6 +310,12 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 	// scheduler queries, task files, output logs or provider session files.
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	s.Daemon = query(queryCtx, entry.StateDir, version, offline)
+	// After the daemon is asked: one that ran the last check and is still
+	// running means the computer slept.
+	if scheduleOf != nil && s.Runtime != nil {
+		sch := scheduleOf(&s.Daemon)
+		s.Runtime.Overdue, s.Runtime.OverdueMessage = sch.Overdue, sch.Message
+	}
 	cancel()
 	if ctx.Err() != nil {
 		return unavailable("cancelled")

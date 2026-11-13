@@ -55,3 +55,63 @@ func at(day time.Time, hhmm string) (time.Time, error) {
 	}
 	return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute), nil
 }
+
+// Overlap is how much of [from, to) falls in the configured window. A nil
+// window means always, so it is the whole of it. At most maxOverlapDays days
+// are looked at; a longer stretch counts only its first maxOverlapDays.
+func Overlap(w *config.Window, from, to time.Time) (time.Duration, error) {
+	if !to.After(from) {
+		return 0, nil
+	}
+	if w == nil {
+		return to.Sub(from), nil
+	}
+	loc, err := time.LoadLocation(w.TZ)
+	if err != nil {
+		return 0, err
+	}
+	from, to = from.In(loc), to.In(loc)
+	if limit := from.AddDate(0, 0, maxOverlapDays); to.After(limit) {
+		to = limit
+	}
+	var total time.Duration
+	// Yesterday's span may run past midnight into the first day.
+	day := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -1)
+	for ; day.Before(to); day = day.AddDate(0, 0, 1) {
+		span, ok := w.Days[day.Format("Mon")]
+		if !ok || len(span) != 2 {
+			continue
+		}
+		start, err := at(day, span[0])
+		if err != nil {
+			return 0, err
+		}
+		end, err := at(day, span[1])
+		if err != nil {
+			return 0, err
+		}
+		if !end.After(start) {
+			end = end.AddDate(0, 0, 1)
+		}
+		if s, e := maxTime(start, from), minTime(end, to); e.After(s) {
+			total += e.Sub(s)
+		}
+	}
+	return total, nil
+}
+
+const maxOverlapDays = 400
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}

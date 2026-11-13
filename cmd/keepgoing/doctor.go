@@ -230,12 +230,8 @@ func doctor(e env, args []string, run doctorRun) int {
 	doctorFailedChecks(&r, st, stateErr == nil)
 	if stateErr == nil {
 		if ctl, err := control.Load(cfg.Loop.StateDir); err == nil {
-			sch := describeSchedule(st, cfg.Loop.Daemon.Interval.Duration, ctl.Enabled, r.CheckedAt)
-			switch {
-			case sch.Overdue:
-				r.add("supervisor.schedule", "warning", "This loop's scheduler may have stopped: "+sch.Message+".", "Start the scheduler again. A BB automation that failed repeatedly may have disabled itself (doctor --bb-automation <id> --bb-project <id> inspects one); `keepgoing service install` runs checks from a service the operating system restarts.")
-			case sch.LastCheckAt != nil && ctl.Enabled:
-				r.add("supervisor.schedule", "ok", "Checks are running: the last one was "+sch.For+" ago.", "")
+			if level, text, fix, ok := scheduleDoctorLine(describeSchedule(&cfg.Loop, st, ctl, &d, r.CheckedAt)); ok {
+				r.add("supervisor.schedule", level, text, fix)
 			}
 		}
 	}

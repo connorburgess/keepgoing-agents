@@ -285,3 +285,10 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 		t.Errorf("primary with new_thread: %v", err)
 	}
 }
+
+// check_gap is a known event, and opt-in: not in the default list.
+func TestCheckGapReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "check_gap") || contains(DefaultReportEvents, "check_gap") {
+		t.Fatal("check_gap must be a known event and not a default one")
+	}
+}
