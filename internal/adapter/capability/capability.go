@@ -81,7 +81,7 @@ var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
+			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -102,7 +102,7 @@ var Adapters = []Adapter{
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
 var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
+	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -169,7 +169,7 @@ var Matrix = []Behaviour{
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{
-			"bb": {Yes, Live, "Running on one live loop.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires")}},
+			"bb": {Yes, Live, "The age-based expiry is running on one live loop. Dropping a fresh notice at once when BB's retry plugin has declined the failure and has nothing pending is fixture-tested only.", []Ref{d("docs/operations.md#bb-retry-and-stall-handling"), t("internal/adapter/bb/stale_retry_test.go", "TestStaleRetryNoticeOnErroredThreadExpires"), t("internal/adapter/bb/retry_plugin_test.go", "TestDeclinedRetryNoticeIsDroppedAtOnce")}},
 		}, same(Cell{NA, None, "A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.", nil}, headless...),
 			same(Cell{NA, None, "The status contract has no retry notice.", nil}, "process"))},
 	{ID: "reprompt", Title: "Recover a failed turn: re-prompt", What: "After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.",
