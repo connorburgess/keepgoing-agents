@@ -430,6 +430,48 @@ func ChildAnnouncements(errored, announced []string) (kept, unannounced []string
 	return kept, unannounced
 }
 
+// ChildReport says what to do about telling the owner that children are in
+// error. It is separate from the notice to the parent session: the owner is
+// told when a failure is first seen, the parent when it is next woken.
+type ChildReport string
+
+// Child report outcomes.
+const (
+	ChildReportNone          ChildReport = "none"           // no newly errored child
+	ChildReportSend          ChildReport = "requested"      // send one report
+	ChildReportNotSubscribed ChildReport = "not_subscribed" // report.events does not include child_error
+	ChildReportCapped        ChildReport = "capped"         // this episode has sent its maximum
+)
+
+// ChildReportRecord compares the children now in error with those already
+// reported, as ChildAnnouncements does for the parent notice, so both agree
+// on which children are new: only growth reports, and a child that leaves
+// error is forgotten so a later failure is reported again. An incomplete
+// listing cannot show that a child recovered, so it prunes nothing.
+func ChildReportRecord(errored, reported []string, complete bool) (kept, unreported []string) {
+	kept, unreported = ChildAnnouncements(errored, reported)
+	if !complete {
+		kept = append([]string{}, reported...)
+	}
+	return kept, unreported
+}
+
+// ChildErrorReport decides whether newly errored children are reported to the
+// owner. reports counts the reports already requested in this episode, which
+// lasts while any child stays in error; max bounds them, so children failing
+// one after another cannot produce a stream.
+func ChildErrorReport(unreported, reports, max int, subscribed bool) ChildReport {
+	switch {
+	case unreported <= 0:
+		return ChildReportNone
+	case !subscribed:
+		return ChildReportNotSubscribed
+	case reports >= max:
+		return ChildReportCapped
+	}
+	return ChildReportSend
+}
+
 // BriefAttempts records one target's rejected takeover briefs within the
 // current episode: handoff briefs to one fallback while an error lasts, or
 // switch-back briefs to the primary while the loop stays on a fallback.

@@ -247,6 +247,7 @@ func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, erro
 type statusOut struct {
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
+	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
 	GoalError         string                   `json:"goalError,omitempty"`
 	Notifications     report.DeliveryStatus    `json:"notifications"`
@@ -381,6 +382,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
+	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}
 		used, err := state.LoadSends(l.StateDir)
@@ -482,6 +484,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	printPromptSend(w, out.PromptSend)
 	printLimitWait(w, out.LimitWait)
+	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
 		fmt.Fprintf(w, " (%s)", out.TaskFile)
