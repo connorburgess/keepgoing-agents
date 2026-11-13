@@ -521,6 +521,8 @@
       pane.appendChild(nb);
     }
     pane.appendChild(nowRow(l));
+    var change = changeBox(l);
+    if (change) pane.appendChild(change);
 
     // The ordered preferred routes are the main structure.
     var c = l.chain, entries = list(c.entries);
@@ -569,6 +571,121 @@
       checks.appendChild(ids);
     }
     pane.appendChild(checks);
+  }
+
+  // ---- Changes: pause, stop and resume, on a panel started with --allow-changes ----
+  // Every sentence comes from the server. Each change is prepared, shown,
+  // and only then confirmed; nothing is retried by itself.
+  var ACTION_LABEL = { pause: "Pause", stop: "Stop", resume: "Resume" };
+  function changesOn() { return !!(state.server && state.server.changes === "on" && state.server.form); }
+  function post(path, form, body) {
+    return fetch(path, {
+      method: "POST", cache: "no-store", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form }, body: JSON.stringify(body)
+    })
+      .then(function (r) {
+        if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
+        return r.json();
+      })
+      .then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; });
+  }
+  function focusOn(name) {
+    var n = document.querySelector('[data-focus="' + name + '"]');
+    if (n) n.focus();
+  }
+  function prepareChange(key, action) {
+    if (!changesOn()) return;
+    state.change = { key: key, action: action, busy: true };
+    render(false, true);
+    post("api/v1/loops/" + key + "/prepare", state.server.form, { action: action })
+      .then(function (d) { state.change = d.preview ? { key: key, action: action, preview: d.preview } : { key: key, action: action, result: d.result }; })
+      .catch(function () {
+        state.change = { key: key, action: action, result: { outcome: "refused", retry: true, text: "The review could not be prepared: the panel did not answer. Nothing was changed." } };
+      })
+      .then(function () {
+        render(false, true);
+        if (state.change.preview) focusOn("change-cancel");
+        else { focusOn("change-result"); announce(state.change.result.text); }
+      });
+  }
+  function confirmChange() {
+    var c = state.change, p = c && c.preview;
+    if (!p || c.busy) return;
+    state.change = { key: c.key, action: c.action, preview: p, busy: true };
+    render(false, true);
+    post("api/v1/loops/" + c.key + "/confirm", p.form, { action: p.action })
+      .then(function (d) { state.change = { key: c.key, action: c.action, result: d.result }; })
+      // A refusal (4xx) comes before anything is done. Anything else, or no
+      // reply: whether it was saved is not known, and it is not sent again.
+      .catch(function (err) {
+        var refused = err && err.status >= 400 && err.status < 500;
+        state.change = { key: c.key, action: c.action, result: refused ? { outcome: "refused", retry: true, text: p.refused } : { outcome: "uncertain", text: p.lost } };
+      })
+      .then(function () {
+        render(false, true);
+        focusOn("change-result");
+        announce(state.change.result.text);
+        clearTimeout(state.timer);
+        load(true);
+      });
+  }
+  function cancelChange() {
+    var c = state.change;
+    state.change = null;
+    render(false, true);
+    if (c) focusOn("act-" + c.action);
+  }
+  function button(label, focus, cls, onClick, disabled) {
+    var b = el("button", "btn" + (cls ? " " + cls : ""), label);
+    b.type = "button";
+    b.setAttribute("data-focus", focus);
+    if (disabled) b.disabled = true;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function changeBox(l) {
+    var c = state.change && state.change.key === l.key ? state.change : null;
+    if (!changesOn() && !c) return null;
+    var box = el("section", "panel change");
+    if (c && c.preview) {
+      var p = c.preview;
+      box.classList.add("is-review");
+      box.setAttribute("aria-labelledby", "change-title");
+      var h = el("h2", null, p.title);
+      h.id = "change-title";
+      box.appendChild(h);
+      list(p.lines).forEach(function (line) { box.appendChild(el("p", "change-line", say(line))); });
+      var row = el("div", "change-buttons");
+      row.appendChild(button("Cancel", "change-cancel", "", cancelChange, c.busy));
+      row.appendChild(button(c.busy ? "Saving…" : p.confirm, "change-confirm", "is-primary", confirmChange, c.busy));
+      box.appendChild(row);
+      return box;
+    }
+    if (c && c.result) {
+      var r = el("p", "change-result is-" + c.result.outcome, c.result.text);
+      r.tabIndex = -1;
+      r.setAttribute("data-focus", "change-result");
+      box.appendChild(r);
+      var again = el("div", "change-buttons");
+      if (c.result.retry && changesOn()) again.appendChild(button("Review again", "change-retry", "", function () { prepareChange(l.key, c.action); }));
+      again.appendChild(button("Close", "change-close", "", function () { state.change = null; render(false, true); focusOn("act-" + c.action); }));
+      box.appendChild(again);
+      if (!changesOn()) return box;
+    }
+    if (c && c.busy) {
+      box.appendChild(el("p", "change-line", "Preparing the review…"));
+      return box;
+    }
+    var can = list(l.can);
+    if (!can.length) return c ? box : null;
+    var actions = el("div", "change-buttons");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "Change this loop");
+    can.forEach(function (a) {
+      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + "…", "act-" + a, "", function () { prepareChange(l.key, a); }));
+    });
+    box.appendChild(actions);
+    return box;
   }
 
   // ---- Routes across loops ----
@@ -727,7 +844,10 @@
     renderReadline();
     var needs = list(d.needsYou).length;
     document.title = (needs ? "(" + needs + ") " : "") + "keepgoing";
-    announce((d.needsLine || "Needs you: unknown") + ".");
+    // The needs-you line is announced when it changes, not on every read, so
+    // a read does not talk over the outcome of a change.
+    var needsSaid = (d.needsLine || "Needs you: unknown") + ".";
+    if (needsSaid !== state.needsSaid) { state.needsSaid = needsSaid; announce(needsSaid); }
     window.scrollTo(0, top);
     if (navigated) {
       // A link to one route lands on that route; any other lands on the pane.
@@ -768,6 +888,8 @@
 
   // One sentence under the footer: what serves the page and when it stops.
   function renderServed() {
+    var m = $("changes");
+    if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
     var p = $("served");
     if (!p) return;
     p.textContent = "";
@@ -782,7 +904,13 @@
   function loadServer() {
     fetch(SERVER, { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } })
       .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
-      .then(function (d) { if (d && d.schemaVersion === 1) { state.server = d; renderServed(); } })
+      .then(function (d) {
+        if (!d || d.schemaVersion !== 1) return;
+        var was = changesOn();
+        state.server = d;
+        renderServed();
+        if (changesOn() !== was && state.data) render(false, true);
+      })
       .catch(function () { /* the page works without it */ });
   }
 
@@ -794,6 +922,9 @@
 
   function load(byHand) {
     if (state.busy) { state.again = true; return; }
+    // What serves the page and whether it allows changes, read again with
+    // every read so the footer's ages stay current.
+    if (state.data) loadServer();
     // A hidden tab does not poll; it reads again when it is shown.
     if (document.hidden && state.data && !byHand) { schedule(); return; }
     state.busy = true;
@@ -854,6 +985,9 @@
       $("pane").focus();
     });
     window.addEventListener("hashchange", function () { render(true); });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && state.change && state.change.preview && !state.change.busy) { ev.preventDefault(); cancelChange(); }
+    });
     document.addEventListener("selectionchange", function () {
       if (state.pending && !selecting()) render(false);
     });

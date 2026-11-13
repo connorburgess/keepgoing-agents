@@ -450,9 +450,11 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish")
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish",
+				// The same three changes made from the keepgoing panel.
+				"panel_pause", "panel_stop", "panel_resume")
 			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
-			c.NewEpisode = c.NewEpisode && c.Operation == "resume"
+			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
 			r.ControlChange = &c
 		}
 	} else {

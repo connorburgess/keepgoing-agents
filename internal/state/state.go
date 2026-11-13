@@ -79,6 +79,15 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// ClaimUnavailable is set while checks run without a session claim
+	// because there is no user state directory to keep claims in; its start
+	// and end are reported once each.
+	ClaimUnavailable bool `json:"claimUnavailable,omitempty"`
+	// ClaimReport and StuckClaimReport carry those reports, and the report of
+	// another loop's stuck claim, until each is delivered: at most three
+	// attempts each.
+	ClaimReport      *OnceReport `json:"claimReport,omitempty"`
+	StuckClaimReport *OnceReport `json:"stuckClaimReport,omitempty"`
 	// PrimaryResetsAt is when the primary's limit was reported to lift at the
 	// handoff away from it; switch-back waits for it.
 	PrimaryResetsAt   time.Time `json:"primaryResetsAt,omitempty"`
@@ -239,6 +248,18 @@ func (f File) CandidateAgent(c config.Candidate) (a config.Agent, ok bool) {
 	a.BB = &target
 	return a, true
 }
+
+// OnceReport is a report keepgoing sends once per episode: Key names the
+// episode, and a failed delivery is tried again, at most MaxOnceAttempts
+// times in all.
+type OnceReport struct {
+	Key      string `json:"key"`
+	Attempts int    `json:"attempts"`
+	Sent     bool   `json:"sent"`
+}
+
+// MaxOnceAttempts bounds the deliveries of one OnceReport.
+const MaxOnceAttempts = 3
 
 // BriefRecord is one target's rejected takeover briefs.
 type BriefRecord struct {

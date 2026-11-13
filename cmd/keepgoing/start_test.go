@@ -130,7 +130,7 @@ func TestStartRefusesBeforeEnabling(t *testing.T) {
 			}
 			before, _ := os.ReadFile(filepath.Join(dir, control.FileName))
 			var errs bytes.Buffer
-			code := startForeground(env{ctx, io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("unexpected readiness"); return nil })
+			code := startForeground(env{ctx, io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("unexpected readiness"); return nil }, false)
 			after, _ := os.ReadFile(filepath.Join(dir, control.FileName))
 			if code != want || !bytes.Equal(before, after) || f.read("calls") != "" || f.read("probes") != "" {
 				t.Fatalf("code=%d want=%d mutated=%v errs=%s", code, want, !bytes.Equal(before, after), &errs)
@@ -148,7 +148,7 @@ func TestStartFlagsAndBackgroundLaunchFailure(t *testing.T) {
 		}
 	}
 	var errs bytes.Buffer
-	code := startBackground(env{context.Background(), io.Discard, &errs}, filepath.Join(f.dir, "missing"), f.cfg)
+	code := startBackground(env{context.Background(), io.Discard, &errs}, filepath.Join(f.dir, "missing"), f.cfg, false)
 	if code != exitFailed || !strings.Contains(errs.String(), "cannot launch") {
 		t.Fatalf("code %d: %s", code, &errs)
 	}

@@ -177,6 +177,11 @@ type dockLoop struct {
 	LimitWait   *dockLimitWait   `json:"limitWait,omitempty"`
 	Issues      []string         `json:"issues"`
 	Identifiers *dockIdentifiers `json:"identifiers,omitempty"`
+	// Can is which changes fit the loop's control flags as read: pause when
+	// not paused, stop when no stop is requested, resume when any hold is
+	// set. Empty when the flags could not be read. A page offers them only
+	// when the server that serves it allows changes.
+	Can []string `json:"can"`
 }
 
 type dockTarget struct {
@@ -1099,7 +1104,19 @@ func dockTestingOf(state string, st *statusOut, chain *dockChainInput) dockTesti
 
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
 	l := dockLoop{Key: dockKey(in.Entry.ID), Name: clip(in.Entry.Loop, dockMaxText), Evidence: in.Client.Outcome,
-		Limits: []dockLimit{}, Issues: []string{}}
+		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}}
+	if snap := in.Client.Snapshot; snap != nil && snap.Controls != nil {
+		c := snap.Controls
+		if !c.Paused {
+			l.Can = append(l.Can, "pause")
+		}
+		if !c.Stop {
+			l.Can = append(l.Can, "stop")
+		}
+		if c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+			l.Can = append(l.Can, "resume")
+		}
+	}
 	if identifiers {
 		l.Identifiers = &dockIdentifiers{RegistrationID: in.Entry.ID}
 	}

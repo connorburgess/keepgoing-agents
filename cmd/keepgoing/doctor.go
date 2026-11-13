@@ -95,6 +95,15 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.Loop = cfg.Loop.Name
 	r.add("config", "ok", "Configuration and configured fallbacks validate.", "")
+	// The variables move what every command reads, so doctor says where.
+	if dir := os.Getenv(registryDirEnv); dir != "" {
+		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
+	}
+	// A check claims its session before acting on it. Doctor says what is
+	// wrong with the claim directory, in terms of its real cause.
+	if status, message, fix := sessionDirectoryCheck(); status != "" {
+		r.add("session.directory", status, message, fix)
+	}
 	doctorFile(&r, "config.permissions", *path, false)
 	if cfg.Loop.Fallbacks != "" {
 		doctorFile(&r, "fallbacks.permissions", cfg.Loop.Fallbacks, false)
