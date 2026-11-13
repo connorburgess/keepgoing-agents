@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -465,6 +466,24 @@ func TestDockPageHasNoExternalReferences(t *testing.T) {
 	}
 }
 
+// dockBuffer is written by the command's goroutine and read by the test.
+type dockBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (d *dockBuffer) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.Write(p)
+}
+
+func (d *dockBuffer) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.b.String()
+}
+
 func TestDockCommandServesUntilCancelledAndValidatesFlags(t *testing.T) {
 	d, _ := dockFixtureReader(t)
 	for _, args := range [][]string{{"extra"}, {"--port", "70000"}, {"--refresh", "1s"}, {"--refresh", "1h"}, {"--stale-after", "0"}, {"--unknown"}} {
@@ -474,11 +493,15 @@ func TestDockCommandServesUntilCancelledAndValidatesFlags(t *testing.T) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	out := &safeBuffer{}
+	out := &dockBuffer{}
 	done := make(chan int, 1)
 	go func() { done <- run(ctx, []string{"dock", "--directory", d.directory, "--offline"}, out, io.Discard) }()
 	address := regexp.MustCompile(`http://127\.0\.0\.1:\d+/[0-9a-f]{64}/`)
-	waitFor(t, func() bool { return address.MatchString(out.String()) }, "the dock address")
+	for deadline := time.Now().Add(30 * time.Second); !address.MatchString(out.String()); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no address printed")
+		}
+	}
 	url := address.FindString(out.String())
 	resp, body := dockRequest(t, http.MethodGet, url+dockAPIPath, nil)
 	if resp.StatusCode != 200 || !strings.Contains(body, `"readOnly":true`) {
