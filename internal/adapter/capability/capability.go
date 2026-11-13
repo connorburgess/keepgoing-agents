@@ -87,7 +87,8 @@ var Adapters = []Adapter{
 		Files:  []string{"internal/adapter/runner/cursor.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
 	{ID: "antigravity", Title: "Antigravity", Registered: false,
-		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go"}},
+		Files: []string{"internal/adapter/runner/antigravity_protocol.go", "internal/adapter/runner/antigravity_acp_protocol.go", "internal/adapter/runner/antigravity_acp_exchange.go", "internal/adapter/runner/antigravity_acp_hold.go",
+			"internal/adapter/runner/antigravity_runner.go", "internal/adapter/runner/antigravity_worker.go"}},
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
@@ -269,7 +270,7 @@ var Matrix = []Behaviour{
 			"codex":   {Missing, None, "The sandbox setting is passed to the CLI. No typed permission state is read.", []Ref{d("docs/configuration.md")}},
 			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
-		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, with fixtures. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
 }
 
 // Render returns the generated part of docs/adapters.md.
