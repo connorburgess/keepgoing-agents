@@ -429,6 +429,21 @@ There is no "ask first" or grace mode: turning handoff off entirely (an empty `f
 
 Work that moves to wherever it can continue must not be able to spread by itself. The bounds are stated in the [glossary](glossary.md#what-moves-and-what-never-does) and in AGENTS.md, and each item above is implemented inside them: only configured routes, accounts and devices; no self-installation; one owner per loop; capped and spaced creation; every move recorded.
 
+#### Loops across devices (planned)
+
+Design only: [loops across devices](devices.md). Nothing below is built, and nothing here starts before P9. The items are in order; each names what it depends on. What a person sees of this in the panel is listed under [Panel feature set](#panel-feature-set), "Across devices, later"; H5 and H6 are the items behind those lines.
+
+- [ ] **H1 — Every loop is shown with its device.** Accepted when status, timelines, reports and panel text name the device for every loop on a single machine, and "this device" appears only as the [glossary](glossary.md#naming-the-device) allows. Depends on nothing.
+- [ ] **H2 — Records and ownership rules, with no carrier.** Accepted when offers, claims, grants, withdrawals and owner generations are defined as signed, sealed record files, and a pure function with table tests shows that no sequence of them yields two owners while the origin is alive. Depends on the owner's choices on sealing and signing.
+- [ ] **H3 — Enrollment, allowances and revocation.** Accepted when a device joins the fleet only by a person's action on it and a confirmation on a device already in the fleet, may take nothing until allowed on the device that would do the work, and stops being accepted by the others once revoked. Depends on H2 and P9.
+- [ ] **H4 — The cooperative hop over a folder the person configures.** Accepted when a loop offered on one device is taken by exactly one other in fixtures covering every [failure case](devices.md#failure-cases), with bounds carried, the origin fenced and no login, transcript or checkout file crossing. Depends on H3, on P9's default bound and device-wide stop, and on P8 for refusing to offer a loop held for a refusal.
+- [ ] **H5 — Other devices' loops in the panel, read-only.** Accepted when a panel lists loops on the fleet's other devices with each device's name and the time it was last seen, and shows an unreachable device as unreachable. Depends on H3, on the panel's route view (V2) and on remote access to a panel (V5).
+- [ ] **H6 — A panel-only device that can pause and stop.** Accepted when a device with the panel role only, such as a phone, can view and add holds, cannot start, resume, move or change routes unless allowed on the device, and loses all of it when revoked. Depends on H5, on the panel's controls (V4) and on the remote write path ordered in [the command center](command-center.md#options-for-the-dock-least-infrastructure-first).
+- [ ] **H7 — A private records repository as the carrier.** Accepted when the same records are committed and pushed to a repository the person created only for them, a work repository is refused, and the hop fixtures pass unchanged. Depends on H4 and on the owner rewording the rule that keepgoing never commits to repositories, a decision to be made when H1 starts; until then the rule stands as written.
+- [ ] **H8 — A relay.** Accepted when status and control pass through a device the person enrolled with the relay role, a relay that drops, repeats or alters messages cannot change what a device does, and no provider request can be sent through it. Depends on H6.
+- [ ] **H9 — A leased loop that can be taken without its origin.** Accepted when a loop marked for it is taken only after its lease has lapsed, the origin holds itself on waking, and the remaining overlap of one running turn is measured and documented. Depends on H7 and on the owner deciding the lease should exist.
+- [ ] **H10 — Lanes on other devices.** Accepted when a lane is offered and taken like a loop, shown with its own device, and cannot exceed the share of the loop's bounds it was given. Depends on P6 and H4.
+
 #### Quota monitoring (planned)
 
 The owner wants keepgoing to move to another target at a usage threshold, for example 80%, instead of only after a turn fails on a limit. Deliver it in four steps. Throughout, an unavailable reading never triggers a switch, readings come only from structured provider fields, and keepgoing never reads stored credentials or calls a provider usage endpoint.
@@ -541,7 +556,8 @@ Trust
 Across devices, later
 
 - [ ] Reach the page over a private network the person already runs, by an explicit setting for the names it may be reached by; today it answers only to its own loopback address. (V5a)
-- [ ] The same page for another device's loops, and one view of a fleet. (V5, after P9 and the device design)
+- [ ] The same page for another device's loops, and one view of a fleet. (V5, after P9 and the [device design](devices.md); roadmap H5)
+- [ ] Pause and stop from a device that is only a panel, such as a phone, with anything more allowed per device. (roadmap H6, [the panel role](devices.md#a-phone-used-only-as-a-panel))
 
 Keep the first client in this repository with an independent build/release path so macOS packaging does not gate core Go releases. Reconsider a separate repository if maintainers, release cadence or supported backends diverge. Goal-aware display depends on section 8; stage display consumes explicit optional metadata and does not imply section 9 is implemented.
 
