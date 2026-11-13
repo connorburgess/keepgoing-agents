@@ -37,6 +37,25 @@ test("preview, disabled create, diagnostics, and explicit start remain separate"
   assert.equal((await f.create(p.ticket)).ok, false);
 });
 
+test("loop-wide bounds given at preview are passed to every init and cannot be dropped or changed at creation", async () => {
+  const f = fixture();
+  const seen: unknown[] = [];
+  const init = f.d.init;
+  f.d.init = async (bin, target, name, task, dry, goal, bounds) => { seen.push(bounds); return init(bin, target, name, task, dry, goal, bounds); };
+  const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };
+  const call = (action: "preview" | "create", ticket?: string, b?: typeof bounds) => f.controller.call({ action, threadId: "thr_example", name: "example-loop", task: "Fictional private task", ticket }, b);
+  const dropped = await call("preview", undefined, bounds);
+  assert.equal((await call("create", dropped.ticket)).ok, false, "a bounded preview is not created unbounded");
+  const changed = await call("preview", undefined, bounds);
+  assert.equal((await call("create", changed.ticket, { maxSends: 400, noProgressTimeout: "24h" })).ok, false);
+  const added = await call("preview");
+  assert.equal((await call("create", added.ticket, bounds)).ok, false, "an unbounded preview is not created bounded");
+  assert.equal(f.records().length, 0); assert.ok(!f.calls.includes("create"));
+  const kept = await call("preview", undefined, bounds);
+  assert.equal((await call("create", kept.ticket, bounds)).ok, true);
+  assert.deepEqual(seen.slice(-3), [bounds, bounds, bounds]); assert.equal(f.records().length, 1);
+});
+
 test("changed task, target, binary, and resolved plan invalidate a preview", async () => {
   for (const change of ["task", "target", "binary", "plan"]) {
     const f = fixture(); const p = await f.preview();

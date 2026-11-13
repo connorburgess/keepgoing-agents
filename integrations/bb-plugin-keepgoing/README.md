@@ -51,6 +51,38 @@ Existing configured supervision or a failed status lookup blocks creating anothe
 
 Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller tests, DOM interaction tests, typechecking, and plugin bundle builds. Tests cover host routing, preview changes/replay/concurrency, holds, failed diagnostics, reload, privacy, and the separate preview/create/start clicks. No live BB thread, remote host deployment, paid request, account handoff, or end-to-end install-to-completion walkthrough was exercised. The existing conversation timer was not changed.
 
+## Keep going from the New thread screen
+
+Unreleased source, tested only with BB's SDK test hosts and stand-ins. It has not been run in a real BB, so nothing below is live-verified. It uses BB plugin APIs that BB marks experimental (`composer.submit`'s `experimental_data`, `bb.experimental_hooks` and its `experimental_submission`); they can change between BB versions.
+
+The New thread composer gets a **Keep going** switch in its action row, and a **Keep going…** row in the menu beside Send for the compact layout, where BB draws no action row. Turning it on shows a banner that says what will happen and holds one button, **Send and keep going**. That button is the send that asks for supervision. A plain Enter sends the message without supervision; the new thread then shows the ordinary **Supervise this thread** offer.
+
+What happens after **Send and keep going**:
+
+1. The plugin asks its server for a single-use request (valid for two minutes, one per draft) and sends the message through BB's own composer with that request attached. BB creates the thread and delivers the message as usual.
+2. BB hands the request back to the plugin's `message.dispatch` hook together with the thread it created. That is the only link the plugin accepts. It never guesses from project, time or text. If the request is unknown, expired, already used, or does not describe a person's first message on a thread created after the switch was turned on, nothing is created, and the thread says so.
+3. Once the thread's environment and host are ready, the plugin runs the same setup as **Supervise this thread**: preview, then **create switched off**. The first message is the task (recorded as the loop's goal, on stdin), and the loop is named after the thread's title, or `bb-<thread id>` when the title gives no usable name or that name is taken.
+4. The thread's banner or card shows `keepgoing: ready, not started`, the loop's limit, and one button, **Start keeping this going**. Nothing starts before that click.
+
+Every loop created this way has a loop-wide limit: it stops for a person after a number of automatic sends, or after a time without a Git change. The defaults are 40 sends and 24 hours; they are placeholders, defined once in `new-thread-contract.ts`, and both can be changed under **Details** in the banner before sending (1 to 1000 sends; 2, 6, 12, 24 or 72 hours). The plugin refuses a setup whose CLI report does not carry the requested limits.
+
+The setting **Keep going from the New thread screen** has two values. *Create switched off; I start it* is the default and is described above. *Start automatically* starts supervision once the setup is created and its diagnostics allow a start; the banner says so before you send. Automatic start applies only if that mode was shown when the switch was turned on and is still set when the thread is ready.
+
+When it cannot go ahead, it says why and does nothing else:
+
+- The keepgoing program does not run on the BB server: the switch stays off and the banner explains. This check runs on the BB server, not on the host a new thread will use; a host without keepgoing is reported on the thread, after creation.
+- Another loop already supervises the thread, or that could not be checked: nothing is created.
+- The thread does not work in a Git repository, or its environment is not ready within ten minutes: nothing is created.
+- The message has no text, or more than 256 KiB.
+
+Limits of this flow:
+
+- The plugin never creates, sends to, re-parents or changes a thread. BB creates the thread; the plugin only learns of it.
+- The task text is held in the plugin server's memory from the send until the setup is created (at most ten minutes), and is never written to plugin storage, logged, or put in subprocess arguments. Reloading the plugin in that window drops the request; the thread then shows the ordinary offer.
+- The plugin's dispatch hook runs for every message BB dispatches and always answers "proceed". It does not delay, queue or reject a send.
+- There is no keyboard shortcut for **Send and keep going**.
+- The limits and the cadence shown on the thread after creation are kept in memory; after a plugin reload the thread shows the ordinary status row and **Setup** panel instead.
+
 ## Move supervision here
 
 Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 is distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.

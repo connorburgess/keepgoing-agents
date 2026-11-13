@@ -27,6 +27,32 @@ test("host setup uses stdin, fixed flags and verified CLI output", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("loop-wide bounds travel as fixed flags and must come back in the CLI's own report", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "keepgoing-plugin-bounds-")));
+  try {
+    const target = { threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: root, provider: "codex" };
+    const input = { bin: "keepgoing", target, name: "example-loop", task: "Fictional private task", dryRun: true, bounds: { maxSends: 40, noProgressTimeout: "24h" as const } };
+    const limits: Record<string, unknown> = { wakeEvery: "1h", interval: "5m", stallAfter: "30m", backoff: "10m", maxNudges: 3, maxReprompts: 3, failoverOn: [], maxSends: 40, noProgressTimeout: "24h0m0s" };
+    const reply = { schemaVersion: 1, outcome: "preview", loop: input.name, project: root, configPath: join(root, "outside", "keepgoing.yaml"), stateDir: join(root, "outside", "state"), primary: { agent: { adapter: "bb", bbThread: target.threadId, provider: target.provider } }, fallbacks: [], limits };
+    const run: Execute = async (_bin, args, stdin) => {
+      assert.ok(!args.includes(input.task)); assert.equal(stdin, input.task);
+      const at = args.indexOf("--max-sends");
+      assert.deepEqual(args.slice(at, at + 4), ["--max-sends", "40", "--no-progress-timeout", "24h"]);
+      return { code: 0, data: reply };
+    };
+    const r = await setupOnHost(input, undefined, run);
+    assert.equal(r.plan.limits.maxSends, 40); assert.equal(r.plan.limits.noProgressTimeout, "24h0m0s");
+    limits.maxSends = 400;
+    await assert.rejects(setupOnHost(input, undefined, run), /loop-wide limits/);
+    limits.maxSends = 40; limits.noProgressTimeout = "2h0m0s";
+    await assert.rejects(setupOnHost(input, undefined, run), /loop-wide limits/);
+    delete limits.maxSends; delete limits.noProgressTimeout;
+    await assert.rejects(setupOnHost(input, undefined, run), /loop-wide limits/, "a CLI that ignores the flags is not accepted as bounded");
+    // Without requested bounds no flag is added.
+    await setupOnHost({ ...input, bounds: undefined }, undefined, async (_bin, args) => { assert.ok(!args.includes("--max-sends")); return { code: 0, data: reply }; });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("host commands route to the recorded file and set the owner; no shell or takeover", async () => {
   const record = { id: "record", threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex", configPath: "/private/path with spaces/keepgoing.yaml", loop: "example-loop" };
   for (const operation of ["status", "doctor", "start", "pause", "resume", "stop"] as const) {
@@ -100,11 +126,15 @@ test("built CLI creates the goal through the host contract without running BB", 
       child.stdin?.on("error", () => {}); child.stdin?.end(input);
     });
     const target = { threadId: "thr_goal_contract", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project, provider: "codex" };
-    const input = { bin: binary, target, name: "goal-contract", task: "Fictional task. Acceptance: verify the example.", dryRun: true, withGoal: true };
+    const input = { bin: binary, target, name: "goal-contract", task: "Fictional task. Acceptance: verify the example.", dryRun: true, withGoal: true, bounds: { maxSends: 40, noProgressTimeout: "24h" as const } };
     const preview = await setupOnHost(input, undefined, run);
     await assert.rejects(access(destination));
     const created = await setupOnHost({ ...input, dryRun: false }, undefined, run);
     assert.deepEqual(created.plan, preview.plan);
+    // The real CLI accepts the bounds flags, reports them, and writes them.
+    assert.equal(created.plan.limits.maxSends, 40); assert.equal(created.plan.limits.noProgressTimeout, "24h0m0s");
+    const config = await readFile(join(destination, "keepgoing.yaml"), "utf8");
+    assert.match(config, /max_sends: 40/); assert.match(config, /no_progress_timeout: 24h/);
     const goal = JSON.parse(await readFile(join(destination, "state", "goal.json"), "utf8"));
     assert.equal(goal.revisions[0].spec.title, "goal-contract");
     assert.equal(goal.revisions[0].spec.objectiveRefs[0], join(destination, "task.md"));

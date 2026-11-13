@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { goalDetails } from "./status-details.ts";
 import { checkSchema, setupInput, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
+import type { Bounds } from "./new-thread-contract.ts";
 
 export interface SetupDependencies {
   target(threadId: string): Promise<SetupTarget>;
@@ -9,7 +10,7 @@ export interface SetupDependencies {
   records(): Promise<SetupRecord[]>;
   save(records: SetupRecord[]): Promise<void>;
   guard(threadId: string): Promise<void>;
-  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean): Promise<{ plan: SetupPlan }>;
+  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds): Promise<{ plan: SetupPlan }>;
   command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start"): Promise<{ code: number; data: unknown }>;
   changed(): void;
 }
@@ -25,7 +26,7 @@ const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function createSetupController(d: SetupDependencies) {
-  const previews = new Map<string, { target: SetupTarget; name: string; taskHash: string; withGoal: boolean; bin: string; plan: SetupPlan; expires: number }>();
+  const previews = new Map<string, { target: SetupTarget; name: string; taskHash: string; withGoal: boolean; bounds?: Bounds; bin: string; plan: SetupPlan; expires: number }>();
   let queue: Promise<unknown> = Promise.resolve();
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = queue.then(fn, fn);
@@ -51,7 +52,7 @@ export function createSetupController(d: SetupDependencies) {
     const canStart = goal.goalState !== "unavailable" && result.code === 0 && checks.some(c => c.id === "agent.primary.target" && c.status === "ok") && !checks.some(c => c.status === "error") && ["disabled", "enabled"].includes(s.data.controlState) && s.data.daemon?.state !== "responsive";
     return { ok: true, record: r, ...goal, checks, canStart, message: canStart ? "Review the diagnostics, then start background supervision when ready." : "Setup is saved. Existing holds, a responding daemon, or diagnostic failures prevent another start here." };
   };
-  const handle = async (raw: z.infer<typeof setupInput>): Promise<SetupResult> => {
+  const handle = async (raw: z.infer<typeof setupInput>, bounds?: Bounds): Promise<SetupResult> => {
     const input = setupInput.parse(raw);
     const bin = await d.binary();
     const records = await d.records();
@@ -77,18 +78,18 @@ export function createSetupController(d: SetupDependencies) {
       if (!input.name) throw new SetupPolicyError("Enter a loop name using lowercase letters, digits, and hyphens.");
       for (const [key, p] of previews) if (p.expires < Date.now()) previews.delete(key);
       if (previews.size >= 64) throw new SetupPolicyError("Too many pending previews. Wait five minutes and retry.");
-      const { plan } = await d.init(bin, target, input.name, task, true, withGoal);
+      const { plan } = await d.init(bin, target, input.name, task, true, withGoal, bounds);
       const ticket = randomUUID();
-      previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, bin, plan, expires: Date.now() + 300_000 });
+      previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, bounds, bin, plan, expires: Date.now() + 300_000 });
       return { ok: true, ticket, plan, message: "Preview only. Creating this setup leaves supervision disabled; fallbacks and automatic handoffs are off." };
     }
     const preview = previews.get(input.ticket ?? "");
     previews.delete(input.ticket ?? ""); // one attempt, including failure; never replay a creation
-    if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, target, or binary changed. Preview again.");
+    if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || !equal(preview.bounds, bounds) || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, target, or binary changed. Preview again.");
     if (records.length >= 32) throw new SetupPolicyError("The plugin already has 32 saved setups; manage existing loops before adding another.");
-    const fresh = await d.init(bin, target, preview.name, task, true, withGoal);
+    const fresh = await d.init(bin, target, preview.name, task, true, withGoal, bounds);
     if (!equal(fresh.plan, preview.plan)) throw new SetupPolicyError("The resolved setup changed. Preview again before creating it.");
-    const created = await d.init(bin, target, preview.name, task, false, withGoal);
+    const created = await d.init(bin, target, preview.name, task, false, withGoal, bounds);
     if (!equal(created.plan, preview.plan)) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
     const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop };
     try { await d.save([...records, record]); }
@@ -100,8 +101,11 @@ export function createSetupController(d: SetupDependencies) {
   return {
     // Serialize mutations and previews so concurrent clients cannot create two
     // loops for one thread or overwrite the stored record list.
-    call: (input: z.infer<typeof setupInput>): Promise<SetupResult> => serialize(async () => {
-      try { return await handle(input); }
+    // `bounds` are loop-wide limits chosen by a server-side caller. They are
+    // not part of the browser's input, and a preview made with one set
+    // cannot be created with another.
+    call: (input: z.infer<typeof setupInput>, bounds?: Bounds): Promise<SetupResult> => serialize(async () => {
+      try { return await handle(input, bounds); }
       catch (error) {
         // Dependency/SDK errors can contain paths, command arguments, or task
         // input. Only our fixed policy messages are returned by safe wrappers.

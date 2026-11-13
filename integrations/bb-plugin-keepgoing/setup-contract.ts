@@ -12,7 +12,7 @@ export const planSchema = z.object({
   withGoal: z.literal(true).optional(),
   loop: text, project: text, configPath: text, stateDir: text,
   threadId: text, provider: text,
-  limits: z.object({ wakeEvery: text, stallAfter: text, interval: text, backoff: text, maxNudges: z.number().int().positive(), maxReprompts: z.number().int().positive() }),
+  limits: z.object({ wakeEvery: text, stallAfter: text, interval: text, backoff: text, maxNudges: z.number().int().positive(), maxReprompts: z.number().int().positive(), maxSends: z.number().int().positive().optional(), noProgressTimeout: text.optional() }),
 });
 export type SetupPlan = z.infer<typeof planSchema>;
 export const setupInput = z.object({

@@ -1,0 +1,170 @@
+// Carries "keep going" from the New thread screen to the thread it creates.
+//
+// The link between the request and the thread is exact or absent. The browser
+// asks for a single-use intent, then sends the message itself with that
+// intent as `experimental_data`; BB hands the marker back to the dispatch
+// hook together with the thread it created. Nothing is ever matched by
+// project, time or text. A thread that arrives without a valid marker gets no
+// supervision and no record here, and shows the ordinary setup offer.
+//
+// The plugin never creates, sends to or changes a thread. The task text is
+// held in memory only until the disabled setup is created, and reaches
+// keepgoing through the existing setup flow, on stdin.
+import type { SetupResult } from "./setup-contract.ts";
+import { DEFAULT_BOUNDS, boundsPhrase, fallbackName, loopName, markerSchema, newThreadInput, type Bounds, type NewThreadInput, type NewThreadResult, type Outcome, type StartMode } from "./new-thread-contract.ts";
+
+export const INTENT_TTL_MS = 120_000;
+export const JOB_WAIT_MS = 600_000;
+const MAX_INTENTS = 16;
+const MAX_JOBS = 32;
+
+/** The facts of one dispatch the server copies out of BB's hook context. */
+export interface Dispatch {
+  data: unknown;
+  threadId: string; projectId: string; threadCreatedAt: number;
+  attempt: string; initiator: string; senderThreadId: string | null; parentThreadId: string | null; sourceThreadId: string | null;
+  queued: number; text: string;
+}
+type SetupCall = { action: "preview" | "create" | "start"; threadId: string; name?: string; task?: string; ticket?: string; withGoal?: boolean };
+export interface NewThreadDependencies {
+  now(): number;
+  id(): string;
+  mode(): Promise<StartMode>;
+  /** Null when keepgoing can be used; otherwise why not, in words safe to show. */
+  unavailable(): Promise<string | null>;
+  /**
+   * The thread's title once its environment and host are ready for setup;
+   * null while they are not yet; a reason when they never will be.
+   */
+  ready(threadId: string): Promise<{ title: string | null } | { reason: string } | null>;
+  /** "none" when no loop supervises the thread; "unverified" when that could not be established. */
+  supervision(threadId: string): Promise<"none" | "supervised" | "unverified">;
+  setup(input: SetupCall, bounds: Bounds): Promise<SetupResult>;
+  changed(): void;
+}
+interface Intent { id: string; draftKey: string; projectId: string; bounds: Bounds; mode: StartMode; createdAt: number; expires: number; threadId?: string }
+interface Job { threadId: string; task: string; bounds: Bounds; mode: StartMode; expires: number; outcome: Outcome }
+
+const NOT_READY = "This thread's environment was not ready in time, so keepgoing set nothing up. Use Supervise this thread to set it up here.";
+const NOT_MATCHED = "keepgoing could not confirm that this thread is the one Keep going was turned on for, so nothing was created or started. Use Supervise this thread to set it up here.";
+
+export function createNewThreadController(d: NewThreadDependencies) {
+  const intents = new Map<string, Intent>();
+  const jobs = new Map<string, Job>();
+  let queue: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(fn: () => Promise<T>): Promise<T> => { const next = queue.then(fn, fn); queue = next.catch(() => {}); return next; };
+  const prune = () => {
+    const now = d.now();
+    for (const [key, i] of intents) if (i.expires < now) intents.delete(key);
+    // A request nobody advanced in time must not keep its task text.
+    for (const job of jobs.values()) if (job.outcome.state === "waiting" && job.expires < now) fail(job, NOT_READY);
+    // Finished records are kept for display only; drop the oldest beyond the cap.
+    for (const key of jobs.keys()) { if (jobs.size <= MAX_JOBS) break; if (jobs.get(key)?.outcome.state !== "waiting") jobs.delete(key); }
+  };
+  const fail = (job: Job, message: string) => { job.task = ""; job.outcome = { state: "failed", message }; };
+
+  // One pass over a waiting job: nothing happens until the thread's
+  // environment and host are ready, and nothing is retried once setup has
+  // been asked to create anything.
+  const advance = async (threadId: string) => {
+    const job = jobs.get(threadId);
+    if (!job || job.outcome.state !== "waiting") return;
+    if (d.now() > job.expires) { fail(job, NOT_READY); d.changed(); return; }
+    let ready: Awaited<ReturnType<NewThreadDependencies["ready"]>>;
+    try { ready = await d.ready(threadId); } catch { ready = null; }
+    if (!ready) return;
+    if ("reason" in ready) { fail(job, ready.reason); d.changed(); return; }
+    const task = job.task;
+    try {
+      const supervision = await d.supervision(threadId);
+      if (supervision !== "none") { fail(job, supervision === "supervised" ? "Another loop already supervises this thread. Nothing was created or started." : "keepgoing could not check whether this thread is already supervised, so it set nothing up. Refresh, then use Supervise this thread."); return; }
+      const names = [loopName(ready.title), fallbackName(threadId)].filter((n, i, all) => n !== "" && all.indexOf(n) === i);
+      let preview: SetupResult | undefined;
+      for (const name of names) {
+        preview = await d.setup({ action: "preview", threadId, name, task, withGoal: true }, job.bounds);
+        if (preview.ok && preview.ticket && preview.plan) break;
+      }
+      if (!preview?.ok || !preview.ticket || !preview.plan) { fail(job, preview?.message || "Setup could not be previewed. Nothing was created."); return; }
+      const created = await d.setup({ action: "create", threadId, ticket: preview.ticket, task, withGoal: true }, job.bounds);
+      job.task = "";
+      if (!created.ok || !created.record) { fail(job, created.message || "Setup could not be created."); return; }
+      const l = preview.plan.limits;
+      job.outcome = {
+        state: "ready", loop: created.record.loop, bounds: job.bounds,
+        cadence: `Checks every ${l.interval}. Nudges a stalled turn after ${l.stallAfter}, at most ${l.maxNudges} times. Re-prompts an error at most ${l.maxReprompts} times, ${l.backoff} apart. No fallbacks.`,
+        message: created.canStart ? "Created from this thread's first message. It is switched off until you start it." : `Created from this thread's first message, switched off. ${created.message}`,
+        startedAutomatically: false,
+      };
+      // Automatic start only when the person saw that mode when turning the
+      // control on, and it is still the setting now.
+      if (job.mode === "automatic" && created.canStart && await d.mode() === "automatic") {
+        const started = await d.setup({ action: "start", threadId }, job.bounds);
+        job.outcome = started.ok
+          ? { ...job.outcome, startedAutomatically: true, message: "Started automatically when this thread was created." }
+          : { ...job.outcome, message: "Created from this thread's first message. Automatic start could not be confirmed, so it is switched off until you start it." };
+      }
+    } catch { fail(job, "Setup could not complete. A switched-off setup may exist; check Supervise this thread before trying again."); }
+    finally { job.task = ""; d.changed(); }
+  };
+
+  const handle = async (input: NewThreadInput): Promise<NewThreadResult> => {
+    prune();
+    if (input.action === "outcome") {
+      await advance(input.threadId);
+      return { ok: true, message: "", outcome: jobs.get(input.threadId)?.outcome ?? { state: "none", message: "" } };
+    }
+    if (input.action === "cancel") {
+      const intent = intents.get(input.intent);
+      if (intent && !intent.threadId) intents.delete(input.intent);
+      return { ok: true, message: "Keep going is off." };
+    }
+    const reason = await d.unavailable();
+    if (reason) return { ok: false, message: reason };
+    const mode = await d.mode();
+    if (input.action === "check") return { ok: true, mode, message: "" };
+    // One live intent per draft: turning the control on again replaces it.
+    for (const [key, i] of intents) if (i.draftKey === input.draftKey && !i.threadId) intents.delete(key);
+    if (intents.size >= MAX_INTENTS) return { ok: false, message: "Too many Keep going requests are waiting. Wait two minutes and try again." };
+    const now = d.now();
+    const intent: Intent = { id: d.id(), draftKey: input.draftKey, projectId: input.projectId, bounds: input.bounds, mode, createdAt: now, expires: now + INTENT_TTL_MS };
+    intents.set(intent.id, intent);
+    return { ok: true, mode, intent: intent.id, expiresAt: intent.expires, message: boundsPhrase(input.bounds) };
+  };
+
+  return {
+    call: (raw: NewThreadInput): Promise<NewThreadResult> => serialize(async () => {
+      try { return await handle(newThreadInput.parse(raw)); }
+      catch { return { ok: false, message: "Keep going could not be checked. Nothing was created or started." }; }
+    }),
+    /**
+     * Called from the dispatch hook for a submission that carries this
+     * plugin's marker. Synchronous and never throws: the hook must not delay
+     * or fail a send. It records the request and returns; setup happens later.
+     */
+    dispatched(x: Dispatch): void {
+      try {
+        prune();
+        const parsed = markerSchema.safeParse(x.data);
+        if (!parsed.success) return;
+        const intent = intents.get(parsed.data.intent);
+        // BB runs the hook again for the same message after a restart or a
+        // drain. The first pass already decided; later passes change nothing.
+        if (intent?.threadId === x.threadId || jobs.has(x.threadId)) return;
+        const explain = (message: string) => { if (jobs.size < MAX_JOBS * 2) jobs.set(x.threadId, { threadId: x.threadId, task: "", bounds: DEFAULT_BOUNDS, mode: "manual", expires: 0, outcome: { state: "failed", message } }); };
+        const refuse = () => explain(NOT_MATCHED);
+        if (!intent || intent.threadId || intent.expires < d.now()) return refuse();
+        intent.threadId = x.threadId; // single use, whatever happens next
+        const exact = x.projectId === intent.projectId && x.attempt === "start-turn" && x.initiator === "user" && x.senderThreadId === null && x.parentThreadId === null && x.sourceThreadId === null && x.queued === 0 && x.threadCreatedAt >= intent.createdAt;
+        const bytes = Buffer.byteLength(x.text);
+        if (!exact) return refuse();
+        if (!x.text.trim() || bytes > 262144) return explain("The first message has no text keepgoing can use as a task, or is larger than 256 KiB. Nothing was created. Use Supervise this thread to enter a task.");
+        jobs.set(x.threadId, { threadId: x.threadId, task: x.text, bounds: intent.bounds, mode: intent.mode, expires: d.now() + JOB_WAIT_MS, outcome: { state: "waiting", message: "keepgoing is waiting for this thread's environment, then creates a switched-off setup from the first message." } });
+      } catch { /* never fail a send */ }
+    },
+    /** A thread reached a state in which its environment may be ready. */
+    advance: (threadId: string): Promise<void> => serialize(() => advance(threadId)).catch(() => {}),
+    /** The thread is gone: forget the request and its task text. */
+    forget(threadId: string): void { jobs.delete(threadId); },
+    dispose(): void { intents.clear(); jobs.clear(); },
+  };
+}

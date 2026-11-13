@@ -10,6 +10,9 @@ import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-con
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
 import { createSetupController } from "./setup-controller.ts";
+import { createNewThreadController } from "./new-thread-controller.ts";
+import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
+import { randomUUID } from "node:crypto";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
 const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
@@ -60,6 +63,7 @@ const actionSchema = z.enum(["pause", "resume", "stop"]);
 export const rpcContract = defineRpcContract({
   transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
+  newThread: { input: newThreadInput, output: newThreadResult },
   forThread: {
     input: z.object({ threadId: z.string().min(1).max(200) }),
     output: z.object({ loops: z.array(loopSchema), errors: z.array(z.string()) }),
@@ -95,6 +99,14 @@ export default async function plugin(bb: BbPluginApi) {
       description: "One keepgoing.yaml path per line. Only these loops are shown and controlled.",
       experimental_multiline: true,
       default: "",
+    },
+    newThreadStart: {
+      type: "select",
+      label: "Keep going from the New thread screen",
+      description: "What happens after a thread is created with Keep going on. Manual: a switched-off setup is created and you start it from the thread. Automatic: supervision starts once the thread exists. Both create the loop with a loop-wide limit.",
+      options: ["manual", "automatic"],
+      experimental_optionLabels: { manual: "Create switched off; I start it", automatic: "Start automatically" },
+      default: "manual",
     },
   });
 
@@ -236,7 +248,7 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun, withGoal) => host.call("init", { bin, target, name, task, dryRun, withGoal }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal, bounds) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
@@ -257,13 +269,67 @@ export default async function plugin(bb: BbPluginApi) {
     transfer: (intent, operation, recoveryId) => host.call("transfer", { bin: intent.bin, record: intent.record, destination: intent.destination, operation, ...(recoveryId ? { recoveryId } : {}) }, { hostId: intent.record.hostId, signal: AbortSignal.timeout(30_000) }),
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
-  bb.onDispose(() => { setup.dispose(); transfer.dispose(); });
+  // Browser setup requests never carry loop-wide limits; the New thread flow
+  // supplies them from its own closed list.
+  const setupCall = (input: z.infer<typeof setupInput>, bounds?: Bounds) => serialize(async () => {
+    if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
+    return setup.call(input, bounds);
+  });
+  const newThread = createNewThreadController({
+    now: () => Date.now(),
+    id: () => randomUUID(),
+    mode: async () => startModeSchema.catch("manual").parse((await settings.get()).newThreadStart),
+    unavailable: async () => {
+      const { bin } = await configured();
+      const result = await run(bin, ["version"]);
+      return result.code === 0 ? null : "The keepgoing program was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";
+    },
+    ready: async threadId => {
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const t = await bb.sdk.threads.get({ threadId, signal });
+        if (t.archivedAt !== null || t.deletedAt !== null) return { reason: "This thread was archived or deleted before keepgoing could set it up. Nothing was created." };
+        if (!t.environmentId) return null;
+        const e = await bb.sdk.environments.get({ environmentId: t.environmentId, signal });
+        if (e.status !== "ready") return null;
+        if (!e.isGitRepo || !e.path) return { reason: "This thread does not work in a Git repository, which keepgoing needs to tell whether work is progressing. Nothing was created." };
+        await resolveTarget(threadId);
+        return { title: t.title ?? t.titleFallback };
+      } catch { return null; }
+    },
+    supervision: async threadId => {
+      const result = await allLoops(threadId);
+      return result.errors.length ? "unverified" : result.loops.length ? "supervised" : "none";
+    },
+    setup: (input, bounds) => setupCall(input, bounds),
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
+  // The dispatch hook is how BB reports which thread a marked message
+  // created. It never waits for anything and always lets the send proceed.
+  bb.experimental_hooks.on("message.dispatch", ctx => {
+    try {
+      const s = ctx.experimental_submission;
+      if (s && s.pluginId === bb.pluginId) {
+        newThread.dispatched({
+          data: s.data, threadId: ctx.thread.id, projectId: ctx.thread.projectId, threadCreatedAt: ctx.thread.createdAt,
+          attempt: ctx.attempt, initiator: ctx.initiator, senderThreadId: ctx.senderThreadId, parentThreadId: ctx.thread.parentThreadId, sourceThreadId: ctx.thread.sourceThreadId,
+          queued: ctx.queuedMessages.length, text: ctx.input.text,
+        });
+        void newThread.advance(ctx.thread.id);
+      }
+    } catch { /* a send is never delayed or failed by this plugin */ }
+    return { action: "proceed" };
+  });
+  // A thread's environment exists by the time its first turn is running.
+  bb.events.on("thread.active", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.idle", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.archived", ({ thread }) => { newThread.forget(thread.id); });
+  bb.events.on("thread.deleted", ({ thread }) => { newThread.forget(thread.id); });
+  bb.onDispose(() => { setup.dispose(); transfer.dispose(); newThread.dispose(); });
   bb.rpc.register(rpcContract, {
     transfer: input => serialize(() => transfer.call(input)),
-    setup: input => serialize(async () => {
-      if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
-      return setup.call(input);
-    }),
+    setup: input => setupCall(input),
+    newThread: input => newThread.call(input),
     forThread: ({ threadId }) => allLoops(threadId),
     control: ({ configPath, action, managedId, expectedThreadId }) => action === "resume" ? serialize(() => control(configPath, action, managedId, expectedThreadId)) : control(configPath, action, managedId, expectedThreadId),
   });
