@@ -93,8 +93,10 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
-	// RetrySignal is "expired" when a stale provider retry notice was seen
-	// and not honored, so ordinary error or stall handling applied.
+	// RetrySignal says why a provider retry notice was not honoured, so that
+	// ordinary error or stall handling applied: "expired" when it had gone
+	// stale, "declined" when the provider's own retry service had recorded
+	// that it will not retry the failed turn. Empty otherwise.
 	RetrySignal  string     `json:"retrySignal,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
@@ -155,6 +157,9 @@ type tick struct {
 	incidentLimitWaitReport string
 	// incidentTurnRetry is set only by a check that asked the provider to retry a failed turn.
 	incidentTurnRetry string
+	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
+	// one was already queued.
+	turnRetryAlreadyQueued bool
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -437,6 +442,9 @@ func (t *tick) run() error {
 	}
 	if obs.RetryExpired {
 		res.RetrySignal = "expired"
+	}
+	if obs.RetryDeclined {
+		res.RetrySignal = "declined"
 	}
 	if len(obs.AwaitingChildren) > 0 {
 		// Escalate before probes, fingerprints, and recovery. Child input must
@@ -1234,6 +1242,11 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
 	t.st.CheckedAt = t.now
+	// The count is of consecutive checks. Any check that did not end in that
+	// answer breaks the run, including one that was held or sent nothing.
+	if !t.turnRetryAlreadyQueued && !t.opts.DryRun {
+		t.st.TurnRetryNoOps = 0
+	}
 	outcome := "succeeded"
 	if t.opts.DryRun {
 		outcome = "dry_run"
