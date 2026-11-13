@@ -44,9 +44,14 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(try args().count, 5)
         try client.open(.openLoop(key: "l0123456789ab"))
         XCTAssertEqual(Array(try args().prefix(3)), ["panel", "--loop", "l0123456789ab"])
-        // Nothing runs for a key that is not a page key, or for refresh and quit.
+        // Stop and status go to the panel's own directory and take no registry.
+        try client.open(.stopPanel)
+        XCTAssertEqual(try args(), ["panel", "stop", "--panel-directory", "/private/example panel"])
+        _ = try? client.panelStatus()
+        XCTAssertEqual(try args(), ["panel", "status", "--json", "--panel-directory", "/private/example panel"])
+        // Nothing runs for a key that is not a page key, or for quit.
         try FileManager.default.removeItem(atPath: binary.path + ".args")
-        for command in [MenuCommand.openLoop(key: "example; rm -rf /"), .openLoop(key: "--no-open"), .refresh, .quit] {
+        for command in [MenuCommand.openLoop(key: "example; rm -rf /"), .openLoop(key: "--no-open"), .quit] {
             XCTAssertThrowsError(try client.open(command))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
