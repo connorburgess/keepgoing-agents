@@ -114,28 +114,30 @@ func exitCode(err error) int {
 }
 
 // DefaultOnline checks connectivity. KEEPGOING_NET_PROBE, when set, is a
-// command whose exit 0 means online; otherwise an HTTP GET to
+// command line run by the platform's shell whose exit 0 means online; otherwise an HTTP GET to
 // KEEPGOING_NET_PROBE_URL (default https://api.github.com/zen) must answer.
 func DefaultOnline(ctx context.Context) bool {
 	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
 		return shell(ctx, probe).Run() == nil
 	}
-	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
-	if url == "" {
-		url = "https://api.github.com/zen"
-	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
+	return defaultOnline(ctx)
+}
+
+// DefaultURL is requested when nothing else is configured.
+const DefaultURL = "https://api.github.com/zen"
+
+// defaultOnline is DefaultOnline under the caller's own time limit.
+func defaultOnline(ctx context.Context) bool {
+	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
+		return shell(ctx, probe).Run() == nil
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
+	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
+	if url == "" {
+		url = DefaultURL
 	}
-	resp.Body.Close()
-	return true
+	return get(ctx, url)
 }
 
 // Probe is a connectivity check with explicit settings. Command, when set,
@@ -164,15 +166,32 @@ func (p Probe) Online(ctx context.Context) bool {
 	case p.URL != "":
 		return get(ctx, p.URL)
 	}
-	return DefaultOnline(ctx)
+	return defaultOnline(ctx)
 }
 
+// errOtherHost stops a redirect that leaves the requested host. A captive
+// portal answers any request with a redirect to its own login page; that is
+// an answer from the portal, not from the target, so it means offline.
+var errOtherHost = errors.New("redirected to another host")
+
+var client = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 || req.URL.Hostname() != via[0].URL.Hostname() {
+		return errOtherHost
+	}
+	return nil
+}}
+
+// get reports whether url's own host answered. Any status counts, because a
+// server that answers at all shows the network works. A transport error does
+// not, and neither does a redirect to another host. A TLS handshake that a
+// gateway intercepts with a certificate this machine does not trust fails as
+// a transport error, so an https target reads as offline behind a portal.
 func get(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

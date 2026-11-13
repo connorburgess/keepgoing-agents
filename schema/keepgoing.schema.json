@@ -218,6 +218,7 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "network_wait",
                   "child_error",
                   "test"
                 ]
@@ -261,6 +262,10 @@
             },
             "timeout": {
               "$ref": "#/$defs/duration"
+            },
+            "verify_after": {
+              "$ref": "#/$defs/duration",
+              "description": "after the check has failed this long, and again at this interval, test the provider with one probe and attempt a report; default 1h"
             }
           }
         },

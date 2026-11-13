@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -185,14 +186,55 @@ type Network struct {
 	// Command exits 0 when the network is up. It replaces the URL.
 	Command []string `yaml:"command,omitempty"`
 	Timeout Duration `yaml:"timeout,omitempty"`
+	// VerifyAfter: once the check has failed this long, and again at this
+	// interval, the provider is tested directly with one probe and a report
+	// is attempted, so a check that is wrong cannot hold a loop in silence.
+	VerifyAfter Duration `yaml:"verify_after,omitempty"`
 }
 
 // Enabled reports whether connectivity is checked. A loop built in code
 // without defaults has no check.
 func (n Network) Enabled() bool { return n.Check == "on" }
 
-// DefaultNetworkTimeout bounds one connectivity check.
-const DefaultNetworkTimeout = 8 * time.Second
+// NetworkCheckTimeout is the time one connectivity check may use, or zero
+// when it is not made. The check is a mandatory step of a check's time
+// accounting, so it may use only what tick_timeout has beyond MinTickTimeout:
+// a file with the smallest tick_timeout still loads and simply has no room
+// for it.
+func (l Loop) NetworkCheckTimeout() time.Duration {
+	if !l.Network.Enabled() {
+		return 0
+	}
+	room := l.TickTimeout.Duration - MinTickTimeout
+	if room < time.Second {
+		return 0
+	}
+	return min(l.Network.Timeout.Duration, room)
+}
+
+// NetworkCheckWarning is non-empty when the check is on but cannot be made,
+// or is given less time than configured.
+func (l Loop) NetworkCheckWarning() string {
+	if !l.Network.Enabled() {
+		return ""
+	}
+	got, want := l.NetworkCheckTimeout(), l.Network.Timeout.Duration
+	switch {
+	case got == 0:
+		return fmt.Sprintf("loop.tick_timeout (%s) leaves no room for the connectivity check, so it is not made and nothing waits for the network; set tick_timeout to at least %s", l.TickTimeout.Duration, MinTickTimeout+want)
+	case got < want:
+		return fmt.Sprintf("loop.tick_timeout (%s) leaves %s for the connectivity check instead of network.timeout (%s); set tick_timeout to at least %s", l.TickTimeout.Duration, got, want, MinTickTimeout+want)
+	}
+	return ""
+}
+
+// DefaultNetworkTimeout bounds one connectivity check, and
+// DefaultNetworkVerifyAfter how long a failing check is waited on before the
+// provider is tested directly and a report attempted.
+const (
+	DefaultNetworkTimeout     = 8 * time.Second
+	DefaultNetworkVerifyAfter = time.Hour
+)
 
 // Daemon configures `keepgoing daemon`.
 type Daemon struct {
@@ -221,12 +263,12 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "limit_wait", "child_error", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "child_error", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -409,6 +451,7 @@ func (c *Config) applyDefaults() {
 		l.Network.Check = "on"
 	}
 	setDur(&l.Network.Timeout, DefaultNetworkTimeout)
+	setDur(&l.Network.VerifyAfter, DefaultNetworkVerifyAfter)
 	if y := l.Yield; y != nil {
 		setDur(&y.Timeout, DefaultYieldTimeout)
 	}
@@ -477,12 +520,8 @@ func (c *Config) Validate() error {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
-	minTick := MinTickTimeout
-	if l.Network.Enabled() {
-		minTick += l.Network.Timeout.Duration // the connectivity check is a mandatory step too
-	}
-	if l.TickTimeout.Duration < minTick {
-		add("loop.tick_timeout must be at least %s", minTick)
+	if l.TickTimeout.Duration < MinTickTimeout {
+		add("loop.tick_timeout must be at least %s", MinTickTimeout)
 	}
 	if l.Daemon.Interval.Duration < 10*time.Second {
 		add("loop.daemon.interval must be at least 10s")
@@ -548,8 +587,16 @@ func (c *Config) Validate() error {
 	if l.Network.URL != "" && len(l.Network.Command) > 0 {
 		add("loop.network: set url or command, not both")
 	}
-	if u := l.Network.URL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
-		add("loop.network.url must be an http or https URL")
+	if raw := l.Network.URL; raw != "" {
+		if u, err := url.Parse(raw); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			add("loop.network.url must be an http or https URL with a host")
+		}
+	}
+	if c := l.Network.Command; len(c) > 0 && strings.TrimSpace(c[0]) == "" {
+		add("loop.network.command must name a program")
+	}
+	if d := l.Network.VerifyAfter.Duration; d < time.Minute {
+		add("loop.network.verify_after must be at least 1m")
 	}
 	if d := l.Network.Timeout.Duration; d < time.Second || d > 30*time.Second {
 		add("loop.network.timeout must be between 1s and 30s")

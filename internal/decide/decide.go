@@ -146,9 +146,10 @@ type Input struct {
 	SinceLastReprompt time.Duration
 	Backoff           time.Duration
 
-	// NetworkDown: a structured connectivity check just failed. Nothing that
-	// needs the network is spent on an errored session: no re-prompt, no
-	// handoff, no hold. The session is looked at again on the next check.
+	// NetworkDown: a structured connectivity check just failed and is still
+	// believed. Nothing that needs the network is sent: no re-prompt, handoff,
+	// wake, nudge or switch-back, and an errored session is not held for a
+	// person because of it. The session is looked at again on the next check.
 	NetworkDown bool
 
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
@@ -221,7 +222,7 @@ func limitWait(kind LimitWait, reason string) Decision {
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
-const NetworkDownReason = "network down; waiting for connectivity before re-prompting or handing off"
+const NetworkDownReason = "network down; waiting for connectivity"
 
 // HandoffDeferredReason is recorded when a due handoff waits for the next check.
 const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed in this check; the next check retries"
@@ -301,6 +302,9 @@ func Decide(in Input) Decision {
 		if o.Queued > 0 {
 			return none("messages already queued")
 		}
+		if in.NetworkDown {
+			return none(NetworkDownReason)
+		}
 		// Only between turns: never pull the loop from a fallback mid-turn.
 		if in.SwitchBackReady {
 			return Decision{Action: SwitchBack, Reason: "primary's limit has reset"}
@@ -315,6 +319,10 @@ func Decide(in Input) Decision {
 			return Decision{Action: AwaitUser, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
 		}
 		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+			if in.NetworkDown {
+				// Neither a nudge nor the hold that follows the last one.
+				return none(NetworkDownReason)
+			}
 			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
 				return Decision{Action: AwaitUser, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
 			}

@@ -54,6 +54,54 @@ Four causes were found behind intermittent failures, each reproduced before it w
 
 Reproduce before changing anything: repeat the one test with `-count`, then add the pressure that matches the suspected cause (CPU, filesystem writes, or many first executions of new files). Record the failure rate before and after, and name what was not reproduced. Raising a timeout is a fix only when the deadline is shown to be the sole defect.
 
+## Live check: a long time offline
+
+`TestOfflineForAnyLengthThenRecoversOnce` covers this with a fake clock, a stand-in `bb` and a stand-in connectivity target. Nothing below has been run on a real machine; this is the procedure for doing so. It changes no scheduler or service: use whatever already runs your loop, and do not reconfigure it for the test.
+
+**The scenario.** Someone is working at home, disconnects, closes the lid, and hours later opens it on a different network that needs a sign-in, then signs in.
+
+**Before you start**
+
+1. Use a loop on a BB thread you can afford to interrupt, with the connectivity check on (`keepgoing validate` prints no `connectivity check` warning, and `keepgoing doctor` shows `network.check` as ok).
+2. Note the loop's check interval (the scheduler's, or `daemon.interval`).
+3. Save a reference: `keepgoing status > before.txt` and `keepgoing timeline --limit 20 > timeline-before.txt`.
+4. Have the thread mid-turn, ideally with a child thread working.
+
+**Do**
+
+1. Turn the network off (Wi-Fi off, or unplug). Wait until the thread shows an error in BB.
+2. Close the lid. Leave it for the length you want to test: start with 20 minutes, then try a few hours or overnight.
+3. Open the lid on a network with a captive portal if you have one (a phone hotspot with no data, a guest network before signing in). Leave it two or three check intervals. If you have no portal, skip this step.
+4. Sign in to the portal, or turn the normal network back on. Note the time.
+5. Wait two check intervals.
+
+**Then look at**
+
+```sh
+keepgoing status
+keepgoing timeline --since <when you disconnected> --limit 100
+keepgoing runs
+tail -n 40 <state_dir>/runs.jsonl
+```
+
+**Pass**
+
+- While offline and behind the portal, every recorded check has action `none` and the reason `network down; waiting for connectivity` (or `provider is retrying the turn` for the first minutes). None is `reprompt`, `handoff`, `nudge` or `await_user`. In `runs.jsonl`, probes in those checks are `"skipped":"network_down"`, apart from at most one `connectivity verification` probe per hour.
+- `status` while offline shows `network: down at the last connectivity check, failing since <time>`.
+- The loop was not held: `status` does not say `awaiting user`, and `reprompts` is what it was in `before.txt`.
+- The first check after you signed in has `"network":"restored"` with `networkDownFor`, and action `reprompt` (or `wake`). There is exactly one, and the thread in BB received one message, not several. If a child had failed, that message ends with a `[keepgoing:child-errors count=N]` line.
+- `timeline` shows the waiting checks as one entry with a first and last time, then the recovery.
+- Recovery started within one check interval of signing in. Note how long it took.
+
+**Fail, and worth reporting with the output above**
+
+- Any re-prompt, nudge or handoff while offline or behind the portal; more than one message after recovery.
+- An `awaiting user` hold with a reason about re-prompts, `auth error` or `no Git progress` that appeared during the outage.
+- `network: down` still shown by `status` long after recovery.
+- No check recorded at all after the lid was opened: that is the scheduler, not keepgoing. See [external schedulers can stop on their own](operations.md#external-schedulers-can-stop-on-their-own).
+
+**What this does not show.** A check target that is unreachable while the provider works (test that separately with `keepgoing doctor` from the environment your scheduler uses), an outage of weeks, or an expired provider login after a long gap.
+
 ## Run discovery tests (D1, D2)
 
 `go test -race ./internal/rundiscovery` exercises the pure identity and run-boundary contract with fictional caller-supplied IDs and timestamps: every run-boundary case, distinct attempts, run/session links and malformed input.

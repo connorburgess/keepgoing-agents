@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 	t.Setenv("KEEPGOING_NET_PROBE", "exit 1")
 	for i := 0; i < 4; i++ {
 		code, r := networkTick(t, f)
-		if code != exitOK || r["action"] != "none" || r["reason"] != "network down; waiting for connectivity before re-prompting or handing off" || r["network"] != "down" || r["outcome"] != "succeeded" || r["reprompts"] != nil {
+		if code != exitOK || r["action"] != "none" || r["reason"] != "network down; waiting for connectivity" || r["network"] != "down" || r["outcome"] != "succeeded" || r["reprompts"] != nil {
 			t.Fatalf("check %d: exit %d %v", i, code, r)
 		}
 	}
@@ -52,7 +53,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 		t.Fatal("a re-prompt was sent into the dead network")
 	}
 	_, status, _ := f.run("status")
-	if !strings.Contains(status, "network:   down since ") || !strings.Contains(status, "decision reason: network down;") {
+	if !strings.Contains(status, "network:   down at the last connectivity check, failing since ") || !strings.Contains(status, "not reported yet") || !strings.Contains(status, "decision reason: network down;") {
 		t.Fatalf("status does not show the outage:\n%s", status)
 	}
 	code, timeline, _ := timelineCLI(t, filepath.Join(f.dir, "state"))
@@ -61,7 +62,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 	}
 
 	t.Setenv("KEEPGOING_NET_PROBE", "exit 0")
-	if code, r := networkTick(t, f); code != exitOK || r["action"] != "reprompt" || r["network"] != nil || r["reprompts"] != float64(1) {
+	if code, r := networkTick(t, f); code != exitOK || r["action"] != "reprompt" || r["network"] != "restored" || r["networkDownFor"] == nil || r["reprompts"] != float64(1) {
 		t.Fatalf("first check after connectivity returned: exit %d %v", code, r)
 	}
 	if _, status, _ = f.run("status"); strings.Contains(status, "network:   down") {
@@ -103,5 +104,77 @@ func TestNetworkCheckConfiguration(t *testing.T) {
 		if code, _, errs := f.run("validate"); code == exitOK || !strings.Contains(errs, "loop.network") {
 			t.Fatalf("%q accepted: %s", bad, errs)
 		}
+	}
+}
+
+// doctor runs the connectivity check once, so a target this machine cannot
+// reach is found before it makes a loop wait. --offline does not run it.
+func TestDoctorTestsTheConnectivityCheck(t *testing.T) {
+	check := func(t *testing.T, f *fixture, args ...string) string {
+		t.Helper()
+		_, out, _ := f.run(append([]string{"doctor", "--json"}, args...)...)
+		i := strings.Index(out, `"network.check"`)
+		if i < 0 {
+			t.Fatalf("doctor has no network.check:\n%s", out)
+		}
+		return out[i:min(len(out), i+900)]
+	}
+	marker := filepath.Join(t.TempDir(), "probed")
+	probe := "touch " + marker + "; exit "
+	for _, tc := range []struct {
+		name, network, env, want string
+		args                     []string
+		probed                   bool
+	}{
+		{"reachable", "", probe + "0", `"status": "ok"`, nil, true},
+		{"unreachable", "", probe + "1", "could not reach the default target", nil, true},
+		{"configured command", "  network: {command: [\"false\"]}\n", probe + "0", "could not reach the configured command", nil, false},
+		{"off", "  network: {check: \"off\"}\n", probe + "1", "The connectivity check is off", nil, false},
+		{"no room", "  tick_timeout: 2m40s\n", probe + "1", "leaves no room for the connectivity check", nil, false},
+		{"offline flag", "", probe + "1", "not tested because --offline was given", []string{"--offline"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Remove(marker)
+			t.Setenv("KEEPGOING_NET_PROBE", tc.env)
+			f := newFixture(t)
+			networkConfig(t, f, tc.network)
+			if got := check(t, f, tc.args...); !strings.Contains(got, tc.want) {
+				t.Fatalf("want %q in:\n%s", tc.want, got)
+			}
+			if _, err := os.Stat(marker); (err == nil) != tc.probed {
+				t.Fatalf("default probe ran=%t, want %t", err == nil, tc.probed)
+			}
+		})
+	}
+}
+
+// A dry run previews the decision without making the connectivity request,
+// and an explicit tick_timeout of 2m40s, the earlier minimum, still loads:
+// the check has no room, is not made, and validate and status say so.
+func TestDryRunAndSmallTickTimeoutMakeNoConnectivityRequest(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "probed")
+	t.Setenv("KEEPGOING_NET_PROBE", "touch "+marker+"; exit 1")
+	f := newFixture(t)
+	networkConfig(t, f, "")
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
+	f.run("enable")
+	code, out, _ := f.run("tick", "--dry-run")
+	if _, err := os.Stat(marker); err == nil || code != exitOK || !strings.Contains(out, `"action":"reprompt"`) {
+		t.Fatalf("dry run made the request or changed its preview: exit %d %s", code, out)
+	}
+
+	networkConfig(t, f, "  tick_timeout: 2m40s\n")
+	code, _, errs := f.run("validate")
+	if code != exitOK || !strings.Contains(errs, "leaves no room for the connectivity check") {
+		t.Fatalf("validate: exit %d %s", code, errs)
+	}
+	if code, r := networkTick(t, f); code != exitOK || r["action"] != "reprompt" || r["network"] != nil {
+		t.Fatalf("exit %d %v", code, r)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the check was made although it has no room")
+	}
+	if _, status, _ := f.run("status"); !strings.Contains(status, "network:   warning: loop.tick_timeout (2m40s) leaves no room") {
+		t.Fatalf("status:\n%s", status)
 	}
 }

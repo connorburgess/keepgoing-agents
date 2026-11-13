@@ -39,7 +39,19 @@ type File struct {
 	// and FailedSince is when that run began.
 	// NetworkDownSince is when a connectivity check first failed in the
 	// current run of failures; zero once a check did not find it down.
-	NetworkDownSince  time.Time      `json:"networkDownSince,omitempty"`
+	// the most recent gap. They tell a long gap in which no check ran from an
+	// ordinary interval.
+	CheckInterval    time.Duration `json:"checkIntervalNs,omitempty"`
+	LastCheckGap     time.Duration `json:"lastCheckGapNs,omitempty"`
+	NetworkDownSince time.Time     `json:"networkDownSince,omitempty"`
+	// NetworkVerifiedAt is when the provider was last tested directly during
+	// that outage, and NetworkReportedAt when the outage was reported.
+	// NetworkDistrusted says the check is no longer believed, because the
+	// provider answered a probe while the check was failing. It stays set
+	// until the check itself passes.
+	NetworkVerifiedAt time.Time      `json:"networkVerifiedAt,omitempty"`
+	NetworkReportedAt time.Time      `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted bool           `json:"networkDistrusted,omitempty"`
 	FailedChecks      int            `json:"failedChecks,omitempty"`
 	FailedSince       time.Time      `json:"failedSince,omitempty"`
 	HandoffDeferrals  int            `json:"handoffDeferrals,omitempty"`

@@ -37,8 +37,12 @@ func TestNetworkDownWaitsInsteadOfSpendingRecovery(t *testing.T) {
 		{"pending interaction", func(i *Input) { i.Obs.AwaitingInput = true }, None, "waiting on a person (pending interaction)"},
 		{"active child", func(i *Input) { i.Obs.ActiveChildren = 1 }, None, "child work running"},
 		{"outside window", func(i *Input) { i.InWindow = false }, None, "outside window"},
-		{"idle session is still woken", func(i *Input) { i.Obs.State = Idle }, Wake, "idle"},
-		{"active session is unaffected", func(i *Input) { i.Obs.State = Active }, None, "active"},
+		{"idle session is not woken", func(i *Input) { i.Obs.State = Idle }, None, NetworkDownReason},
+		{"idle session, queued message", func(i *Input) { i.Obs.State, i.Obs.Queued = Idle, 1 }, None, "messages already queued"},
+		{"switch-back waits", func(i *Input) { i.Obs.State, i.SwitchBackReady = Idle, true }, None, NetworkDownReason},
+		{"active session that has not stalled", func(i *Input) { i.Obs.State = Active }, None, "active"},
+		{"stalled session is not nudged", func(i *Input) { i.Obs.State, i.UnchangedFor, i.MaxNudges = Active, 2*time.Hour, 3 }, None, NetworkDownReason},
+		{"stalled session with nudges spent is not held", func(i *Input) { i.Obs.State, i.UnchangedFor, i.MaxNudges, i.Nudges = Active, 2*time.Hour, 3, 3 }, None, NetworkDownReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := base()
@@ -49,7 +53,7 @@ func TestNetworkDownWaitsInsteadOfSpendingRecovery(t *testing.T) {
 			if d.Action != tc.action || tc.reason != "" && d.Reason != tc.reason {
 				t.Fatalf("%+v", d)
 			}
-			if d.Action == Reprompt || d.Action == Handoff {
+			if d.Action == Reprompt || d.Action == Handoff || d.Action == Wake || d.Action == Nudge || d.Action == SwitchBack {
 				t.Fatalf("recovery spent into a dead network: %+v", d)
 			}
 		})

@@ -121,7 +121,7 @@ How the time is spent:
 
 **The limit, tested.** `TestCheckEndsWithinItsHardLimitInEveryCombination` charges every step either its maximum or almost nothing, independently (yield, observation, fingerprint, model switch, send), with probes hanging and reports failing on both attempts, against idle, active, rate-limited, unknown-error, auth-error and errored-children sessions, with and without previously healthy fallbacks, with the connectivity check configured throughout and failing at its timeout in some: 1,512 checks per configuration. The longest is 4m00s of the 4m30s limit at the defaults, and 4m30s of a 5m00s limit with `probe.timeout: 2m`. The same fixture run against the code before this accounting gives 4m40s and 5m10s. These are fake-clock figures: each step is charged its configured limit, and no command was actually hung. They rest on a limit being enforced by killing the command; a process that ignores the kill and keeps its output open is abandoned after two more seconds, and a filesystem call that hangs is abandoned, not stopped. Local file writes (state, run log, incident history) are not timed.
 
-**Configuration.** The minimum `tick_timeout` is `2m40s`, the time the mandatory steps can take less the 90 seconds, plus `network.timeout` while the connectivity check is on (`2m48s` at the defaults). With fallbacks it must also be at least `probe.timeout` plus 90 seconds, or no scheduled probe could ever start. If `tick_timeout` is omitted it grows to that value, so a file with a long `probe.timeout` keeps loading; an explicit value that is too small is an error naming both settings. `status` prints the budget on its `check budget:` line and says when it was raised from the default (`tickBudget` in `status --json`), and `doctor` reports it as `supervisor.tick_timeout`. Those, and `validate`, warn when `tick_timeout` exceeds `3m15s`, because the limit is then over 4m45s and no longer leaves a margin under a five-minute scheduler timeout. That includes an omitted `tick_timeout` beside a `probe.timeout` above 105 seconds. The daemon and managed services have no such timeout.
+**Configuration.** The minimum `tick_timeout` is `2m40s`, the time the mandatory steps can take less the 90 seconds. The connectivity check uses only what `tick_timeout` has beyond that, up to `network.timeout`: at `2m40s` it is not made, and from `2m48s` it has its full 8 seconds. With fallbacks it must also be at least `probe.timeout` plus 90 seconds, or no scheduled probe could ever start. If `tick_timeout` is omitted it grows to that value, so a file with a long `probe.timeout` keeps loading; an explicit value that is too small is an error naming both settings. `status` prints the budget on its `check budget:` line and says when it was raised from the default (`tickBudget` in `status --json`), and `doctor` reports it as `supervisor.tick_timeout`. Those, and `validate`, warn when `tick_timeout` exceeds `3m15s`, because the limit is then over 4m45s and no longer leaves a margin under a five-minute scheduler timeout. That includes an omitted `tick_timeout` beside a `probe.timeout` above 105 seconds. The daemon and managed services have no such timeout.
 
 ## Status for other tools
 
@@ -238,7 +238,7 @@ In v0.1.3 or newer, set `loop.limits.no_progress_timeout: 2h` or use `init --no-
 
 The first enabled ordinary tick saves a baseline in private `progress.json` before any automatic provider observation, yield command or probe. Subsequent ticks verify Git again. A changed fingerprint for the same repository list resets the timer; an unchanged fingerprint at or beyond the timeout persists/reports an awaiting-user hold. Progress is checked even outside the operating window or while the agent is busy. No running or queued turn is cancelled. Stop, existing holds, the absolute deadline and exhausted total-send allowance take precedence. A failed read, fingerprint or ledger write prevents automatic provider work with a diagnostic error; unknown evidence never grants more time.
 
-The ledger is independent of diagnostic history, target identity and per-turn retry/nudge counts. Repeated idle turns, errors, handoffs, switch-back, restart and resume do not reset it. Elapsed time includes downtime, disabled periods, operating-window closures and pauses; it is not active execution time. Reordering or duplicating repository entries does not alter the source identity. Changing the source list rebases the fingerprint while preserving elapsed time, so a configuration edit alone is not progress. Dry runs preview the result without changing this ledger or controls. Child-completion polling skips provider queries when the saved timer is due, unavailable or lacks a baseline, leaving fresh Git verification to the next ordinary tick.
+The ledger is independent of diagnostic history, target identity and per-turn retry/nudge counts. Repeated idle turns, errors, handoffs, switch-back, restart and resume do not reset it. Elapsed time includes operating-window closures while checks keep running. Elapsed time still includes pauses and disabled or held periods while checks keep running. Unreleased source no longer counts time in which no check ran at all (a host that slept, a stopped scheduler) beyond one ordinary interval, or time in which the connectivity check found the network down; see [a long time offline](#a-long-time-offline). It is still not active execution time. Reordering or duplicating repository entries does not alter the source identity. Changing the source list rebases the fingerprint while preserving elapsed time, so a configuration edit alone is not progress. Dry runs preview the result without changing this ledger or controls. Child-completion polling skips provider queries when the saved timer is due, unavailable or lacks a baseline, leaving fresh Git verification to the next ordinary tick.
 
 Once held, new Git changes or a configuration edit alone do not reopen supervision. Inspect the work and tracking, then explicitly `resume` after verified progress, increasing the timeout, or disabling it under the task's authorization. Resume alone with unchanged Git and an expired timer immediately holds again. Re-enabling a disabled timeout uses the retained ledger. A fresh state directory starts a fresh baseline; deleting/rolling back the ledger loses the bound and is not a recovery method.
 
@@ -342,30 +342,75 @@ This waits until the newest run of every workflow on the exact commit has finish
 
 Unreleased; **fixture-tested only**. A re-prompt, a handoff brief or a fallback probe sent while the network is down fails and still spends its allowance. In one observed outage two of three allowed re-prompts went into a dead network; a third failure would have ended in a hold with the network back minutes later. keepgoing now checks connectivity first.
 
-**What is checked.** One structured check, at most once per check and only when something that needs the network is about to be done:
+**What keepgoing sends, by default.** One HTTP `GET https://api.github.com/zen`, with Go's standard `User-Agent` and no loop name, host name, thread ID, token or other identifier. keepgoing contacted no host by itself before this change. It is sent only when one of the following is about to happen, at most once per check, and never in a dry run:
 
-- before an error **re-prompt** or a **handoff**;
-- before the first **scheduled fallback probe** that is due;
-- before the exact probe of a **switch-back**.
+- an error **re-prompt**, a **handoff**, or an **awaiting-user hold for a session in error** (a spent re-prompt cap or an auth error);
+- the first **scheduled fallback probe** that is due;
+- the exact probe of a **switch-back**.
 
-The check is `loop.network`: a `command` whose exit 0 means online, or an HTTP GET to `url` where any response means online and a transport error means offline. With neither set it is the same probe `net-retry` uses: `KEEPGOING_NET_PROBE` (a shell command) if set, else a GET to `KEEPGOING_NET_PROBE_URL`, by default `https://api.github.com/zen`. It has an 8-second timeout, which is reserved inside the [check's hard limit](#check-time-budget). No response body, error text or provider output is read. `network: {check: "off"}` disables it, and everything is attempted as before.
+Idle wakes, nudges, stop, pause and every other hold do not trigger it. To change it, set `loop.network`: `url` for another address, `command` for an argv whose exit 0 means online, or `check: "off"` for no check at all. With neither `url` nor `command`, the `net-retry` variables apply first: `KEEPGOING_NET_PROBE`, a command line run by the platform's shell (`/bin/sh -c`, or `cmd /C` on Windows), or `KEEPGOING_NET_PROBE_URL`. Only `network.command` is run without a shell. Any HTTP response means online; a transport error means offline. No response body, error text or provider output is read. The check has `network.timeout` (8s), reserved inside the [check's hard limit](#check-time-budget).
 
-**What happens while it fails.**
+**While it fails.**
 
-- An errored session is not re-prompted and no handoff is tried. The check records action `none` with the reason `network down; waiting for connectivity before re-prompting or handing off` (incident cause and stage `network_down`), outcome `succeeded`, exit 0. The re-prompt count, the backoff clock, the handoff-brief counts and the send allowance are untouched, and no hold is raised, including for an auth error or a spent re-prompt cap: those wait until the network is back.
-- Due scheduled probes and a due switch-back probe are not run. They appear in the check's `probes` with `"skipped":"network_down"`, are not recorded as failures, do not count against the daily cap, and stay due. A probe into a dead network would otherwise mark every fallback unhealthy until its next scheduled probe.
-- The tick line has `"network":"down"`, a warning names `loop.network`, and `status` prints `network: down since <time>` until a check finds it up.
+- An errored session is not re-prompted, not handed off and not held. The check records action `none` with the reason `network down; waiting for connectivity` (incident stage and cause `network_down`), outcome `succeeded`, exit 0. The re-prompt count, the backoff clock, the handoff-brief counts and the send allowance are untouched. A hold that has nothing to do with the session's error (a child waiting on a person, a loop deadline, the send limit, a missing target) is raised as usual.
+- Due scheduled probes and a due switch-back probe are not run. They appear in the check's `probes` with `"skipped":"network_down"`, are not recorded as failures, do not count against the daily cap, and stay due.
+- A check that has already found the network down, because a probe was due, does not go on to send an idle wake, a nudge or a switch-back brief either. A check that had no reason to test the network still sends them.
+- The tick line has `"network":"down"`, a warning names `loop.network`, and `status` prints `network: down at the last connectivity check, failing since <time>`.
 
 **When it returns.** The first check whose connectivity check passes acts as usual: it re-prompts if the session is still in error (subject to `errors.backoff` from any earlier re-prompt) and runs the probes that were left due. Nothing is retried faster than the ordinary check interval.
 
-**What is not gated.** An idle wake and a stall nudge are sent without a connectivity check, to keep ordinary checks free of an extra request; a wake into a dead network produces an errored turn, which the next check then waits on. Stop, pause and the other holds never involve the check. Messages queued on the thread are still left alone under the existing rule, which comes first.
+**A long outage, and a check that is wrong.** Two cases look the same from the check: a real outage, which may last weeks, and a check target that this machine cannot reach while the provider works (a DNS filter or blocked host, a scheduler environment without its proxy settings, a proxy that refuses the connection, a TLS-inspecting gateway whose certificate is not trusted). The first must be waited out; the second must not hold a loop in silence. So after `network.verify_after` (default `1h`) of failed checks, and again at that interval, keepgoing asks the provider directly, with the one exact probe a switch-back would use for the current target:
+
+- **The provider answers**, by passing the probe or by refusing it for a reason of its own (a rate limit, an expired login, overload). The network works, so the check is set aside for this outage: the tick line has `"network":"down_untrusted"`, a warning and `status` say so, and the ordinary error rules apply again. This is also how an expired login is found after a long gap: the next check holds with `auth error` and sends its `await_user` report once. The check is believed again only after it has itself passed.
+- **The probe does not get through.** It is a real outage. Nothing is spent and no hold is raised, however long it lasts: the fixture runs three weeks. A `network_wait` report is attempted at each verification until one is accepted; in a real outage it usually cannot be delivered, and nothing depends on it.
+- **No probe is configured for the target** (`loop.probe`, set by default for the `claude-code` and `codex` providers). keepgoing cannot tell the two cases apart, keeps waiting, and the report says so.
+
+The verification probe is the only thing sent during an outage. Into a dead network it fails without reaching the provider. `keepgoing doctor` runs the connectivity check once and reports it as `network.check`, so an unreachable target is found before it matters; `doctor --offline` does not run it.
+
+**Captive portals.** A network that needs a sign-in answers requests itself. A redirect to another host and a TLS handshake presented with a certificate this machine does not trust both read as offline, so the default `https` target is offline behind a portal. A plain `http` target can be answered by a portal as if it were the target; use `https`.
+
+**Recorded outage and status.** The `network:` line reflects the last connectivity check. It is cleared when a check passes, and also when a later check needs no connectivity check and finds the session active or idle, since nothing is waiting for the network then. The check that finds the network back has `"network":"restored"` and `networkDownFor` in its tick line and a `network back` warning with the duration, which `runs.jsonl` keeps. The outage starts at the first check that found it, not at the moment the network dropped. `timeline` shows the waiting checks as one retained entry with its first and last time and a count, whatever its length; it does not tell a portal from no network.
+
+**Reports that make one attempt.** `limit_wait` and `child_error` reports are not attempted while the connectivity check is failing, because a failed attempt is not repeated. They are sent by the first check after it passes.
 
 **Limits.**
 
 - The check says the network is reachable, not that the provider is. A provider outage with a working network is still re-prompted into, as before.
-- If the check's own target is down or blocked (for example a host that cannot reach GitHub) while the provider works, keepgoing waits for as long as that lasts and says `network down`. Point `loop.network` at a host or command that reflects your provider's reachability, or turn it off.
-- Nothing bounds or reports a long wait: an outage of days is recorded on every check and shown by `status`, but no report is sent. That is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
-- By default this makes keepgoing send an unauthenticated GET to `api.github.com` when an errored session is about to be re-prompted or a probe is due. It did not contact any host by itself before.
+- With `tick_timeout` at its minimum there is no room for the check in the time accounting. It is then not made, and `validate`, `status` and `doctor` say so; raise `tick_timeout` to `2m48s` or more to have it.
+- `doctor` tests the target from the environment `doctor` runs in, which may differ from a scheduler's.
+- Recovery starts at the first check after connectivity returns, so up to one scheduler or daemon interval after a portal is cleared. Reacting to a wake or a network change sooner is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+### A long time offline
+
+Unreleased; **fixture-tested only**. `TestOfflineForAnyLengthThenRecoversOnce` runs one scenario at 20 minutes, 4 hours, 3 days and 3 weeks offline: a turn with two working children fails as the network drops, checks run only now and then with a long stretch of none, the machine wakes behind a captive portal, and the portal is cleared. At every length nothing is sent while offline or behind the portal, no hold is raised, and the first check after connectivity returns sends exactly one re-prompt, which tells the parent that two children are in error.
+
+What each time-driven or counted mechanism does across such a gap:
+
+| Mechanism | Across a long gap | Right? |
+| --- | --- | --- |
+| Retry-notice expiry (`bb.retry_signal_ttl`) | The notice is dead after 15 minutes and is not waited on again. | yes |
+| `errors.backoff` | Has long passed; the first re-prompt after the outage is not delayed by it. | yes |
+| `stall_after`, `min_wake_interval`, nudge count | Apply only to an active session. One that BB still shows active after the gap is nudged at once if the Git fingerprint is unchanged; the nudge is withheld only when that check has already found the network down. The nudge count restarts whenever the session is seen not active. | acceptable |
+| Re-prompt count | Kept across the gap: attempts made before it still count, and nothing is spent or held during it. If the cap was already spent before the outage, the hold is raised by the first check that finds the network up. | yes; see follow-ups |
+| Handoff-deferral and rejected-brief counts | Kept until the error episode ends. Their backoff has long passed. | yes |
+| Probe `every`, `ttl`, daily cap | No probe is run or recorded while offline. After a gap longer than `ttl` every fallback's result has expired: the first check back runs the due probes (as many as fit its time), `degraded` may be reported once, and a handoff is refused until enough have passed again. The daily cap is per calendar day. | acceptable; a handoff can lag by a check or two |
+| Limit-wait episode and its report | A reset that passed while offline ends the wait; the session is then handled as an ordinary error. The report is not attempted while offline. | yes |
+| Child-error episode, its report and the notice | Children that failed stay failed. The report waits for connectivity and is sent once; the parent is told on its first re-prompt or wake. | yes |
+| `network.verify_after` | One provider probe and one report attempt per interval, for as long as the outage lasts. | yes |
+| Provider limit reset recorded for switch-back | A reset that passed makes switch-back due; its probe waits for connectivity. | yes |
+| Usage readings and credential expiry recorded by probes | Not examined in this change. They are refreshed only by probes, so they are as old as the last probe. | follow-up |
+| Incident history retention | Identical consecutive checks are folded into one entry with a first time, a last time and a count, so the offline period stays one explainable span. | yes |
+| Run graph staleness labels | Not examined in this change. | follow-up |
+| `loop.limits.deadline` | An absolute time. One that passed while offline holds the loop at the next check with `loop deadline reached`, whatever the network is doing. This is the owner's choice and is not softened. | yes |
+| `loop.limits.no_progress_timeout` | Counts only time in which progress was possible: see below. | changed here |
+
+**`no_progress_timeout` across a gap.** It used to count all host-clock time, so a machine that slept past it was held on waking although nothing could have run. It now counts time in which supervised work was possible:
+
+- Time between two checks of any kind counts up to an ordinary interval: `30m`, or three times `daemon.interval` if that is longer. A longer gap means no check ran at all (the host slept, the scheduler or daemon was stopped), and the rest of it is not counted. Checks that run while the loop is paused, held or disabled are checks, so that time counts as before. keepgoing does not know an external scheduler's cadence: if yours runs less often than every half hour, set `daemon.interval` to its interval, or part of every gap goes uncounted and the limit takes longer to reach.
+- Time in which the connectivity check found the network down is not counted, and the limit does not hold while it is down.
+- Everything else counts as before, including time outside the operating window while checks run.
+
+The limit keeps its meaning as "this long with no Git change while the loop could work", and `status` shows the adjusted `changedAt`. If you relied on it as a wall-clock cutoff, use `loop.limits.deadline`, which is absolute.
 
 ## net-retry
 
