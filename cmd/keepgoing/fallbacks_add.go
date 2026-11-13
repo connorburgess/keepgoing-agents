@@ -19,6 +19,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"gopkg.in/yaml.v3"
 )
 
@@ -931,6 +932,10 @@ func editLoopYAML(raw []byte, setFallbacks bool, failoverOn *[]string) ([]byte, 
 		for _, class := range *failoverOn {
 			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: class})
 		}
+		// Comments written beside the old value stay beside the new one.
+		if old := yamlMapValue(errs, "failover_on"); old != nil {
+			seq.HeadComment, seq.LineComment, seq.FootComment = old.HeadComment, old.LineComment, old.FootComment
+		}
 		yamlMapSet(errs, "failover_on", seq)
 	}
 	return yaml.Marshal(&doc)
@@ -1167,20 +1172,11 @@ func printFallbackAddPreview(w io.Writer, p *fallbackAddPlan) {
 	}
 
 	fmt.Fprintln(w, "\nHandoff order")
-	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "  \tID\tPROVIDER\tGROUP\tMODEL\t")
-	fmt.Fprintf(tw, "  now\tprimary\t%s\t%s\t%s\t\n", p.cfg.Loop.Provider, p.cfg.Loop.Group, fallbackAddAgentModel(p.cfg.Loop.Agent))
-	for i, o := range p.order {
-		note := ""
-		switch {
-		case o.ID == c.ID:
-			note = "<- new"
-		case o.Disabled:
-			note = "disabled"
-		}
-		fmt.Fprintf(tw, "  %d.\t%s\t%s\t%s\t%s\t%s\n", i+1, o.ID, o.Provider, o.Group, fallbackAddAgentModel(o.Agent), note)
+	active := ""
+	if st, err := state.Load(p.cfg.Loop.StateDir); err == nil {
+		active = st.Target()
 	}
-	tw.Flush()
+	printHandoffOrder(w, p.cfg, p.order, active, map[string]string{c.ID: "<- new"})
 
 	fmt.Fprintln(w, "\nRules")
 	on := strings.Join(p.failoverOn, ", ")
@@ -1302,8 +1298,8 @@ func printFallbackAddNext(w io.Writer, p *fallbackAddPlan) {
 	command("list")
 	fmt.Fprintln(w, "\nUntil a check passes, the fallback counts as not healthy and is not used.")
 	if len(p.failoverOn) == 0 {
-		fmt.Fprintln(w, "\nAutomatic handoff is still OFF. To turn it on, set this in keepgoing.yaml:")
-		fmt.Fprintln(w, "  loop:\n    errors:\n      failover_on: [rate_limit]")
+		fmt.Fprintln(w, "\nAutomatic handoff is still OFF. To turn it on:")
+		fmt.Fprintf(w, "       %s fallbacks handoff on %s\n         -c %s\n", prefix, cont, cfgPath)
 	}
 	fmt.Fprintln(w, "\nA running daemon uses the new order after its next configuration reload.")
 }
