@@ -29,7 +29,9 @@ var dockLoops = []string{
 	"release-notes-bot",        // finished
 	"nightly-dependency-bumps", // not checked recently
 	"data-export-cleanup",      // off
-	"payments-reconciler",      // running on a fallback whose last probe is old
+	"payments-reconciler",      // on its second route; the first is at a limit that resets in five days
+	"inventory-sync",           // on its second route; the first route's reported reset has passed
+	"report-builder",           // on its second route; no reset time was reported
 }
 
 const dockFallbacksYAML = `version: 1
@@ -61,6 +63,43 @@ candidates:
     disabled: true
 `
 
+// dockLoopThread is the fictional BB thread a fixture loop supervises. Each
+// loop has its own, so a lane can be recognised as a registered loop.
+func dockLoopThread(name string) string {
+	for i, loop := range dockLoops {
+		if loop == name {
+			return fmt.Sprintf("thr_example1%03d", i)
+		}
+	}
+	return "thr_example1999"
+}
+
+// dockCodexFallbacksYAML is the route list of the two loops whose first route
+// is a Codex thread. Its last route has no model, and a tool, provider and
+// account group that are all "codex".
+const dockCodexFallbacksYAML = `version: 1
+redundancy:
+  min_healthy: 1
+  span: none
+probe:
+  every: 4h
+  ttl: 12h
+  timeout: 90s
+candidates:
+  - id: claude-second-account
+    adapter: bb
+    provider: claude-code
+    group: second-account
+    bb: {thread: thr_example0002, model: claude-sonnet-5-5, cli: nonexistent-provider-fixture}
+  - id: codex-headless
+    adapter: codex
+    provider: codex
+    codex: {workdir: ., cli: nonexistent-provider-fixture}
+`
+
+// dockOnCodex reports whether a fixture loop's first route is a Codex thread.
+func dockOnCodex(name string) bool { return name == "inventory-sync" || name == "report-builder" }
+
 func dockConfigYAML(name string, withFallbacks bool, maxSends int) string {
 	model := "claude-opus-5-5"
 	if !withFallbacks {
@@ -72,11 +111,11 @@ loop:
   state_dir: state
   adapter: bb
   provider: claude-code
-  bb: {thread: thr_example0001, model: %s, cli: nonexistent-provider-fixture}
+  bb: {thread: %s, model: %s, reasoning: medium, cli: nonexistent-provider-fixture}
   prompt: Continue the fictional example task.
   errors:
     failover_on: [rate_limit]
-`, name, model)
+`, name, dockLoopThread(name), model)
 	if maxSends > 0 {
 		s += fmt.Sprintf("  limits:\n    max_sends: %d\n", maxSends)
 	}
@@ -125,6 +164,21 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: team-account\n", 1)
 			fbYAML = strings.Replace(fbYAML, "group: second-account", "group: team-second-account", 1)
 		}
+		if dockOnCodex(name) {
+			// inventory-sync returns by itself; report-builder has that off.
+			back := "  switch_back: {enabled: true}\n"
+			if name == "report-builder" {
+				back = ""
+			}
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: codex\n"+back, 1)
+			cfgYAML = strings.Replace(cfgYAML, "model: claude-opus-5-5, reasoning: medium, ", "", 1)
+			fbYAML = dockCodexFallbacksYAML
+		}
+		if name == "payments-reconciler" {
+			// Its first route is on an account group of its own, so the limit
+			// it left on is not a limit on the routes other loops are using.
+			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: payments-account\n  switch_back: {enabled: true}\n", 1)
+		}
 		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), cfgYAML)
 		if withFallbacks {
 			dockWrite(t, filepath.Join(dir, "fallbacks.yaml"), fbYAML)
@@ -150,8 +204,30 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		switch name {
 		case "docs-site-refresh":
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "child work running")
-			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0002"), Status: rungraph.ChildActive},
+			// One lane is itself a registered loop: mobile-onboarding's thread.
+			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf(dockLoopThread("mobile-onboarding")), Status: rungraph.ChildActive},
 				{Key: childKeyOf("thr_child0003"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0004"), Status: rungraph.ChildErrored}}
+			// Its retained history: resumed yesterday, moved to another route
+			// on a limit, returned, woke the session, then an unbroken run of
+			// checks that sent nothing because lanes were working.
+			on := &incident.Controls{Enabled: true}
+			primaryKey, secondKey := incident.TargetKey(state.Primary), incident.TargetKey("claude-second-account")
+			history := []incident.Record{
+				{Kind: "control", CheckStartedAt: now.Add(-26 * time.Hour), ControlBefore: &incident.Controls{Enabled: true, AwaitingUser: true}, ControlAfter: on,
+					ControlChange: &incident.ControlChange{Operation: "resume", SaveObservedAt: now.Add(-26 * time.Hour)}},
+				{Kind: "tick", CheckStartedAt: now.Add(-(7*time.Hour + 39*time.Minute)), Action: "handoff", Outcome: "succeeded", Cause: "other", TargetKey: primaryKey, TargetKeyAfter: secondKey, ControlBefore: on, ControlAfter: on},
+				{Kind: "tick", CheckStartedAt: now.Add(-(2*time.Hour + 26*time.Minute)), Action: "switch_back", Outcome: "succeeded", Cause: "other", TargetKey: secondKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on},
+				{Kind: "tick", CheckStartedAt: now.Add(-time.Hour), Action: "wake", Outcome: "succeeded", Cause: "idle", TargetKey: primaryKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on},
+			}
+			for m := 57; m >= 3; m -= 6 {
+				history = append(history, incident.Record{Kind: "tick", CheckStartedAt: now.Add(-time.Duration(m) * time.Minute), Action: "none", Outcome: "succeeded", Cause: "child_busy",
+					TargetKey: primaryKey, TargetKeyAfter: primaryKey, ControlBefore: on, ControlAfter: on, LimitWaitReport: "none", TurnRetry: "none"})
+			}
+			for _, r := range history {
+				if err := incident.Append(sd, r); err != nil {
+					t.Fatal(err)
+				}
+			}
 			run = 1
 		case "billing-api-migration":
 			// Held 2h14m ago by a check that found a child waiting on a
@@ -189,10 +265,25 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "wake", "idle")
 		case "data-export-cleanup":
 			ctl.Enabled = false
-		case "payments-reconciler":
+		case "payments-reconciler", "inventory-sync", "report-builder":
+			// Each left its first route on a usage limit and is on its second.
 			st.ActiveTarget = "claude-second-account"
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "active")
 			st.LastCheck.Target, st.LastCheck.ObservedTarget = st.ActiveTarget, st.ActiveTarget
+			st.LastHandoffAt, st.Handoffs = now.Add(-32*time.Hour), 1
+			switch name {
+			case "payments-reconciler":
+				st.PrimaryResetsAt = now.Add(5 * 24 * time.Hour) // the reported reset is still ahead
+			case "inventory-sync":
+				st.PrimaryResetsAt = now.Add(-2 * time.Hour) // it has passed, and no return has been tried
+			}
+			// report-builder: the provider reported no reset time.
+			on := &incident.Controls{Enabled: true}
+			if err := incident.Append(sd, incident.Record{Kind: "tick", CheckStartedAt: st.LastHandoffAt, Action: "handoff", Outcome: "succeeded", Cause: "other",
+				TargetKey: incident.TargetKey(state.Primary), TargetKeyAfter: incident.TargetKey(st.ActiveTarget), ControlBefore: on, ControlAfter: on,
+				Observation: incident.Observation{Availability: "observed", State: "error", ErrorClass: "rate_limit"}}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := control.Save(sd, ctl); err != nil {
 			t.Fatal(err)
@@ -237,6 +328,16 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			case "payments-reconciler":
 				// Handed off 32 hours ago; the route in use is not probed since.
 				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-32 * time.Hour), OK: true, Kind: "bb"}}
+				// The reading taken when it left: the weekly window was full.
+				reg.Candidates["primary"].Usage = dockUsageReading(primary, now.Add(-32*time.Hour),
+					probe.UsageWindow{Key: "seven_day", Used: 1, ResetsAt: dockPtr(now.Add(5 * 24 * time.Hour)), Status: "rejected"})
+			case "inventory-sync", "report-builder":
+				// The first route has no reading; the route in use was last
+				// probed before the move; the last route passed a Codex probe
+				// eight hours ago, inside its twelve-hour window.
+				delete(reg.Candidates, "primary")
+				reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-32 * time.Hour), OK: true, Kind: "bb"}}
+				reg.Candidates[cands[1].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-8 * time.Hour), OK: true, Kind: "codex"}}
 			case "nightly-dependency-bumps":
 				// Old readings whose windows have since reset.
 				reg.Candidates["primary"].Usage = dockUsageReading(primary, now.Add(-30*time.Hour),

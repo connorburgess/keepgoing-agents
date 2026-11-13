@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,14 +43,19 @@ const (
 	dockMinRefresh     = 5 * time.Second
 	dockMaxRefresh     = 10 * time.Minute
 	// dockMaxResponse bounds the JSON a read may produce. The projection
-	// caps every list and string; the largest registry (128 loops) with long
-	// fallback lists measured just under 2 MiB, so the bound leaves room.
+	// caps every list and string, and states what it leaves out. The largest
+	// registry (128 loops) with every list at its cap and every name at its
+	// longest measured about 4.4 MB with identifiers, and 5.1 MB with names
+	// of four-byte characters; tests keep both under three quarters of this
+	// bound (6 MiB).
 	dockMaxResponse = 8 << 20
 	// dockReadTimeout bounds one whole read of the registry.
 	dockReadTimeout = 20 * time.Second
 	// dockReadParallel bounds how many loops are read at once.
 	dockReadParallel = 4
 	dockAPIPath      = "api/v1/dock"
+	// dockMaxDeliveries is the report delivery history's own record bound.
+	dockMaxDeliveries = 64
 	// dockServerPath says which command serves the page, so the page can
 	// name it and say when it stops.
 	dockServerPath = "api/v1/server"
@@ -292,6 +298,9 @@ type dockReader struct {
 	now        func() time.Time
 	timeout    time.Duration // zero means dockReadTimeout
 
+	hostOnce sync.Once
+	host     string
+
 	mu    sync.Mutex
 	cache map[bool]dockCached
 }
@@ -299,6 +308,13 @@ type dockReader struct {
 type dockCached struct {
 	at   time.Time
 	body []byte
+}
+
+// hostname is this computer's name, read once. It is an identifier and
+// leaves the reader only in the view with identifiers.
+func (d *dockReader) hostname() string {
+	d.hostOnce.Do(func() { d.host, _ = os.Hostname() })
+	return d.host
 }
 
 func (d *dockReader) clock() time.Time {
@@ -401,7 +417,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 }
 
 func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
-	in := dockInput{Entry: entry}
+	in := dockInput{Entry: entry, Hostname: d.hostname()}
 	if ctx.Err() != nil {
 		in.Client = clientStatusReport{SchemaVersion: 1, RegistrationID: entry.ID, ReadAt: now, Outcome: "unavailable", Issues: []string{"cancelled"}}
 		return in
@@ -417,13 +433,20 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return in
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
-		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn}
+		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled}
 		if fb := cfg.FallbackSet; fb != nil {
 			in.Chain.Candidates = fb.Candidates
+			if !fb.Probe.Disabled {
+				in.Chain.ProbeEvery = fb.Probe.Every.Duration
+			}
 			// The same read as fallbacks list.
 			if reg, err := health.Load(cfg.Loop.StateDir); err == nil {
 				out := summarize(cfg, reg, now)
 				in.Chain.Summary = &out
+				in.Chain.Due = map[string]string{}
+				for _, c := range fb.Candidates {
+					_, in.Chain.Due[c.ID] = reg.Due(c, fb.Probe, now)
+				}
 				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now)
 				in.Chain.PrimaryUse = &use
 			}
@@ -433,11 +456,12 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 			in.Status = &out
 		}
 	}
+	// The retained history, read as timeline reads it: recent entries, when
+	// and why a hold began, and how long the last result has repeated.
+	tl := readTimeline(entry.StateDir, now, d.staleAfter, incident.MaxRecords+dockMaxDeliveries, timelineFilter{})
+	in.Timeline = &tl
 	if c := in.Client.Snapshot.Controls; c != nil && c.AwaitingUser {
-		// The retained history timeline reads, for when and why the hold began.
-		if j, err := incident.Load(entry.StateDir); err == nil {
-			in.Hold = dockHoldFrom(j)
-		}
+		in.Hold = dockHoldFromTimeline(in.Timeline)
 	}
 	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable
