@@ -324,6 +324,28 @@ CLI sessions and existing graphical IDE chats are separate capabilities. Officia
 - [ ] A3: Implement the detached primary-only runner with private structured stdin, exact conversation resume, owned stop and no duplicate sends. Add restart/hold/error fixtures and explicitly unavailable probes/limits where evidence is missing.
 - [ ] A4: Add guided setup/diagnostics and then record an authorized live two-turn/resume/stop/permission walkthrough with version/platform evidence.
 
+#### Runner kit: one contract for every command-line agent
+
+The Claude Code, Codex and Cursor runners already share the detached turn, private stdin, per-target session storage, exact resume, owned stop and output bounds; each adds about two hundred lines for its argv, its result parser and its error mapping. Make that split explicit so a new agent is a small, testable definition instead of a new adapter.
+
+- [ ] **K1 — Runner contract.** One internal specification per agent: how to start a turn and resume a session, how the prompt is passed, how to read state, session identity, waiting-on-person and structured error evidence from the result, how to probe account and model, and what the agent already does itself (retries, provider failover, scheduling, child work). Port the Claude Code and Codex runners onto it with no behaviour change, proved by their existing fixtures and the adapter conformance suite. Cursor and Antigravity adopt it as their own work lands.
+- [ ] **K2 — Agents defined in configuration.** Let a loop describe an agent it has no built-in runner for: start and resume commands, where the session ID comes from, which exit codes and JSON fields mean idle, error (and of which class) or waiting on a person, and its capability declaration. No shell, no text matching on prose, bounded output; anything undeclared is `unknown`. Acceptance: a definition written only from an agent's documented interface passes the conformance suite against a stand-in, and `doctor` shows what it can and cannot do.
+- [ ] **K3 — First agent built from a definition: Hermes Agent.** It retries, fails over between providers and can schedule itself, so it also exercises deferring to an agent's own supervisor. Offline evidence first; a live two-turn walkthrough needs the owner's authorization.
+- [ ] **K4 — Protocol transport.** Several agents (Cursor, Hermes, Zed, Gemini CLI and others) speak the Agent Client Protocol, which carries structured permission requests, questions and cancellation that one-shot command-line turns lack. Build one protocol runner on the existing Antigravity protocol gate and exchange so that family shares it, with the durable permission hold already implemented.
+- [ ] **K5 — Further agents**, each from a definition plus its conformance run and an authorized live walkthrough, in order of demand. Candidates to verify against their published interfaces: Gemini CLI, OpenCode, Amp, Aider, Goose, Copilot CLI.
+- [ ] **K6 — IDE chats.** Where an IDE documents a way for an outside process to observe and continue a chat open in its window (through the protocol transport or an extension interface), support it; where it does not, say so in the capability matrix.
+
+#### Test suites
+
+The supervisor's value is that it behaves correctly when things go wrong, so its tests have to cover that deliberately rather than as a by-product of each change.
+
+- [ ] **T1 — Adapter conformance suite**, run against every adapter and available to integrators for their own wrappers.
+- [ ] **T2 — Scenario suite.** End-to-end journeys through the built binary with stand-in agents and an injected clock: first loop from `init` to completion; outage and recovery at 20 minutes, 4 hours, 3 days and 3 weeks, with a captive portal; limit, handoff, switch-back and new-conversation handoff; child failure and recovery; scheduler death and restart; upgrade from each released state format; two supervisors on one session; a full disk and an unwritable state directory. Each scenario asserts what was sent, what was held, what was reported and what `status`, `timeline` and `runs` say afterwards.
+- [ ] **T3 — Fault injection.** Kill the supervisor at every write point of a check and assert that restart neither loses a hold nor repeats a send; cut every external command at its time limit; corrupt and truncate each state file.
+- [ ] **T4 — Native platform runs.** The scenario suite on macOS, Linux and Windows runners, not only cross-compilation, with platform differences stated where they exist.
+- [ ] **T5 — Live checks, by procedure.** For each supported agent, a written procedure the owner can authorize and run (two turns, resume, stop, a permission prompt, an outage), with its last result and date recorded, so "live-verified" always points at a run.
+- [ ] **T6 — Coverage and mutation evidence** for the decision engine and each adapter, tracked per release, so a gap is visible before it is found in production.
+
 #### Shared later gates
 
 Exact account/model probes, quota/reset handling and fallback eligibility each need their own structured contract and evidence. Never interpret generic error strings or exit 1 as rate limits. Unknown never triggers failover. No automatic provider installation, login change, permission relaxation or model replacement is part of these tracks.
