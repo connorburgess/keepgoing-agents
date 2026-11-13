@@ -35,6 +35,14 @@ Apply these checks when changing runners, stop commands, service integrations, i
 
 The runner now exercises owned cancellation with native subprocess fixtures: legacy and mismatched records, changed saved PIDs, stale acknowledgements, old requests after a new turn, wrapper death, descendant cancellation, and accented Latin/CJK paths. The legacy-record regression failed against the old implementation before the fix. macOS/Linux full-suite CI and the dedicated Windows job execute these tests. These checks do not certify live provider cancellation, abrupt-death descendant cleanup, or hostile runtime-file writers.
 
+## Stand-in executables in tests
+
+Install any shell script a test executes with `internal/testexec`, not `os.WriteFile`: `testexec.Script(t, path, content)` for a script used by one test, `testexec.Shared` for content that many fixtures install unchanged. The content must begin with `#!/bin/sh`. In `cmd/keepgoing`, the `write` helper already does this for executable shell scripts.
+
+The reason is a host behaviour, not style. macOS checks a file the first time it is executed and queues those checks across the whole machine, so the first run of a new script takes from half a second to many seconds while later runs take milliseconds. A test that writes a script and runs it under a deadline, a context timeout or a configured command timeout then fails when other tests are starting new scripts too, and passes alone. The helper runs the script once while the fixture is built, in a mode that exits before its body, so the cost is paid outside any deadline. On Linux and Windows it only writes the file.
+
+To replace a script installed this way, call the helper again; never write through the path, because a shared script is a hard link. Scripts that are written but never executed, such as service-file fixtures, do not need it. Compiled fixtures are not covered.
+
 ## Timing-sensitive tests
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.
