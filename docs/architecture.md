@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, dock, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
@@ -110,38 +110,36 @@ Unreleased source (roadmap K1). A command-line agent that runs one turn per proc
 
 Retries itself, fails over itself and schedules itself are vocabulary for agents that supervise themselves (K3). Nothing acts on them, and a test refuses a registered agent that declares one.
 
-**Registry.** `runner.Specs()` lists the specifications. These read from it: the adapter factory, `internal/probe` (argv, verdict, kept output and the limit lookup), the saved-session check in `status`, the run graph's session link, and guided `fallbacks add` (account variable, existing logins, default quota group and the probe for a BB provider).
+**Registry.** `runner.Specs()` lists the built-in specifications; `runner.Resolve` also builds one from a definition. These read from it: the adapter factory, `internal/probe` (argv, verdict, kept output and the limit lookup), the saved-session check in `status`, the run graph's session link, and guided `fallbacks add` (account variable, existing logins, default quota group and the probe for a BB provider).
 
 These still name agents and were left, with the reason:
 
 - `internal/config` (the adapter list, defaults, validation, probe-kind defaults and probe settings) and both JSON schemas. `runner` imports `config`, so `config` cannot read the registry, and each agent's settings are a typed struct with its own YAML keys.
 - `init` and the guided `fallbacks add` flow: they build those typed settings and carry per-agent wording.
-- `internal/probe`'s usage readings: the reading types live in that package, so a small table there is keyed by specification name.
 - `internal/incident`'s allowed adapter names: a storage allowlist that should change deliberately.
 - `doctor`'s version pattern, and the account variables `CLAUDE_CONFIG_DIR` and `CODEX_HOME` written out in `doctor` (where it reads an agent's CLI, account and working directory) and in `init` (where it builds an agent from an account directory). Both switch on the typed settings, so they were left with them.
 
 **Not on the contract.** Cursor (`cursor.go`) keeps its own adapter and is the next to adopt it. From its code as it is, adopting needs three additions to the contract that neither ported agent uses: an output size limit on the turn's stream, a strict session rule (a returned session that differs from the saved one is refused, and so is a new conversation after a turn with no verified session), and a reading that can say the output is unsafe to act on, which the runner reports as an unknown state with an error. It also reads a crashed turn's output, where the shared runner does not. Antigravity has no runner yet. BB and process targets are not one-turn-per-process agents.
 
-**What K2 would have to express.** A configuration-defined agent needs at least what these two required:
+**Agents defined in configuration (roadmap K2, unreleased).** A loop or fallback may set `adapter: custom` and describe an agent keepgoing has no built-in runner for. `internal/config/custom.go` holds the definition and its validation; `internal/adapter/runner/definition.go` turns it into a `runner.Spec`, so it runs through the same shared runner, probe and factory as Claude Code and Codex. See [an agent defined in configuration](configuration.md#an-agent-defined-in-configuration) for the format.
 
-- Argv as an ordered template over named settings, where a flag appears only when its setting is set, plus fixed extra arguments.
-- Resume as a second template, not a suffix: Codex inserts a subcommand, changes how one setting is passed and places the session before the final argument.
-- The session identity from a named field of either one result object or one event type in a line stream.
-- Success from a structured field combined with exit code zero, with both "last object of a given type" and "any line of a given type" selection.
-- Error class from an ordered list of fields (a code, an HTTP status, a type) mapped through the existing code table, with `unknown` when none matches.
-- A probe command with its own argv, a model flag, and the same success and class rules.
-- An account directory variable and environment overrides.
-- A capability declaration.
-- What the two agents' probes and lookups also return, which a definition would need fields for or go without: a credential expiry time (Claude's result object), usage windows (Claude's stream events and Codex's limit snapshot) and the time a reached limit resets (Codex's snapshot, used for the observation's reset time and the probe result).
+To make room for it the contract no longer assumes a built-in agent:
 
-Parts of the contract as built that assume a built-in agent, and that K2 has to change first:
+- A specification never sees the configuration. `runner.Resolve` reads a registered agent's typed settings, or a definition's values, into `runner.Settings` (the four every runner needs, the rest by name), and `Spec.Argv` takes those.
+- A limit lookup returns the general `runner.Limits`; `CodexLimits` is an alias for it.
+- A probe's usage reading and its source are fields of the specification, not a table keyed by agent name.
+- A probe with no configured executable uses the specification's default, not the probe kind. The usage identity keeps its earlier fingerprint, so stored readings stay valid.
+- The exit code is part of each reader's "completed", so a definition can name its own healthy exit codes.
+- A specification may bound the output that is read (`MaxOutput`) and may take its prompt from the private prompt file with an empty standard input (`PromptFile`). What a turn's standard input is, is an explicit start parameter that the environment cannot change.
+- A turn that ended waiting on a person is reported as a deferred interaction until the supervisor has saved the awaiting-user hold (the existing `InteractionAdopter`), then no longer. After a person resumes, the turn is read by its other rules and the next send continues the session.
 
-- `Spec.Argv` and `Spec.Settings` take `config.Agent` and read its typed `claude` or `codex` settings, so a configuration-defined agent has nowhere to put its settings.
-- `LimitLookup.Read` returns `runner.CodexLimits`.
-- Usage readings in `internal/probe` are a table keyed by agent name.
-- A probe's CLI falls back to the probe kind (`ProbeCLI()` in `internal/config`), not to the specification's default CLI. The two are equal for both ported agents.
+What a definition cannot express, by design or for now:
 
-Two things these agents needed that such a shape cannot express without code: Codex's limit lookup speaks a JSON-RPC exchange with a second process, and Claude's kept probe output drops one message type. K2 should either leave them out for defined agents (the class stays `unknown`) or name them as built-in helpers.
+- Anything read from prose. A field is compared for equality with a declared code, and a value that is not shaped like a code is absent.
+- State spread over several event types. One object is selected (the last, or the last whose field has a given value) and every rule reads that object; the session may select its own.
+- Codex's limit lookup (a JSON-RPC exchange with a second process) and Claude's usage and credential-expiry readings. A definition's limit lookup is one command printing one JSON object; no usage reading or credential expiry is taken from a defined agent.
+- Retries, failover, scheduling and child work. Validation refuses those capabilities because a definition gives no way to observe them. They are the subject of K3.
+- A resume that needs a setting passed differently, beyond what a second argv can say.
 
 ## State directory
 
@@ -292,6 +290,14 @@ The command layer owns one bounded private `client-resume.json` ticket slot per 
 `resume` takes the same registry/tick locks and uses the existing checked control update/history recorder for the short control lock. It compares the ticket to fresh validated evidence and the callback's control record, persists consumption before mutating controls, then checks evidence again. Stale, expired, clock-reversed, consumed or superseded tickets are refused. A crash after consumption loses that ticket and may leave holds intact; only a new explicit preparation/action can proceed. Successful resume has ordinary CLI semantics without enabling, claiming, resetting allowances or starting work. Diagnostic failures cannot undo a saved control change. No provider, scheduler, transcript, task-file or live daemon lookup occurs under these locks.
 
 All saved state fields are bound, so an intervening ordinary tick may require another reviewed preparation. Files referenced by the config and external session/BB metadata are not bound. This is a cooperative local stale-action guard, not authentication, an approval ledger, or a power-loss transaction. See [registered resume](local-clients.md#registered-resume) for output, privacy and recovery limits.
+
+## Dock page (unreleased)
+
+`cmd/keepgoing` implements `dock` as three separate layers so that remote reach can be added later without a rewrite. `dockGuard` accepts only loopback `Host` values, same-origin requests and `GET`/`HEAD`. `dockAuth` is an interface that decides who may read; its only implementation requires a per-run random token as the first path segment, compared in constant time. `dockReader` builds one versioned report (`/api/v1/dock`) that the embedded page consumes; ages are computed against the report's read time, not the browser's clock. The listener binds `127.0.0.1` only. There is no write endpoint and no control path.
+
+The reader composes existing reads and no new evidence: `registry.Load`, `readClientStatus` (with its bounded query of the loop's existing daemon endpoint, reused for the same loop's status read), `readStatus` (the function behind `status --json`), `readRegisteredRunsWith` (behind `runs --registry-id`), `summarize` (behind `fallbacks list`) and `incident.Load` for the record of a hold starting. A read runs on the command's context with its own time limit, never a request's; each registered configuration is validated once per read and shared with the runs read; an incomplete read is marked, never cached, and its unread loops are listed as needing a look. It takes no lock, creates no file, and runs no adapter, provider, `bb`, scheduler or Git command.
+
+`dock_view.go` is a pure projection from those values to plain-language fields with explicit unknown and stale markers and caps on every list and string. `TestDockPhrasesFollowEvidence` maps each record to the exact phrase shown, so wording that says more than its record has to be added there. `allClear` is true only when every registered loop was read and none needs a person. A loop's current route is "in use" only when the loop is on with no hold and its last check is recent and recorded that route. Each loop carries its ordered routes (`primary`, then fallbacks), and the report groups the same entries by route (provider, quota group, model and the probe's usage identity) for the view across loops, so every view reads one feed. Identifiers and hold notes are withheld unless requested, and paths are never included. The token keeps other web origins out; it is not authentication against a local process that can read runtime files. See [the panel](dock.md).
 
 ## Goal-aware prompt composition
 
