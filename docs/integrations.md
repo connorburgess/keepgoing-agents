@@ -38,7 +38,7 @@ Other coding agents can be supervised today through the process adapter, given a
 
 ## Guided setup
 
-`keepgoing init` is implemented on `main` for BB, Claude Code, and Codex. **Fakes** cover CLI discovery, ordered account configuration, task instructions, disabled state, and completion across repeated checks using the generated config. Temporary real Git repositories exercise progress validation. Setup checks executable availability and directory existence only; it does not invoke providers or verify login, subscription identity, BB target identity, or live task completion. See the [setup guide](setup.md).
+`keepgoing init` is implemented on `main` for BB, Claude Code, and Codex, and in unreleased source for a primary-only Cursor loop. **Fakes** cover CLI discovery, ordered account configuration, task instructions, disabled state, and completion across repeated checks using the generated config. Temporary real Git repositories exercise progress validation. Setup checks executable availability and directory existence only; it does not invoke providers or verify login, subscription identity, BB target identity, or live task completion. See the [setup guide](setup.md).
 
 **Goal-aware setup: released in CLI v0.1.5 / BB plugin v0.2.0; Fakes evidence.** The wizard's explicit choice and `init --with-goal` create a goal in the existing private store, reference one task snapshot and enable current-goal transport with a stable wake policy. Fixtures for BB/Claude/Codex cover preview without writes, disabled creation, non-ASCII paths, private output, changed source snapshots, revised composition and preserved holds. The rebuilt BB UI exposes the same explicit choice and recorded identity/revision; SDK/DOM fixtures verify preview binding, host flags, older-CLI rejection and private-text omission. Live deployment, real provider access to private references and the timed first-loop walkthrough remain unverified.
 
@@ -130,7 +130,7 @@ Documentation review: print mode accepts stdin and structured session/results, b
 
 ### Antigravity
 
-An [internal protocol foundation](antigravity.md) now encodes private stdin prompts and parses one-turn lifecycle/session evidence with offline fixtures. It is unreleased and is not a registered adapter. Structured permission handling, detached runtime integration, setup and live verification remain open.
+An [internal protocol foundation](antigravity.md) encodes private stdin prompts, parses one-turn lifecycle/session evidence, and adds an ACP permission gate, a saved interaction hold and an unregistered detached runner. It is unreleased and tested only with offline fixtures and a stand-in agent; Antigravity itself has never been run, and no adapter is registered, so no loop can select it. A verified permission contract, registration, setup and live verification remain open.
 
 The official [headless guide](https://antigravity.google/docs/cli/headless/) documents print mode and machine-readable output. The [CLI reference](https://antigravity.google/docs/cli/reference/) documents conversation-ID resume. Authentication, cancellation, permission state, and structured quota reporting still require verification for this integration.
 

@@ -30,7 +30,23 @@ type File struct {
 	AwaitingUser    bool               `json:"awaitingUser"`
 	Completed       bool               `json:"completed,omitempty"`
 	Note            string             `json:"note,omitempty"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
+	// EpisodeHold says a check raised the awaiting-user hold because a
+	// per-episode allowance was spent (re-prompts, nudges, the patience for a
+	// silent provider retry). Only a resume of such a hold starts a new
+	// episode. No command sets it, so holding and resuming by hand refunds
+	// nothing. A resume clears it.
+	EpisodeHold bool `json:"episodeHold,omitempty"`
+	// OpenQuestion is the awaiting-user hold that was outstanding when the
+	// task was declared complete, with its note. Completion ends the hold,
+	// but what a person was being asked is kept until a resume.
+	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
+}
+
+// OpenQuestion records an awaiting-user hold ended by a completion.
+type OpenQuestion struct {
+	Note string    `json:"note,omitempty"`
+	At   time.Time `json:"at"`
 }
 
 // Load reads the control file. A missing file yields a disabled record and

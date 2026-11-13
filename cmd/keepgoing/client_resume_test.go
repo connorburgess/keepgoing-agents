@@ -409,3 +409,64 @@ func TestClientResumeExpiryDuringConsumption(t *testing.T) {
 		t.Fatal("consumption lost")
 	}
 }
+
+// The registered resume, used by local clients, is the same explicit act:
+// it starts a new episode for a hold keepgoing raised for a spent allowance,
+// and for no other.
+func TestClientResumeStartsANewErrorEpisode(t *testing.T) {
+	for _, episodeHold := range []bool{true, false} {
+		f := newResumeFixture(t)
+		if _, err := control.Update(f.entry.StateDir, func(c *control.File) { c.EpisodeHold = episodeHold }); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Save(f.entry.StateDir, state.File{Reprompts: 3, Nudges: 2, HandoffDeferrals: 1, NewThreadsCreated: 1}); err != nil {
+			t.Fatal(err)
+		}
+		p := f.prepare(t)
+		if r, c := f.call("resume", p.Ticket, false, nil); c != 0 || r.ControlSave != "confirmed" || len(r.Issues) != 0 {
+			t.Fatal(c, r)
+		}
+		st, err := state.Load(f.entry.StateDir)
+		want := state.File{Reprompts: 3, Nudges: 2}
+		if episodeHold {
+			want = state.File{ResumeEpisodes: 1}
+		}
+		if err != nil || st.Reprompts != want.Reprompts || st.Nudges != want.Nudges || st.ResumeEpisodes != want.ResumeEpisodes || st.HandoffDeferrals != 0 || st.NewThreadsCreated != 1 {
+			t.Fatalf("episode hold %t: %+v %v", episodeHold, st, err)
+		}
+		j, err := incident.Load(f.entry.StateDir)
+		if c := j.Records[len(j.Records)-1].ControlChange; err != nil || c.Caller != "client" || c.NewEpisode != episodeHold {
+			t.Fatalf("episode hold %t: %+v %v", episodeHold, c, err)
+		}
+		if ctl, _ := control.Load(f.entry.StateDir); ctl.EpisodeHold {
+			t.Fatal("the episode hold survived the resume")
+		}
+	}
+}
+
+// If the counts cannot be saved the registered resume fails with
+// new_episode_unconfirmed and the holds intact. The ticket is spent, as after
+// any failure once it was consumed.
+func TestClientResumeFailsWithHoldsIntactWhenTheEpisodeCannotBeSaved(t *testing.T) {
+	f := newResumeFixture(t)
+	if _, err := control.Update(f.entry.StateDir, func(c *control.File) { c.EpisodeHold = true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(f.entry.StateDir, state.File{Reprompts: 3}); err != nil {
+		t.Fatal(err)
+	}
+	p := f.prepare(t)
+	original := saveEpisodeState
+	t.Cleanup(func() { saveEpisodeState = original })
+	saveEpisodeState = func(string, state.File) error { return errors.New("fictional write failure") }
+	r, c := f.call("resume", p.Ticket, false, nil)
+	if c != exitFailed || r.ControlSave != "not_attempted" || len(r.Issues) != 1 || r.Issues[0] != "new_episode_unconfirmed" {
+		t.Fatal(c, r)
+	}
+	if ctl, _ := control.Load(f.entry.StateDir); !ctl.AwaitingUser || !ctl.Paused || !ctl.EpisodeHold {
+		t.Fatalf("holds changed: %+v", ctl)
+	}
+	if st, _ := state.Load(f.entry.StateDir); st.Reprompts != 3 || st.ResumeEpisodes != 0 {
+		t.Fatalf("%+v", st)
+	}
+}

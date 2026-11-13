@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,19 +244,24 @@ func TestRepromptCapSurvivesActiveChecksBetweenFailures(t *testing.T) {
 }
 
 // The episode ends, and the allowance starts over, when a turn finishes
-// without an error or the active session makes verified Git progress.
+// without an error or the active session makes verified Git progress. Git
+// progress seen while the session is in error does not end it: the check
+// keeps backing off.
 func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
 	for _, tc := range []struct {
 		name      string
 		obs       decide.Observation
 		print     string
+		action    string
 		reprompts int
 	}{
-		{"active_no_progress", decide.Observation{State: decide.Active}, "same", 1},
-		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", 0},
-		{"idle", decide.Observation{State: decide.Idle}, "same", 0},
-		{"error_git_progress", decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, "changed", 1},
-		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", 1},
+		{"active_no_progress", decide.Observation{State: decide.Active}, "same", "none", 1},
+		{"active_git_progress", decide.Observation{State: decide.Active}, "changed", "none", 0},
+		{"idle", decide.Observation{State: decide.Idle}, "same", "wake", 0},
+		{"error_no_progress", failed, "same", "none", 1},
+		{"error_git_progress", failed, "changed", "none", 1},
+		{"retrying", decide.Observation{State: decide.Active, Retrying: true}, "same", "none", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t, true, false)
@@ -274,9 +280,68 @@ func TestRepromptCountResetsOnCleanTurnOrGitProgress(t *testing.T) {
 				t.Fatalf("%+v", r)
 			}
 			p.obs = tc.obs
-			run(time.Minute, tc.print)
-			if st, _ := state.Load(w.dir); st.Reprompts != tc.reprompts {
-				t.Fatalf("reprompts=%d", st.Reprompts)
+			r := run(time.Minute, tc.print)
+			if st, _ := state.Load(w.dir); r.Action != tc.action || st.Reprompts != tc.reprompts {
+				t.Fatalf("%s (%s) reprompts=%d", r.Action, r.Reason, st.Reprompts)
+			}
+		})
+	}
+}
+
+// A session that never leaves error reaches its hold however much the
+// repository changes around it. The Git fingerprint covers every worktree,
+// so lanes, other loops and people change it: a coordinator in error while
+// its lanes commit is the ordinary case. If a change seen on an errored check
+// restarted the count, such a session would be re-prompted for as long as
+// anyone committed, with no backoff and no hold. Each case runs two hours
+// with three re-prompts and a ten-minute backoff, and expects what an
+// unchanged repository gives: three sends, ten minutes apart, then the hold
+// at the next check.
+func TestErroredSessionReachesItsHoldWhateverTheRepositoryDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		commitEvery, check time.Duration
+		maxSends           int64
+	}{
+		{"nothing committed", 0, 10 * time.Minute, 0},
+		{"commit every 5m, check every 10m", 5 * time.Minute, 10 * time.Minute, 0},
+		{"commit every 5m, check every 5m", 5 * time.Minute, 5 * time.Minute, 0},
+		{"commit every 30m, check every 10m", 30 * time.Minute, 10 * time.Minute, 0},
+		{"commit every 5m, max_sends 6", 5 * time.Minute, 10 * time.Minute, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, true, false)
+			w.cfg.Loop.Errors.MaxReprompts = 3
+			w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+			w.cfg.Loop.Limits.MaxSends = tc.maxSends
+			p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
+			var sentAt []time.Duration
+			heldAt := time.Duration(-1)
+			for at := time.Duration(0); at <= 2*time.Hour; at += tc.check {
+				opts := w.opts(t0.Add(at))
+				print := "unchanged"
+				if tc.commitEvery > 0 {
+					print = fmt.Sprintf("commit-%d", at/tc.commitEvery)
+				}
+				opts.Fingerprint = func([]string) (string, error) { return print, nil }
+				before := len(p.sent)
+				r, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(p.sent) > before {
+					sentAt = append(sentAt, at)
+				}
+				if r.Action == "await_user" && heldAt < 0 {
+					heldAt = at
+				}
+			}
+			// The hold is raised by the first check after the third send.
+			if fmt.Sprint(sentAt) != fmt.Sprint([]time.Duration{0, 10 * time.Minute, 20 * time.Minute}) || heldAt != 20*time.Minute+tc.check {
+				t.Fatalf("sends at %v, held at %v; want sends at 0, 10m and 20m and the hold at %v", sentAt, heldAt, 20*time.Minute+tc.check)
+			}
+			if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || !strings.Contains(ctl.Note, "error persisted after re-prompts") {
+				t.Fatalf("%+v", ctl)
 			}
 		})
 	}
@@ -327,8 +392,10 @@ func TestExpiredRetryOnActiveThreadUsesOrdinaryStallBounds(t *testing.T) {
 }
 
 // A rate-limit retry notice on an errored target is honored only while a
-// retry is queued or the reset is within wait_if_reset_within (30m here).
-// With a far reset and nothing queued the ordinary limit rules decide.
+// retry is queued. With a structured reset ahead and nothing queued the
+// ordinary limit rules decide: a far reset hands off or waits, and a reset
+// within wait_if_reset_within (30m here) is recorded as a limit wait, where
+// it used to be recorded as "provider is retrying the turn".
 func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -342,8 +409,9 @@ func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 		{"far reset, no fallback", false, 5 * time.Hour, 0, "none", "limit resets in 5h0m0s; no confirmed fallback"},
 		{"far reset, queued retry, healthy fallback", true, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
 		{"far reset, queued retry, no fallback", false, 5 * time.Hour, 1, "none", "provider is retrying the turn"},
-		{"near reset, healthy fallback", true, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
-		{"near reset, no fallback", false, 20 * time.Minute, 0, "none", "provider is retrying the turn"},
+		{"near reset, healthy fallback", true, 20 * time.Minute, 0, "none", "limit resets in 20m0s; waiting"},
+		{"near reset, no fallback", false, 20 * time.Minute, 0, "none", "limit resets in 20m0s; waiting"},
+		{"near reset, queued retry", true, 20 * time.Minute, 1, "none", "provider is retrying the turn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t, true, tc.fallbacks)
@@ -358,6 +426,7 @@ func TestRateLimitRetryNoticeYieldsToLimitRules(t *testing.T) {
 			if r.Action != tc.action || r.Reason != tc.reason || len(p.sent) != 0 || st.Reprompts != 0 || (r.Handoff != nil) != (tc.action == "handoff") {
 				t.Fatalf("%+v", r)
 			}
+
 		})
 	}
 }

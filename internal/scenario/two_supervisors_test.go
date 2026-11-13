@@ -198,10 +198,16 @@ func TestScenarioTwoSupervisorsOnOneLoop(t *testing.T) {
 		exit(step, 75), check(strings.Contains(r.Stderr, "another daemon is running for example-loop"), "stderr %q", r.Stderr),
 		nothingSent(step),
 	))
-	// So does a check from another thread, before any takeover.
+	// So does a check from another thread, before any takeover: refused for
+	// its owner (exit 1), or skipped because operator A's daemon is in the
+	// middle of a control poll (exit 75), since the tick lock is taken before
+	// ownership is checked. Either way it does no work.
 	r = w.RunAs(operatorB, "tick", "-c", w.Config, "--now", w.stamp())
 	step = w.record("check from operator B", r, nil)
-	w.Check(step, "another thread's check is refused", all(exit(step, 1), check(strings.Contains(r.Stderr, "owned by BB thread "+operatorA), "stderr %q", r.Stderr), nothingSent(step), noCalls(step)))
+	w.Check(step, "another thread's check is refused", all(
+		check(r.Code == 1 && strings.Contains(r.Stderr, "owned by BB thread "+operatorA) ||
+			r.Code == 75 && strings.Contains(r.Stderr, "another tick holds the lock"), "exit %d: %s", r.Code, r.Stderr),
+		nothingSent(step), noCalls(step)))
 
 	// Operator B takes the loop over. The daemon operator A started notices
 	// at its next control check and stops by itself.
