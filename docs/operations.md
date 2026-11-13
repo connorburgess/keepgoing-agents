@@ -339,9 +339,32 @@ Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `reco
 
 - **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.
 - **The session stays stalled.** After `progress.max_nudges` nudges without visible progress, the loop is marked awaiting user and reports `await_user`.
+- **The turn was refused or restricted.** A provider that denied permission, or a model or provider that declined the turn, holds the loop at once with its own note and one `await_user` report; nothing is re-prompted or handed off. A `resume` asks for exactly one more try. See [a refused or restricted turn](#a-refused-or-restricted-turn).
 - **The target is gone.** An archived, deleted, or missing target marks the loop awaiting user and reports `await_user`.
 - **A headless turn was stopped.** Stopping a headless turn ends its process without an exit code, so it reads as an `unknown` error. After `keepgoing resume`, it is re-prompted under the ordinary error rules.
 - **Only `resume` clears a stop.** `enable` does not.
+
+### A refused or restricted turn
+
+Unreleased; **fixture-tested only**. Two error classes mean that someone decided against the request, which is different from a limit or a fault:
+
+- `restricted`: the provider denied permission for the request or the account. Signals: HTTP 403, the codes `permission_denied`, `permission_error`, `forbidden` and `oauth_org_not_allowed`.
+- `refused`: the model or the provider declined the turn itself. Signals: a headless Claude Code result whose `stop_reason` is `refusal`, BB's error category `policy`, and Codex's `cyberPolicy` and `misalignmentPolicyViolation` codes.
+
+When an error carries several structured fields, one of these in any field wins over every other class. The [capability matrix](adapters.md#refusals-and-restrictions-hold) says what each adapter can and cannot detect; a refusal that no structured field reports is still `unknown`, or looks like a finished turn.
+
+What keepgoing does: it holds the loop for a person on that check, with the note `provider denied permission for this request or account; not a limit, so no handoff` or `the model or provider declined this turn; not a limit, so no handoff`, and sends one `await_user` report. It does not re-prompt, does not retry the turn, and never hands off, whatever `errors.failover_on` lists; neither class can be listed there. If the connectivity check is failing, it waits for the network first, like every hold for a session in error.
+
+The way out is a person's decision:
+
+1. Read why. The note says which of the two it was; the provider's own message is in the session, not in keepgoing's records.
+2. Fix the cause where you can: the account's access or plan for `restricted`; the task for `refused` (see [`goal revise`](goals.md), or edit the prompt).
+3. Run `resume`. A resume of a loop held for this reason is your request for one more try: the next check sends exactly one re-prompt to the same session, outside `errors.max_reprompts` and its backoff, which bound keepgoing's own attempts. The loop-wide limits still apply and that send counts against `max_sends`.
+4. If that turn is declined again, the loop holds again and reports again. keepgoing never tries twice for one resume, so repeated resumes cost one send each and nothing more.
+
+Starting a turn in the session by hand also works: once the target no longer shows the declined turn, the loop continues after `resume` with nothing extra sent. `retarget` to a different fallback is a move you make yourself; keepgoing does not make it.
+
+When the loop is on a fallback and the primary's switch-back probe is refused or restricted, switch-back stops after that one probe, with one `switch_back` report, until `resume`, `retarget` or the next handoff. It is not probed again every `retry_every`.
 
 ### A long limit wait with no way out
 
@@ -376,7 +399,7 @@ Unreleased; **fixture-tested only**. A re-prompt, a handoff brief or a fallback 
 
 **What keepgoing sends, by default.** One HTTP `GET https://api.github.com/zen`, with Go's standard `User-Agent` and no loop name, host name, thread ID, token or other identifier. keepgoing contacted no host by itself before this change. It is sent only when one of the following is about to happen, at most once per check, and never in a dry run:
 
-- an error **re-prompt**, a **handoff**, or an **awaiting-user hold for a session in error** (a spent re-prompt cap or an auth error);
+- an error **re-prompt**, a **handoff**, or an **awaiting-user hold for a session in error** (a spent re-prompt cap, an auth error, or a [refused or restricted turn](#a-refused-or-restricted-turn)). While the check fails, that hold is not raised either: the loop waits for connectivity and holds on the first check after it returns;
 - a **stall nudge**, or an **awaiting-user hold for a stalled session** (`no progress after N nudges`, or a provider retry that went silent);
 - any check of an **active session while the last check found the network down**, so the outage is not forgotten and the stall clock stays paused;
 - the first **scheduled fallback probe** that is due;
@@ -405,6 +428,7 @@ For a BB thread, a recovery after an outage is therefore one [turn retry](#recov
   | passes | yes | The provider answered the request. |
   | `rate_limit` | yes | A limit is the provider's own answer to a request that reached it; no CLI reports one without a response. |
   | `overloaded` | yes | As for a rate limit: the provider answered, with a refusal. |
+  | `restricted`, `refused` | yes | A permission or policy decision is the provider's answer to a request that reached it. Counting it keeps a restriction from being mistaken for an outage. |
   | `auth` | no | A CLI can find its stored login expired or missing without making a request, so this says nothing about the network. Treating it as an answer would re-prompt into a dead network. |
   | `network`, `unknown`, a timeout | no | Nothing shows the provider was reached. |
 

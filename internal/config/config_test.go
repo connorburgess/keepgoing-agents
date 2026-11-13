@@ -43,19 +43,18 @@ func TestParseAppliesDefaults(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
-		"wrong version":          strings.Replace(valid, "version: 1", "version: 2", 1),
-		"bad name":               strings.Replace(valid, "example-loop", "Example Loop", 1),
-		"no prompt":              strings.Replace(valid, "  prompt: Continue the loop.\n", "", 1),
-		"unknown field":          valid + "  surprise: true\n",
-		"bad adapter":            strings.Replace(valid, "adapter: bb", "adapter: magic", 1),
-		"process w/o cmds":       strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1), "  bb:\n    thread: thr_example123\n", "  process: {}\n", 1),
-		"claude w/o workdir":     strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: claude", 1), "  bb:\n    thread: thr_example123\n", "  claude: {model: sonnet}\n", 1),
-		"failover on unknown":    valid + "  errors:\n    failover_on: [unknown]\n",
-		"failover on restricted": valid + "  errors:\n    failover_on: [rate_limit, restricted]\n",
-		"bad report event":       valid + "  report:\n    events: [everything]\n",
-		"yield w/o command":      valid + "  yield: {}\n",
-		"bad window day":         valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
-		"bad window time":        valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
+		"wrong version":       strings.Replace(valid, "version: 1", "version: 2", 1),
+		"bad name":            strings.Replace(valid, "example-loop", "Example Loop", 1),
+		"no prompt":           strings.Replace(valid, "  prompt: Continue the loop.\n", "", 1),
+		"unknown field":       valid + "  surprise: true\n",
+		"bad adapter":         strings.Replace(valid, "adapter: bb", "adapter: magic", 1),
+		"process w/o cmds":    strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1), "  bb:\n    thread: thr_example123\n", "  process: {}\n", 1),
+		"claude w/o workdir":  strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: claude", 1), "  bb:\n    thread: thr_example123\n", "  claude: {model: sonnet}\n", 1),
+		"failover on unknown": valid + "  errors:\n    failover_on: [unknown]\n",
+		"bad report event":    valid + "  report:\n    events: [everything]\n",
+		"yield w/o command":   valid + "  yield: {}\n",
+		"bad window day":      valid + "  window:\n    tz: UTC\n    days: {Funday: [\"09:00\", \"17:00\"]}\n",
+		"bad window time":     valid + "  window:\n    tz: UTC\n    days: {Mon: [\"9am\", \"17:00\"]}\n",
 		"bad exit class": strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
 			"  bb:\n    thread: thr_example123\n",
 			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {3: nonsense}\n", 1),
@@ -63,6 +62,27 @@ func TestParseRejects(t *testing.T) {
 	for name, src := range cases {
 		if _, err := Parse([]byte(src)); err == nil {
 			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// A refusal or a restriction is a class an adapter may report, and one a loop
+// can never fail over on: the configuration says why instead of treating it
+// as a misspelled class.
+func TestDeclinedClassesAreReportableButNeverFailoverClasses(t *testing.T) {
+	for _, class := range []string{"restricted", "refused"} {
+		_, err := Parse([]byte(valid + "  errors:\n    failover_on: [rate_limit, " + class + "]\n"))
+		if err == nil || !strings.Contains(err.Error(), "is not a limit and never causes a handoff") {
+			t.Errorf("failover_on %s: %v", class, err)
+		}
+		reported := strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
+			"  bb:\n    thread: thr_example123\n",
+			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {78: "+class+"}\n", 1)
+		if _, err := Parse([]byte(reported)); err != nil {
+			t.Errorf("exit_codes mapped to %s: %v", class, err)
+		}
+		if !ValidErrorClass(class) {
+			t.Errorf("%s is not a reportable class", class)
 		}
 	}
 }

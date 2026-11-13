@@ -126,14 +126,42 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrRateLimit
 	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
-	case "restricted", "permission_denied", "permission_error", "forbidden":
+	case "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
 		return decide.ErrRestricted
+	// "policy" is BB's typed category for a provider's policy block; the two
+	// Codex identifiers are what BB's Codex provider maps to it.
+	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
+		return decide.ErrRefused
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
 	case "network", "econnreset", "econnrefused", "etimedout", "enotfound", "timeout", "connection_error", "stream-disconnected", "stream_disconnected", "responsestreamdisconnected":
 		return decide.ErrNetwork
 	}
 	return decide.ErrUnknown
+}
+
+// Classify classifies an error that carries several structured fields. A
+// refusal or a restriction in any field wins over every other class: a
+// provider that reports "unauthorized" together with HTTP 403, or a policy
+// block together with a rate-limit code, has declined the request, and that
+// must never read as a login or a limit a loop may fail over on. Otherwise
+// the first field that maps to a known class decides.
+func Classify(codes ...string) decide.ErrorClass {
+	first, restricted := decide.ErrUnknown, false
+	for _, c := range codes {
+		switch cl := ClassifyCode(c); {
+		case cl == decide.ErrRefused:
+			return cl
+		case cl == decide.ErrRestricted:
+			restricted = true
+		case first == decide.ErrUnknown:
+			first = cl
+		}
+	}
+	if restricted {
+		return decide.ErrRestricted
+	}
+	return first
 }
 
 // ParseState maps a provider's status string onto the engine's states.

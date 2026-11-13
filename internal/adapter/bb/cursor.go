@@ -251,15 +251,22 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 	return true
 }
 
+// summarySchema versions how a summary is derived from the log. 2: a
+// forbidden or declined provider error is its own class, so a summary that
+// cached such an error as auth is derived again.
+const summarySchema = 2
+
 // scan reads every event after the cursor and returns the updated summary.
 // ok is false when the log could not be read; the summary is then stale.
 func (a *Adapter) scan(ctx context.Context) (Cursor, bool) {
 	c := a.loadCursor()
-	if c.RetrySchema != 1 {
+	if c.RetrySchema != summarySchema {
 		// Rebuild old summaries once: they may have consumed recovery events or
-		// cleared errors on queued input. PollWake retains the old LastSeq as
-		// its delivery watermark, so this scan cannot replay old child notices.
-		c = Cursor{Thread: a.cfg.Thread, RetrySchema: 1}
+		// cleared errors on queued input, and they keep the error class as it
+		// was derived when the event was read. PollWake retains the old
+		// LastSeq as its delivery watermark, so this scan cannot replay old
+		// child notices.
+		c = Cursor{Thread: a.cfg.Thread, RetrySchema: summarySchema}
 	}
 	seenAt := a.now().UTC()
 	if c.LastSeq > 0 && c.LastEventAt.IsZero() {

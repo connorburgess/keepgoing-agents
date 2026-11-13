@@ -272,15 +272,9 @@ func httpCode(p *int) string {
 	return fmt.Sprint(*p)
 }
 
-// firstKnown classifies the first code that maps to a known class.
-func firstKnown(codes ...string) decide.ErrorClass {
-	for _, c := range codes {
-		if cl := adapter.ClassifyCode(c); cl != decide.ErrUnknown {
-			return cl
-		}
-	}
-	return decide.ErrUnknown
-}
+// firstKnown classifies an error from its structured fields: a refusal or
+// restriction in any of them wins, otherwise the first known class.
+func firstKnown(codes ...string) decide.ErrorClass { return adapter.Classify(codes...) }
 
 // pendingInteraction reports whether the thread has an unresolved
 // interaction. It reads `bb thread interactions list --json`; if that fails

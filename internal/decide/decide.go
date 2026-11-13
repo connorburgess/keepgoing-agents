@@ -35,11 +35,13 @@ const (
 	ErrNone      ErrorClass = "none"
 	ErrRateLimit ErrorClass = "rate_limit"
 	ErrAuth      ErrorClass = "auth"
-	// ErrRestricted is a provider declining the request for this account:
-	// forbidden, permission denied, a policy block or an account
-	// restriction. It is not a limit. It holds for a person and can never
-	// cause a move to another route.
+	// ErrRestricted is a provider denying permission for the request or the
+	// account: forbidden, permission denied, an organisation not allowed.
+	// ErrRefused is the model or the provider declining the turn itself: a
+	// refusal, a policy block. Neither is a limit. Both hold for a person
+	// and can never cause a move to another route.
 	ErrRestricted ErrorClass = "restricted"
+	ErrRefused    ErrorClass = "refused"
 	ErrOverloaded ErrorClass = "overloaded"
 	ErrNetwork    ErrorClass = "network"
 	ErrUnknown    ErrorClass = "unknown"
@@ -140,6 +142,9 @@ type Input struct {
 	// the primary's limit has had time to reset. The tick still confirms the
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
+	// DeclineAcknowledged: the loop was held because this session's turn was
+	// refused or restricted, and a person has since resumed it.
+	DeclineAcknowledged bool
 
 	// UnannouncedErroredChildren counts errored children the session has not
 	// been told about. Children it was told about that are still in error do
@@ -374,9 +379,27 @@ func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges in
 	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
 }
 
-// RestrictedReason is the reason recorded when a session's error is a
-// provider refusal or restriction.
-const RestrictedReason = "provider refused or restricted the request; not a limit, so no handoff"
+// Declined reports whether an error class is a provider's or a model's
+// decision about the request, as opposed to a limit or a fault.
+func Declined(c ErrorClass) bool { return c == ErrRestricted || c == ErrRefused }
+
+// The fixed reasons for a session whose error is such a decision. They never
+// carry provider text.
+const (
+	RestrictedReason = "provider denied permission for this request or account; not a limit, so no handoff"
+	RefusedReason    = "the model or provider declined this turn; not a limit, so no handoff"
+	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
+	// resuming a loop held for either reason.
+	DeclineAcknowledgedReason = "resumed by a person after a refusal or restriction; one re-prompt"
+)
+
+// declineReason is the hold reason for a declined class.
+func declineReason(c ErrorClass) string {
+	if c == ErrRefused {
+		return RefusedReason
+	}
+	return RestrictedReason
+}
 
 // decideError bounds recovery from an errored session. A handoff happens
 // only for an error class the loop is configured to fail over on, and only
@@ -395,8 +418,15 @@ func decideError(in Input) Decision {
 	// Ahead of the handoff rule: a provider that refused or restricted the
 	// request has made a decision about the work or the account. Moving to
 	// another route, or prompting again, would be a way around it.
-	if o.ErrorClass == ErrRestricted {
-		return Decision{Action: AwaitUser, Reason: RestrictedReason}
+	if Declined(o.ErrorClass) {
+		// A person who resumes the loop held for this has seen the reason
+		// and asks for another try: exactly one, outside the re-prompt cap
+		// and its backoff, which bound keepgoing's own attempts. A turn that
+		// is declined again holds again.
+		if in.DeclineAcknowledged {
+			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
+		}
+		return Decision{Action: AwaitUser, Reason: declineReason(o.ErrorClass)}
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {

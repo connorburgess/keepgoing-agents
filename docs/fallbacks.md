@@ -316,7 +316,7 @@ BB candidates still use the account selected by BB. Setting `probe.env` only cha
 
 A handoff happens only when all of these hold:
 
-1. The active target is in error, with a class listed in `errors.failover_on`. The default is `rate_limit` only. A `restricted` error, which is a provider refusing or restricting the request, can never be listed and never causes a handoff (unreleased source); the loop holds for a person.
+1. The active target is in error, with a class listed in `errors.failover_on`. The default is `rate_limit` only. A `restricted` or `refused` error, which is a provider denying permission or a model or provider declining the turn, can never be listed and never causes a handoff (unreleased source); the loop holds for a person. A switch-back probe of the primary that comes back with either stops switch-back until a person acts.
 2. The provider did not report a reset within `errors.wait_if_reset_within`.
 3. The redundancy rule is met.
 4. A candidate passes its exact probe in the same tick.

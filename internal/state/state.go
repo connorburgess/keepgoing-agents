@@ -88,6 +88,13 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
+	// DeclineHeldTarget is the target whose refused or restricted turn the
+	// loop was last held for. While that turn is still what the target
+	// shows, a check that runs at all means a person resumed the loop, which
+	// is their request for one more try. Cleared when that try has been
+	// attempted or the target no longer shows a declined turn.
+	DeclineHeldTarget string    `json:"declineHeldTarget,omitempty"`
+	DeclineHeldAt     time.Time `json:"declineHeldAt,omitempty"`
 	// ChildErrorsAnnounced covers the errored children the session has been
 	// told about, by hash, never by ID. A child is dropped once it has stayed
 	// out of error for min_wake_interval; the record is bounded.

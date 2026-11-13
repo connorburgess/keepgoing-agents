@@ -108,22 +108,17 @@ func claudeResult(stdout []byte) (ClaudeResult, []byte, bool) {
 // Class classifies a failed result from structured fields only.
 func (r ClaudeResult) Class() decide.ErrorClass {
 	if r.Refused() {
-		return decide.ErrRestricted
+		return decide.ErrRefused
 	}
+	status := ""
 	switch v := r.APIErrorStatus.(type) {
 	case float64:
-		if cl := adapter.ClassifyCode(strconv.Itoa(int(v))); cl != decide.ErrUnknown {
-			return cl
-		}
+		status = strconv.Itoa(int(v))
 	case string:
-		if cl := adapter.ClassifyCode(v); cl != decide.ErrUnknown {
-			return cl
-		}
+		status = v
 	}
-	if cl := adapter.ClassifyCode(r.TerminalReason); cl != decide.ErrUnknown {
-		return cl
-	}
-	return adapter.ClassifyCode(r.Subtype)
+	// A restriction in any field wins; otherwise the first known class.
+	return adapter.Classify(status, r.TerminalReason, r.Subtype)
 }
 
 // claudeArgv builds the claude argv for one turn.
@@ -163,6 +158,9 @@ func judgeClaudeProbe(stdout []byte, code int) ProbeVerdict {
 	switch {
 	case !ok:
 		v.Class, v.Detail = decide.ErrUnknown, "no result object"
+	case r.Refused():
+		// A declined probe is not a healthy candidate, whatever the exit code.
+		v.Class, v.Detail = decide.ErrRefused, "stop_reason=refusal"
 	case !r.IsError && code == 0:
 		v.OK, v.Detail = true, "subtype="+r.Subtype
 	default:

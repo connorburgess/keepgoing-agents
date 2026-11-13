@@ -125,15 +125,59 @@ func TestObserveStructuredRateLimit(t *testing.T) {
 // the work. It is its own class, so it can never be treated as a login to
 // fail over from.
 func TestObserveForbiddenIsRestricted(t *testing.T) {
-	for _, log := range []string{
-		"[" + turnStarted + "," + providerError("unknown", 403, "unknown", nil) + "]",
-		"[" + turnStarted + "," + providerError("unknown", nil, "permission_denied", nil) + "]",
+	for _, tc := range []struct {
+		event string
+		want  decide.ErrorClass
+	}{
+		// The shapes BB's bundled Claude Code provider (BB 0.48.1) produces:
+		// it gives HTTP 401 and 403 the same category, "unauthorized", and
+		// the code "unknown" when it classified from the status alone. Read
+		// from BB's provider code, not captured from a live thread.
+		{providerError("unauthorized", 403, "unknown", nil), decide.ErrRestricted},
+		{providerError("unauthorized", 403, "authentication_failed", nil), decide.ErrRestricted},
+		{providerError("unauthorized", nil, "oauth_org_not_allowed", nil), decide.ErrRestricted},
+		{providerError("unauthorized", 401, "unknown", nil), decide.ErrAuth},
+		{providerError("unauthorized", 401, "authentication_failed", nil), decide.ErrAuth},
+		{providerError("unauthorized", nil, "authentication_failed", nil), decide.ErrAuth},
+		{providerError("unknown", nil, "permission_denied", nil), decide.ErrRestricted},
+		// A restriction outranks a limit reported beside it.
+		{providerError("rate-limit", 403, "rate_limit_event", nil), decide.ErrRestricted},
 	} {
-		a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+		a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+tc.event+"]", false)
 		obs, _ := a.Observe(context.Background())
-		if obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
-			t.Errorf("%+v", obs)
+		if obs.State != decide.Error || obs.ErrorClass != tc.want {
+			t.Errorf("%s: %+v, want %s", tc.event, obs, tc.want)
 		}
+	}
+}
+
+// BB's typed category for a provider's policy block, which its Codex provider
+// reports for cyberPolicy and misalignmentPolicyViolation, is a refusal.
+func TestObservePolicyBlockIsRefused(t *testing.T) {
+	for _, event := range []string{
+		providerError("policy", nil, "cyberPolicy", nil),
+		providerError("policy", nil, "misalignmentPolicyViolation", nil),
+		providerError("policy", nil, "", nil),
+		providerError("policy", 429, "rate_limit_event", nil),
+	} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+event+"]", false)
+		obs, _ := a.Observe(context.Background())
+		if obs.State != decide.Error || obs.ErrorClass != decide.ErrRefused {
+			t.Errorf("%s: %+v", event, obs)
+		}
+	}
+}
+
+// A summary saved by an earlier build keeps the class it derived then. One
+// that cached a forbidden error as auth is derived again from the log.
+func TestSummaryFromAnEarlierBuildIsDerivedAgain(t *testing.T) {
+	log := "[" + turnStarted + "," + providerError("unauthorized", 403, "unknown", nil) + "]"
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	stale := Cursor{Thread: "thr_example123", RetrySchema: 1, LastSeq: 2, Error: &errorSignal{Class: decide.ErrAuth, Seq: 2}}
+	a.mem = &stale
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRestricted {
+		t.Fatalf("a cached auth class survived the upgrade: %+v", obs)
 	}
 }
 

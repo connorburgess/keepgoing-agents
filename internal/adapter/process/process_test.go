@@ -70,6 +70,11 @@ func TestObserveRestricted(t *testing.T) {
 	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
 		t.Errorf("%+v %v", obs, err)
 	}
+	a = New(config.Process{StatusCommand: []string{script(t, `exit 79`, "exit /b 79")}, ExitCodes: map[int]string{79: "refused"}})
+	obs, err = a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRefused {
+		t.Errorf("%+v %v", obs, err)
+	}
 }
 
 func TestObserveBadJSONIsUnknown(t *testing.T) {

@@ -321,7 +321,7 @@ func cleanProbes(p Probes) Probes {
 			r.TargetKey = "unavailable"
 		}
 		r.Tier = oneOf(r.Tier, "unavailable", "scheduled", "exact")
-		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "overloaded", "network", "unknown")
+		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown")
 	}
 	return p
 }
@@ -476,7 +476,7 @@ func clean(r Record) Record {
 		*o = Observation{Availability: o.Availability}
 	}
 	o.State = oneOf(o.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
-	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "overloaded", "network", "unknown")
+	o.ErrorClass = oneOf(o.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown")
 	o.Retry = oneOf(o.Retry, "unavailable", "retrying", "not_retrying", "unverified", "expired", "declined")
 	o.SourceTime = "unavailable"
 	d := evidence.Clean(evidence.Detail{Source: o.Source, Category: o.Category, Code: o.ProviderCode, HTTPStatus: o.HTTPStatus, ExitCode: o.ExitCode})
@@ -524,6 +524,12 @@ func Cause(reason string) string {
 		return "child_unverified"
 	case "waiting on a person (pending interaction)":
 		return "input"
+	case decide.RestrictedReason:
+		return "restricted"
+	case decide.RefusedReason:
+		return "refused"
+	case decide.DeclineAcknowledgedReason:
+		return "decline_acknowledged"
 	}
 	for _, c := range []struct{ prefix, code string }{
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
@@ -548,7 +554,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "restricted", "refused", "decline_acknowledged", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

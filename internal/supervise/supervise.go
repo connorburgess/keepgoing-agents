@@ -602,6 +602,14 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	// A loop held for a refused or restricted turn runs no check until a
+	// person resumes it. Reaching this point with that same turn still
+	// showing therefore means a person resumed: their request for one try.
+	declined := obs.State == decide.Error && decide.Declined(obs.ErrorClass)
+	if !declined || t.st.DeclineHeldTarget != target {
+		t.st.DeclineHeldTarget, t.st.DeclineHeldAt = "", time.Time{}
+	}
+	in.DeclineAcknowledged = declined && t.st.DeclineHeldTarget == target
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -1045,7 +1053,7 @@ func (t *tick) switchBackReady(target string) bool {
 	}
 	// retry_every already spaces attempts; the cap ends them.
 	if decide.BriefGate(decide.BriefAttempts{Failed: t.st.SwitchBackRejected}, t.now, t.loop.Errors.MaxReprompts, 0) == decide.BriefCapped {
-		t.warn("switch-back stopped: the primary rejected %d switch-back briefs; staying on %s until resume, retarget or the next handoff", t.st.SwitchBackRejected, target)
+		t.warn("switch-back stopped: the primary rejected switch-back briefs, or the provider refused or restricted its probe (count %d); staying on %s until resume, retarget or the next handoff", t.st.SwitchBackRejected, target)
 		return false
 	}
 	return t.st.LastSwitchBackTry.IsZero() || t.now.Sub(t.st.LastSwitchBackTry) >= sb.RetryEvery.Duration
@@ -1083,6 +1091,14 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.incidentProbes.Add(state.Primary, string(r.Tier), r.OK, r.ErrorClass)
 	if !r.OK {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
+		if decide.Declined(decide.ErrorClass(r.ErrorClass)) && t.st.SwitchBackRejected < t.loop.Errors.MaxReprompts {
+			// The provider refused or restricted the primary. Asking again
+			// every retry_every would press it without end: stop here, as
+			// after the last rejected brief, until a person acts.
+			t.st.SwitchBackRejected = t.loop.Errors.MaxReprompts
+			t.report("switch_back", fmt.Sprintf("%s: switch-back stopped: the provider refused or restricted the primary's probe (%s); staying on %s until resume, retarget or the next handoff", t.loop.Name, r.ErrorClass, from),
+				map[string]any{"from": from, "to": state.Primary, "stopped": true, "declined": r.ErrorClass})
+		}
 		return false, nil
 	}
 	brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
@@ -1174,6 +1190,11 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
 		// per-episode caps and spacing.
+		if d.Reason == decide.DeclineAcknowledgedReason {
+			// The one try a person asked for has been made, whatever it
+			// returned. A turn declined again holds again.
+			t.st.DeclineHeldTarget, t.st.DeclineHeldAt = "", time.Time{}
+		}
 		c := decide.Attempted(d.Action, decide.Counters{
 			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
 		}, t.now)
@@ -1190,6 +1211,10 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	case decide.AwaitUser:
 		if _, err := control.Update(loop.StateDir, func(f *control.File) { f.AwaitingUser, f.Note = true, d.Reason }); err != nil {
 			return err
+		}
+		if d.Reason == decide.RestrictedReason || d.Reason == decide.RefusedReason {
+			// Saved only once the hold is: see the check before the decision.
+			t.st.DeclineHeldTarget, t.st.DeclineHeldAt = t.res.Target, t.now
 		}
 		data := map[string]any{"target": t.res.Target}
 		if len(t.awaitingChildren) > 0 {
@@ -1631,7 +1656,7 @@ func (t *tick) verifyOutage() {
 		tested = true
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: probe.Exact, OK: r.OK, ErrorClass: r.ErrorClass, Detail: "connectivity verification"})
 		switch decide.ErrorClass(r.ErrorClass) {
-		case decide.ErrRateLimit, decide.ErrOverloaded:
+		case decide.ErrRateLimit, decide.ErrOverloaded, decide.ErrRestricted, decide.ErrRefused:
 			r.OK = true // the provider answered: the network works
 		}
 		if r.OK {

@@ -60,8 +60,11 @@ type world struct {
 	dir      string
 	adapters map[string]*fakeAdapter
 	probeOK  map[string]bool // exact and scheduled outcome per candidate
-	probes   []string
-	reports  []report.Event
+	// probeClass overrides the error class a failed probe of a candidate
+	// reports; rate_limit when unset.
+	probeClass map[string]string
+	probes     []string
+	reports    []report.Event
 }
 
 func (w *world) Report(_ context.Context, e report.Event) error {
@@ -84,6 +87,9 @@ func (w *world) opts(now time.Time) Options {
 			w.probes = append(w.probes, c.ID+":"+string(tier))
 			if w.probeOK[c.ID] {
 				return probe.Result{OK: true}
+			}
+			if class, ok := w.probeClass[c.ID]; ok {
+				return probe.Result{ErrorClass: class}
 			}
 			return probe.Result{ErrorClass: "rate_limit"}
 		},

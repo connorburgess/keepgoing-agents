@@ -76,7 +76,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 
 ### Structured error classes
 
-Classify a failure as rate_limit, auth, restricted, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
+Classify a failure as rate_limit, auth, restricted, refused, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
 
 - **BB thread:** yes, evidence live. From real provider error and rate-limit events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveStructuredRateLimit`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
@@ -87,14 +87,14 @@ Classify a failure as rate_limit, auth, restricted, overloaded or network from s
 
 ### Refusals and restrictions hold
 
-Recognise a provider refusing or restricting the request, from a structured field, as its own class. It holds for a person at once; it is never re-prompted and never causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.
+Recognise, from a structured field, a provider denying permission (restricted) or a model or provider declining the turn (refused). Either holds for a person at once and never causes a handoff; a person's resume asks for exactly one more try. A refusal no structured field reports stays unknown or looks like a finished turn.
 
-- **BB thread:** partial, evidence fixture. A provider error carrying HTTP 403 or a permission code is restricted. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. [`TestObserveForbiddenIsRestricted`](../internal/adapter/bb/bb_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
-- **Claude Code headless:** yes, evidence fixture. HTTP 403 in api_error_status, and stop_reason "refusal" in the result object, which Claude Code documents for a declined turn. Neither has been captured from the real CLI. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
-- **Codex headless:** partial, evidence fixture. An event carrying HTTP 403 or a permission code is restricted. The documented event stream has no refusal or policy field and usually carries a failure only as a message, so a refusal is unknown or looks like a finished turn. [`TestParseCodexEventsRestricted`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **BB thread:** partial, evidence fixture. Restricted: a provider error with HTTP 403, a permission code or oauth_org_not_allowed, in any field, including BB's category "unauthorized" with status 403. Refused: BB's category "policy". Shapes read from BB 0.48.1's bundled providers, not captured live. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. [`TestObserveForbiddenIsRestricted`](../internal/adapter/bb/bb_test.go) [`TestObservePolicyBlockIsRefused`](../internal/adapter/bb/bb_test.go) [`TestDeclinedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Claude Code headless:** yes, evidence fixture. Restricted: HTTP 403 in api_error_status, or a permission code in any result field. Refused: stop_reason "refusal", which Claude Code documents for a declined turn, whether or not the result is marked as an error. Neither has been captured from the real CLI. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go) [`TestDeclinedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Codex headless:** partial, evidence fixture. Restricted: an event carrying HTTP 403 or a permission code. Refused: the codes cyberPolicy and misalignmentPolicyViolation, or the type policy. Whether codex exec prints those codes was not captured; a failure carried only as a message is unknown or looks like a finished turn. [`TestParseCodexEventsRestricted`](../internal/adapter/runner/runner_test.go) [`TestDeclinedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
 - **Cursor headless:** missing, evidence none. Every failure is unknown.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted, or an exit code is mapped to it. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted or refused, or an exit code is mapped to either. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestDeclinedHoldsAndNeverMoves`](../internal/decide/restricted_test.go)
 
 ### Stale retry-notice expiry
 

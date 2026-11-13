@@ -408,7 +408,7 @@ func TestRetryNoticeWithoutUsableEventTime(t *testing.T) {
 // scan after the upgrade, without rereading the log.
 func TestLegacyRetrySummaryIsAgedFromFirstScan(t *testing.T) {
 	dir := t.TempDir()
-	legacy := Cursor{Thread: "thr_example123", RetrySchema: 1, LastSeq: 2, Error: &errorSignal{Class: decide.ErrNetwork, WillRetry: true, RetryKnown: true}}
+	legacy := Cursor{Thread: "thr_example123", RetrySchema: summarySchema, LastSeq: 2, Error: &errorSignal{Class: decide.ErrNetwork, WillRetry: true, RetryKnown: true}}
 	b, _ := json.Marshal(legacy)
 	if err := os.WriteFile(filepath.Join(dir, "bb-cursor.json"), b, 0o600); err != nil {
 		t.Fatal(err)

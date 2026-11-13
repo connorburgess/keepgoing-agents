@@ -335,6 +335,7 @@
                     "rate_limit",
                     "auth",
                     "restricted",
+                    "refused",
                     "overloaded",
                     "network",
                     "unknown"
@@ -466,6 +467,7 @@
                 "rate_limit",
                 "auth",
                 "restricted",
+                "refused",
                 "overloaded",
                 "network",
                 "unknown"
