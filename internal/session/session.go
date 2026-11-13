@@ -41,10 +41,11 @@ import (
 // different directories do not see each other's claims.
 const DirEnv = "KEEPGOING_SESSION_DIR"
 
-// stateHome is the user's state directory: $XDG_STATE_HOME or ~/.local/state
-// on Linux and other Unix systems, Application Support on macOS, and the
-// local application data folder on Windows.
-func stateHome() (string, error) {
+// StateHome is the user's state directory, where keepgoing keeps runtime
+// files that belong to no single loop: $XDG_STATE_HOME or ~/.local/state on
+// Linux and other Unix systems, Application Support on macOS, and the local
+// application data folder on Windows.
+func StateHome() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return os.UserConfigDir() // ~/Library/Application Support
@@ -69,7 +70,7 @@ func stateHome() (string, error) {
 func Dir() (string, error) {
 	dir := os.Getenv(DirEnv)
 	if dir == "" {
-		base, err := stateHome()
+		base, err := StateHome()
 		if err != nil {
 			return "", errors.New("the user state directory is unavailable")
 		}

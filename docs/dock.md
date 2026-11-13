@@ -68,8 +68,10 @@ Two servers cannot persist. A server removes only the socket and the record it c
 | `--no-open` | off | Print the opening address. It still works once, within 30 seconds. |
 | `--idle 30m` | `30m` | Idle limit for a server this command starts. A running server keeps its own. |
 | `--directory DIR` | the default registry | A non-default private registry. A running panel for another registry is refused; stop it first. |
-| `--panel-directory DIR` | `keepgoing/panel` in the user configuration directory | Where the runtime files below live. |
+| `--panel-directory DIR` | `keepgoing/panel` in the user state directory (`~/.local/state` or `$XDG_STATE_HOME` on Linux, `~/Library/Application Support` on macOS), beside the [session claims](operations.md#one-loop-per-session) | Where the runtime files below live. |
 | `--refresh`, `--stale-after`, `--offline` | as for `dock` | Passed to a server this command starts. |
+
+**Earlier location.** Builds before this kept the runtime files in `keepgoing/panel` under the user configuration directory, which on Linux is `~/.config`. The first `keepgoing panel` command that uses the default directory looks there once: a panel server that an earlier build started is stopped, so it is not left running unseen, and that directory's runtime files and the directory itself are removed. After that the old place is not read again. A server there that does not stop is left, and the next command tries again. On macOS both places are the same and nothing moves.
 
 **Runtime files.** They live in one private directory (mode `0700`, never a loop's directory, never inside a Git checkout): `panel-server.lock` and `panel-open.lock`, `panel.sock` (the private socket, created private), `panel.json` (mode `0600`: process ID, port, start time, idle limit, registry directory, version and an instance ID) and, for up to 30 seconds each, launch pages named `open-<random>.html`. Only a launch page holds anything that can open the panel, and only until it is used or expires. If the directory's path is too long for a local socket on this platform the command stops and says so before creating anything; it never falls back to anything weaker.
 

@@ -1563,3 +1563,74 @@ func TestPanelServerRemovesOnlyItsOwnSocketAndExitsWithoutItsLock(t *testing.T) 
 		t.Fatalf("it removed a record it did not write: %+v %v", rec, ok)
 	}
 }
+
+// A panel server an earlier build started in the configuration directory is
+// found and stopped by the first command that uses the default directory,
+// and the old directory is removed, so it is never looked at again.
+func TestPanelRetiresTheOldLocationOnce(t *testing.T) {
+	root := t.TempDir()
+	registryDir := dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	oldBase, newBase := panelShortDir(t), panelShortDir(t)
+	prevState, prevLegacy := panelStateBase, panelLegacyBase
+	panelStateBase = func() (string, error) { return newBase, nil }
+	panelLegacyBase = func() (string, error) { return oldBase, nil }
+	t.Cleanup(func() { panelStateBase, panelLegacyBase = prevState, prevLegacy })
+	legacy := filepath.Join(oldBase, "keepgoing", "panel")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: legacy, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), legacy); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the old server did not start")
+		}
+	}
+	var out, errs bytes.Buffer
+	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"status"}); code != exitOK || !strings.Contains(out.String(), "not running") {
+		t.Fatalf("status: %d %s %s", code, out.String(), errs.String())
+	}
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Fatalf("the old server exited %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old server was not stopped")
+	}
+	if _, err := os.Lstat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the old directory is still there: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(newBase, "keepgoing", "panel")); err != nil || !info.IsDir() {
+		t.Fatalf("the new directory: %v", err)
+	}
+	// Nothing at the old place is created again.
+	out.Reset()
+	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"status"}); code != exitOK {
+		t.Fatal(code)
+	}
+	if _, err := os.Lstat(legacy); !os.IsNotExist(err) {
+		t.Fatal("the old directory came back")
+	}
+	// A directory that is not private, or the same place as the new one, is
+	// not touched.
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, panelRecordName), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	panelCommand(env{context.Background(), &out, &errs}, []string{"status"})
+	if _, err := os.Lstat(filepath.Join(legacy, panelRecordName)); err != nil {
+		t.Fatal("a directory that is not private was cleared")
+	}
+}

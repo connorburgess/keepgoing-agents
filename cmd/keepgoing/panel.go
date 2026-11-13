@@ -20,6 +20,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
@@ -100,18 +101,74 @@ func panelSocketLimit() int {
 	}
 }
 
+// The panel's runtime files live under the user's state directory, beside
+// the session claims. Builds before this kept them under the configuration
+// directory, which is a different place on Linux; see panelRetireLegacy.
+var (
+	panelStateBase  = session.StateHome
+	panelLegacyBase = os.UserConfigDir
+)
+
 // panelDirectory resolves the private directory for the record, the locks and
-// the socket: the same parent the registry uses, never a loop's directory and
-// never inside a Git checkout. It creates the directory when missing.
+// the socket: never a loop's directory and never inside a Git checkout. It
+// creates the directory when missing.
 func panelDirectory(path string) (string, error) {
 	bad := errors.New("the panel directory must be a private path outside Git checkouts")
-	if path == "" {
-		base, err := os.UserConfigDir()
+	defaulted := path == ""
+	if defaulted {
+		base, err := panelStateBase()
 		if err != nil {
 			return "", bad
 		}
 		path = filepath.Join(base, "keepgoing", "panel")
 	}
+	dir, err := panelPrivateDirectory(path, bad)
+	if err == nil && defaulted {
+		panelRetireLegacy(dir)
+	}
+	return dir, err
+}
+
+// panelRetireLegacy deals once with the directory an earlier build used. A
+// panel server that build started is found there and stopped, so it is not
+// left running unseen; then its runtime files and the directory are
+// removed, and it is never looked at again. A server that does not stop is
+// left, and the next command tries again.
+func panelRetireLegacy(current string) {
+	base, err := panelLegacyBase()
+	if err != nil {
+		return
+	}
+	legacy := filepath.Join(base, "keepgoing", "panel")
+	if session.CleanPath(legacy) == session.CleanPath(current) {
+		return // the same place on this platform
+	}
+	if info, err := os.Lstat(legacy); err != nil || !info.IsDir() || registry.CheckDirectory(legacy) != nil {
+		return // nothing there, or nothing of ours to touch
+	}
+	if panelServerHeld(legacy) {
+		if _, err := panelControl(context.Background(), legacy, panelRequest{Op: "stop"}); err != nil {
+			return
+		}
+		stopped := false
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if !panelServerHeld(legacy) {
+				stopped = true
+				break
+			}
+		}
+		if !stopped {
+			return
+		}
+	}
+	panelRemoveLeftovers(legacy)
+	for _, name := range []string{panelOpenLock + ".lock", panelServerLock + ".lock"} {
+		_ = os.Remove(filepath.Join(legacy, name))
+	}
+	_ = os.Remove(legacy) // only if it is now empty
+}
+
+func panelPrivateDirectory(path string, bad error) (string, error) {
 	dir, err := canonicalFuturePath(path)
 	if err != nil {
 		return "", bad
