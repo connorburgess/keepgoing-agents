@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
@@ -69,6 +70,33 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// ChildErrorReport is set while any child of the supervised thread is in
+	// error, so its report is not repeated by later checks or after a restart.
+	ChildErrorReport *ChildErrorReport `json:"childErrorReport,omitempty"`
+}
+
+// ChildErrorReport outcomes; the first three mean what the limit-wait ones do.
+const (
+	ChildReportRequested     = "requested"
+	ChildReportFailed        = "delivery_failed"
+	ChildReportNotSubscribed = "not_subscribed"
+	ChildReportCapped        = "capped" // newly errored children were seen after the episode's last report
+)
+
+// ChildErrorReport describes the owner reports for one episode of errored
+// children: from the first child seen in error until every covered child has
+// been out of error long enough to be forgotten. Children holds hashes, never
+// child IDs, and is bounded.
+type ChildErrorReport struct {
+	Children   []decide.ReportedChild `json:"children,omitempty"`
+	Reports    int                    `json:"reports,omitempty"` // report attempts in this episode
+	Outcome    string                 `json:"outcome"`
+	DetectedAt time.Time              `json:"detectedAt"`
+	// What the detecting check saw. Complete is false when the child listing
+	// was incomplete, so the counts are lower bounds.
+	Errored  int  `json:"errored"`
+	Running  int  `json:"running"`
+	Complete bool `json:"complete"`
 }
 
 // LimitWaitReport outcomes.
@@ -100,6 +128,7 @@ type BriefRecord struct {
 // belong to one thread, so it is called whenever the loop's target changes.
 func (f *File) ClearChildErrors() {
 	f.ChildErrorsAnnounced, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, "", 0
+	f.ChildErrorReport = nil
 }
 
 // ClearBriefs starts a new episode for handoff and switch-back briefs.

@@ -187,9 +187,10 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 	}
 	attempts := 2
 	client := w.client
-	// A limit_wait report is requested once per wait and, like a completion,
-	// makes one attempt: an uncertain delivery must not page a person twice.
-	if e.Type == "complete" || e.Type == "limit_wait" {
+	// A limit_wait or child_error report is requested once and, like a
+	// completion, makes one attempt: an uncertain delivery must not page a
+	// person twice.
+	if e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

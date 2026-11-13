@@ -88,6 +88,10 @@ type Observation struct {
 	// ActiveChildIDs names the children counted in ActiveChildren, for the
 	// run graph only. It is diagnostic and never changes Decide policy.
 	ActiveChildIDs []string
+	// HealthyChildren contains verified direct child IDs with a known status
+	// other than error. Decide never reads it; the owner report uses it to
+	// tell a child that recovered from one an incomplete listing did not show.
+	HealthyChildren []string
 }
 
 // Control is the operator's gate.
@@ -464,6 +468,108 @@ func ChildAnnouncements(errored, announced []string) (kept, unannounced []string
 		}
 	}
 	return kept, unannounced
+}
+
+// ChildReport says what to do about telling the owner that children are in
+// error. It is separate from the notice to the parent session: the owner is
+// told when a failure is first seen, the parent when it is next woken.
+type ChildReport string
+
+// Child report outcomes.
+const (
+	ChildReportNone          ChildReport = "none"           // no newly errored child
+	ChildReportSend          ChildReport = "requested"      // send one report
+	ChildReportNotSubscribed ChildReport = "not_subscribed" // report.events does not include child_error
+	ChildReportCapped        ChildReport = "capped"         // this episode has sent its maximum
+)
+
+// ReportedChild is one child covered by the current episode of owner reports.
+// Hash is its ChildHashes value, never the ID. RecoveredAt is zero while the
+// child was in error when last seen.
+type ReportedChild struct {
+	Hash        string    `json:"hash"`
+	ErroredAt   time.Time `json:"erroredAt"`             // when it was last seen in error
+	RecoveredAt time.Time `json:"recoveredAt,omitempty"` // when it was first seen out of error since then
+}
+
+// ChildReportRecord compares the children now in error with those covered by
+// the episode. Like ChildAnnouncements for the parent notice it uses per-child
+// hashes and reports only growth: unreported lists errored children the
+// episode does not cover.
+//
+// A covered child is forgotten only after it has been seen out of error for
+// forgetAfter. Until then a child that fails again is the same failure, so one
+// that flaps between error and a provider retry is not reported each time and
+// does not spend the episode's reports. A child counts as out of error when
+// the listing is complete and does not show it in error, or when it is in
+// healthy. An incomplete listing that simply does not show a child proves
+// nothing about it, so that child is kept unchanged.
+func ChildReportRecord(errored, healthy []string, covered []ReportedChild, complete bool, now time.Time, forgetAfter time.Duration) (kept []ReportedChild, unreported []string) {
+	inError, out := map[string]bool{}, map[string]bool{}
+	for _, h := range errored {
+		inError[h] = true
+	}
+	for _, h := range healthy {
+		out[h] = true
+	}
+	known := map[string]bool{}
+	kept, unreported = []ReportedChild{}, []string{}
+	for _, c := range covered {
+		if known[c.Hash] {
+			continue
+		}
+		known[c.Hash] = true
+		switch {
+		case inError[c.Hash]:
+			c.ErroredAt, c.RecoveredAt = now, time.Time{}
+		case complete || out[c.Hash]:
+			if c.RecoveredAt.IsZero() {
+				c.RecoveredAt = now
+			}
+			if now.Sub(c.RecoveredAt) >= forgetAfter {
+				continue // recovered for long enough: forgotten
+			}
+		}
+		kept = append(kept, c)
+	}
+	for _, h := range errored {
+		if !known[h] {
+			known[h] = true
+			unreported = append(unreported, h)
+		}
+	}
+	return kept, unreported
+}
+
+// CoverChildren adds newly reported children to the episode. The record is
+// bounded: past max entries, the ones seen in error longest ago are dropped.
+func CoverChildren(kept []ReportedChild, unreported []string, now time.Time, max int) []ReportedChild {
+	out := append([]ReportedChild{}, kept...)
+	for _, h := range unreported {
+		out = append(out, ReportedChild{Hash: h, ErroredAt: now})
+	}
+	if len(out) > max {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].ErroredAt.After(out[j].ErroredAt) })
+		out = out[:max]
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
+	return out
+}
+
+// ChildErrorReport decides whether newly errored children are reported to the
+// owner. reports counts the reports already requested in this episode, which
+// lasts while any child stays in error; max bounds them, so children failing
+// one after another cannot produce a stream.
+func ChildErrorReport(unreported, reports, max int, subscribed bool) ChildReport {
+	switch {
+	case unreported <= 0:
+		return ChildReportNone
+	case !subscribed:
+		return ChildReportNotSubscribed
+	case reports >= max:
+		return ChildReportCapped
+	}
+	return ChildReportSend
 }
 
 // BriefAttempts records one target's rejected takeover briefs within the

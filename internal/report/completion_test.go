@@ -113,3 +113,50 @@ func TestLimitWaitSingleAttemptForFailureAndRedirect(t *testing.T) {
 		t.Fatalf("unsubscribed: err=%v attempts=%d", err, tr.calls.Load())
 	}
 }
+
+// A child_error report is requested once per newly failed child, so like a
+// completion it makes one attempt and follows no redirect.
+func TestChildErrorSingleAttemptForFailureAndRedirect(t *testing.T) {
+	t.Setenv("KG_TEST_URL", "https://example.com/hook")
+	t.Setenv("KG_TEST_SECRET", secret)
+	c := cfg("")
+	c.Events = []string{"child_error", "await_user"}
+	w, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &failedTransport{}
+	w.client = &http.Client{Transport: tr}
+	if err := w.Report(context.Background(), Event{Type: "child_error"}); err == nil || tr.calls.Load() != 1 {
+		t.Fatalf("err=%v attempts=%d", err, tr.calls.Load())
+	}
+	for _, status := range []int{202, 503, 307} {
+		var calls, redirected atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected.Add(1) }))
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.Header().Set("Location", target.URL)
+			w.WriteHeader(status)
+		}))
+		t.Setenv("KG_TEST_URL", srv.URL)
+		w, err := New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = w.Report(context.Background(), Event{Type: "child_error", Text: "fictional loop has child threads in error"})
+		srv.Close()
+		target.Close()
+		if calls.Load() != 1 || redirected.Load() != 0 || (err == nil) != (status == 202) {
+			t.Fatalf("status %d: requests=%d redirected=%d err=%v", status, calls.Load(), redirected.Load(), err)
+		}
+	}
+	t.Setenv("KG_TEST_URL", "https://example.com/hook")
+	// An unsubscribed child_error sends nothing.
+	c.Events = []string{"await_user"}
+	w, _ = New(c)
+	tr.calls.Store(0)
+	w.client = &http.Client{Transport: tr}
+	if err := w.Report(context.Background(), Event{Type: "child_error"}); err != nil || tr.calls.Load() != 0 {
+		t.Fatalf("err=%v attempts=%d", err, tr.calls.Load())
+	}
+}

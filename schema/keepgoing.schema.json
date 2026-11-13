@@ -218,6 +218,7 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "child_error",
                   "test"
                 ]
               }

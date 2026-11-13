@@ -97,7 +97,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	if obs.Gone {
 		return obs, nil
 	}
-	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren = a.childWork(ctx)
+	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren, obs.HealthyChildren = a.childWork(ctx)
 	obs.ActiveChildIDs = a.activeChildIDs
 	if len(obs.AwaitingChildren) > 0 {
 		if obs.State == decide.Error {
