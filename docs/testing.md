@@ -43,6 +43,23 @@ The reason is a host behaviour, not style. macOS checks a file the first time it
 
 To replace a script installed this way, call the helper again; never write through the path, because a shared script is a hard link. Scripts that are written but never executed, such as service-file fixtures, do not need it. Compiled fixtures are not covered.
 
+## Scenario suite (T2)
+
+`go test ./internal/scenario` drives the built binary through whole journeys. `TestMain` builds `cmd/keepgoing` and a stand-in `bb` (`internal/scenario/standin`, a Go program, so no POSIX shell is needed); set `KEEPGOING_TEST_BINARY` to an absolute path to run the scenarios against another build. Every command runs as a separate process with an environment built from nothing: `PATH` holds only the stand-in and a link to `git`, `HOME` and the XDG directories are private, reports go to a local receiver that checks signatures, and `KEEPGOING_NET_PROBE_URL` points at a local connectivity target that can answer, drop the connection, or redirect to a captive portal's sign-in page. Time comes from `tick --now` and `status --now`; nothing sleeps for timing and nothing reaches a real network, agent or model.
+
+Every step records four things: what the stand-in agents were sent (`bb thread tell` and `bb thread retry`), the holds in force, the reports delivered, and what `status --json`, `timeline --json` and `runs --json` say. Invariants run after every step: a check exits 0 and is the latest check in both `status` and `timeline`, the three commands agree on the control state, and `runs` records as many send attempts as the agents received. The stand-in agents react to what they are sent: a turn starts, and fails at once with a network error while the provider is unreachable. A failing scenario prints its journal.
+
+Scenarios:
+
+- `TestScenarioFirstLoop`: `init`, a disabled check that runs no `bb` command, `enable`, a wake with the task, a working agent left alone, a wake after progress, the agent's own `complete` with one `complete` report, and completed checks that query nothing.
+- `TestScenarioOutage`, at 20 minutes, 4 hours, 3 days and 3 weeks: the network drops mid-turn while a child works, BB retries and gives up, the host sleeps so checks run irregularly or not at all, the network returns behind a captive portal, the portal clears and the work completes. When the session is still failed half an hour after the network returns, a person retries it in BB and resumes the loop, as they must on main today.
+
+**Known failures.** An assertion that fails on main because of open work is wrapped in `World.Known` with the work it waits on. It still runs on every build: while it fails the scenario passes and logs a line starting `KNOWN FAILURE [<work>]`; when it starts to pass the scenario fails with `FIXED KNOWN FAILURE`, so the change that fixes it must delete the marker and the assertion is enforced from then on. Nothing is skipped. List them with `go test ./internal/scenario -v -count=1 | grep 'KNOWN FAILURE'`. The work named today is network gating (#154), turn retry, child recovery, and two items with no open work: a captive portal is read as online, and the stall clock runs through an outage so a recovered turn is nudged at once.
+
+Each scenario was run against a deliberately broken build to show it fails: a completed loop that still queries its agent (`supervise`: drop `gate.Completed` from the hold check) fails both scenarios; ignoring BB's own retry (`decide`: never honour `Retrying`) fails the outage scenario at the retrying check; waiting on every error (`decide`: return `none` for the error state) turns known failures into `FIXED KNOWN FAILURE`.
+
+Not covered yet: limits and handoffs, child failure reports, scheduler death, state upgrades, two supervisors, a full or unwritable state directory, fault injection (T3). The suite runs in the macOS and Linux CI jobs as part of the full suite; it is not yet run on Windows (T4), where the link to `git` and the environment need work.
+
 ## Timing-sensitive tests
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.
