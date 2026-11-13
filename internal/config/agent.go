@@ -32,12 +32,28 @@ type BB struct {
 	NewThread   bool   `yaml:"new_thread,omitempty"`
 	Project     string `yaml:"project,omitempty"`
 	Environment string `yaml:"environment,omitempty"`
-	CLI         string `yaml:"cli,omitempty"`
-	Model       string `yaml:"model,omitempty"`
-	Reasoning   string `yaml:"reasoning,omitempty"`
+	// PermissionMode is the permission mode of a thread created for
+	// NewThread: accept-edits (the default), auto or full. It is always
+	// passed to BB, so the new thread never inherits a project default.
+	PermissionMode string `yaml:"permission_mode,omitempty"`
+	CLI            string `yaml:"cli,omitempty"`
+	Model          string `yaml:"model,omitempty"`
+	Reasoning      string `yaml:"reasoning,omitempty"`
 	// RetrySignalTTL bounds how long a provider retry notice on an errored
 	// thread suppresses error recovery. Zero uses the adapter default (15m).
 	RetrySignalTTL Duration `yaml:"retry_signal_ttl,omitempty"`
+}
+
+// DefaultNewThreadPermission is the permission mode of a thread keepgoing
+// creates when the candidate sets none: the most restrictive BB offers.
+const DefaultNewThreadPermission = "accept-edits"
+
+// NewThreadPermission is the permission mode a created thread gets.
+func (b BB) NewThreadPermission() string {
+	if b.PermissionMode == "" {
+		return DefaultNewThreadPermission
+	}
+	return b.PermissionMode
 }
 
 // Process configures the generic process adapter. Each command is argv.
@@ -151,8 +167,10 @@ func (a Agent) validate(where string) []error {
 			add("bb.new_thread needs provider: the new thread is created on that BB provider")
 		case !a.BB.NewThread && a.BB.Thread == "":
 			add("bb.thread is required (or bb.new_thread for a fallback that starts a new thread at handoff)")
-		case !a.BB.NewThread && (a.BB.Project != "" || a.BB.Environment != ""):
-			add("bb.project and bb.environment apply only with bb.new_thread")
+		case !a.BB.NewThread && (a.BB.Project != "" || a.BB.Environment != "" || a.BB.PermissionMode != ""):
+			add("bb.project, bb.environment and bb.permission_mode apply only with bb.new_thread")
+		case a.BB.NewThread && a.BB.PermissionMode != "" && a.BB.PermissionMode != "accept-edits" && a.BB.PermissionMode != "auto" && a.BB.PermissionMode != "full":
+			add("bb.permission_mode must be accept-edits, auto or full")
 		}
 		if d := a.BB.RetrySignalTTL.Duration; d != 0 && d < time.Minute {
 			add("bb.retry_signal_ttl must be at least 1m")

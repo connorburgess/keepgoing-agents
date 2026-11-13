@@ -20,8 +20,22 @@ var placeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 // for it by title before trying again.
 var ErrSpawnUncertain = errors.New("bb thread spawn: outcome unknown")
 
-// ErrSpawnRefused means bb returned a structured error: no thread was created.
-var ErrSpawnRefused = errors.New("bb thread spawn: refused")
+// ErrSpawnRefused means the request was proven never to have reached BB: it
+// was invalid before bb was run, or the bb CLI itself rejected the invocation
+// with one of its documented invocation-mistake codes. No thread was created.
+// Every other failure, including a structured server error, is uncertain: BB
+// may have created the thread and failed afterwards.
+var ErrSpawnRefused = errors.New("bb thread spawn: refused before creation")
+
+// invocationMistakes are the bb CLI's own codes for a command it did not
+// send (bb guide json). They are the only answers that prove nothing exists.
+var invocationMistakes = map[string]bool{
+	"unknown_command": true, "unknown_option": true, "missing_required": true,
+	"unexpected_argument": true, "invalid_value": true, "missing_command": true,
+}
+
+// PermissionModes are the values `bb thread spawn --permission-mode` accepts.
+var PermissionModes = []string{"accept-edits", "auto", "full"}
 
 // maxListed bounds the threads inspected when looking for a created thread.
 const maxListed = 5000
@@ -38,8 +52,11 @@ type SpawnRequest struct {
 	Provider  string
 	Model     string
 	Reasoning string
-	Title     string
-	Prompt    string
+	// Permission is always passed, so the new thread never inherits a
+	// project's remembered default.
+	Permission string
+	Title      string
+	Prompt     string
 }
 
 // PlaceOf reads the project and environment of an existing thread with
@@ -107,13 +124,17 @@ func (a *Adapter) FindByTitle(ctx context.Context, p Place, title string) ([]str
 }
 
 // Spawn creates one thread with `bb thread spawn`, the prompt on stdin. It
-// returns the new thread's ID. ErrSpawnRefused means bb said no and nothing
-// was created; ErrSpawnUncertain means the caller cannot tell.
+// returns the new thread's ID. ErrSpawnRefused means the request provably
+// never reached BB; ErrSpawnUncertain means a thread may exist.
 func (a *Adapter) Spawn(ctx context.Context, r SpawnRequest) (string, error) {
-	if !placeIDPattern.MatchString(r.Project) || !placeIDPattern.MatchString(r.Environment) || r.Provider == "" || r.Title == "" || r.Prompt == "" {
+	permitted := false
+	for _, m := range PermissionModes {
+		permitted = permitted || r.Permission == m
+	}
+	if !placeIDPattern.MatchString(r.Project) || !placeIDPattern.MatchString(r.Environment) || r.Provider == "" || r.Title == "" || r.Prompt == "" || !permitted {
 		return "", ErrSpawnRefused // nothing was run
 	}
-	args := []string{"thread", "spawn", "--project", r.Project, "--environment", r.Environment, "--provider", r.Provider, "--title", r.Title, "--prompt-file", "-", "--json"}
+	args := []string{"thread", "spawn", "--project", r.Project, "--environment", r.Environment, "--provider", r.Provider, "--permission-mode", r.Permission, "--title", r.Title, "--prompt-file", "-", "--json"}
 	if r.Model != "" {
 		args = append(args, "--model", r.Model)
 	}
@@ -121,8 +142,11 @@ func (a *Adapter) Spawn(ctx context.Context, r SpawnRequest) (string, error) {
 		args = append(args, "--reasoning-level", r.Reasoning)
 	}
 	out, err := a.run(ctx, r.Prompt, args...)
-	if _, ok := envelopeError(out); ok {
-		return "", ErrSpawnRefused
+	if code, ok := envelopeError(out); ok {
+		if invocationMistakes[code] {
+			return "", ErrSpawnRefused
+		}
+		return "", ErrSpawnUncertain // a server error: the thread may exist
 	}
 	var created struct {
 		ID          string `json:"id"`

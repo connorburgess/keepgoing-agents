@@ -66,7 +66,8 @@
             "max_new_threads": {
               "type": "integer",
               "minimum": 0,
-              "description": "most BB threads this loop may create for handoffs to candidates with bb.new_thread; 0 or absent means 3"
+              "maximum": 10,
+              "description": "most BB threads this loop may create for handoffs to candidates with bb.new_thread; 0 or absent means 3; never more than 10, and never more than one an hour"
             },
             "deadline": {
               "type": "string",
@@ -394,6 +395,7 @@
         },
         "project": false,
         "environment": false,
+        "permission_mode": false,
         "cli": {
           "type": "string",
           "default": "bb"

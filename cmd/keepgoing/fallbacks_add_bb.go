@@ -292,6 +292,11 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 	case o.newThread && thread != "":
 		return fail(errors.New("Give either --thread (an existing thread) or --new-thread (a handoff starts\n  one), not both."))
 	case o.newThread:
+		if err := bbPermissionMode(o.permission); err != nil {
+			return fail(err)
+		}
+	case o.permission != "":
+		return fail(errors.New("--permission-mode applies only with --new-thread: an existing thread keeps\n  the permission mode it has."))
 	case !transferThreadID.MatchString(thread):
 		return fail(errors.New("A BB fallback needs an existing thread ID (--thread thr_...), or\n  --new-thread to let a handoff start one. Nothing is created or moved now."))
 	}
@@ -334,7 +339,7 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 	if probeAccount != "" {
 		probe.Env = map[string]string{fallbackAddAccountKey(kind): probeAccount}
 	}
-	agent := config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: thread, NewThread: o.newThread, CLI: cli, Model: o.model, Reasoning: o.reasoning}}
+	agent := config.Agent{Adapter: "bb", Provider: provider, Group: group, BB: &config.BB{Thread: thread, NewThread: o.newThread, PermissionMode: o.permission, CLI: cli, Model: o.model, Reasoning: o.reasoning}}
 
 	// One short line each: the preview is read before a yes/no.
 	var warnings []string
@@ -342,8 +347,9 @@ func fallbackAddBBTarget(cfg *config.Config, o fallbackAddOptions, lookPath func
 		max := cfg.Loop.Limits.MaxNewThreads
 		warnings = append(warnings,
 			"A handoff to this fallback makes keepgoing create a BB thread. It creates one only then, never otherwise.",
-			fmt.Sprintf("At most %d such threads per loop (loop.limits.max_new_threads); after that a person is asked.", max),
-			"The new thread starts in the project and environment of the conversation it continues. That conversation is left as it is.",
+			fmt.Sprintf("At most %d such threads per loop (loop.limits.max_new_threads), and at most one an hour; after that a person is asked.", max),
+			"The new thread works in the same environment and checkout as the conversation it continues. That conversation is left as it is, and BB may retry it later.",
+			fmt.Sprintf("Permission mode %s: %s", agent.BB.NewThreadPermission(), bbPermissionMeaning(agent.BB.NewThreadPermission())),
 			"keepgoing cannot see which account BB uses for the new thread.",
 			fmt.Sprintf("Its own quota group is your claim that %s has a separate limit. keepgoing cannot check that; the check before a handoff is the only test.", provider))
 		if o.model == "" {
@@ -462,6 +468,25 @@ func (w *fallbackAddWizard) collectBB() error {
 	})
 }
 
+// bbPermissionMode checks a new thread's permission mode; blank is the default.
+func bbPermissionMode(s string) error {
+	switch s {
+	case "", "accept-edits", "auto", "full":
+		return nil
+	}
+	return errors.New("Permission mode must be accept-edits, auto or full (blank = accept-edits).")
+}
+
+func bbPermissionMeaning(mode string) string {
+	switch mode {
+	case "full":
+		return "the new thread acts without asking. Choose this only for a project where that is acceptable."
+	case "auto":
+		return "BB decides what the new thread may do without asking."
+	}
+	return "the new thread asks before anything but file edits, so it may wait on a person."
+}
+
 // collectBBNewThread asks what a new-thread fallback needs: a provider, a
 // model and the same quota-group and check answers as any BB fallback. No
 // thread is chosen, listed or created.
@@ -478,6 +503,13 @@ func (w *fallbackAddWizard) collectBBNewThread(cli string, asked *bool) error {
 	}
 	kind, _ := bbProbeKind(o.provider)
 	fmt.Fprintln(out, "  keepgoing cannot see which account BB uses for the new thread.")
+	fmt.Fprintln(out, "  The new thread works in the same environment and checkout as the")
+	fmt.Fprintln(out, "  conversation it continues. Its permission mode is set explicitly:")
+	fmt.Fprintln(out, "  accept-edits asks before anything but file edits (it may wait on a")
+	fmt.Fprintln(out, "  person); auto lets BB decide; full acts without asking.")
+	if err := w.askValid("permission-mode", "Permission mode (accept-edits/auto/full)", "accept-edits", &o.permission, bbPermissionMode); err != nil {
+		return err
+	}
 	fmt.Fprintln(out, "\nStep 3 of 4: Model")
 	lookup := asked != nil && *asked
 	if asked == nil && w.bb != nil && !o.set["model"] {
@@ -799,6 +831,7 @@ func printBBCandidate(w io.Writer, p *fallbackAddPlan) {
 		fmt.Fprintf(tw, "  Check model:\t%s\n", c.Probe.Model)
 	}
 	if d.relation == "new_thread" {
+		fmt.Fprintf(tw, "  Permissions:\t%s (set on the new thread; never a project default)\n", c.BB.NewThreadPermission())
 		fmt.Fprintf(tw, "  At handoff:\tcreates a BB thread titled \"keepgoing: %s (continued, ...)\"\n", p.cfg.Loop.Name)
 		fmt.Fprintf(tw, "  \t(bb thread spawn) with the handoff message as its first prompt,\n")
 		fmt.Fprintf(tw, "  \tand supervises it. Nothing is created now.\n")

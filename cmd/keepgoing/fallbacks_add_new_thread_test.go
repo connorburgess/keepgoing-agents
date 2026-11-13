@@ -21,9 +21,13 @@ func TestFallbacksAddBBNewThread(t *testing.T) {
 		"Thread:", "none yet: a new thread, created at handoff",
 		`creates a BB thread titled "keepgoing: `, "(bb thread spawn) with the handoff message as its first prompt",
 		"Nothing is created now.",
-		"A handoff to this fallback makes keepgoing create a BB", "At most 3 such threads per loop",
+		"A handoff to this fallback makes keepgoing create a BB", "At most 3 such threads per loop (loop.limits.max_new_threads), and at most one an hour",
+		"Permissions:", "accept-edits (set on the new thread; never a project default)",
+		"Permission mode accept-edits: the new thread asks before anything but file edits",
+		"works in the same environment and checkout as the conversation it continues", "BB may retry it later",
 	} {
-		if !strings.Contains(preview, want) {
+		// Warnings are wrapped, so line breaks are not part of the wording.
+		if !strings.Contains(strings.Join(strings.Fields(preview), " "), want) {
 			t.Errorf("preview missing %q:\n%s", want, preview)
 		}
 	}
@@ -38,6 +42,9 @@ func TestFallbacksAddBBNewThread(t *testing.T) {
 	if c.Adapter != "bb" || c.Provider != "codex" || c.Group != "codex-team" || c.BB == nil || !c.BB.NewThread || c.BB.Thread != "" || c.BB.Model != "example-large" || c.BB.Reasoning != "high" || c.Probe.Kind != "codex" {
 		t.Fatalf("candidate %+v bb=%+v", c, c.BB)
 	}
+	if c.BB.PermissionMode != "" || c.BB.NewThreadPermission() != "accept-edits" {
+		t.Fatalf("permission mode %q", c.BB.PermissionMode)
+	}
 	if c.Describe() != "bb new thread (example-large)" && !strings.Contains(c.Describe(), "new thread") {
 		t.Fatalf("describe %q", c.Describe())
 	}
@@ -50,6 +57,14 @@ func TestFallbacksAddBBNewThread(t *testing.T) {
 		t.Fatalf("%d %s %s", code, out, errOut)
 	}
 
+	// A chosen permission mode is stored and shown.
+	f = newBBAddFixture(t)
+	code, preview, errOut = f.add(t, "", "--non-interactive", "--agent", "bb", "--new-thread", "--provider", "codex", "--permission-mode", "full")
+	cfg, err = config.Load(f.cfg)
+	if code != exitOK || err != nil || cfg.FallbackSet.Candidates[0].BB.PermissionMode != "full" || !strings.Contains(strings.Join(strings.Fields(preview), " "), "Permission mode full: the new thread acts without asking") {
+		t.Fatalf("%d %s %v\n%s", code, errOut, err, preview)
+	}
+
 	// Refusals: both forms at once, neither, and outside a BB candidate.
 	for name, bad := range map[string][]string{
 		"both":         {"--agent", "bb", "--new-thread", "--thread", bbOtherThread, "--provider", "codex"},
@@ -57,6 +72,8 @@ func TestFallbacksAddBBNewThread(t *testing.T) {
 		"no provider":  {"--agent", "bb", "--new-thread"},
 		"headless":     {"--agent", "codex", "--new-thread"},
 		"bad provider": {"--agent", "bb", "--new-thread", "--provider", "pi"},
+		"bad mode":     {"--agent", "bb", "--new-thread", "--provider", "codex", "--permission-mode", "plan"},
+		"mode, thread": {"--agent", "bb", "--thread", bbOtherThread, "--provider", "codex", "--permission-mode", "full"},
 	} {
 		f := newBBAddFixture(t)
 		before := f.files(t)
@@ -67,7 +84,7 @@ func TestFallbacksAddBBNewThread(t *testing.T) {
 }
 
 // The wizard offers a new thread at the thread question. Earlier answers keep
-// their meaning: nothing is asked that was not asked before.
+// their meaning; the one added question is the new thread's permission mode.
 func TestFallbacksAddBBWizardNewThread(t *testing.T) {
 	f := newBBAddFixture(t)
 	lists := &fakeBBLists{}
@@ -77,6 +94,7 @@ func TestFallbacksAddBBWizardNewThread(t *testing.T) {
 		"no",    // do not ask BB for lists
 		"new",   // a new thread at handoff
 		"codex", // provider
+		"",      // permission mode: accept-edits
 		"",      // model: BB's default
 		"",      // reasoning: unchanged
 		"",      // quota group default
@@ -92,7 +110,7 @@ func TestFallbacksAddBBWizardNewThread(t *testing.T) {
 	if len(lists.calls) != 0 {
 		t.Fatalf("bb was run: %v", lists.calls)
 	}
-	for _, want := range []string{"Or type new", "keepgoing creates a thread only for such a handoff, never now.", "Thread ID, or new", "none yet: a new thread, created at handoff"} {
+	for _, want := range []string{"Or type new", "keepgoing creates a thread only for such a handoff, never now.", "Thread ID, or new", "none yet: a new thread, created at handoff", "Permission mode (accept-edits/auto/full)", "Permissions:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -101,7 +119,7 @@ func TestFallbacksAddBBWizardNewThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := cfg.FallbackSet.Candidates[0]; c.BB == nil || !c.BB.NewThread || c.BB.Thread != "" || c.Provider != "codex" {
+	if c := cfg.FallbackSet.Candidates[0]; c.BB == nil || !c.BB.NewThread || c.BB.Thread != "" || c.Provider != "codex" || c.BB.NewThreadPermission() != "accept-edits" {
 		t.Fatalf("%+v", c)
 	}
 }

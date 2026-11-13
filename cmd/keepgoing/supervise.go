@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -308,6 +309,9 @@ type newThreadStatus struct {
 	Max     int        `json:"max"`
 	Pending bool       `json:"pending"`
 	Active  *time.Time `json:"activeCreatedAt,omitempty"`
+	// NextAllowedAt is the earliest another thread may be created: one hour
+	// after the last.
+	NextAllowedAt *time.Time `json:"nextAllowedAt,omitempty"`
 }
 
 // takeoverBriefsStatus reports recorded rejections against errors.max_reprompts.
@@ -464,6 +468,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	}
 	out.NewThreads = newThreadStatus{Created: st.NewThreadsCreated, Max: l.Limits.MaxNewThreads, Pending: st.NewThreadIntent != nil}
+	if !st.LastNewThreadAt.IsZero() {
+		next := st.LastNewThreadAt.Add(config.MinNewThreadInterval)
+		out.NewThreads.NextAllowedAt = &next
+	}
 	if t, ok := st.NewThreads[st.Target()]; ok && out.TargetConfigured {
 		created := t.CreatedAt
 		out.NewThreads.Active = &created
@@ -521,12 +529,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	printPromptSend(w, out.PromptSend)
 	if n := out.NewThreads; n.Created > 0 || n.Pending {
-		fmt.Fprintf(w, "new threads: keepgoing has created %d of at most %d BB thread(s) for handoffs", n.Created, n.Max)
+		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
 		if n.Active != nil {
 			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
 		}
 		if n.Pending {
-			fmt.Fprint(w, "; one creation is not yet confirmed, and nothing is handed off until it is")
+			fmt.Fprint(w, "; one creation could not be confirmed: nothing is created or handed off until a person settles it with retarget")
 		}
 		fmt.Fprintln(w)
 	}
@@ -767,6 +775,11 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 	return exitOK
 }
 
+// retargetFind looks a created thread up by its generated title. Swapped in tests.
+var retargetFind = func(ctx context.Context, cli string, p bb.Place, title string) ([]string, error) {
+	return bb.New(config.BB{CLI: cli}).FindByTitle(ctx, p, title)
+}
+
 // retarget points the loop at a candidate, or back at the primary, without
 // sending anything. The next tick supervises the new target.
 func retarget(e env, cfg *config.Config, id, note string) int {
@@ -803,6 +816,30 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 		e.errf("%v", err)
 		return exitFailed
 	}
+	// A thread creation whose outcome is unknown is looked for before the
+	// loop is pointed anywhere, so an existing thread is never orphaned
+	// unrecorded. It stays counted against the cap either way.
+	if in := st.NewThreadIntent; in != nil {
+		cli := config.DefaultBBCLI
+		if c, ok := cfg.FallbackSet.Find(in.Candidate); ok && c.BB != nil {
+			cli = c.BB.CLI
+		}
+		ids, err := retargetFind(e.ctx, cli, bb.Place{Project: in.Project, Environment: in.Environment}, in.Title)
+		switch {
+		case err != nil || len(ids) > 1:
+			e.errf("a BB thread titled %q may have been created for a handoff, and BB could not say whether it exists; no retarget performed. Check BB and try again.", in.Title)
+			return exitFailed
+		case len(ids) == 1:
+			if st.NewThreads == nil {
+				st.NewThreads = map[string]state.CreatedThread{}
+			}
+			st.NewThreads[in.Candidate] = state.CreatedThread{Thread: ids[0], Title: in.Title, CreatedAt: time.Now().UTC(), From: in.From, Continues: in.Continues}
+			fmt.Fprintf(e.stdout, "%s: found the BB thread created earlier for %s; it is now on record\n", cfg.Loop.Name, in.Candidate)
+		default:
+			fmt.Fprintf(e.stdout, "%s: no BB thread titled %q is listed; the pending creation is dropped and stays counted\n", cfg.Loop.Name, in.Title)
+		}
+		st.NewThreadIntent = nil
+	}
 	from := st.Target()
 	agent := cfg.Loop.Agent
 	if c, ok := cfg.FallbackSet.Find(id); ok {
@@ -822,9 +859,9 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
-	st.ClearBriefs()         // an operator's retarget starts a new episode
-	st.ClearChildErrors()    // children belong to the previous target
-	st.NewThreadIntent = nil // an operator's retarget drops a pending thread creation
+	st.ClearBriefs()      // an operator's retarget starts a new episode
+	st.ClearChildErrors() // children belong to the previous target
+
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 		e.errf("%v", err)
 		return exitFailed

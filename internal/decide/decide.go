@@ -568,16 +568,34 @@ func ChildErrorReport(unreported, reports, max int, subscribed bool) ChildReport
 	return ChildReportSend
 }
 
-// NewThreadAllowed reports whether a handoff may create another thread: the
-// loop has created fewer than max. Creating a thread is opt-in per fallback
-// and happens only for a handoff, so this is the whole rule.
-func NewThreadAllowed(created, max int) bool {
-	return max > 0 && created < max
+// NewThreadVerdict says whether a handoff may create another thread.
+type NewThreadVerdict string
+
+// New thread verdicts.
+const (
+	NewThreadAllowed NewThreadVerdict = "allowed"
+	NewThreadCapped  NewThreadVerdict = "new_thread_cap"     // the loop has used its maximum
+	NewThreadTooSoon NewThreadVerdict = "new_thread_spacing" // the last one was too recent
+)
+
+// NewThreadGate bounds the threads a loop creates. attempts counts every
+// creation whose outcome was a thread or is unknown: only one proven never to
+// have reached BB is left out, so a lost answer cannot make room for another
+// thread. Below the cap, two creations are at least minInterval apart. With
+// no cap configured no thread is created.
+func NewThreadGate(attempts, max int, sinceLast, minInterval time.Duration, any bool) NewThreadVerdict {
+	switch {
+	case max <= 0 || attempts >= max:
+		return NewThreadCapped
+	case any && sinceLast < minInterval:
+		return NewThreadTooSoon
+	}
+	return NewThreadAllowed
 }
 
 // NewThreadCapReason is the hold raised when a handoff needed a new thread
-// and the loop had already created its maximum.
-const NewThreadCapReason = "new thread cap reached: this loop has created its maximum of BB threads for handoffs; raise loop.limits.max_new_threads or retarget before resuming"
+// and the loop had already used its maximum.
+const NewThreadCapReason = "new thread cap reached: this loop has used its maximum of BB threads for handoffs; raise loop.limits.max_new_threads or retarget before resuming"
 
 // BriefAttempts records one target's rejected takeover briefs within the
 // current episode: handoff briefs to one fallback while an error lasts, or

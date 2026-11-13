@@ -85,11 +85,14 @@ type File struct {
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// NewThreads holds the thread created for each candidate with
-	// bb.new_thread; NewThreadsCreated counts every thread this loop has
-	// created, for loop.limits.max_new_threads; NewThreadIntent is a creation
-	// whose outcome is not yet recorded.
+	// bb.new_thread. NewThreadsCreated counts, for
+	// loop.limits.max_new_threads, every creation that produced a thread or
+	// whose outcome is unknown; only one proven never to have reached BB is
+	// not counted. LastNewThreadAt is when the latest counted one was asked
+	// for. NewThreadIntent is a creation whose outcome is not yet recorded.
 	NewThreads        map[string]CreatedThread `json:"newThreads,omitempty"`
 	NewThreadsCreated int                      `json:"newThreadsCreated,omitempty"`
+	LastNewThreadAt   time.Time                `json:"lastNewThreadAt,omitempty"`
 	NewThreadIntent   *NewThreadIntent         `json:"newThreadIntent,omitempty"`
 	// ChildErrorReport is set while any child of the supervised thread is in
 	// error, so its report is not repeated by later checks or after a restart.
@@ -164,9 +167,6 @@ type NewThreadIntent struct {
 	Continues   string    `json:"continues,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	RequestedAt time.Time `json:"requestedAt"`
-	// Unresolved counts consecutive checks that could not ask BB whether the
-	// thread exists.
-	Unresolved int `json:"unresolved,omitempty"`
 }
 
 // CreatedThreadFor returns the thread created for a candidate, or "".

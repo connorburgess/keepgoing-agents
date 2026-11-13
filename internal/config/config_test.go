@@ -238,8 +238,13 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	if err != nil || cfg.Loop.Limits.MaxNewThreads != 5 || len(cfg.Loop.Limits.Configured()) != 0 {
 		t.Fatalf("%v %v", cfg, err)
 	}
-	if _, err := Parse([]byte(valid + "  limits: {max_new_threads: -1}\n")); err == nil {
-		t.Error("negative cap accepted")
+	for _, bad := range []string{"-1", "11", "1000"} {
+		if _, err := Parse([]byte(valid + "  limits: {max_new_threads: " + bad + "}\n")); err == nil {
+			t.Errorf("cap %s accepted", bad)
+		}
+	}
+	if cfg, err := Parse([]byte(valid + "  limits: {max_new_threads: 10}\n")); err != nil || cfg.Loop.Limits.MaxNewThreads != MaxNewThreadsCeiling {
+		t.Errorf("ceiling refused: %v", err)
 	}
 	agent := func(bb BB, provider string) Agent {
 		return Agent{Adapter: "bb", Provider: provider, BB: &bb}
@@ -248,14 +253,17 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 		a  Agent
 		ok bool
 	}{
-		"existing thread":                      {agent(BB{Thread: "thr_example"}, ""), true},
-		"new thread":                           {agent(BB{NewThread: true, Model: "example-model"}, "codex"), true},
-		"new thread with a place":              {agent(BB{NewThread: true, Project: "proj_example", Environment: "env_example"}, "codex"), true},
-		"new thread and a thread":              {agent(BB{NewThread: true, Thread: "thr_example"}, "codex"), false},
-		"new thread without a provider":        {agent(BB{NewThread: true}, ""), false},
-		"neither":                              {agent(BB{}, "codex"), false},
-		"a place on an existing thread":        {agent(BB{Thread: "thr_example", Project: "proj_example"}, "codex"), false},
-		"an environment on an existing thread": {agent(BB{Thread: "thr_example", Environment: "env_example"}, "codex"), false},
+		"existing thread":                         {agent(BB{Thread: "thr_example"}, ""), true},
+		"new thread":                              {agent(BB{NewThread: true, Model: "example-model"}, "codex"), true},
+		"new thread with a place":                 {agent(BB{NewThread: true, Project: "proj_example", Environment: "env_example"}, "codex"), true},
+		"new thread and a thread":                 {agent(BB{NewThread: true, Thread: "thr_example"}, "codex"), false},
+		"new thread without a provider":           {agent(BB{NewThread: true}, ""), false},
+		"neither":                                 {agent(BB{}, "codex"), false},
+		"a place on an existing thread":           {agent(BB{Thread: "thr_example", Project: "proj_example"}, "codex"), false},
+		"an environment on an existing thread":    {agent(BB{Thread: "thr_example", Environment: "env_example"}, "codex"), false},
+		"a permission mode on an existing thread": {agent(BB{Thread: "thr_example", PermissionMode: "full"}, "codex"), false},
+		"new thread with full permissions":        {agent(BB{NewThread: true, PermissionMode: "full"}, "codex"), true},
+		"new thread with an unknown permission":   {agent(BB{NewThread: true, PermissionMode: "everything"}, "codex"), false},
 	} {
 		if errs := tc.a.validate("x."); (len(errs) == 0) != tc.ok {
 			t.Errorf("%s: %v", name, errs)
@@ -263,6 +271,10 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	}
 	if got := agent(BB{NewThread: true, Model: "example-model"}, "codex").Describe(); !strings.Contains(got, "new thread") {
 		t.Errorf("describe %q", got)
+	}
+	// The permission mode is never left to BB: unset means the most restrictive.
+	if (BB{NewThread: true}).NewThreadPermission() != "accept-edits" || (BB{NewThread: true, PermissionMode: "auto"}).NewThreadPermission() != "auto" {
+		t.Error("permission default")
 	}
 	// The primary needs an existing thread.
 	primary := strings.Replace(valid, "thread: thr_example123", "new_thread: true", 1)

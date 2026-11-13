@@ -15,7 +15,10 @@ import (
 
 // fakeBBWithSpawn is the fixture's fake bb plus thread creation. A created
 // thread is added to the listing bb would return, whether or not the command
-// then reports it, so a lost answer can be told from a refused creation.
+// then reports it. spawn.refuse answers as the bb CLI does when it rejects the
+// invocation before sending anything; spawn.lost creates the thread and gives
+// no answer; spawn.servererror creates it and answers with a server error;
+// spawn.unlisted keeps the created thread out of the listing.
 const fakeBBWithSpawn = `#!/bin/sh
 d="$FAKE_BB"; t="$3"
 echo "$*" >> "$d/calls"
@@ -29,12 +32,13 @@ case "$1 $2" in
   fi ;;
 "thread spawn")
   cat > "$d/spawn.prompt"
-  if [ -f "$d/spawn.refuse" ]; then echo '{"ok":false,"error":{"code":"provider_unavailable"}}'; exit 1; fi
+  if [ -f "$d/spawn.refuse" ]; then echo '{"ok":false,"error":{"code":"invalid_value"}}'; exit 1; fi
   title=""; prev=""
   for a in "$@"; do [ "$prev" = "--title" ] && title="$a"; prev="$a"; done
   n=$(( $(cat "$d/spawn.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/spawn.count"
-  printf '[{"id":"thr_spawned_%s","title":"%s"}]' "$n" "$title" > "$d/listing"
+  if [ ! -f "$d/spawn.unlisted" ]; then printf '[{"id":"thr_spawned_%s","title":"%s"}]' "$n" "$title" > "$d/listing"; fi
   if [ -f "$d/spawn.lost" ]; then exit 1; fi
+  if [ -f "$d/spawn.servererror" ]; then echo '{"ok":false,"error":{"code":"provider_unavailable"}}'; exit 1; fi
   printf '{"id":"thr_spawned_%s","status":"active","projectId":"proj_example","environmentId":"env_example"}\n' "$n" ;;
 "thread log")  if [ -f "$d/$t.log" ]; then cat "$d/$t.log"; else echo '[]'; fi ;;
 "thread interactions") t="$4"; if [ -f "$d/$t.interactions" ]; then cat "$d/$t.interactions"; else echo '[]'; fi ;;
@@ -88,12 +92,13 @@ func TestEndToEndHandoffToANewThread(t *testing.T) {
 		}
 	}
 	if strings.Count(spawn, "\n") != 1 ||
-		!strings.HasPrefix(spawn, "thread spawn --project proj_example --environment env_example --provider claude-code --title keepgoing: example-loop (continued, ") ||
+		!strings.HasPrefix(spawn, "thread spawn --project proj_example --environment env_example --provider claude-code --permission-mode accept-edits --title keepgoing: example-loop (continued, ") ||
 		!strings.Contains(spawn, ") --prompt-file - --json --model claude-fable-5-1 --reasoning-level medium\n") {
 		t.Fatalf("spawn command: %q", spawn)
 	}
 	prompt := f.read("spawn.prompt")
-	if !strings.Contains(prompt, "taking over") || !strings.Contains(prompt, "rate_limit") || !strings.Contains(prompt, "This conversation continues @thread:thr_primary.") || strings.Contains(spawn, "taking over") {
+	if !strings.Contains(prompt, "taking over") || !strings.Contains(prompt, "rate_limit") || !strings.Contains(prompt, "Continue from @thread:thr_primary.") ||
+		!strings.Contains(prompt, `Loop ownership: this conversation does not own the "example-loop" loop.`) || !strings.Contains(prompt, "you may run keepgoing pause, stop, await-user and complete") || strings.Contains(spawn, "taking over") {
 		t.Fatalf("first prompt: %q", prompt)
 	}
 	// The conversation that was left is not stopped, archived, updated or sent to.
@@ -119,7 +124,7 @@ func TestEndToEndHandoffToANewThread(t *testing.T) {
 	}
 
 	code, out, errs := f.run("status")
-	if code != exitOK || !strings.Contains(out, "thread:    thr_spawned_1\n") || !strings.Contains(out, "new threads: keepgoing has created 1 of at most 3 BB thread(s) for handoffs; the active target is one of them, created ") {
+	if code != exitOK || !strings.Contains(out, "thread:    thr_spawned_1\n") || !strings.Contains(out, "new threads: keepgoing has used 1 of at most 3 BB thread creation(s) for handoffs; the active target is one of them, created ") {
 		t.Fatalf("status: %d %s %s", code, out, errs)
 	}
 	code, out, errs = f.run("timeline")
@@ -145,39 +150,128 @@ func TestEndToEndHandoffToANewThread(t *testing.T) {
 	}
 }
 
-// bb is killed after BB created the thread, so no answer comes back. The next
-// check finds the thread by the title keepgoing gave it and completes the
-// handoff; a second thread is never created.
-func TestEndToEndLostSpawnAnswerIsReconciled(t *testing.T) {
-	f := newThreadFixture(t)
-	write(t, filepath.Join(f.bbDir, "spawn.lost"), "", 0o600)
-	code, out, _ := f.run("tick")
-	if code != exitOK || !strings.Contains(out, `"action":"none"`) || !strings.Contains(out, "a new thread may have been created for this handoff") {
-		t.Fatalf("%d %s", code, out)
-	}
-	st, _ := state.Load(filepath.Join(f.dir, "state"))
-	if st.NewThreadIntent == nil || st.Target() != state.Primary || f.read("thr_codex.told") != "" {
-		t.Fatalf("after the lost answer: %+v", st)
-	}
-	if _, out, _ := f.run("status"); !strings.Contains(out, "one creation is not yet confirmed") {
-		t.Fatalf("status: %s", out)
-	}
-	os.Remove(filepath.Join(f.bbDir, "spawn.lost"))
-	v := f.tick()
-	handoff, _ := v["handoff"].(map[string]any)
-	if v["target"] != "claude-other-account" || handoff["newThread"] != "thr_spawned_1" || handoff["reconciled"] != true || f.read("spawn.count") != "1\n" {
-		t.Fatalf("%v spawns %q", v, f.read("spawn.count"))
-	}
-	for i := 0; i < 3; i++ {
-		f.tick()
-	}
-	if f.read("spawn.count") != "1\n" {
-		t.Fatalf("spawns %q", f.read("spawn.count"))
+// bb gives no usable answer after BB created the thread: it is killed, or it
+// reports a server error. The thread is looked for by the title keepgoing gave
+// it in the same check, and the handoff completes; a second thread is never
+// created.
+func TestEndToEndUnprovenSpawnIsLookedUp(t *testing.T) {
+	for _, how := range []string{"spawn.lost", "spawn.servererror"} {
+		t.Run(how, func(t *testing.T) {
+			f := newThreadFixture(t)
+			write(t, filepath.Join(f.bbDir, how), "", 0o600)
+			v := f.tick()
+			handoff, _ := v["handoff"].(map[string]any)
+			if v["action"] != "handoff" || v["target"] != "claude-other-account" || handoff["newThread"] != "thr_spawned_1" || f.read("spawn.count") != "1\n" || f.read("thr_codex.told") != "" {
+				t.Fatalf("%v spawns %q", v, f.read("spawn.count"))
+			}
+			for i := 0; i < 3; i++ {
+				f.tick()
+			}
+			st, _ := state.Load(filepath.Join(f.dir, "state"))
+			if f.read("spawn.count") != "1\n" || st.NewThreadsCreated != 1 || st.NewThreadIntent != nil {
+				t.Fatalf("spawns %q state %+v", f.read("spawn.count"), st)
+			}
+		})
 	}
 }
 
-// bb refuses to create the thread: the next fallback takes the loop in the
-// same check, and no thread is on record.
+// The thread was created but cannot be found by its title (renamed, archived
+// or not listed yet). That is not proof that nothing exists: the attempt stays
+// counted, the loop is held for a person with a report, the spawn is not
+// repeated and no other fallback is handed the loop. retarget then settles it.
+func TestEndToEndCreatedButUnlistedThreadHoldsAndCounts(t *testing.T) {
+	for _, how := range []string{"spawn.lost", "spawn.servererror"} {
+		t.Run(how, func(t *testing.T) {
+			f := newThreadFixture(t)
+			write(t, filepath.Join(f.bbDir, how), "", 0o600)
+			write(t, filepath.Join(f.bbDir, "spawn.unlisted"), "", 0o600)
+			v := f.tick()
+			reason, _ := v["reason"].(string)
+			if v["action"] != "await_user" || !strings.Contains(reason, `titled "keepgoing: example-loop (continued, `) || !strings.Contains(reason, "cannot tell whether it exists") || f.hooks.types() != "keepgoing.await_user" {
+				t.Fatalf("%v webhooks=%s", v, f.hooks.types())
+			}
+			st, _ := state.Load(filepath.Join(f.dir, "state"))
+			if st.NewThreadsCreated != 1 || st.NewThreadIntent == nil || st.Target() != state.Primary || f.read("thr_codex.told") != "" {
+				t.Fatalf("after the hold: %+v", st)
+			}
+			if _, out, _ := f.run("status"); !strings.Contains(out, "keepgoing has used 1 of at most 3 BB thread creation(s) for handoffs; one creation could not be confirmed") {
+				t.Fatalf("status: %s", out)
+			}
+			// Resuming without settling it holds again; nothing is created or sent.
+			os.Remove(filepath.Join(f.bbDir, how))
+			for i := 0; i < 3; i++ {
+				if code, _, errs := f.run("resume"); code != exitOK {
+					t.Fatal(errs)
+				}
+				if v := f.tick(); v["action"] != "await_user" {
+					t.Fatalf("resume %d: %v", i, v)
+				}
+			}
+			if f.read("spawn.count") != "1\n" || f.read("thr_codex.told") != "" {
+				t.Fatalf("spawns %q codex told %q", f.read("spawn.count"), f.read("thr_codex.told"))
+			}
+			// A person settles it: the pending creation is dropped, still counted.
+			code, out, errs := f.run("retarget", "codex-main")
+			st, _ = state.Load(filepath.Join(f.dir, "state"))
+			if code != exitOK || !strings.Contains(out, "the pending creation is dropped and stays counted") || st.NewThreadIntent != nil || st.NewThreadsCreated != 1 || st.Target() != "codex-main" || len(st.NewThreads) != 0 {
+				t.Fatalf("retarget: %d %s %s %+v", code, out, errs, st)
+			}
+		})
+	}
+}
+
+// retarget looks for a thread whose creation is unsettled before it points
+// the loop anywhere: found, it goes on record; unverifiable, nothing changes.
+func TestRetargetReconcilesAnUnsettledCreation(t *testing.T) {
+	held := func(t *testing.T) *fixture {
+		f := newThreadFixture(t)
+		write(t, filepath.Join(f.bbDir, "spawn.lost"), "", 0o600)
+		write(t, filepath.Join(f.bbDir, "spawn.unlisted"), "", 0o600)
+		if v := f.tick(); v["action"] != "await_user" {
+			t.Fatalf("%v", v)
+		}
+		return f
+	}
+	t.Run("found", func(t *testing.T) {
+		f := held(t)
+		st, _ := state.Load(filepath.Join(f.dir, "state"))
+		write(t, filepath.Join(f.bbDir, "listing"), fmt.Sprintf(`[{"id":"thr_spawned_1","title":%q}]`, st.NewThreadIntent.Title), 0o600)
+		code, out, errs := f.run("retarget", "codex-main")
+		st, _ = state.Load(filepath.Join(f.dir, "state"))
+		if code != exitOK || !strings.Contains(out, "found the BB thread created earlier for claude-other-account") || st.NewThreadIntent != nil || st.NewThreads["claude-other-account"].Thread != "thr_spawned_1" || st.NewThreadsCreated != 1 || st.Target() != "codex-main" {
+			t.Fatalf("%d %s %s %+v", code, out, errs, st)
+		}
+		// The recorded thread can now be chosen by hand; nothing is created.
+		if code, _, errs := f.run("retarget", "claude-other-account"); code != exitOK {
+			t.Fatal(errs)
+		}
+		if f.read("spawn.count") != "1\n" {
+			t.Fatalf("spawns %q", f.read("spawn.count"))
+		}
+	})
+	for name, listing := range map[string]string{
+		"BB cannot be asked": "not json",
+		"two threads":        `[{"id":"thr_a","title":%q},{"id":"thr_b","title":%q}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := held(t)
+			before, _ := state.Load(filepath.Join(f.dir, "state"))
+			if strings.Contains(listing, "%q") {
+				listing = fmt.Sprintf(listing, before.NewThreadIntent.Title, before.NewThreadIntent.Title)
+			}
+			write(t, filepath.Join(f.bbDir, "listing"), listing, 0o600)
+			code, _, errs := f.run("retarget", "codex-main")
+			st, _ := state.Load(filepath.Join(f.dir, "state"))
+			if code != exitFailed || !strings.Contains(errs, "no retarget performed") || st.NewThreadIntent == nil || st.Target() != state.Primary || st.NewThreadsCreated != 1 {
+				t.Fatalf("%d %s %+v", code, errs, st)
+			}
+		})
+	}
+}
+
+// The bb CLI rejects the invocation, which proves nothing was sent: the next
+// fallback takes the loop in the same check, no thread is on record and the
+// attempt is not counted.
 func TestEndToEndRefusedSpawnFallsThroughAndRetargetNeverCreates(t *testing.T) {
 	f := newThreadFixture(t)
 	// Retarget never creates a thread for a fallback that has none yet.

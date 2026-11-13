@@ -174,7 +174,7 @@
       "oneOf": [
         {
           "required": ["thread"],
-          "not": {"anyOf": [{"required": ["new_thread"]}, {"required": ["project"]}, {"required": ["environment"]}]}
+          "not": {"anyOf": [{"required": ["new_thread"]}, {"required": ["project"]}, {"required": ["environment"]}, {"required": ["permission_mode"]}]}
         },
         {
           "required": ["new_thread"],
@@ -198,6 +198,11 @@
         "environment": {
           "type": "string",
           "description": "with new_thread: existing BB environment for the new thread; default is the environment of the conversation it continues"
+        },
+        "permission_mode": {
+          "enum": ["accept-edits", "auto", "full"],
+          "default": "accept-edits",
+          "description": "with new_thread: the new thread's permission mode, always passed to BB so it never inherits a project default"
         },
         "cli": {
           "type": "string",

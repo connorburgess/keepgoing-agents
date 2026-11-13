@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
@@ -629,10 +628,10 @@ func (t *tick) run() error {
 				// has created its maximum: a person decides, not a re-prompt.
 				d = decide.Decision{Action: decide.AwaitUser, Reason: decide.NewThreadCapReason}
 				why = ""
-			case t.newThreadUnresolved:
-				// A created thread may exist. Nothing more is sent anywhere
-				// until that is settled.
-				d = decide.Decision{Action: decide.None, Reason: "a new thread may have been created for this handoff; waiting to find it"}
+			case t.newThreadUnresolved && t.st.NewThreadIntent != nil:
+				// A created thread may exist and could not be found. Nothing
+				// more is created or sent anywhere: a person is asked.
+				d = decide.Decision{Action: decide.AwaitUser, Reason: unsettledReason(t.st.NewThreadIntent)}
 				why = ""
 			default:
 				in.Failover.Available = false
@@ -825,12 +824,10 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 			switch {
 			case errors.Is(err, state.ErrSendLimit) || errors.Is(err, state.ErrSendLedger):
 				return false, err
-			case errors.Is(err, bb.ErrSpawnUncertain):
-				// A thread may exist. Creating another, or handing the loop to
-				// a different fallback, could put two conversations on the
-				// task: stop here and let the next check look for it.
-				t.warn("handoff to %s: bb did not say whether the new thread was created; the next check looks for it before anything else is tried", id)
-				t.rejectHandoffBrief(id)
+			case errors.Is(err, errNewThreadUnsettled):
+				// A thread may exist and was not found. Creating another, or
+				// handing the loop to a different fallback, could put two
+				// conversations on the task: a person decides.
 				t.newThreadUnresolved = true
 				return false, nil
 			case err != nil:

@@ -185,10 +185,15 @@ type Daemon struct {
 
 // Defaults applied when a field is omitted.
 const (
-	DefaultStallAfter        = 30 * time.Minute
-	DefaultMinWakeInterval   = 60 * time.Minute
-	DefaultMaxReprompts      = 3
-	DefaultMaxNewThreads     = 3
+	DefaultStallAfter      = 30 * time.Minute
+	DefaultMinWakeInterval = 60 * time.Minute
+	DefaultMaxReprompts    = 3
+	DefaultMaxNewThreads   = 3
+	// MaxNewThreadsCeiling is the most loop.limits.max_new_threads may be, and
+	// MinNewThreadInterval the least time between two threads a loop creates.
+	// Together: at most ten threads per loop ever, and at most one an hour.
+	MaxNewThreadsCeiling     = 10
+	MinNewThreadInterval     = time.Hour
 	DefaultMaxNudges         = 3
 	DefaultBackoff           = 10 * time.Minute
 	DefaultWaitIfResetWithin = 30 * time.Minute
@@ -413,8 +418,8 @@ func (c *Config) Validate() error {
 	if l.Limits.MaxSends < 0 {
 		add("loop.limits.max_sends must be nonnegative")
 	}
-	if l.Limits.MaxNewThreads < 0 {
-		add("loop.limits.max_new_threads must be nonnegative (zero means the default)")
+	if l.Limits.MaxNewThreads < 0 || l.Limits.MaxNewThreads > MaxNewThreadsCeiling {
+		add("loop.limits.max_new_threads must be between 0 and %d (zero means the default)", MaxNewThreadsCeiling)
 	}
 	if l.BB != nil && l.BB.NewThread {
 		add("loop.bb.new_thread is for fallback candidates only: the primary needs an existing thread")

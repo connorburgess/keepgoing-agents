@@ -14,13 +14,13 @@ func TestSpawnRunsOneCommandWithThePromptOnStdin(t *testing.T) {
 		*calls = append(*calls, call{stdin, args})
 		return []byte(`{"id":"thr_new_example","status":"active","title":"private fixture text","projectId":"proj_example","environmentId":"env_example"}`), nil
 	}
-	r := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Model: "example-model", Reasoning: "high",
+	r := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Model: "example-model", Reasoning: "high", Permission: "accept-edits",
 		Title: "keepgoing: example-loop (continued, 0a1b2c3d)", Prompt: "fictional brief\nsecond line"}
 	id, err := a.Spawn(context.Background(), r)
 	if err != nil || id != "thr_new_example" || len(*calls) != 1 {
 		t.Fatalf("%q %v %d calls", id, err, len(*calls))
 	}
-	want := []string{"thread", "spawn", "--project", "proj_example", "--environment", "env_example", "--provider", "codex", "--title", r.Title, "--prompt-file", "-", "--json", "--model", "example-model", "--reasoning-level", "high"}
+	want := []string{"thread", "spawn", "--project", "proj_example", "--environment", "env_example", "--provider", "codex", "--permission-mode", "accept-edits", "--title", r.Title, "--prompt-file", "-", "--json", "--model", "example-model", "--reasoning-level", "high"}
 	if got := (*calls)[0]; !reflect.DeepEqual(got.args, want) || got.stdin != r.Prompt {
 		t.Fatalf("args %v stdin %q", got.args, got.stdin)
 	}
@@ -33,13 +33,13 @@ func TestSpawnRunsOneCommandWithThePromptOnStdin(t *testing.T) {
 	// Model and reasoning are optional.
 	r.Model, r.Reasoning = "", ""
 	a.Spawn(context.Background(), r)
-	if got := (*calls)[1].args; len(got) != 13 {
+	if got := (*calls)[1].args; len(got) != 15 {
 		t.Fatalf("args %v", got)
 	}
 }
 
 func TestSpawnOutcomes(t *testing.T) {
-	ok := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Title: "keepgoing: example-loop (continued, 0a1b2c3d)", Prompt: "fictional brief"}
+	ok := SpawnRequest{Place: Place{Project: "proj_example", Environment: "env_example"}, Provider: "codex", Permission: "accept-edits", Title: "keepgoing: example-loop (continued, 0a1b2c3d)", Prompt: "fictional brief"}
 	for _, tc := range []struct {
 		name   string
 		req    SpawnRequest
@@ -50,17 +50,24 @@ func TestSpawnOutcomes(t *testing.T) {
 		runs   int
 	}{
 		{"created", ok, `{"id":"thr_new_example"}`, false, nil, "thr_new_example", 1},
-		{"structured error: nothing was created", ok, `{"ok":false,"error":{"code":"provider_unavailable","message":"private fixture text"}}`, true, ErrSpawnRefused, "", 1},
-		{"structured error with exit 0", ok, `{"ok":false,"error":{"code":"invalid_environment"}}`, false, ErrSpawnRefused, "", 1},
+		// Only the bb CLI's own invocation-mistake codes prove nothing was sent.
+		{"the CLI rejected the invocation", ok, `{"ok":false,"error":{"code":"unknown_option","message":"private fixture text"}}`, true, ErrSpawnRefused, "", 1},
+		{"the CLI rejected a value", ok, `{"ok":false,"error":{"code":"invalid_value"}}`, true, ErrSpawnRefused, "", 1},
+		// A server error says nothing about whether the thread was created first.
+		{"a server error", ok, `{"ok":false,"error":{"code":"provider_unavailable","message":"private fixture text"}}`, true, ErrSpawnUncertain, "", 1},
+		{"a server error with exit 0", ok, `{"ok":false,"error":{"code":"http_500"}}`, false, ErrSpawnUncertain, "", 1},
+		{"an error with no known code", ok, `{"ok":false,"error":{"code":"error"}}`, true, ErrSpawnUncertain, "", 1},
 		{"killed with no output", ok, ``, true, ErrSpawnUncertain, "", 1},
 		{"output that is not JSON", ok, `private fixture text`, false, ErrSpawnUncertain, "", 1},
 		{"an ok envelope without a thread", ok, `{"ok":true}`, false, ErrSpawnUncertain, "", 1},
 		{"an id that is not a thread id", ok, `{"id":"--help"}`, false, ErrSpawnUncertain, "", 1},
 		{"a created thread reported with a failing exit", ok, `{"id":"thr_new_example"}`, true, ErrSpawnUncertain, "", 1},
-		{"no project", SpawnRequest{Place: Place{Environment: "env_example"}, Provider: "codex", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
-		{"unsafe environment", SpawnRequest{Place: Place{Project: "proj_example", Environment: "--machine"}, Provider: "codex", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
-		{"no provider", SpawnRequest{Place: ok.Place, Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
-		{"no prompt", SpawnRequest{Place: ok.Place, Provider: "codex", Title: "t"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no project", SpawnRequest{Place: Place{Environment: "env_example"}, Provider: "codex", Permission: "accept-edits", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"unsafe environment", SpawnRequest{Place: Place{Project: "proj_example", Environment: "--machine"}, Provider: "codex", Permission: "accept-edits", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no provider", SpawnRequest{Place: ok.Place, Permission: "accept-edits", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no prompt", SpawnRequest{Place: ok.Place, Provider: "codex", Permission: "accept-edits", Title: "t"}, ``, false, ErrSpawnRefused, "", 0},
+		{"no permission mode: never left to a project default", SpawnRequest{Place: ok.Place, Provider: "codex", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
+		{"an unknown permission mode", SpawnRequest{Place: ok.Place, Provider: "codex", Permission: "everything", Title: "t", Prompt: "p"}, ``, false, ErrSpawnRefused, "", 0},
 	} {
 		a, _ := newFake(`{}`, `[]`, false)
 		runs := 0

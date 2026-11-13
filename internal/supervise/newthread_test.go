@@ -34,11 +34,14 @@ type fakeThreads struct {
 	createdAnyway bool
 	// crash makes Spawn panic after the thread exists, standing in for the
 	// supervisor process ending before it could record anything.
-	crash   bool
-	titles  map[string][]string
-	spawned []bb.SpawnRequest
-	places  []string
-	lists   int
+	crash bool
+	// unlisted makes a created thread missing from the title listing, as when
+	// it was renamed, retitled by BB, archived or is not visible yet.
+	unlisted bool
+	titles   map[string][]string
+	spawned  []bb.SpawnRequest
+	places   []string
+	lists    int
 }
 
 func (f *fakeThreads) PlaceOf(_ context.Context, thread string) (bb.Place, error) {
@@ -57,7 +60,7 @@ func (f *fakeThreads) FindByTitle(_ context.Context, p bb.Place, title string) (
 func (f *fakeThreads) Spawn(_ context.Context, r bb.SpawnRequest) (string, error) {
 	f.spawned = append(f.spawned, r)
 	id := fmt.Sprintf("thr_created_%d", len(f.spawned))
-	if f.spawnErr == nil || f.createdAnyway {
+	if (f.spawnErr == nil || f.createdAnyway) && !f.unlisted {
 		f.titles[r.Title] = append(f.titles[r.Title], id)
 	}
 	if f.crash {
@@ -133,17 +136,18 @@ func TestHandoffToANewThreadCreatesItOnce(t *testing.T) {
 		t.Fatalf("spawns=%d place lookups=%v", len(f.spawned), f.places)
 	}
 	r := f.spawned[0]
-	if r.Project != "proj_example" || r.Environment != "env_example" || r.Provider != "claude-code" || r.Model != "example-model" || r.Reasoning != "high" ||
+	if r.Project != "proj_example" || r.Environment != "env_example" || r.Provider != "claude-code" || r.Model != "example-model" || r.Reasoning != "high" || r.Permission != "accept-edits" ||
 		!strings.HasPrefix(r.Title, "keepgoing: example-loop (continued, ") || !strings.HasSuffix(r.Title, ")") {
 		t.Fatalf("request %+v", r)
 	}
-	if !strings.Contains(r.Prompt, `You are taking over the "example-loop" loop`) || !strings.Contains(r.Prompt, "This conversation continues @thread:thr_primary.") || !strings.Contains(r.Prompt, "keep going") {
+	if !strings.Contains(r.Prompt, `You are taking over the "example-loop" loop`) || !strings.Contains(r.Prompt, "Continue from @thread:thr_primary.") || !strings.Contains(r.Prompt, "keep going") ||
+		!strings.Contains(r.Prompt, `Loop ownership: this conversation does not own the "example-loop" loop. Its owner is unchanged by this handoff. From here you may run keepgoing pause, stop, await-user and complete for this loop. Do not run keepgoing resume or enable, and do not use --take-over, unless a person asks you to.`) {
 		t.Fatalf("first prompt: %q", r.Prompt)
 	}
 	st, _ := state.Load(w.dir)
 	created := st.NewThreads["claude-other"]
 	if st.Target() != "claude-other" || created.Thread != "thr_created_1" || created.Title != r.Title || created.From != state.Primary || created.Continues != "thr_primary" ||
-		st.NewThreadsCreated != 1 || st.NewThreadIntent != nil || st.Handoffs != 1 {
+		st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || st.NewThreadIntent != nil || st.Handoffs != 1 {
 		t.Fatalf("state %+v", st)
 	}
 	// The conversation that was left: nothing sent, nothing stopped.
@@ -188,7 +192,8 @@ func TestCrashAfterCreationIsReconciledWithoutASecondThread(t *testing.T) {
 		threadTick(t, w, f, t0, nil)
 	}()
 	st, _ := state.Load(w.dir)
-	if st.NewThreadIntent == nil || st.NewThreadIntent.Candidate != "claude-other" || st.NewThreadIntent.Title != f.spawned[0].Title || st.Target() != state.Primary || len(st.NewThreads) != 0 {
+	// The attempt was counted with the intent, before bb was asked.
+	if st.NewThreadIntent == nil || st.NewThreadIntent.Candidate != "claude-other" || st.NewThreadIntent.Title != f.spawned[0].Title || st.Target() != state.Primary || len(st.NewThreads) != 0 || st.NewThreadsCreated != 1 {
 		t.Fatalf("after the crash: %+v", st)
 	}
 	f.crash = false
@@ -207,85 +212,117 @@ func TestCrashAfterCreationIsReconciledWithoutASecondThread(t *testing.T) {
 	}
 }
 
-// bb gives no clear answer. Nothing else is tried until the outcome is known:
-// creating again, or handing the loop to another fallback, could put two
-// conversations on the task.
-func TestUncertainCreationIsSettledBeforeAnythingElseIsTried(t *testing.T) {
-	t.Run("the thread was created", func(t *testing.T) {
-		w, p, f := newThreadWorld(t)
+// bb gives no proof that nothing was created: it was killed, printed nothing
+// usable, or returned a server error. The thread is looked for by its title
+// straight away. Found, the handoff completes. Not found is not proof either
+// (it may have been renamed, archived or not listed yet): the attempt stays
+// counted, the loop is held for a person, the spawn is never retried and the
+// loop is handed to no other fallback.
+func TestUnprovenCreationIsFoundOrHeldNeverRetried(t *testing.T) {
+	t.Run("the thread was created and is listed", func(t *testing.T) {
+		w, _, f := newThreadWorld(t)
 		f.spawnErr, f.createdAnyway = bb.ErrSpawnUncertain, true
 		res := mustThreadTick(t, w, f, t0)
 		st, _ := state.Load(w.dir)
-		if res.Action != "none" || !strings.Contains(res.Reason, "a new thread may have been created") || st.NewThreadIntent == nil || st.Target() != state.Primary ||
-			sentTo(w, "codex-main") != 0 || len(p.sent) != 0 || exactProbes(w, "codex-main") != 0 {
+		if res.Action != "handoff" || res.Target != "claude-other" || res.Handoff.NewThread != "thr_created_1" || len(f.spawned) != 1 || f.lists != 1 || st.NewThreadsCreated != 1 || st.NewThreadIntent != nil {
 			t.Fatalf("%+v state=%+v", res, st)
 		}
-		res = mustThreadTick(t, w, f, t0.Add(time.Minute))
-		if len(f.spawned) != 1 || res.Target != "claude-other" || !res.Handoff.Reconciled {
-			t.Fatalf("spawns=%d %+v", len(f.spawned), res)
-		}
 	})
-	t.Run("nothing was created", func(t *testing.T) {
+	for name, setup := range map[string]func(*fakeThreads){
+		"created but missing from the listing": func(f *fakeThreads) { f.createdAnyway, f.unlisted = true, true },
+		"not created at all":                   func(f *fakeThreads) {},
+		"BB cannot be asked":                   func(f *fakeThreads) { f.createdAnyway, f.listErr = true, errors.New("listing unavailable") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, p, f := newThreadWorld(t)
+			w.cfg.Loop.Limits.MaxNewThreads = 1
+			f.spawnErr = bb.ErrSpawnUncertain
+			setup(f)
+			res := mustThreadTick(t, w, f, t0)
+			ctl, _ := control.Load(w.dir)
+			st, _ := state.Load(w.dir)
+			if res.Action != "await_user" || !ctl.AwaitingUser || !strings.Contains(ctl.Note, f.spawned[0].Title) || !strings.Contains(ctl.Note, "cannot tell whether it exists") ||
+				strings.Count(w.reportTypes(), "await_user") != 1 {
+				t.Fatalf("%+v hold=%+v reports=%s", res, ctl, w.reportTypes())
+			}
+			// Counted, still pending, and nothing else was tried.
+			if st.NewThreadsCreated != 1 || st.NewThreadIntent == nil || st.Target() != state.Primary || sentTo(w, "codex-main") != 0 || len(p.sent) != 0 || exactProbes(w, "codex-main") != 0 {
+				t.Fatalf("state=%+v codex sends=%d primary sends=%d", st, sentTo(w, "codex-main"), len(p.sent))
+			}
+			// A person resumes, again and again over hours: the thread is looked
+			// for each time, never created again, and nothing is handed off.
+			f.spawnErr = nil
+			for i := 1; i <= 6; i++ {
+				control.Update(w.dir, func(c *control.File) { c.AwaitingUser = false })
+				if res := mustThreadTick(t, w, f, t0.Add(time.Duration(i)*2*time.Hour)); res.Action != "await_user" {
+					t.Fatalf("resume %d: %+v", i, res)
+				}
+			}
+			st, _ = state.Load(w.dir)
+			if len(f.spawned) != 1 || st.NewThreadsCreated != 1 || sentTo(w, "codex-main") != 0 || st.Target() != state.Primary {
+				t.Fatalf("spawns=%d count=%d codex sends=%d", len(f.spawned), st.NewThreadsCreated, sentTo(w, "codex-main"))
+			}
+		})
+	}
+	t.Run("held, then the thread shows up in the listing", func(t *testing.T) {
 		w, _, f := newThreadWorld(t)
-		f.spawnErr = bb.ErrSpawnUncertain
+		f.spawnErr, f.createdAnyway, f.unlisted = bb.ErrSpawnUncertain, true, true
 		mustThreadTick(t, w, f, t0)
-		f.spawnErr = nil
-		// The listing shows no such thread: the intent is dropped and the
-		// handoff goes on. The candidate is backing off after its failed
-		// attempt, so the next fallback takes the loop.
-		res := mustThreadTick(t, w, f, t0.Add(time.Minute))
-		st, _ := state.Load(w.dir)
-		if st.NewThreadIntent != nil || res.Action != "handoff" || res.Target != "codex-main" || len(f.spawned) != 1 || st.NewThreadsCreated != 0 {
-			t.Fatalf("%+v state=%+v spawns=%d", res, st, len(f.spawned))
-		}
-	})
-	t.Run("BB cannot be asked", func(t *testing.T) {
-		w, p, f := newThreadWorld(t) // max_reprompts 2
-		f.spawnErr, f.createdAnyway = bb.ErrSpawnUncertain, true
-		mustThreadTick(t, w, f, t0)
-		f.listErr = errors.New("listing unavailable")
-		res := mustThreadTick(t, w, f, t0.Add(time.Minute))
-		if res.Action != "none" || sentTo(w, "codex-main") != 0 || len(p.sent) != 0 {
-			t.Fatalf("something was tried while the creation was unsettled: %+v", res)
-		}
-		// Not a wait to sit in silently: the second such check asks a person.
-		res = mustThreadTick(t, w, f, t0.Add(2*time.Minute))
-		ctl, _ := control.Load(w.dir)
-		if res.Action != "await_user" || !ctl.AwaitingUser || !strings.Contains(ctl.Note, f.spawned[0].Title) || strings.Count(w.reportTypes(), "await_user") != 1 {
-			t.Fatalf("%+v hold=%+v", res, ctl)
-		}
-		if len(f.spawned) != 1 || sentTo(w, "codex-main") != 0 {
-			t.Fatalf("spawns=%d", len(f.spawned))
-		}
-		// BB answers again and the person resumes: the thread is found.
-		f.listErr = nil
+		f.titles[f.spawned[0].Title] = []string{"thr_created_1"} // now visible
 		control.Update(w.dir, func(c *control.File) { c.AwaitingUser = false })
-		if res := mustThreadTick(t, w, f, t0.Add(3*time.Minute)); res.Target != "claude-other" || len(f.spawned) != 1 {
+		res := mustThreadTick(t, w, f, t0.Add(time.Minute))
+		if res.Target != "claude-other" || !res.Handoff.Reconciled || res.Handoff.NewThread != "thr_created_1" || len(f.spawned) != 1 {
 			t.Fatalf("%+v", res)
 		}
 	})
 	t.Run("two threads carry the title", func(t *testing.T) {
 		w, _, f := newThreadWorld(t)
 		f.spawnErr, f.createdAnyway = bb.ErrSpawnUncertain, true
-		mustThreadTick(t, w, f, t0)
-		f.titles[f.spawned[0].Title] = append(f.titles[f.spawned[0].Title], "thr_unrelated_copy")
-		mustThreadTick(t, w, f, t0.Add(time.Minute))
-		res := mustThreadTick(t, w, f, t0.Add(2*time.Minute))
+		f.titles = map[string][]string{}
+		// A second thread appears under the same title before the lookup.
+		creator := f
+		opts := w.opts(t0)
+		opts.Threads = func(string) ThreadCreator { return doubledTitle{creator} }
+		res, err := Tick(context.Background(), w.cfg, opts)
 		st, _ := state.Load(w.dir)
-		if res.Action != "await_user" || st.Target() != state.Primary || len(st.NewThreads) != 0 || len(f.spawned) != 1 {
+		if err != nil || res.Action != "await_user" || st.Target() != state.Primary || len(st.NewThreads) != 0 || len(f.spawned) != 1 || st.NewThreadsCreated != 1 {
+			t.Fatalf("%+v state=%+v err=%v", res, st, err)
+		}
+	})
+	t.Run("the supervisor ended and the thread is not listed", func(t *testing.T) {
+		w, _, f := newThreadWorld(t)
+		f.crash, f.unlisted = true, true
+		func() {
+			defer func() { recover() }()
+			threadTick(t, w, f, t0, nil)
+		}()
+		f.crash = false
+		res := mustThreadTick(t, w, f, t0.Add(time.Minute))
+		st, _ := state.Load(w.dir)
+		if res.Action != "await_user" || len(f.spawned) != 1 || st.NewThreadsCreated != 1 || st.NewThreadIntent == nil || sentTo(w, "codex-main") != 0 {
 			t.Fatalf("%+v state=%+v", res, st)
 		}
 	})
 }
 
-// bb refuses to create the thread. That counts as a rejected brief for that
-// fallback, under its own cap and spacing, and the next fallback is tried.
+// doubledTitle reports one more thread under every title than exist.
+type doubledTitle struct{ *fakeThreads }
+
+func (d doubledTitle) FindByTitle(ctx context.Context, p bb.Place, title string) ([]string, error) {
+	ids, err := d.fakeThreads.FindByTitle(ctx, p, title)
+	return append(ids, "thr_unrelated_copy"), err
+}
+
+// The request provably never reached BB (the bb CLI rejected the invocation).
+// That alone is "nothing was created": it counts as a rejected brief for that
+// fallback, under its own cap and spacing, the attempt is not counted against
+// the thread cap, and the next fallback is tried.
 func TestFailedCreationCountsAsARejectedBriefAndFallsThrough(t *testing.T) {
 	w, p, f := newThreadWorld(t)
 	f.spawnErr = bb.ErrSpawnRefused
 	res := mustThreadTick(t, w, f, t0)
 	st, _ := state.Load(w.dir)
-	if res.Action != "handoff" || res.Target != "codex-main" || res.Handoff.NewThread != "" || st.HandoffBriefs != nil || st.NewThreadsCreated != 0 || st.NewThreadIntent != nil || len(f.spawned) != 1 {
+	if res.Action != "handoff" || res.Target != "codex-main" || res.Handoff.NewThread != "" || st.HandoffBriefs != nil || st.NewThreadsCreated != 0 || !st.LastNewThreadAt.IsZero() || st.NewThreadIntent != nil || len(f.spawned) != 1 || f.lists != 0 {
 		t.Fatalf("%+v state=%+v", res, st)
 	}
 	if !strings.Contains(strings.Join(res.Warnings, ";"), "new thread not created") || sentTo(w, "codex-main") != 1 || len(p.sent) != 0 {
@@ -435,7 +472,10 @@ func TestSwitchBackFromACreatedThreadAndASecondHandoff(t *testing.T) {
 	if st.NewThreads["claude-other"].Thread != "thr_created_1" || len(f.spawned) != 1 {
 		t.Fatalf("%+v", st.NewThreads)
 	}
-	// The primary hits its limit again: a second thread for the same candidate.
+	// The primary hits its limit again half an hour after the first thread was
+	// created: too soon for another, so the ordinary fallback takes the loop.
+	// (Here the first was created at t0; this check is well past the hour, so
+	// spacing is exercised separately below.)
 	p.obs = limited
 	res = mustThreadTick(t, w, f, t0.Add(5*time.Hour))
 	st, _ = state.Load(w.dir)
@@ -525,5 +565,33 @@ func TestNewThreadSendAllowanceDryRunAndMissingRecord(t *testing.T) {
 	res = mustThreadTick(t, w, f, t0)
 	if res.Target != state.Primary || !strings.Contains(strings.Join(res.Warnings, ";"), "no created thread on record") {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// Two threads are never created less than an hour apart. Inside the hour the
+// new-thread fallback is skipped unprobed and another fallback may take the
+// loop; no hold is raised for spacing alone.
+func TestNewThreadsAreSpacedAnHourApart(t *testing.T) {
+	w, _, f := newThreadWorld(t)
+	state.Save(w.dir, state.File{NewThreadsCreated: 1, LastNewThreadAt: t0.Add(-59 * time.Minute)})
+	res := mustThreadTick(t, w, f, t0)
+	if res.Target != "codex-main" || len(f.spawned) != 0 || exactProbes(w, "claude-other") != 0 || strings.Join(res.Handoff.Skipped, ",") != "claude-other: new_thread_spacing" {
+		t.Fatalf("%+v handoff=%+v", res, res.Handoff)
+	}
+	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
+		t.Fatal("spacing raised a hold")
+	}
+	w, _, f = newThreadWorld(t)
+	state.Save(w.dir, state.File{NewThreadsCreated: 1, LastNewThreadAt: t0.Add(-time.Hour)})
+	if res := mustThreadTick(t, w, f, t0); res.Target != "claude-other" || len(f.spawned) != 1 {
+		t.Fatalf("an hour later: %+v", res)
+	}
+	// With no other fallback the loop falls through to its ordinary rules.
+	w, p, f := newThreadWorld(t)
+	delete(w.probeOK, "codex-main")
+	w.cfg.FallbackSet.Redundancy.MinHealthy = 1
+	state.Save(w.dir, state.File{NewThreadsCreated: 1, LastNewThreadAt: t0.Add(-time.Minute)})
+	if res := mustThreadTick(t, w, f, t0); res.Action != "reprompt" || len(f.spawned) != 0 || len(p.sent) != 1 {
+		t.Fatalf("no other fallback: %+v", res)
 	}
 }

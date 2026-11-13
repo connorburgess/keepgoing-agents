@@ -47,25 +47,52 @@ func isNewThread(c config.Candidate) bool {
 	return c.Adapter == "bb" && c.BB != nil && c.BB.NewThread
 }
 
-// saveNewThreadIntent writes the intent (or its removal) to state.json at
-// once, ahead of the rest of the check's state.
-func (t *tick) saveNewThreadIntent(in *state.NewThreadIntent) error {
+// errNewThreadUnsettled means a thread may exist and could not be found: the
+// loop must be held for a person, and nothing else may be tried.
+var errNewThreadUnsettled = errors.New("a new thread may have been created and could not be found")
+
+// beginNewThread saves the intent to create a thread, and counts the attempt,
+// in one write to state.json ahead of the rest of the check's state. From
+// here on the attempt counts against the cap unless it is proven never to
+// have reached BB.
+func (t *tick) beginNewThread(in *state.NewThreadIntent) error {
 	saved, err := state.Load(t.loop.StateDir)
 	if err != nil {
 		return err
 	}
-	saved.NewThreadIntent = in
+	saved.NewThreadIntent, saved.NewThreadsCreated, saved.LastNewThreadAt = in, saved.NewThreadsCreated+1, t.now
 	if err := state.Save(t.loop.StateDir, saved); err != nil {
 		return err
 	}
-	t.st.NewThreadIntent = in
+	t.st.NewThreadIntent, t.st.NewThreadsCreated, t.st.LastNewThreadAt = in, saved.NewThreadsCreated, t.now
 	return nil
 }
 
+// refundNewThread drops an attempt that provably never reached BB.
+func (t *tick) refundNewThread(previous time.Time) {
+	t.st.NewThreadIntent, t.st.LastNewThreadAt = nil, previous
+	if t.st.NewThreadsCreated > 0 {
+		t.st.NewThreadsCreated--
+	}
+	if saved, err := state.Load(t.loop.StateDir); err == nil {
+		saved.NewThreadIntent, saved.NewThreadsCreated, saved.LastNewThreadAt = nil, t.st.NewThreadsCreated, previous
+		state.Save(t.loop.StateDir, saved)
+	}
+}
+
+// ownershipNote is fixed wording appended to the first prompt of a created
+// thread. The handoff does not change who owns the loop.
+func ownershipNote(loop string) string {
+	return "\n\nLoop ownership: this conversation does not own the \"" + loop + "\" loop. Its owner is unchanged by this handoff. " +
+		"From here you may run keepgoing pause, stop, await-user and complete for this loop. " +
+		"Do not run keepgoing resume or enable, and do not use --take-over, unless a person asks you to.\n"
+}
+
 // createThread creates the thread for a handoff to c, with the brief as its
-// first prompt. The intent is on disk before bb is asked, so whatever happens
-// next a later check can find the thread by its title instead of creating
-// another. A bb.ErrSpawnUncertain error leaves the intent in place.
+// first prompt. The intent is on disk, and counted, before bb is asked. Only
+// an answer that proves the request never reached BB is treated as "nothing
+// was created". After any other failure the thread is looked for by its
+// title: found, it is the thread; not found, errNewThreadUnsettled.
 func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candidate, brief prompt.Message, reason string) (string, error) {
 	creator := t.opts.Threads(c.BB.CLI)
 	place := bb.Place{Project: c.BB.Project, Environment: c.BB.Environment}
@@ -92,22 +119,26 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	if err != nil {
 		return "", errors.New("could not generate a title")
 	}
+	previous := t.st.LastNewThreadAt
 	intent := &state.NewThreadIntent{Candidate: c.ID, Title: title, Project: place.Project, Environment: place.Environment,
 		From: from, Continues: continues, Reason: reason, RequestedAt: t.now}
-	if err := t.saveNewThreadIntent(intent); err != nil {
+	if err := t.beginNewThread(intent); err != nil {
 		return "", errors.New("could not record the intent to create a thread; nothing was created")
 	}
 	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
-		t.saveNewThreadIntent(nil) // nothing was asked of bb
+		t.refundNewThread(previous) // nothing was asked of bb
 		return "", err
 	}
 	t.graphSessionOf(from) // the end of the move that is being left
 	text := brief.Text
 	if continues != "" {
-		text += "\n\nThis conversation continues @thread:" + continues + ". keepgoing started it for this handoff; the earlier conversation was left as it was.\n"
+		// BB's documented way to reference the source of a handoff.
+		text += "\n\nContinue from @thread:" + continues + ". keepgoing started this conversation for the handoff; the earlier one was left as it was.\n"
 	}
+	text += ownershipNote(t.loop.Name)
 	attempt := t.graphBegin(c.ID, "handoff", string(adapter.ModeAuto), brief)
-	thread, err := creator.Spawn(t.ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning, Title: title, Prompt: text})
+	thread, err := creator.Spawn(t.ctx, bb.SpawnRequest{Place: place, Provider: c.Provider, Model: c.BB.Model, Reasoning: c.BB.Reasoning,
+		Permission: c.BB.NewThreadPermission(), Title: title, Prompt: text})
 	outcome := "adapter_returned"
 	if err != nil {
 		outcome = "adapter_error"
@@ -116,23 +147,29 @@ func (t *tick) createThread(from string, fromAgent config.Agent, c config.Candid
 	t.st.LastPromptSend = &state.PromptSend{Version: 1, CheckAt: t.now, Target: c.ID, Action: "handoff", Mode: string(adapter.ModeAuto), Outcome: outcome,
 		GoalID: brief.GoalID, GoalRevision: brief.GoalRevision}
 	switch {
-	case errors.Is(err, bb.ErrSpawnUncertain):
-		return "", err
-	case err != nil:
-		t.st.NewThreadIntent = nil // bb refused: nothing exists
+	case err == nil:
+		t.adoptThread(intent, thread)
+		return thread, nil
+	case errors.Is(err, bb.ErrSpawnRefused):
+		t.refundNewThread(previous)
 		return "", err
 	}
-	t.adoptThread(intent, thread)
-	return thread, nil
+	// No proof either way: BB may have created the thread and failed after.
+	ids, findErr := creator.FindByTitle(t.ctx, place, title)
+	if findErr == nil && len(ids) == 1 {
+		t.adoptThread(intent, ids[0]) // created, whatever bb went on to report
+		return ids[0], nil
+	}
+	return "", errNewThreadUnsettled
 }
 
-// adoptThread records a created thread as its candidate's thread.
+// adoptThread records a created thread as its candidate's thread. The attempt
+// was counted when it was begun.
 func (t *tick) adoptThread(in *state.NewThreadIntent, thread string) {
 	if t.st.NewThreads == nil {
 		t.st.NewThreads = map[string]state.CreatedThread{}
 	}
 	t.st.NewThreads[in.Candidate] = state.CreatedThread{Thread: thread, Title: in.Title, CreatedAt: t.now, From: in.From, Continues: in.Continues}
-	t.st.NewThreadsCreated++
 	t.st.NewThreadIntent = nil
 	t.incidentNewThread = true
 }
@@ -151,15 +188,31 @@ func (t *tick) moveToCreated(in *state.NewThreadIntent, thread string, note *Han
 		map[string]any{"from": in.From, "to": in.Candidate, "reason": in.Reason, "tried": note.Tried, "newThread": true})
 }
 
+// unsettledReason is the hold raised when a thread may exist and cannot be
+// found. It names the title so a person can look for it.
+func unsettledReason(in *state.NewThreadIntent) string {
+	return fmt.Sprintf("keepgoing asked BB to create a thread titled %q for a handoff and cannot tell whether it exists (it may have been renamed or archived, or BB could not be asked). "+
+		"Nothing else was created or handed off. Look for it in BB, then choose where the loop continues with retarget, and resume", in.Title)
+}
+
+// holdForNewThread asks a person. The pending creation stays on record and
+// stays counted; a later check, or retarget, looks for the thread again.
+func (t *tick) holdForNewThread() {
+	d := decide.Decision{Action: decide.AwaitUser, Reason: unsettledReason(t.st.NewThreadIntent)}
+	t.res.Action, t.res.Reason = string(d.Action), d.Reason
+	if err := t.act(nil, d); err != nil {
+		t.warn("could not hold the loop: %v", err)
+	}
+}
+
 // reconcileNewThread settles a creation whose outcome was never recorded: the
-// supervisor stopped between asking bb and saving the answer, or bb gave no
-// clear answer. It looks for the intent's unique title. Exactly one match is
-// the thread: the handoff is completed. No match means nothing was created.
-// While the listing cannot be trusted the intent stays, no thread is created
-// and no handoff is made, since a second conversation might be started on the
-// same task. That wait is bounded: after errors.max_reprompts such checks the
-// loop is held for a person. moved says the loop was moved to the thread;
-// held says the hold was raised and the check should end.
+// supervisor stopped between asking bb and saving the answer, or a person
+// resumed a loop held for it. It looks for the intent's unique title. Exactly
+// one match is the thread, and the handoff is completed. Anything else is not
+// proof that nothing was created (the thread may have been renamed, archived
+// or not listed yet), so the loop is held again: no spawn is retried and the
+// loop is handed to nothing else. moved says the loop was moved to the
+// thread; held says the hold was raised and the check should end.
 func (t *tick) reconcileNewThread() (moved, held bool) {
 	in := t.st.NewThreadIntent
 	if in == nil || t.opts.DryRun {
@@ -174,29 +227,9 @@ func (t *tick) reconcileNewThread() (moved, held bool) {
 		cli = c.BB.CLI
 	}
 	ids, err := t.opts.Threads(cli).FindByTitle(t.ctx, bb.Place{Project: in.Project, Environment: in.Environment}, in.Title)
-	switch {
-	case err != nil || len(ids) > 1:
-		t.newThreadUnresolved = true
-		in.Unresolved++
-		why := "BB could not be asked whether it was created"
-		if err == nil {
-			why = "more than one thread has the title keepgoing generated"
-		}
-		if in.Unresolved < t.loop.Errors.MaxReprompts {
-			t.warn("new thread for %s: %s; nothing is created or handed off until that is known", in.Candidate, why)
-			return false, false
-		}
-		// Not a wait to sit in silently: ask a person.
-		in.Unresolved = 0
-		d := decide.Decision{Action: decide.AwaitUser, Reason: fmt.Sprintf("a new BB thread titled %q may have been created for a handoff, and %s; check BB, then resume, or retarget to drop the pending creation", in.Title, why)}
-		t.res.Action, t.res.Reason = string(d.Action), d.Reason
-		if err := t.act(nil, d); err != nil {
-			t.warn("could not hold the loop: %v", err)
-		}
+	if err != nil || len(ids) != 1 {
+		t.holdForNewThread()
 		return false, true
-	case len(ids) == 0:
-		t.st.NewThreadIntent = nil // nothing was created
-		return false, false
 	}
 	thread := ids[0]
 	if !configured || c.Disabled || !isNewThread(c) || t.st.Target() != in.From {
@@ -216,14 +249,18 @@ func (t *tick) reconcileNewThread() (moved, held bool) {
 // newThreadGate says why a new-thread candidate cannot be offered a handoff
 // right now, or "".
 func (t *tick) newThreadGate(c config.Candidate) string {
-	switch {
-	case !isNewThread(c):
+	if !isNewThread(c) {
 		return ""
-	case t.st.NewThreadIntent != nil:
-		return "new_thread_pending" // an earlier creation is still unsettled
-	case !decide.NewThreadAllowed(t.st.NewThreadsCreated, t.loop.Limits.MaxNewThreads):
-		t.newThreadCapped = true
-		return "new_thread_cap"
 	}
-	return ""
+	if t.st.NewThreadIntent != nil {
+		return "new_thread_pending" // an earlier creation is still unsettled
+	}
+	v := decide.NewThreadGate(t.st.NewThreadsCreated, t.loop.Limits.MaxNewThreads, t.now.Sub(t.st.LastNewThreadAt), config.MinNewThreadInterval, !t.st.LastNewThreadAt.IsZero())
+	switch v {
+	case decide.NewThreadAllowed:
+		return ""
+	case decide.NewThreadCapped:
+		t.newThreadCapped = true
+	}
+	return string(v)
 }
