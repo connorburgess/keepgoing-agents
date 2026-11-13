@@ -76,6 +76,14 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// KillReporter is implemented by adapters that can tell when the host ended
+// one of their provider commands with a signal they did not send. The
+// affected read is already treated as unverified; the count lets a check say
+// why.
+type KillReporter interface {
+	HostKills() int
+}
+
 // LaneRecoverer is implemented by adapters that can recover a failed lane: a
 // direct child conversation of the supervised session. The supervisor uses
 // it only when the loop has opted in. It is the only way the supervisor acts
@@ -89,6 +97,9 @@ type LaneRecoverer interface {
 	// RetryLane asks the provider to retry the lane's failed turn by
 	// reference. Errors mean what they mean for TurnRetrier.RetryFailedTurn.
 	RetryLane(ctx context.Context, id string) (TurnRetry, error)
+	// ForgetLanes removes everything the adapter keeps about lanes. It is
+	// called when lane recovery is switched off.
+	ForgetLanes()
 }
 
 // TurnRetryOutcome is what the provider reported for a retry request.

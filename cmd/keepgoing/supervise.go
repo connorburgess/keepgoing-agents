@@ -432,6 +432,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
+	// The lane record is per-lane hashes and their key. Status shows its
+	// counts above and never the record itself.
+	out.State.Lanes = nil
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
 	if l.Limits.MaxSends > 0 {
 		out.SendAllowance = &sendAllowanceStatus{Max: l.Limits.MaxSends}

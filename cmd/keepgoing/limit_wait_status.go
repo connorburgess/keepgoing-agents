@@ -152,8 +152,11 @@ func printLanes(w io.Writer, s lanesStatus) {
 	}
 	c := s.Last
 	fmt.Fprintf(w, "lane recovery: on; last lane work at the check of %s: asked BB to retry %d lane(s), gave up on %d, put off %d for lack of time", when(c.At), c.Retried, c.GivenUp, c.Deferred)
-	if c.Waiting == "network" {
+	switch c.Waiting {
+	case "network":
 		fmt.Fprint(w, "; waiting for the network")
+	case "control":
+		fmt.Fprint(w, "; ended early because stop, pause or a hold was requested during the check")
 	}
 	fmt.Fprintln(w)
 	reasons := make([]string, 0, len(c.NotRetried))

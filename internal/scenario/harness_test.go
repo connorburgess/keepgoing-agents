@@ -96,9 +96,12 @@ type World struct {
 	Project string
 	Config  string
 	Now     time.Time
-	Net     *Connectivity
-	Hooks   *Receiver
-	Threads map[string]*Thread
+	// AllowHostKills lets a scenario kill a stand-in on purpose. Otherwise a
+	// stand-in the host killed fails the scenario at once, as its own failure.
+	AllowHostKills bool
+	Net            *Connectivity
+	Hooks          *Receiver
+	Threads        map[string]*Thread
 	// Headless is the CLI of a headless loop, or "" for a BB loop.
 	Headless string
 
@@ -600,6 +603,12 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	s.NetChecks = w.Net.take()
 	w.read(s)
 	w.Journal = append(w.Journal, s)
+	if killed := hostKilled(s); killed != "" && !w.AllowHostKills {
+		// Not an assertion about keepgoing: the machine killed a stand-in
+		// process, which changes what the check could read. Say so, instead
+		// of failing later on whatever product assertion that upsets.
+		w.t.Fatalf("HOST KILLED A STAND-IN at %s (%s): %s\nThis is the machine running the tests (overloaded or out of memory), not keepgoing's behaviour. Run the scenario again on a quieter machine.", s.At.Format(time.RFC3339), label, killed)
+	}
 	// The stand-in agents respond to what they were sent, so the next step
 	// observes the consequence.
 	for _, m := range s.Sent {
@@ -697,6 +706,24 @@ func (w *World) Check(s *Step, name string, err error) {
 	if err != nil {
 		w.Failf(s, "%s: %v", name, err)
 	}
+}
+
+// hostKilled returns what a step says about a provider command the host
+// killed, or "". keepgoing reports it in two places: a warning on a check
+// that went on with the read unverified, and the error of a check that
+// could not observe its target at all.
+func hostKilled(s *Step) string {
+	if warnings, _ := s.Tick["warnings"].([]any); len(warnings) > 0 {
+		for _, w := range warnings {
+			if text, _ := w.(string); strings.Contains(text, "killed by the host") {
+				return text
+			}
+		}
+	}
+	if strings.Contains(s.Result.Stderr, "signal: killed") {
+		return strings.TrimSpace(s.Result.Stderr)
+	}
+	return ""
 }
 
 // Waiting names open work a known failure is waiting on.

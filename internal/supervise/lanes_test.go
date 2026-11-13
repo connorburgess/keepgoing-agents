@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -29,6 +30,7 @@ type laneAdapter struct {
 	inspected []string
 	retried   []string
 	onInspect func()
+	forgotten int
 }
 
 var retryable = decide.LaneFacts{Verified: true, Errored: true, InputKnown: true, ClassKnown: true, Class: decide.ErrNetwork}
@@ -43,6 +45,8 @@ func (l *laneAdapter) InspectLane(_ context.Context, id string) decide.LaneFacts
 	}
 	return retryable
 }
+
+func (l *laneAdapter) ForgetLanes() { l.forgotten++ }
 
 func (l *laneAdapter) RetryLane(_ context.Context, id string) (adapter.TurnRetry, error) {
 	l.retried = append(l.retried, id)
@@ -163,6 +167,13 @@ func TestLaneRecoveryIsOffUnlessConfigured(t *testing.T) {
 			t.Fatalf("%+v: %v %v %+v", children, w.a.inspected, w.a.retried, res.Lanes)
 		}
 		sendsUsed(t, w.world, 0)
+		// A loop that never opts in writes nothing an older build cannot read.
+		if g, _ := rungraph.Load(w.dir); len(g.Attempts) != 0 || w.a.forgotten != 0 {
+			t.Fatalf("%+v: graph attempts %+v, forgotten %d", children, g.Attempts, w.a.forgotten)
+		}
+		if kept := everythingKept(t, w.world); strings.Contains(kept, "child_retry") {
+			t.Fatalf("%+v: lane work was recorded with the option off", children)
+		}
 	}
 	w := newLaneWorld(t)
 	ids := laneIDs(2)
@@ -172,8 +183,12 @@ func TestLaneRecoveryIsOffUnlessConfigured(t *testing.T) {
 		t.Fatalf("%+v", res.Lanes)
 	}
 	w.cfg.Loop.Agent.BB.Children.RetryErrored = false
-	if res := w.tick(t, t0.Add(20*time.Minute)); res.Lanes != nil || w.lanes(t) != nil || len(w.a.retried) != 2 {
-		t.Fatalf("switched off: %+v %+v", res.Lanes, w.lanes(t))
+	if res := w.tick(t, t0.Add(20*time.Minute)); res.Lanes != nil || w.lanes(t) != nil || len(w.a.retried) != 2 || w.a.forgotten != 1 {
+		t.Fatalf("switched off: %+v %+v forgotten=%d", res.Lanes, w.lanes(t), w.a.forgotten)
+	}
+	w.tick(t, t0.Add(21*time.Minute))
+	if w.a.forgotten != 1 {
+		t.Fatal("the adapter was told to forget on every check")
 	}
 }
 
@@ -203,7 +218,7 @@ func TestLaneMustHaveBeenSeenWorkingFirst(t *testing.T) {
 	// A lane that leaves the listing is forgotten; coming back in error it is new.
 	w.a.obs.ErroredChildren = ids[:1]
 	w.tick(t, t0.Add(42*time.Minute))
-	if _, kept := w.lanes(t).SeenActive[decide.ChildHashes(ids[1:2])[0]]; kept {
+	if _, kept := w.lanes(t).SeenActive[laneHasher(w.lanes(t).Key)(ids[1])]; kept {
 		t.Fatal("a lane no longer listed is still remembered as seen working")
 	}
 }
@@ -287,8 +302,28 @@ func TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce(t *testing.T) {
 	if retried != 18 || givenUp != 6 {
 		t.Fatalf("history: %d retried, %d given up", retried, givenUp)
 	}
-	if l := w.lanes(t); l.EpisodeRetries != 18 || len(l.Retries) != 6 || l.Reports != 2 {
+	// Every lane is given up, so the episode is over: its count starts again
+	// for the next failure, and the given-up lanes stay given up.
+	l := w.lanes(t)
+	if l.EpisodeRetries != 0 || len(l.Retries) != 6 {
 		t.Fatalf("%+v", l)
+	}
+	for h, r := range l.Retries {
+		if !r.GivenUp || !r.Reported || r.Attempts != 3 {
+			t.Fatalf("%s: %+v", h, r)
+		}
+	}
+	// What was recorded as sent: eighteen lane retries, each a child_retry
+	// against the loop's own target, with no lane named.
+	g, availability := rungraph.Load(w.dir)
+	laneSends := 0
+	for _, a := range g.Attempts {
+		if a.Action == "child_retry" && a.Mode == "turn_retry" && a.Target == state.Primary {
+			laneSends++
+		}
+	}
+	if availability != rungraph.Available || laneSends != 18 {
+		t.Fatalf("graph %s: %d lane sends", availability, laneSends)
 	}
 }
 
@@ -367,8 +402,9 @@ func TestLanesAreDeferredWhenTheCheckIsShortOfTime(t *testing.T) {
 	if res.Lanes.Retried != 5 || res.Lanes.Deferred != 0 || len(next) != 5 {
 		t.Fatalf("%+v %v", res.Lanes, next)
 	}
+	name := laneHasher(w.lanes(t).Key)
 	for i, h := range deferred { // the deferred lanes lead the next check, in order
-		if decide.ChildHashes(next[i : i+1])[0] != h {
+		if name(next[i]) != h {
 			t.Fatalf("deferred lanes were not taken first: %v then %v", deferred, next)
 		}
 	}
@@ -424,8 +460,7 @@ func TestLanesWaitOutAnOutageOfAnyLength(t *testing.T) {
 
 // A turn that failed long ago may no longer be retryable. BB then answers
 // that there is nothing to retry: the lane is not prompted instead, no
-// attempt or send is spent, it is not asked again inside the spacing, and it
-// is never given up or reported.
+// attempt or send is spent, and it is not asked again inside the spacing.
 func TestLaneWithNothingToRetryIsLeftAlone(t *testing.T) {
 	w := newLaneWorld(t)
 	id := laneIDs(1)
@@ -546,7 +581,9 @@ func TestStopPauseHoldsAndDryRunWinOverLaneRecovery(t *testing.T) {
 		"a lane is waiting on a person": func(w *laneWorld) {
 			w.a.obs.AwaitingChildren = []string{"thr_lane_00"}
 		},
-		"the session is gone": func(w *laneWorld) { w.a.obs.Gone = true },
+		"the session is gone":            func(w *laneWorld) { w.a.obs.Gone = true },
+		"the session is stopping":        func(w *laneWorld) { w.a.obs.State = decide.Stopping },
+		"the session's state is unknown": func(w *laneWorld) { w.a.obs.State = decide.Unknown },
 	} {
 		w := newLaneWorld(t)
 		ids := laneIDs(3)
@@ -601,19 +638,53 @@ func TestNoLaneOfTheOldConversationIsRetriedAfterAMove(t *testing.T) {
 	}
 }
 
-// The notice to an idle session says how many lanes BB was asked to retry.
-func TestNoticeSaysHowManyLanesWereRetried(t *testing.T) {
+// The session is told only about lanes keepgoing will not act on. Ten lanes
+// fail together and five are retried per check: the other five are waiting
+// their turn, not the session's to restart, so nothing is announced.
+func TestLanesWaitingTheirTurnAreNotHandedToTheSession(t *testing.T) {
 	w := newLaneWorld(t)
+	ids := laneIDs(10)
+	w.working(t, t0, ids...)
+	w.failed(ids...)
+	w.a.obs.State = decide.Idle
+	for i, total := range []int{5, 10} {
+		res := w.tick(t, t0.Add(time.Duration(i+1)*time.Minute))
+		if res.Action != "wake" || res.ChildErrorNote || len(w.a.retried) != total || w.a.sent[i] != "keep going" {
+			t.Fatalf("check %d: %+v retried=%d sent=%q", i, res, len(w.a.retried), w.a.sent[i])
+		}
+	}
+	// A lane whose log is too long to read in one check is unknown at first.
+	// It is still keepgoing's to recover, so it is not announced either.
+	w = newLaneWorld(t)
+	w.working(t, t0, ids[:2]...)
+	w.failed(ids[:2]...)
+	w.a.obs.State = decide.Idle
+	unread := retryable
+	unread.ClassKnown = false
+	w.a.facts[ids[0]] = unread
+	if res := w.tick(t, t0.Add(time.Minute)); res.ChildErrorNote || len(w.a.retried) != 1 || res.Lanes.NotRetried["unknown"] != 1 {
+		t.Fatalf("%+v %+v", res, res.Lanes)
+	}
+}
+
+// When some lanes are keepgoing's and some are not, the notice says how many
+// of each, and never which.
+func TestNoticeSaysHowManyLanesAreBeingRecovered(t *testing.T) {
+	w := newLaneWorld(t)
+	w.cfg.Loop.Agent.BB.Children.MaxPerCheck = 20
 	ids := laneIDs(7)
 	w.working(t, t0, ids...)
 	w.failed(ids...)
 	w.a.obs.State = decide.Idle
+	limited, login := retryable, retryable
+	limited.Class, login.Class = decide.ErrRateLimit, decide.ErrAuth
+	w.a.facts[ids[2]], w.a.facts[ids[5]] = limited, login
 	res := w.tick(t, t0.Add(time.Minute))
 	if res.Action != "wake" || !res.ChildErrorNote || res.Lanes.Retried != 5 || len(w.a.sent) != 1 {
 		t.Fatalf("%+v", res)
 	}
 	text := w.a.sent[0]
-	for _, want := range []string{"[keepgoing:child-errors count=7", "retried=5", "keepgoing has asked BB to retry the failed turn of 5 of them, by reference and without sending a message", "check each child before you retry or replace it"} {
+	for _, want := range []string{"[keepgoing:child-errors count=7 recovering=5]", "keepgoing is recovering 5 of them itself: it asks BB to retry their failed turn, by reference and without sending a message", "The other 2 are yours", "check its current state"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
@@ -622,20 +693,49 @@ func TestNoticeSaysHowManyLanesWereRetried(t *testing.T) {
 		t.Fatalf("the notice names a lane:\n%s", text)
 	}
 	sendsUsed(t, w.world, 6) // five retries and the wake
+	// Nothing new is said while those five are retried again.
+	if res := w.tick(t, t0.Add(12*time.Minute)); res.ChildErrorNote || len(w.a.retried) != 10 {
+		t.Fatalf("%+v", res)
+	}
 }
 
-// Lane retries stop at the loop's send allowance and raise no hold of their own.
-func TestLaneRetriesStopAtTheSendAllowance(t *testing.T) {
-	w := newLaneWorld(t)
-	w.cfg.Loop.Limits.MaxSends = 2
+// The supervised session comes first. Lane retries never use the sends its
+// own recovery needs (errors.max_reprompts and one notice), and raise no hold.
+func TestLaneRetriesLeaveTheSessionItsSends(t *testing.T) {
+	w := newLaneWorld(t) // max_reprompts 3: four sends are kept back
+	w.cfg.Loop.Limits.MaxSends = 6
 	ids := laneIDs(4)
 	w.working(t, t0, ids...)
 	w.failed(ids...)
 	res := w.tick(t, t0.Add(time.Minute))
-	if len(w.a.retried) != 2 || res.Lanes.Retried != 2 || res.Lanes.NotRetried["send_allowance"] != 1 {
-		t.Fatalf("%+v %v", res.Lanes, w.a.retried)
+	if len(w.a.retried) != 2 || res.Lanes.Retried != 2 || res.Lanes.NotRetried["send_allowance"] != 1 || len(w.a.inspected) != 2 {
+		t.Fatalf("%+v retried=%v inspected=%v", res.Lanes, w.a.retried, w.a.inspected)
 	}
 	sendsUsed(t, w.world, 2)
+	// With two sends left and the session itself in error, the session is
+	// recovered and no lane is: before, the lanes took both and the loop held.
+	w = newLaneWorld(t)
+	w.cfg.Loop.Limits.MaxSends = 10
+	w.working(t, t0, ids...)
+	for i := 0; i < 8; i++ {
+		if err := state.ReserveSend(w.dir, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.failed(ids...)
+	w.a.obs.State, w.a.obs.ErrorClass = decide.Error, decide.ErrNetwork
+	res = w.tick(t, t0.Add(time.Minute))
+	if res.Action != "reprompt" || len(w.a.retried) != 0 || len(w.a.sent) == 0 || !strings.Contains(w.a.sent[0], "keep going") {
+		t.Fatalf("%+v retried=%v sent=%q", res, w.a.retried, w.a.sent)
+	}
+	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
+		t.Fatal("the loop was held")
+	}
+	// The lanes cannot be recovered for now, so they are the session's: the
+	// re-prompt carries the ordinary notice for all four.
+	if !strings.Contains(w.a.sent[0], "[keepgoing:child-errors count=4]") {
+		t.Fatalf("%q", w.a.sent[0])
+	}
 }
 
 // Counters survive a restart (every check here loads its state from disk),
@@ -700,5 +800,161 @@ func TestLaneBeingRecoveredIsAnnouncedOnlyWhenGivenUp(t *testing.T) {
 		if has := strings.Contains(text, "[keepgoing:child-errors count=2]"); has != (i == 3) {
 			t.Fatalf("send %d: %q", i, text)
 		}
+	}
+}
+
+// BB answering "nothing to retry" or "already queued" is not repeated for
+// ever. After three such answers in a row the lane is given up and reported,
+// and none of them is recorded as a send.
+func TestLaneNoOpAnswersAreBoundedAndNotRecordedAsSends(t *testing.T) {
+	for _, outcome := range []adapter.TurnRetryOutcome{adapter.TurnRetryNothing, adapter.TurnRetryAlreadyQueued} {
+		w := newLaneWorld(t)
+		id := laneIDs(1)
+		w.working(t, t0, id...)
+		w.failed(id...)
+		w.a.answer = func(string) (adapter.TurnRetry, error) { return adapter.TurnRetry{Outcome: outcome}, nil }
+		for minute := 1; minute <= 24*60; minute += 11 {
+			w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+		}
+		if len(w.a.retried) != 3 {
+			t.Fatalf("%s: BB was asked %d times in a day", outcome, len(w.a.retried))
+		}
+		reports := w.laneReports()
+		if len(reports) != 1 || reports[0].Data["givenUp"] != 1 {
+			t.Fatalf("%s: %+v", outcome, reports)
+		}
+		sendsUsed(t, w.world, 0)
+		if g, _ := rungraph.Load(w.dir); len(g.Attempts) != 0 {
+			t.Fatalf("%s: a no-op was recorded as a send: %+v", outcome, g.Attempts)
+		}
+	}
+}
+
+// One lane that is given up and stays in error does not keep the episode
+// open: lanes that fail on later days get their own retries, however many
+// retries there have been before.
+func TestGivenUpLaneDoesNotKeepTheEpisodeOpen(t *testing.T) {
+	w := newLaneWorld(t)
+	abandoned := "thr_lane_abandoned"
+	w.working(t, t0, abandoned)
+	w.failed(abandoned)
+	for minute := 1; minute <= 34; minute += 11 {
+		w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+	}
+	if len(w.a.retried) != 3 || !strings.Contains(w.reportTypes(), "child_recovery") {
+		t.Fatalf("%v %s", w.a.retried, w.reportTypes())
+	}
+	for day := 1; day <= 11; day++ {
+		at := t0.Add(time.Duration(day) * 24 * time.Hour)
+		lane := fmt.Sprintf("thr_lane_day%02d", day)
+		w.a.obs.ActiveChildren, w.a.obs.ActiveChildIDs, w.a.obs.ErroredChildren = 1, []string{lane}, []string{abandoned}
+		w.tick(t, at)
+		w.failed(abandoned, lane)
+		before := len(w.a.retried)
+		for minute := 1; minute <= 34; minute += 11 {
+			w.tick(t, at.Add(time.Duration(minute)*time.Minute))
+		}
+		if got := len(w.a.retried) - before; got != 3 {
+			t.Fatalf("day %d: %d retries of that day's lane (episode count %d)", day, got, w.lanes(t).EpisodeRetries)
+		}
+		if n := w.lanes(t).EpisodeRetries; n != 0 {
+			t.Fatalf("day %d: the episode was left open at %d", day, n)
+		}
+	}
+	for _, id := range w.a.retried[3:] {
+		if id == abandoned {
+			t.Fatal("the given-up lane was retried again")
+		}
+	}
+	if len(w.a.retried) != 36 {
+		t.Fatalf("%d retries", len(w.a.retried))
+	}
+}
+
+// A lane that works for more than min_wake_interval after each retry and
+// then fails again is a new failure each time, with new attempts. Its
+// retries are still bounded per day: twice errors.max_reprompts, then it is
+// given up and reported.
+func TestLaneThatKeepsFailingAgainIsBoundedPerDay(t *testing.T) {
+	w := newLaneWorld(t) // max_reprompts 3: six retries a day
+	id := laneIDs(1)
+	w.working(t, t0, id...)
+	at := t0
+	for at.Sub(t0) < 24*time.Hour {
+		w.failed(id...)
+		at = at.Add(time.Minute)
+		w.tick(t, at)
+		// The retry works: the lane is seen working, and again 61 minutes later.
+		at = at.Add(time.Minute)
+		w.working(t, at, id...)
+		at = at.Add(61 * time.Minute)
+		w.working(t, at, id...)
+	}
+	if len(w.a.retried) != 6 {
+		t.Fatalf("%d retries in 24 hours", len(w.a.retried))
+	}
+	if reports := w.laneReports(); len(reports) != 1 || reports[0].Data["givenUp"] != 1 {
+		t.Fatalf("%+v", reports)
+	}
+	// A new day, and a lane that has been healthy: it is recoverable again.
+	at = at.Add(24 * time.Hour)
+	w.working(t, at, id...)
+	w.failed(id...)
+	if res := w.tick(t, at.Add(time.Minute)); res.Lanes == nil || res.Lanes.Retried != 1 {
+		t.Fatalf("%+v", res.Lanes)
+	}
+}
+
+// Stop or pause requested while a check is working through its lanes is seen
+// before the next lane: nothing more is retried in that check.
+func TestStopDuringACheckEndsLaneWorkAtOnce(t *testing.T) {
+	for name, ask := range map[string]func(f *control.File){
+		"stop":  func(f *control.File) { f.Stop = true },
+		"pause": func(f *control.File) { f.Paused = true },
+		"hold":  func(f *control.File) { f.AwaitingUser = true },
+	} {
+		w := newLaneWorld(t)
+		ids := laneIDs(5)
+		w.working(t, t0, ids...)
+		w.failed(ids...)
+		w.a.answer = func(string) (adapter.TurnRetry, error) {
+			if _, err := control.Update(w.dir, ask); err != nil {
+				t.Fatal(err)
+			}
+			return adapter.TurnRetry{Outcome: adapter.TurnRetried}, nil
+		}
+		res := w.tick(t, t0.Add(time.Minute))
+		if len(w.a.retried) != 1 || len(w.a.inspected) != 1 || res.Lanes == nil || res.Lanes.Waiting != "control" {
+			t.Fatalf("%s: retried %v inspected %v %+v", name, w.a.retried, w.a.inspected, res.Lanes)
+		}
+	}
+}
+
+// A report that could not be sent when lanes were given up, because the loop
+// was not subscribed or the network was down, is sent by a later check.
+func TestLaneReportPutOffIsSentLater(t *testing.T) {
+	w := newLaneWorld(t)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"await_user"}}
+	id := laneIDs(1)
+	w.working(t, t0, id...)
+	w.failed(id...)
+	for minute := 1; minute <= 45; minute += 11 {
+		w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+	}
+	if len(w.a.retried) != 3 || len(w.laneReports()) != 0 {
+		t.Fatalf("%v %s", w.a.retried, w.reportTypes())
+	}
+	w.cfg.Loop.Report = &config.Report{Events: []string{"all"}}
+	online := false
+	w.online = func(context.Context) bool { return online }
+	w.tick(t, t0.Add(50*time.Minute))
+	if len(w.laneReports()) != 0 {
+		t.Fatal("reported into a dead network")
+	}
+	online = true
+	w.tick(t, t0.Add(51*time.Minute))
+	w.tick(t, t0.Add(52*time.Minute))
+	if reports := w.laneReports(); len(reports) != 1 || reports[0].Data["givenUp"] != 1 {
+		t.Fatalf("%+v", reports)
 	}
 }

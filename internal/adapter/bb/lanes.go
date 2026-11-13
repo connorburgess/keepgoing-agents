@@ -2,6 +2,8 @@ package bb
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,10 +47,22 @@ type laneSummary struct {
 	Complete bool `json:"complete,omitempty"`
 }
 
-// laneKey is the hash a lane is filed under. It matches decide.ChildHashes.
-func laneKey(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:12])
+// lanesFile is bb-lanes.json: the summaries, filed under a keyed hash of each
+// lane's ID, and the key. The key is random, made once per target and kept
+// only here, in the loop's private state, so the same lane has a different
+// name in every loop and a hash cannot be looked up in a table made
+// elsewhere. It is not protection from someone who can read this file.
+type lanesFile struct {
+	Key   string                 `json:"key"`
+	Lanes map[string]laneSummary `json:"lanes"`
+}
+
+// laneHash is the name a lane, or its provider reference, is filed under.
+func (a *Adapter) laneHash(id string) string {
+	a.loadLanes()
+	mac := hmac.New(sha256.New, a.laneKey)
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil)[:12])
 }
 
 func (a *Adapter) lanesPath() string {
@@ -65,15 +79,27 @@ func (a *Adapter) loadLanes() map[string]laneSummary {
 	lanes := map[string]laneSummary{}
 	if p := a.lanesPath(); p != "" {
 		if b, err := snapshot.ReadFile(p); err == nil {
-			var stored map[string]laneSummary
-			if json.Unmarshal(b, &stored) == nil && stored != nil {
-				lanes = stored
+			var stored lanesFile
+			if json.Unmarshal(b, &stored) == nil && stored.Lanes != nil {
+				if key, err := hex.DecodeString(stored.Key); err == nil && len(key) == laneKeyBytes {
+					lanes, a.laneKey = stored.Lanes, key
+				}
 			}
 		}
+	}
+	if len(a.laneKey) != laneKeyBytes {
+		// No usable file: a new key, and nothing filed under an old one.
+		a.laneKey = make([]byte, laneKeyBytes)
+		if _, err := rand.Read(a.laneKey); err != nil {
+			panic("bb: no random source for the lane key: " + err.Error())
+		}
+		lanes = map[string]laneSummary{}
 	}
 	a.lanes = lanes
 	return lanes
 }
+
+const laneKeyBytes = 32
 
 func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 	// Keep the most recently scanned summaries.
@@ -95,7 +121,7 @@ func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 	if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
 		return false
 	}
-	b, _ := json.Marshal(lanes)
+	b, _ := json.Marshal(lanesFile{Key: hex.EncodeToString(a.laneKey), Lanes: lanes})
 	tmp := p + ".tmp"
 	if os.WriteFile(tmp, append(b, '\n'), 0o600) != nil {
 		return false
@@ -103,17 +129,28 @@ func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 	return snapshot.Replace(tmp, p) == nil
 }
 
+// ForgetLanes implements adapter.LaneRecoverer: the summaries and their key
+// are removed, so nothing about a lane outlives the option being switched off.
+func (a *Adapter) ForgetLanes() {
+	a.lanes, a.laneKey = nil, nil
+	if p := a.lanesPath(); p != "" {
+		os.Remove(p)
+		os.Remove(p + ".tmp")
+	}
+}
+
 // scanLane reads the lane's log events after its summary, at most lanePages
 // pages, and saves the progress. ok is true only when the log was read to its
 // end, so the summary describes the lane's latest turn.
 func (a *Adapter) scanLane(ctx context.Context, id string) (Cursor, bool) {
 	lanes := a.loadLanes()
-	key := laneKey(id)
+	key := a.laneHash(id)
 	sum := lanes[key]
 	c := sum.Cursor
 	// The summary holds no thread ID, hashes the provider reference, and
 	// keeps no interaction IDs.
 	c.Thread, c.HashRefs, c.RetrySchema = "", true, 1
+	c.hashRef = a.laneHash
 	seenAt := a.now().UTC()
 	for pages := 0; pages < lanePages; pages++ {
 		out, err := a.run(ctx, "", "thread", "log", id, "--json", "--after-seq", strconv.FormatInt(c.LastSeq, 10), "--limit", strconv.Itoa(pageSize))

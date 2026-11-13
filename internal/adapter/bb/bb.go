@@ -31,6 +31,10 @@ type Adapter struct {
 	activeChildIDs []string
 	// lanes is the lane log summaries, loaded once per adapter.
 	lanes map[string]laneSummary
+	// laneKey is the secret that salts lane hashes in bb-lanes.json.
+	laneKey []byte
+	// hostKills counts bb commands ended by a signal this adapter did not send.
+	hostKills int
 }
 
 // New returns an adapter for the thread.
@@ -465,6 +469,12 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == -1 && ctx.Err() == nil {
+		// Ended by a signal that was not this adapter's time limit: the host
+		// killed it, as it does when out of memory or badly overloaded.
+		a.hostKills++
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.
@@ -472,6 +482,10 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	}
 	return stdout.Bytes(), err
 }
+
+// HostKills implements adapter.KillReporter: how many bb commands of this
+// adapter were ended by a signal it did not send.
+func (a *Adapter) HostKills() int { return a.hostKills }
 
 // errStopped marks a bb command that was killed at its time limit or because
 // the check was cancelled.

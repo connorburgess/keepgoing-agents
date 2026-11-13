@@ -228,7 +228,7 @@ func TestLaneMessageTextIsNeverDecodedOrStored(t *testing.T) {
 		}
 	}
 	// The summary still did its job: the lane is filed under a hash.
-	if _, ok := a.lanes[laneKey(laneID)]; !ok || !a.lanes[laneKey(laneID)].Complete {
+	if _, ok := a.lanes[a.laneHash(laneID)]; !ok || !a.lanes[a.laneHash(laneID)].Complete {
 		t.Fatalf("%+v", a.lanes)
 	}
 }
@@ -242,7 +242,7 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 		diagnostic error errorInfo hashRefs httpStatusCode id initiator interaction item itemId kind lastEventAt lastSeq
 		observedAt ok outcomes parentThreadId pending providerCode providerThread providerThreadId queuedMessageCount
 		rateLimits resetsAt resetsAtMs retries retryOfRequestId retrySchema scannedAt seq status systemMessageKind
-		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked
+		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes
 		evidence at class retryKnown activeBackgroundAgentCount`)
 	want := map[string]bool{}
 	for _, tag := range allowed {
@@ -325,5 +325,49 @@ func TestLongLaneLogIsReadAcrossChecks(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(w.calls, "\n"), fmt.Sprintf("--after-seq %d ", lanePages*pageSize)) {
 		t.Fatalf("did not continue from the saved progress:\n%s", strings.Join(w.calls, "\n"))
+	}
+}
+
+// A lane is filed under a hash keyed with a secret of this loop's own state:
+// the same lane has a different name in another loop, the unkeyed hash of its
+// ID appears nowhere, and switching lane recovery off removes the file.
+func TestLaneHashesAreKeyedPerLoopAndForgotten(t *testing.T) {
+	a, _ := newLane(t)
+	b, _ := newLane(t)
+	if f := a.InspectLane(context.Background(), laneID); decide.LaneVerdictFor(f) != decide.LaneRetry {
+		t.Fatalf("%+v", f)
+	}
+	b.InspectLane(context.Background(), laneID)
+	ha, hb := a.laneHash(laneID), b.laneHash(laneID)
+	if ha == hb || len(ha) != 24 {
+		t.Fatalf("the same lane is filed as %q in two loops (%q)", ha, hb)
+	}
+	path := filepath.Join(a.stateDir, "bb-lanes.json")
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unkeyed := decide.ChildHashes([]string{laneID})[0]
+	if !strings.Contains(string(stored), ha) || strings.Contains(string(stored), unkeyed) || strings.Contains(string(stored), hb) {
+		t.Fatalf("%s", stored)
+	}
+	// A restart reads the key back and finds the same summary.
+	again := New(config.BB{Thread: laneParent})
+	again.WithStateDir(a.stateDir)
+	if again.laneHash(laneID) != ha || !again.loadLanes()[ha].Complete {
+		t.Fatal("the key or the summary did not survive a restart")
+	}
+	// A file that is not this format is not trusted: a new key, nothing kept.
+	if err := os.WriteFile(path, []byte(`{"`+ha+`":{"cursor":{"lastSeq":3},"complete":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := New(config.BB{Thread: laneParent})
+	old.WithStateDir(a.stateDir)
+	if old.laneHash(laneID) == ha || len(old.loadLanes()) != 0 {
+		t.Fatal("an unkeyed file was read as lane summaries")
+	}
+	a.ForgetLanes()
+	if _, err := os.Stat(path); !os.IsNotExist(err) || a.lanes != nil || a.laneKey != nil {
+		t.Fatalf("lane summaries were kept: %v", err)
 	}
 }

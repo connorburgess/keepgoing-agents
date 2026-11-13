@@ -2,8 +2,6 @@ package bb
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -31,7 +29,9 @@ type Cursor struct {
 	// HashRefs makes the summary keep a hash of the provider thread reference
 	// in place of the reference. It is set for a lane's summary, which must
 	// hold no identifier of the lane.
-	HashRefs        bool   `json:"hashRefs,omitempty"`
+	HashRefs bool `json:"hashRefs,omitempty"`
+	// hashRef is the keyed hash HashRefs uses. It is set by the lane scan.
+	hashRef         func(string) string
 	ChildOutcomeSeq int64  `json:"childOutcomeSeq,omitempty"`
 	Thread          string `json:"thread"`
 	LastSeq         int64  `json:"lastSeq"`
@@ -56,8 +56,10 @@ func (c *Cursor) ref(id string) string {
 	if !c.HashRefs || id == "" {
 		return id
 	}
-	sum := sha256.Sum256([]byte(id))
-	return "h:" + hex.EncodeToString(sum[:12])
+	if c.hashRef == nil {
+		return "h:" // no key to hash with: keep nothing rather than the reference
+	}
+	return "h:" + c.hashRef(id)
 }
 
 // eventTime bounds BB's createdAt for an event by what this supervisor knows

@@ -92,6 +92,13 @@ type Lane struct {
 	// waiting on a person) is not read again on every check.
 	LookedAt time.Time
 	GivenUp  bool
+	// NoOps counts consecutive retries the provider answered without doing
+	// anything: no failed turn, or a retry already queued.
+	NoOps int
+	// DayRetries counts this lane's retries in its current 24-hour window,
+	// across recoveries, so a lane that keeps failing an hour after each
+	// retry is bounded too.
+	DayRetries int
 	// Deferred: a previous check ran out of time before reaching it.
 	Deferred bool
 }
@@ -102,6 +109,8 @@ type LaneLimits struct {
 	MaxAttempts int           // retries per lane
 	Backoff     time.Duration // spacing between retries of one lane
 	EpisodeLeft int           // retries the episode still allows
+	MaxNoOps    int           // consecutive no-op answers before a lane is given up
+	MaxPerDay   int           // retries per lane in 24 hours, across recoveries
 }
 
 // LanePlan is one check's lane work.
@@ -110,8 +119,9 @@ type LanePlan struct {
 	// lanes a previous check put off first, then by hash.
 	Try []string
 	// GiveUp lists lanes that will not be retried again and have not been
-	// given up before: every attempt is used and the spacing after the last
-	// has passed, or the episode has no retries left.
+	// given up before: every attempt (of this failure, or of the lane's day)
+	// is used and the spacing after the last has passed, the provider keeps
+	// answering that it will do nothing, or the episode has no retries left.
 	GiveUp []string
 	// Waiting counts lanes that are eligible but not tried on this check:
 	// inside their spacing, beyond the per-check limit, or beyond the episode's.
@@ -136,7 +146,10 @@ func PlanLanes(lanes []Lane, now time.Time, lim LaneLimits) LanePlan {
 		spaced := l.Attempts == 0 || now.Sub(l.LastAt) >= lim.Backoff
 		looked := !l.LookedAt.IsZero() && now.Sub(l.LookedAt) < lim.Backoff
 		switch {
-		case l.Attempts >= lim.MaxAttempts:
+		case lim.MaxNoOps > 0 && l.NoOps >= lim.MaxNoOps:
+			// The provider keeps answering that there is nothing it will do.
+			p.GiveUp = append(p.GiveUp, l.Hash)
+		case l.Attempts >= lim.MaxAttempts || (lim.MaxPerDay > 0 && l.DayRetries >= lim.MaxPerDay):
 			// The last retry has had its spacing to take effect.
 			if spaced {
 				p.GiveUp = append(p.GiveUp, l.Hash)
@@ -160,10 +173,16 @@ func PlanLanes(lanes []Lane, now time.Time, lim LaneLimits) LanePlan {
 // LanesAllowed reports whether a check that reached this decision may act on
 // lanes at all. A check that raises a hold, stops the session or moves the
 // loop to another conversation leaves every lane alone, and so does a check
-// outside the loop's window or one that finds the session itself waiting on a
-// person, whose pending question may be about those lanes.
-func LanesAllowed(a Action, inWindow, sessionWaitingOnPerson bool) bool {
+// outside the loop's window, one that finds the session itself waiting on a
+// person, whose pending question may be about those lanes, and one that finds
+// the session stopping or in a state it could not read.
+func LanesAllowed(a Action, session State, inWindow, sessionWaitingOnPerson bool) bool {
 	if !inWindow || sessionWaitingOnPerson {
+		return false
+	}
+	// A session that is stopping, or whose state could not be read, is not
+	// one to start work under.
+	if session != Idle && session != Active && session != Error {
 		return false
 	}
 	switch a {

@@ -108,14 +108,21 @@ func TestPlanLanes(t *testing.T) {
 
 func TestLanesAllowed(t *testing.T) {
 	for a, want := range map[Action]bool{None: true, Wake: true, Nudge: true, Reprompt: true, AwaitUser: false, Stop: false, Handoff: false, SwitchBack: false, Action("something new"): false} {
-		if got := LanesAllowed(a, true, false); got != want {
-			t.Errorf("%s in the window: %v", a, got)
+		for _, session := range []State{Idle, Active, Error} {
+			if got := LanesAllowed(a, session, true, false); got != want {
+				t.Errorf("%s, session %s, in the window: %v", a, session, got)
+			}
 		}
-		if LanesAllowed(a, false, false) {
+		if LanesAllowed(a, Idle, false, false) {
 			t.Errorf("%s outside the window is allowed", a)
 		}
-		if LanesAllowed(a, true, true) {
+		if LanesAllowed(a, Idle, true, true) {
 			t.Errorf("%s is allowed while the session waits on a person", a)
+		}
+		for _, session := range []State{Stopping, Unknown, State(""), State("something new")} {
+			if LanesAllowed(a, session, true, false) {
+				t.Errorf("%s is allowed while the session is %q", a, session)
+			}
 		}
 	}
 }
@@ -142,5 +149,30 @@ func TestPlanLanesGivesUpWhenTheEpisodeIsSpent(t *testing.T) {
 	lim.EpisodeLeft = 1
 	if p := PlanLanes(lanes, now, lim); strings.Join(p.Try, ",") != "a" || len(p.GiveUp) != 0 || p.Waiting != 2 {
 		t.Fatalf("%+v", p)
+	}
+}
+
+// A lane the provider keeps answering "nothing to do" for is given up after
+// three such answers, and a lane that keeps failing again after it recovered
+// is bounded by its retries in a day.
+func TestPlanLanesBoundsNoOpsAndRetriesPerDay(t *testing.T) {
+	now := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	lim := LaneLimits{MaxPerCheck: 5, MaxAttempts: 3, Backoff: 10 * time.Minute, EpisodeLeft: 20, MaxNoOps: 3, MaxPerDay: 6}
+	for name, tc := range map[string]struct {
+		lane        Lane
+		try, giveUp bool
+	}{
+		"two no-ops, spaced":           {Lane{NoOps: 2, LookedAt: now.Add(-11 * time.Minute)}, true, false},
+		"two no-ops, inside spacing":   {Lane{NoOps: 2, LookedAt: now.Add(-time.Minute)}, false, false},
+		"three no-ops":                 {Lane{NoOps: 3, LookedAt: now.Add(-time.Minute)}, false, true},
+		"five retries today":           {Lane{DayRetries: 5}, true, false},
+		"six retries today":            {Lane{DayRetries: 6}, false, true},
+		"six today, last a minute ago": {Lane{DayRetries: 6, Attempts: 1, LastAt: now.Add(-time.Minute)}, false, false},
+	} {
+		tc.lane.Hash, tc.lane.SeenWorking = "a", true
+		p := PlanLanes([]Lane{tc.lane}, now, lim)
+		if (len(p.Try) == 1) != tc.try || (len(p.GiveUp) == 1) != tc.giveUp {
+			t.Errorf("%s: %+v", name, p)
+		}
 	}
 }

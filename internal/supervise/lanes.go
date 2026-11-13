@@ -2,6 +2,10 @@ package supervise
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
@@ -31,10 +36,34 @@ const (
 	laneTimeout = 40 * time.Second
 	// laneMaxReports bounds the child_recovery reports of one episode.
 	laneMaxReports = 3
+	// laneDay is the window of a lane's per-day retry count.
+	laneDay = 24 * time.Hour
 	// laneMaxTracked bounds each record. It matches the adapter's limit on
 	// children inspected in one listing.
 	laneMaxTracked = 200
 )
+
+// laneWontAct are the reasons a lane was left alone that keepgoing will not
+// get past on its own. A lane left for one of them is the session's to deal
+// with, so it is announced like any other errored child.
+var laneWontAct = map[string]bool{
+	string(decide.LaneRateLimited): true, string(decide.LaneAuth): true, string(decide.LaneUnverified): true,
+	string(decide.LaneWaitingPerson): true,
+}
+
+// laneSendReserve is how many sends of loop.limits.max_sends lane retries
+// never touch: a whole recovery of the supervised session (its re-prompts)
+// and one notice. The session comes first.
+func (t *tick) laneSendReserve() int64 {
+	return int64(max(t.loop.Errors.MaxReprompts, 1) + 1)
+}
+
+// lanesPerDay bounds one lane's retries in 24 hours, across recoveries: a
+// lane that works for a while after each retry and then fails again gets
+// two rounds of attempts a day, not a round an hour.
+func (t *tick) lanesPerDay() int {
+	return 2 * max(t.loop.Errors.MaxReprompts, 1)
+}
 
 // recoverLanes is the only place the supervisor acts on a lane: a direct
 // child conversation of the supervised session. It runs only when the active
@@ -44,12 +73,13 @@ const (
 // It runs before the check's decision, on the path where the target was
 // observed, so stop, pause and every standing hold have already won. d is
 // what the engine decides before lane work; its only effect on the final
-// decision is that a lane being recovered is not announced to the session.
-// Stop, pause and holds are never affected, and
-// decide.LanesAllowed keeps it out of a check that raises a hold, stops the
-// session, moves the loop to another conversation, falls outside the window
-// or finds the session waiting on a person. It does nothing in a dry run or for a target that is gone. It waits
-// while the network is down.
+// decision is that a lane keepgoing is recovering is not announced to the
+// session. decide.LanesAllowed keeps it out of a check that raises a hold,
+// stops the session, moves the loop to another conversation, falls outside
+// the window, or finds the session waiting on a person, stopping or
+// unreadable. Control is read again before each lane, so a stop or pause
+// asked for during the check ends lane work at once. It does nothing in a dry
+// run or for a target that is gone, and it waits while the network is down.
 //
 // A lane is tried only if an earlier check saw it working, it has attempts
 // left with their spacing passed, and a fresh inspection establishes every
@@ -58,27 +88,63 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 	if t.opts.DryRun {
 		return
 	}
+	lr, canRecover := a.(adapter.LaneRecoverer)
 	if !agent.BB.RetryErroredLanes() {
-		t.st.Lanes = nil // switched off: nothing is remembered
+		// Switched off: nothing is remembered, here or by the adapter.
+		if t.st.Lanes != nil {
+			if canRecover {
+				lr.ForgetLanes()
+			}
+			t.st.Lanes = nil
+		}
 		return
 	}
 	t.laneRecoveryOn = true
-	lr, ok := a.(adapter.LaneRecoverer)
-	if !ok || obs.Gone {
+	if !canRecover || obs.Gone {
 		return
 	}
 	rec := copyLanes(t.st.Lanes)
+	if rec.Key == "" {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			t.warn("lane recovery: no random source for the lane key; no lane was looked at")
+			return
+		}
+		rec.Key = hex.EncodeToString(key)
+	}
 	t.st.Lanes = rec
+	hash := laneHasher(rec.Key)
+	set := func(ids []string) map[string]bool {
+		out := map[string]bool{}
+		for _, id := range ids {
+			out[hash(id)] = true
+		}
+		return out
+	}
 	complete := !obs.ChildrenUnverified
-	active, errored, healthy := hashSet(obs.ActiveChildIDs), hashSet(obs.ErroredChildren), hashSet(obs.HealthyChildren)
+	active, errored, healthy := set(obs.ActiveChildIDs), set(obs.ErroredChildren), set(obs.HealthyChildren)
+	allowed, retried := false, 0
 	defer func() {
+		// The lanes keepgoing is recovering or will recover: seen working, not
+		// given up, and not left alone for a reason it cannot get past. They
+		// are withheld from the notice to the session.
+		// The set is held for this check only, under the names the notice
+		// record uses.
 		t.lanesInRecovery = map[string]bool{}
-		for h := range errored {
-			if r, ok := rec.Retries[h]; ok && r.Attempts > 0 && !r.GivenUp && !r.LookedAt.After(r.LastAt) {
-				t.lanesInRecovery[h] = true
+		for _, id := range obs.ErroredChildren {
+			h := hash(id)
+			r := rec.Retries[h]
+			_, seen := rec.SeenActive[h]
+			if rec.Blocked == "" && (seen || r.Attempts > 0) && !r.GivenUp && !laneWontAct[r.Outcome] {
+				t.lanesInRecovery[decide.ChildHashes([]string{id})[0]] = true
 			}
 		}
 		t.lanesRetried = len(t.lanesInRecovery)
+		if allowed {
+			t.reportLanes(rec, retried, errored)
+		}
+		endLaneEpisode(rec) // after this check's give-ups and their report
+		t.noteHostKills(a)
 	}()
 
 	// Seen working: remembered until a complete listing no longer shows the lane.
@@ -92,10 +158,15 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 	}
 	trimOldest(rec.SeenActive, laneMaxTracked)
 
-	// A lane's record is dropped once it has stayed out of error for
+	// A lane's attempts are forgotten once it has stayed out of error for
 	// min_wake_interval, the rule the child-error report uses, so a lane that
-	// fails again straight after a retry spends the same attempts.
+	// fails again straight after a retry spends the same attempts. Its count
+	// for the day outlasts that, so a lane that fails again an hour after
+	// each retry is bounded too.
 	for h, r := range rec.Retries {
+		if !r.DayStart.IsZero() && t.now.Sub(r.DayStart) >= laneDay {
+			r.DayStart, r.DayRetries = time.Time{}, 0
+		}
 		switch {
 		case errored[h]:
 			r.HealthySince = time.Time{}
@@ -104,18 +175,26 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 				r.HealthySince = t.now
 			}
 			if t.now.Sub(r.HealthySince) >= t.loop.Progress.MinWakeInterval.Duration {
-				delete(rec.Retries, h)
-				continue
+				if r.DayRetries == 0 {
+					delete(rec.Retries, h)
+					continue
+				}
+				// A new failure gets new attempts, unless the lane has used
+				// its retries for the day: then it stays given up.
+				spent := r.DayRetries >= t.lanesPerDay()
+				r = state.LaneRetry{HealthySince: r.HealthySince, DayStart: r.DayStart, DayRetries: r.DayRetries, GivenUp: spent && r.GivenUp, Reported: spent && r.Reported}
 			}
 		}
 		rec.Retries[h] = r
 	}
-	if len(rec.Retries) == 0 {
-		rec.EpisodeRetries, rec.Reports = 0, 0
+	trimLanes(rec.Retries, errored, laneMaxTracked)
+	endLaneEpisode(rec)
+	if !decide.LanesAllowed(d.Action, obs.State, inWindow, obs.AwaitingInput) {
+		rec.Deferred = nil
+		return
 	}
-	// A check that raises a hold, stops the session or moves the loop leaves
-	// every lane alone, and so does a check outside the loop's window.
-	if !decide.LanesAllowed(d.Action, inWindow, obs.AwaitingInput) || len(obs.ErroredChildren) == 0 {
+	allowed = true
+	if len(obs.ErroredChildren) == 0 {
 		rec.Deferred = nil
 		return
 	}
@@ -127,20 +206,21 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 	}
 	var lanes []decide.Lane
 	for _, id := range obs.ErroredChildren {
-		h := decide.ChildHashes([]string{id})[0]
+		h := hash(id)
 		if _, dup := ids[h]; dup {
 			continue
 		}
 		ids[h] = id
 		_, seen := rec.SeenActive[h]
 		r := rec.Retries[h]
-		lanes = append(lanes, decide.Lane{Hash: h, SeenWorking: seen, Attempts: r.Attempts, LastAt: r.LastAt, LookedAt: r.LookedAt, GivenUp: r.GivenUp, Deferred: deferred[h]})
+		lanes = append(lanes, decide.Lane{Hash: h, SeenWorking: seen, Attempts: r.Attempts, LastAt: r.LastAt, LookedAt: r.LookedAt, GivenUp: r.GivenUp,
+			NoOps: r.NoOps, DayRetries: r.DayRetries, Deferred: deferred[h]})
 	}
+	t.lanesPerEpisode = agent.BB.LanesPerEpisode()
 	plan := decide.PlanLanes(lanes, t.now, decide.LaneLimits{
 		MaxPerCheck: agent.BB.LanesPerCheck(), MaxAttempts: t.loop.Errors.MaxReprompts, Backoff: t.loop.Errors.Backoff.Duration,
-		EpisodeLeft: agent.BB.LanesPerEpisode() - rec.EpisodeRetries,
+		EpisodeLeft: t.lanesPerEpisode - rec.EpisodeRetries, MaxNoOps: turnRetryMaxNoOps, MaxPerDay: t.lanesPerDay(),
 	})
-	t.lanesPerEpisode = agent.BB.LanesPerEpisode()
 	check := &state.LaneCheck{At: t.now, NotRetried: map[string]int{}}
 	for _, h := range plan.GiveUp {
 		r := rec.Retries[h]
@@ -155,18 +235,34 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 		// Nothing is asked of BB and nothing is counted into a dead network.
 		check.Waiting = "network"
 	default:
+	lanes:
 		for i, h := range plan.Try {
-			if t.left() < laneMargin {
+			switch {
+			case t.left() < laneMargin:
 				rec.Deferred = append([]string{}, plan.Try[i:]...)
 				check.Deferred = len(rec.Deferred)
 				t.warn("%d lane(s) put off to the next check: too little time is left in this one", check.Deferred)
-				break
+				break lanes
+			case !t.lanesStillAllowed():
+				// Stop, pause or a hold was asked for while this check ran.
+				check.Waiting = "control"
+				break lanes
+			case !t.lanesMaySend():
+				// The supervised session's own recovery comes first.
+				rec.Blocked = "send_allowance"
+				check.NotRetried["send_allowance"]++
+				t.warn("lane retries stopped: the last %d sends of loop.limits.max_sends are kept for the supervised session", t.laneSendReserve())
+				break lanes
+			}
+			if rec.Blocked == "send_allowance" {
+				rec.Blocked = ""
 			}
 			if !t.tryLane(lr, rec, check, h, ids[h]) {
 				break
 			}
 		}
 	}
+	retried = check.Retried
 	if len(check.NotRetried) == 0 {
 		check.NotRetried = nil
 	}
@@ -175,7 +271,56 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 	}
 	rec.Last, t.res.Lanes = check, check
 	t.incidentLanes.Retried, t.incidentLanes.GivenUp, t.incidentLanes.Deferred = check.Retried, check.GivenUp, check.Deferred
-	t.reportLanes(rec, check, errored)
+}
+
+// endLaneEpisode ends the episode when no lane is still being recovered. An
+// episode is one failure being recovered: it is over once each of its lanes
+// has been forgotten or given up, so a lane that stays given up and in error
+// does not hold it open, and the next failure has the whole allowance of
+// retries and reports.
+func endLaneEpisode(rec *state.LaneRecovery) {
+	for _, r := range rec.Retries {
+		if r.Attempts > 0 && !r.GivenUp {
+			return
+		}
+	}
+	rec.EpisodeRetries, rec.Reports = 0, 0
+}
+
+// lanesStillAllowed reads the control file again. Stop and pause win on the
+// next check everywhere else; between two lanes they win at once.
+func (t *tick) lanesStillAllowed() bool {
+	ctl, err := control.Load(t.loop.StateDir)
+	if err != nil {
+		return false
+	}
+	g := ctl.Gate()
+	return g.Enabled && !g.Stop && !g.Paused && !g.AwaitingUser && !g.Completed
+}
+
+// lanesMaySend reports whether a lane retry would leave the supervised
+// session the sends its own recovery needs. Without a limit it always does.
+func (t *tick) lanesMaySend() bool {
+	limit := t.loop.Limits.MaxSends
+	if limit <= 0 {
+		return true
+	}
+	used, err := state.LoadSends(t.loop.StateDir)
+	return err == nil && limit-used > t.laneSendReserve()
+}
+
+// noteHostKills says so when the host ended a provider command of this check
+// with a signal the adapter did not send. Whatever that command was reading
+// was already treated as unverified; this is why.
+func (t *tick) noteHostKills(a adapter.Adapter) {
+	k, ok := a.(adapter.KillReporter)
+	if !ok {
+		return
+	}
+	if n := k.HostKills(); n > t.hostKillsNoted {
+		t.warn("%d provider command(s) of this check were killed by the host, not by keepgoing's time limit; what they were reading was treated as unverified. A machine that is out of memory or overloaded does this", n-t.hostKillsNoted)
+		t.hostKillsNoted = n
+	}
 }
 
 // tryLane inspects one lane and, if every fact allows it, asks the provider
@@ -195,7 +340,7 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
 		// The allowance is spent or unreadable. Lanes raise no hold of their
 		// own; the session's next send does.
-		r.Outcome = "send_allowance"
+		rec.Blocked = "send_allowance"
 		check.NotRetried["send_allowance"]++
 		t.warn("lane retries stopped: %v", err)
 		return false
@@ -204,38 +349,47 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 	// The lane itself is not named.
 	attempt := t.graphBegin(t.res.Target, laneRetryAction, turnRetryMode, prompt.Message{})
 	res, err := lr.RetryLane(ctx, id)
-	graphOutcome := "adapter_returned"
-	if err != nil {
-		graphOutcome = "adapter_error"
-	}
-	t.graphFinish(attempt, graphOutcome)
 	var unsupported adapter.ErrUnsupported
 	refund := func() {
 		if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
 			t.warn("lane retry: %v", err)
 		}
 	}
+	counted := func(outcome string) {
+		if r.DayStart.IsZero() {
+			r.DayStart = t.now
+		}
+		r.Attempts, r.DayRetries, r.LastAt, r.Outcome, r.NoOps = r.Attempts+1, r.DayRetries+1, t.now, outcome, 0
+		rec.EpisodeRetries++
+	}
 	switch {
 	case errors.As(err, &unsupported):
-		// This provider version cannot retry a turn. Nothing else is tried.
+		// This provider version cannot retry a turn. Nothing else is tried,
+		// and while that lasts every lane is the session's to deal with.
 		refund()
-		r.Outcome = turnRetryUnsupported
+		t.graphDiscard(attempt)
+		r.Outcome, r.LookedAt, rec.Blocked = turnRetryUnsupported, t.now, turnRetryUnsupported
 		check.NotRetried[turnRetryUnsupported]++
 		t.warn("lane retries are not supported by this provider version")
 		return false
 	case err != nil:
-		// Refused or unreadable: it may have been acted on, so it is counted.
-		r.Attempts, r.LastAt, r.Outcome = r.Attempts+1, t.now, turnRetryRefused
-		rec.EpisodeRetries++
+		// Refused, unreadable or cut off at the time limit: BB may have acted
+		// on it, so it is counted as an attempt.
+		t.graphFinish(attempt, "adapter_error")
+		counted(turnRetryRefused)
 		check.NotRetried[turnRetryRefused]++
 	case res.Outcome == adapter.TurnRetryNothing || res.Outcome == adapter.TurnRetryAlreadyQueued:
-		// BB did nothing for this request. A lane is never prompted instead.
+		// BB did nothing for this request, and said so. A lane is never
+		// prompted instead. Three such answers in a row and the lane is
+		// given up, as for the supervised session's own turn.
 		refund()
-		r.Outcome, r.LookedAt = string(res.Outcome), t.now
+		t.graphDiscard(attempt)
+		r.Outcome, r.LookedAt, r.NoOps = string(res.Outcome), t.now, r.NoOps+1
 		check.NotRetried[string(res.Outcome)]++
 	default:
-		r.Attempts, r.LastAt, r.Outcome = r.Attempts+1, t.now, string(res.Outcome)
-		rec.EpisodeRetries++
+		t.graphFinish(attempt, "adapter_returned")
+		counted(string(res.Outcome))
+		rec.Blocked = ""
 		check.Retried++
 	}
 	return true
@@ -245,7 +399,7 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 // were left alone because their failure is a rate limit or an auth error.
 // Counts only. The record is saved before the single attempt, like the other
 // reports that say a person may be needed.
-func (t *tick) reportLanes(rec *state.LaneRecovery, check *state.LaneCheck, errored map[string]bool) {
+func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[string]bool) {
 	var fresh []string
 	givenUp, rateLimited, auth := 0, 0, 0
 	for h, r := range rec.Retries {
@@ -300,14 +454,14 @@ func (t *tick) reportLanes(rec *state.LaneRecovery, check *state.LaneCheck, erro
 		return
 	}
 	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited and %d because they need a login. keepgoing asked BB to retry %d on this check. It has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
-		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, check.Retried)
+		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, retried)
 	ctx, cancel, ok := t.reportContext(laneRecoveryEvent, text)
 	if !ok {
 		return
 	}
 	defer cancel()
 	err = t.opts.Reporter.Report(ctx, report.Event{Type: laneRecoveryEvent, Loop: t.loop.Name, Text: text, At: t.now,
-		Data: map[string]any{"givenUp": givenUp, "rateLimited": rateLimited, "authFailed": auth, "retried": check.Retried, "report": rec.Reports}})
+		Data: map[string]any{"givenUp": givenUp, "rateLimited": rateLimited, "authFailed": auth, "retried": retried, "report": rec.Reports}})
 	if err != nil {
 		t.warn("report %s: %v", laneRecoveryEvent, err) // one attempt, not retried
 	}
@@ -333,7 +487,7 @@ func copyLanes(l *state.LaneRecovery) *state.LaneRecovery {
 	if l == nil {
 		return out
 	}
-	out.EpisodeRetries, out.Reports, out.Last = l.EpisodeRetries, l.Reports, l.Last
+	out.Key, out.Blocked, out.EpisodeRetries, out.Reports, out.Last = l.Key, l.Blocked, l.EpisodeRetries, l.Reports, l.Last
 	out.Deferred = append([]string{}, l.Deferred...)
 	for h, at := range l.SeenActive {
 		out.SeenActive[h] = at
@@ -344,12 +498,42 @@ func copyLanes(l *state.LaneRecovery) *state.LaneRecovery {
 	return out
 }
 
-func hashSet(ids []string) map[string]bool {
-	set := map[string]bool{}
-	for _, h := range decide.ChildHashes(ids) {
-		set[h] = true
+// laneHasher names lanes for one loop: a keyed hash of the lane's ID, with
+// the record's own random key. See state.LaneRecovery.Key.
+func laneHasher(key string) func(id string) string {
+	secret, _ := hex.DecodeString(key)
+	return func(id string) string {
+		mac := hmac.New(sha256.New, secret)
+		mac.Write([]byte(id))
+		return hex.EncodeToString(mac.Sum(nil)[:12])
 	}
-	return set
+}
+
+// trimLanes bounds the lane records. Lanes no longer in error go first, then
+// the ones longest untouched.
+func trimLanes(m map[string]state.LaneRetry, errored map[string]bool, limit int) {
+	if len(m) <= limit {
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	last := func(r state.LaneRetry) time.Time {
+		if r.LookedAt.After(r.LastAt) {
+			return r.LookedAt
+		}
+		return r.LastAt
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if errored[keys[i]] != errored[keys[j]] {
+			return errored[keys[i]]
+		}
+		return last(m[keys[i]]).After(last(m[keys[j]]))
+	})
+	for _, k := range keys[limit:] {
+		delete(m, k)
+	}
 }
 
 // trimOldest keeps the most recent max entries.

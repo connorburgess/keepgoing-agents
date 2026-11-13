@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // Through the real CLI and BB adapter against a fake bb, with
@@ -94,7 +97,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 		t.Fatalf("calls:\n%s", calls)
 	}
 	told := f.read("thr_primary.told")
-	if strings.Count(told, "[keepgoing:child-errors count=3 retried=1]") != 1 || !strings.Contains(told, "keepgoing has asked BB to retry the failed turn of 1 of them") || strings.Contains(told, "thr_child") || strings.Contains(told, private) {
+	if strings.Count(told, "[keepgoing:child-errors count=3 recovering=1]") != 1 || !strings.Contains(told, "keepgoing is recovering 1 of them itself") || !strings.Contains(told, "The other 2 are yours") || strings.Contains(told, "thr_child") || strings.Contains(told, private) {
 		t.Fatalf("told: %q", told)
 	}
 	// Inside the spacing nothing more is asked.
@@ -102,13 +105,13 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 		t.Fatalf("%v", r)
 	}
 	// Nothing a lane said, no lane ID and no provider reference is kept.
-	state := filepath.Join(f.dir, "state")
-	entries, err := os.ReadDir(state)
+	state_ := filepath.Join(f.dir, "state")
+	entries, err := os.ReadDir(state_)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		b, _ := os.ReadFile(filepath.Join(state, e.Name()))
+		b, _ := os.ReadFile(filepath.Join(state_, e.Name()))
 		for _, secret := range []string{private, "thr_child_", "provider_private1"} {
 			if strings.Contains(string(b), secret) {
 				t.Errorf("%s holds %q", e.Name(), secret)
@@ -124,6 +127,35 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 	code, out, errs = f.run("status", "--json")
 	if code != exitOK || !strings.Contains(out, `"laneRecovery": {`) || !strings.Contains(out, `"enabled": true`) || !strings.Contains(out, `"retried": 1`) {
 		t.Fatalf("status json %d\n%s%s", code, out, errs)
+	}
+	// The saved record holds a hash per lane and their key. status shows the
+	// counts and never the record.
+	saved, err := state.Load(state_)
+	if err != nil || saved.Lanes == nil || len(saved.Lanes.Key) != 64 || len(saved.Lanes.Retries) != 2 {
+		t.Fatalf("%+v %v", saved.Lanes, err)
+	}
+	// The lane record is keyed: it does not use the unkeyed hash that the
+	// child-error records and the run graph already hold for the same child.
+	unkeyed := map[string]bool{}
+	for _, id := range lanes {
+		unkeyed[decide.ChildHashes([]string{id})[0]] = true
+	}
+	for h := range saved.Lanes.Retries {
+		if strings.Contains(out, h) || unkeyed[h] {
+			t.Fatalf("lane hash %s is unkeyed or shown by status:\n%s", h, out)
+		}
+	}
+	if lanesFile, _ := os.ReadFile(filepath.Join(state_, "targets", "primary", "bb-lanes.json")); len(lanesFile) == 0 {
+		t.Fatal("no lane summary file")
+	} else {
+		for h := range unkeyed {
+			if strings.Contains(string(lanesFile), h) {
+				t.Fatalf("bb-lanes.json holds an unkeyed lane hash")
+			}
+		}
+	}
+	if strings.Contains(out, saved.Lanes.Key) || strings.Contains(out, `"seenActive"`) {
+		t.Fatalf("status shows the lane record:\n%s", out)
 	}
 	code, out, errs = f.run("timeline", "--kind", "child_retry")
 	if code != exitOK || errs != "" || !strings.Contains(out, "LANES: asked BB to retry the failed turn of 1 lane(s) by reference") ||
@@ -151,7 +183,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 	if code != exitOK || strings.Contains(out, "lane recovery") {
 		t.Fatalf("option off: status %d\n%s", code, out)
 	}
-	if _, err := os.Stat(filepath.Join(f.dir, "state", "bb-lanes.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.dir, "state", "targets", "primary", "bb-lanes.json")); err == nil {
 		t.Fatal("option off: a lane summary was written")
 	}
 }
