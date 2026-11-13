@@ -215,7 +215,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .route-list:not(.is-ordered) .route:first-child { padding-top: 0.25rem; }
 .route-list.is-ordered .route::before { content: ""; position: absolute; left: 1.3rem; top: 2.5rem; bottom: -0.8rem; width: 1px; background: var(--line-2); }
 .route-list.is-ordered .route:last-child::before { display: none; }
-.route:target { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 8px; }
+.route:focus { outline: 2px solid var(--focus); outline-offset: 6px; border-radius: 8px; }
 .pos { justify-self: center; display: inline-grid; place-items: center; min-width: 1.7rem; height: 1.7rem; padding: 0 0.35rem; border-radius: 999px; background: var(--sunk); box-shadow: inset 0 0 0 1px var(--ink-3); font-size: 0.72rem; font-weight: 650; color: var(--ink-2); position: relative; z-index: 1; }
 .route.is-active .pos { background: var(--good); color: var(--surface); box-shadow: none; }
 .route.is-off .route-name { color: var(--ink-2); }

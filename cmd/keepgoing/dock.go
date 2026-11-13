@@ -43,8 +43,10 @@ const (
 	dockMinRefresh     = 5 * time.Second
 	dockMaxRefresh     = 10 * time.Minute
 	// dockMaxResponse bounds the JSON a read may produce. The projection
-	// caps every list and string; the largest registry (128 loops) with long
-	// fallback lists measured just under 2 MiB, so the bound leaves room.
+	// caps every list and string, and states what it leaves out. The largest
+	// registry (128 loops) with every list at its cap and every name at its
+	// longest measured about 4.5 MB with identifiers; a test keeps it under
+	// five eighths of this bound.
 	dockMaxResponse = 8 << 20
 	// dockReadTimeout bounds one whole read of the registry.
 	dockReadTimeout = 20 * time.Second

@@ -19,7 +19,7 @@ import (
 // reason; free-text reasons and notes are never shown here.
 
 const (
-	dockMaxLanes  = 64 // lanes listed per loop
+	dockMaxLanes  = 24 // lanes listed per loop; the rest are counted
 	dockMaxEvents = 5  // recent history entries per loop
 )
 
@@ -35,6 +35,8 @@ type dockDecision struct {
 	// the history does not show it.
 	Since        *time.Time `json:"since,omitempty"`
 	SinceSeconds *int64     `json:"sinceSeconds,omitempty"`
+	// Sub is the line under the decision: its age, and since when.
+	Sub dockText `json:"sub"`
 }
 
 // dockHoldState is the hold in force now, from the control flags.
@@ -46,6 +48,8 @@ type dockHoldState struct {
 	// SinceEvidence is hold_recorded or control_changed, as for dockNeed.
 	SinceEvidence string `json:"sinceEvidence,omitempty"`
 	SinceSeconds  *int64 `json:"sinceSeconds,omitempty"`
+	// Sub is the line under the hold: for how long.
+	Sub string `json:"sub,omitempty"`
 }
 
 // dockDevice is the machine the report was built on. There is one device:
@@ -55,6 +59,10 @@ type dockDevice struct {
 	Name     string `json:"name"`
 	Role     string `json:"role"`
 	Hostname string `json:"hostname,omitempty"`
+	// Text is the whole line: which computer, and its role from a record.
+	// HostText is the same line naming the hostname, only with identifiers.
+	Text     string `json:"text"`
+	HostText string `json:"hostText,omitempty"`
 }
 
 // dockLane is one lane from the last verified listing. keepgoing records a
@@ -80,6 +88,9 @@ type dockLanes struct {
 	Availability string     `json:"availability"`
 	Lanes        []dockLane `json:"lanes"`
 	Omitted      int        `json:"omitted"`
+	// Heading and Footer are the lines above and below the rows.
+	Heading string `json:"heading"`
+	Footer  string `json:"footer,omitempty"`
 }
 
 // dockEvent is one retained history entry in plain words.
@@ -94,6 +105,9 @@ type dockEvent struct {
 	// folded into this entry, since FoldedSince.
 	Folded      uint64     `json:"folded,omitempty"`
 	FoldedSince *time.Time `json:"foldedSince,omitempty"`
+	// When is the entry's time; FoldedText says how many more and since when.
+	When       dockText `json:"when"`
+	FoldedText dockText `json:"foldedText,omitempty"`
 }
 
 type dockEvents struct {
@@ -103,6 +117,8 @@ type dockEvents struct {
 	Retained     int         `json:"retained"`
 	// Pruned says older history may have been pruned or dropped.
 	Pruned bool `json:"pruned"`
+	// Footer says how many entries are shown of how many retained.
+	Footer string `json:"footer,omitempty"`
 }
 
 // dockReasons words each fixed cause. A cause outside this table reads as not
@@ -184,6 +200,10 @@ func dockLastDecision(st *statusOut, tl *timelineReport, now time.Time) dockDeci
 		}
 	}
 	d.Phrase = dockDecisionPhrase(c.Action, c.Outcome, c.DryRun, d.Cause)
+	d.Sub = txt(dockAgo(now, at))
+	if d.Since != nil {
+		d.Sub = txt(d.Sub, " \u00B7 this result since ", tm(*d.Since, "clock"))
+	}
 	return d
 }
 
@@ -263,9 +283,13 @@ func dockCurrentHold(c *clientControls, updatedAt time.Time, tl *timelineReport,
 	if r, ok := dockFlagSince(tl, flag); ok {
 		at := dockRecordTime(r)
 		h.Since, h.SinceEvidence, h.SinceSeconds = &at, "hold_recorded", secondsSince(now, at)
+		h.Sub = "for " + dockSpan(now.Sub(at))
 	} else if !updatedAt.IsZero() {
 		at := updatedAt
 		h.Since, h.SinceEvidence, h.SinceSeconds = &at, "control_changed", secondsSince(now, at)
+		h.Sub = "for at least " + dockSpan(now.Sub(at))
+	} else {
+		h.Sub = "since an unknown time"
 	}
 	return h
 }
@@ -284,24 +308,27 @@ func dockHoldFromTimeline(tl *timelineReport) *dockHold {
 }
 
 // dockDeviceOf describes this computer for one loop. The role is stated only
-// from a record: a check recorded in the loop's state here.
-func dockDeviceOf(st *statusOut, hostname string, identifiers bool) dockDevice {
+// from a record: the loop's last check, which is recorded in its state here.
+func dockDeviceOf(st *statusOut, hostname string, identifiers bool, now time.Time) dockDevice {
 	d := dockDevice{Name: "This computer", Role: "Holds this loop's records; no check is recorded here"}
 	if st == nil {
 		d.Role = "Holds this loop's registration; its records could not be read"
-	} else if !st.State.CheckedAt.IsZero() {
-		d.Role = "Runs this loop's checks"
+	} else if t := st.State.CheckedAt; !t.IsZero() {
+		d.Role = "The loop's last check ran here, " + dockAgo(now, t)
 	}
-	if identifiers {
+	d.Text = d.Name + " \u00B7 " + d.Role
+	if identifiers && hostname != "" {
 		d.Hostname = clip(hostname, dockMaxText)
+		d.HostText = d.Hostname + " (this computer) \u00B7 " + d.Role
 	}
 	return d
 }
 
 // dockLaneList lists each lane of the last verified listing, most in need of
 // a person first. keys maps a registration ID to that loop's key in the report.
-func dockLaneList(r runsLoop, known bool, identifiers bool) dockLanes {
-	out := dockLanes{Availability: dockChildWork(r, known).Availability, Lanes: []dockLane{}}
+func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now time.Time) dockLanes {
+	c := dockChildWork(r, known)
+	out := dockLanes{Availability: c.Availability, Lanes: []dockLane{}, Heading: "This loop's lanes"}
 	if out.Availability != "current" && out.Availability != "held" {
 		return out
 	}
@@ -338,6 +365,36 @@ func dockLaneList(r runsLoop, known bool, identifiers bool) dockLanes {
 		out.Lanes = append(out.Lanes, l)
 	}
 	out.Omitted += r.Blocker.OmittedChildren
+	if len(out.Lanes) == 0 {
+		return out
+	}
+	counts := []string{}
+	for _, x := range []struct {
+		n    int
+		word string
+	}{{c.Working, "working"}, {c.Stuck, "waiting for an answer"}, {c.Failed, "failed"}} {
+		if x.n > 0 {
+			counts = append(counts, fmt.Sprintf("%d %s", x.n, x.word))
+		}
+	}
+	when := "listed "
+	if c.Availability == "held" {
+		when = "as of the check that held it, "
+	}
+	if c.CheckedAt != nil {
+		when += dockAgo(now, *c.CheckedAt)
+	} else {
+		when += "at an unknown time"
+	}
+	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
+	out.Footer = "keepgoing records each lane's state, not its title or which route it is on"
+	if current {
+		out.Footer += "; they are listed under the loop's current route"
+	}
+	out.Footer += "."
+	if out.Omitted > 0 {
+		out.Footer = dockPlural(out.Omitted, "more lane is", "more lanes are") + " not listed. " + out.Footer
+	}
 	return out
 }
 
@@ -362,14 +419,11 @@ func dockRouteNamesOf(chain *dockChainInput) dockRouteNames {
 	}
 	for _, cand := range append([]config.Candidate{chain.Primary}, chain.Candidates...) {
 		ref := refOf(cand.Agent)
-		name := ref.Model
-		if name == "" {
-			name = dockTool(ref.Adapter)
+		title := dockRouteTitle(dockTool(ref.Adapter), ref.Model)
+		if acct := dockTitleAccount(title, ref.Group, ref.Provider); acct != "" {
+			title += " on " + acct
 		}
-		if ref.Group != "" {
-			name += " on " + ref.Group
-		}
-		names[incident.TargetKey(cand.ID)] = clip(name, dockMaxText)
+		names[incident.TargetKey(cand.ID)] = clip(title, dockMaxText)
 	}
 	return names
 }
@@ -406,6 +460,7 @@ func dockRecentEvents(tl *timelineReport, names dockRouteNames, now time.Time) d
 			last := &out.Events[len(out.Events)-1]
 			at := e.At
 			last.Folded, last.FoldedSince = last.Folded+1, &at
+			last.FoldedText = dockFoldedText(last.Folded, at)
 			run = nil
 			continue
 		}
@@ -413,7 +468,7 @@ func dockRecentEvents(tl *timelineReport, names dockRouteNames, now time.Time) d
 			break
 		}
 		run = nil
-		ev := dockEvent{At: e.At, AgeSeconds: *secondsSince(now, e.At), Tone: "routine"}
+		ev := dockEvent{At: e.At, AgeSeconds: *secondsSince(now, e.At), Tone: "routine", When: txt(tm(e.At, "clock"))}
 		switch {
 		case e.Incident != nil:
 			dockWordIncident(&ev, *e.Incident, names)
@@ -428,7 +483,25 @@ func dockRecentEvents(tl *timelineReport, names dockRouteNames, now time.Time) d
 		out.Events = append(out.Events, ev)
 		out.Availability = "known"
 	}
+	if len(out.Events) > 0 {
+		entries := "retained entries."
+		if out.Retained == 1 {
+			entries = "retained entry."
+		}
+		out.Footer = fmt.Sprintf("%d of %d %s", len(out.Events), out.Retained, entries)
+		if out.Pruned {
+			out.Footer += " Older history has been pruned."
+		}
+	}
 	return out
+}
+
+func dockFoldedText(n uint64, since time.Time) dockText {
+	checks := "more checks"
+	if n == 1 {
+		checks = "more check"
+	}
+	return txt(fmt.Sprintf("%d %s with this result since ", n, checks), tm(since, "clock"))
 }
 
 func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
@@ -452,6 +525,7 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		if c := r.Collapsed; c != nil && c.Count > 0 {
 			first := c.FirstAt
 			ev.Folded, ev.FoldedSince = c.Count, &first
+			ev.FoldedText = dockFoldedText(c.Count, first)
 		}
 	case "control":
 		ev.Tone, ev.Phrase = "key", dockControlPhrase(r)
