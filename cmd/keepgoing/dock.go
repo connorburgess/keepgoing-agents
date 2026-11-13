@@ -34,7 +34,7 @@ import (
 // report from the existing read paths. Nothing in this file writes, controls a
 // loop, or talks to a provider.
 
-//go:embed dockui/index.html dockui/dock.css dockui/dock.js
+//go:embed dockui/index.html dockui/dock.css dockui/dock.js dockui/expired.js
 var dockUI embed.FS
 
 const (
@@ -50,6 +50,9 @@ const (
 	// dockReadParallel bounds how many loops are read at once.
 	dockReadParallel = 4
 	dockAPIPath      = "api/v1/dock"
+	// dockServerPath says which command serves the page, so the page can
+	// name it and say when it stops.
+	dockServerPath = "api/v1/server"
 )
 
 func dockCommand(e env, args []string) int {
@@ -171,10 +174,23 @@ type dockServer struct {
 	guard  dockGuard
 	auth   dockAuth
 	reader *dockReader
+	served dockServed
+}
+
+// dockServed is what the page is told about the command serving it. It holds
+// nothing about any loop.
+type dockServed struct {
+	SchemaVersion int `json:"schemaVersion"`
+	// ServedBy is dock (in the foreground, until interrupted) or panel (in
+	// the background, until idle or stopped).
+	ServedBy string `json:"servedBy"`
+	// IdleSeconds is how long the panel server runs with no page reading
+	// from it. Zero for dock, which has no such limit.
+	IdleSeconds int `json:"idleSeconds,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
-	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader}
+	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock"}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -182,7 +198,13 @@ func (s *dockServer) url(token string) string {
 }
 
 func (s *dockServer) serve(ctx context.Context, ln net.Listener, stderr io.Writer) int {
-	hs := &http.Server{Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: dockReadTimeout + 10*time.Second,
+	return dockServeHandler(ctx, ln, s, stderr)
+}
+
+// dockServeHandler serves h on ln until ctx ends, with the request bounds
+// every panel server uses.
+func dockServeHandler(ctx context.Context, ln net.Listener, h http.Handler, stderr io.Writer) int {
+	hs := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: dockReadTimeout + 10*time.Second,
 		IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10, ErrorLog: nil}
 	done := make(chan error, 1)
 	go func() { done <- hs.Serve(ln) }()
@@ -230,6 +252,9 @@ func (s *dockServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.asset(w, "dockui/dock.css", "text/css; charset=utf-8")
 	case "dock.js":
 		s.asset(w, "dockui/dock.js", "text/javascript; charset=utf-8")
+	case dockServerPath:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(s.served)
 	case dockAPIPath:
 		identifiers := r.URL.Query().Get("identifiers") == "1"
 		body, err := s.reader.json(identifiers)
