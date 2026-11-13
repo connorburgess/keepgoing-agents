@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/allowance"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
@@ -315,6 +316,11 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			reg.Candidates["primary"] = &health.Entry{Usage: dockUsageReading(primary, now.Add(-12*time.Minute),
 				probe.UsageWindow{Key: "five_hour", Used: 0.38, ResetsAt: dockPtr(now.Add(3*time.Hour + 5*time.Minute))},
 				probe.UsageWindow{Key: "seven_day", Used: 0.61, ResetsAt: dockPtr(now.Add(4 * 24 * time.Hour))})}
+			// Three readings of the weekly window over 25 hours, a point an hour,
+			// so it can be projected; the five-hour window has only the latest.
+			week := allowance.Series{Key: "seven_day", ResetsAt: now.Add(4 * 24 * time.Hour), Samples: []allowance.Sample{
+				{At: now.Add(-25*time.Hour - 12*time.Minute), Used: 0.36}, {At: now.Add(-12*time.Hour - 42*time.Minute), Used: 0.485}, {At: now.Add(-12 * time.Minute), Used: 0.61}}}
+			reg.Candidates["primary"].UsageHistory = &allowance.History{Identity: probe.UsageIdentity(primary), Windows: []allowance.Series{week}}
 			reg.Candidates[cands[0].ID] = &health.Entry{Last: &probe.Result{At: probed, OK: true, Kind: "bb"},
 				Usage: dockUsageReading(cands[0], probed, probe.UsageWindow{Key: "five_hour", Used: 0.12, ResetsAt: dockPtr(now.Add(4 * time.Hour))})}
 			reg.Candidates[cands[1].ID] = &health.Entry{Last: &probe.Result{At: now.Add(-2 * time.Hour), OK: false, Kind: "bb", ErrorClass: "auth"}}
