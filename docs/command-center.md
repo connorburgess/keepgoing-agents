@@ -290,8 +290,9 @@ What would change the decision:
 ## Consequences for the roadmap
 
 - **An always-on command center for cloud sessions.** Supervising cloud sessions assumes a machine that stays awake. Setup and `doctor` should say so when a loop has a cloud target, and the scheduler self-check already planned in priority 0 covers a command center that has stopped checking. New runner-kit item: cloud-session targets, starting with services that document both observe and continue.
-- **A headless service on small Linux ARM devices.** A target environment with no desktop and no login session: a boot-time service (a system unit, or a user unit with lingering, chosen explicitly), a remote view only, reports queued until the connection returns, and network-aware waiting. New runner-kit item.
+- **A headless service on small Linux ARM devices.** A target environment with no desktop and no login session: a boot-time service, a remote view only, reports queued until the connection returns, and network-aware waiting. New runner-kit item.
 - **Safety before reach.** A held state for refusals and restrictions, a bound on repeated wakes without progress, and the fleet rules (enrolment by a person, pull, a local stop the root cannot override, default bounds) come before any multi-device feature.
+- **Starting at boot is the person's act (decided).** keepgoing never enables login lingering and never installs a system unit itself; that would be the tool extending its own reach on the machine. Planned instead: `doctor` and `service status` detect that the user unit will not start at boot and print the exact command for the person to run, and a separate command prints a system unit for whoever builds a device image to install. There will be no flag that enables lingering for the person. None of this is built.
 - **The remote view.** The dock's local page stays loopback-only and read-only until the authentication above exists; reaching it from elsewhere is documented first through the user's own private network. Remote writes come in the order recommended above.
 
 ## Sources
