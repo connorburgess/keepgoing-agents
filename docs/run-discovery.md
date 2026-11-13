@@ -69,10 +69,11 @@ Each loop's state directory holds one private record, `graph.json`, written by `
 | Identity | Where it lives | How it is created |
 | --- | --- | --- |
 | Durable loop `supervision_…` | `graph.json` in the loop's state directory | Allocated by the first graph write for that directory. It follows the directory, not the config path, loop name or registry. |
-| Registry reference `loop_…` | The registry; the graph keeps a list of references it has seen used | Recorded when a control operation reaches the loop through that reference (registered client pause, stop or resume). |
+| Registry reference `loop_…` | The registry; the graph keeps a list of references it has recorded | Recorded by `registry add` when the loop already has a graph, and when a control operation reaches the loop through that reference (registered client pause, stop or resume). |
+| Routine and invocation | `graph.json`, on the run they opened or triggered | Supplied by the caller with `--routine` on `enable`, `resume` or `tick`. Never generated or inferred. |
 | Run `run_…`, attempt `attempt_…` | `graph.json` | Allocated when a run opens or a send intent is recorded. |
 
-A registry reference maps to a durable loop through its entry's runtime directory: the durable loop is the one recorded in that directory's `graph.json`. The mapping is **recorded** only once the graph lists that reference. `registry add` and `registry remove` never write into a runtime directory, so a reference that has only been added, or one created by removing and adding again, resolves to the directory's loop as **not recorded**. A reader must show that state instead of presenting the loop's earlier runs as belonging to the new reference. The graph's list says a reference was used then, not that it is still registered; the registry answers that. The list keeps the newest 16.
+A registry reference maps to a durable loop through its entry's runtime directory: the durable loop is the one recorded in that directory's `graph.json`. The mapping is **recorded** only once the graph lists that reference. `registry add` records it when the loop already has a graph, and writes nothing otherwise: registry commands never create a runtime file, so a loop registered before its first run resolves as **not recorded** until `registry add` is repeated after that run, or a registered control operation uses the reference. `registry add` is safe to repeat; it returns the same reference. Removing and adding again creates a new reference, recorded as its own entry with its own time; the earlier one stays as history. A reader shows the not-recorded state instead of presenting a loop's runs as belonging to a reference the graph has not recorded. The graph's list says a reference was recorded then, not that it is still registered; the registry answers that, and `registry remove` does not edit the graph. The list keeps 16. When it is full the oldest reference recorded only by `registry add` goes first, so repeated remove and add cannot push out a reference that a control operation used.
 
 ### What is recorded, and when
 
@@ -86,17 +87,44 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
 | Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
 | Run → chat/session | A check's target is a BB thread (its configured thread ID) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target` or `runner_session_file` |
-| Run → routine invocation | Store API only. No command accepts a routine identity yet. | `external` |
-| Registry reference | A registered client control operation succeeds | `registered_control` |
+| Run's opening invocation | An accepted `enable` or `resume` that opens a run carries `--routine` | the run's own source |
+| Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
+| Registry reference | `registry add` finds an existing graph | `registry_add` |
+| Registry reference | A registered client control operation succeeds; this also upgrades a reference first recorded by an add | `registered_control` |
 | Unrecorded note | A check's target has a chat/session identifier outside the recordable characters, such as one containing `/` or a space | none; kept once per run and target |
 
 Run boundaries are derived from saved control state, read inside the graph lock, so a writer never applies control state older than the graph it updates. If the write after a control command fails, the next check records the same boundary with the `control_state` source. This recovers the state, not every event: if a completion and the resume after it both lose their graph writes before any check runs, control looks unchanged and neither boundary is recorded, so that work stays in the earlier run. An attempt left as `intent` means the process stopped, or the graph write failed, between recording the intent and recording the return. It is unconfirmed, not proof that anything was or was not sent. A session link carries the configured target alias it was recorded for. It is history: neither a session link nor the graph says which target is active now. Target moves (handoff, switch-back and manual retarget) are recorded once, in the incident journal read by [`keepgoing timeline`](diagnostics.md#offline-incident-timeline); the graph does not duplicate them. A process-adapter target has no recorded session identity. An identifier the contract cannot store is not altered to fit: the run gets an unrecorded note naming the target alias, the check warns once (`target "<alias>": its chat/session identifier cannot be recorded…`), and later checks stay quiet. The rejected identifier is not stored. Dry runs record nothing.
 
+### Supplying a scheduler identity
+
+A scheduler that calls keepgoing can say which entry and which trigger it is:
+
+```sh
+keepgoing tick   -c loop.yaml --routine example-scheduler/nightly/2026-11-13
+keepgoing enable -c loop.yaml --routine example-scheduler/nightly/2026-11-13
+keepgoing resume -c loop.yaml --routine example-scheduler/nightly/2026-11-14
+```
+
+The value is `source/routine` or `source/routine/invocation`. Each part is 1–128 letters, digits and `. _ : @ -`, starting with a letter or digit. A timestamp with `+00:00`, a name with a space or an ID containing `/` does not fit; pass an identifier that does. `start`, `daemon` and the other commands do not take the flag.
+
+A value that cannot be recorded, including an empty one, is handled by what the command is for:
+
+- **`tick` runs the check anyway.** The identity is diagnostic only, so a scheduler sending an unusable value must not stop supervision. The check behaves exactly as it would without the flag, records no identity, and adds one warning to its output and its `runs.jsonl` event: `routine identity ignored: …`. The value is not echoed.
+- **`enable` and `resume` refuse with a usage error** that changes nothing and does not echo the value. These are explicit control operations, usually run by a person or a setup script, where a wrong identity should be corrected.
+
+The identity is recorded and nothing more. It never reaches a decision, and a trigger never opens, reopens or closes a run:
+
+- `enable` or `resume` that opens a run records the invocation on that run.
+- `tick`, `enable` or `resume` while a run is already open records a trigger link on it. A repeated invocation is one link. A routine that supplies no invocation ID has one link per run, because its triggers cannot be told apart.
+- With no open run, including after completion and on a disabled or held loop with no run, nothing is recorded. Dry runs record nothing.
+
+Triggers have their own bound. A run keeps its first trigger and its newest seven; the ones between are dropped and counted as `triggers`. A scheduler that sends a new ID on every check therefore cannot push out a chat/session link, a goal link, a send or an earlier run. If chat and goal links alone fill the shared 256-link bound, trigger links are removed first.
+
 ### Lookup
 
-`Lookup` takes an exact reference and returns that node with its adjacent recorded references, from an index built once per loaded graph. It reads nothing else: no history scan, provider query, filesystem search or timestamp comparison. References are the run, attempt, durable loop and registry IDs themselves, `session:<provider>/<id>` for a chat/session, `<goal id>@<revision>` for a goal revision and `routine:<source>/<routine>/<invocation>` for an invocation. The parts are joined with `/`, which no recorded token can contain, so different identities never share a reference. Every node and edge carries its source label and recorded time; that is the only freshness the graph has, and nothing in it is a live observation.
+`Lookup` takes an exact reference and returns that node with its adjacent recorded references, from an index built once per loaded graph. It reads nothing else: no history scan, provider query, filesystem search or timestamp comparison. References are the run, attempt, durable loop and registry IDs themselves, `session:<provider>/<id>` for a chat/session, `<goal id>@<revision>` for a goal revision, `routine:<source>/<routine>` for a routine and `routine:<source>/<routine>/<invocation>` for one invocation. An invocation reference always has three parts, ending in `/` when no invocation ID was supplied, so it never equals a routine reference. The parts are joined with `/`, which no recorded token can contain, so different identities never share a reference. Every node and edge carries its source label and recorded time; that is the only freshness the graph has, and nothing in it is a live observation.
 
-The paths D2 requires resolve from recorded IDs: loop → current run → chat/session, run → goal revision, run → attempts, run → predecessor, chat/session → every run that recorded it, and registry reference → loop.
+The paths D2 requires resolve from recorded IDs: loop → current run → chat/session, run → goal revision, run → attempts, run → predecessor, chat/session → every run that recorded it, registry reference → loop, and routine → its invocations and runs → their chats.
 
 ### Evidence that is not available
 
@@ -106,14 +134,14 @@ The paths D2 requires resolve from recorded IDs: loop → current run → chat/s
 | `unsupported` | Written by a newer schema | Not read and never rewritten. |
 | `corrupt` | Unreadable, oversized, not a regular file, or failing validation against the contract | Not read and never rewritten or reset. Remove the file to start a new record; the earlier history is gone. |
 | `not_recorded` | The reference is not in the graph | Nothing is inferred. |
-| `not_recorded_or_expired` | The reference is not in the graph and retention has dropped runs, attempts, links, registry references or unrecorded notes | Dropped records are counted per kind, never recreated. |
+| `not_recorded_or_expired` | The reference is not in the graph and retention has dropped runs, attempts, links, triggers, registry references or unrecorded notes | Dropped records are counted per kind, never recreated. |
 | Unrecorded note on a run | A chat/session identifier existed but could not be stored | The run lists the target alias and reason; no session link exists for it. |
 | Conflict `completion_not_recorded` or `reopen_not_recorded` | Saved control state and the recorded run disagree because a boundary write was lost | Reported to the reader; the next check records the boundary. |
 
 ### Storage and failure behavior
 
 - **Private and atomic.** `graph.json` is written with mode 0600 through the control writer's temporary-file replacement, which on Windows replaces a file that a reader still has open. The temporary file is flushed to disk before it replaces the record, so a power loss leaves either the old record or the new one, not a truncated file. The directory entry is not flushed, so the newest write can still be lost. A separate `graph.lock` serializes writers; it is independent of the tick and control locks.
-- **Bounded.** At most 32 runs, 128 attempts, 256 links, 16 registry references, 16 unrecorded notes and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
+- **Bounded.** At most 32 runs, 128 attempts, 256 links, 8 trigger links per run, 16 registry references, 16 unrecorded notes and 256 KiB. The oldest closed run is dropped first, together with its attempts and links. Within one long run the oldest attempts and links go.
 - **Versioned.** `schemaVersion` is 1. Unknown fields are rejected.
 - **Never in the way.** A graph that cannot be read or written does not fail a check, change its decision, block a send or fail a control command. The check adds one warning, `run reference record unavailable; discovery evidence is incomplete`, to its output and its `runs.jsonl` event. Control commands stay silent. A corrupt record keeps warning on every check until the file is removed by hand, because it is never reset automatically.
 - **No private text.** The record holds IDs, target aliases, action names and times. It holds no prompt, goal text, note, path, URL or error text.
@@ -163,6 +191,8 @@ keepgoing runs -c loop.yaml --id session:bb/thr_example
 | `attempt_…` | its run, the goal revision composed into it, and its chat/session |
 | `session:<provider>/<id>` | every run that recorded it, and the sends recorded for it |
 | `<goal id>@<revision>` | every run that recorded it |
+| `routine:<source>/<routine>` | its invocations, and every run they opened or triggered |
+| `routine:<source>/<routine>/<invocation>` | the run it opened or triggered, and its routine |
 
 A send's chat/session is derived from two recorded fields: the send's run and its target alias. If that alias named more than one chat during the run, for example because the configured chat was edited, the send's chat is `ambiguous` and no chat is picked. Each of those chats then reports how many sends could not be attributed (`ambiguousAttempts`).
 
@@ -193,7 +223,7 @@ A lookup answers `found`, `not_recorded`, `not_recorded_or_expired` when retenti
 | `loops[].graph` | `availability` (`available`, `missing`, `unsupported`, `corrupt`), `loopId`, `updatedAt`, `dropped` counts |
 | `loops[].control`, `conflict`, `activeTarget` | Saved control summary, any boundary conflict, and the saved active target alias; each has `availability` `not_recorded` when its file does not exist |
 | `loops[].current`, `recent[]`, `omittedRuns` | The current run and earlier runs, newest first |
-| run fields | `id`, `state` (`open` or `completion_declared`), `origin`, `recordedAt`, `source`, `closedAt`, `reopens`, `invocation`, `sessionEvidence`, `sessions[]`, `omittedSessions`, `goalRevisions[]`, `omittedGoalRevisions`, `attempts`, `unrecorded[]` |
+| run fields | `id`, `state` (`open` or `completion_declared`), `origin`, `recordedAt`, `source`, `closedAt`, `reopens`, `invocation` (the one that opened it), `triggers[]` and `omittedTriggers` (later invocations while open), `sessionEvidence`, `sessions[]`, `omittedSessions`, `goalRevisions[]`, `omittedGoalRevisions`, `attempts`, `unrecorded[]` |
 | `sessions[]` | `ref`, `provider`, `id`, `target`, `evidence`, `source`, `recordedAt`, `link` |
 | `attempts` | `total`, `unconfirmed`, and the newest three in `latest[]` with `outcome` (`intent`, `adapter_returned`, `adapter_error`) and `session` |
 | `loops[].blocker` | Always `unavailable` in this schema |

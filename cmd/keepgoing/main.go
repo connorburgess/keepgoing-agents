@@ -15,6 +15,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 )
 
 // version is set at release time with -ldflags "-X main.version=...".
@@ -60,6 +61,8 @@ Goal metadata:
 
 Control:
   enable | disable         Turn supervision on or off (nothing is sent while off)
+                           enable, resume and tick take --routine source/routine[/invocation]
+                           to record which scheduler entry and trigger called them
   pause | resume           Pause; resume also clears stop, awaiting-user, and completion
   stop                     Stop the running session on the next pass, then send nothing
   complete                 Mark the task finished; hold until resume
@@ -100,6 +103,18 @@ type env struct {
 	ctx    context.Context
 	stdout io.Writer
 	stderr io.Writer
+}
+
+// routineKey carries the scheduler identity from --routine on the command's
+// context. It is recorded in the run graph only.
+type routineKey struct{}
+
+// routineIgnoredKey marks a tick whose --routine value could not be recorded.
+type routineIgnoredKey struct{}
+
+func suppliedRoutine(ctx context.Context) rd.RoutineRef {
+	r, _ := ctx.Value(routineKey{}).(rd.RoutineRef)
+	return r
 }
 
 func (e env) errf(format string, a ...any) { fmt.Fprintf(e.stderr, format+"\n", a...) }
@@ -170,6 +185,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		id:         fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
 		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
+		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
 	}
 	if err := fs.Parse(rest); err != nil {
@@ -183,6 +199,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *f.takeOver && *f.dryRun && cmd == "daemon" {
 		e.errf("daemon --take-over cannot be combined with --dry-run; use validate --take-over to preview")
 		return exitUsage
+	}
+	routineSet := false
+	fs.Visit(func(fl *flag.Flag) { routineSet = routineSet || fl.Name == "routine" })
+	if routineSet {
+		// Never echo the value: it is supplied by another program.
+		if cmd != "enable" && cmd != "resume" && cmd != "tick" {
+			e.errf("--routine is only supported by enable, resume, and tick")
+			return exitUsage
+		}
+		r, err := rd.ParseRoutine(*f.routine)
+		switch {
+		case err == nil:
+			e.ctx = context.WithValue(e.ctx, routineKey{}, r)
+		case cmd == "tick":
+			// The identity is diagnostic only. A scheduled check must still
+			// run when its scheduler sends a value keepgoing cannot record.
+			e.ctx = context.WithValue(e.ctx, routineIgnoredKey{}, true)
+		default:
+			e.errf("--routine takes source/routine or source/routine/invocation; each part is 1-128 letters, digits and . _ : @ -, starting with a letter or digit")
+			return exitUsage
+		}
 	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {
@@ -234,7 +271,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 type cliFlags struct {
 	staleAfter                      *time.Duration
-	cfgPath, now, note, id          *string
+	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
 }
 

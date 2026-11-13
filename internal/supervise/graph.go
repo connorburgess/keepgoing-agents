@@ -53,6 +53,12 @@ func (t *tick) graphSync() {
 			return false, nil // The tick reports the control failure itself.
 		}
 		changed, err := g.Sync(rungraph.Boundary{Gate: rungraph.GateOf(ctl), At: t.now, NewRunID: runID})
+		if err == nil && t.opts.Routine != (rd.RoutineRef{}) {
+			// A scheduled check is a trigger of the open run. It opens nothing.
+			var triggered bool
+			triggered, err = g.Trigger(t.opts.Routine, t.now)
+			changed = changed || triggered
+		}
 		if err != nil || goal == nil || g.CurrentRun == "" || g.Completed {
 			return changed, err
 		}

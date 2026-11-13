@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,5 +222,143 @@ func TestRunsCommandShowsWhatTicksRecordedWithoutProviderCalls(t *testing.T) {
 		if after := snapshotTree(t, stateDir); after != before {
 			t.Fatalf("%s: runs changed the state directory", hold)
 		}
+	}
+}
+
+// A scheduler supplies its identity with --routine. It is recorded with the
+// run it opens or triggers; it never opens, reopens or closes one by itself,
+// and it changes nothing a check decides.
+func TestRoutineFlagRecordsSchedulerIdentityWithoutChangingSupervision(t *testing.T) {
+	f := newFixture(t)
+	stateDir := filepath.Join(f.dir, "state")
+	ok := func(args ...string) string {
+		t.Helper()
+		code, out, errs := f.run(args...)
+		if code != exitOK {
+			t.Fatalf("%v: %d %s %s", args, code, out, errs)
+		}
+		return out
+	}
+	// A scheduled check before anything is enabled records nothing.
+	ok("tick", "--routine", "example-scheduler/nightly/inv-0")
+	if _, availability := rungraph.Load(stateDir); availability != rungraph.Missing {
+		t.Fatal("a trigger on a disabled loop created a graph")
+	}
+	ok("enable", "--routine", "example-scheduler/nightly/inv-1")
+	g := graphOf(t, f)
+	run := g.CurrentRun
+	if g.Runs[0].Origin != rd.Explicit || g.Runs[0].Routine == nil || g.Runs[0].Routine.Invocation != "inv-1" || len(g.Links) != 0 {
+		t.Fatalf("%#v", g.Runs)
+	}
+	f.tick()
+	ok("tick", "--routine", "example-scheduler/nightly/inv-2")
+	ok("tick", "--routine", "example-scheduler/nightly/inv-2")              // repeated trigger: one link
+	ok("tick", "--dry-run", "--routine", "example-scheduler/nightly/inv-9") // dry runs record nothing
+	ok("enable", "--routine", "example-scheduler/nightly/inv-3")            // a scheduled enable of an open run is a trigger
+	g = graphOf(t, f)
+	var triggers []string
+	for _, l := range g.Links {
+		if l.Kind == rd.InvocationLink {
+			triggers = append(triggers, l.Routine.Invocation)
+		}
+	}
+	if g.CurrentRun != run || len(g.Runs) != 1 || strings.Join(triggers, " ") != "inv-2 inv-3" {
+		t.Fatalf("runs=%d triggers=%v", len(g.Runs), triggers)
+	}
+	// After completion a trigger and a scheduled enable relate to no run and
+	// reopen nothing. Only resume opens the next run, and carries its invocation.
+	ok("complete")
+	ok("tick", "--routine", "example-scheduler/nightly/inv-4")
+	ok("enable", "--routine", "example-scheduler/nightly/inv-5")
+	if g = graphOf(t, f); len(g.Runs) != 1 || !g.Completed || len(g.Links) != len(triggers)+1 {
+		t.Fatalf("a trigger after completion changed the graph: %#v", g.Links)
+	}
+	ok("resume", "--routine", "example-scheduler/nightly/inv-6")
+	g = graphOf(t, f)
+	if len(g.Runs) != 2 || g.Runs[1].Origin != rd.Reopened || g.Runs[1].Reopens != run || g.Runs[1].Routine.Invocation != "inv-6" {
+		t.Fatalf("%#v", g.Runs)
+	}
+	// routine → both runs, through the reader.
+	out := ok("runs", "--id", "routine:example-scheduler/nightly")
+	if !strings.Contains(out, "run -> "+run) || !strings.Contains(out, "run -> "+g.CurrentRun) || !strings.Contains(out, "opened by invocation: routine:example-scheduler/nightly/inv-6") {
+		t.Fatal(out)
+	}
+	// On enable and resume, and on commands that do not take it, a malformed
+	// identity is a usage error: nothing changes and the value is not echoed.
+	before := snapshotTree(t, stateDir)
+	for _, args := range [][]string{
+		{"enable", "--routine", "PRIVATE value"}, {"enable", "--routine", "nightly"}, {"resume", "--routine", "a/b/c/d"}, {"enable", "--routine", ""}, {"resume", "--routine", ""},
+		{"pause", "--routine", "example-scheduler/nightly"}, {"status", "--routine", "example-scheduler/nightly"}, {"pause", "--routine", ""},
+	} {
+		code, out, errs := f.run(args...)
+		if code != exitUsage || strings.Contains(out+errs, "PRIVATE") || strings.Contains(out+errs, "a/b/c/d") {
+			t.Fatalf("%v: %d %s %s", args, code, out, errs)
+		}
+	}
+	if snapshotTree(t, stateDir) != before {
+		t.Fatal("a rejected --routine changed runtime records")
+	}
+}
+
+const routineIgnoredWarning = "routine identity ignored"
+
+// tickLine runs one check at a fixed time in a fresh fixture that has been
+// enabled, and returns its exit code, its output line and what was sent.
+func tickLine(t *testing.T, extra ...string) (int, string, string) {
+	t.Helper()
+	f := newFixture(t)
+	if code, _, errs := f.run("enable"); code != exitOK {
+		t.Fatal(errs)
+	}
+	code, out, errs := f.run(append([]string{"tick", "--now", "2026-11-09T12:00:00Z"}, extra...)...)
+	if errs != "" {
+		t.Fatalf("%v: %s", extra, errs)
+	}
+	return code, out, f.read("thr_primary.told") + "|" + f.read("calls")
+}
+
+// From identical state, a check with a scheduler identity prints the same
+// line, exits the same and sends the same as one without.
+func TestRoutineFlagLeavesTheWholeCheckIdentical(t *testing.T) {
+	code, line, sent := tickLine(t)
+	if code != exitOK || !strings.Contains(line, `"action":"wake"`) || !strings.Contains(sent, "thread tell") {
+		t.Fatalf("baseline: %d %s %s", code, line, sent)
+	}
+	gotCode, gotLine, gotSent := tickLine(t, "--routine", "example-scheduler/nightly/inv-1")
+	if gotCode != code || gotLine != line || gotSent != sent {
+		t.Fatalf("--routine changed the check:\n%d %s\n%s\nwant\n%d %s\n%s", gotCode, gotLine, gotSent, code, line, sent)
+	}
+}
+
+// A scheduler can send an identity keepgoing cannot record. The check must
+// still run exactly as it would have, and say once that it ignored the value.
+func TestTickRunsWhenTheRoutineValueCannotBeRecorded(t *testing.T) {
+	code, line, sent := tickLine(t)
+	for _, value := range []string{"example-scheduler/nightly/2026-11-13T02:00:00+00:00", "example-scheduler/nightly build", "example-scheduler/team/nightly/inv-1", "PRIVATE value", "nightly", ""} {
+		gotCode, gotLine, gotSent := tickLine(t, "--routine", value)
+		var got, want map[string]any
+		if json.Unmarshal([]byte(gotLine), &got) != nil || json.Unmarshal([]byte(line), &want) != nil {
+			t.Fatalf("%q: %s", value, gotLine)
+		}
+		warnings := fmt.Sprint(got["warnings"])
+		delete(got, "warnings")
+		delete(want, "warnings")
+		if gotCode != code || gotSent != sent || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%q changed the check: %d %s", value, gotCode, gotLine)
+		}
+		if strings.Count(warnings, routineIgnoredWarning) != 1 || (value != "" && strings.Contains(gotLine, value)) {
+			t.Fatalf("%q: want one warning that does not echo the value: %s", value, gotLine)
+		}
+	}
+	// The warning is in the check's log entry, and nothing was recorded for it.
+	f := newFixture(t)
+	f.run("enable")
+	if code, out, _ := f.run("tick", "--routine", "not a routine"); code != exitOK || !strings.Contains(out, routineIgnoredWarning) {
+		t.Fatal(code, out)
+	}
+	log, _ := os.ReadFile(filepath.Join(f.dir, "state", "runs.jsonl"))
+	g := graphOf(t, f)
+	if strings.Count(string(log), routineIgnoredWarning) != 1 || len(g.Links) != 1 || g.Links[0].Kind != rd.SessionLink || g.Runs[0].Routine != nil {
+		t.Fatalf("%s %#v", log, g.Links)
 	}
 }
