@@ -1,8 +1,14 @@
-// Command standin is a test-only stand-in for the bb and claude CLIs, used by
+// Command standin is a test-only stand-in for the bb, claude and codex CLIs, used by
 // the scenario suite in internal/scenario. It is compiled once per test run
 // and installed under each name it plays (bb, claude; with .exe on Windows),
 // so it runs natively on every platform without a POSIX shell. It picks its
 // part from the name it was run as.
+//
+// As claude or codex it answers probes and runs headless turns. A turn's
+// answer follows net.mode (online, offline or portal), unless headless.mode
+// says otherwise: online succeeds and reports the session; offline (or
+// "structured") fails with the CLI's structured error; portal prints a
+// sign-in page; silent exits 1 with no output, before any session exists.
 //
 // All state lives in the directory named by SCENARIO_WORLD, which the test
 // writes and reads:
@@ -17,10 +23,14 @@
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
-//	probes.jsonl           every claude invocation
+//	probes.jsonl           every probe
+//	net.mode               online, offline or portal (default online)
+//	headless.mode          overrides net.mode for headless turns
 //	sends.jsonl            everything an agent received: `thread tell` (thread,
 //	                       mode, message), an accepted `thread retry`, and a
-//	                       `thread spawn` (new thread, title, first prompt)
+//	                       `thread spawn` (new thread, title, first prompt), and
+//	                       every headless turn (thread is the CLI name, mode the
+//	                       session it resumed, message the prompt)
 //
 // `thread retry` re-submits a failed turn: it is accepted only while the
 // thread's show file says "error" and answers like BB otherwise: an error
@@ -47,8 +57,17 @@ func main() {
 		os.Exit(97)
 	}
 	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
-	if name == "claude" {
+	switch name {
+	case "claude":
+		if isClaudeTurn(os.Args[1:]) {
+			os.Exit(turn(world, name, os.Args[1:]))
+		}
 		os.Exit(claude(world, os.Args[1:]))
+	case "codex":
+		if len(os.Args) > 1 && os.Args[1] == "app-server" {
+			os.Exit(1) // no structured limit snapshot
+		}
+		os.Exit(turn(world, name, os.Args[1:]))
 	}
 	os.Exit(run(world, os.Args[1:]))
 }
@@ -257,4 +276,62 @@ func retry(world, thread string) int {
 	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "retry", "thread": thread})
 	fmt.Println(`{"ok":true,"delivery":"sent","attempt":1}`)
 	return 0
+}
+
+// HeadlessSession is the session every stand-in headless turn reports.
+const HeadlessSession = "00000000-0000-4000-8000-0000000000aa"
+
+// isClaudeTurn tells a headless turn (prompt on stdin, JSON output) from a
+// probe (prompt as the argument after -p).
+func isClaudeTurn(args []string) bool {
+	return len(args) > 2 && args[0] == "-p" && args[1] == "--output-format" && args[2] == "json"
+}
+
+// turn runs one headless turn of claude or codex.
+func turn(world, cli string, args []string) int {
+	prompt, _ := io.ReadAll(os.Stdin)
+	resumed := ""
+	switch cli {
+	case "claude":
+		resumed = flagValue(args, "--resume")
+	case "codex":
+		if len(args) > 2 && args[0] == "exec" && args[1] == "resume" {
+			resumed = args[len(args)-2] // the session comes before the final "-"
+		}
+	}
+	appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "turn", "thread": cli, "mode": resumed, "message": string(prompt)})
+	mode := readMode(filepath.Join(world, "headless.mode"), "")
+	if mode == "" {
+		mode = readMode(filepath.Join(world, "net.mode"), "online")
+	}
+	switch mode {
+	case "silent":
+		return 1
+	case "portal":
+		fmt.Println("<html><body>Fictional sign-in page</body></html>")
+		return 1
+	case "online":
+		if cli == "claude" {
+			fmt.Printf(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"api_error_status":null}`+"\n", HeadlessSession)
+		} else {
+			fmt.Printf(`{"type":"thread.started","thread_id":%q}`+"\n"+`{"type":"turn.completed","usage":{}}`+"\n", HeadlessSession)
+		}
+		return 0
+	}
+	// offline or structured: the CLI's structured failure, no recognised code
+	// for Claude Code, stream_disconnected for Codex.
+	if cli == "claude" {
+		fmt.Printf(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":%q,"api_error_status":null}`+"\n", HeadlessSession)
+	} else {
+		fmt.Printf(`{"type":"thread.started","thread_id":%q}`+"\n"+`{"type":"turn.failed","error":{"type":"stream_disconnected"}}`+"\n", HeadlessSession)
+	}
+	return 1
+}
+
+func readMode(path, fallback string) string {
+	b, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(string(b))
 }

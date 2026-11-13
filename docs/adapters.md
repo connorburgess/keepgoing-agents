@@ -100,8 +100,8 @@ Stop honouring a provider's "retrying" notice when nothing fresh stands behind i
 After an error, send the task prompt again, with backoff, up to errors.max_reprompts, then ask for a person.
 
 - **BB thread:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. A real retry exhaustion and explicit resume were observed once. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go) [integrations.md#agent-providers](integrations.md#agent-providers)
-- **Claude Code headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
-- **Codex headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Claude Code headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
+- **Codex headless:** yes, evidence fixture. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Cursor headless:** yes, evidence fixture. A failed turn is re-prompted in its verified session. [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go)
@@ -111,8 +111,8 @@ After an error, send the task prompt again, with backoff, up to errors.max_repro
 Continue the same conversation by its saved identifier, never "the most recent".
 
 - **BB thread:** n/a. The configured thread is the conversation; every message goes to that thread ID.
-- **Claude Code headless:** yes, evidence fixture. --resume with the saved session ID. If no turn ever reported one, the next turn starts a new session. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go) [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
-- **Codex headless:** yes, evidence fixture. exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session. [`TestCodexResumeArgs`](../internal/adapter/runner/runner_test.go) [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Claude Code headless:** yes, evidence fixture. --resume with the saved session ID. If no turn ever reported one, the next turn starts a new session. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
+- **Codex headless:** yes, evidence fixture. exec resume with the saved thread ID. If no turn ever reported one, the next turn starts a new session. [`TestCodexResumeArgs`](../internal/adapter/runner/runner_test.go) [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Cursor headless:** yes, evidence fixture. --resume with the saved session ID, and a refusal to start a new conversation when the previous turn's identity is unverified. [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command owns session identity.
@@ -133,8 +133,8 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
 
 - **BB thread:** missing, evidence none. A structured network class is recognised, but it is handled like any other error: recovery attempts (turn retries) are spent into the outage and the loop ends on an awaiting-user hold. [`TestObserveStreamDisconnectIsNetworkAndRetrying`](../internal/adapter/bb/bb_test.go)
-- **Claude Code headless:** missing, evidence fixture. An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
-- **Codex headless:** missing, evidence fixture. As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it. [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go)
+- **Claude Code headless:** missing, evidence fixture. An outage is unknown unless the CLI reports a recognised code. Three re-prompts are spent, then the loop holds for a person. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
+- **Codex headless:** missing, evidence fixture. As for Claude Code. A stream-disconnect code is classified as network, which changes nothing unless failover_on includes it. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go)
 - **Cursor headless:** missing, evidence none. Every failure is unknown.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. The status command may report network; it is handled like any other error.
@@ -263,7 +263,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 
 ## The offline scenario on headless Claude Code and Codex
 
-The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestOfflineScenarioHeadless`](../cmd/keepgoing/offline_scenario_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
+The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
 
 What happens, with default settings:
 
@@ -276,13 +276,13 @@ What happens, with default settings:
 | Four hours, three days, three weeks | Nothing. Checks run and report `awaiting user`. Nothing is sent. |
 | The network returns, behind a captive portal or not | Nothing. keepgoing does not notice and does not come back by itself. |
 | A person runs `resume` | The hold clears, but the spent re-prompts do not, and a headless session cannot change state without a send. The next check holds again at once, without trying. |
-| A person runs `retarget primary`, then `resume` | A new error episode starts and the loop re-prompts. Behind a captive portal the three re-prompts fail again and it holds again. With the network really back, the first re-prompt succeeds in the same session. |
+| A person runs `retarget primary`, then `resume` | A new error episode starts and the loop re-prompts. With the network back, the first re-prompt succeeds in the same session. (Behind a captive portal the three re-prompts would fail again and it would hold again; that repeat is reasoning from the episode rules and is no longer run as a fixture.) |
 
 The four questions:
 
 - **What does the runner record when the CLI exits on a network failure?** The exit code, standard output and standard error of that turn, in the target's private directory. No network state is recorded: an outage is not told apart from any other failure unless the CLI prints a recognised code.
 - **Is the saved session ID reused exactly?** Yes. Every send after the first passed the saved ID (`--resume <id>` for Claude Code, `exec resume … <id>` for Codex), including after `retarget primary` and three weeks later. A failed turn does not change it.
-- **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestOfflineFirstTurnStartsANewSessionOnEveryReprompt`](../cmd/keepgoing/offline_scenario_test.go)). Files the earlier turns changed are still on disk either way.
+- **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go)). Files the earlier turns changed are still on disk either way.
 - **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
 
 Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test. A reboot is different: see the stale turn record below.
@@ -296,7 +296,7 @@ None of these is fixed here. Each needs a decision or is not small.
 | **An outage ends in a hold that needs a person.** Re-prompts are spent into a dead network, and nothing acts when it returns. | Every adapter | The scenario above; [roadmap](roadmap.md) "network-aware sending" |
 | **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. | Headless Claude Code, Codex, Cursor | The scenario above |
 | **A stale turn record with a reused PID reads as a running turn.** After a reboot, a turn that never wrote its exit code is judged by whether its saved PID exists. If an unrelated process has that PID, the loop sees an active session and sends nothing for as long as that process lives. | Headless Claude Code, Codex, Cursor | [`TestTurnRecordAfterTheWrapperIsGone`](../internal/adapter/runner/reboot_gap_test.go) |
-| **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestOfflineFirstTurnStartsANewSessionOnEveryReprompt`](../cmd/keepgoing/offline_scenario_test.go) |
+| **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |
 | **A session the provider no longer has is not recognised.** It fails as `unknown` until the re-prompts are spent. | Headless Claude Code, Codex, Cursor | Reasoning from the code; not tested against a real expired session |
