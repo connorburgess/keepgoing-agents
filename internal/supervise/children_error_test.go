@@ -184,3 +184,51 @@ func TestChildWorkStillHoldsAHealthyParentWithFallbacksConfigured(t *testing.T) 
 		}
 	}
 }
+
+// A failed turn of a parent whose children are working is retried by
+// reference when the provider allows it, exactly as without children, and
+// waits while the network is down. The only text sent is the short notice
+// about a newly failed child, where a re-prompt would have carried it.
+func TestErroredParentWithChildrenIsRetriedByReference(t *testing.T) {
+	for name, kids := range childWork {
+		for _, class := range []decide.ErrorClass{decide.ErrNetwork, decide.ErrUnknown} {
+			w := newRetryWorld(t, class)
+			kids(&w.a.obs)
+			online := false
+			tick := func(at time.Time) Result {
+				t.Helper()
+				opts := w.options(at)
+				opts.Online = func(context.Context) bool { return online }
+				res, err := Tick(context.Background(), w.cfg, opts)
+				if err != nil {
+					t.Fatalf("%s, children %s: %v", class, name, err)
+				}
+				return res
+			}
+			for i := 0; i < 3; i++ {
+				if res := tick(t0.Add(time.Duration(i) * time.Hour)); res.Action != "none" || res.Reason != decide.NetworkDownReason {
+					t.Fatalf("%s, children %s, offline check %d: %+v", class, name, i, res)
+				}
+			}
+			if st := savedState(t, w.dir); w.a.retries != 0 || len(w.a.sent) != 0 || st.Reprompts != 0 {
+				t.Fatalf("%s, children %s: spent while offline: %d retries, %d sent, %d re-prompts", class, name, w.a.retries, len(w.a.sent), st.Reprompts)
+			}
+			online = true
+			res := tick(t0.Add(3 * time.Hour))
+			if res.Action != "reprompt" || res.Recovery != "turn_retry" || w.a.retries != 1 || strings.Contains(res.Reason, "child") {
+				t.Fatalf("%s, children %s: %+v, %d retries", class, name, res, w.a.retries)
+			}
+			// The task prompt is never sent again.
+			wantSent := 0
+			if name == "one failed beside one working" {
+				wantSent = 1 // the notice alone
+			}
+			if len(w.a.sent) != wantSent || (wantSent == 1 && (!strings.Contains(w.a.sent[0], "[keepgoing:child-errors count=1 running=1]") || strings.Contains(w.a.sent[0], "keep going"))) {
+				t.Fatalf("%s, children %s: sent %q", class, name, w.a.sent)
+			}
+			if st := savedState(t, w.dir); st.Reprompts != 1 || st.LastTurnRetry == nil || st.LastTurnRetry.Outcome != "retried" {
+				t.Fatalf("%s, children %s: %+v", class, name, st.LastTurnRetry)
+			}
+		}
+	}
+}
