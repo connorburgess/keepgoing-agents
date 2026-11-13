@@ -346,6 +346,9 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	// A killed bb whose children still hold its output must not hold the
+	// check open past the timeout.
+	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
 	return stdout.Bytes(), err

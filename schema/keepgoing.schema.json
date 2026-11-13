@@ -243,6 +243,10 @@
             }
           }
         },
+        "tick_timeout": {
+          "$ref": "#/$defs/duration",
+          "description": "time budget for one check's optional work (fallback probes); default 3m, minimum 30s"
+        },
         "daemon": {
           "type": "object",
           "additionalProperties": false,

@@ -51,11 +51,72 @@ Background mode survives the launching terminal closing. It does not install a u
 | Code | Meaning |
 | --- | --- |
 | 0 | ok |
-| 1 | failed: the target could not be observed, an action failed, or `fallbacks check` found redundancy unmet |
+| 1 | failed: keepgoing could not run or could not record its result, or `fallbacks check` found redundancy unmet. For `tick`, see [the contract for schedulers](#exit-codes-for-external-schedulers) |
 | 2 | usage or config error |
 | 3 | `ci-wait`: no run appeared for the commit |
 | 75 | skipped: the lock is held, a yield check reported other work, or `net-retry` waited longer than `--max-wait` for the network |
 | 124 | `ci-wait`: timed out |
+
+### Exit codes for external schedulers
+
+Unreleased; fixture-tested only. The exit code of `keepgoing tick` says whether keepgoing ran and recorded the check. It does not say whether the session, the provider, the network or a repository was healthy. That is in the check's output and in `status`.
+
+| `tick` exits | When | What a scheduler should do |
+| --- | --- | --- |
+| 0 | The check ran and was recorded. This includes a check that failed to observe or act: the session could not be observed, the target's adapter could not be built, a send or stop failed, a tracked repository or the fallback health file could not be read, or the operating window could not be evaluated. Such a check has `"outcome":"failed"` in its JSON line and in `runs.jsonl`, `outcome failed` in `status`, a line on stderr and an `error` report. A check that only left probes out for lack of time has outcome `succeeded` and a warning. | Nothing; run again on schedule. |
+| 75 | The check was skipped: another tick holds the lock, the yield command reported other work, or the configuration files changed while loading. | Treat as success. |
+| 1 | The check could not be recorded or could not start: `control.json`, `state.json`, the run log or incident history could not be read or written, the lock could not be taken, or loop ownership was refused. | Treat as a failure; a person should look. |
+| 2 | Usage or configuration error. | Treat as a failure. |
+
+Because such a failure no longer stops the scheduler, it must be visible another way. `status` prints `failed checks: N in a row since <time>` while consecutive checks fail, and `doctor` reports the same as a `supervisor.failed_checks` warning; both clear on the next completed check. Nothing escalates on that count by itself: the `error` report is sent for each failed check, and a persistent failure otherwise waits for someone to look.
+
+Before this change a check that could not observe or act exited 1. A scheduler that disables a job after a few consecutive failures (a BB automation does after three) was therefore switched off by an outage, and nothing ran when the network came back. Scripts that relied on exit 1 to detect a failed send should read `outcome` from the JSON line instead.
+
+### External schedulers can stop on their own
+
+keepgoing cannot run itself when an external scheduler stops calling it. Known ways this happens:
+
+- The scheduler disables the job after consecutive failures or timeouts. A tick killed by the scheduler's own timeout writes nothing, so keepgoing's history simply ends.
+- The host sleeps, reboots or loses the user session.
+
+What keepgoing shows afterwards, when someone runs it:
+
+- `status` prints `history: stale` once the last check is older than the stale threshold, with the reason `no recent check; inspect the supervisor and its scheduler`. It does not query any scheduler.
+- `doctor --bb-automation <id> --bb-project <id>` reads the selected BB automation and warns `The selected automation is disabled; scheduled runs are not expected.` See [BB automation diagnostics](diagnostics.md#bb-automation-diagnostics).
+- Nothing notifies anyone. No report is sent when checks stop, because nothing is running to send it. A self-check that reports the gap on the next run is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+Prefer `keepgoing start`, the daemon or a managed [service](services.md) where one is available: the service manager restarts it, and it does not depend on a scheduler's failure counting. If you keep an external scheduler, give its timeout a comfortable margin over `loop.tick_timeout` (below) and treat exit 75 as success.
+
+### Check time budget
+
+Unreleased; fixture-tested only. `loop.tick_timeout` (default `3m`) is a time budget for one check's optional work, so that a check records its result and exits inside a scheduler timeout of five minutes.
+
+What can take time in a check, and how each part is bounded:
+
+| Step | Bound | Counted against `tick_timeout` |
+| --- | --- | --- |
+| Observing the target (for BB: status, children, log, interactions) | 30s per `bb` command, and 90s for the whole observation | it uses the budget, but is not cut by it |
+| Yield command | `yield.timeout` (10s) | as above |
+| Git progress fingerprint | 30s per `git` command, and 60s for the whole fingerprint | as above |
+| Scheduled fallback probes, one after another | `probe.timeout` each (90s) | started only if the whole timeout fits with 60s kept back |
+| Exact probes before a handoff | `probe.timeout` each | given what is left, less 45s kept back for sending |
+| Exact probe before a switch-back | `probe.timeout` | started only if the whole timeout fits with 45s kept back |
+| Sending a wake, nudge, re-prompt or brief | the adapter's command timeout (30s for `bb`, twice for a handoff that also sets the model) | not cut |
+| Webhook reports | two attempts of `report.timeout` (20s) each, so up to 40s per report | once the budget is spent, 10s per report |
+
+With the network down, each due fallback's scheduled probe ran to its 90-second timeout and was followed by a failed report, before the session was considered at all. Four due fallbacks made one check last over seven minutes (fixture `TestTickBudgetBoundsProbesDuringAnOutage`), so a scheduler with a five-minute timeout killed it before it wrote anything.
+
+How the budget is spent:
+
+- **Scheduled probes are never shortened.** One is started only when its whole timeout fits. A probe that then runs to its timeout is a real failure: recorded, reported, counted against the daily cap, and not due again until `probe.every`. One that does not fit is listed in the check's `probes` with `"skipped":"tick_timeout"`, a warning names `loop.tick_timeout`, and it stays due. So a fallback that hangs costs one check, after which the others are probed; it cannot starve them.
+- **Exact probes for a handoff may be shortened**, because a handoff is worth trying with the time there is. A probe stopped early is listed with `"skipped":"cut_short"`, is not held against the fallback, and the next candidate is tried in the same check. A fallback stopped early goes to the back of the order on the next check, so a hanging one cannot keep a working one from being tried.
+- **A handoff that could not be confirmed is put off, within a limit.** The check records `handoff deferred: no fallback could be confirmed within this check's time budget; the next check retries` (incident cause `handoff_deferred`), spends no re-prompt and raises no hold. After `errors.max_reprompts` such checks in a row, or the same number of early stops for one fallback, the result is treated as real: the fallback's probe is recorded as failed, and the ordinary error rules act on the current target (re-prompts, then a hold, or a limit wait).
+- **Observing, deciding, sending and recording are never cut by the budget**, so a wake or re-prompt is not lost to slow probes and nothing is stopped in the middle of a write. They have their own limits, above. An observation that reaches its 90-second limit is recorded as `could not verify state; no action taken`.
+- Stop, pause and the other holds are handled before any optional work and do not depend on the budget.
+
+**Worst case.** With every step taking as long as it is allowed (observation 90s, fingerprint 60s, probes hanging, a 30-second send, every report failing slowly), a check at the default settings ends within four and a half minutes (fixture `TestWorstCaseCheckFitsAFiveMinuteScheduler`). That figure rests on these limits being enforced by killing the command; a process that ignores the kill and keeps its output open is abandoned after two more seconds. The budget does not shorten the observation or the fingerprint, so raising `tick_timeout` lengthens the worst case and lowering it below about three minutes does not shorten it.
+
+**Configuration.** With fallbacks, `tick_timeout` must be at least `probe.timeout` plus 90 seconds, or no scheduled probe could ever start. If `tick_timeout` is omitted it grows to that value, so a file with a long `probe.timeout` keeps loading; an explicit value that is too small is an error naming both settings. The minimum is `30s`. `validate` warns when it exceeds four minutes, because the worst case then no longer fits a five-minute scheduler timeout; the daemon and managed services have no such timeout.
 
 ## Status for other tools
 

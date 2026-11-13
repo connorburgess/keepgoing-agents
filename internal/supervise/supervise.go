@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ type Options struct {
 	Probe       ProbeFunc
 	Reporter    report.Reporter
 	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	// Clock reads wall time for the check's time budget. Now is the logical
+	// check time and may be fixed; Clock always advances.
+	Clock func() time.Time
 	// Routine is the scheduler identity supplied with this check, if any. It
 	// is recorded in the run graph only and never reaches a decision.
 	Routine rd.RoutineRef
@@ -49,11 +53,15 @@ type Options struct {
 
 // ProbeNote summarises a probe that ran during the tick.
 type ProbeNote struct {
-	ID         string     `json:"id"`
-	Tier       probe.Tier `json:"tier"`
-	OK         bool       `json:"ok"`
-	ErrorClass string     `json:"errorClass,omitempty"`
-	Detail     string     `json:"detail,omitempty"`
+	ID   string     `json:"id"`
+	Tier probe.Tier `json:"tier"`
+	OK   bool       `json:"ok"`
+	// Skipped says why the probe produced no result: "tick_timeout" when it
+	// was not started, "cut_short" when it was stopped by the check's time
+	// budget before its own timeout. Neither is recorded as a probe failure.
+	Skipped    string `json:"skipped,omitempty"`
+	ErrorClass string `json:"errorClass,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // HandoffNote describes a handoff attempt.
@@ -100,6 +108,14 @@ type Result struct {
 	Yielded                 bool            `json:"yielded,omitempty"`
 	DryRun                  bool            `json:"dryRun,omitempty"`
 	Warnings                []string        `json:"warnings,omitempty"`
+	// Outcome is the recorded result of the check: succeeded, failed or
+	// dry_run. It is empty when the check could not be recorded at all.
+	Outcome string `json:"outcome,omitempty"`
+	// MissingWorktrees counts registered Git worktrees left out of the
+	// progress fingerprint because their directories are gone.
+	MissingWorktrees int `json:"missingWorktrees,omitempty"`
+	// Recorded: state, the event line and incident history were all written.
+	Recorded bool `json:"-"`
 }
 
 type tick struct {
@@ -137,6 +153,10 @@ type tick struct {
 	res                 *Result
 	st                  state.File
 	reg                 *health.Registry
+	deadline            time.Time // wall time after which optional work is skipped
+	probesDeferred      bool      // a needed probe was skipped for lack of time
+	switchBackDeferred  bool
+	budgetWarned        bool
 	graphFailed         bool
 	graphClosed         bool
 }
@@ -149,7 +169,11 @@ func (t *tick) report(typ, text string, data map[string]any) {
 	if t.opts.DryRun {
 		return
 	}
-	if err := t.opts.Reporter.Report(t.ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
+	// A report is part of recording the check, so it is still attempted after
+	// the budget is spent, but briefly.
+	ctx, cancel := context.WithTimeout(t.ctx, max(t.deadline.Sub(t.opts.Clock()), minReportTime))
+	defer cancel()
+	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
 	}
 }
@@ -174,9 +198,13 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Busy == nil {
 		opts.Busy = runBusy
 	}
+	if opts.Clock == nil {
+		opts.Clock = time.Now
+	}
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
+	t.deadline = opts.Clock().Add(tickBudget(cfg.Loop))
 	if opts.RoutineIgnored {
 		t.warn("routine identity ignored: --routine takes source/routine or source/routine/invocation; this check ran without it")
 	}
@@ -186,6 +214,7 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
+		res.Recorded = false
 	}
 	return res, err
 }
@@ -294,10 +323,11 @@ func (t *tick) run() error {
 
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
-		return err
+		res.State, res.Window, res.Reason = "not observed", "not checked", "could not build the target's adapter; no action taken"
+		return t.record(err)
 	}
 	t.observedTarget = target
-	obs, err := a.Observe(t.ctx)
+	obs, err := t.observe(a)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
@@ -363,7 +393,9 @@ func (t *tick) run() error {
 	var summary health.Summary
 	if t.fb != nil {
 		if t.reg, err = health.Load(loop.StateDir); err != nil {
-			return err
+			t.reg = nil
+			res.Reason = "could not read fallback health; no action taken"
+			return t.record(err)
 		}
 		if inWindow && !t.opts.DryRun {
 			t.scheduledProbes(target, agent.Group)
@@ -394,10 +426,19 @@ func (t *tick) run() error {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
 		}
+		if n := state.MissingWorktrees(f); n > 0 {
+			t.warn("%d registered Git worktree(s) no longer exist on disk and were left out of the progress fingerprint; run `git worktree prune` in the repository", n)
+			res.MissingWorktrees = n
+		}
 		// A first baseline is not progress.
-		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && f != t.st.Fingerprint
-		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
-			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
+		// A worktree that disappeared, returned or was newly registered is not
+		// progress either; the newest observation is kept so later changes are.
+		changed := !state.SameProgress(t.st.Fingerprint, f)
+		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && changed
+		previousFingerprint := t.st.Fingerprint
+		t.st.Fingerprint = f
+		if previousFingerprint == "" || changed || t.st.LastProgressAt.IsZero() {
+			t.st.LastProgressAt = t.now
 			t.st.Nudges = 0
 		}
 		if t.progress != nil {
@@ -483,6 +524,9 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
+	if d.Action != decide.Handoff && !t.opts.DryRun {
+		t.st.ClearDeferrals() // no handoff is due, so none is being put off
+	}
 	res.Action, res.Reason = string(d.Action), d.Reason
 	res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
 
@@ -498,7 +542,11 @@ func (t *tick) run() error {
 			t.decisionInput = in
 			d = t.decide("switch_back_failed", in)
 			res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
-			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
+			why := " (primary failed its probe; staying on the fallback)"
+			if t.switchBackDeferred {
+				why = " (no time left in this check to confirm the primary; staying on the fallback)"
+			}
+			res.Action, res.Reason = string(d.Action), d.Reason+why
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
@@ -511,11 +559,33 @@ func (t *tick) run() error {
 		} else if !moved {
 			// No candidate took over: fall back to the ordinary error rules
 			// for the current target. A dry run only previews that decision.
-			in.Failover.Available = false
-			d = t.decide("handoff_failed", in)
 			why := " (no fallback could take over; see probes and warnings)"
-			if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
-				why = " (every confirmed fallback is capped or backing off after rejecting its handoff brief)"
+			if t.probesDeferred {
+				t.st.HandoffDeferrals++
+			} else {
+				t.st.HandoffDeferrals = 0
+			}
+			switch {
+			case t.probesDeferred && t.st.HandoffDeferrals <= t.deferralCap():
+				// A fallback could not be confirmed because the check ran out
+				// of time, not because it failed. Spend nothing on that: no
+				// re-prompt and no hold. The next check retries the handoff.
+				in.HandoffDeferred = true
+				t.decisionInput = in
+				d = t.decide("handoff_deferred", in)
+				why = ""
+			case t.probesDeferred:
+				// Too many checks in a row: stop waiting on the budget and let
+				// the ordinary error rules act on the current target.
+				in.Failover.Available = false
+				d = t.decide("handoff_failed", in)
+				why = fmt.Sprintf(" (no fallback could be confirmed within the check's time budget in %d consecutive checks; see probes and warnings)", t.st.HandoffDeferrals)
+			default:
+				in.Failover.Available = false
+				d = t.decide("handoff_failed", in)
+				if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
+					why = " (every confirmed fallback is capped or backing off after rejecting its handoff brief)"
+				}
 			}
 			// The hold note and report carry the explanation too.
 			d.Reason += why
@@ -550,10 +620,11 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	res.Window = "not checked"
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
-		return err
+		res.State, res.Reason = "not observed", "stop requested; could not build the target's adapter"
+		return t.record(err)
 	}
 	t.observedTarget = target
-	obs, err := a.Observe(t.ctx)
+	obs, err := t.observe(a)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
@@ -586,6 +657,15 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		if !due {
 			continue
 		}
+		// Scheduled probes are optional and run before the decision. One is
+		// started only if its whole timeout fits before the time kept back for
+		// deciding, sending and reporting, so it is never shortened: a probe
+		// that runs to its timeout is a real failure, recorded and counted,
+		// and one that does not fit stays due for the next check.
+		if t.deadline.Sub(t.opts.Clock())-scheduledReserve < t.fb.Probe.Timeout.Duration {
+			t.skipProbe(c.ID, probe.Scheduled, "tick_timeout")
+			continue
+		}
 		r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Scheduled
 		t.reg.Record(c.ID, r)
@@ -615,7 +695,11 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		// Nothing would be offered a brief: preview the fall-through instead.
 		return len(summary.Healthy) == 0, nil
 	}
-	for _, id := range summary.Healthy {
+	// Fallbacks whose exact probe was stopped early by the budget go last, so
+	// one that hangs cannot keep a working one from being tried.
+	order := append([]string(nil), summary.Healthy...)
+	sort.SliceStable(order, func(i, j int) bool { return t.st.ExactCut[order[i]] < t.st.ExactCut[order[j]] })
+	for _, id := range order {
 		if err := t.sendAllowance(); err != nil {
 			return false, err
 		}
@@ -630,7 +714,27 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}
-		r := t.opts.Probe(t.ctx, c, probe.Exact, t.fb.Probe.Timeout.Duration)
+		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, sendReserve)
+		if !ok {
+			// No time for this or any later candidate.
+			t.skipProbe(id, probe.Exact, "tick_timeout")
+			t.probesDeferred = true
+			break
+		}
+		r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+		if r.TimedOut && timeout < t.fb.Probe.Timeout.Duration && t.st.ExactCut[id]+1 < t.deferralCap() {
+			// Stopped early by the budget: that says little about the
+			// candidate. Try the next one now and this one last next time.
+			if t.st.ExactCut == nil {
+				t.st.ExactCut = map[string]int{}
+			}
+			t.st.ExactCut[id]++
+			t.skipProbe(id, probe.Exact, "cut_short")
+			t.probesDeferred = true
+			continue
+		}
+		// An answer, a full timeout, or one early stop too many: a real result.
+		delete(t.st.ExactCut, id)
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
 		t.keepFailure(id, r)
@@ -724,13 +828,20 @@ func (t *tick) switchBackReady(target string) bool {
 // switchBack confirms the primary with an exact probe, then activates it and
 // sends it a brief. It returns false when the primary is not ready.
 func (t *tick) switchBack(from string) (bool, error) {
-	t.st.LastSwitchBackTry = t.now
 	c := t.loop.PrimaryCandidate()
-	timeout := config.DefaultProbeTimeout
+	configured := config.DefaultProbeTimeout
 	if t.fb != nil {
-		timeout = t.fb.Probe.Timeout.Duration
+		configured = t.fb.Probe.Timeout.Duration
 	}
-	r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+	// Out of time: leave the retry spacing alone so the next check tries.
+	// A switch-back is optional: it runs only when the whole probe fits.
+	if t.deadline.Sub(t.opts.Clock())-sendReserve < configured {
+		t.skipProbe(state.Primary, probe.Exact, "tick_timeout")
+		t.switchBackDeferred = true
+		return false, nil
+	}
+	r := t.opts.Probe(t.ctx, c, probe.Exact, configured)
+	t.st.LastSwitchBackTry = t.now
 	r.At, r.Tier = t.now, probe.Exact
 	if t.reg != nil {
 		t.reg.Record(state.Primary, r)
@@ -891,6 +1002,17 @@ func (t *tick) record(actErr error) error {
 	if actErr != nil {
 		outcome = "failed"
 	}
+	// Consecutive failed checks, so a loop that keeps running without
+	// completing a check is visible. A dry run changes nothing.
+	switch outcome {
+	case "failed":
+		if t.st.FailedChecks == 0 {
+			t.st.FailedSince = t.now
+		}
+		t.st.FailedChecks++
+	case "succeeded":
+		t.st.FailedChecks, t.st.FailedSince = 0, time.Time{}
+	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
@@ -900,7 +1022,7 @@ func (t *tick) record(actErr error) error {
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
 	t.graphClose()
-	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target}
+	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target, Outcome: outcome}
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
@@ -924,6 +1046,7 @@ func (t *tick) record(actErr error) error {
 	if err := state.Append(t.loop.StateDir, ev); err != nil {
 		return err
 	}
+	t.res.Outcome, t.res.Recorded = outcome, true
 	return actErr
 }
 
@@ -1006,4 +1129,68 @@ func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adap
 		c.CheckAt(t.now)
 	}
 	return ad, err
+}
+
+// minProbeTime is the least time worth giving a probe, and minReportTime the
+// least a report gets once the budget is spent.
+const (
+	minProbeTime  = 10 * time.Second
+	minReportTime = 10 * time.Second
+	// scheduledReserve is kept back from scheduled probes for deciding, an
+	// exact probe, sending and reporting. sendReserve is kept back from exact
+	// probes for activating and sending.
+	scheduledReserve = 60 * time.Second
+	// observeTimeout bounds one whole observation, however many commands it
+	// runs: a hung bb or an endless log cannot hold the check open.
+	observeTimeout = 90 * time.Second
+	sendReserve    = 45 * time.Second
+)
+
+// tickBudget is the configured time budget for a check's optional work.
+func tickBudget(l config.Loop) time.Duration {
+	if d := l.TickTimeout.Duration; d > 0 {
+		return d
+	}
+	return config.DefaultTickTimeout
+}
+
+// probeBudget returns the timeout a probe may use now, at most configured.
+// reserve is time that must be left for the rest of the check. ok is false
+// when too little remains for the probe to be worth starting.
+func (t *tick) probeBudget(configured, reserve time.Duration) (time.Duration, bool) {
+	left := t.deadline.Sub(t.opts.Clock()) - reserve
+	if left < minProbeTime {
+		return 0, false
+	}
+	return min(configured, left), true
+}
+
+// deferralCap is how many checks in a row may put a handoff off for lack of
+// time, and how many early stops one fallback's exact probe gets, before the
+// result is treated as real. It reuses the re-prompt cap.
+func (t *tick) deferralCap() int {
+	return max(t.loop.Errors.MaxReprompts, 1)
+}
+
+// skipProbe notes a probe that produced no result. It is not recorded in the
+// health registry, the probe cap or incident history as a failure.
+func (t *tick) skipProbe(id string, tier probe.Tier, why string) {
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: tier, Skipped: why})
+	if !t.budgetWarned {
+		t.budgetWarned = true
+		t.warn("the check's time budget (loop.tick_timeout) left no room for every fallback probe; skipped probes stay due")
+	}
+}
+
+// observe reads the target's state within observeTimeout. When the limit is
+// reached the adapter's commands are cancelled and the observation fails or
+// comes back unverified; either way nothing is sent.
+func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
+	ctx, cancel := context.WithTimeout(t.ctx, observeTimeout)
+	defer cancel()
+	obs, err := a.Observe(ctx)
+	if err == nil && ctx.Err() != nil {
+		err = fmt.Errorf("observation exceeded %s", observeTimeout)
+	}
+	return obs, err
 }

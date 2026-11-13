@@ -93,7 +93,7 @@ func cleanDecisions(h Decisions) Decisions {
 	h.Evaluations = evals
 	for i := range h.Evaluations {
 		e := &h.Evaluations[i]
-		e.Stage = oneOf(e.Stage, "unavailable", "normal", "deadline", "progress_limit", "send_limit", "child_input", "stop", "switch_back_failed", "handoff_failed")
+		e.Stage = oneOf(e.Stage, "unavailable", "normal", "deadline", "progress_limit", "send_limit", "child_input", "stop", "switch_back_failed", "handoff_failed", "handoff_deferred")
 		e.Action = cleanAction(e.Action)
 		e.Cause = cleanCause(e.Cause)
 		e.Input.State = oneOf(e.Input.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")

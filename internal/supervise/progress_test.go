@@ -91,9 +91,14 @@ func TestNoProgressEvidencePrecedesProviderAndSurvivesLostHistory(t *testing.T) 
 	if _, err := Tick(context.Background(), w.cfg, opts); err == nil {
 		t.Fatal("expected provider failure")
 	}
+	// A failed adapter build is now a recorded check. Lose the diagnostic
+	// history anyway: the allowance evidence must not depend on it.
 	st, _ := state.Load(w.dir)
-	if st.LastCheck != nil {
-		t.Fatal("expected missing diagnostic history")
+	if st.LastCheck == nil || st.LastCheck.Outcome != "failed" || st.FailedChecks != 1 {
+		t.Fatalf("failed check not recorded: %+v", st.LastCheck)
+	}
+	if err := os.Remove(filepath.Join(w.dir, state.FileName)); err != nil {
+		t.Fatal(err)
 	}
 	if got := progressTick(t, w, t0.Add(time.Hour), "same"); got.Action != "await_user" {
 		t.Fatalf("failure refunded: %+v", got)
