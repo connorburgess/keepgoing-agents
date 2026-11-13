@@ -182,7 +182,13 @@ func (s *dockServer) url(token string) string {
 }
 
 func (s *dockServer) serve(ctx context.Context, ln net.Listener, stderr io.Writer) int {
-	hs := &http.Server{Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: dockReadTimeout + 10*time.Second,
+	return dockServeHandler(ctx, ln, s, stderr)
+}
+
+// dockServeHandler serves h on ln until ctx ends, with the request bounds
+// every panel server uses.
+func dockServeHandler(ctx context.Context, ln net.Listener, h http.Handler, stderr io.Writer) int {
+	hs := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: dockReadTimeout + 10*time.Second,
 		IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10, ErrorLog: nil}
 	done := make(chan error, 1)
 	go func() { done <- hs.Serve(ln) }()
