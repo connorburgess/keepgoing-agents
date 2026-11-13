@@ -164,6 +164,17 @@ The re-prompt budget resets when the session is seen idle, or when it is active 
 - A window span whose start equals its end is rejected.
 - The BB CLI is given 30 seconds per call.
 
+## network
+
+The connectivity check made before an error re-prompt, a handoff and fallback probes. See [network outages](operations.md#network-outages).
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
+| `url` | none | Answers an HTTP GET when the network is up. Any response counts. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
+| `timeout` | `8s` | Between `1s` and `30s`. |
+
 ## report, yield, daemon
 
 See [operations.md](operations.md).

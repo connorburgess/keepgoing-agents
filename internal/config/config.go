@@ -62,6 +62,7 @@ type Loop struct {
 	Report    *Report    `yaml:"report,omitempty"`
 	Yield     *Yield     `yaml:"yield,omitempty"`
 	Daemon    Daemon     `yaml:"daemon"`
+	Network   Network    `yaml:"network,omitempty"`
 	// TickTimeout bounds the optional work of one check (fallback probes), so
 	// a check records its result and exits well inside an external
 	// scheduler's own timeout.
@@ -173,6 +174,26 @@ type Yield struct {
 	Timeout     Duration `yaml:"timeout,omitempty"`
 }
 
+// Network configures the connectivity check made before work that needs the
+// network: an error re-prompt, a handoff and fallback probes. With Check off
+// nothing is checked and that work is attempted as before.
+type Network struct {
+	// Check is "on" (the default) or "off".
+	Check string `yaml:"check,omitempty"`
+	// URL answers an HTTP GET when the network is up. Any response counts.
+	URL string `yaml:"url,omitempty"`
+	// Command exits 0 when the network is up. It replaces the URL.
+	Command []string `yaml:"command,omitempty"`
+	Timeout Duration `yaml:"timeout,omitempty"`
+}
+
+// Enabled reports whether connectivity is checked. A loop built in code
+// without defaults has no check.
+func (n Network) Enabled() bool { return n.Check == "on" }
+
+// DefaultNetworkTimeout bounds one connectivity check.
+const DefaultNetworkTimeout = 8 * time.Second
+
 // Daemon configures `keepgoing daemon`.
 type Daemon struct {
 	Interval    Duration `yaml:"interval,omitempty"`
@@ -248,6 +269,7 @@ func Load(path string) (*Config, error) {
 	if l.Probe.Workdir != "" {
 		l.Probe.Workdir = resolve(base, l.Probe.Workdir)
 	}
+	resolveArgv(base, l.Network.Command)
 	if l.Yield != nil {
 		resolveArgv(base, l.Yield.BusyCommand)
 	}
@@ -369,6 +391,10 @@ func (c *Config) applyDefaults() {
 		}
 		setDur(&r.Timeout, DefaultReportTimeout)
 	}
+	if l.Network.Check == "" {
+		l.Network.Check = "on"
+	}
+	setDur(&l.Network.Timeout, DefaultNetworkTimeout)
 	if y := l.Yield; y != nil {
 		setDur(&y.Timeout, DefaultYieldTimeout)
 	}
@@ -495,6 +521,20 @@ func (c *Config) Validate() error {
 		if l.Fallbacks == "" {
 			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
 		}
+	}
+	switch l.Network.Check {
+	case "on", "off":
+	default:
+		add("loop.network.check must be on or off")
+	}
+	if l.Network.URL != "" && len(l.Network.Command) > 0 {
+		add("loop.network: set url or command, not both")
+	}
+	if u := l.Network.URL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		add("loop.network.url must be an http or https URL")
+	}
+	if d := l.Network.Timeout.Duration; d < time.Second || d > 30*time.Second {
+		add("loop.network.timeout must be between 1s and 30s")
 	}
 	if y := l.Yield; y != nil && len(y.BusyCommand) == 0 {
 		add("loop.yield.busy_command is required when yield is set")

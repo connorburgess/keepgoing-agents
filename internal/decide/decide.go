@@ -146,6 +146,11 @@ type Input struct {
 	SinceLastReprompt time.Duration
 	Backoff           time.Duration
 
+	// NetworkDown: a structured connectivity check just failed. Nothing that
+	// needs the network is spent on an errored session: no re-prompt, no
+	// handoff, no hold. The session is looked at again on the next check.
+	NetworkDown bool
+
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
 	HandoffDeferred bool
@@ -214,6 +219,9 @@ func limitWait(kind LimitWait, reason string) Decision {
 }
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
+
+// NetworkDownReason is recorded when recovery waits for connectivity.
+const NetworkDownReason = "network down; waiting for connectivity before re-prompting or handing off"
 
 // HandoffDeferredReason is recorded when a due handoff waits for the next check.
 const HandoffDeferredReason = "handoff deferred: no fallback could be confirmed within this check's time budget; the next check retries"
@@ -341,6 +349,12 @@ func decideError(in Input) Decision {
 	if o.Queued > 0 {
 		return none("messages already queued after error")
 	}
+	// Ahead of every recovery rule, including the caps: a re-prompt or brief
+	// sent into a dead network fails and spends its allowance for nothing,
+	// and a hold raised because of it would outlast the outage.
+	if in.NetworkDown {
+		return none(NetworkDownReason)
+	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
 			return limitWait(WaitResetSoon, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; waiting")
@@ -429,7 +443,8 @@ func childErrorWake(in Input) bool {
 }
 
 // ChildErrorNote returns how many errored children a message should announce,
-// or zero for none. Only a wake of an idle session carries the note, and only
+// or zero for none. A wake of an idle session and a re-prompt of an errored
+// one carry the note, and only
 // while a newly errored child is unannounced: the supervisor never retries,
 // messages or stops a child, so the owning session is told and decides. The
 // count is every child now in error, including ones announced before. Every
@@ -437,7 +452,7 @@ func childErrorWake(in Input) bool {
 // the ordinary idle wake, or is the whole message of the one wake
 // childErrorWake allows.
 func ChildErrorNote(in Input, d Decision) int {
-	if d.Action != Wake || !childErrorNoticeDue(in) || in.Obs.ChildrenUnverified {
+	if (d.Action != Wake && d.Action != Reprompt) || !childErrorNoticeDue(in) || in.Obs.ChildrenUnverified {
 		return 0
 	}
 	return len(in.Obs.ErroredChildren)

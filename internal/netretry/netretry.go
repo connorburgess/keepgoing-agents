@@ -138,6 +138,48 @@ func DefaultOnline(ctx context.Context) bool {
 	return true
 }
 
+// Probe is a connectivity check with explicit settings. Command, when set,
+// is an argv whose exit 0 means online. Otherwise URL must answer an HTTP
+// GET; any response counts, a transport error does not. With neither set it
+// is DefaultOnline, which honours the KEEPGOING_NET_PROBE variables.
+type Probe struct {
+	URL     string
+	Command []string
+	Timeout time.Duration
+}
+
+// Online runs the check once.
+func (p Probe) Online(ctx context.Context) bool {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	switch {
+	case len(p.Command) > 0:
+		cmd := exec.CommandContext(ctx, p.Command[0], p.Command[1:]...)
+		cmd.WaitDelay = 2 * time.Second
+		return cmd.Run() == nil
+	case p.URL != "":
+		return get(ctx, p.URL)
+	}
+	return DefaultOnline(ctx)
+}
+
+func get(ctx context.Context, url string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
 // shell runs a command line with the platform's shell.
 func shell(ctx context.Context, line string) *exec.Cmd {
 	if runtime.GOOS == "windows" {

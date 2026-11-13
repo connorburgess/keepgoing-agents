@@ -19,6 +19,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/handoff"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/netretry"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
@@ -40,6 +41,9 @@ type Options struct {
 	Probe       ProbeFunc
 	Reporter    report.Reporter
 	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	// Online reports connectivity once. Nil uses the loop's network settings;
+	// a loop with the check off is never checked.
+	Online func(ctx context.Context) bool
 	// Clock reads wall time for the check's time budget. Now is the logical
 	// check time and may be fixed; Clock always advances.
 	Clock func() time.Time
@@ -111,6 +115,9 @@ type Result struct {
 	// Outcome is the recorded result of the check: succeeded, failed or
 	// dry_run. It is empty when the check could not be recorded at all.
 	Outcome string `json:"outcome,omitempty"`
+	// Network is "down" when this check's connectivity check failed, so
+	// work that needs the network was not attempted.
+	Network string `json:"network,omitempty"`
 	// MissingWorktrees counts registered Git worktrees left out of the
 	// progress fingerprint because their directories are gone.
 	MissingWorktrees int `json:"missingWorktrees,omitempty"`
@@ -157,6 +164,8 @@ type tick struct {
 	probesDeferred      bool      // a needed probe was skipped for lack of time
 	switchBackDeferred  bool
 	budgetWarned        bool
+	networkChecked      bool // connectivity was checked in this check
+	networkOffline      bool
 	graphFailed         bool
 	graphClosed         bool
 	// waiting is the child picture this check observed, for the run graph.
@@ -202,6 +211,10 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	}
 	if opts.Clock == nil {
 		opts.Clock = time.Now
+	}
+	if opts.Online == nil && cfg.Loop.Network.Enabled() {
+		n := cfg.Loop.Network
+		opts.Online = netretry.Probe{URL: n.URL, Command: n.Command, Timeout: n.Timeout.Duration}.Online
 	}
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
@@ -527,6 +540,13 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
+	// A re-prompt or a handoff needs the network. Check it only now, when one
+	// is about to be spent, and let the engine decide what a dead network means.
+	if (d.Action == decide.Reprompt || d.Action == decide.Handoff) && t.networkDown() {
+		in.NetworkDown = true
+		t.decisionInput = in
+		d = t.decide("network_down", in)
+	}
 	if d.Action != decide.Handoff && !t.opts.DryRun {
 		t.st.ClearDeferrals() // no handoff is due, so none is being put off
 	}
@@ -548,6 +568,9 @@ func (t *tick) run() error {
 			why := " (primary failed its probe; staying on the fallback)"
 			if t.switchBackDeferred {
 				why = " (no time left in this check to confirm the primary; staying on the fallback)"
+			}
+			if t.networkOffline {
+				why = " (network down, so the primary was not probed; staying on the fallback)"
 			}
 			res.Action, res.Reason = string(d.Action), d.Reason+why
 			actErr = t.act(a, d)
@@ -659,6 +682,12 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		}
 		due, _ := t.reg.Due(c, t.fb.Probe, t.now)
 		if !due {
+			continue
+		}
+		// A probe into a dead network proves nothing about the candidate and
+		// would mark every fallback unhealthy until its next scheduled probe.
+		if t.networkDown() {
+			t.skipProbe(c.ID, probe.Scheduled, "network_down")
 			continue
 		}
 		// Scheduled probes are optional and run before the decision. One is
@@ -838,6 +867,11 @@ func (t *tick) switchBack(from string) (bool, error) {
 		configured = t.fb.Probe.Timeout.Duration
 	}
 	// Out of time: leave the retry spacing alone so the next check tries.
+	if t.networkDown() {
+		t.skipProbe(state.Primary, probe.Exact, "network_down")
+		t.switchBackDeferred = true
+		return false, nil
+	}
 	// A switch-back is optional: it runs only when the whole probe fits.
 	if t.deadline.Sub(t.opts.Clock())-sendReserve < configured {
 		t.skipProbe(state.Primary, probe.Exact, "tick_timeout")
@@ -1005,6 +1039,14 @@ func (t *tick) record(actErr error) error {
 	}
 	if actErr != nil {
 		outcome = "failed"
+	}
+	// How long connectivity checks have been failing. A check that did not
+	// need the network leaves an earlier outage recorded.
+	switch {
+	case t.networkOffline && t.st.NetworkDownSince.IsZero() && !t.opts.DryRun:
+		t.st.NetworkDownSince = t.now
+	case t.networkChecked && !t.networkOffline:
+		t.st.NetworkDownSince = time.Time{}
 	}
 	// Consecutive failed checks, so a loop that keeps running without
 	// completing a check is visible. A dry run changes nothing.
@@ -1180,7 +1222,7 @@ func (t *tick) deferralCap() int {
 // health registry, the probe cap or incident history as a failure.
 func (t *tick) skipProbe(id string, tier probe.Tier, why string) {
 	t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: tier, Skipped: why})
-	if !t.budgetWarned {
+	if !t.budgetWarned && why == "tick_timeout" {
 		t.budgetWarned = true
 		t.warn("the check's time budget (loop.tick_timeout) left no room for every fallback probe; skipped probes stay due")
 	}
@@ -1197,4 +1239,22 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 		err = fmt.Errorf("observation exceeded %s", observeTimeout)
 	}
 	return obs, err
+}
+
+// networkDown checks connectivity at most once per check, and only when
+// something that needs the network is about to be done. Without a configured
+// check it reports false and nothing is gated.
+func (t *tick) networkDown() bool {
+	if t.opts.Online == nil {
+		return false
+	}
+	if !t.networkChecked {
+		t.networkChecked = true
+		t.networkOffline = !t.opts.Online(t.ctx)
+		if t.networkOffline {
+			t.res.Network = "down"
+			t.warn("network down: the connectivity check failed, so no re-prompt, handoff or fallback probe was attempted (loop.network)")
+		}
+	}
+	return t.networkOffline
 }

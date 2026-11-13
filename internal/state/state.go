@@ -37,6 +37,9 @@ type File struct {
 	// fallback, consecutive exact probes stopped early by that budget.
 	// FailedChecks counts consecutive recorded checks whose outcome was failed,
 	// and FailedSince is when that run began.
+	// NetworkDownSince is when a connectivity check first failed in the
+	// current run of failures; zero once a check did not find it down.
+	NetworkDownSince  time.Time      `json:"networkDownSince,omitempty"`
 	FailedChecks      int            `json:"failedChecks,omitempty"`
 	FailedSince       time.Time      `json:"failedSince,omitempty"`
 	HandoffDeferrals  int            `json:"handoffDeferrals,omitempty"`

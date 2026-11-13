@@ -333,6 +333,35 @@ keepgoing ci-wait --repo example-org/example-app --sha <40-char sha> --branch cb
 
 This waits until the newest run of every workflow on the exact commit has finished. It looks at the 50 most recent runs on the branch, and it pins the pull request's head commit when it starts. A failed run makes it exit 1. When a run is replaced, for example cancelled by a pull request edit, the newer run of the same workflow is followed. Then it prints each run's jobs. It uses the `gh` CLI, so authentication stays with `gh`. Every `gh` call goes through the network retry below.
 
+## Network outages
+
+Unreleased; **fixture-tested only**. A re-prompt, a handoff brief or a fallback probe sent while the network is down fails and still spends its allowance. In one observed outage two of three allowed re-prompts went into a dead network; a third failure would have ended in a hold with the network back minutes later. keepgoing now checks connectivity first.
+
+**What is checked.** One structured check, at most once per check and only when something that needs the network is about to be done:
+
+- before an error **re-prompt** or a **handoff**;
+- before the first **scheduled fallback probe** that is due;
+- before the exact probe of a **switch-back**.
+
+The check is `loop.network`: a `command` whose exit 0 means online, or an HTTP GET to `url` where any response means online and a transport error means offline. With neither set it is the same probe `net-retry` uses: `KEEPGOING_NET_PROBE` (a shell command) if set, else a GET to `KEEPGOING_NET_PROBE_URL`, by default `https://api.github.com/zen`. It has an 8-second timeout. No response body, error text or provider output is read. `network: {check: "off"}` disables it, and everything is attempted as before.
+
+**What happens while it fails.**
+
+- An errored session is not re-prompted and no handoff is tried. The check records action `none` with the reason `network down; waiting for connectivity before re-prompting or handing off` (incident cause and stage `network_down`), outcome `succeeded`, exit 0. The re-prompt count, the backoff clock, the handoff-brief counts and the send allowance are untouched, and no hold is raised, including for an auth error or a spent re-prompt cap: those wait until the network is back.
+- Due scheduled probes and a due switch-back probe are not run. They appear in the check's `probes` with `"skipped":"network_down"`, are not recorded as failures, do not count against the daily cap, and stay due. A probe into a dead network would otherwise mark every fallback unhealthy until its next scheduled probe.
+- The tick line has `"network":"down"`, a warning names `loop.network`, and `status` prints `network: down since <time>` until a check finds it up.
+
+**When it returns.** The first check whose connectivity check passes acts as usual: it re-prompts if the session is still in error (subject to `errors.backoff` from any earlier re-prompt) and runs the probes that were left due. Nothing is retried faster than the ordinary check interval.
+
+**What is not gated.** An idle wake and a stall nudge are sent without a connectivity check, to keep ordinary checks free of an extra request; a wake into a dead network produces an errored turn, which the next check then waits on. Stop, pause and the other holds never involve the check. Messages queued on the thread are still left alone under the existing rule, which comes first.
+
+**Limits.**
+
+- The check says the network is reachable, not that the provider is. A provider outage with a working network is still re-prompted into, as before.
+- If the check's own target is down or blocked (for example a host that cannot reach GitHub) while the provider works, keepgoing waits for as long as that lasts and says `network down`. Point `loop.network` at a host or command that reflects your provider's reachability, or turn it off.
+- Nothing bounds or reports a long wait: an outage of days is recorded on every check and shown by `status`, but no report is sent. That is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+- By default this makes keepgoing send an unauthenticated GET to `api.github.com` when an errored session is about to be re-prompted or a probe is due. It did not contact any host by itself before.
+
 ## net-retry
 
 ```sh
@@ -394,7 +423,7 @@ The nudges queue behind the stuck turn and are not delivered while it is stuck; 
 
 **Why the interval does not cut off a slow, genuine retry.** It bounds silence, not the length of a retry: each failed attempt logs a newer notice, which restarts it. The notices come from the provider. BB's retry plugin is a separate mechanism that acts only after a turn has failed: in BB 0.48.1 it retries an unavailable provider up to four times, waiting one to two minutes before the first and doubling each time (up to eight to sixteen minutes before the last), and a subscription limit shortly after its reset. Each of those waits is a queued message, so the queued rule above covers it however long it is, and the interval does not need to. If the interval is still too short for a provider's own retries, the cost is bounded: on an errored thread at most `max_reprompts` extra prompts and then a hold, on an active thread at most `max_nudges` queued nudges or the hold above. Raise `retry_signal_ttl` for a provider known to pause longer between attempts. None of this has been checked against a live slow retry.
 
-**Worked example and the default.** In one observed outage a provider logged ten notices over about 145 seconds (gaps of 1 to 37 seconds), gave up and failed the turn; a second turn failed the same way and ten more notices followed its failed completion, the last at 00:28:30, then nothing. With checks every ten minutes from 00:30 and the default interval, the notice expires at 00:43:30: the 00:30 and 00:40 checks record `provider is retrying the turn` and the 00:50 check sends the first re-prompt (fixture `TestIncidentRetrySeriesAfterFailedCompletion`). Before this change every check waited. Raising the provider's attempt count lengthens the series, not the gaps, so it does not affect expiry. Fifteen minutes is far longer than the 37-second gaps seen here. It is kept for now because a re-prompt sent while the network is still down spends one of `max_reprompts`, and nothing yet checks connectivity before sending; a shorter interval reaches the hold sooner in an outage. Set `retry_signal_ttl` as low as `1m` to re-prompt sooner.
+**Worked example and the default.** In one observed outage a provider logged ten notices over about 145 seconds (gaps of 1 to 37 seconds), gave up and failed the turn; a second turn failed the same way and ten more notices followed its failed completion, the last at 00:28:30, then nothing. With checks every ten minutes from 00:30 and the default interval, the notice expires at 00:43:30: the 00:30 and 00:40 checks record `provider is retrying the turn` and the 00:50 check sends the first re-prompt (fixture `TestIncidentRetrySeriesAfterFailedCompletion`). Before this change every check waited. Raising the provider's attempt count lengthens the series, not the gaps, so it does not affect expiry. Fifteen minutes is far longer than the 37-second gaps seen here. It was kept when nothing checked connectivity before sending, because a re-prompt sent while the network is still down spends one of `max_reprompts`. With the [network check](#network-outages) on, a shorter interval no longer risks that. Set `retry_signal_ttl` as low as `1m` to re-prompt sooner.
 
 **Clocks.** Event times are bounded by what keepgoing knows locally. An event is never treated as later than the scan that read it, so a source clock running ahead cannot keep a notice fresh. An event that was not in the previous complete scan is never treated as older than that scan, so a BB host whose clock runs behind cannot expire a notice early; on the first scan of a log there is no earlier scan and old events keep their own time. A missing or malformed `createdAt` uses the scan time. A summary saved by an older build is aged from the first scan after the upgrade. A local clock that moves backwards delays expiry rather than causing it. The adapter uses the check's own time, including `tick --now`.
 
@@ -441,7 +470,7 @@ A direct child whose status is `error` is not running work. It does not keep the
 Unreleased source tells the session that owns the children, and records the count:
 
 - Each BB check lists the verified direct children in error, from the status field alone. keepgoing never reads a child's log or messages, and never sends to, stops, retries or restarts a child.
-- When the parent is woken and a child has newly entered error, the wake message ends with a fixed notice: a `[keepgoing:child-errors count=N]` line, then one sentence saying N direct child threads were in error, that keepgoing has not touched them, and that the session should decide whether to retry or replace that work. The notice holds the count only: no child ID, title, task text or error detail.
+- When the parent is woken, or re-prompted after an error of its own, and a child has newly entered error, that message ends with a fixed notice: a `[keepgoing:child-errors count=N]` line, then one sentence saying N direct child threads were in error, that keepgoing has not touched them, and that the session should decide whether to retry or replace that work. The notice holds the count only: no child ID, title, task text or error detail.
 - Only growth is announced. keepgoing keeps a short hash of each child it has announced, never the IDs. A child not in that record triggers the notice; a set that only shrinks does not, so retrying one child, or archiving or deleting an errored one, says nothing.
 - A recovered child is forgotten slowly. A child stays in the record until it has been out of error for `progress.min_wake_interval` (default `60m`). Failing again before that is the same failure and says nothing, so a child that flaps between error and a provider retry is announced once, not on every re-failure, and does not cause a wake each time. A child that has been out of error that long and fails again is announced again. This is the same rule, in the same code, as the owner report below; the two keep separate records only because they are told at different times.
 - N is every child in error at that check, including ones announced earlier that the parent may have chosen to abandon. keepgoing cannot tell an abandoned child from one still waiting for a decision.

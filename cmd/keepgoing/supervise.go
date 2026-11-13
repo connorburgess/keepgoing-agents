@@ -590,6 +590,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
 	}
+	if !st.NetworkDownSince.IsZero() {
+		fmt.Fprintf(w, "network:   down since %s by keepgoing's connectivity check; re-prompts, handoffs and fallback probes wait for it\n", st.NetworkDownSince.Format(time.RFC3339))
+	}
 	if st.FailedChecks > 0 {
 		fmt.Fprintf(w, "failed checks: %d in a row since %s; checks are running but could not observe or act (see the decision reason and the run log)\n", st.FailedChecks, st.FailedSince.Format(time.RFC3339))
 	}
