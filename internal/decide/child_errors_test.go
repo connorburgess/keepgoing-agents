@@ -50,7 +50,9 @@ func TestErroredChildrenChangeTheDecisionInOneCaseOnly(t *testing.T) {
 						}
 						n := ChildErrorNote(in, got)
 						wantNote := 0
-						if (got.Action == Wake || got.Action == Reprompt) && due {
+						// A re-prompt of a parent in error can happen with an
+						// incomplete listing; the note is withheld then.
+						if (got.Action == Wake || got.Action == Reprompt) && due && !in.Obs.ChildrenUnverified {
 							wantNote = 3
 						}
 						if n != wantNote && failures < 5 {
@@ -119,7 +121,10 @@ func TestChildErrorNote(t *testing.T) {
 		{"another child running, something sent too recently", func(i *Input) { running(i); i.SinceWake = i.MinWakeInterval - 1 }, 0, false},
 		{"another child running, exactly the wake interval since the last send", func(i *Input) { running(i); i.SinceWake = i.MinWakeInterval }, 2, true},
 		{"another child running, parent active", func(i *Input) { running(i); i.Obs.State = Active }, 0, false},
-		{"another child running, parent errored", func(i *Input) { running(i); i.Obs.State = Error }, 0, false},
+		// A parent in error is re-prompted whatever its children do, and the
+		// re-prompt carries the notice.
+		{"another child running, parent errored", func(i *Input) { running(i); i.Obs.State = Error }, 2, false},
+		{"another child running, parent errored, discovery incomplete", func(i *Input) { running(i); i.Obs.State, i.Obs.ChildrenUnverified = Error, true }, 0, false},
 		{"another child running, outside the window", func(i *Input) { running(i); i.InWindow = false }, 0, false},
 		{"another child running, messages queued", func(i *Input) { running(i); i.Obs.Queued = 1 }, 0, false},
 		{"another child running, background work", func(i *Input) { running(i); i.Obs.Background = 1 }, 0, false},
