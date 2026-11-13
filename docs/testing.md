@@ -155,6 +155,8 @@ Before (unreleased) the turn retry and the report were repeated, because a check
 
 Mutations that fail these: a hold saved after its report instead of before, a damaged `state.json` read as a new loop, and a damaged `health.json` read as empty.
 
+**Setup checks.** A fault scenario's setup relies on its first check to wake the session, and confirms it did (`setupWake`): action `wake` and one message to the session. A check that found the provider retry state unverified could not read what the stand-in `bb` serves (a `thread log` that failed gives exactly that), which is the host or the harness and not the step under test: it is run again a minute later, up to three checks in all, and then fails as `ENVIRONMENT FAILURE`. Any other answer fails the setup at once as `SETUP FAILURE`, with what the check said. The stand-in's `fail.<command>` file makes the next N calls of `bb thread <command>` fail, which is how `TestSetupWakeRunsAgainAfterAFailedRead` proves the retry.
+
 Not covered: cutting each external command at its time limit (the other half of T3 on the roadmap), a kill inside a write, and power loss (nothing here cuts the power, so a flush is never tested).
 
 ## Timing-sensitive tests
