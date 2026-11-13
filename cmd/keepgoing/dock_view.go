@@ -529,6 +529,12 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	default:
 		c := snap.Controls
 		switch {
+		case snap.ControlUnreadable && c.Stop:
+			l.State, l.Phrase, l.Detail = "stopped", "Stopped (control record unreadable)", "Its control record could not be read. A stop is kept beside it, so nothing is sent. Restore the record, then resume."
+			need = dockUnreadable([]string{"control_unavailable"})
+		case snap.ControlUnreadable:
+			l.State, l.Phrase, l.Detail = "paused", "Paused (control record unreadable)", "Its control record could not be read. A pause is kept beside it, so nothing is sent. Restore the record, then resume."
+			need = dockUnreadable([]string{"control_unavailable"})
 		case c.Stop:
 			l.State, l.Phrase, l.Detail = "stopped", "Stopped", "A stop is requested. Nothing is sent until it is resumed."
 		case c.Completed:

@@ -94,7 +94,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		return exitFailed
 	}
 	defer l.Release()
-	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
+	if err := checkOwnershipForCheck(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return ownershipError(e, err)
 	}
 	if err := checkTransferSources(cfg, true); err != nil {
@@ -179,7 +179,7 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		if e.ctx.Err() != nil {
 			return exitOK
 		}
-		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
+		if err := daemonOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
 		// Take the control signature before the pass, so a stop or pause
@@ -187,7 +187,7 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
 		tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
-		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
+		if err := daemonOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
 		if !waitForNext(e.ctx, cfg, sig, monitor, lease) {
@@ -241,7 +241,10 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 		return false
 	}
 	defer l.Release()
-	if err := checkOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
+	// An unreadable control record is not a reason to wake early: the
+	// daemon keeps running, and wakes when the record or the hold marker
+	// changes, or at its interval.
+	if err := daemonOwnership(cfg.Loop.StateDir, firstLease(leases)); err != nil {
 		return len(leases) > 0
 	} // Return to the daemon's exit check.
 	if checkTransferSources(cfg, false) != nil {
@@ -253,7 +256,19 @@ func pollWake(ctx context.Context, cfg *config.Config, leases ...*ownerLease) bo
 }
 
 func controlSignature(stateDir string) string {
-	return controlSignatureWithOpen(stateDir, control.OpenSnapshot)
+	return controlSignatureWithOpen(stateDir, control.OpenSnapshot) + holdSignature(stateDir)
+}
+
+// holdSignature changes when the hold marker appears, changes or goes, so a
+// stop saved beside an unreadable control.json wakes the daemon early, as a
+// stop in control.json does. The marker is written whole by atomic
+// replacement, so its metadata is enough.
+func holdSignature(stateDir string) string {
+	info, err := os.Lstat(filepath.Join(stateDir, control.HoldFileName))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("|hold:%d:%d", info.ModTime().UnixNano(), info.Size())
 }
 
 func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, error)) string {
@@ -304,11 +319,14 @@ type statusOut struct {
 	ControlState      string                   `json:"controlState"`
 	// Unreadable lists the records status could not read. The rest of the
 	// output is what it could; the command still exits 1.
-	Unreadable      []unreadableRecord `json:"unreadable,omitempty"`
-	Deadline        string             `json:"deadline,omitempty"`
-	DeadlineReached bool               `json:"deadlineReached"`
-	WorkBounds      workBoundsStatus   `json:"workBounds"`
-	TickBudget      tickBudgetStatus   `json:"tickBudget"`
+	Unreadable []unreadableRecord `json:"unreadable,omitempty"`
+	// ControlHold is the hold marker, when a stop or pause had to be saved
+	// beside an unreadable control.json.
+	ControlHold     *control.Hold    `json:"controlHold,omitempty"`
+	Deadline        string           `json:"deadline,omitempty"`
+	DeadlineReached bool             `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus `json:"workBounds"`
+	TickBudget      tickBudgetStatus `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -506,6 +524,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, " (%s)", ctl.Note)
 	}
 	fmt.Fprintln(w)
+	if h := out.ControlHold; h != nil {
+		fmt.Fprintf(w, "hold:      %s holds the loop %s since %s; it is released by resume once control.json can be read\n", control.HoldFileName, map[bool]string{true: "stopped", false: "paused"}[h.Stop], when(h.At))
+	}
+	if !st.HistoryUnavailableSince.IsZero() {
+		fmt.Fprintf(w, "HISTORY:   incidents.json cannot be written since %s. Checks carry on and exit 0, but timeline shows nothing new. Restore incidents.json from a copy of the state directory, or move it aside to start a new history.\n", when(st.HistoryUnavailableSince))
+	}
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
 	tickBudget := out.TickBudget.Timeout
@@ -626,11 +650,13 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	// which, and what to do, and shows what it can. The error is still
 	// returned, so callers that need both records (the dock) skip the loop.
 	var unreadable []unreadableRecord
+	hold, _ := control.LoadHold(l.StateDir)
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
 		unreadable = append(unreadable, unreadableControl(err))
 		ctl = control.File{}
 	}
+	hold.Apply(&ctl)
 	st, stateErr := state.Load(l.StateDir)
 	if stateErr != nil {
 		unreadable = append(unreadable, unreadableState(stateErr))
@@ -652,10 +678,14 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version, Unreadable: unreadable}
+	out.ControlHold = hold
 	for _, u := range unreadable {
 		switch u.File {
 		case control.FileName:
 			out.ControlState = "unavailable"
+			if hold != nil {
+				out.ControlState = hold.Summary()
+			}
 		case state.FileName:
 			out.Target = "unavailable"
 		}
@@ -744,6 +774,10 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		if u.File == control.FileName {
 			out.Runtime.State, out.Runtime.Source = "unavailable", "unavailable"
 			out.Runtime.Reason = "control.json could not be read"
+			if hold != nil {
+				out.Runtime.State, out.Runtime.Source = map[bool]string{true: "stopped", false: "paused"}[hold.Stop], "control_hold"
+				out.Runtime.Reason = "control.json could not be read; held by " + control.HoldFileName + " until it is restored and the loop is resumed"
+			}
 		}
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -783,6 +817,29 @@ func when(t time.Time) string {
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
+	dir := cfg.Loop.StateDir
+	if _, loadErr := control.Load(dir); loadErr != nil {
+		// Stop and pause win over every other rule, so they work when the
+		// control record is damaged: they are saved in the hold marker beside
+		// it, which every check honours first. Nothing else is safe without
+		// the record, and it is never rewritten or moved here.
+		switch cmd {
+		case "stop", "pause":
+			h, err := control.SaveHold(dir, cmd == "stop", cmd == "pause", time.Now())
+			if err != nil {
+				e.errf("%s could not be read (%v), and the hold could not be saved in %s either: %v", control.FileName, loadErr, control.HoldFileName, err)
+				return exitFailed
+			}
+			e.errf("warning: %s could not be read (%v); the %s is saved in %s instead, and every check honours it. Restore %s from a copy of the state directory, then run resume.", control.FileName, loadErr, cmd, control.HoldFileName, control.FileName)
+			fmt.Fprintf(e.stdout, "%s: %s\n", cfg.Loop.Name, h.Summary())
+			return exitOK
+		case "resume":
+			if h, _ := control.LoadHold(dir); h != nil {
+				e.errf("%s could not be read (%v): restore it from a copy of the state directory first. Until then the loop stays %s, held by %s.", control.FileName, loadErr, strings.TrimSuffix(h.Summary(), " (control record unreadable)"), control.HoldFileName)
+				return exitFailed
+			}
+		}
+	}
 	if cmd == "enable" || cmd == "resume" {
 		l, err := lock.Acquire(cfg.Loop.StateDir)
 		if err != nil {
@@ -841,6 +898,17 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			return exitSkipped
 		}
 		return exitFailed
+	}
+	if cmd == "resume" {
+		// The control record can be read again, so a hold that had to be
+		// kept beside it is released with the others.
+		if h, _ := control.LoadHold(dir); h != nil {
+			if err := control.RemoveHold(dir); err != nil {
+				e.errf("warning: resumed, but %s could not be removed, so checks still honour it: %v", control.HoldFileName, err)
+			} else {
+				e.errf("released the hold saved in %s", control.HoldFileName)
+			}
+		}
 	}
 	if cmd == "resume" {
 		// Resume is the operator saying "try again": a fallback or primary
@@ -1016,7 +1084,7 @@ type unreadableRecord struct {
 
 func unreadableControl(err error) unreadableRecord {
 	return unreadableRecord{File: control.FileName, Problem: recordProblem(err, control.FileName),
-		Remedy: "Checks send nothing, and pause, stop and resume cannot be saved, until it is repaired. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory, or move it aside: a loop with no control.json is disabled, and the next enable, pause or stop writes a new one, without the earlier holds, note and owner."}
+		Remedy: "Checks send nothing until it is repaired, unless stop or pause saved a hold in " + control.HoldFileName + ", which they honour first. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory and run resume, or move it aside: a loop with no control.json is disabled, and the next enable, pause or stop writes a new one, without the earlier holds, note and owner."}
 }
 
 func unreadableState(err error) unreadableRecord {

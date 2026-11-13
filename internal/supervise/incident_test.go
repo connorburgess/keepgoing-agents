@@ -78,7 +78,9 @@ func TestIncidentWriteFailurePreservesHoldAndStop(t *testing.T) {
 		}
 		r, err := Tick(context.Background(), w.cfg, w.opts(t0))
 		l.Release()
-		if !errors.Is(err, incident.ErrUnavailable) || len(r.Warnings) == 0 {
+		// The check's work was saved in state.json; only its history is
+		// missing, which does not fail the check.
+		if err != nil || r.History != "unavailable" || !r.Recorded || len(r.Warnings) == 0 {
 			t.Fatal(r, err)
 		}
 		c, _ := control.Load(w.dir)

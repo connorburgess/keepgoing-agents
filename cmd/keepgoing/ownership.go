@@ -45,6 +45,37 @@ func checkOwnership(stateDir string, lease *ownerLease) error {
 	return control.CheckOwner(f, os.Getenv("BB_THREAD_ID"), false)
 }
 
+// checkOwnershipForCheck is checkOwnership for a check and the daemon that
+// runs checks. When control.json cannot be read but the loop is held by the
+// hold marker, the owner cannot be verified, and it need not be: the check
+// can only stop the session or do nothing, and holds win over ownership.
+func checkOwnershipForCheck(stateDir string, lease *ownerLease) error {
+	err := checkOwnership(stateDir, lease)
+	if err == nil {
+		return nil
+	}
+	if _, loadErr := control.Load(stateDir); loadErr == nil {
+		return err
+	}
+	if h, _ := control.LoadHold(stateDir); h != nil {
+		return nil
+	}
+	return err
+}
+
+// daemonOwnership is the ownership check a running daemon makes between
+// checks. A daemon exits when a readable control record shows the loop has
+// moved to another owner. It does not exit because control.json cannot be
+// read: its checks then send nothing, a stop or pause saved in the hold marker
+// is honoured at the next check, and supervision resumes when the record is
+// restored. Exiting there would end supervision over a damaged file.
+func daemonOwnership(stateDir string, lease *ownerLease) error {
+	if _, err := control.Load(stateDir); err != nil {
+		return nil
+	}
+	return checkOwnership(stateDir, lease)
+}
+
 func firstLease(leases []*ownerLease) *ownerLease {
 	if len(leases) > 0 {
 		return leases[0]

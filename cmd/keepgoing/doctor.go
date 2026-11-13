@@ -219,6 +219,7 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	doctorHolds(&r, cfg.Loop.StateDir, st, stateErr == nil)
 	doctorTickBudget(&r, cfg.Loop)
 	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
@@ -298,6 +299,23 @@ func doctorNetworkCheck(ctx context.Context, r *doctorReport, l config.Loop, st 
 		message = fmt.Sprintf("The connectivity check could not reach %s, while the provider answered a probe: the loop has stopped believing the check for the current outage.", target)
 	}
 	r.add("network.check", "warning", message, fix)
+}
+
+// doctorHolds reports a stop or pause saved beside an unreadable control
+// record, and incident history that checks cannot write.
+func doctorHolds(r *doctorReport, dir string, st state.File, stateReadable bool) {
+	if h, err := control.LoadHold(dir); h != nil {
+		what := map[bool]string{true: "stopped", false: "paused"}[h.Stop]
+		message := fmt.Sprintf("The loop is %s by %s, saved because control.json could not be read.", what, control.HoldFileName)
+		if err != nil {
+			message = fmt.Sprintf("%s could not be read and is treated as a stop.", control.HoldFileName)
+		}
+		r.add("supervisor.control_hold", "warning", message, "Restore control.json from a copy of the state directory, then run `keepgoing resume`, which releases the hold.")
+	}
+	if stateReadable && !st.HistoryUnavailableSince.IsZero() {
+		r.add("supervisor.history_unavailable", "warning", fmt.Sprintf("Since %s checks cannot write incidents.json. They carry on and exit 0, but timeline shows nothing new.", st.HistoryUnavailableSince.UTC().Format(time.RFC3339)),
+			"Restore incidents.json from a copy of the state directory, or move it aside to start a new history.")
+	}
 }
 
 // doctorFailedChecks reports consecutive failed checks. A check that could

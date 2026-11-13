@@ -28,9 +28,12 @@ type clientStatusReport struct {
 	Snapshot       *clientSnapshot `json:"snapshot,omitempty"`
 }
 type clientSnapshot struct {
-	Loop               string               `json:"loop"`
-	Controls           *clientControls      `json:"controls,omitempty"`
-	ControlState       string               `json:"controlState,omitempty"`
+	Loop         string          `json:"loop"`
+	Controls     *clientControls `json:"controls,omitempty"`
+	ControlState string          `json:"controlState,omitempty"`
+	// ControlUnreadable: control.json could not be read, and Controls holds
+	// only the stop or pause kept in the hold marker beside it.
+	ControlUnreadable  bool                 `json:"controlUnreadable,omitempty"`
 	CompletionEvidence string               `json:"completionEvidence"`
 	Target             *clientTarget        `json:"target,omitempty"`
 	Runtime            *clientRuntime       `json:"runtime,omitempty"`
@@ -230,9 +233,16 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 	issue := func(code string) { r.Issues = append(r.Issues, code); r.Outcome = "partial" }
 	var ctl control.File
 	controlOK := readTransferRecord(entry.StateDir, control.FileName, &ctl) == nil && control.CheckOwner(ctl, "", false) == nil
+	hold, _ := control.LoadHold(entry.StateDir)
 	if !controlOK {
 		issue("control_unavailable")
 		s.CompletionEvidence = "unavailable"
+		if hold != nil {
+			// A stop or pause saved beside the unreadable record: what the
+			// loop may do is known, though the rest of its controls are not.
+			s.Controls = &clientControls{Enabled: true, Paused: hold.Paused, Stop: hold.Stop}
+			s.ControlState, s.ControlUnreadable = hold.Summary(), true
+		}
 	} else {
 		if ctl.PendingTransfer != nil {
 			return unavailable("transfer_pending")
@@ -240,6 +250,7 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 		if ctl.BBTarget != "" && (cfg.Loop.BB == nil || ctl.BBTarget != cfg.Loop.BB.Thread || !transferThreadID.MatchString(ctl.BBTarget)) {
 			return unavailable("target_binding_mismatch")
 		}
+		hold.Apply(&ctl)
 		s.Controls = &clientControls{ctl.Enabled, ctl.Paused, ctl.Stop, ctl.AwaitingUser, ctl.Completed}
 		s.ControlState = ctl.Summary()
 	}

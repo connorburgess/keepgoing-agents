@@ -165,8 +165,10 @@ func TestControlHistoryRejectsUncommittedChange(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, control.FileName), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _ := f.run("pause"); code != exitFailed {
-		t.Fatal(code)
+	// With control.json unreadable, a pause is kept in the hold marker
+	// instead, and no control change is recorded in the history.
+	if code, _, errs := f.run("pause"); code != 0 || !strings.Contains(errs, control.HoldFileName) {
+		t.Fatal(code, errs)
 	}
 	after, _ := os.ReadFile(filepath.Join(dir, incident.FileName))
 	if !bytes.Equal(before, after) {

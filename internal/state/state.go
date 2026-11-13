@@ -56,24 +56,28 @@ type File struct {
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
 	// until the check itself passes or the session is seen active or idle.
-	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
-	NetworkVerifications int            `json:"networkVerifications,omitempty"`
-	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`
-	NetworkDistrusted    bool           `json:"networkDistrusted,omitempty"`
-	FailedChecks         int            `json:"failedChecks,omitempty"`
-	FailedSince          time.Time      `json:"failedSince,omitempty"`
-	HandoffDeferrals     int            `json:"handoffDeferrals,omitempty"`
-	ExactCut             map[string]int `json:"exactCut,omitempty"`
-	Fingerprint          string         `json:"fingerprint,omitempty"`
-	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
-	LastWakeAt           time.Time      `json:"lastWakeAt,omitempty"`
-	CheckedAt            time.Time      `json:"checkedAt,omitempty"`
-	LastState            string         `json:"lastState,omitempty"`
-	LastCheck            *Check         `json:"lastCheck,omitempty"`
-	Reprompts            int            `json:"reprompts,omitempty"`
-	Nudges               int            `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt       time.Time      `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent    bool           `json:"stopSent,omitempty"`
+	NetworkVerifiedAt    time.Time `json:"networkVerifiedAt,omitempty"`
+	NetworkVerifications int       `json:"networkVerifications,omitempty"`
+	NetworkReportedAt    time.Time `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted    bool      `json:"networkDistrusted,omitempty"`
+	FailedChecks         int       `json:"failedChecks,omitempty"`
+	// HistoryUnavailableSince is when checks began to find the incident
+	// journal impossible to write, with their own work still saved here. It is
+	// cleared by the first check that writes the journal again.
+	HistoryUnavailableSince time.Time      `json:"historyUnavailableSince,omitempty"`
+	FailedSince             time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals        int            `json:"handoffDeferrals,omitempty"`
+	ExactCut                map[string]int `json:"exactCut,omitempty"`
+	Fingerprint             string         `json:"fingerprint,omitempty"`
+	LastProgressAt          time.Time      `json:"lastProgressAt,omitempty"`
+	LastWakeAt              time.Time      `json:"lastWakeAt,omitempty"`
+	CheckedAt               time.Time      `json:"checkedAt,omitempty"`
+	LastState               string         `json:"lastState,omitempty"`
+	LastCheck               *Check         `json:"lastCheck,omitempty"`
+	Reprompts               int            `json:"reprompts,omitempty"`
+	Nudges                  int            `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt          time.Time      `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent       bool           `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`

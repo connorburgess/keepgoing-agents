@@ -29,6 +29,12 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 	}
 	var ctl control.File
 	if readTransferRecord(cfg.Loop.StateDir, control.FileName, &ctl) != nil {
+		// A stop or pause kept in the hold marker still runs: such a check
+		// can only stop the session or do nothing, which a pending transfer
+		// allows too.
+		if h, _ := control.LoadHold(cfg.Loop.StateDir); allowStop && h != nil {
+			return nil
+		}
 		return errors.New("control state unavailable")
 	}
 	if p := ctl.PendingTransfer; p != nil {

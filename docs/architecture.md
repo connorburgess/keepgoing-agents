@@ -8,7 +8,7 @@
 - **Structured signals only.** Session state and error class come from exit codes, JSON fields, HTTP status, or provider events. Transcript and message text is never read for a decision. Stderr from agent commands is never parsed.
 - **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
 - **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
-- **Stop and pause win.** Once the loaded configuration is verified, a stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
+- **Stop and pause win.** Once the loaded configuration is verified, a stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. When `control.json` itself cannot be read, `stop` and `pause` are saved in `control-hold.json` beside it, and every check honours that first. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 
@@ -148,6 +148,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | File | Owner | Purpose |
 | --- | --- | --- |
 | `control.json` | operator, via control commands | enabled, paused, stop, awaitingUser, completed, note, ownership, pendingTransfer, bbTarget |
+| `control-hold.json` | operator, via `stop` and `pause` when `control.json` cannot be read | a stop or pause kept beside the unreadable control record; honoured first by every check; cleared by `resume` once `control.json` can be read |
 | `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |

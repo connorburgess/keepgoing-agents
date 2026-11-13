@@ -142,6 +142,9 @@ type Result struct {
 	MissingWorktrees int `json:"missingWorktrees,omitempty"`
 	// Recorded: state, the event line and incident history were all written.
 	Recorded bool `json:"-"`
+	// History is "unavailable" when the check did its work and saved it in
+	// state.json, but the incident journal could not be written.
+	History string `json:"history,omitempty"`
 }
 
 type tick struct {
@@ -279,12 +282,55 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	t.graphSync()
 	err := t.run()
 	t.graphClose()
-	if journalErr := t.recordIncident(err != nil); journalErr != nil {
+	journalErr := t.recordIncident(err != nil)
+	switch {
+	case journalErr != nil && res.Recorded:
+		// The check's own work was done and saved in state.json; only its
+		// history is missing. Losing supervision is worse than losing history,
+		// so this is not a failed check: a scheduler that stops after a few
+		// failing exits must not stop over it.
+		t.warn("incident history write failed; diagnostic evidence is incomplete")
+		res.History = "unavailable"
+		t.historyUnavailable(journalErr)
+	case journalErr != nil:
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
 		res.Recorded = false
+	case res.Recorded:
+		t.historyAvailable()
 	}
 	return res, err
+}
+
+// historyUnavailable notes, once, that checks can no longer write the
+// incident journal, and reports it.
+func (t *tick) historyUnavailable(cause error) {
+	if t.opts.DryRun || t.st.HistoryUnavailableSince.After(time.Time{}) {
+		return
+	}
+	t.st.HistoryUnavailableSince = t.now
+	if err := state.Save(t.loop.StateDir, t.st); err != nil {
+		t.warn("could not record that incident history is unavailable: %v", err)
+		return
+	}
+	t.report("degraded", fmt.Sprintf("%s: incident history (incidents.json) cannot be written; checks carry on without it", t.loop.Name),
+		map[string]any{"cause": "incident_history"})
+}
+
+// historyAvailable notes that a check wrote the incident journal again
+// after it had been unavailable, and reports it.
+func (t *tick) historyAvailable() {
+	if t.opts.DryRun || t.st.HistoryUnavailableSince.IsZero() {
+		return
+	}
+	since := t.st.HistoryUnavailableSince
+	t.st.HistoryUnavailableSince = time.Time{}
+	if err := state.Save(t.loop.StateDir, t.st); err != nil {
+		t.warn("could not record that incident history is available again: %v", err)
+		return
+	}
+	t.report("recovered", fmt.Sprintf("%s: incident history (incidents.json) is written again", t.loop.Name),
+		map[string]any{"cause": "incident_history", "unavailableSince": since})
 }
 
 // resolve returns the agent for a target id, reverting to primary when a
@@ -317,11 +363,27 @@ func (t *tick) label(target string) string {
 
 func (t *tick) run() error {
 	loop, res := t.loop, t.res
+	// A stop or pause saved in the hold marker, because control.json could
+	// not be read when it was asked for, is honoured before anything else.
+	hold, holdErr := control.LoadHold(loop.StateDir)
+	if holdErr != nil {
+		t.warn("%s could not be read; treated as a stop", control.HoldFileName)
+	}
 	ctl, err := control.Load(loop.StateDir)
 	if err != nil {
-		return err
+		if hold == nil {
+			return err
+		}
+		// The loop is held, so it is known what this check may do: stop the
+		// session once, or nothing.
+		t.warn("control.json could not be read (%v); held by %s until it is restored and the loop is resumed", err, control.HoldFileName)
+		ctl = control.File{Enabled: true}
+		hold.Apply(&ctl)
+		res.Control = hold.Summary()
+	} else {
+		hold.Apply(&ctl)
+		res.Control = ctl.Summary()
 	}
-	res.Control = ctl.Summary()
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err

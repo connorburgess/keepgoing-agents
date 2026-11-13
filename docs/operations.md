@@ -63,9 +63,9 @@ Unreleased; fixture-tested only. The exit code of `keepgoing tick` says whether 
 
 | `tick` exits | When | What a scheduler should do |
 | --- | --- | --- |
-| 0 | The check ran and was recorded. This includes a check that failed to observe or act: the session could not be observed, the target's adapter could not be built, a send or stop failed, a tracked repository or the fallback health file could not be read, or the operating window could not be evaluated. Such a check has `"outcome":"failed"` in its JSON line and in `runs.jsonl`, `outcome failed` in `status`, a line on stderr and an `error` report. A check that only left probes out for lack of time has outcome `succeeded` and a warning. | Nothing; run again on schedule. |
+| 0 | The check ran and was recorded. This includes a check whose own work was saved in `state.json` but whose incident history could not be written: its line has `"history":"unavailable"` (see [when the incident history cannot be written](#when-the-incident-history-cannot-be-written)). It also includes a check that failed to observe or act: the session could not be observed, the target's adapter could not be built, a send or stop failed, a tracked repository or the fallback health file could not be read, or the operating window could not be evaluated. Such a check has `"outcome":"failed"` in its JSON line and in `runs.jsonl`, `outcome failed` in `status`, a line on stderr and an `error` report. A check that only left probes out for lack of time has outcome `succeeded` and a warning. | Nothing; run again on schedule. |
 | 75 | The check was skipped: another tick holds the lock, the yield command reported other work, or the configuration files changed while loading. | Treat as success. |
-| 1 | The check could not be recorded or could not start: `control.json`, `state.json`, the run log or incident history could not be read or written, the lock could not be taken, or loop ownership was refused. | Treat as a failure; a person should look. |
+| 1 | The check could not be recorded or could not start: `control.json` (with no hold kept beside it), `state.json` or the run log could not be read or written, the lock could not be taken, or loop ownership was refused. | Treat as a failure; a person should look. |
 | 2 | Usage or configuration error. | Treat as a failure. |
 
 Because such a failure no longer stops the scheduler, it must be visible another way. `status` prints `failed checks: N in a row since <time>` while consecutive checks fail, and `doctor` reports the same as a `supervisor.failed_checks` warning; both clear on the next completed check. Nothing escalates on that count by itself: the `error` report is sent for each failed check, and a persistent failure otherwise waits for someone to look.
@@ -154,7 +154,22 @@ If `control.json` or `state.json` in the state directory is damaged (empty, cut 
 
 What to do: stop the daemon, service or scheduler, then restore the file from a copy of the state directory. Or move it aside. A loop with no `control.json` is disabled, and the next `enable`, `pause` or `stop` writes a new one, without the earlier holds, note and owner. A missing `state.json` is started again by the next check, without the re-prompt and nudge counts, the active target or the record of the last check and send.
 
-While `control.json` is unreadable, checks send nothing, but `pause`, `stop` and `resume` cannot be saved either, so nothing keepgoing offers holds the loop: stop the process that runs it.
+While `control.json` is unreadable, checks send nothing. `stop` and `pause` still work, as below; `resume` and every other control command refuse until the record is restored.
+
+### Stop and pause with a damaged control record
+
+Stop and pause win over every other rule, so they work even when `control.json` cannot be read. `stop` or `pause` then saves the hold in a small separate file beside it, `control-hold.json` (written whole by atomic replacement, private to the user), says so on standard error, and exits 0. `keepgoing` never rewrites or moves the damaged `control.json` itself.
+
+- **Every check honours the marker before anything else**, whatever `control.json` says or fails to say. A stop stops the running session once and then sends nothing; a pause sends nothing and queries nothing. With `control.json` unreadable the owner cannot be checked, and need not be: such a check can only stop the session or do nothing. A running daemon notices the marker at its next control poll, as it does a stop in `control.json`. A daemon does not exit because `control.json` became unreadable: its checks send nothing meanwhile, it does not retry them on every poll, and it carries on when the record is restored. It still exits when a readable record shows the loop has a new owner.
+- **A marker that cannot itself be read is a stop.** It was written to hold the loop; a damaged one does not release it.
+- **`status`** shows `control:   stopped (control record unreadable)` (or `paused`) and a `hold:` line; `status --json` has `controlHold`. **`doctor`** warns `supervisor.control_hold`. The dock shows the loop as "Stopped (control record unreadable)".
+- **`resume` refuses** while `control.json` is unreadable and the marker exists, and says to restore the record first. **To release the hold:** stop the process that runs the loop if you want it stopped for good, restore `control.json` from a copy of the state directory, then run `resume`, which clears the marker with the other holds. A marker left while `control.json` is readable still holds the loop until `resume`.
+
+### When the incident history cannot be written
+
+Losing supervision is worse than losing history. When a check has done its work and saved it in `state.json`, but cannot write the incident journal (`incidents.json` is damaged, locked, or from a newer build), it no longer fails: it exits 0, its line has `"history":"unavailable"` and a warning, and its outcome is what it would otherwise have been. The first such check sends one `degraded` report (data `cause: incident_history`) and records the time in `state.json`; the first check that writes the journal again sends one `recovered` report. Meanwhile `status` prints a `HISTORY:` line and `doctor` warns `supervisor.history_unavailable`. `timeline` shows nothing new. The damaged journal is never reset: restore it from a copy, or move it aside to start a new history.
+
+A check that cannot read or write `control.json` (with no hold marker) or `state.json` still exits 1: it cannot know what it may do.
 
 ## Completing a task
 
