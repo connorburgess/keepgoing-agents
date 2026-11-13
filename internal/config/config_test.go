@@ -157,3 +157,39 @@ func TestSwitchBackValidation(t *testing.T) {
 		t.Errorf("defaults: %+v %+v", cfg.Loop.Probe, cfg.Loop.SwitchBack)
 	}
 }
+
+func TestLimitWaitReportDefaultsAndSubscription(t *testing.T) {
+	cfg, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loop.Errors.ReportWaitAfter.Duration != 6*time.Hour {
+		t.Errorf("report_wait_after default = %v", cfg.Loop.Errors.ReportWaitAfter)
+	}
+	// No report section: nothing is subscribed.
+	if cfg.Loop.Report.ReportsEvent("limit_wait") {
+		t.Error("limit_wait subscribed without a report section")
+	}
+	for src, want := range map[string]bool{
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET}\n":                              true, // default events
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [all]}\n":               true,
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [limit_wait]}\n":        true,
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [await_user, stop]}\n":  false, // an explicit list must name it
+		"  report: {url_env: KG_URL, secret_env: KG_SECRET, events: [handoff, complete]}\n": false,
+	} {
+		cfg, err := Parse([]byte(valid + src))
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if got := cfg.Loop.Report.ReportsEvent("limit_wait"); got != want {
+			t.Errorf("%s: subscribed = %t, want %t", strings.TrimSpace(src), got, want)
+		}
+	}
+	cfg, err = Parse([]byte(valid + "  errors:\n    report_wait_after: 90m\n"))
+	if err != nil || cfg.Loop.Errors.ReportWaitAfter.Duration != 90*time.Minute {
+		t.Fatalf("%v %v", cfg, err)
+	}
+	if _, err := Parse([]byte(valid + "  errors:\n    report_wait_after: -1h\n")); err == nil {
+		t.Error("negative report_wait_after accepted")
+	}
+}

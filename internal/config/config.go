@@ -142,6 +142,10 @@ type ErrorRules struct {
 	Backoff           Duration `yaml:"backoff,omitempty"`
 	FailoverOn        []string `yaml:"failover_on,omitempty"`
 	WaitIfResetWithin Duration `yaml:"wait_if_reset_within,omitempty"`
+	// ReportWaitAfter: when a limit is being waited out with no handoff
+	// possible and its reported reset is further away than this, report once
+	// that a person may be needed. It never holds the loop or changes a decision.
+	ReportWaitAfter Duration `yaml:"report_wait_after,omitempty"`
 }
 
 // Report configures signed webhook reports.
@@ -177,6 +181,7 @@ const (
 	DefaultMaxNudges         = 3
 	DefaultBackoff           = 10 * time.Minute
 	DefaultWaitIfResetWithin = 30 * time.Minute
+	DefaultReportWaitAfter   = 6 * time.Hour
 	DefaultProcessTimeout    = 20 * time.Second
 	DefaultBBCLI             = "bb"
 	DefaultDaemonInterval    = 5 * time.Minute
@@ -188,10 +193,12 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "limit_wait", "test"}
 
-// DefaultReportEvents are sent when report.events is empty.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "complete", "stop", "error"}
+// DefaultReportEvents are sent when report.events is empty. limit_wait is
+// among them because, like await_user, it says a person may be needed; an
+// explicit list must name it (or all) to receive it.
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -278,6 +285,7 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.Errors.Backoff, DefaultBackoff)
 	setDur(&l.Errors.WaitIfResetWithin, DefaultWaitIfResetWithin)
+	setDur(&l.Errors.ReportWaitAfter, DefaultReportWaitAfter)
 	if l.Errors.FailoverOn == nil {
 		l.Errors.FailoverOn = []string{"rate_limit"}
 	}
@@ -373,6 +381,9 @@ func (c *Config) Validate() error {
 	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
+	}
+	if l.Errors.ReportWaitAfter.Duration < 0 {
+		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
 		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
