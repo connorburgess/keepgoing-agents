@@ -27,6 +27,55 @@ Open the printed address in a browser on the same computer. Nothing is hosted, t
 
 Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
+## Opening it with one command: `keepgoing panel`
+
+`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS, not run on Windows.
+
+```sh
+keepgoing panel                  # start the panel if needed, and open it
+keepgoing panel --loop NAME      # open one loop's page (a name, registration ID or key)
+keepgoing panel --no-open        # print a single-use address and start no browser
+keepgoing panel status           # running or not, since when, the port, the idle limit
+keepgoing panel stop             # stop the background server
+keepgoing panel list [--json]    # every loop and its state in the page's words; no server
+```
+
+What happens:
+
+1. If a panel server this user started is running and answers, it is reused. Otherwise one is started in the background and the command waits, up to ten seconds, until it answers. Two commands run at the same moment end with one server.
+2. The command asks that server, over a private local socket, for an opening address: `http://127.0.0.1:PORT/open/<code>`. The code works once and for 30 seconds. That address is the only thing handed to the browser launcher (`open`, `xdg-open` or the Windows URL handler; `KEEPGOING_PANEL_OPENER` names another program).
+3. The browser loads it. The server exchanges the code for a session cookie and redirects to the page. A used or expired address, or a page address whose session has ended, shows a short page that says to run `keepgoing panel` again.
+
+The background server stops by itself after 30 minutes without a page request (`--idle`, `1m` to `24h`; `panel status` states the limit and the time left). Health checks, `panel status` and refused requests do not count as use. It also stops on `keepgoing panel stop`. It is never started at login or by any other command. **Starting it, using it, leaving it idle and stopping it never affect supervision**: it reads what the page reads and writes only its own runtime files.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--loop NAME` | none | Open that loop's page. A name shared by two loops is refused; pass the registration ID. |
+| `--no-open` | off | Print the opening address. It still works once, within 30 seconds. |
+| `--idle 30m` | `30m` | Idle limit for a server this command starts. A running server keeps its own. |
+| `--directory DIR` | the default registry | A non-default private registry. A running panel for another registry is refused; stop it first. |
+| `--panel-directory DIR` | `keepgoing/panel` in the user configuration directory | Where the runtime files below live. |
+| `--refresh`, `--stale-after`, `--offline` | as for `dock` | Passed to a server this command starts. |
+
+**Runtime files.** They live in one private directory (mode `0700`, never a loop's directory, never inside a Git checkout): `panel.json` (mode `0600`: process ID, port, start time, idle limit, registry directory, version and an instance ID), `panel.sock` (the private socket) and two lock files. None holds a code, cookie or other secret. A record is believed only when the server it names answers its health request with the same instance ID, so a record left by a crash, a reused process ID or another program on the same port is ignored and replaced. If the directory's path is too long for a local socket on this platform the command stops and says so; it never falls back to anything weaker.
+
+**`keepgoing panel list --json`** returns `schemaVersion: 1`, `readAt`, `registry`, `complete`, `allClear`, `needsYou`, `unread`, `omitted` and `loops`, each with `key`, `name`, `state`, `phrase` and `needsYou`. It is built by the code that builds the page, so the words match, and it carries no registration ID, thread ID, path or note. `key` is what `panel --loop` accepts. It exists so that another local program, such as the menu-bar item, can list loops without a second copy of the wording.
+
+### Access through `keepgoing panel`
+
+Everything under [Access](#access) holds for this server too, with a session in place of the token in the address. Each line is a claim the tests check:
+
+- The server listens on `127.0.0.1` only. Every request, including the health request and an opening address, must pass the same `Host`, `Origin`, fetch-metadata and `GET`/`HEAD` checks before anything else is looked at. No response carries a cross-origin header, and every response carries the content security policy, `no-store`, `nosniff` and frame denial.
+- `/healthz` returns the instance ID and nothing else.
+- An opening code is 256 random bits, compared in constant time, usable once, and dead after 30 seconds whether or not it was used. `HEAD`, refused requests and wrong codes do not spend it. At most 16 can be pending.
+- An opening address can only be created through the private socket, which only this user can reach.
+- The session is a cookie with 256 random bits: `HttpOnly`, `SameSite=Strict`, no expiry (it ends with the browser session, or with the server), scoped to the path `/s/<random segment>/`. Cookies are not separated by port, so the random segment is what keeps a browser from sending it to another local server; the segment alone grants nothing. At most 16 sessions exist; the oldest is dropped.
+- The session value is never in an address, an argument, the environment, a file or a log. The server keeps no log. The only secret that another program's arguments ever contain is the opening code.
+- Without a valid cookie nothing under `/s/` is served, and nothing is served at any other path except the health request, an opening address, and the stylesheet (`/panel.css`, which the expired-link page needs and which holds nothing private).
+- There is still no write endpoint.
+
+As with the token, this keeps other local web pages and other users of the computer out. It is not protection against another program running as you.
+
 ## What the page shows
 
 The page has two levels, so opening it never starts with a list of facts.

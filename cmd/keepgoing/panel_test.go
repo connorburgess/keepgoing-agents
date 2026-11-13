@@ -279,6 +279,17 @@ func TestPanelKeepsEveryNetworkCheck(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &reply) != nil || len(reply) != 1 || reply["instance"] != rec.Instance {
 		t.Fatalf("health: %d %q", resp.StatusCode, body)
 	}
+	// The stylesheet is the one thing served without a session; it is the
+	// page's own and passes the same guard.
+	css, cssBody := dockRequest(t, http.MethodGet, base+"/panel.css", nil)
+	sheet, _ := dockUI.ReadFile("dockui/dock.css")
+	if css.StatusCode != http.StatusOK || cssBody != string(sheet) || !strings.HasPrefix(css.Header.Get("Content-Type"), "text/css") {
+		t.Fatalf("stylesheet: %d", css.StatusCode)
+	}
+	headers(css, "stylesheet")
+	if resp, _ := dockRequest(t, http.MethodGet, base+"/panel.css", refused["foreign host"]); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("stylesheet for a foreign host: %d", resp.StatusCode)
+	}
 	for _, url := range []string{base + "/open/" + strings.Repeat("0", 64), page, base + "/nothing"} {
 		resp, _ := dockRequest(t, http.MethodGet, url, nil)
 		headers(resp, url)
