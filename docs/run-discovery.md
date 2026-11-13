@@ -174,7 +174,7 @@ Use exactly one selector; the default is `-c keepgoing.yaml`. `--directory` name
 
 A registry selector checks the binding first, as registered status does: the registered configuration must still load and still name the same loop and runtime directory. If it does not, the entry shows `binding: unavailable`, nothing is read from the registered directory, and the command exits 1. A lookup through such an entry answers `unavailable`.
 
-Add `--json` for the versioned report and `--limit N` (1–256, default 10). The limit bounds earlier runs, each run's chat/session references and goal revisions, a reference's links, a chat's sends and registered loops. Omitted counts are always printed.
+Add `--json` for the versioned report, `--limit N` (1–256, default 10) and `--stale-after D` (default 30m) for how old the last check's child listing may be. The limit bounds earlier runs, each run's chat/session references and goal revisions, a reference's links, a chat's sends, the children a loop is waiting on and registered loops. Omitted counts are always printed.
 
 ### Following a reference
 
@@ -195,7 +195,7 @@ keepgoing runs -c loop.yaml --id session:bb/thr_example
 | `<goal id>@<revision>` | every run that recorded it |
 | `routine:<source>/<routine>` | its invocations, and every run they opened or triggered |
 | `routine:<source>/<routine>/<invocation>` | the run it opened or triggered, and its routine |
-| `child:<key>` | the run it holds (`blocks`), or the run that lists it when it does not hold it |
+| `child:<key>` | the run it held (`blocks`), or the run that lists it (`child`); `unavailable` when the listing is not current |
 
 A send's chat/session is derived from two recorded fields: the send's run and its target alias. If that alias named more than one chat during the run, for example because the configured chat was edited, the send's chat is `ambiguous` and no chat is picked. Each of those chats then reports how many sends could not be attributed (`ambiguousAttempts`).
 
@@ -229,7 +229,7 @@ A lookup answers `found`, `not_recorded`, `not_recorded_or_expired` when retenti
 | run fields | `id`, `state` (`open` or `completion_declared`), `origin`, `recordedAt`, `source`, `closedAt`, `reopens`, `invocation` (the one that opened it), `triggers[]` and `omittedTriggers` (later invocations while open), `sessionEvidence`, `sessions[]`, `omittedSessions`, `goalRevisions[]`, `omittedGoalRevisions`, `attempts`, `unrecorded[]` |
 | `sessions[]` | `ref`, `provider`, `id`, `target`, `evidence`, `source`, `recordedAt`, `link` |
 | `attempts` | `total`, `unconfirmed`, and the newest three in `latest[]` with `outcome` (`intent`, `adapter_returned`, `adapter_error`) and `session` |
-| `loops[].blocker` | `availability` (`blocked`, `none`, `unknown`), `reason`, `checkedAt`, `target`, `children[]` with `ref`, `status`, `holds` and `supervised`, `omittedChildren`, `owner`, and `lock` (always `unavailable`); see [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial-unreleased) |
+| `loops[].blocker` | `availability` (`blocked`, `held`, `listed`, `none`, `unknown`), `reason`, `checkedAt`, `ageSeconds`, `stale`, `target`, `lastCheckCause`, `children[]` with `ref`, `status`, `holds` and `supervised` (`registrationId`, `loop`, `run`), `omittedChildren`, `owner`, and `lock` (always `unavailable`); see [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial-unreleased) |
 | `node` | With `--id`: `ref`, `status`, `type`, `recordedAt`, `source`, `edges[]`, `omittedEdges`, and the run or send detail; for a chat/session, its `attempts[]`, `omittedAttempts` and `ambiguousAttempts` |
 | `omitted`, `limitations[]` | Registered loops not shown, and fixed statements of what the report cannot establish |
 
@@ -239,39 +239,48 @@ Exit codes: 0 for an answer, including a missing graph, a hold or a reference th
 
 ### What a loop is waiting on (D4, partial, unreleased)
 
-`keepgoing runs` answers "which conversation is this loop waiting on, and is it working, stuck or failed" from two structured records. It reads no PID, compares no ages and matches no names. Showing a blocker contacts nobody and grants no control: following it only reads more records.
+`keepgoing runs` answers "which conversation is this loop waiting on, and is it working, stuck or failed" from structured records: the child listing a check verified, the reason that same check recorded, and the ownership claim. It reads no PID and matches no names. Showing a blocker contacts nobody and grants no control: following it only reads more records.
 
 **Child conversations.** Each check that observes a BB target lists the target's direct child threads and verifies each one, as it always has. The graph now keeps that picture for the open run:
 
-| Status | Meaning | Holds the run |
+| Status | Meaning | Can hold the run |
 | --- | --- | --- |
-| `active` | The child is working | Yes: the check sends the parent nothing |
-| `awaiting_input` | The child is stuck on a person | Yes: the check puts the loop on an awaiting-user hold |
-| `error` | The child failed | No: it is listed because the check reported it |
+| `active` | The child is working | Yes. The check does not prompt the parent for its task; it can still send the one notice that other children are in error. |
+| `awaiting_input` | The child is stuck on a person | Yes. The check puts the loop on an awaiting-user hold. |
+| `error` | The child failed | No. It is listed because the check reported it. |
 
-The answer is one of three:
+A child is said to have **held the run** only when its status can hold a parent *and* the last check recorded child work or child input as its reason. The answer is one of five:
 
-- `blocked`: the last check verified every child, and at least one holds the run.
-- `none`: the last check verified every child, and none holds the run.
-- `unknown`, with a reason. Nothing is guessed and no child is listed:
+| Answer | Meaning |
+| --- | --- |
+| `blocked` | The last check verified every child and recorded child work (`child_busy`) or child input (`child_input`) as its reason. |
+| `held` | The loop is on an awaiting-user hold that began when a check found a child stuck on a person. Held checks do not observe, so this is the last verified listing, shown with its age. The children have not been verified since. |
+| `listed` | The last check verified every child, but recorded another reason, such as a stop request. The children are shown and none is said to hold the run. |
+| `none` | The last check verified every child and none could hold the run. |
+| `unknown` | The evidence does not support an answer. No child is listed. |
+
+Reasons for `unknown`:
 
 | Reason | When |
 | --- | --- |
 | `child_listing_incomplete` | The check could not verify every child, or its observation failed. Children it did verify are not listed either: a partial list would read as the answer. |
-| `not_refreshed_by_the_last_check` | The last recorded check is not the one that wrote the record: the loop was held, the target changed, or the graph write failed. |
+| `not_refreshed_by_the_last_check` | The last recorded check is not the one that wrote the record: the loop was held for another reason, the target changed, or the graph write failed. |
+| `last_check_older_than_stale_after` | The listing is from the last check, but that check is older than `--stale-after` (default 30 minutes, as for `status`). Checks may have stopped. Set it above your scheduler interval. |
 | `no_child_evidence_recorded` | No check has recorded a listing for this run: a headless or process target, or no check since the run opened. |
 | `last_check_not_recorded` | There is no `state.json` or it records no check. |
 | `no_open_run`, `graph_unavailable`, `binding_unavailable` | There is no open run, or the records cannot be read. |
 
-A child is shown by key, `child:<key>`, a short hash of its thread ID. The thread ID itself is never written to the graph or printed for a child: the checks that already keep errored children do the same in `state.json`. `--id child:<key>` shows the run it holds, and a run's links include `blocked_by` for each child that holds it.
+Every answer that has a listing shows the time of the check it came from and its age, and marks it `stale` past `--stale-after`. `lastCheckCause` is the last check's reason in a fixed vocabulary; the reason text itself is not printed.
 
-**The blocking loop's run and chat.** A child conversation is often supervised itself. When a registry is consulted, each child is matched against the registered loops whose configuration binding validates and whose configured BB thread has that key:
+A child is shown by key, `child:<key>`, a short hash of its thread ID. A child's thread ID is never written to the graph and never printed in the parent's view: the checks that already keep errored children do the same in `state.json`. `--id child:<key>` and a run's `blocked_by` links follow the same answer as the loop view: when the answer is `unknown` the child reference answers `unavailable` and the run shows no child link, and when it is `listed` or `none` the links are shown as `child`, not `blocked_by`.
 
-- **Exactly one match:** the report names that loop's registry reference, its name, its chat/session reference and its open run, when that run recorded the same conversation. If it has no such run, the loop is named and the run is `unavailable`.
+**The blocking loop.** A child conversation is often supervised itself. When a registry is consulted, each child is matched against the registered loops whose configuration binding validates and whose configured BB thread has that key:
+
+- **Exactly one match:** the report names that loop's registry reference, its name, and its open run when that run recorded the same conversation. If it has no such run, the loop is named and the run is `unavailable`. The child's conversation is not printed here. Follow it with `keepgoing runs --registry-id <reference>`, where that loop's own chat reference is shown.
 - **No match:** `not_registered`. The child is still shown by key.
 - **More than one match:** `ambiguous`. None is picked.
 
-A loop that merely shares a name is never a match. A registry is consulted with `--registry-id` or `--all`, or when `--directory` is passed with `-c` or `--state-dir`; otherwise the answer is `registry_not_consulted`. To follow the link, run `keepgoing runs --registry-id <reference> --id <run>`.
+A loop that merely shares a name is never a match, and a loop is never its own blocker. A registry is consulted with `--registry-id` or `--all`, or when `--directory` is passed with `-c` or `--state-dir`; otherwise the answer is `registry_not_consulted`. A registry that cannot be read is an error, not "nothing registered".
 
 **The owning conversation.** `control.json` records which BB thread owns a loop and its generation; control commands from another conversation are refused. `runs` reports that claim when it validates:
 

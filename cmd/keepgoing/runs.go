@@ -194,8 +194,10 @@ type runsUnrecorded struct {
 type runsNode struct {
 	Ref string `json:"ref"`
 	// Status is found, not_recorded, not_recorded_or_expired, or unavailable
-	// when the graph exists but cannot be read.
+	// when the graph exists but cannot be read, or when a child reference is
+	// in a listing that is not current; Reason then says why.
 	Status       rungraph.Status `json:"status"`
+	Reason       string          `json:"reason,omitempty"`
 	Type         string          `json:"type,omitempty"`
 	RecordedAt   *time.Time      `json:"recordedAt,omitempty"`
 	Source       rungraph.Source `json:"source,omitempty"`
@@ -240,6 +242,7 @@ func runsCommand(e env, args []string) int {
 	ref := fs.String("id", "", "show one recorded reference and what it links to")
 	limit := fs.Int("limit", runsDefaultLimit, "recent runs, edges or registered loops to print (1-256)")
 	asJSON := fs.Bool("json", false, "print the versioned report")
+	stale := fs.Duration("stale-after", defaultStaleAfter, "age at which the last check's child listing is too old to report as current; set above your scheduler interval")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(e.stdout)
@@ -258,13 +261,13 @@ func runsCommand(e env, args []string) int {
 		}
 	}
 	registered := set["registry-id"] || *all
-	if fs.NArg() != 0 || selectors > 1 || *limit < 1 || *limit > runsMaxLimit || (set["state-dir"] && *dir == "") ||
+	if fs.NArg() != 0 || selectors > 1 || *limit < 1 || *limit > runsMaxLimit || *stale <= 0 || (set["state-dir"] && *dir == "") ||
 		(set["registry-id"] && !clientRegistrationID.MatchString(*registration)) ||
 		(*all && set["id"]) || (set["id"] && !runsRefPattern.MatchString(*ref)) {
-		e.errf("runs: select one of -c, --state-dir, --registry-id or --all; --id needs one loop; limit 1-256; no positional arguments")
+		e.errf("runs: select one of -c, --state-dir, --registry-id or --all; --id needs one loop; limit 1-256; a positive stale-after; no positional arguments")
 		return exitUsage
 	}
-	r := runsReport{SchemaVersion: runsSchemaVersion, ReadAt: time.Now().UTC(), View: "loop", Loops: []runsLoop{}, Limitations: runsLimitations}
+	r := runsReport{SchemaVersion: runsSchemaVersion, ReadAt: runsNow(), View: "loop", Loops: []runsLoop{}, Limitations: runsLimitations}
 	failed := false
 	switch {
 	case registered:
@@ -280,7 +283,7 @@ func runsCommand(e env, args []string) int {
 		}
 		// Every entry of this registry may be consulted to see whether a
 		// blocking conversation is itself a registered loop.
-		allEntries, _ := runsEntries(regDir, "", true)
+		allEntries, allKnown := runsEntries(regDir, "", true)
 		if *all {
 			r.View = "registry"
 		}
@@ -309,7 +312,7 @@ func runsCommand(e env, args []string) int {
 				}
 				continue
 			}
-			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit, registry: allEntries, registryKnown: true, viaRegistry: true}
+			c := runsContext{dir: entry.StateDir, cfg: cfg, limit: *limit, staleAfter: *stale, registry: allEntries, registryKnown: allKnown, viaRegistry: true}
 			loop, bad := c.readLoop(limitRuns)
 			loop.RegistrationID, loop.Loop, loop.Binding = entry.ID, entry.Loop, recordAvailable
 			loop.Registration = recordUnavailable
@@ -326,7 +329,7 @@ func runsCommand(e env, args []string) int {
 			}
 		}
 	default:
-		c := runsContext{dir: *dir, limit: *limit}
+		c := runsContext{dir: *dir, limit: *limit, staleAfter: *stale}
 		if set["directory"] {
 			// An explicitly named registry is consulted only to see whether a
 			// blocking conversation is itself a registered loop.
@@ -396,6 +399,12 @@ type runsContext struct {
 	registry      []registry.Entry
 	registryKnown bool
 	viaRegistry   bool
+	staleAfter    time.Duration
+	// candidateList is the registry's validated BB loops, built once.
+	candidateList    []runsCandidate
+	candidatesLoaded bool
+	// waiting is the one blocker answer every view of this loop uses.
+	waiting runsBlocker
 }
 
 // absent reports whether a record file does not exist, without creating or
@@ -434,7 +443,8 @@ func (c *runsContext) readLoop(limitRuns int) (runsLoop, bool) {
 	default:
 		loop.Control, controlKnown = runsControl{Availability: recordAvailable, State: ctl.Summary()}, true
 	}
-	loop.Blocker = c.blocker(st, stateKnown, ctl, controlKnown)
+	c.waiting = c.blocker(st, stateKnown, ctl, controlKnown)
+	loop.Blocker = c.waiting
 	if c.available != rungraph.Available {
 		return loop, failed
 	}
@@ -613,7 +623,22 @@ func (c *runsContext) readNode(ref string) *runsNode {
 		at := n.RecordedAt
 		out.RecordedAt = &at
 	}
+	// Child edges follow the loop view's answer. A listing that is not
+	// current there is not followable here, and a child that is listed but
+	// does not hold the run is not presented as blocking it.
+	show, holds := c.waiting.childEdges()
+	if n.Type == rungraph.ChildNode && !show {
+		return &runsNode{Ref: ref, Status: recordUnavailable, Reason: c.waiting.Reason, Edges: []runsEdge{}}
+	}
 	for _, e := range n.Edges {
+		if e.Type == rungraph.EdgeBlockedBy || e.Type == rungraph.EdgeBlocks || e.Type == rungraph.EdgeChild {
+			if !show {
+				continue
+			}
+			if !holds {
+				e.Type = rungraph.EdgeChild
+			}
+		}
 		if len(out.Edges) >= c.limit {
 			out.OmittedEdges++
 			continue
@@ -720,7 +745,9 @@ func printRuns(w io.Writer, r runsReport) {
 	if n := r.Node; n != nil {
 		fmt.Fprintf(w, "\nreference %s: %s", runsSafe(n.Ref), n.Status)
 		if n.Status != rungraph.Found {
-			if n.Status == recordUnavailable {
+			if n.Status == recordUnavailable && n.Reason != "" {
+				fmt.Fprintf(w, " (%s; a child listing that is not current is not followed)", n.Reason)
+			} else if n.Status == recordUnavailable {
 				fmt.Fprint(w, " (the graph or binding could not be read, so the reference may exist)")
 			}
 			fmt.Fprintln(w)
@@ -818,14 +845,11 @@ func printSupervised(w io.Writer, s runsSupervised) {
 		} else {
 			fmt.Fprintf(w, "  run unavailable (%s)", s.RunReason)
 		}
-		if s.Session != "" {
-			fmt.Fprintf(w, "  chat/session %s", runsSafe(s.Session))
-		}
-		fmt.Fprintln(w)
+		fmt.Fprintf(w, "\n      follow it with: keepgoing runs --registry-id %s\n", s.RegistrationID)
 	case "registry_not_consulted":
-		fmt.Fprintln(w, "      its run: unavailable (no registry consulted; pass --directory or a registry selector)")
+		fmt.Fprintln(w, "      its loop: unavailable (no registry consulted; pass --directory or a registry selector)")
 	default:
-		fmt.Fprintf(w, "      its run: unavailable (%s)\n", s.Availability)
+		fmt.Fprintf(w, "      its loop: unavailable (%s)\n", s.Availability)
 	}
 }
 
@@ -835,11 +859,17 @@ func printBlocker(w io.Writer, b runsBlocker) {
 		fmt.Fprintf(w, " (%s)", b.Reason)
 	}
 	if b.CheckedAt != nil {
-		fmt.Fprintf(w, "  as of the check at %s", b.CheckedAt.Format(time.RFC3339))
+		fmt.Fprintf(w, "  child listing from the check at %s, %s ago", b.CheckedAt.Format(time.RFC3339), (time.Duration(*b.AgeSeconds) * time.Second).String())
+		if b.Stale {
+			fmt.Fprint(w, " (stale)")
+		}
+	}
+	if b.LastCheckCause != "" {
+		fmt.Fprintf(w, "  last check recorded: %s", runsSafe(b.LastCheckCause))
 	}
 	fmt.Fprintln(w)
 	for _, child := range b.Children {
-		holds := "holds the run"
+		holds := "held the run at that check"
 		if !child.Holds {
 			holds = "does not hold the run"
 		}

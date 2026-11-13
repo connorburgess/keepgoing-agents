@@ -53,8 +53,17 @@ func runsSend(n int, target string) rungraph.Attempt {
 
 // runsFixture records a closed first run and an open second run that reuses
 // the first run's chat and adds a headless fallback session.
+// runsClock makes the reader's clock one minute after the fixture's records.
+func runsClock(t *testing.T, at time.Time) {
+	t.Helper()
+	previous := runsNow
+	runsNow = func() time.Time { return at }
+	t.Cleanup(func() { runsNow = previous })
+}
+
 func runsFixture(t *testing.T) string {
 	t.Helper()
+	runsClock(t, runsAt.Add(time.Minute))
 	dir := t.TempDir()
 	if err := control.Save(dir, control.File{Enabled: true, Note: "PRIVATE-NOTE"}); err != nil {
 		t.Fatal(err)
@@ -886,6 +895,7 @@ func childKey(thread string) string { return childKeyOf(thread) }
 // makes it the last recorded check.
 func runsWait(t *testing.T, dir, listing string, children ...rungraph.Child) {
 	t.Helper()
+	runsClock(t, runsAt.Add(time.Minute))
 	runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Wait("primary", listing, children, runsAt) })
 	if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt, Target: "primary", ObservedState: "active", Action: "none", Reason: "child work running", Outcome: "succeeded"}}); err != nil {
 		t.Fatal(err)
@@ -941,7 +951,7 @@ func TestRunsBlockerComesOnlyFromACurrentCompleteChildListing(t *testing.T) {
 	}
 	var text, errs bytes.Buffer
 	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
-	for _, want := range []string{"waiting on: blocked", "child child:" + working + "  active  holds the run", "child child:" + failed + "  error  does not hold the run", "lock holder: unavailable"} {
+	for _, want := range []string{"waiting on: blocked", "child child:" + working + "  active  held the run at that check", "child child:" + failed + "  error  does not hold the run", "lock holder: unavailable"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("lacks %q:\n%s", want, text.String())
 		}
@@ -1048,7 +1058,7 @@ func TestRunsBlockerResolvesToTheBlockingLoopsRunAndChat(t *testing.T) {
 		if blocking.Ref != "child:"+key {
 			blocking = b.Children[1]
 		}
-		want := runsSupervised{Availability: recordRecorded, RegistrationID: child.ID, Loop: "example-child", Session: "session:bb/thr_example_child", Run: runsID("run_", 2)}
+		want := runsSupervised{Availability: recordRecorded, RegistrationID: child.ID, Loop: "example-child", Run: runsID("run_", 2)}
 		if blocking.Supervised != want {
 			t.Fatalf("%s: %+v", name, blocking.Supervised)
 		}
@@ -1057,7 +1067,7 @@ func TestRunsBlockerResolvesToTheBlockingLoopsRunAndChat(t *testing.T) {
 				t.Fatalf("%s: an unsupervised child was resolved: %+v", name, c)
 			}
 		}
-		if strings.Contains(raw, "thr_example_unsupervised") || strings.Contains(raw, decoy.ID) || strings.Contains(raw, parent.StateDir) || strings.Contains(raw, child.StateDir) {
+		if strings.Contains(raw, "thr_example_child") || strings.Contains(raw, "thr_example_unsupervised") || strings.Contains(raw, decoy.ID) || strings.Contains(raw, parent.StateDir) || strings.Contains(raw, child.StateDir) {
 			t.Fatalf("%s: %s", name, raw)
 		}
 	}
@@ -1073,7 +1083,7 @@ func TestRunsBlockerResolvesToTheBlockingLoopsRunAndChat(t *testing.T) {
 	}
 	var text, errs bytes.Buffer
 	run(context.Background(), []string{"runs", "--registry-id", parent.ID, "--directory", regDir}, &text, &errs)
-	for _, want := range []string{"a registered loop: " + child.ID + " (example-child)  run " + runsID("run_", 2) + "  chat/session session:bb/thr_example_child", "its run: unavailable (not_registered)"} {
+	for _, want := range []string{"a registered loop: " + child.ID + " (example-child)  run " + runsID("run_", 2) + "\n", "follow it with: keepgoing runs --registry-id " + child.ID, "its loop: unavailable (not_registered)"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("lacks %q:\n%s", want, text.String())
 		}
@@ -1218,7 +1228,196 @@ func TestRunsRegistryViewWithholdsTheOwnerButNamesItsLoop(t *testing.T) {
 	}
 	// With a configuration selector the owner is shown, as status shows it.
 	_, r, _ := runsExec(t, "--state-dir", owned.StateDir, "--directory", regDir)
-	if o := r.Loops[0].Blocker.Owner; o.Ref != "session:bb/thr_example_owner" || o.Supervised.Session != "session:bb/thr_example_owner" || o.Supervised.Run != runsID("run_", 7) {
+	if o := r.Loops[0].Blocker.Owner; o.Ref != "session:bb/thr_example_owner" || o.Supervised.RegistrationID != owner.ID || o.Supervised.Run != runsID("run_", 7) {
 		t.Fatalf("%+v", o)
+	}
+}
+
+// A listing the loop view does not show as current must not be followable by
+// exact ID either, in any view.
+func TestRunsStaleChildListingIsNotFollowableByID(t *testing.T) {
+	dir := runsFixture(t)
+	key := childKey("thr_child_working")
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: key, Status: rungraph.ChildActive})
+	blockedEdges := func() (child *runsNode, runEdges int) {
+		t.Helper()
+		_, r, _ := runsExec(t, "--state-dir", dir, "--id", "child:"+key)
+		child = r.Node
+		_, r, _ = runsExec(t, "--state-dir", dir, "--id", runsID("run_", 2))
+		for _, e := range r.Node.Edges {
+			if e.Type == rungraph.EdgeBlockedBy || e.Type == rungraph.EdgeChild || e.Type == rungraph.EdgeBlocks {
+				runEdges++
+			}
+		}
+		return child, runEdges
+	}
+	if child, edges := blockedEdges(); child.Status != rungraph.Found || edges != 1 {
+		t.Fatalf("%+v %d", child, edges)
+	}
+	// A held check came later and observed nothing.
+	if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt.Add(30 * time.Second), Reason: "paused"}}); err != nil {
+		t.Fatal(err)
+	}
+	child, edges := blockedEdges()
+	if child.Status != recordUnavailable || child.Reason != "not_refreshed_by_the_last_check" || len(child.Edges) != 0 || edges != 0 {
+		t.Fatalf("%+v %d", child, edges)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir, "--id", "child:" + key}, &text, &errs)
+	if strings.Contains(text.String(), "blocks ->") || !strings.Contains(text.String(), "reference child:"+key+": unavailable (not_refreshed_by_the_last_check") {
+		t.Fatal(text.String())
+	}
+	text.Reset()
+	run(context.Background(), []string{"runs", "--state-dir", dir, "--id", runsID("run_", 2)}, &text, &errs)
+	if strings.Contains(text.String(), "blocked_by") || strings.Contains(text.String(), "child:"+key) {
+		t.Fatal(text.String())
+	}
+}
+
+// Equal check times are not enough: if checks stop, the listing ages. An old
+// listing is unknown, with its age shown.
+func TestRunsChildListingOlderThanStaleAfterIsUnknown(t *testing.T) {
+	dir := runsFixture(t)
+	key := childKey("thr_child_working")
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: key, Status: rungraph.ChildActive})
+	read := func(args ...string) runsBlocker {
+		t.Helper()
+		_, r, _ := runsExec(t, append([]string{"--state-dir", dir}, args...)...)
+		return r.Loops[0].Blocker
+	}
+	if b := read(); b.Availability != blockerBlocked || b.Stale || *b.AgeSeconds != 60 {
+		t.Fatalf("%+v", b)
+	}
+	runsClock(t, runsAt.Add(2*time.Hour)) // checks stopped two hours ago
+	b := read()
+	if b.Availability != blockerUnknown || b.Reason != "last_check_older_than_stale_after" || !b.Stale || *b.AgeSeconds != 7200 || len(b.Children) != 0 {
+		t.Fatalf("%+v", b)
+	}
+	if _, r, _ := runsExec(t, "--state-dir", dir, "--id", "child:"+key); r.Node.Status != recordUnavailable {
+		t.Fatalf("an aged listing was followable: %+v", r.Node)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
+	if !strings.Contains(text.String(), "waiting on: unknown (last_check_older_than_stale_after)") || !strings.Contains(text.String(), "2h0m0s ago (stale)") {
+		t.Fatal(text.String())
+	}
+	// A longer threshold, for a slower scheduler, accepts it.
+	if b = read("--stale-after", "3h"); b.Availability != blockerBlocked || b.Stale {
+		t.Fatalf("%+v", b)
+	}
+	var out bytes.Buffer
+	if code := run(context.Background(), []string{"runs", "--state-dir", dir, "--stale-after", "0s"}, &out, &errs); code != exitUsage {
+		t.Fatal(code)
+	}
+}
+
+// A child is said to hold the run only when child work is what the last check
+// recorded. With a stop requested, the same children are listed, not blocking.
+func TestRunsChildrenHoldTheRunOnlyWhenTheCheckSaidSo(t *testing.T) {
+	dir := runsFixture(t)
+	key := childKey("thr_child_working")
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: key, Status: rungraph.ChildActive})
+	for reason, want := range map[string]struct{ availability, cause string }{
+		"child work running": {blockerBlocked, "child_busy"},
+		"children waiting on a person (pending interaction): thr_child_working": {blockerBlocked, "child_input"},
+		"stop requested; session not running":                                   {blockerListed, "stop"},
+		"children in error while other children run":                            {blockerListed, "child_error"},
+		"idle":                              {blockerListed, "idle"},
+		"a reason this build does not know": {blockerListed, "other"},
+	} {
+		if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt, Reason: reason}}); err != nil {
+			t.Fatal(err)
+		}
+		code, r, raw := runsExec(t, "--state-dir", dir)
+		b := r.Loops[0].Blocker
+		holds := want.availability == blockerBlocked
+		if code != exitOK || b.Availability != want.availability || b.LastCheckCause != want.cause || len(b.Children) != 1 || b.Children[0].Holds != holds || strings.Contains(raw, "thr_child_working") || strings.Contains(raw, "a reason this build") {
+			t.Fatalf("%q: %s", reason, raw)
+		}
+		var text, errs bytes.Buffer
+		run(context.Background(), []string{"runs", "--state-dir", dir, "--id", runsID("run_", 2)}, &text, &errs)
+		if strings.Contains(text.String(), "blocked_by") != holds || strings.Contains(text.String(), "held the run at that check") != holds {
+			t.Fatalf("%q: %s", reason, text.String())
+		}
+		if !holds && (b.Reason != "last_check_recorded_another_reason" || !strings.Contains(text.String(), "does not hold the run") || !strings.Contains(text.String(), "child -> child:"+key)) {
+			t.Fatalf("%q: %s", reason, text.String())
+		}
+	}
+}
+
+// A stuck child puts the loop on an awaiting-user hold, and held checks stop
+// observing. The last verified listing stays visible, labelled with the hold
+// and its age, instead of vanishing after one check.
+func TestRunsKeepsTheStuckChildVisibleDuringItsHold(t *testing.T) {
+	dir := runsFixture(t)
+	stuck, working := childKey("thr_child_stuck"), childKey("thr_child_working")
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: stuck, Status: rungraph.ChildAwaiting}, rungraph.Child{Key: working, Status: rungraph.ChildActive})
+	held := func() {
+		t.Helper()
+		if err := control.Save(dir, control.File{Enabled: true, AwaitingUser: true}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Save(dir, state.File{LastCheck: &state.Check{At: runsAt.Add(20 * time.Minute), Reason: "awaiting user"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held()
+	runsClock(t, runsAt.Add(26*time.Hour))
+	_, r, _ := runsExec(t, "--state-dir", dir)
+	b := r.Loops[0].Blocker
+	if b.Availability != blockerHeld || !strings.HasPrefix(b.Reason, "awaiting_user_hold") || !b.Stale || *b.AgeSeconds != 26*3600 || len(b.Children) != 2 || !b.Children[0].Holds || b.LastCheckCause != "awaiting_user" {
+		t.Fatalf("%+v", b)
+	}
+	if _, r, _ = runsExec(t, "--state-dir", dir, "--id", "child:"+stuck); r.Node.Status != rungraph.Found || r.Node.Edges[0].Type != rungraph.EdgeBlocks {
+		t.Fatalf("%+v", r.Node)
+	}
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir}, &text, &errs)
+	if !strings.Contains(text.String(), "waiting on: held (awaiting_user_hold") || !strings.Contains(text.String(), "26h0m0s ago (stale)") {
+		t.Fatal(text.String())
+	}
+	// Once the hold is cleared, or if no child was stuck, the old listing is
+	// not presented: a later check has not refreshed it.
+	if err := control.Save(dir, control.File{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Blocker.Availability != blockerUnknown || r.Loops[0].Blocker.Reason != "not_refreshed_by_the_last_check" {
+		t.Fatalf("%+v", r.Loops[0].Blocker)
+	}
+	runsWait(t, dir, rungraph.ListingComplete, rungraph.Child{Key: working, Status: rungraph.ChildActive})
+	held()
+	if _, r, _ = runsExec(t, "--state-dir", dir); r.Loops[0].Blocker.Availability != blockerUnknown {
+		t.Fatalf("an awaiting-user hold with no stuck child kept the listing: %+v", r.Loops[0].Blocker)
+	}
+}
+
+// A loop is never reported as its own blocker, whichever way it is selected,
+// and an unreadable registry is an error, not "nothing registered".
+func TestRunsNeverNamesTheLoopItselfAndRejectsAnUnreadableRegistry(t *testing.T) {
+	regDir, entry := clientFixture(t) // its configuration uses a relative state_dir
+	if err := control.Save(entry.StateDir, control.File{Enabled: true, Ownership: &control.Ownership{ThreadID: "thr_example", Generation: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	runsSync(t, entry.StateDir, false, "start", 1)
+	t.Setenv("BB_THREAD_ID", "")
+	for name, args := range map[string][]string{
+		"configuration": {"-c", entry.ConfigPath, "--directory", regDir},
+		"state dir":     {"--state-dir", entry.StateDir, "--directory", regDir},
+		"registry":      {"--registry-id", entry.ID, "--directory", regDir},
+	} {
+		code, r, raw := runsExec(t, args...)
+		if code != exitOK || r.Loops[0].Blocker.Owner.Availability != recordRecorded || r.Loops[0].Blocker.Owner.Supervised != (runsSupervised{Availability: "not_registered"}) {
+			t.Fatalf("%s: %d %s", name, code, raw)
+		}
+	}
+	// A registry file that cannot be read stops the command.
+	if err := os.WriteFile(filepath.Join(regDir, registry.FileName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--state-dir", entry.StateDir, "--directory", regDir}, {"--all", "--directory", regDir}} {
+		var out, errs bytes.Buffer
+		if code := run(context.Background(), append([]string{"runs"}, args...), &out, &errs); code != exitFailed || out.Len() != 0 || strings.Contains(errs.String(), regDir) {
+			t.Fatalf("%v: %d %s %s", args, code, out.String(), errs.String())
+		}
 	}
 }

@@ -412,8 +412,8 @@ func TestRunsNamesTheSupervisedConversationALoopIsWaitingOn(t *testing.T) {
 	}
 	calls := f.read("calls")
 	before := snapshotTree(t, parentState) + snapshotTree(t, childState) + snapshotTree(t, regDir)
-	b, _ := read()
-	want := runsSupervised{Availability: recordRecorded, RegistrationID: childEntry.ID, Loop: "example-child", Session: "session:bb/thr_child", Run: childGraph.CurrentRun}
+	b, parentView := read()
+	want := runsSupervised{Availability: recordRecorded, RegistrationID: childEntry.ID, Loop: "example-child", Run: childGraph.CurrentRun}
 	if b.Availability != blockerBlocked || len(b.Children) != 1 || b.Children[0].Ref != "child:"+key || b.Children[0].Status != rungraph.ChildActive || !b.Children[0].Holds || b.Children[0].Supervised != want {
 		t.Fatalf("%+v", b)
 	}
@@ -425,7 +425,11 @@ func TestRunsNamesTheSupervisedConversationALoopIsWaitingOn(t *testing.T) {
 		t.Fatal(out)
 	}
 	text := command("runs", "-c", f.cfg, "--directory", regDir)
-	if !strings.Contains(text, "waiting on: blocked") || !strings.Contains(text, "a registered loop: "+childEntry.ID+" (example-child)  run "+childGraph.CurrentRun) {
+	// The child's conversation is named only through its own loop's view.
+	if strings.Contains(parentView, "thr_child") || strings.Contains(text, "thr_child") {
+		t.Fatal("the child's thread ID was printed in the parent's view")
+	}
+	if !strings.Contains(text, "follow it with: keepgoing runs --registry-id "+childEntry.ID) || !strings.Contains(text, "waiting on: blocked") || !strings.Contains(text, "a registered loop: "+childEntry.ID+" (example-child)  run "+childGraph.CurrentRun) {
 		t.Fatal(text)
 	}
 	// Nothing was sent, queried, stopped, claimed or written by any of it.
