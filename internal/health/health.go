@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // FileName of the registry inside the state directory.
@@ -41,7 +42,7 @@ type Registry struct {
 // Load reads the registry; a missing file is empty.
 func Load(stateDir string) (*Registry, error) {
 	r := &Registry{Candidates: map[string]*Entry{}}
-	b, err := os.ReadFile(filepath.Join(stateDir, FileName))
+	b, err := snapshot.ReadFile(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
 	}
@@ -86,7 +87,7 @@ func (r *Registry) Save(stateDir string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, filepath.Join(stateDir, FileName))
+	return snapshot.Replace(name, filepath.Join(stateDir, FileName))
 }
 
 func (r *Registry) entry(id string) *Entry {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -116,21 +117,28 @@ func TestRegistryConcurrentWritersAndLock(t *testing.T) {
 	held.Release()
 	var wg sync.WaitGroup
 	errs := make(chan error, 16)
+	deadline := time.Now().Add(2 * time.Minute)
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("loop-%d", i)
-			for attempt := 0; attempt < 200; attempt++ {
+			// Retry for as long as another writer holds the lock. A fixed budget of
+			// two hundred short retries only measured how slow the filesystem was.
+			// The overall limit is far beyond sixteen short writes on any host and
+			// exists to name a leaked lock instead of hanging until the test timeout.
+			for {
 				_, err := Add(dir, name, filepath.Join(dir, name+".yaml"), filepath.Join(dir, name))
-				if errors.Is(err, lock.ErrHeld) {
-					time.Sleep(time.Millisecond)
-					continue
+				if !errors.Is(err, lock.ErrHeld) {
+					errs <- err
+					return
 				}
-				errs <- err
-				return
+				if time.Now().After(deadline) {
+					errs <- errors.New("registry lock still held after two minutes: a holder leaked it or never finished")
+					return
+				}
+				runtime.Gosched()
 			}
-			errs <- errors.New("writers never made progress")
 		}(i)
 	}
 	wg.Wait()

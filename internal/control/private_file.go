@@ -1,6 +1,10 @@
 package control
 
-import "os"
+import (
+	"os"
+
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+)
 
 // WritePrivateFile atomically replaces a 0600 record in a state directory. It
 // uses the same replacement as control.json, so a reader holding a snapshot
@@ -14,4 +18,4 @@ func WritePrivateFile(path string, data []byte) error {
 
 // OpenPrivateSnapshot opens a record written by WritePrivateFile without
 // blocking a later replacement. The caller closes it.
-func OpenPrivateSnapshot(path string) (*os.File, error) { return openSnapshotFile(path) }
+func OpenPrivateSnapshot(path string) (*os.File, error) { return snapshot.Open(path) }

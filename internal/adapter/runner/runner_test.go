@@ -13,14 +13,13 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 func fakeCLI(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fake-cli")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, p, "#!/bin/sh\n"+body+"\n")
 	return p
 }
 

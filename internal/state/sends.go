@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // SendsName is separate from diagnostic state so a failed check or stale record
@@ -18,7 +20,7 @@ var ErrSendLedger = errors.New("send allowance unavailable; inspect private send
 // malformed, unknown-version, or incomplete records fail closed without echoing
 // file contents. The caller serializes reservations with the loop's tick lock.
 func LoadSends(dir string) (int64, error) {
-	b, err := os.ReadFile(filepath.Join(dir, SendsName))
+	b, err := snapshot.ReadFile(filepath.Join(dir, SendsName))
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
@@ -78,7 +80,7 @@ func saveAllowance(dir, name string, b []byte) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
+	if err := snapshot.Replace(f.Name(), filepath.Join(dir, name)); err != nil {
 		return err
 	}
 	return nil

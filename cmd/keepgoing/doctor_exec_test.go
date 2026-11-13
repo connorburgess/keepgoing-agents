@@ -14,9 +14,7 @@ import (
 
 func TestDoctorExecUsesAccountEnvironmentAndDiscardsStderr(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "version-cli")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\nprintf '%s' \"$EXAMPLE_ACCOUNT\"\nprintf 'private stderr' >&2\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	write(t, p, "#!/bin/sh\nprintf '%s' \"$EXAMPLE_ACCOUNT\"\nprintf 'private stderr' >&2\n", 0o700)
 	t.Setenv("EXAMPLE_ACCOUNT", "inherited")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -28,18 +26,14 @@ func TestDoctorExecUsesAccountEnvironmentAndDiscardsStderr(t *testing.T) {
 
 func TestDoctorExecBoundsOutputAndTime(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "version-cli")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\nhead -c 70000 /dev/zero\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	write(t, p, "#!/bin/sh\nhead -c 70000 /dev/zero\n", 0o700)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	out, err := doctorExec(ctx, p, []string{"--version"}, nil, "")
 	cancel()
 	if err == nil || len(out) != 0 || !strings.Contains(err.Error(), "output limit") {
 		t.Fatalf("unbounded output: %d %v", len(out), err)
 	}
-	if err := os.WriteFile(p, []byte("#!/bin/sh\nexec sleep 20\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	write(t, p, "#!/bin/sh\nexec sleep 20\n", 0o700)
 	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -55,9 +49,7 @@ func TestDoctorLoginExitCodesAndWorkingDirectory(t *testing.T) {
 	for _, code := range []int{0, 1, 2} {
 		// Emit a sensitive field to ensure only the status is reported.
 		script := fmt.Sprintf("#!/bin/sh\n[ -f ./expected-project ] || exit 9\nprintf '%%s' '{\"loggedIn\":false,\"email\":\"%s\"}'\nprintf 'private error' >&2\nexit %d\n", doctorPrivate, code)
-		if err := os.WriteFile(p, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		write(t, p, script, 0o700)
 		if err := os.WriteFile(filepath.Join(dir, "expected-project"), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}

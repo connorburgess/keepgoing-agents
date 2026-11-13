@@ -38,6 +38,8 @@ internal/control            control.json and goal.json: holds, BB ownership/tran
 internal/state              state.json, sends.json, progress.json, runs.jsonl, and the progress fingerprint
 internal/window             weekly time windows
 internal/lock               named advisory locks for ticks, daemon, controls, and services
+internal/snapshot           read-only opens and atomic replacement that do not block each other on Windows; used for the records in the state directory that one command replaces while another reads
+internal/testexec           test-only installer for shell stand-in CLIs; see testing.md
 internal/daemoninfo         private loopback diagnostics for a running daemon
 internal/netretry           retry only while the network is down
 internal/ciwait             wait for CI on an exact commit

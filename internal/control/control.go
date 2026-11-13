@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // FileName of the control file inside the state directory.
@@ -60,7 +61,7 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return openSnapshotFile(filepath.Join(stateDir, FileName))
+	return snapshot.Open(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.
@@ -152,8 +153,10 @@ func CheckControlPath(stateDir string) error {
 	return nil
 }
 
+// writeAtomic syncs before publishing, as the send ledger does: a hold must not
+// be replaced by an empty file after a crash. Not a power-loss guarantee.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	return writeAtomicSync(path, data, mode, false)
+	return writeAtomicSync(path, data, mode, true)
 }
 
 // writeAtomicSync optionally flushes the temporary file before it replaces the
@@ -182,5 +185,5 @@ func writeAtomicSync(path string, data []byte, mode os.FileMode, sync bool) erro
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return replaceSnapshotFile(name, path)
+	return snapshot.ReplaceStrict(name, path)
 }
