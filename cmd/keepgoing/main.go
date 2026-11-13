@@ -55,8 +55,9 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
-  loop remove              Remove a switched-off loop that init created: its setup directory,
-                           state and registry entry. Previews by default; --yes removes
+  loop remove              Remove a switched-off loop that carries keepgoing's marker: its setup
+                           directory, state and registry entry. Previews by default; --yes removes
+  loop mark                Mark an older or hand-made setup as keepgoing's, so it can be removed
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata

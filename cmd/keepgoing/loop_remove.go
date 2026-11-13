@@ -33,31 +33,134 @@ type loopMarker struct {
 	CreatedBy     string `json:"createdBy"`
 }
 
-func newLoopMarker(loop string) []byte {
-	b, _ := json.MarshalIndent(loopMarker{SchemaVersion: 1, Type: "keepgoing_loop_setup", Loop: loop, CreatedBy: version}, "", "  ")
+// Marker types: a setup directory (which covers a state directory inside
+// it), and a state directory that lives somewhere else.
+const (
+	loopSetupMarker = "keepgoing_loop_setup"
+	loopStateMarker = "keepgoing_loop_state"
+)
+
+func newLoopMarker(loop string) []byte { return newLoopMarkerOf(loopSetupMarker, loop) }
+
+func newLoopMarkerOf(kind, loop string) []byte {
+	b, _ := json.MarshalIndent(loopMarker{SchemaVersion: 1, Type: kind, Loop: loop, CreatedBy: version}, "", "  ")
 	return append(b, '\n')
 }
 
 // readLoopMarker reads a setup directory's marker: a small regular file, not
 // a symlink, naming the loop.
-func readLoopMarker(dir, loop string) error {
+func readLoopMarker(dir, loop string) error { return readLoopMarkerOf(dir, loopSetupMarker, loop) }
+
+func readLoopMarkerOf(dir, kind, loop string) error {
 	p := filepath.Join(dir, loopMarkerName)
 	info, err := os.Lstat(p)
+	what := "setup"
+	if kind == loopStateMarker {
+		what = "state"
+	}
 	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("the setup directory carries no keepgoing marker, so keepgoing cannot tell that it created it")
+		return errNoLoopMarker{what}
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024 {
-		return errors.New("the setup directory's keepgoing marker is not a small regular file")
+		return fmt.Errorf("the %s directory's keepgoing marker is not a small regular file", what)
 	}
 	b, err := os.ReadFile(p)
 	var m loopMarker
-	if err != nil || json.Unmarshal(b, &m) != nil || m.SchemaVersion != 1 || m.Type != "keepgoing_loop_setup" {
-		return errors.New("the setup directory's keepgoing marker is not one keepgoing wrote")
+	if err != nil || json.Unmarshal(b, &m) != nil || m.SchemaVersion != 1 || m.Type != kind {
+		return fmt.Errorf("the %s directory's keepgoing marker is not one keepgoing wrote for it", what)
 	}
 	if m.Loop != loop {
-		return errors.New("the setup directory's keepgoing marker names another loop")
+		return fmt.Errorf("the %s directory's keepgoing marker names another loop", what)
 	}
 	return nil
+}
+
+// errNoLoopMarker says a directory carries no marker at all, which `loop
+// mark` can put right; any other marker fault it cannot.
+type errNoLoopMarker struct{ what string }
+
+func (e errNoLoopMarker) Error() string {
+	return "the " + e.what + " directory carries no keepgoing marker, so keepgoing cannot tell that it created it"
+}
+
+// insideCheckout reports whether dir is in a Git checkout.
+func insideCheckout(dir string) bool {
+	for ; ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		if filepath.Dir(dir) == dir {
+			return false
+		}
+	}
+}
+
+// loopWorkPaths are the places a configuration points at that are never
+// keepgoing's to delete: working directories and progress repositories.
+func loopWorkPaths(cfg *config.Config) []string {
+	var out []string
+	add := func(a config.Agent) {
+		for _, w := range []string{workdirOf(a)} {
+			if w != "" {
+				out = append(out, w)
+			}
+		}
+	}
+	add(cfg.Loop.Agent)
+	if cfg.FallbackSet != nil {
+		for _, c := range cfg.FallbackSet.Candidates {
+			add(c.Agent)
+		}
+	}
+	return append(out, cfg.Loop.Progress.Repositories...)
+}
+
+func workdirOf(a config.Agent) string {
+	switch {
+	case a.Claude != nil:
+		return a.Claude.Workdir
+	case a.Codex != nil:
+		return a.Codex.Workdir
+	case a.Cursor != nil:
+		return a.Cursor.Workdir
+	case a.Custom != nil:
+		return a.Custom.Workdir
+	}
+	return ""
+}
+
+// separateStateFaults says why a state directory outside the setup
+// directory is not one keepgoing may treat as the loop's own, apart from its
+// marker: it must be a real directory outside any checkout that holds none
+// of the places the configuration points at, and it must hold keepgoing's
+// control file.
+func separateStateFaults(cfg *config.Config, setupDir, state string) []string {
+	var faults []string
+	info, err := os.Lstat(state)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return []string{"the state directory is a symlink or not a directory"}
+	}
+	if insideCheckout(state) {
+		faults = append(faults, "the state directory is inside a Git checkout")
+	}
+	real, err := filepath.EvalSymlinks(state)
+	if err != nil {
+		return append(faults, "the state directory cannot be resolved")
+	}
+	for _, other := range append(loopWorkPaths(cfg), setupDir) {
+		// A place that does not exist yet is resolved through its existing
+		// ancestors, so it still counts.
+		if o, err := canonicalFuturePath(other); err == nil && (pathWithin(real, o) || pathWithin(o, real)) {
+			faults = append(faults, "the state directory contains, or lies inside, a working directory, a progress repository or the setup directory")
+			break
+		}
+	}
+	if _, err := control.Load(state); err != nil {
+		faults = append(faults, "the state directory's control file cannot be read")
+	} else if _, err := os.Lstat(filepath.Join(state, control.FileName)); err != nil {
+		faults = append(faults, "the state directory holds no keepgoing control file")
+	}
+	return faults
 }
 
 // loopSetupFiles are the entries `init` and keepgoing write at the top of a
@@ -107,8 +210,11 @@ var (
 )
 
 func loopCommand(e env, args []string) int {
+	if len(args) > 0 && args[0] == "mark" {
+		return loopMarkCommand(e, args[1:])
+	}
 	if len(args) == 0 || args[0] != "remove" {
-		e.errf("usage: keepgoing loop remove [-c keepgoing.yaml] [--yes] [--force] [--json] [--private] [--registry DIR]")
+		e.errf("usage: keepgoing loop remove|mark [-c keepgoing.yaml] [--yes] [--json] [--private] [--registry DIR]; remove also takes --force")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("loop remove", flag.ContinueOnError)
@@ -134,11 +240,13 @@ type loopPlan struct {
 	configPath string
 	setupDir   string
 	stateDir   string // "" when it does not exist
-	registry   string
-	entry      *registry.Entry
-	files      []string // known files present in the setup directory
-	items      []loopRemovalItem
-	refusals   []loopRefusal
+	// stateSeparate: the state directory is outside the setup directory.
+	stateSeparate bool
+	registry      string
+	entry         *registry.Entry
+	files         []string // known files present in the setup directory
+	items         []loopRemovalItem
+	refusals      []loopRefusal
 }
 
 func loopRemoveCmd(e env, cfgPath, registryDir string, yes, force, asJSON, private bool) int {
@@ -230,14 +338,8 @@ func planLoopRemoval(ctx context.Context, cfgPath, registryDir string, private b
 			refuse("no_marker", false, "%v; nothing unmarked is removed", err)
 		}
 	}
-	for dir := p.setupDir; ; dir = filepath.Dir(dir) {
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			refuse("inside_checkout", false, "the setup directory is inside a Git checkout")
-			break
-		}
-		if filepath.Dir(dir) == dir {
-			break
-		}
+	if insideCheckout(p.setupDir) {
+		refuse("inside_checkout", false, "the setup directory is inside a Git checkout")
 	}
 	state := cfg.Loop.StateDir
 	nested := filepath.Join(p.setupDir, "state")
@@ -247,10 +349,19 @@ func planLoopRemoval(ctx context.Context, cfgPath, registryDir string, private b
 		switch {
 		case !sinfo.IsDir() || sinfo.Mode()&os.ModeSymlink != 0:
 			refuse("state_not_a_directory", false, "the state directory is a symlink or not a directory")
-		case filepath.Clean(state) != nested || rerr != nil || serr != nil || real != filepath.Join(realSetup, "state"):
-			refuse("state_outside_setup", false, "the state directory is not the one inside the setup directory, and keepgoing did not mark it as its own")
-		default:
+		case filepath.Clean(state) == nested && rerr == nil && serr == nil && real == filepath.Join(realSetup, "state"):
+			// The layout init creates: the setup directory's marker covers it.
 			p.stateDir = state
+		default:
+			// A state directory elsewhere needs its own marker, which only
+			// `loop mark` writes, and must pass the same checks again.
+			if err := readLoopMarkerOf(state, loopStateMarker, cfg.Loop.Name); err != nil {
+				refuse("state_not_marked", false, "%v; nothing unmarked is removed", err)
+			} else if faults := separateStateFaults(cfg, p.setupDir, state); len(faults) > 0 {
+				refuse("state_not_removable", false, "%s", strings.Join(faults, "; "))
+			} else {
+				p.stateDir, p.stateSeparate = state, true
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		refuse("state_unreadable", false, "the state directory cannot be inspected")
@@ -336,7 +447,11 @@ func planLoopRemoval(ctx context.Context, cfgPath, registryDir string, private b
 
 	// What would go, in the order it is removed.
 	if p.stateDir != "" {
-		p.items = append(p.items, loopRemovalItem{Kind: "state_directory", What: "the state directory inside the setup directory, with everything keepgoing recorded for this loop", Path: show(p.stateDir)})
+		where := "inside the setup directory"
+		if p.stateSeparate {
+			where = "named by the configuration and marked as this loop's"
+		}
+		p.items = append(p.items, loopRemovalItem{Kind: "state_directory", What: "the state directory " + where + ", with everything keepgoing recorded for this loop", Path: show(p.stateDir)})
 	}
 	if dir, err := registryDirectory(registryDir); err == nil {
 		p.registry = dir
@@ -419,28 +534,35 @@ func applyLoopRemoval(p *loopPlan, report *loopRemovalReport, private bool) {
 // directory, where the record survives the loop. It holds who ran it and
 // what was removed; paths only on request.
 func recordLoopRemoval(p *loopPlan, report *loopRemovalReport, private bool) bool {
-	if p.registry == "" {
-		return false
-	}
-	if err := os.MkdirAll(p.registry, 0o700); err != nil {
-		return false
-	}
-	record := map[string]any{"schemaVersion": 1, "at": time.Now().UTC().Format(time.RFC3339), "loop": report.Loop, "by": "terminal",
-		"removed": report.Removed, "complete": report.Complete, "build": version}
-	if caller := os.Getenv("BB_THREAD_ID"); caller != "" {
-		record["by"], record["thread"] = "thread", caller
-	}
+	record := map[string]any{"removed": report.Removed, "complete": report.Complete}
 	if p.entry != nil {
 		record["registryId"] = p.entry.ID
 	}
+	return appendLoopLog(p.registry, "remove", report.Loop, p.configPath, private, record)
+}
+
+// loopLogName is the log of loop removals and markings in the private
+// registry directory.
+const loopLogName = "loop-log.jsonl"
+
+// appendLoopLog records one operation with who ran it; paths on request.
+func appendLoopLog(dir, operation, loop, configPath string, private bool, record map[string]any) bool {
+	if dir == "" || os.MkdirAll(dir, 0o700) != nil {
+		return false
+	}
+	record["schemaVersion"], record["operation"], record["loop"], record["build"] = 1, operation, loop, version
+	record["at"], record["by"] = time.Now().UTC().Format(time.RFC3339), "terminal"
+	if caller := os.Getenv("BB_THREAD_ID"); caller != "" {
+		record["by"], record["thread"] = "thread", caller
+	}
 	if private {
-		record["configPath"] = p.configPath
+		record["configPath"] = configPath
 	}
 	b, err := json.Marshal(record)
 	if err != nil {
 		return false
 	}
-	f, err := os.OpenFile(filepath.Join(p.registry, "removals.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, loopLogName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return false
 	}

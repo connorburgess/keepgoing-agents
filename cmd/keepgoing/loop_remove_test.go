@@ -179,7 +179,7 @@ func TestLoopRemoveApplies(t *testing.T) {
 	if strings.Contains(list, "example-loop") {
 		t.Fatalf("the registry entry is still there: %s", list)
 	}
-	log, _ := os.ReadFile(filepath.Join(f.registry, "removals.jsonl"))
+	log, _ := os.ReadFile(filepath.Join(f.registry, loopLogName))
 	if !strings.Contains(string(log), `"loop":"example-loop"`) || !strings.Contains(string(log), `"by":"terminal"`) || !strings.Contains(string(log), `"complete":true`) || strings.Contains(string(log), f.dir) {
 		t.Fatalf("removal log: %s", log)
 	}
@@ -190,7 +190,7 @@ func TestLoopRemoveApplies(t *testing.T) {
 	if code, r, errs := g.remove("--yes", "--private"); code != exitOK || !r.Complete {
 		t.Fatalf("%d %+v %s", code, r, errs)
 	}
-	log, _ = os.ReadFile(filepath.Join(g.registry, "removals.jsonl"))
+	log, _ = os.ReadFile(filepath.Join(g.registry, loopLogName))
 	if !strings.Contains(string(log), `"by":"thread"`) || !strings.Contains(string(log), "thr_example_owner") || !strings.Contains(string(log), "keepgoing.yaml") {
 		t.Fatalf("removal log: %s", log)
 	}
@@ -260,7 +260,7 @@ func TestLoopRemoveRefusals(t *testing.T) {
 			elsewhere := filepath.Join(f.root, "elsewhere")
 			os.MkdirAll(elsewhere, 0o700)
 			f.write("keepgoing.yaml", "version: 1\nloop:\n  name: example-loop\n  state_dir: "+elsewhere+"\n  adapter: bb\n  bb: {thread: thr_example123, cli: absent-bb}\n  prompt_file: prompt.md\n")
-		}, "state_outside_setup", false},
+		}, "state_not_marked", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newLoopFixture(t)
@@ -344,7 +344,7 @@ func TestLoopRemovePartialFailureIsReportedAndRetried(t *testing.T) {
 			t.Fatalf("%s is gone, so the retry could not find the loop: %v", name, err)
 		}
 	}
-	log, _ := os.ReadFile(filepath.Join(f.registry, "removals.jsonl"))
+	log, _ := os.ReadFile(filepath.Join(f.registry, loopLogName))
 	if !strings.Contains(string(log), `"complete":false`) {
 		t.Fatalf("removal log: %s", log)
 	}
@@ -404,5 +404,149 @@ func TestInitWritesTheLoopMarker(t *testing.T) {
 	}
 	if err := readLoopMarker(dir, "other-loop"); err == nil {
 		t.Fatal("a marker for another loop was accepted")
+	}
+}
+
+// separateLayout is a loop assembled by hand, the way loops on a real
+// machine often are: the configuration under a configuration directory and
+// the state under a state directory, with no marker anywhere.
+func separateLayout(t *testing.T) (f *loopFixture, state string) {
+	t.Helper()
+	f = newLoopFixture(t)
+	os.Remove(filepath.Join(f.dir, loopMarkerName))
+	state = filepath.Join(f.root, "state-home", "keepgoing", "example-loop")
+	f.write("keepgoing.yaml", "version: 1\nloop:\n  name: example-loop\n  state_dir: "+state+"\n  adapter: bb\n  bb: {thread: thr_example123, cli: absent-bb}\n  prompt_file: prompt.md\n  progress:\n    repositories: ["+filepath.Join(f.root, "work")+"]\n")
+	os.MkdirAll(filepath.Join(f.root, "work"), 0o700)
+	f.must("enable", "-c", f.path)
+	f.must("disable", "-c", f.path)
+	return f, state
+}
+
+func (f *loopFixture) mark(extra ...string) (int, loopMarkReport, string) {
+	f.t.Helper()
+	code, out, errs := f.run(append([]string{"loop", "mark", "-c", f.path, "--registry", f.registry, "--json"}, extra...)...)
+	var r loopMarkReport
+	if out != "" {
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			f.t.Fatalf("not JSON: %v\n%s\n%s", err, out, errs)
+		}
+	}
+	return code, r, errs
+}
+
+// A setup with no marker is never removed by guessing. A person marks it
+// once, after the same structural checks; then it can be removed, including
+// a state directory that lives somewhere else.
+func TestLoopMarkThenRemove(t *testing.T) {
+	f, state := separateLayout(t)
+	if code, r, _ := f.remove("--yes", "--force"); code != exitFailed || !strings.Contains(refusalCodes(r), "no_marker") || !strings.Contains(refusalCodes(r), "state_not_marked") {
+		t.Fatalf("an unmarked loop: %d %+v", code, r)
+	}
+	// The preview writes nothing.
+	before := f.snapshot()
+	code, r, errs := f.mark()
+	if code != exitOK || r.Applied || len(r.Refusals) != 0 || len(r.Marks) != 2 || r.Marks[0].Kind != loopSetupMarker || r.Marks[1].Kind != loopStateMarker || r.Marks[0].Path != "" {
+		t.Fatalf("%d %+v %s", code, r, errs)
+	}
+	if after := f.snapshot(); after != before {
+		t.Fatal("a mark preview changed something")
+	}
+	code, r, errs = f.mark("--yes")
+	if code != exitOK || !r.Applied || !r.Recorded || len(r.Marks) != 2 {
+		t.Fatalf("%d %+v %s", code, r, errs)
+	}
+	if readLoopMarker(f.dir, "example-loop") != nil || readLoopMarkerOf(state, loopStateMarker, "example-loop") != nil {
+		t.Fatal("the markers were not written")
+	}
+	log, _ := os.ReadFile(filepath.Join(f.registry, loopLogName))
+	if !strings.Contains(string(log), `"operation":"mark"`) || !strings.Contains(string(log), `"by":"terminal"`) || strings.Contains(string(log), f.dir) {
+		t.Fatalf("log: %s", log)
+	}
+	// Marking again has nothing to do and writes nothing.
+	before = f.snapshot()
+	if code, r, _ := f.mark("--yes"); code != exitOK || r.Applied || !strings.Contains(r.Message, "already marked") || f.snapshot() != before {
+		t.Fatalf("%d %+v", code, r)
+	}
+
+	// Now it can be removed: both directories, and nothing beside them.
+	code, rm, errs := f.remove("--yes")
+	if code != exitOK || !rm.Complete || strings.Join(rm.Removed, ",") != "state_directory,configuration_directory" {
+		t.Fatalf("%d %+v %s", code, rm, errs)
+	}
+	for _, gone := range []string{f.dir, state} {
+		if _, err := os.Lstat(gone); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{filepath.Join(f.root, "work"), filepath.Dir(state), filepath.Dir(f.dir)} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("%s was touched: %v", kept, err)
+		}
+	}
+
+	// A setup init made before markers existed: state inside, one marker.
+	g := newLoopFixture(t)
+	os.Remove(filepath.Join(g.dir, loopMarkerName))
+	g.must("enable", "-c", g.path)
+	g.must("disable", "-c", g.path)
+	if code, r, _ := g.mark("--yes"); code != exitOK || len(r.Marks) != 1 || r.Marks[0].Kind != loopSetupMarker {
+		t.Fatalf("%d %+v", code, r)
+	}
+	if code, rm, errs := g.remove("--yes"); code != exitOK || !rm.Complete {
+		t.Fatalf("%d %+v %s", code, rm, errs)
+	}
+}
+
+// Marking makes the checks a removal makes, and refuses the same things. A
+// refusal writes nothing.
+func TestLoopMarkRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup func(t *testing.T, f *loopFixture, state string)
+		want  string
+	}{
+		"an entry keepgoing did not write": {func(t *testing.T, f *loopFixture, _ string) { f.write("notes.txt", "fictional\n") }, "unexpected_entries"},
+		"inside a checkout":                {func(t *testing.T, f *loopFixture, _ string) { os.Mkdir(filepath.Join(f.root, "setups", ".git"), 0o700) }, "inside_checkout"},
+		"a marker for another loop": {func(t *testing.T, f *loopFixture, _ string) {
+			f.write(loopMarkerName, string(newLoopMarker("another-loop")))
+		}, "marker_conflict"},
+		"a state directory in a checkout": {func(t *testing.T, f *loopFixture, state string) {
+			os.Mkdir(filepath.Join(filepath.Dir(state), ".git"), 0o700)
+		}, "state_not_markable"},
+		"a state directory holding the work": {func(t *testing.T, f *loopFixture, state string) {
+			f.write("keepgoing.yaml", "version: 1\nloop:\n  name: example-loop\n  state_dir: "+state+"\n  adapter: bb\n  bb: {thread: thr_example123, cli: absent-bb}\n  prompt_file: prompt.md\n  progress:\n    repositories: ["+filepath.Join(state, "repo")+"]\n")
+		}, "state_not_markable"},
+		"a state directory that is the work": {func(t *testing.T, f *loopFixture, state string) {
+			f.write("keepgoing.yaml", "version: 1\nloop:\n  name: example-loop\n  state_dir: "+filepath.Join(f.root, "work", "inner")+"\n  adapter: bb\n  bb: {thread: thr_example123, cli: absent-bb}\n  prompt_file: prompt.md\n  progress:\n    repositories: ["+filepath.Join(f.root, "work")+"]\n")
+			os.MkdirAll(filepath.Join(f.root, "work", "inner"), 0o700)
+		}, "state_not_markable"},
+		"a directory with no keepgoing control file": {func(t *testing.T, f *loopFixture, state string) {
+			os.Remove(filepath.Join(state, "control.json"))
+		}, "state_not_markable"},
+		"not the owner": {func(t *testing.T, f *loopFixture, _ string) {
+			t.Setenv("BB_THREAD_ID", "thr_example_owner")
+			f.must("enable", "-c", f.path)
+			f.must("disable", "-c", f.path)
+			t.Setenv("BB_THREAD_ID", "thr_example_other")
+		}, "not_owner"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, state := separateLayout(t)
+			tc.setup(t, f, state)
+			before := f.snapshot()
+			code, r, errs := f.mark("--yes")
+			if code != exitFailed || r.Applied || !strings.Contains(refusalCodes(loopRemovalReport{Refusals: r.Refusals}), tc.want) || len(r.Marks) != 0 {
+				t.Fatalf("%d %+v %s", code, r, errs)
+			}
+			if after := f.snapshot(); after != before {
+				t.Fatal("a refused mark wrote something")
+			}
+		})
+	}
+	f := newLoopFixture(t)
+	if code, _, errs := f.run("loop", "mark", "extra", "-c", f.path); code != exitUsage {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if code, _, errs := f.run("loop", "forget"); code != exitUsage || !strings.Contains(errs, "usage: keepgoing loop remove|mark") {
+		t.Fatalf("%d %s", code, errs)
 	}
 }

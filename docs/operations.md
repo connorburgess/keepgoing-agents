@@ -344,13 +344,25 @@ keepgoing loop remove -c /private/example-loop/keepgoing.yaml          # preview
 keepgoing loop remove -c /private/example-loop/keepgoing.yaml --yes    # remove what the preview listed
 ```
 
-`loop remove` deletes a switched-off loop that `keepgoing init` created: the state directory inside its setup directory, its registry entry, and the setup directory with the files keepgoing wrote there (`keepgoing.yaml`, `fallbacks.yaml`, `prompt.md`, `task.md` and the marker). It cannot be undone. It never touches the agent's conversation, the work repository, an account directory, or anything else a configuration value points at.
+`loop remove` deletes a switched-off loop that keepgoing created or a person has marked: its state directory, its registry entry, and the setup directory with the files keepgoing wrote there (`keepgoing.yaml`, `fallbacks.yaml`, `prompt.md`, `task.md` and the marker). It cannot be undone. It never touches the agent's conversation, the work repository, an account directory, or anything else a configuration value points at.
 
 **Preview first.** Without `--yes` it prints exactly what would be removed and changes nothing: no file, lock or record is created. `--json` gives the same as a `loop_removal` object, for the preview and for the removal. Private paths are shown, and kept in the removal record, only with `--private`.
 
-**Only what keepgoing marked.** `init` now writes a small marker file, `.keepgoing-loop`, into the setup directory it creates. `loop remove` deletes a directory only when it carries that marker for the loop named in the configuration. A path in a configuration value is never enough. It also refuses when the setup directory is a symlink, is inside a Git checkout, or holds anything keepgoing did not write (move it out first), and when the state directory is anywhere but inside the setup directory. The setup directory itself is removed without recursion, so nothing unexpected can go with it.
+**Only what keepgoing marked.** `loop remove` deletes a directory only when it carries keepgoing's marker file, `.keepgoing-loop`, for the loop named in the configuration. A path in a configuration value is never enough. Two layouts are supported:
 
-**Setups created before the marker existed** carry none and are refused. Nothing distinguishes such a directory from one a person assembled by hand: it holds the same file names. keepgoing does not guess. Until there is a deliberate way to mark an existing setup, remove such a loop by hand: `keepgoing registry remove`, then delete the setup directory yourself.
+- **What `init` creates.** `init` puts the setup directory under the user configuration directory (`keepgoing/loops/<name>`, or wherever `--directory` says) and the state directory inside it as `state`. It now writes the marker into the setup directory, and that marker covers the state directory inside.
+- **A state directory somewhere else**, as in a configuration written by hand with its state under the user state directory. `init` never creates this layout, so it is removable only after a person has marked it: the state directory then carries its own marker.
+
+In both, removal also refuses when a directory is a symlink or inside a Git checkout, and when the setup directory holds anything keepgoing did not write (move it out first). A separate state directory must also hold keepgoing's control file and must not contain, or lie inside, a working directory, a progress repository or the setup directory. The setup directory itself is removed without recursion, so nothing unexpected can go with it.
+
+### Marking an existing setup
+
+```sh
+keepgoing loop mark -c /private/example-loop/keepgoing.yaml          # preview: writes nothing
+keepgoing loop mark -c /private/example-loop/keepgoing.yaml --yes
+```
+
+A setup created before `init` wrote markers, or assembled by hand, carries none. Nothing distinguishes such a directory from any other holding the same file names, and keepgoing does not guess. `loop mark` is how a person says "this is keepgoing's": it makes the structural checks a removal makes, shows which directories it would mark, and with `--yes` writes the marker into the setup directory and, when the state directory is somewhere else, into that too. It deletes nothing, never replaces a marker, refuses from a BB thread that does not own the loop, and is recorded in the same log as removals. Run it once per older setup; after that `loop remove` applies its own checks as usual.
 
 It refuses, and `--force` does not change it, while:
 
@@ -366,7 +378,7 @@ It refuses unless `--force` when the loop is switched on (`keepgoing disable` fi
 
 **Order and partial failure.** The state directory goes first, then the registry entry, then the setup directory's files, with the configuration and the marker last. Removal stops at the first failure and the command exits 1, saying what was removed and what was not. Because the configuration and marker are still there, running the same command again finishes the job. The checks run just before removal and their locks are released before deleting, so a check started in that instant could recreate the state directory; the command would then report the setup directory as not empty, and can be run again.
 
-**Record.** Each removal with `--yes` appends a line to `removals.jsonl` in the private registry directory, which survives the loop: the time, the loop's name, what was removed, whether it completed, and who ran it (`thread` with the BB thread ID, or `terminal`). `--registry DIR` names another registry directory.
+**Record.** Each removal and each marking with `--yes` appends a line to `loop-log.jsonl` in the private registry directory, which survives the loop: the operation, the time, the loop's name, what was removed or marked, whether a removal completed, and who ran it (`thread` with the BB thread ID, or `terminal`). `--registry DIR` names another registry directory.
 
 ## Situations that need a person
 
