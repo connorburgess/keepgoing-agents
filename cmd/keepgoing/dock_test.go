@@ -1443,8 +1443,8 @@ func dockMaximalInput(i int) dockInput {
 }
 
 // The largest registry, with every loop maximal, stays well inside the
-// response bound, with and without identifiers. It measured about 5.3 MB
-// with identifiers and ASCII names (6.0 MB with four-byte ones, below), with
+// response bound, with and without identifiers. It measured about 5.4 MB
+// with identifiers and ASCII names (6.1 MB with four-byte ones, below), with
 // the longest projection sentence in every usage window; dock.go and
 // docs/dock.md quote.
 func TestDockMaximalRegistryStaysUnderTheResponseBound(t *testing.T) {

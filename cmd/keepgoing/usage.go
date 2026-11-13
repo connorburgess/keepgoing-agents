@@ -175,8 +175,10 @@ func usageSpan(d time.Duration) string {
 // words is one window's projection as parts, without the window's name:
 // strings, and each time as stamp gives it. Status and the panel both word a
 // projection with it, so they say the same.
-func (p projectionView) words(resetsAt *time.Time, stamp func(time.Time) any) []any {
-	span := func(n int64) string { return usageSpan(time.Duration(n) * time.Second) }
+// duration words a length of time; status passes usageSpan and the panel its
+// own style, so each reads one way and the sentences are otherwise identical.
+func (p projectionView) words(resetsAt *time.Time, stamp func(time.Time) any, duration func(time.Duration) string) []any {
+	span := func(n int64) string { return duration(time.Duration(n) * time.Second) }
 	over := fmt.Sprintf("%d readings over %s", p.Readings, span(p.SpanSeconds))
 	if p.Ignored > 0 {
 		over += fmt.Sprintf(", %d stamped after this clock's time ignored", p.Ignored)
@@ -203,9 +205,9 @@ func (p projectionView) words(resetsAt *time.Time, stamp func(time.Time) any) []
 	case p.UsedUpSince != nil:
 		return []any{"used up since ", stamp(*p.UsedUpSince)}
 	case p.RunsOutAt != nil && resetsAt != nil && !p.RunsOutAt.After(p.now):
-		return []any{"projected to have run out at ", stamp(*p.RunsOutAt), ", " + usageSpan(resetsAt.Sub(*p.RunsOutAt)) + " before it resets (" + over + ")"}
+		return []any{"projected to have run out at ", stamp(*p.RunsOutAt), ", " + duration(resetsAt.Sub(*p.RunsOutAt)) + " before it resets (" + over + ")"}
 	case p.RunsOutAt != nil && resetsAt != nil:
-		return []any{"runs out about " + usageSpan(resetsAt.Sub(*p.RunsOutAt)) + " before it resets, at ", stamp(*p.RunsOutAt), " (" + over + ")"}
+		return []any{"runs out about " + duration(resetsAt.Sub(*p.RunsOutAt)) + " before it resets, at ", stamp(*p.RunsOutAt), " (" + over + ")"}
 	case p.WithinRounding:
 		return []any{"may run out before it resets, within the readings' rounding (" + over + ")"}
 	case p.UsedAtReset == nil:
@@ -218,7 +220,7 @@ func (p projectionView) words(resetsAt *time.Time, stamp func(time.Time) any) []
 func (p projectionView) text(key string, resetsAt *time.Time) string {
 	var b strings.Builder
 	b.WriteString(key + " ")
-	for _, part := range p.words(resetsAt, func(t time.Time) any { return t.UTC().Format("2006-01-02 15:04Z") }) {
+	for _, part := range p.words(resetsAt, func(t time.Time) any { return t.UTC().Format("2006-01-02 15:04Z") }, usageSpan) {
 		b.WriteString(part.(string))
 	}
 	return b.String()

@@ -1716,12 +1716,13 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 const accountReadingsNote = "Readings for this account come only from its routes' probes."
 
 // dockProjection words a window's projection as status does, with each
-// time as a part the page shows in its own time zone.
+// time as a part the page shows in its own time zone and each length of time
+// in the page's own style ("2 days 9 h", "25 h").
 func dockProjection(p projectionView, resetsAt *time.Time) dockText {
 	if p.State == "" {
 		return nil
 	}
-	parts := p.words(resetsAt, func(t time.Time) any { return tm(t, "datetime") })
+	parts := p.words(resetsAt, func(t time.Time) any { return tm(t, "datetime") }, dockSpan)
 	if first, ok := parts[0].(string); ok {
 		parts[0] = dockCapital(first)
 	}

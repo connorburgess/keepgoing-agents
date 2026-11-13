@@ -10,8 +10,9 @@ import (
 )
 
 // Each projection is worded on the page as status words it, without the
-// window's name, which the meter beside it already shows, and with each time
-// as a part the page shows in its own time zone.
+// window's name, which the meter beside it already shows, with each time as a
+// part the page shows in its own time zone, and each length of time in the
+// page's own style; the words are otherwise the same.
 func TestDockProjectionPhrases(t *testing.T) {
 	h := func(n int) time.Time { return dockNow.Add(time.Duration(n) * time.Hour) }
 	ptr := func(t time.Time) *time.Time { return &t }
@@ -25,27 +26,27 @@ func TestDockProjectionPhrases(t *testing.T) {
 		needsReads bool
 	}{
 		{with(func(p *projectionView) { p.UsedAtReset = used(0.6) }),
-			"60% at reset (3 readings over 6h 0m)", "w 60% at reset (3 readings over 6h 0m)", false},
+			"60% at reset (3 readings over 6 h)", "w 60% at reset (3 readings over 6h 0m)", false},
 		{with(func(p *projectionView) { p.UsedAtReset, p.RunsOutAt = used(2), ptr(h(12)) }),
-			"Runs out about 24h 0m before it resets, at Tue 5 Mar, 00:00 (3 readings over 6h 0m)",
+			"Runs out about 24 h before it resets, at Tue 5 Mar, 00:00 (3 readings over 6 h)",
 			"w runs out about 24h 0m before it resets, at 2030-03-05 00:00Z (3 readings over 6h 0m)", false},
 		{with(func(p *projectionView) { p.UsedAtReset, p.RunsOutAt = used(2.4), ptr(h(-2)) }),
-			"Projected to have run out at Mon 4 Mar, 10:00, 38h 0m before it resets (3 readings over 6h 0m)",
+			"Projected to have run out at Mon 4 Mar, 10:00, 38 h before it resets (3 readings over 6 h)",
 			"w projected to have run out at 2030-03-04 10:00Z, 38h 0m before it resets (3 readings over 6h 0m)", false},
 		{with(func(p *projectionView) { p.UsedAtReset, p.UsedUpSince = used(1), ptr(h(-6)) }),
 			"Used up since Mon 4 Mar, 06:00", "w used up since 2030-03-04 06:00Z", false},
 		{with(func(p *projectionView) { p.UsedAtReset, p.WithinRounding = used(1.05), true }),
-			"May run out before it resets, within the readings' rounding (3 readings over 6h 0m)",
+			"May run out before it resets, within the readings' rounding (3 readings over 6 h)",
 			"w may run out before it resets, within the readings' rounding (3 readings over 6h 0m)", false},
 		{with(func(p *projectionView) { p.State, p.Reason, p.Readings = "unavailable", "too_few_readings", 2 }),
 			"Can't project: 2 of the 3 readings needed in this window", "w can't project: 2 of the 3 readings needed in this window", true},
 		{with(func(p *projectionView) { p.State, p.Reason, p.ResetsInSeconds = "unavailable", "too_early", 162*3600 }),
-			"Can't project: too early to project: 6h 0m of readings for a window that resets in 6d 18h",
+			"Can't project: too early to project: 6 h of readings for a window that resets in 6 days 18 h",
 			"w can't project: too early to project: 6h 0m of readings for a window that resets in 6d 18h", true},
 		{with(func(p *projectionView) { p.State, p.Reason = "unavailable", "no_history" }),
 			"Can't project: no earlier reading of this window is recorded", "w can't project: no earlier reading of this window is recorded", true},
 		{with(func(p *projectionView) { p.State, p.Reason = "unavailable", "newest_too_old" }),
-			"Can't project: the newest reading is older than 6h 0m", "w can't project: the newest reading is older than 6h 0m", true},
+			"Can't project: the newest reading is older than 6 h", "w can't project: the newest reading is older than 6h 0m", true},
 		{with(func(p *projectionView) { p.State, p.Reason = "unavailable", "no_reset_time" }),
 			"Can't project: no reset time was reported", "w can't project: no reset time was reported", true},
 		{with(func(p *projectionView) { p.State, p.Reason = "unavailable", "window_reset" }),
@@ -116,7 +117,7 @@ func TestDockShowsProjectionInRouteViewAndAllowances(t *testing.T) {
 		byName[w.Name] = w
 	}
 	week, short := byName["7-day"], byName["5-hour"]
-	wantWeek := "Runs out about 2d 9h before it resets, at Wed 6 Mar, 02:48 (3 readings over 25h 0m)"
+	wantWeek := "Runs out about 2 days 9 h before it resets, at Wed 6 Mar, 02:48 (3 readings over 25 h)"
 	if say(week.Projection, dockNow) != wantWeek || say(short.Projection, dockNow) != "Can't project: no earlier reading of this window is recorded" ||
 		first.Usage.ReadingsNote != readingsNote {
 		t.Errorf("route view: %q %q %q", say(week.Projection, dockNow), say(short.Projection, dockNow), first.Usage.ReadingsNote)
