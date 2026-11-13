@@ -99,7 +99,15 @@ What was looked for and not found, or not done:
 - **`t.Parallel`.** Not added. Most `cmd/keepgoing` tests set environment variables with `t.Setenv`, which Go refuses to combine with parallel tests, and the packages' fake clocks and stand-ins were not audited for shared state.
 - **`internal/incident`** also takes over a minute under `-race`, but skipping the flush there changed nothing, so its time goes elsewhere. Not investigated.
 
-A new test package that runs many checks in-process can opt in the same way. One that needs the real flush (a future power-loss fixture) must not.
+**Which packages skip the flush, and which must not.** Exactly two: `internal/supervise` and `cmd/keepgoing`, each from its `sync_test.go`. They run the check in the test process and assert on decisions, sends and saved records, none of which a flush changes. A package must not skip it if it tests durability (what survives a kill or a power cut, such as the fault-injection suite), or if it runs the built binary: the scenario suite does not, so every scenario exercises the command as it ships. Adding a package means adding it to the list in `internal/snapshot/sync_guard_test.go` and to this paragraph.
+
+**Why the switch cannot be off in a shipped binary.** Three tests hold it:
+
+- `TestOnlyNamedTestFilesSkipTheFlush` scans the source: only the listed `_test.go` files may mention `SkipSyncInTests`, so no file compiled into a command can call it.
+- `TestFlushCannotBeSkippedOutsideATestBinary` builds an ordinary program (`internal/snapshot/testdata/flushprobe`), the way the command is built, and shows that the call panics there and that the flush is attempted before and after it, including when the program is given test flags and test-like environment variables. The guard is Go's `testing.Testing()`, which is set by the linker when `go test` builds a test binary and by nothing at run time.
+- `TestBuiltBinaryCannotSkipTheFlush`, in the scenario suite, inspects the symbols of the `keepgoing` binary the scenarios run: the flag `Sync` reads is present, and the only function that sets it is absent, as is the variable `testing.Testing()` reads. It fails on a stripped binary supplied through `KEEPGOING_TEST_BINARY`, because that cannot be checked.
+
+Each was run against a broken build: a command that calls the switch behind an environment variable fails the first and third; a switch without its guard fails the second. What they do not cover: someone deliberately building the command with a linker flag that sets `testing.testBinary` and adding a call to the switch, which is a source change the first test catches; and whether a flush that is requested reaches the device, which depends on the operating system and disk.
 
 ## Live check: a long time offline
 

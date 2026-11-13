@@ -30,6 +30,16 @@ func Sync(f *os.File) error {
 //
 // Call it from an init function in a _test.go file. Tests that run the built
 // binary, such as the scenario suite, are not affected and keep the flush.
+//
+// Three tests hold this in place. TestOnlyNamedTestFilesSkipTheFlush lists
+// every file allowed to call it. TestFlushCannotBeSkippedOutsideATestBinary
+// builds an ordinary program and shows the call panics there and the flush
+// is attempted. TestBuiltBinaryCannotSkipTheFlush, in the scenario suite,
+// checks that the built keepgoing command does not contain this function at
+// all; it is kept out of line so that its presence in a binary means
+// something there can call it.
+//
+//go:noinline
 func SkipSyncInTests() {
 	if !testing.Testing() {
 		panic("snapshot: SkipSyncInTests called outside a test binary")
