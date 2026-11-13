@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
@@ -161,6 +162,31 @@ func Settle(dir string, seq int64) error {
 	b, _ := json.Marshal(l)
 	if err := saveAllowance(dir, SendsName, b); err != nil {
 		return ErrSendLedger
+	}
+	return nil
+}
+
+// SettleIntoEpisode settles, in f, the records a check has not yet read,
+// before a resume starts a new error episode, so they count in the episode
+// that is ending and not in the new one. Each sets the time of the last send
+// to the agent, as a check would. It stops at the first brief that may have
+// put the task on a second conversation (a handoff or switch-back): that
+// record, and those after it, are left for the next check, which holds for a
+// person. f.SendsRecorded is moved forward; the caller saves f.
+func SettleIntoEpisode(dir string, f *File) error {
+	l, err := LoadLedger(dir)
+	if err != nil {
+		return err
+	}
+	for _, p := range l.Unrecorded(max(f.SendsRecorded, l.Settled)) {
+		if p.Action == "handoff" || p.Action == "switch_back" {
+			break
+		}
+		agentSend := p.Action != "stop" && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
+		if agentSend && p.At.After(f.LastWakeAt) {
+			f.LastWakeAt = p.At
+		}
+		f.SendsRecorded = max(f.SendsRecorded, p.Seq)
 	}
 	return nil
 }

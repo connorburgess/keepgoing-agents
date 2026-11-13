@@ -295,3 +295,57 @@ func TestCompleteWithNothingHeldRecordsNoOpenQuestion(t *testing.T) {
 		t.Fatalf("%+v", ctl)
 	}
 }
+
+// A resume settles the sends recorded by a check that could not save what
+// happened before it starts a new episode, so they count in the episode that
+// is ending. The next check does not count them into the new one. A brief
+// that may have put the task on a second conversation is left for the next
+// check, which holds for a person.
+func TestResumeSettlesUnsavedSendsIntoTheEndingEpisode(t *testing.T) {
+	for _, tc := range []struct {
+		action, target string
+		held           bool
+	}{
+		{"reprompt", state.Primary, false},
+		{"handoff", "fallback-example", true},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
+			if code, _, errs := f.run("enable"); code != 0 {
+				t.Fatal(errs)
+			}
+			cfg, err := config.Load(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := cfg.Loop.StateDir
+			at := time.Now().Add(-time.Hour).UTC()
+			if err := state.Save(dir, state.File{Reprompts: cfg.Loop.Errors.MaxReprompts, LastRepromptAt: at}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := state.Reserve(dir, 0, 0, state.SendIntent{At: at.Add(time.Minute), Action: tc.action, Target: tc.target}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := control.Update(dir, func(c *control.File) {
+				c.AwaitingUser, c.EpisodeHold, c.Note = true, true, "error persisted after re-prompts"
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if code, _, errs := f.run("resume"); code != 0 {
+				t.Fatal(errs)
+			}
+			got := f.tick()
+			st, _ := state.Load(dir)
+			if tc.held {
+				if got["action"] != "await_user" || !strings.HasPrefix(fmt.Sprint(got["reason"]), "a handoff brief to fallback-example may have been delivered") {
+					t.Fatalf("%v", got)
+				}
+				return
+			}
+			if got["action"] != "reprompt" || st.Reprompts != 1 || st.UnconfirmedReprompts != 0 {
+				t.Fatalf("the unsaved re-prompt was counted into the new episode: %v reprompts=%d unconfirmed=%d", got, st.Reprompts, st.UnconfirmedReprompts)
+			}
+		})
+	}
+}

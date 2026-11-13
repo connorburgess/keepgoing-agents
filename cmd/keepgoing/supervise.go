@@ -792,6 +792,12 @@ func resumeEpisode(stateDir string, episodeHold bool, at time.Time) error {
 	}
 	before := st
 	if episodeHold {
+		// Sends recorded by a check that could not save what happened belong
+		// to the episode that is ending: settle them first, so the next
+		// check does not count them into the new one.
+		if err := state.SettleIntoEpisode(stateDir, &st); err != nil {
+			return err
+		}
 		st.NewEpisode(at)
 	} else {
 		st.RetryRepaired()
