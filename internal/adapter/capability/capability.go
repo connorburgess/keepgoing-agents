@@ -97,6 +97,11 @@ var Adapters = []Adapter{
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
+	// Any agent reached over the Agent Client Protocol. Antigravity's
+	// groundwork is the same code with stricter options and no registration.
+	{ID: "acp", Title: "Agent over ACP", Registered: true,
+		Files:  []string{"internal/adapter/runner/antigravity_runner.go"},
+		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "State"}},
 	// An agent defined in configuration. Its Inputs are the most a
 	// definition can produce; a definition that declares less produces less.
 	{ID: "custom", Title: "Agent defined in configuration", Registered: true,
@@ -319,10 +324,43 @@ var customCells = map[string]Cell{
 	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
 }
 
+const (
+	acpTest     = "internal/adapter/runner/acp_runner_test.go"
+	acpScenario = "internal/scenario/acp_agent_test.go"
+	acpDoc      = "docs/configuration.md#an-agent-over-the-agent-client-protocol"
+)
+
+// acpCells is the column for an agent reached over the Agent Client
+// Protocol. Every fixture uses a stand-in that speaks the protocol; what has
+// been run against a real agent is said in the cell.
+var acpCells = map[string]Cell{
+	"observe":          {Yes, Fixture, "The worker's exit status and its saved record of how the prompt ended: the protocol's typed stop reason or error code. No message, tool or error text is read.", []Ref{t(acpTest, "TestACPRunnerContinuesTheSessionByResumeOrLoad")}},
+	"error_classes":    {Partial, Fixture, "Only from the prompt's typed end: a refusal stop reason is refused, the authentication-required error code is auth. Every other stop reason and code is unknown; the protocol has no typed limit.", []Ref{t(acpTest, "TestACPRunnerClassifiesOnlyTypedEnds")}},
+	"retry_expiry":     {NA, None, "A turn is one worker process that is running, finished or gone.", nil},
+	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(acpScenario, "TestACPAgentJourney")}},
+	"session_resume":   {Yes, Fixture, "session/resume or session/load with the saved identifier, whichever the agent advertises. A saved session is never replaced by a new one: an agent that can no longer continue it fails the turn.", []Ref{t(acpTest, "TestACPRunnerContinuesTheSessionByResumeOrLoad"), t(acpTest, "TestACPRunnerNeverReplacesASavedSession")}},
+	"turn_retry":       {Missing, None, "A re-prompt is always a new prompt in the continued session.", nil},
+	"network":          {Yes, Fixture, fakeDecision, []Ref{t(networkTest, "TestOutageDoesNotSpendRepromptsOrProbes"), d(networkDoc)}},
+	"child_awareness":  {NA, None, "Work the agent starts lives and ends inside its turn's process.", nil},
+	"child_notice":     {NA, None, "No child conversations.", nil},
+	"handoff_source":   {Partial, Fixture, fakeDecision + " The protocol has no typed limit, so a limit is unknown and never starts a handoff by itself.", []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
+	"handoff_target":   {Partial, Fixture, "Only with a command probe: the runner has no probe of its own. Guided setup does not create it.", []Ref{d(acpDoc)}},
+	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
+	"probes":           {Missing, None, "No probe. A candidate needs a command probe.", nil},
+	"quota":            {Missing, None, "No usage reading.", nil},
+	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief opens one.", []Ref{t(acpTest, "TestACPRunnerContinuesTheSessionByResumeOrLoad")}},
+	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own and is not shown.", []Ref{t(acpTest, "TestACPRunnerContinuesTheSessionByResumeOrLoad")}},
+	"stop":             {Yes, Fixture, "The worker sends session/cancel and waits a few seconds for the prompt to end; then the owned stop ends its process group. A saved PID never authorizes a signal.", []Ref{t(acpTest, "TestACPRunnerStopCancelsThePromptCleanly"), t(acpTest, "TestACPRunnerStopEndsAnAgentThatIgnoresTheCancel")}},
+	"permissions":      {Yes, Fixture, "A permission request is answered cancelled, never granted, and raises one awaiting-user hold.", []Ref{t(acpTest, "TestACPRunnerNeverGrantsAPermission")}},
+}
+
 func init() {
 	for i := range Matrix {
 		if c, ok := customCells[Matrix[i].ID]; ok {
 			Matrix[i].Cells["custom"] = c
+		}
+		if c, ok := acpCells[Matrix[i].ID]; ok {
+			Matrix[i].Cells["acp"] = c
 		}
 	}
 }

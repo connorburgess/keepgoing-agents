@@ -211,6 +211,7 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		"codex":   runner.NewCodex(config.Codex{CLI: "absent"}, dir),
 		"cursor":  runner.NewCursor(config.Cursor{CLI: "absent"}, dir),
 		"custom":  definedRunner(t, "", dir),
+		"acp":     runner.NewACP(runner.ACPConfig{Name: "acp", Command: []string{"absent"}}, dir),
 		"process": process.New(config.Process{}),
 	}
 	for _, a := range Adapters {

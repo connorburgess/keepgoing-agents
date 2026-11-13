@@ -20,6 +20,8 @@ type Agent struct {
 	Cursor   *Cursor  `yaml:"cursor,omitempty"`
 	// Custom is an agent defined in configuration.
 	Custom *Custom `yaml:"custom,omitempty"`
+	// ACP is an agent reached over the Agent Client Protocol.
+	ACP *ACP `yaml:"acp,omitempty"`
 }
 
 // BB configures the BB thread adapter. Model and Reasoning, when set, are
@@ -111,7 +113,7 @@ type Cursor struct {
 var CursorVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$`)
 
 // Adapters lists the supported adapter names.
-var Adapters = []string{"bb", "process", "claude", "codex", "cursor", CustomAdapter}
+var Adapters = []string{"bb", "process", "claude", "codex", "cursor", CustomAdapter, ACPAdapter}
 
 func (a *Agent) applyDefaults() {
 	if a.Cursor != nil && a.Cursor.CLI == "" {
@@ -128,6 +130,10 @@ func (a *Agent) applyDefaults() {
 		case CustomAdapter:
 			if a.Custom != nil {
 				a.Provider = a.Custom.Name
+			}
+		case ACPAdapter:
+			if a.ACP != nil {
+				a.Provider = a.ACP.Name
 			}
 		}
 	}
@@ -157,7 +163,7 @@ func (a Agent) validate(where string) []error {
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(where+format, args...))
 	}
-	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, CustomAdapter: a.Custom != nil}
+	set := map[string]bool{"bb": a.BB != nil, "process": a.Process != nil, "claude": a.Claude != nil, "codex": a.Codex != nil, "cursor": a.Cursor != nil, CustomAdapter: a.Custom != nil, ACPAdapter: a.ACP != nil}
 	known := false
 	for _, n := range Adapters {
 		if a.Adapter == n {
@@ -228,6 +234,8 @@ func (a Agent) validate(where string) []error {
 		}
 	case a.Adapter == CustomAdapter && a.Custom != nil:
 		a.Custom.validate(add)
+	case a.Adapter == ACPAdapter && a.ACP != nil:
+		a.ACP.validate(add)
 	}
 	return errs
 }
@@ -265,6 +273,8 @@ func (a Agent) Describe() string {
 		s += " " + a.Codex.Workdir
 	case a.Custom != nil:
 		s += " " + a.Custom.Name + " " + a.Custom.Workdir
+	case a.ACP != nil:
+		s += " " + a.ACP.Name + " " + a.ACP.Workdir
 	}
 	if m := a.Model(); m != "" {
 		s += " (" + m + ")"
@@ -275,6 +285,9 @@ func (a Agent) Describe() string {
 func (a *Agent) resolvePaths(base string) {
 	if a.Custom != nil {
 		a.Custom.resolvePaths(base)
+	}
+	if a.ACP != nil {
+		a.ACP.resolvePaths(base)
 	}
 	if a.Cursor != nil {
 		a.Cursor.Workdir = resolve(base, a.Cursor.Workdir)

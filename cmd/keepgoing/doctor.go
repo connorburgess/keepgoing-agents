@@ -498,6 +498,23 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		}
 		r.add(prefix+".account", "unavailable", "A defined agent's account and login are not queried; its environment is passed through.", "")
 		return
+	case a.ACP != nil:
+		// An agent over the Agent Client Protocol. Doctor runs nothing: the
+		// command is the agent's server, not a version or login query.
+		if info, err := os.Stat(a.ACP.Workdir); err != nil || !info.IsDir() {
+			r.add(prefix+".workdir", "error", "The agent's working directory is missing or not a directory.", "Correct acp.workdir; a relative path resolves against the configuration file.")
+		} else {
+			r.add(prefix+".workdir", "ok", "The agent's working directory exists.", "")
+		}
+		if _, err := exec.LookPath(a.ACP.Command[0]); err != nil {
+			r.add(prefix+".cli", "error", "The agent's ACP command is missing or not executable.", "Install it or correct the first argument of acp.command and the scheduler PATH. A path resolves against the configuration file.")
+		} else {
+			r.add(prefix+".cli", "ok", "The agent's ACP command resolves. It was not run.", "")
+		}
+		r.add(prefix+".capabilities", "ok", "Agent "+a.ACP.Name+" over the Agent Client Protocol. keepgoing can: send the prompt over the protocol; continue the same session when the agent advertises session resume or load; hold for a person when the agent asks for a permission, which it never grants; ask the agent to cancel on stop before ending its process; read a refusal and an authentication requirement from the turn's typed end.", "")
+		r.add(prefix+".limits", "unavailable", "With this protocol keepgoing cannot: tell a usage limit from another failure (the protocol has no typed limit, so one is unknown and never moves work to a fallback); probe the account or model (a fallback needs a command probe); read usage. Whether this agent advertises a way to continue a session is known only once a turn has run.", "")
+		r.add(prefix+".account", "unavailable", "The agent's account and login are not queried; its environment is passed through.", "")
+		return
 	case a.Process != nil:
 		r.add(prefix+".cli", "unavailable", "Custom process commands are not executed by doctor.", "Check their structured status contract separately.")
 		return

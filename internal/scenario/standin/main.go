@@ -54,6 +54,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,6 +88,9 @@ func main() {
 	}
 	if name == "example-agent" {
 		os.Exit(exampleAgent(world, os.Args[1:]))
+	}
+	if name == "example-acp" {
+		os.Exit(exampleACP(world))
 	}
 	os.Exit(run(world, os.Args[1:]))
 }
@@ -417,4 +421,96 @@ func readMode(path, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// exampleACPSession is the session the fictional ACP agent opens.
+const exampleACPSession = "sess_example_acp_0001"
+
+// exampleACP plays a fictional agent that speaks the Agent Client Protocol
+// (ACP v1) on its standard streams. It continues a session with
+// session/load. What each successive prompt does comes from
+// example-acp.turns, one outcome per line consumed in order: ok (the
+// default), max_tokens, refusal, or permission (it asks for a permission and
+// ends the prompt as cancelled once it has been answered). Every prompt is
+// recorded in sends.jsonl with kind "turn", the agent's name, the session it
+// continued as the mode, and the prompt text.
+func exampleACP(world string) int {
+	send := func(v map[string]any) {
+		v["jsonrpc"] = "2.0"
+		b, _ := json.Marshal(v)
+		os.Stdout.Write(append(b, '\n'))
+	}
+	r := bufio.NewReaderSize(os.Stdin, 2<<20)
+	loaded := ""
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			return 0
+		}
+		var f struct {
+			ID     json.RawMessage
+			Method string
+			Params map[string]json.RawMessage
+			Result json.RawMessage
+		}
+		json.Unmarshal(line, &f)
+		var session string
+		json.Unmarshal(f.Params["sessionId"], &session)
+		switch f.Method {
+		case "initialize":
+			send(map[string]any{"id": f.ID, "result": map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{"loadSession": true}}})
+		case "session/new":
+			send(map[string]any{"id": f.ID, "result": map[string]any{"sessionId": exampleACPSession}})
+		case "session/load":
+			loaded = session
+			send(map[string]any{"id": f.ID, "result": nil})
+		case "session/prompt":
+			var parts []struct{ Text string }
+			json.Unmarshal(f.Params["prompt"], &parts)
+			text := ""
+			if len(parts) > 0 {
+				text = parts[0].Text
+			}
+			appendLine(filepath.Join(world, "sends.jsonl"), map[string]string{"kind": "turn", "thread": "example-acp", "mode": loaded, "message": text})
+			outcome := "ok"
+			path := filepath.Join(world, "example-acp.turns")
+			if b, err := os.ReadFile(path); err == nil {
+				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+				if len(lines) > 0 && lines[0] != "" {
+					outcome = lines[0]
+					os.WriteFile(path, []byte(strings.Join(lines[1:], "\n")+"\n"), 0o600)
+				}
+			}
+			switch outcome {
+			case "max_tokens", "refusal":
+				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": outcome}})
+			case "permission":
+				send(map[string]any{"id": 7, "method": "session/request_permission", "params": map[string]any{
+					"sessionId": session, "toolCall": map[string]any{"toolCallId": "fictional-tool-1"},
+					"options": []map[string]string{{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}}}})
+				cancelled, replied := false, ""
+				for !cancelled || replied == "" {
+					next, err := r.ReadBytes('\n')
+					if err != nil {
+						return 5
+					}
+					var g struct {
+						ID     json.RawMessage
+						Method string
+						Result json.RawMessage
+					}
+					json.Unmarshal(next, &g)
+					if g.Method == "session/cancel" {
+						cancelled = true
+					} else if string(g.ID) == "7" {
+						replied = string(g.Result)
+					}
+				}
+				appendLine(filepath.Join(world, "permission-replies.jsonl"), map[string]string{"reply": replied})
+				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "cancelled"}})
+			default:
+				send(map[string]any{"id": f.ID, "result": map[string]any{"stopReason": "end_turn"}})
+			}
+		}
+	}
 }

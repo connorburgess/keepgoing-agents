@@ -23,6 +23,16 @@ func New(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 		return process.New(*a.Process), nil
 	case "cursor":
 		return runner.NewCursor(*a.Cursor, dir), nil
+	case "acp": // config.ACPAdapter, written out so the capability table's check sees it
+		if a.ACP == nil {
+			return nil, fmt.Errorf("the acp adapter needs its acp settings, and the agent definition has none")
+		}
+		// Any agent that speaks ACP: classes from typed ends only, a saved
+		// session continued by whatever the agent advertises, and a clean
+		// cancel on stop.
+		return runner.NewACP(runner.ACPConfig{Name: config.ACPAdapter, Classify: true, AllowWithoutResume: true, CancelOnStop: true,
+			Command: a.ACP.Command, Workdir: a.ACP.Workdir, Env: a.ACP.Env,
+			HandshakeTimeout: a.ACP.HandshakeTimeout.Duration, ExitTimeout: a.ACP.ExitTimeout.Duration}, dir), nil
 	}
 	// Agents on the runner contract come from its registry.
 	if h, ok := runner.New(a, dir); ok {

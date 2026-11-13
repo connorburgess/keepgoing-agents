@@ -4,6 +4,18 @@ keepgoing is meant to supervise every popular coding agent, not only BB threads.
 
 An adapter is how the supervisor talks to one kind of agent. The decision engine is the same for all of them, but it can only act on what an adapter reports and can only do what an adapter can carry out.
 
+## Which way to add an agent
+
+keepgoing reaches a command-line agent in one of three ways. Pick by what the agent's documented interface offers, not by what would be convenient:
+
+| The agent | Use |
+| --- | --- |
+| Takes its prompt on standard input or from a file, and prints a structured result (JSON, with a session identifier) | [An agent defined in configuration](configuration.md#an-agent-defined-in-configuration): no code |
+| Takes its prompt only as an argument, or prints only prose, but speaks the Agent Client Protocol | [An agent over the Agent Client Protocol](configuration.md#an-agent-over-the-agent-client-protocol): no code |
+| Neither | A built-in runner, written and reviewed for that agent |
+
+Do not bend the first to fit an agent of the second kind. A definition never puts a prompt in an argument (it would be visible to every process on the machine) and never matches text (a sentence about a limit is not a limit). Hermes Agent is the worked example: its one-shot mode takes the prompt as an argument and prints only the final text, so it is reached over the protocol instead.
+
 ## How to read the matrix
 
 Each cell is a status and an evidence level:
@@ -44,26 +56,26 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 ## Matrix
 
 <!-- capability-matrix:begin -->
-| Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent defined in configuration |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
-| [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture |
-| [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a | n/a |
-| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
-| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a | partial · fixture |
-| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
-| [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
-| [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
-| [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
-| [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
-| [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
-| [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
-| [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture | partial · fixture |
-| [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none |
-| [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
-| [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
-| [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
-| [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
+| Behaviour | BB thread | Claude Code headless | Codex headless | Cursor headless | Antigravity | Generic process | Agent over ACP | Agent defined in configuration |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture | yes · fixture |
+| [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture | partial · fixture |
+| [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a | n/a | n/a |
+| [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture | yes · fixture |
+| [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a | yes · fixture | partial · fixture |
+| [Recover a failed turn: retry the turn](#recover-a-failed-turn-retry-the-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture | yes · fixture |
+| [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a | n/a |
+| [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a | n/a |
+| [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture | yes · fixture |
+| [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture | partial · fixture |
+| [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture | yes · fixture |
+| [Probes](#probes) | yes · live | yes · live | yes · live | missing · none | missing · none | yes · fixture | missing · none | partial · fixture |
+| [Quota readings](#quota-readings) | partial · live | yes · live | partial · live | missing · none | missing · none | missing · none | missing · none | missing · none |
+| [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture | yes · fixture |
+| [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture | partial · fixture |
+| [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | yes · fixture | partial · fixture |
+| [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | yes · fixture | partial · fixture |
 
 ### Observe state
 
@@ -75,6 +87,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 - **Cursor headless:** yes, evidence live. The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS. [cursor.md](cursor.md) [`TestCursorLifecycleOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The JSON the status command prints. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
+- **Agent over ACP:** yes, evidence fixture. The worker's exit status and its saved record of how the prompt ended: the protocol's typed stop reason or error code. No message, tool or error text is read. [`TestACPRunnerContinuesTheSessionByResumeOrLoad`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentOutputBound`](../internal/adapter/runner/definition_unix_test.go)
 
 ### Structured error classes
@@ -87,6 +100,7 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 - **Cursor headless:** missing, evidence live. Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only. [cursor.md](cursor.md) [`TestCursorFailuresRemainUnknown`](../internal/adapter/runner/cursor_test.go) [`TestCursorConnectionRecordsAreDiagnosticOnly`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
+- **Agent over ACP:** partial, evidence fixture. Only from the prompt's typed end: a refusal stop reason is refused, the authentication-required error code is auth. Every other stop reason and code is unknown; the protocol has no typed limit. [`TestACPRunnerClassifiesOnlyTypedEnds`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown. [`TestDefinedAgentErrorClassification`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionReadings`](../internal/adapter/runner/definition_test.go)
 
 ### Stale retry-notice expiry
@@ -99,6 +113,7 @@ Stop honouring a provider's "retrying" notice when nothing fresh stands behind i
 - **Cursor headless:** n/a. A headless turn is one process that is running, finished or gone. The CLI retries inside that process and reports no retry notice that could go stale.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The status contract has no retry notice.
+- **Agent over ACP:** n/a. A turn is one worker process that is running, finished or gone.
 - **Agent defined in configuration:** n/a. A turn is one process that is running, finished or gone, as for the built-in headless agents.
 
 ### Recover a failed turn: re-prompt
@@ -111,6 +126,7 @@ After an error, send the task prompt again, with backoff, up to errors.max_repro
 - **Cursor headless:** yes, evidence live. A failed turn is re-prompted in its verified session. Live once after a usage-limit failure and after a stop; connection loss is fixture-only. [cursor.md](cursor.md) [`TestCursorRecoversInitializedSessionAfterWrapperCrash`](../internal/adapter/runner/cursor_recovery_test.go) [`TestCursorConnectionLossKeepsSessionAndStaysUnknown`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestErrorRepromptsThenAwaitsUser`](../internal/supervise/supervise_test.go)
+- **Agent over ACP:** yes, evidence fixture. Run end to end with a stand-in agent. [`TestACPAgentJourney`](../internal/scenario/acp_agent_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. Run end to end with a stand-in agent. [`TestDefinedAgentJourney`](../internal/scenario/defined_agent_test.go)
 
 ### Recover a failed turn: exact session resume
@@ -123,6 +139,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 - **Cursor headless:** yes, evidence live. --resume with the saved session ID, live once across three turns. A new conversation is refused when the previous turn's identity is unverified, unless that turn exited 1 having written nothing on a CLI version whose start order is verified. [cursor.md](cursor.md) [`TestCursorSessionSafety`](../internal/adapter/runner/cursor_test.go) [`TestCursorFreshStartNeedsExactShapeAndVerifiedVersion`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command owns session identity.
+- **Agent over ACP:** yes, evidence fixture. session/resume or session/load with the saved identifier, whichever the agent advertises. A saved session is never replaced by a new one: an agent that can no longer continue it fails the turn. [`TestACPRunnerContinuesTheSessionByResumeOrLoad`](../internal/adapter/runner/acp_runner_test.go) [`TestACPRunnerNeverReplacesASavedSession`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With exact_resume: the resume command with the saved session identifier, read from a declared field or file. A saved identifier that is no longer usable holds the loop for a person; no new conversation is started in its place. Without exact_resume every turn starts a new session. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinedAgentLostSessionHoldsInsteadOfStartingAnother`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionSessionFile`](../internal/adapter/runner/definition_test.go)
 
 ### Recover a failed turn: retry the turn
@@ -135,6 +152,7 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 - **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. The contract has a resume command only.
+- **Agent over ACP:** missing, evidence none. A re-prompt is always a new prompt in the continued session.
 - **Agent defined in configuration:** missing, evidence none. A re-prompt is always a new turn.
 
 ### Connection loss and the network check
@@ -147,6 +165,7 @@ Tell an outage from a provider failure, wait it out without spending re-prompts 
 - **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **Agent over ACP:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Agent defined in configuration:** yes, evidence fixture. As for the built-in headless agents. The turn that ran into the outage is spent; nothing else is sent and no hold is raised until the network returns. Run end to end with a stand-in agent. [`TestDefinedAgentOutage`](../internal/scenario/defined_agent_test.go) [operations.md#network-outages](operations.md#network-outages)
 
 ### Child-work awareness
@@ -159,6 +178,7 @@ Hold a parent that is not in error while conversations it started are still work
 - **Cursor headless:** n/a. A headless turn has no child conversations outside its own process. Subagents the CLI starts live and end inside the turn.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. A background count in the status JSON holds the loop. No child identities are reported. [`TestObserveJSON`](../internal/adapter/process/process_test.go)
+- **Agent over ACP:** n/a. Work the agent starts lives and ends inside its turn's process.
 - **Agent defined in configuration:** n/a. A definition cannot declare work that outlives a turn, so none is assumed.
 
 ### Child failure notice and report
@@ -171,6 +191,7 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Cursor headless:** n/a. No child conversations.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. No child identities are reported.
+- **Agent over ACP:** n/a. No child conversations.
 - **Agent defined in configuration:** n/a. No child conversations.
 
 ### Handoff away from it
@@ -183,6 +204,7 @@ When it is the active target and hits a configured error class, move the loop to
 - **Cursor headless:** missing, evidence none. Configuration refuses fallbacks for a Cursor loop, and every Cursor failure is unknown, which never fails over. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+- **Agent over ACP:** partial, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. The protocol has no typed limit, so a limit is unknown and never starts a handoff by itself. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
 
 ### Handoff to it
@@ -195,6 +217,7 @@ Be a fallback candidate that takes the work over after an exact probe.
 - **Cursor headless:** missing, evidence none. Cursor fallback candidates are refused: there is no account and model probe contract. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestHandoffToFirstCandidatePassingExactProbe`](../internal/supervise/supervise_test.go)
+- **Agent over ACP:** partial, evidence fixture. Only with a command probe: the runner has no probe of its own. Guided setup does not create it. [configuration.md#an-agent-over-the-agent-client-protocol](configuration.md#an-agent-over-the-agent-client-protocol)
 - **Agent defined in configuration:** partial, evidence fixture. With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand. [`TestCustomAgentDefinition`](../internal/config/custom_test.go) [configuration.md#an-agent-defined-in-configuration](configuration.md#an-agent-defined-in-configuration)
 
 ### Switch-back
@@ -207,6 +230,7 @@ Return to the primary once its limit has lifted, when enabled.
 - **Cursor headless:** missing, evidence none. Refused with fallbacks. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
+- **Agent over ACP:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestSwitchBackAfterThePrimaryResets`](../internal/supervise/supervise_test.go)
 
 ### Probes
@@ -219,6 +243,7 @@ Check a candidate's account and model with a small real request before relying o
 - **Cursor headless:** missing, evidence none. No probe contract. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. A command probe. [`TestCommandProbe`](../internal/probe/probe_test.go)
+- **Agent over ACP:** missing, evidence none. No probe. A candidate needs a command probe.
 - **Agent defined in configuration:** partial, evidence fixture. With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules. [`TestCustomProbe`](../internal/probe/custom_test.go)
 
 ### Quota readings
@@ -231,6 +256,7 @@ Record how much of a usage window is used, from structured fields a probe alread
 - **Cursor headless:** missing, evidence none. No probe contract.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** missing, evidence none. A command probe reports health only.
+- **Agent over ACP:** missing, evidence none. No usage reading.
 - **Agent defined in configuration:** missing, evidence none. No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets. [`TestDefinedAgentLimitLookup`](../internal/adapter/runner/definition_unix_test.go)
 
 ### Handoff into a new conversation
@@ -243,6 +269,7 @@ Take the work over in a conversation that did not exist before the handoff.
 - **Cursor headless:** missing, evidence none. Not a fallback candidate.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. The resume command decides which conversation receives the brief.
+- **Agent over ACP:** yes, evidence fixture. A candidate has no saved session, so the handoff brief opens one. [`TestACPRunnerContinuesTheSessionByResumeOrLoad`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** yes, evidence fixture. A candidate has no saved session, so the handoff brief starts one. [`TestDefinedAgentTurnLifecycle`](../internal/adapter/runner/definition_unix_test.go)
 
 ### Run graph and keepgoing runs
@@ -255,6 +282,7 @@ Record runs, sends and the conversation reference, and show them offline.
 - **Cursor headless:** yes, evidence fixture. The runner's saved resume ID, labelled observed. [`TestHeadlessTargetRecordsItsSavedSession`](../internal/supervise/graph_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Runs and sends are recorded. No conversation reference exists to record. [`TestHeadlessTargetRecordsNoChildListing`](../internal/supervise/graph_test.go)
+- **Agent over ACP:** partial, evidence fixture. Runs and sends are recorded. The session identifier is the agent's own and is not shown. [`TestACPRunnerContinuesTheSessionByResumeOrLoad`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. Runs and sends are recorded. The session identifier is the agent's own shape and is not shown. [`TestDefinitionBecomesASpecification`](../internal/adapter/runner/definition_test.go)
 
 ### Stop and owned cancellation
@@ -267,6 +295,7 @@ Stop a running turn on request, signalling only a process keepgoing itself start
 - **Cursor headless:** yes, evidence live. The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed. [cursor.md](cursor.md) [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
+- **Agent over ACP:** yes, evidence fixture. The worker sends session/cancel and waits a few seconds for the prompt to end; then the owned stop ends its process group. A saved PID never authorizes a signal. [`TestACPRunnerStopCancelsThePromptCleanly`](../internal/adapter/runner/acp_runner_test.go) [`TestACPRunnerStopEndsAnAgentThatIgnoresTheCancel`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
 
 ### Permission prompts
@@ -279,6 +308,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 - **Cursor headless:** missing, evidence none. No force or approval flag is added, and print mode has no typed permission-wait signal. A rejection has not been observed live. [cursor.md](cursor.md)
 - **Antigravity:** missing, evidence fixture. An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. awaitingInput in the status JSON. [`TestObserveAwaitingInput`](../internal/adapter/process/process_test.go)
+- **Agent over ACP:** yes, evidence fixture. A permission request is answered cancelled, never granted, and raises one awaiting-user hold. [`TestACPRunnerNeverGrantsAPermission`](../internal/adapter/runner/acp_runner_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered. [`TestDefinedAgentWaitingRaisesOneHold`](../internal/adapter/runner/definition_unix_test.go)
 <!-- capability-matrix:end -->
 

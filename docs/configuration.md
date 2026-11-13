@@ -197,6 +197,34 @@ A saved session identity is checked again each time it is read. A value that is 
 
 `keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
 
+## An agent over the Agent Client Protocol
+
+Unreleased source (roadmap K4); **fixture-tested with a stand-in agent only**. `adapter: acp` supervises an agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP v1) on its standard streams, such as Hermes Agent's `hermes acp`. Use it for an agent whose command line takes its prompt only as an argument or prints only prose: such an agent cannot be [defined in configuration](#an-agent-defined-in-configuration), and the protocol gives keepgoing what the command line does not.
+
+```yaml
+loop:
+  adapter: acp
+  acp:
+    name: example-agent                 # label; the provider when none is set
+    command: [example-agent, acp]       # the agent's ACP server command, as argv
+    workdir: /example/project
+    env: {EXAMPLE_HOME: /example/account-a}
+    handshake_timeout: 2m               # initialization and session setup; at most 10m
+    exit_timeout: 10s                   # the agent's exit after its turn; at most 10m
+```
+
+`command` is argv, run without a shell; a bare name is looked up on `PATH` and a path resolves against the configuration file. Each turn starts the command once, in `workdir`, as a child of one keepgoing worker process that lives for that turn only.
+
+What keepgoing does over the protocol:
+
+- **Prompt.** The task prompt is sent as the protocol's prompt, from the private prompt file. It is never an argument.
+- **Session.** The first turn opens a session and saves its identifier. Later turns continue exactly that session with `session/resume` or `session/load`, whichever the agent advertises. A saved session is never replaced by a new one: if the agent can no longer continue it, the turn fails.
+- **Permission requests are never granted.** When the agent asks for a permission, keepgoing answers `cancelled`, asks the agent to cancel the prompt, and holds the loop for a person with one `await_user` report. It does not choose an option, in any mode. After you deal with it and `resume`, the session is continued with the task prompt.
+- **How a turn ended** comes only from the protocol's typed fields. `end_turn` is a finished turn. A `refusal` stop reason is the provider declining the request: it is never treated as a limit and never moves work to a fallback. The protocol's authentication-required error is `auth`. Every other stop reason or error is `unknown`. No message, tool or error text is read.
+- **Stop.** `keepgoing stop` asks the agent to cancel its prompt and waits five seconds for the turn to end by itself; whatever is left is then ended with its process group. An agent killed while writing can lose the session it was asked to keep, which is why the cancel comes first.
+
+What it cannot do: the protocol has no typed usage limit, so a limit is `unknown` and never starts a handoff; there is no probe, so a fallback candidate needs a `command` probe; no usage reading is taken. `keepgoing doctor` says the same and resolves the command without running it. The [capability matrix](adapters.md) has a column for it. Guided `init` and `fallbacks add` do not create one.
+
 ## progress
 
 | Field | Default | Meaning |
