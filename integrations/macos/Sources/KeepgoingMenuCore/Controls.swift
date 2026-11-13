@@ -17,8 +17,8 @@ public struct StopOptions: Decodable, Equatable {
     /// How many lanes a stop with lanes would stop.
     public let lanes: Int
     /// Whether the stop can be carried out now rather than at the next check.
-    public let now: Bool
-    public init(lanes: Int, now: Bool) { self.lanes = lanes; self.now = now }
+    public let immediately: Bool
+    public init(lanes: Int, immediately: Bool) { self.lanes = lanes; self.immediately = immediately }
 }
 
 /// The review `keepgoing client review ACTION --loop KEY --json` prints.
@@ -138,19 +138,19 @@ public enum ConfirmationBuilder {
         }
         let lines = review.lines.map(Contract.text)
         if action == .stop {
-            let now = review.stop?.now ?? false
+            let immediately = review.stop?.immediately ?? false
             if let lanes = review.stop?.lanes, lanes > 0 {
                 buttons.append(ConfirmButton(title: "Stop the Conversation", destructive: true,
-                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, now: now)))
+                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, immediately: immediately)))
                 buttons.append(ConfirmButton(title: lanes == 1 ? "Stop It and Its Lane" : "Stop It and Its \(lanes) Lanes", destructive: true,
-                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: true, now: now)))
+                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: true, immediately: immediately)))
             } else {
                 buttons.append(ConfirmButton(title: name, destructive: true,
-                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, now: now)))
+                                             command: .apply(.stop, key: review.key, expect: review.expect, lanes: false, immediately: immediately)))
             }
         } else {
             buttons.append(ConfirmButton(title: name, destructive: false,
-                                         command: .apply(action, key: review.key, expect: review.expect, lanes: false, now: false)))
+                                         command: .apply(action, key: review.key, expect: review.expect, lanes: false, immediately: false)))
         }
         return Confirmation(messageText: Contract.text(review.title), informativeText: lines.joined(separator: "\n\n"), buttons: buttons)
     }

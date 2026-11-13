@@ -131,26 +131,26 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(MenuBuilder.arguments(.stopPanel), ["panel", "stop"])
         for action in LoopAction.allCases {
             XCTAssertEqual(MenuBuilder.arguments(.review(action, key: key)), ["client", "review", action.rawValue, "--loop", key, "--json"])
-            XCTAssertEqual(MenuBuilder.arguments(.apply(action, key: key, expect: expect, lanes: false, now: false)),
+            XCTAssertEqual(MenuBuilder.arguments(.apply(action, key: key, expect: expect, lanes: false, immediately: false)),
                            ["client", "apply", action.rawValue, "--loop", key, "--expect", expect, "--json"])
         }
-        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: true, now: true)),
-                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--now", "--json"])
-        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: false, now: true)),
-                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--now", "--json"])
+        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: true, immediately: true)),
+                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--immediately", "--json"])
+        XCTAssertEqual(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: false, immediately: true)),
+                       ["client", "apply", "stop", "--loop", key, "--expect", expect, "--immediately", "--json"])
         XCTAssertNil(MenuBuilder.arguments(.quit))
         // Lanes and now belong to a stop only.
-        XCTAssertNil(MenuBuilder.arguments(.apply(.pause, key: key, expect: expect, lanes: true, now: false)))
-        XCTAssertNil(MenuBuilder.arguments(.apply(.resume, key: key, expect: expect, lanes: false, now: true)))
+        XCTAssertNil(MenuBuilder.arguments(.apply(.pause, key: key, expect: expect, lanes: true, immediately: false)))
+        XCTAssertNil(MenuBuilder.arguments(.apply(.resume, key: key, expect: expect, lanes: false, immediately: true)))
         // A key that is not a page key, or an expect value that is not a
         // digest, never reaches the command line.
         for bad in ["", "--idle", "l0123", "example-api", "l0123456789ab --no-open", "L0123456789AB"] {
             XCTAssertNil(MenuBuilder.arguments(.openLoop(key: bad)), bad)
             XCTAssertNil(MenuBuilder.arguments(.review(.stop, key: bad)), bad)
-            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: bad, expect: expect, lanes: false, now: false)), bad)
+            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: bad, expect: expect, lanes: false, immediately: false)), bad)
         }
-        for bad in ["", "--now", String(repeating: "AB", count: 32), String(repeating: "a", count: 63), expect + " --lanes"] {
-            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: key, expect: bad, lanes: false, now: false)), bad)
+        for bad in ["", "--immediately", String(repeating: "AB", count: 32), String(repeating: "a", count: 63), expect + " --lanes"] {
+            XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: key, expect: bad, lanes: false, immediately: false)), bad)
         }
     }
 

@@ -106,8 +106,8 @@ public enum MenuCommand: Equatable {
     /// reads and changes nothing; its review is then shown for confirmation.
     case review(LoopAction, key: String)
     /// Runs `keepgoing client apply <action> --loop <key> --expect <digest>
-    /// [--lanes] [--now] --json`, only from a confirmed review.
-    case apply(LoopAction, key: String, expect: String, lanes: Bool, now: Bool)
+    /// [--lanes] [--immediately] --json`, only from a confirmed review.
+    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool)
     case quit
 }
 
@@ -328,9 +328,9 @@ public enum MenuBuilder {
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]
         case .review(let action, let key): return Contract.validKey(key) ? ["client", "review", action.rawValue, "--loop", key, "--json"] : nil
-        case .apply(let action, let key, let expect, let lanes, let now):
-            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !now) else { return nil }
-            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (now ? ["--now"] : []) + ["--json"]
+        case .apply(let action, let key, let expect, let lanes, let immediately):
+            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately) else { return nil }
+            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : []) + ["--json"]
         case .quit: return nil
         }
     }

@@ -44,7 +44,7 @@ final class ControlsTests: XCTestCase {
         let invalid: [(Data, Int32, LoopAction)] = [
             (reviewJSON(key: "l000000000000"), 0, .stop), (reviewJSON(action: "pause"), 0, .stop), (reviewJSON(expect: "abc"), 0, .stop),
             (reviewJSON(expect: String(repeating: "C1", count: 32)), 0, .stop), (reviewJSON(), 1, .stop), (refused, 0, .stop),
-            (reviewJSON(action: "pause", stop: "{\"lanes\":2,\"now\":true}"), 0, .pause), (reviewJSON(stop: "{\"lanes\":-1,\"now\":true}"), 0, .stop),
+            (reviewJSON(action: "pause", stop: "{\"lanes\":2,\"immediately\":true}"), 0, .pause), (reviewJSON(stop: "{\"lanes\":-1,\"immediately\":true}"), 0, .stop),
             (Data("{\"schemaVersion\":1,\"result\":{\"outcome\":\"maybe\",\"text\":\"x\"}}".utf8), 1, .stop),
             (Data("fictional-private-bad-json".utf8), 0, .stop), (Data(), 0, .stop),
         ]
@@ -63,7 +63,7 @@ final class ControlsTests: XCTestCase {
         XCTAssertEqual(c.informativeText, lines.joined(separator: "\n\n"))
         XCTAssertEqual(c.buttons, [
             ConfirmButton(title: "Cancel", destructive: false, command: nil),
-            ConfirmButton(title: "Stop example-api", destructive: true, command: .apply(.stop, key: key, expect: expect, lanes: false, now: false)),
+            ConfirmButton(title: "Stop example-api", destructive: true, command: .apply(.stop, key: key, expect: expect, lanes: false, immediately: false)),
         ])
         XCTAssertNil(c.defaultButton.command)
         XCTAssertNotNil(MenuBuilder.arguments(c.buttons[1].command!))
@@ -72,24 +72,24 @@ final class ControlsTests: XCTestCase {
     // Once the CLI offers lanes and stopping now, a stop offers the
     // conversation alone, or with its lanes, and always runs now.
     func testAStopWithLanesOffersBothAndRunsNow() throws {
-        let c = ConfirmationBuilder.build(try review("{\"lanes\":3,\"now\":true}"))
+        let c = ConfirmationBuilder.build(try review("{\"lanes\":3,\"immediately\":true}"))
         XCTAssertEqual(c.buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its 3 Lanes"])
         XCTAssertEqual(c.buttons.map(\.destructive), [false, true, true])
-        XCTAssertEqual(c.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, now: true))
-        XCTAssertEqual(c.buttons[2].command, .apply(.stop, key: key, expect: expect, lanes: true, now: true))
-        XCTAssertEqual(MenuBuilder.arguments(c.buttons[2].command!), ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--now", "--json"])
-        XCTAssertEqual(ConfirmationBuilder.build(try review("{\"lanes\":1,\"now\":true}")).buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its Lane"])
+        XCTAssertEqual(c.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
+        XCTAssertEqual(c.buttons[2].command, .apply(.stop, key: key, expect: expect, lanes: true, immediately: true))
+        XCTAssertEqual(MenuBuilder.arguments(c.buttons[2].command!), ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--immediately", "--json"])
+        XCTAssertEqual(ConfirmationBuilder.build(try review("{\"lanes\":1,\"immediately\":true}")).buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its Lane"])
         // No lanes: one stop, now.
-        let none = ConfirmationBuilder.build(try review("{\"lanes\":0,\"now\":true}"))
+        let none = ConfirmationBuilder.build(try review("{\"lanes\":0,\"immediately\":true}"))
         XCTAssertEqual(none.buttons.map(\.title), ["Cancel", "Stop example-api"])
-        XCTAssertEqual(none.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, now: true))
+        XCTAssertEqual(none.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
     }
 
     func testPauseAndResumeAreNotStyledAsDestructive() throws {
         for action in [LoopAction.pause, .resume] {
             let c = ConfirmationBuilder.build(try review(action: action))
             XCTAssertEqual(c.buttons.map(\.destructive), [false, false])
-            XCTAssertEqual(c.buttons[1].command, .apply(action, key: key, expect: expect, lanes: false, now: false))
+            XCTAssertEqual(c.buttons[1].command, .apply(action, key: key, expect: expect, lanes: false, immediately: false))
         }
     }
 

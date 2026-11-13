@@ -79,7 +79,7 @@ final class ClientTests: XCTestCase {
         // Only an apply command is run as one.
         try FileManager.default.removeItem(atPath: binary.path + ".args")
         XCTAssertEqual(client.apply(.openPanel, review: r).outcome, "refused")
-        XCTAssertEqual(client.apply(.apply(.stop, key: key, expect: "--now", lanes: false, now: false), review: r).outcome, "refused")
+        XCTAssertEqual(client.apply(.apply(.stop, key: key, expect: "--immediately", lanes: false, immediately: false), review: r).outcome, "refused")
         XCTAssertThrowsError(try client.open(.review(.stop, key: key)))
         XCTAssertFalse(FileManager.default.fileExists(atPath: binary.path + ".args"))
         // A CLI that cannot be started did nothing.
