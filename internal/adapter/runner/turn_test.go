@@ -113,7 +113,7 @@ func TestTurnErrorAndStopOnThisPlatform(t *testing.T) {
 }
 
 func TestWrapperDoesNotLeakItsVariables(t *testing.T) {
-	cmd, err := wrapperCommand([]string{"x"}, ".", "/fictional/dir", nil)
+	cmd, err := wrapperCommand([]string{"x"}, ".", "/fictional/dir", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
