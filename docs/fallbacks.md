@@ -1,6 +1,6 @@
 # Fallbacks
 
-`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`.
+`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (unreleased source).
 
 ## Add a fallback with guided setup
 

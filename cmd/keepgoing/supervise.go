@@ -40,8 +40,23 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 		fmt.Fprintln(e.stdout, "ownership: validation only; use enable --take-over to transfer the claim")
 	}
 	fmt.Fprintf(e.stdout, "ok: %s (loop %s, %s)\n", path, l.Name, l.Describe())
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := cfg.FallbackSet; fb != nil && !l.FollowsStandard() {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+	}
+	if l.FollowsStandard() {
+		// Never a failure: a following loop is supervised whatever state the
+		// standard list is in.
+		switch fb := cfg.FallbackSet; {
+		case cfg.RouteList.Unreadable:
+			e.errf("warning: %s", config.StandardRoutesUnreadable)
+		case fb == nil:
+			e.errf("warning: follows the standard route list, but none of its routes applies to this loop; see keepgoing routes list")
+		default:
+			fmt.Fprintf(e.stdout, "ok: follows the standard route list (%d of its routes apply, min_healthy %d across %s)\n", len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+		}
+		for _, w := range cfg.RouteList.Warnings {
+			e.errf("warning: %s", w)
+		}
 	}
 	if limits := l.Limits.Configured(); len(limits) > 0 {
 		fmt.Fprintf(e.stdout, "bounds: %s\n", strings.Join(limits, ", "))
@@ -290,9 +305,11 @@ type statusOut struct {
 	InWindow       bool                 `json:"inWindow"`
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
-	Usage          []usageView          `json:"usage"`
-	StateDir       string               `json:"stateDir"`
-	Version        string               `json:"version"`
+	// Routes is set for a loop that follows the standard route list.
+	Routes   *supervise.RouteNote `json:"routes,omitempty"`
+	Usage    []usageView          `json:"usage"`
+	StateDir string               `json:"stateDir"`
+	Version  string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -509,7 +526,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
 	out.Usage = []usageView{}
-	if fb := cfg.FallbackSet; fb != nil {
+	fb, outsideList := supervise.EffectiveRoutes(cfg, st)
+	if cfg.RouteList.Source == config.RoutesStandard {
+		out.Routes = &supervise.RouteNote{Source: cfg.RouteList.Source, Unreadable: cfg.RouteList.Unreadable, CurrentNotInList: outsideList}
+	}
+	if fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
@@ -688,6 +709,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
+	}
+	if r := out.Routes; r != nil {
+		fmt.Fprintln(w, "routes:    follows the standard route list (keepgoing routes list)")
+		if r.Unreadable {
+			fmt.Fprintf(w, "  %s\n", config.StandardRoutesUnreadable)
+		}
+		if r.CurrentNotInList {
+			fmt.Fprintln(w, "  the current route is no longer in the list; the loop stays on it until the ordinary rules move it")
+		}
 	}
 	if r := out.Redundancy; r != nil {
 		verdict := "handoffs allowed"
