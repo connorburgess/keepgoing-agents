@@ -29,7 +29,7 @@ Exit codes: 0 after an interrupt, 1 if it cannot listen, 2 for invalid flags.
 
 ## Opening it with one command: `keepgoing panel`
 
-`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS, and with fixtures and real processes on Linux in CI.
+`keepgoing dock` runs in the foreground and prints an address to copy. `keepgoing panel` is the ordinary way in: it opens the same page in your browser with nothing to copy. Unreleased source; tested with fixtures, real processes and a real browser on macOS. The same tests are meant to run on Linux in CI and have not yet.
 
 **Windows: unverified, so it refuses.** `keepgoing panel`, `panel status` and `panel stop` have never been run on Windows. Until they have, they stop there with a message that says so and points to `keepgoing dock`, which works as before. `keepgoing panel list` needs no server and works on every platform.
 
