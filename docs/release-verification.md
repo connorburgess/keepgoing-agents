@@ -2,6 +2,14 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## Archive contents and packaging from the next release
+
+Releases through v0.1.5 are Apache-2.0 and their archives hold the executable, `README.md` and `LICENSE`; the records below describe them as published. The first release cut after the [license change](../LICENSING.md) differs in three ways, and its verification must check each:
+
+- **Archive inventory.** Every archive holds exactly: the executable, `README.md`, `LICENSE` (Sustainable Use License 1.0), `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`. Nothing else.
+- **Third-party notices.** `THIRD_PARTY_NOTICES` reproduces the terms of the Go runtime and standard library and of every module linked into the executable. `scripts/build-release.sh` runs `scripts/third-party-notices.sh --check` first and stops when the file does not match the modules of the six release targets, so a module added without its notice cannot be released. Pull-request CI runs the same check. After adding or updating a module, run `scripts/third-party-notices.sh`, read the result and commit it.
+- **Homebrew formula.** The tap is a separate repository. Its formula installs v0.1.5 today, which stays Apache-2.0, so its license field is correct until then. The formula update for the first release under the new license must change that field with the URLs and checksums, and its install check should confirm the new files are present. Do not change the field before that release.
+
 ## v0.1.5 release and package evidence
 
 [v0.1.5](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) tags checked head `1f2b0cd87ff12b79f9b58627e27ca9da966b299b`, whose tree matches merge `1ff9ab25edd74a8c42e183835fa4e7e70c396dd1`. The [five-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43131838775) passed on that head against base `bfb9006988792eb81cfbaaad10b6dad289aa63e0`: Ubuntu/macOS build and tests, Windows diagnostics, BB plugin checks and contribution metadata. The [Build and publish job](https://github.com/connorburgess/keepgoing-agents/actions/runs/43132257828) passed on the tagged head, including Go tests, six archive builds/checksums and the unpacked Linux amd64 setup/recovery checks.
