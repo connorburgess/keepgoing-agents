@@ -187,12 +187,92 @@ func (c *Custom) applyDefaults() {
 	if d.Output.MaxBytes == 0 {
 		d.Output.MaxBytes = DefaultCustomOutput
 	}
-	if len(d.Finished.ExitCodes) == 0 && d.Finished.Field == "" {
+	// A turn is finished, or waiting on a person, only with an exit code the
+	// definition names; without one that is exit code 0. A field alone never
+	// overrides a failing or unreadable exit record.
+	if len(d.Finished.ExitCodes) == 0 {
 		d.Finished.ExitCodes = []int{0}
+	}
+	if d.Waiting != nil && len(d.Waiting.ExitCodes) == 0 {
+		d.Waiting.ExitCodes = []int{0}
 	}
 }
 
-func (c *Custom) resolvePaths(base string) { c.Workdir = resolve(base, c.Workdir) }
+// resolvePaths resolves the working directory and every command's executable
+// against the directory of the configuration file, like every other command
+// in a configuration. A bare name is left for PATH.
+func (c *Custom) resolvePaths(base string) {
+	c.Workdir = resolve(base, c.Workdir)
+	d := &c.Definition
+	argvs := []Argv{d.Start, d.Resume}
+	if d.Probe != nil {
+		argvs = append(argvs, d.Probe.Argv)
+	}
+	if d.Limits != nil {
+		argvs = append(argvs, d.Limits.Argv)
+	}
+	for _, argv := range argvs {
+		if len(argv) > 0 && !argv[0].Optional && len(argv[0].Parts) == 1 {
+			argv[0].Parts[0] = resolveExec(base, argv[0].Parts[0])
+		}
+	}
+}
+
+// customShells are command interpreters. A definition runs the agent itself;
+// a shell as the executable would make an argument a command line.
+var customShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "csh": true, "tcsh": true, "ash": true,
+	"cmd": true, "powershell": true, "pwsh": true}
+
+func customShell(executable string) bool {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(executable, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return customShells[name]
+}
+
+// classWords says an error class in plain words.
+var classWords = map[string]string{"rate_limit": "a rate limit", "auth": "an authentication failure", "overloaded": "an overloaded provider", "network": "a network failure"}
+
+// FailoverMappings lists, in words, everything in the definition that maps
+// the agent's own output to an error class the loop fails over on. Each is a
+// declaration that such a result is a real provider limit: it moves work to
+// a fallback. A refusal, a policy block or an account restriction must not
+// be mapped; left unmapped it is unknown, which never moves work.
+func (c Custom) FailoverMappings(failoverOn []string) []string {
+	moves := func(class string) bool { return class != "" && contains(failoverOn, class) }
+	const then = " and will move work to a fallback"
+	var out []string
+	e := c.Definition.Errors
+	if e != nil {
+		codes := make([]int, 0, len(e.ExitCodes))
+		for code := range e.ExitCodes {
+			codes = append(codes, code)
+		}
+		sort.Ints(codes)
+		for _, code := range codes {
+			if class := e.ExitCodes[code]; moves(class) {
+				out = append(out, fmt.Sprintf("exit code %d is treated as %s%s", code, classWords[class], then))
+			}
+		}
+		for _, code := range sortedKeys(e.Classes) {
+			if class := e.Classes[code]; moves(class) {
+				out = append(out, fmt.Sprintf("a result whose %s is %q is treated as %s%s", e.Field, code, classWords[class], then))
+			}
+		}
+		if e.HTTPStatusField != "" {
+			for _, status := range []struct{ codes, class string }{{"429", "rate_limit"}, {"401 or 403", "auth"}, {"503 or 529", "overloaded"}} {
+				if moves(status.class) {
+					out = append(out, fmt.Sprintf("an HTTP status of %s in %s is treated as %s%s", status.codes, e.HTTPStatusField, classWords[status.class], then))
+				}
+			}
+		}
+	}
+	if l := c.Definition.Limits; l != nil && moves("rate_limit") {
+		out = append(out, fmt.Sprintf("an unclassified failure for which the limits command reports %s as %s is treated as a rate limit%s", l.Blocked.Field, strings.Join(l.Blocked.Equals, " or "), then))
+	}
+	return out
+}
 
 // SettingValue returns the value of a setting, or "".
 func (c Custom) SettingValue(name string) string { return c.Values[name] }
@@ -242,6 +322,8 @@ func (c Custom) validate(add func(format string, args ...any)) {
 		}
 		if first := argv[0]; first.Optional || len(first.Parts) != 1 || first.Parts[0] == "" || strings.ContainsAny(first.Parts[0], "{}") {
 			add("%s: the first argument is the executable, written out", where)
+		} else if customShell(first.Parts[0]) {
+			add("%s: the executable is a shell; name the agent's own executable, so that no argument is a command line", where)
 		}
 		usesFile := false
 		for _, arg := range argv {
@@ -249,6 +331,9 @@ func (c Custom) validate(add func(format string, args ...any)) {
 				add("%s: an optional group is empty", where)
 			}
 			for _, part := range arg.Parts {
+				if part == "" {
+					add("%s: an argument is empty", where)
+				}
 				if len(part) > maxCustomValue || strings.ContainsAny(part, "\x00\r\n") {
 					add("%s: an argument must be one line of at most %d characters", where, maxCustomValue)
 				}
@@ -343,6 +428,11 @@ func (c Custom) validate(add func(format string, args ...any)) {
 	}
 	if d.Waiting != nil {
 		checkMatch("custom.definition.waiting", *d.Waiting, false)
+		// Waiting is read first, so a turn both rules match would be a wait.
+		if w := *d.Waiting; intersects(intStrings(w.ExitCodes), intStrings(d.Finished.ExitCodes)) &&
+			(w.Field == "" || d.Finished.Field == "" || (w.Field == d.Finished.Field && intersects(w.Equals, d.Finished.Equals))) {
+			add("custom.definition.waiting matches turns that finished also matches; give them different exit codes or values")
+		}
 	}
 	observesErrors := false
 	if e := d.Errors; e != nil {
@@ -355,6 +445,9 @@ func (c Custom) validate(add func(format string, args ...any)) {
 		for _, code := range sortedKeys(e.Classes) {
 			if !CustomToken.MatchString(code) {
 				add("custom.definition.errors.classes: %q is not a code; only codes are compared, never text", code)
+			}
+			if e.Field == d.Finished.Field && containsString(d.Finished.Equals, code) {
+				add("custom.definition.errors.classes: %q is also a finished value", code)
 			}
 			if class := e.Classes[code]; !customClass(class) {
 				add("custom.definition.errors.classes[%s]: unknown error class %q (use one of %s)", code, class, strings.Join(ErrorClasses, ", "))
@@ -423,9 +516,12 @@ func (c Custom) validate(add func(format string, args ...any)) {
 	case !caps.StructuredWaiting && d.Waiting != nil:
 		add("custom.definition.waiting is used only with capabilities.structured_waiting")
 	}
-	for name, claimed := range map[string]bool{"retries_itself": caps.RetriesItself, "fails_over_itself": caps.FailsOverItself, "schedules_itself": caps.SchedulesItself, "child_work": caps.ChildWork} {
-		if claimed {
-			add("custom.definition.capabilities.%s cannot be declared yet: a definition has no way to let keepgoing observe it", name)
+	for _, claim := range []struct {
+		name    string
+		claimed bool
+	}{{"retries_itself", caps.RetriesItself}, {"fails_over_itself", caps.FailsOverItself}, {"schedules_itself", caps.SchedulesItself}, {"child_work", caps.ChildWork}} {
+		if claim.claimed {
+			add("custom.definition.capabilities.%s cannot be declared yet: a definition has no way to let keepgoing observe it", claim.name)
 		}
 	}
 }
@@ -433,6 +529,32 @@ func (c Custom) validate(add func(format string, args ...any)) {
 // customClass reports whether a definition may map a code to the class: a
 // real error class, not "none".
 func customClass(class string) bool { return ValidErrorClass(class) && class != "none" }
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func intersects(a, b []string) bool {
+	for _, v := range a {
+		if containsString(b, v) {
+			return true
+		}
+	}
+	return false
+}
+
+func intStrings(in []int) []string {
+	out := make([]string, 0, len(in))
+	for _, n := range in {
+		out = append(out, fmt.Sprint(n))
+	}
+	return out
+}
 
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))

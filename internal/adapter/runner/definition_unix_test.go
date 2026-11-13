@@ -293,8 +293,10 @@ func TestStdinCannotBeTakenAwayByEnvironment(t *testing.T) {
 	}
 }
 
-// Output over the definition's limit is not read at all: the state is
-// unknown and nothing is concluded from part of it.
+// Output over the definition's limit is not read at all: nothing is
+// concluded from part of it, however healthy the part that fits looks. The
+// turn is an unclassified failed turn, so the ordinary bounded re-prompts
+// follow, and no session is taken from it.
 func TestDefinedAgentOutputBound(t *testing.T) {
 	h, _ := exampleRunner(t, `cat > /dev/null; head -c 3000 /dev/zero | tr '\0' 'x'; echo; echo '`+exampleLine("ok", "")+`'`, func(c *config.Custom) { c.Definition.Output.MaxBytes = config.MinCustomOutput })
 	if err := h.Send(context.Background(), "go", adapter.ModeAuto); err != nil {
@@ -311,11 +313,41 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	obs, err := h.Observe(context.Background())
-	if err == nil || obs.State != decide.Unknown || strings.Contains(err.Error(), "xxx") {
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown || obs.Evidence.Source != "runner_exit" {
 		t.Fatalf("%+v %v", obs, err)
 	}
-	// Nothing is sent on top of output that could not be read.
-	if err := h.Send(context.Background(), "again", adapter.ModeAuto); err == nil {
-		t.Fatal("sent after unreadable output")
+	if h.dir.Session() != "" {
+		t.Fatalf("a session was taken from unread output: %q", h.dir.Session())
+	}
+	// The next turn can be started; it does not need the file removed.
+	if err := h.Send(context.Background(), "again", adapter.ModeAuto); err != nil {
+		t.Fatalf("could not send after oversize output: %v", err)
+	}
+	waitPhase(t, Dir(string(h.dir)), Running)
+	h.dir.Stop()
+}
+
+// A saved session is checked again when it is read: a value the definition
+// would not have saved is not passed back as an argument.
+func TestDefinedAgentSavedSessionIsRevalidated(t *testing.T) {
+	h, _ := exampleRunner(t, "cat > /dev/null", nil)
+	for saved, resumes := range map[string]bool{exampleSessionToken: true, "--dangerous-flag": false, "two words": false, "": false} {
+		if err := os.MkdirAll(string(h.dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(string(h.dir), "session"), []byte(saved+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Join(h.Args(), "\n")
+		if got := strings.Contains(args, "--session"); got != resumes || (!resumes && saved != "" && strings.Contains(args, saved)) {
+			t.Errorf("saved %q: args %q", saved, args)
+		}
+	}
+	// The built-in agents keep their own rule: whatever was saved is used.
+	dir := t.TempDir()
+	c := NewClaude(config.Claude{CLI: "claude", Workdir: dir}, filepath.Join(dir, "target"))
+	c.dir.SaveSession("sess-1")
+	if !strings.Contains(strings.Join(c.Args(), " "), "--resume sess-1") {
+		t.Errorf("claude args %q", c.Args())
 	}
 }

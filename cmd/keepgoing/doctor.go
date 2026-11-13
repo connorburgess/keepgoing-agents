@@ -177,6 +177,15 @@ func doctor(e env, args []string, run doctorRun) int {
 			r.add("agent."+id+".session", status, s.Message, "")
 		}
 		doctorAgent(e.ctx, &r, id, a, *offline, *timeout, run)
+		if a.Custom != nil {
+			// A defined agent's own mapping decides what moves work to a
+			// fallback, so every such mapping is said in words.
+			if moves := a.Custom.FailoverMappings(cfg.Loop.Errors.FailoverOn); len(moves) > 0 {
+				r.add("agent."+id+".failover", "warning", "This definition decides what moves work to a fallback: "+strings.Join(moves, "; ")+".", "Map only a real provider limit to a class the loop fails over on. Leave a refusal, a policy block or an account restriction unmapped: it is then unknown, which never moves work.")
+			} else {
+				r.add("agent."+id+".failover", "ok", "Nothing in this definition maps the agent's output to a class the loop fails over on.", "")
+			}
+		}
 	}
 	checkAgent("primary", cfg.Loop.Agent)
 	if cfg.FallbackSet != nil {
@@ -391,6 +400,11 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 			r.add(prefix+".cli", "error", "The defined agent has no usable definition.", "Run validate and correct the custom agent's definition.")
 			return
 		}
+		if info, err := os.Stat(workdir); err != nil || !info.IsDir() {
+			r.add(prefix+".workdir", "error", "The defined agent's working directory is missing or not a directory.", "Correct custom.workdir; a relative path resolves against the configuration file.")
+		} else {
+			r.add(prefix+".workdir", "ok", "The defined agent's working directory exists.", "")
+		}
 		if _, err := exec.LookPath(set.CLI); err != nil {
 			r.add(prefix+".cli", "error", "The defined agent's executable is missing or not executable.", "Install it or correct the first argument of the definition's start command and the scheduler PATH.")
 		} else {
@@ -400,6 +414,9 @@ func doctorAgent(ctx context.Context, r *doctorReport, id string, a config.Agent
 		r.add(prefix+".capabilities", "ok", "Defined agent "+spec.Provider+". keepgoing can: "+strings.Join(can, "; ")+".", "")
 		if len(cannot) > 0 {
 			r.add(prefix+".limits", "unavailable", "With this definition keepgoing cannot: "+strings.Join(cannot, "; ")+".", "Declare the capability with the rule that lets it be observed, if the agent's documented interface supports it.")
+		}
+		if spec.Probe.Command != nil {
+			r.add(prefix+".probe", "warning", "The probe is the command the definition gives, with a fixed short prompt. keepgoing cannot tell what it does: if it is the agent's ordinary turn command, each probe is a full paid turn with tools and side effects.", "Use the agent's cheapest documented check for the probe, and see fallbacks check --dry-run for when probes run.")
 		}
 		r.add(prefix+".account", "unavailable", "A defined agent's account and login are not queried; its environment is passed through.", "")
 		return

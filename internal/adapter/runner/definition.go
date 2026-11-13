@@ -65,6 +65,7 @@ func specFromDefinition(c config.Custom) (*Spec, Settings) {
 		Read: func(turn Status) Reading {
 			return readDefined(d, c.Workdir, turn.Stdout, turn.ExitCode, turn.ExitCodeKnown)
 		},
+		ValidSession: sessionToken.MatchString,
 	}
 	if p := d.Probe; p != nil {
 		spec.Probe = ProbeSpec{

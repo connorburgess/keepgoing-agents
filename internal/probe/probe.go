@@ -130,7 +130,13 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 		}
 	}
 	start := time.Now()
-	stdout, code, err := run(ctx, argv, workdir, env, stdin)
+	// A specification that bounds its output has the probe's bounded as it
+	// is read: one byte over the limit is kept to show it was exceeded.
+	var limit int64
+	if known {
+		limit = spec.MaxOutput
+	}
+	stdout, code, err := run(ctx, argv, workdir, env, stdin, limit)
 	res.Raw = capture(c.Probe.Kind, stdout)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	res.ExitCode = code
@@ -217,13 +223,31 @@ func judgeCommand(res *Result, stdout []byte, code int, codes map[int]string) {
 	}
 }
 
-func run(ctx context.Context, argv []string, dir string, env []string, stdin string) ([]byte, int, error) {
+// limitedBuffer keeps at most limit+1 bytes when limit is positive and
+// discards the rest, so a probe cannot make the supervisor hold its output.
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.buf.Write(p)
+	}
+	if room := b.limit + 1 - int64(b.buf.Len()); room > 0 {
+		b.buf.Write(p[:min(int64(len(p)), room)])
+	}
+	return len(p), nil
+}
+
+func run(ctx context.Context, argv []string, dir string, env []string, stdin string, limit int64) ([]byte, int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(stdin)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	out := &limitedBuffer{limit: limit}
+	stdout := &out.buf
+	cmd.Stdout = out
 	// A killed probe whose children still hold its output must not hold the
 	// check open past the timeout.
 	cmd.WaitDelay = 2 * time.Second

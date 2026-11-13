@@ -107,6 +107,24 @@ exit $(cat "`+dir+`/exit")
 		t.Fatalf("%+v", r)
 	}
 
+	// Output is bounded as it is read, not afterwards: a probe that prints
+	// far more than the definition's limit leaves at most one byte over it
+	// in memory and is not judged from the part that fits.
+	bounded := candidate("stdin", "")
+	bounded.Custom.Definition.Output.MaxBytes = config.MinCustomOutput
+	set(strings.Repeat("x", 4<<20)+"\n"+ok, "0", `{"blocked":false}`)
+	r = Run(context.Background(), bounded, Scheduled, 20*time.Second)
+	if r.OK || r.ErrorClass != "unknown" || r.Detail != "output over the definition's limit" || len(r.Raw) > config.MinCustomOutput+1 {
+		t.Fatalf("%+v raw=%d", r, len(r.Raw))
+	}
+	big, code, _ := run(context.Background(), []string{cli, "check"}, dir, []string{"EXAMPLE_HOME=/fictional/account-b"}, "", config.MinCustomOutput)
+	if len(big) != config.MinCustomOutput+1 || code != 0 {
+		t.Fatalf("read %d bytes, exit %d", len(big), code)
+	}
+	if all, _, _ := run(context.Background(), []string{cli, "check"}, dir, []string{"EXAMPLE_HOME=/fictional/account-b"}, "", 0); len(all) < 4<<20 {
+		t.Fatalf("an unbounded probe read %d bytes", len(all))
+	}
+
 	// prompt: file gives the probe a private prompt file and empty stdin.
 	c = candidate("file", `, "--prompt-file={prompt_file}"`)
 	set(ok, "0", `{"blocked":false}`)

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,8 +36,12 @@ type Spec struct {
 	Capabilities Capabilities
 
 	// MaxOutput bounds the turn output that is read, in bytes. Zero keeps
-	// the built-in runners' unbounded read.
+	// the built-in runners' unbounded read. A turn that printed more is an
+	// unclassified failed turn: nothing is read from it.
 	MaxOutput int64
+	// ValidSession, when set, says whether a saved session may be passed
+	// back to the agent.
+	ValidSession func(session string) bool
 	// Argv builds the command for one turn from the agent's settings.
 	// session is the saved session to resume, or "" to start one. With
 	// PromptFile, promptFile is the private file holding the prompt.
@@ -337,15 +342,35 @@ func (h *Headless) Spec() *Spec { return h.spec }
 
 // Args builds the argv for the next turn.
 func (h *Headless) Args() []string {
-	return h.spec.Argv(h.set, h.dir.Session(), h.dir.path("prompt"))
+	return h.spec.Argv(h.set, h.session(), h.dir.path("prompt"))
 }
 
-// status reads the latest turn within the specification's output bound.
-func (h *Headless) status() (Status, error) { return h.dir.statusWithOutputLimit(h.spec.MaxOutput) }
+// status reads the latest turn within the specification's output bound. A
+// turn that printed more is still a turn that ended: its output is not read
+// at all, and unread says so.
+func (h *Headless) status() (st Status, unread bool, err error) {
+	st, err = h.dir.statusWithOutputLimit(h.spec.MaxOutput)
+	if errors.Is(err, errOutputOverLimit) {
+		st.Stdout = nil
+		return st, true, nil
+	}
+	return st, false, err
+}
+
+// session is the saved session to resume, or "" when there is none or the
+// saved value is not one the specification would have saved. A session
+// becomes an argument, so it is checked again when it is read.
+func (h *Headless) session() string {
+	s := h.dir.Session()
+	if h.spec.ValidSession != nil && !h.spec.ValidSession(s) {
+		return ""
+	}
+	return s
+}
 
 // Observe implements adapter.Adapter.
 func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err error) {
-	st, err := h.status()
+	st, unread, err := h.status()
 	if err != nil {
 		return decide.Observation{State: decide.Unknown}, err
 	}
@@ -360,6 +385,11 @@ func (h *Headless) Observe(ctx context.Context) (obs decide.Observation, err err
 	case Running:
 		return decide.Observation{State: decide.Active, ErrorClass: decide.ErrNone}, nil
 	case Crashed:
+		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
+	}
+	if unread {
+		// More output than the specification reads: nothing is concluded
+		// from part of it, and no session is taken from it.
 		return decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}, nil
 	}
 	r := h.spec.Read(st)
@@ -390,14 +420,14 @@ func (h *Headless) waiting(r Reading) bool {
 
 // Send starts a turn. A running turn cannot be steered or queued into.
 func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	st, err := h.status()
+	st, unread, err := h.status()
 	if err != nil {
 		return err
 	}
 	if st.Phase == Running {
 		return adapter.ErrUnsupported{Op: fmt.Sprintf("sending to a running headless turn (%s mode)", mode)}
 	}
-	if st.Phase == Finished {
+	if st.Phase == Finished && !unread {
 		h.dir.SaveSession(h.spec.Read(st).Session)
 	}
 	if h.spec.Prompt == PromptFile {
@@ -411,7 +441,7 @@ func (h *Headless) Send(ctx context.Context, prompt string, mode adapter.Mode) e
 // sent or approved. After a person resumes the loop the turn is read by its
 // other rules, and the next send continues the session.
 func (h *Headless) AdoptInteraction(ctx context.Context) error {
-	st, err := h.status()
+	st, _, err := h.status()
 	if err != nil || st.Phase != Finished {
 		return err
 	}

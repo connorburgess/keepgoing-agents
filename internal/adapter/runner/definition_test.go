@@ -217,6 +217,31 @@ func TestDefinitionReadings(t *testing.T) {
 		}
 	}
 
+	// A field alone never overrides the exit record. With no exit codes in
+	// the definition, finished and waiting both need a readable exit code 0.
+	fieldOnly, _ := exampleSpec(t, func(c *config.Custom) {
+		d := &c.Definition
+		d.Finished = config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"ok"}} // as the parser defaults a field-only rule
+		d.Waiting = &config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"needs_input"}}
+	})
+	for _, tc := range []struct {
+		name               string
+		turn               Status
+		completed, waiting bool
+	}{
+		{"ok at exit 0", turn(exampleResult("ok", ""), 0), true, false},
+		{"ok but killed (exit 137)", turn(exampleResult("ok", ""), 137), false, false},
+		{"ok with an unreadable exit record", Status{Phase: Finished, Stdout: []byte(exampleResult("ok", ""))}, false, false},
+		{"ok with a negative exit record", Status{Phase: Finished, ExitCode: -1, Stdout: []byte(exampleResult("ok", ""))}, false, false},
+		{"needs_input at exit 0", turn(exampleResult("needs_input", ""), 0), false, true},
+		{"needs_input but killed", turn(exampleResult("needs_input", ""), 137), false, false},
+		{"needs_input with an unreadable exit record", Status{Phase: Finished, Stdout: []byte(exampleResult("needs_input", ""))}, false, false},
+	} {
+		if r := fieldOnly.Read(tc.turn); r.Completed != tc.completed || r.Waiting != tc.waiting {
+			t.Errorf("%s: %+v", tc.name, r)
+		}
+	}
+
 	// Undeclared means unknown: without the rules or their capabilities the
 	// same output says nothing.
 	bare, _ := exampleSpec(t, func(c *config.Custom) {

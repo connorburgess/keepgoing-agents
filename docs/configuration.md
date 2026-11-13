@@ -155,14 +155,14 @@ loop:
 | `name`, `workdir`, `env` | A label (lower-case letters, digits, hyphens), where turns run, and extra environment for turns, the probe and the limit lookup. |
 | `values` | Values for the definition's `settings`. One line each. |
 | `settings` | The names the commands may refer to as `{name}`. `model` is also what `status` and probes call the model. |
-| `start`, `resume` | Argv. The first argument is the executable, written out. An item is one argument, or a list of arguments left out together when a setting they refer to has no value. `resume` is used when a session is saved and may refer to `{session}`. |
+| `start`, `resume` | Argv. The first argument is the executable, written out: a bare name such as `example-agent` is looked up on `PATH`, and a path such as `./bin/example-agent` resolves against the directory of the configuration file, like every other command in a configuration (not against `workdir`). A shell (`sh`, `bash`, `cmd`, `powershell` and the like) is refused as the executable. An item is one argument, or a list of arguments left out together when a setting they refer to has no value. `resume` is used when a session is saved and may refer to `{session}`. |
 | `prompt` | `stdin` (default) or `file`. With `file` the commands must refer to `{prompt_file}`, the private file holding the prompt, and standard input is empty. |
-| `output` | `format` is `json` (one object) or `jsonl` (one object per line; lines that are not objects are skipped). `max_bytes` (default 1 MiB, 1 KiB to 16 MiB) bounds what is read: larger output is not read at all, the state is unknown and nothing is sent. `select` picks the object every rule reads: the last one whose field has that value, or the last object without it. |
+| `output` | `format` is `json` (one object) or `jsonl` (one object per line; lines that are not objects are skipped). `max_bytes` (default 1 MiB, 1 KiB to 16 MiB) bounds what is read. A turn that printed more is not read at all, whatever the part that fits says: it is a failed turn of `unknown` class, no session is taken from it, and the ordinary re-prompts follow (up to `errors.max_reprompts`, then a hold). Nothing needs removing by hand; the next turn replaces the output. `select` picks the object every rule reads: the last one whose field has that value, or the last object without it. |
 | `session` | Where the session identity comes from: a `field` of the output (with its own optional `select`), or a `file` under the working directory (one token, at most 256 bytes, a regular file). An identity must be a token that does not begin with a hyphen; anything else is not saved. |
-| `finished` | The turn ended healthy: the exit code is one of `exit_codes`, when given, **and** `field` has one of `equals`, when given. Defaults to exit code 0. |
-| `waiting` | The turn ended waiting on a person, with the same form. It raises one awaiting-user hold and one report; nothing is approved or answered. After you `resume`, the same turn no longer raises it and the next send continues the session. |
+| `finished` | The turn ended healthy: the exit code is one of `exit_codes` **and** `field` has one of `equals`, when a field is given. `exit_codes` defaults to `[0]`, also when a field is given: a field alone never makes a killed turn (exit 137) or one with an unreadable exit record healthy. |
+| `waiting` | The turn ended waiting on a person, with the same form and the same `exit_codes` default. It must not match a turn `finished` also matches. It raises one awaiting-user hold and one report; nothing is approved or answered. See [after a wait](#after-a-turn-that-waited-on-a-person). |
 | `errors` | Classifies a failed turn. `classes` maps the agent's codes in `field` to `rate_limit`, `auth`, `overloaded`, `network` or `unknown`; `http_status_field` is read as an HTTP status; `exit_codes` maps failing exit codes. Anything unmatched is `unknown`. |
-| `probe` | A small real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Without it a candidate needs a `command` probe. |
+| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **keepgoing cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects, run on the probe schedule (by default every 12 hours per fallback, and before each handoff). Use the agent's cheapest documented check. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
 | `limits` | One command printing one JSON object, run only when a failed turn or probe is unclassified, in the same environment. `blocked` (a field and its values) says the account is blocked by a usage limit; `resets_at_field` is an RFC 3339 time or Unix seconds. |
 | `capabilities` | `exact_resume`, `can_be_stopped`, `structured_errors`, `structured_waiting`. |
 
@@ -174,7 +174,28 @@ loop:
 - `can_be_stopped` needs nothing: the turn runs under keepgoing's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
 - `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let keepgoing observe them.
 
-`keepgoing doctor` resolves the executable without running it and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+### What moves work to a fallback
+
+Your mapping decides it. A code, HTTP status or exit code that you map to a class in the loop's `errors.failover_on` (by default `rate_limit`) **moves work to a fallback**, and so does a `limits` lookup that reports the account blocked.
+
+**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit and must be left unmapped. Unmapped, it is `unknown`, which never moves work: the loop re-prompts within its bounds and then holds for a person. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
+
+```text
+failover (primary, defined agent example-agent): exit code 75 is treated as a network failure and will move work to a fallback
+failover (primary, defined agent example-agent): a result whose error.code is "quota_exceeded" is treated as a rate limit and will move work to a fallback
+```
+
+`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses keepgoing's own table: 429 is a rate limit, 401 and 403 an authentication failure, 503 and 529 an overloaded provider. If the agent returns 403 for a policy block, do not add `auth` to `failover_on`.
+
+### After a turn that waited on a person
+
+The hold's note is the fixed text keepgoing uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and with the wait set aside it is read by the other rules. Usually it matches neither `finished` nor a mapped error, so it is a failed turn of `unknown` class and the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. If it matches `finished` it is an ordinary wake instead. A later turn that ends waiting raises a new hold.
+
+### Saved session
+
+A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited) is not passed to the agent, and the next turn starts a new session.
+
+`keepgoing doctor` checks that the working directory exists, resolves the executable without running it, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
 
 ## progress
 

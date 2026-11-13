@@ -198,6 +198,9 @@ func (d Dir) adoptWait(rec Record) error {
 	return os.WriteFile(d.path(waitAdoptedFile), []byte(waitKey(rec)+"\n"), 0o600)
 }
 
+// errOutputOverLimit says a turn printed more than its adapter reads.
+var errOutputOverLimit = errors.New("runner: turn output exceeds the adapter limit")
+
 // envList supplies overrides to subprocesses without changing the supervisor's
 // environment or persisting values in turn metadata.
 func envList(env map[string]string) []string {
@@ -233,7 +236,7 @@ func (d Dir) readOutput(limit int64) ([]byte, error) {
 		return nil, errors.New("runner: turn output could not be read")
 	}
 	if int64(len(b)) > limit {
-		return nil, errors.New("runner: turn output exceeds the adapter limit")
+		return nil, errOutputOverLimit
 	}
 	return b, nil
 }
