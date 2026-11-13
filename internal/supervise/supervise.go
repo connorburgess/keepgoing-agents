@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,8 +43,6 @@ type Options struct {
 	// Clock reads wall time for the check's time budget. Now is the logical
 	// check time and may be fixed; Clock always advances.
 	Clock func() time.Time
-	// MissingWorktrees counts registered worktrees that are gone from disk.
-	MissingWorktrees func([]string) int
 	// Routine is the scheduler identity supplied with this check, if any. It
 	// is recorded in the run graph only and never reaches a decision.
 	Routine rd.RoutineRef
@@ -154,6 +153,7 @@ type tick struct {
 	reg                 *health.Registry
 	deadline            time.Time // wall time after which optional work is skipped
 	probesDeferred      bool      // a needed probe was skipped for lack of time
+	switchBackDeferred  bool
 	budgetWarned        bool
 	graphFailed         bool
 	graphClosed         bool
@@ -198,9 +198,6 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	}
 	if opts.Clock == nil {
 		opts.Clock = time.Now
-	}
-	if opts.MissingWorktrees == nil {
-		opts.MissingWorktrees = state.MissingWorktrees
 	}
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
@@ -324,10 +321,11 @@ func (t *tick) run() error {
 
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
-		return err
+		res.State, res.Window, res.Reason = "not observed", "not checked", "could not build the target's adapter; no action taken"
+		return t.record(err)
 	}
 	t.observedTarget = target
-	obs, err := a.Observe(t.ctx)
+	obs, err := t.observe(a)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
@@ -393,7 +391,9 @@ func (t *tick) run() error {
 	var summary health.Summary
 	if t.fb != nil {
 		if t.reg, err = health.Load(loop.StateDir); err != nil {
-			return err
+			t.reg = nil
+			res.Reason = "could not read fallback health; no action taken"
+			return t.record(err)
 		}
 		if inWindow && !t.opts.DryRun {
 			t.scheduledProbes(target, agent.Group)
@@ -424,14 +424,19 @@ func (t *tick) run() error {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
 		}
-		if n := t.opts.MissingWorktrees(loop.Progress.Repositories); n > 0 {
+		if n := state.MissingWorktrees(f); n > 0 {
 			t.warn("%d registered Git worktree(s) no longer exist on disk and were left out of the progress fingerprint; run `git worktree prune` in the repository", n)
 			res.MissingWorktrees = n
 		}
 		// A first baseline is not progress.
-		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && f != t.st.Fingerprint
-		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
-			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
+		// A worktree that disappeared, returned or was newly registered is not
+		// progress either; the newest observation is kept so later changes are.
+		changed := !state.SameProgress(t.st.Fingerprint, f)
+		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && changed
+		previousFingerprint := t.st.Fingerprint
+		t.st.Fingerprint = f
+		if previousFingerprint == "" || changed || t.st.LastProgressAt.IsZero() {
+			t.st.LastProgressAt = t.now
 			t.st.Nudges = 0
 		}
 		if t.progress != nil {
@@ -506,6 +511,9 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
+	if d.Action != decide.Handoff && !t.opts.DryRun {
+		t.st.ClearDeferrals() // no handoff is due, so none is being put off
+	}
 	res.Action, res.Reason = string(d.Action), d.Reason
 	res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
 
@@ -521,7 +529,11 @@ func (t *tick) run() error {
 			t.decisionInput = in
 			d = t.decide("switch_back_failed", in)
 			res.ChildErrorNote = decide.ChildErrorNote(in, d) > 0
-			res.Action, res.Reason = string(d.Action), d.Reason+" (primary failed its probe; staying on the fallback)"
+			why := " (primary failed its probe; staying on the fallback)"
+			if t.switchBackDeferred {
+				why = " (no time left in this check to confirm the primary; staying on the fallback)"
+			}
+			res.Action, res.Reason = string(d.Action), d.Reason+why
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
@@ -536,12 +548,26 @@ func (t *tick) run() error {
 			// for the current target. A dry run only previews that decision.
 			why := " (no fallback could take over; see probes and warnings)"
 			if t.probesDeferred {
-				// A candidate could not be confirmed because the check ran out
+				t.st.HandoffDeferrals++
+			} else {
+				t.st.HandoffDeferrals = 0
+			}
+			switch {
+			case t.probesDeferred && t.st.HandoffDeferrals <= t.deferralCap():
+				// A fallback could not be confirmed because the check ran out
 				// of time, not because it failed. Spend nothing on that: no
 				// re-prompt and no hold. The next check retries the handoff.
-				d = decide.Decision{Action: decide.None, Reason: "error: " + string(obs.ErrorClass)}
-				why = " (the check's time budget ran out before a fallback could be confirmed; the next check retries)"
-			} else {
+				in.HandoffDeferred = true
+				t.decisionInput = in
+				d = t.decide("handoff_deferred", in)
+				why = ""
+			case t.probesDeferred:
+				// Too many checks in a row: stop waiting on the budget and let
+				// the ordinary error rules act on the current target.
+				in.Failover.Available = false
+				d = t.decide("handoff_failed", in)
+				why = fmt.Sprintf(" (no fallback could be confirmed within the check's time budget in %d consecutive checks; see probes and warnings)", t.st.HandoffDeferrals)
+			default:
 				in.Failover.Available = false
 				d = t.decide("handoff_failed", in)
 				if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
@@ -581,10 +607,11 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	res.Window = "not checked"
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
-		return err
+		res.State, res.Reason = "not observed", "stop requested; could not build the target's adapter"
+		return t.record(err)
 	}
 	t.observedTarget = target
-	obs, err := a.Observe(t.ctx)
+	obs, err := t.observe(a)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
@@ -617,19 +644,16 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		if !due {
 			continue
 		}
-		// Scheduled probes are optional and run before the decision. They may
-		// use only the first half of the check's budget, so observing, deciding
-		// and sending still fit; a probe left out stays due for the next check.
-		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, tickBudget(t.loop)/2)
-		if !ok {
+		// Scheduled probes are optional and run before the decision. One is
+		// started only if its whole timeout fits before the time kept back for
+		// deciding, sending and reporting, so it is never shortened: a probe
+		// that runs to its timeout is a real failure, recorded and counted,
+		// and one that does not fit stays due for the next check.
+		if t.deadline.Sub(t.opts.Clock())-scheduledReserve < t.fb.Probe.Timeout.Duration {
 			t.skipProbe(c.ID, probe.Scheduled, "tick_timeout")
 			continue
 		}
-		r := t.opts.Probe(t.ctx, c, probe.Scheduled, timeout)
-		if t.cutShort(r, timeout, t.fb.Probe.Timeout.Duration) {
-			t.skipProbe(c.ID, probe.Scheduled, "cut_short")
-			continue
-		}
+		r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
 		r.At, r.Tier = t.now, probe.Scheduled
 		t.reg.Record(c.ID, r)
 		t.keepFailure(c.ID, r)
@@ -658,7 +682,11 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		// Nothing would be offered a brief: preview the fall-through instead.
 		return len(summary.Healthy) == 0, nil
 	}
-	for _, id := range summary.Healthy {
+	// Fallbacks whose exact probe was stopped early by the budget go last, so
+	// one that hangs cannot keep a working one from being tried.
+	order := append([]string(nil), summary.Healthy...)
+	sort.SliceStable(order, func(i, j int) bool { return t.st.ExactCut[order[i]] < t.st.ExactCut[order[j]] })
+	for _, id := range order {
 		if err := t.sendAllowance(); err != nil {
 			return false, err
 		}
@@ -673,18 +701,27 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}
-		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, 0)
+		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, sendReserve)
 		if !ok {
+			// No time for this or any later candidate.
 			t.skipProbe(id, probe.Exact, "tick_timeout")
 			t.probesDeferred = true
 			break
 		}
 		r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
-		if t.cutShort(r, timeout, t.fb.Probe.Timeout.Duration) {
+		if r.TimedOut && timeout < t.fb.Probe.Timeout.Duration && t.st.ExactCut[id]+1 < t.deferralCap() {
+			// Stopped early by the budget: that says little about the
+			// candidate. Try the next one now and this one last next time.
+			if t.st.ExactCut == nil {
+				t.st.ExactCut = map[string]int{}
+			}
+			t.st.ExactCut[id]++
 			t.skipProbe(id, probe.Exact, "cut_short")
 			t.probesDeferred = true
-			break
+			continue
 		}
+		// An answer, a full timeout, or one early stop too many: a real result.
+		delete(t.st.ExactCut, id)
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
 		t.keepFailure(id, r)
@@ -784,16 +821,13 @@ func (t *tick) switchBack(from string) (bool, error) {
 		configured = t.fb.Probe.Timeout.Duration
 	}
 	// Out of time: leave the retry spacing alone so the next check tries.
-	timeout, ok := t.probeBudget(configured, 0)
-	if !ok {
+	// A switch-back is optional: it runs only when the whole probe fits.
+	if t.deadline.Sub(t.opts.Clock())-sendReserve < configured {
 		t.skipProbe(state.Primary, probe.Exact, "tick_timeout")
+		t.switchBackDeferred = true
 		return false, nil
 	}
-	r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
-	if t.cutShort(r, timeout, configured) {
-		t.skipProbe(state.Primary, probe.Exact, "cut_short")
-		return false, nil
-	}
+	r := t.opts.Probe(t.ctx, c, probe.Exact, configured)
 	t.st.LastSwitchBackTry = t.now
 	r.At, r.Tier = t.now, probe.Exact
 	if t.reg != nil {
@@ -954,6 +988,17 @@ func (t *tick) record(actErr error) error {
 	if actErr != nil {
 		outcome = "failed"
 	}
+	// Consecutive failed checks, so a loop that keeps running without
+	// completing a check is visible. A dry run changes nothing.
+	switch outcome {
+	case "failed":
+		if t.st.FailedChecks == 0 {
+			t.st.FailedSince = t.now
+		}
+		t.st.FailedChecks++
+	case "succeeded":
+		t.st.FailedChecks, t.st.FailedSince = 0, time.Time{}
+	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
@@ -963,7 +1008,7 @@ func (t *tick) record(actErr error) error {
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
 	t.graphClose()
-	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target}
+	ev := state.Event{At: t.now, Loop: t.loop.Name, Event: "tick", Action: t.res.Action, Reason: t.res.Reason, State: t.res.State, Target: t.res.Target, Outcome: outcome}
 	extra := map[string]any{}
 	if actErr != nil {
 		ev.Error = actErr.Error()
@@ -1077,6 +1122,14 @@ func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adap
 const (
 	minProbeTime  = 10 * time.Second
 	minReportTime = 10 * time.Second
+	// scheduledReserve is kept back from scheduled probes for deciding, an
+	// exact probe, sending and reporting. sendReserve is kept back from exact
+	// probes for activating and sending.
+	scheduledReserve = 60 * time.Second
+	// observeTimeout bounds one whole observation, however many commands it
+	// runs: a hung bb or an endless log cannot hold the check open.
+	observeTimeout = 90 * time.Second
+	sendReserve    = 45 * time.Second
 )
 
 // tickBudget is the configured time budget for a check's optional work.
@@ -1098,10 +1151,11 @@ func (t *tick) probeBudget(configured, reserve time.Duration) (time.Duration, bo
 	return min(configured, left), true
 }
 
-// cutShort reports whether a probe timed out under a timeout the check's
-// budget had shortened. That says nothing about the candidate.
-func (t *tick) cutShort(r probe.Result, used, configured time.Duration) bool {
-	return used < configured && !r.OK && r.Detail == "timeout"
+// deferralCap is how many checks in a row may put a handoff off for lack of
+// time, and how many early stops one fallback's exact probe gets, before the
+// result is treated as real. It reuses the re-prompt cap.
+func (t *tick) deferralCap() int {
+	return max(t.loop.Errors.MaxReprompts, 1)
 }
 
 // skipProbe notes a probe that produced no result. It is not recorded in the
@@ -1112,4 +1166,17 @@ func (t *tick) skipProbe(id string, tier probe.Tier, why string) {
 		t.budgetWarned = true
 		t.warn("the check's time budget (loop.tick_timeout) left no room for every fallback probe; skipped probes stay due")
 	}
+}
+
+// observe reads the target's state within observeTimeout. When the limit is
+// reached the adapter's commands are cancelled and the observation fails or
+// comes back unverified; either way nothing is sent.
+func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
+	ctx, cancel := context.WithTimeout(t.ctx, observeTimeout)
+	defer cancel()
+	obs, err := a.Observe(ctx)
+	if err == nil && ctx.Err() != nil {
+		err = fmt.Errorf("observation exceeded %s", observeTimeout)
+	}
+	return obs, err
 }

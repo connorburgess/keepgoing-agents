@@ -179,7 +179,7 @@ See [operations.md](operations.md).
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
-| `tick_timeout` | `3m` (minimum `30s`): time budget for one check's optional work; see [check time budget](operations.md#check-time-budget) |
+| `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. Time budget for one check's optional work. Minimum `30s`; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
 
 ## Tick output
 

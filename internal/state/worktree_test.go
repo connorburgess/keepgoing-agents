@@ -1,10 +1,11 @@
 package state
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -33,71 +34,111 @@ func TestFingerprintSkipsRegisteredWorktreeMissingFromDisk(t *testing.T) {
 	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("one\n"), 0o644)
 	run("add", "a.txt")
 	run("commit", "-q", "-m", "init")
-	base, err := Fingerprint([]string{repo})
-	if err != nil || MissingWorktrees([]string{repo}) != 0 {
-		t.Fatal(err)
+	repos := []string{repo}
+	fp := func() string {
+		t.Helper()
+		f, err := Fingerprint(repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	base := fp()
+	if MissingWorktrees(base) != 0 {
+		t.Fatal(base)
 	}
 
 	kept := filepath.Join(t.TempDir(), "kept")
 	gone := filepath.Join(t.TempDir(), "gone")
 	run("worktree", "add", "-q", "-b", "kept", kept)
 	run("worktree", "add", "-q", "-b", "gone", gone)
-	both, err := Fingerprint([]string{repo})
-	if err != nil || both == base {
-		t.Fatalf("worktrees are part of the fingerprint: %v", err)
+	both := fp()
+	// A newly registered worktree is not progress by itself.
+	if both == base || !SameProgress(base, both) {
+		t.Fatal("registering worktrees counted as progress")
 	}
 	if err := os.RemoveAll(gone); err != nil { // as after a reboot
 		t.Fatal(err)
 	}
-	withMissing, err := Fingerprint([]string{repo})
+	withMissing, err := Fingerprint(repos)
 	if err != nil {
-		t.Fatalf("a missing registered worktree failed the fingerprint: %v", err)
+		t.Fatalf("a prunable registered worktree failed the fingerprint: %v", err)
 	}
-	if n := MissingWorktrees([]string{repo}); n != 1 {
-		t.Fatalf("missing worktrees = %d", n)
+	// Losing the worktree is reported and is not progress, in either direction.
+	if MissingWorktrees(withMissing) != 1 || !SameProgress(both, withMissing) || !SameProgress(withMissing, both) {
+		t.Fatalf("missing=%d", MissingWorktrees(withMissing))
 	}
 	// The remaining worktree still counts as progress evidence.
 	os.WriteFile(filepath.Join(kept, "a.txt"), []byte("one\ntwo\n"), 0o644)
-	changed, err := Fingerprint([]string{repo})
-	if err != nil || changed == withMissing {
-		t.Fatalf("progress in a remaining worktree was lost: %v", err)
+	changed := fp()
+	if SameProgress(withMissing, changed) || SameProgress(both, changed) {
+		t.Fatal("progress in a remaining worktree was lost")
 	}
-	// Pruning the stale registration changes nothing.
+	// Pruning the stale registration is not progress.
 	run("worktree", "prune")
-	pruned, err := Fingerprint([]string{repo})
-	if err != nil || pruned != changed || MissingWorktrees([]string{repo}) != 0 {
-		t.Fatalf("prune changed the fingerprint or left a missing worktree: %v", err)
+	pruned := fp()
+	if !SameProgress(changed, pruned) || MissingWorktrees(pruned) != 0 {
+		t.Fatal("prune counted as progress or left a missing worktree")
+	}
+	// A worktree that returns unchanged is not progress; its later change is.
+	run("worktree", "add", "-q", "-B", "gone", gone)
+	returned := fp()
+	if !SameProgress(pruned, returned) || !SameProgress(changed, returned) {
+		t.Fatal("a returning worktree counted as progress")
+	}
+	os.WriteFile(filepath.Join(gone, "a.txt"), []byte("changed\n"), 0o644)
+	if SameProgress(returned, fp()) {
+		t.Fatal("a change in the returned worktree was not progress")
 	}
 
-	// A worktree that exists but cannot be read still fails closed: it is
-	// not evidence that nothing changed.
+	// A fingerprint saved by an older build cannot be compared: adopting the
+	// new format is not progress. Unstructured values compare as they are.
+	legacy := "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+	if !SameProgress(legacy, both) || !SameProgress(both, legacy) || !SameProgress("same", "same") || SameProgress("same", "changed") || MissingWorktrees(legacy) != 0 {
+		t.Fatal("format change or unstructured comparison is wrong")
+	}
+
+	// A locked worktree whose directory is gone (a volume that is not mounted)
+	// is not prunable. It must fail closed, not be dropped silently.
+	locked := filepath.Join(t.TempDir(), "locked")
+	run("worktree", "add", "-q", "-b", "locked", locked)
+	run("worktree", "lock", locked)
+	if err := os.RemoveAll(locked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fingerprint(repos); err == nil {
+		t.Fatal("a locked worktree on a vanished volume was dropped")
+	}
+	run("worktree", "unlock", locked)
+	if f := fp(); MissingWorktrees(f) != 1 {
+		t.Fatal("an unlocked missing worktree is prunable")
+	}
+	run("worktree", "prune")
+
+	// A worktree that exists but cannot be read still fails closed.
 	if err := os.RemoveAll(filepath.Join(kept, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint([]string{repo}); err == nil {
+	if _, err := Fingerprint(repos); err == nil {
 		t.Fatal("an unreadable worktree was treated as absent")
-	}
-	if runtime.GOOS != "windows" && os.Getuid() != 0 {
-		locked := filepath.Join(t.TempDir(), "locked")
-		inner := filepath.Join(locked, "tree")
-		if err := os.Mkdir(locked, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		run("worktree", "prune")
-		run("worktree", "add", "-q", "-b", "locked", inner)
-		if err := os.Chmod(locked, 0o000); err != nil {
-			t.Fatal(err)
-		}
-		defer os.Chmod(locked, 0o755)
-		if _, err := Fingerprint([]string{repo}); err == nil {
-			t.Fatal("a worktree whose directory cannot be inspected was treated as absent")
-		}
-		if n := MissingWorktrees([]string{repo}); n != 0 {
-			t.Fatalf("uninspectable worktree counted as missing: %d", n)
-		}
 	}
 	// A repository that is itself gone is an error, not an empty fingerprint.
 	if _, err := Fingerprint([]string{filepath.Join(t.TempDir(), "absent")}); err == nil {
 		t.Fatal("a missing repository produced a fingerprint")
+	}
+}
+
+// The whole fingerprint is bounded, not only each command: a filesystem that
+// hangs on a metadata read ends with an error when the bound is reached.
+func TestStatGivesUpWhenItsContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A FIFO never blocks stat, so use the cancelled context directly: the
+	// call must return the context's error rather than wait.
+	if _, err := statWithin(ctx, filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Fatal("no error")
+	}
+	if _, err := git(ctx, t.TempDir(), "status"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("git ignored its context: %v", err)
 	}
 }

@@ -66,7 +66,9 @@ type Loop struct {
 	// a check records its result and exits well inside an external
 	// scheduler's own timeout.
 	TickTimeout Duration `yaml:"tick_timeout,omitempty"`
-	Limits      Limits   `yaml:"limits,omitempty"`
+	// tickTimeoutDefaulted: the file did not set tick_timeout.
+	tickTimeoutDefaulted bool
+	Limits               Limits `yaml:"limits,omitempty"`
 
 	// SwitchBack returns the loop to its primary after a handoff, once the
 	// primary's limit has reset and an exact probe of it passes. Off by default.
@@ -255,8 +257,46 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 		cfg.FallbackSet = fb
+		if err := cfg.Loop.fitTickTimeout(fb.Probe.Timeout.Duration); err != nil {
+			return nil, err
+		}
 	}
 	return cfg, nil
+}
+
+// TickTimeoutProbeMargin is what a check needs besides one scheduled probe:
+// a brief observation, and the time kept back for deciding, sending and
+// reporting. tick_timeout must exceed fallbacks probe.timeout by this much,
+// or no scheduled probe could ever be started.
+const TickTimeoutProbeMargin = 90 * time.Second
+
+// TickTimeoutSchedulerNote is the longest tick_timeout whose worst case still
+// ends inside a five-minute scheduler timeout.
+const TickTimeoutSchedulerNote = 4 * time.Minute
+
+// fitTickTimeout makes room for one whole scheduled probe. An omitted
+// tick_timeout grows to fit, so an existing file with a long probe timeout
+// keeps loading; an explicit one that is too short is an error.
+func (l *Loop) fitTickTimeout(probeTimeout time.Duration) error {
+	need := probeTimeout + TickTimeoutProbeMargin
+	if l.TickTimeout.Duration >= need {
+		return nil
+	}
+	if !l.tickTimeoutDefaulted {
+		return fmt.Errorf("loop.tick_timeout (%s) must be at least fallbacks probe.timeout plus %s (%s), or scheduled probes could never run", l.TickTimeout.Duration, TickTimeoutProbeMargin, need)
+	}
+	l.TickTimeout.Duration = need
+	return nil
+}
+
+// TickTimeoutWarning is non-empty when a check's worst case may outlast a
+// five-minute scheduler timeout. The daemon and managed services have no
+// such timeout.
+func (l Loop) TickTimeoutWarning() string {
+	if l.TickTimeout.Duration <= TickTimeoutSchedulerNote {
+		return ""
+	}
+	return fmt.Sprintf("loop.tick_timeout is %s; with an external scheduler, give its own timeout at least %s more than that, or a slow check is killed before it records anything", l.TickTimeout.Duration, 90*time.Second)
 }
 
 // Parse decodes and validates YAML bytes without touching the filesystem.
@@ -305,6 +345,7 @@ func (c *Config) applyDefaults() {
 		}
 	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
+	l.tickTimeoutDefaulted = l.TickTimeout.Duration == 0
 	setDur(&l.TickTimeout, DefaultTickTimeout)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {

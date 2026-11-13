@@ -204,6 +204,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		doctorAutomationResult(&r, s)
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
+	doctorFailedChecks(&r, st, stateErr == nil)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")
 	return printDoctor(e, r, *asJSON)
 }
@@ -220,6 +221,20 @@ func doctorCheckVersion(r *doctorReport, check *state.Check, stateReadable bool)
 		r.add("supervisor.version", "warning", "The last recorded tick used a different build label; the scheduler may still use another binary.", "Compare the scheduler's executable with this installation; inspect a new tick before deciding whether the mismatch persists.")
 	default:
 		r.add("supervisor.version", "unavailable", "Comparable tick build history is unavailable; an empty or dev label cannot identify a build.", "Record a tick from a versioned binary, then compare it with the scheduler's executable.")
+	}
+}
+
+// doctorFailedChecks reports consecutive failed checks. A check that could
+// not observe or act still exits 0, so this is where a persistent problem,
+// such as a broken provider CLI, shows up.
+func doctorFailedChecks(r *doctorReport, st state.File, stateReadable bool) {
+	switch {
+	case !stateReadable:
+		r.add("supervisor.failed_checks", "unavailable", "Check history is unavailable.", "")
+	case st.FailedChecks == 0:
+		r.add("supervisor.failed_checks", "ok", "The last recorded check completed.", "")
+	default:
+		r.add("supervisor.failed_checks", "warning", fmt.Sprintf("The last %d recorded checks in a row failed to observe or act, since %s.", st.FailedChecks, st.FailedSince.Format(time.RFC3339)), "Run `keepgoing status` for the reason of the last check and read the errors in the run log; fix the provider CLI, network or repository it names.")
 	}
 }
 

@@ -31,17 +31,26 @@ type File struct {
 	StallRetry     *StallRetry `json:"stallRetry,omitempty"`
 	// SilentRetry records when the active target was first observed with an
 	// expired retry notice, so its continued silence can be bounded.
-	SilentRetry       *SilentRetry `json:"silentRetry,omitempty"`
-	Fingerprint       string       `json:"fingerprint,omitempty"`
-	LastProgressAt    time.Time    `json:"lastProgressAt,omitempty"`
-	LastWakeAt        time.Time    `json:"lastWakeAt,omitempty"`
-	CheckedAt         time.Time    `json:"checkedAt,omitempty"`
-	LastState         string       `json:"lastState,omitempty"`
-	LastCheck         *Check       `json:"lastCheck,omitempty"`
-	Reprompts         int          `json:"reprompts,omitempty"`
-	Nudges            int          `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt    time.Time    `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent bool         `json:"stopSent,omitempty"`
+	SilentRetry *SilentRetry `json:"silentRetry,omitempty"`
+	// HandoffDeferrals counts consecutive checks in which a due handoff could
+	// not be confirmed within the check's time budget. ExactCut counts, per
+	// fallback, consecutive exact probes stopped early by that budget.
+	// FailedChecks counts consecutive recorded checks whose outcome was failed,
+	// and FailedSince is when that run began.
+	FailedChecks      int            `json:"failedChecks,omitempty"`
+	FailedSince       time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals  int            `json:"handoffDeferrals,omitempty"`
+	ExactCut          map[string]int `json:"exactCut,omitempty"`
+	Fingerprint       string         `json:"fingerprint,omitempty"`
+	LastProgressAt    time.Time      `json:"lastProgressAt,omitempty"`
+	LastWakeAt        time.Time      `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time      `json:"checkedAt,omitempty"`
+	LastState         string         `json:"lastState,omitempty"`
+	LastCheck         *Check         `json:"lastCheck,omitempty"`
+	Reprompts         int            `json:"reprompts,omitempty"`
+	Nudges            int            `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time      `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool           `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -134,6 +143,12 @@ func (f *File) ClearChildErrors() {
 // ClearBriefs starts a new episode for handoff and switch-back briefs.
 func (f *File) ClearBriefs() {
 	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
+	f.ClearDeferrals()
+}
+
+// ClearDeferrals forgets handoffs put off for lack of time.
+func (f *File) ClearDeferrals() {
+	f.HandoffDeferrals, f.ExactCut = 0, nil
 }
 
 // SilentRetry is target-scoped and cleared as soon as the target is not both
@@ -248,15 +263,17 @@ func Save(stateDir string, f File) error {
 
 // Event is one line of runs.jsonl.
 type Event struct {
-	At     time.Time      `json:"at"`
-	Loop   string         `json:"loop"`
-	Event  string         `json:"event"`
-	Action string         `json:"action,omitempty"`
-	Reason string         `json:"reason,omitempty"`
-	State  string         `json:"state,omitempty"`
-	Target string         `json:"target,omitempty"`
-	Error  string         `json:"error,omitempty"`
-	Extra  map[string]any `json:"extra,omitempty"`
+	At     time.Time `json:"at"`
+	Loop   string    `json:"loop"`
+	Event  string    `json:"event"`
+	Action string    `json:"action,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	State  string    `json:"state,omitempty"`
+	Target string    `json:"target,omitempty"`
+	Error  string    `json:"error,omitempty"`
+	// Outcome of a tick: succeeded, failed or dry_run.
+	Outcome string         `json:"outcome,omitempty"`
+	Extra   map[string]any `json:"extra,omitempty"`
 }
 
 // Append adds an event to runs.jsonl.

@@ -36,6 +36,8 @@ const Prompt = "Reply with exactly: OK"
 
 // Result is the evidence a probe leaves in the health registry.
 type Result struct {
+	// TimedOut: the probe was stopped at its timeout without an answer.
+	TimedOut            bool       `json:"timedOut,omitempty"`
 	At                  time.Time  `json:"at"`
 	Tier                Tier       `json:"tier"`
 	Kind                string     `json:"kind"`
@@ -138,7 +140,7 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	res.ExitCode = code
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "timeout"
+		res.ErrorClass, res.Detail, res.TimedOut = string(decide.ErrUnknown), "timeout", true
 		return res
 	case errors.Is(err, exec.ErrNotFound) || code == -1:
 		res.ErrorClass, res.Detail = string(decide.ErrUnknown), "not runnable"
@@ -237,6 +239,9 @@ func run(ctx context.Context, argv []string, dir string, env []string) ([]byte, 
 	cmd.Stdin = strings.NewReader("")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	// A killed probe whose children still hold its output must not hold the
+	// check open past the timeout.
+	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
 	if err == nil {
 		return stdout.Bytes(), 0, nil

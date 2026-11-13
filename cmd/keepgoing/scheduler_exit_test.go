@@ -50,8 +50,44 @@ func TestTickExitCodeContractForSchedulers(t *testing.T) {
 				t.Fatalf("exit %d %v %s", code, r, errs)
 			}
 		}
-		if _, status, _ := f.run("status"); !strings.Contains(status, "outcome failed") {
-			t.Fatalf("status hides the failed check:\n%s", status)
+		// Exit 0 must not make a persistent failure quiet: status and doctor
+		// count the failed checks, and the run log carries each outcome.
+		_, status, _ := f.run("status")
+		if !strings.Contains(status, "outcome failed") || !strings.Contains(status, "failed checks: 3 in a row since ") {
+			t.Fatalf("status hides the failed checks:\n%s", status)
+		}
+		_, doctor, _ := f.run("doctor", "--json")
+		if !strings.Contains(doctor, `"supervisor.failed_checks"`) || !strings.Contains(doctor, "The last 3 recorded checks in a row failed") {
+			t.Fatalf("doctor hides the failed checks:\n%s", doctor)
+		}
+		log, err := os.ReadFile(filepath.Join(f.dir, "state", "runs.jsonl"))
+		if err != nil || strings.Count(string(log), `"outcome":"failed"`) != 3 {
+			t.Fatalf("run log: %v\n%s", err, log)
+		}
+		// One completed check ends the count.
+		write(t, filepath.Join(f.dir, "bin", "bb"), fakeBB, 0700)
+		if code, out, _ := f.run("tick"); code != exitOK || tickResult(t, out)["outcome"] != "succeeded" {
+			t.Fatal(out)
+		}
+		if _, status, _ = f.run("status"); strings.Contains(status, "failed checks:") {
+			t.Fatalf("count not reset:\n%s", status)
+		}
+		log, _ = os.ReadFile(filepath.Join(f.dir, "state", "runs.jsonl"))
+		if !strings.Contains(string(log), `"outcome":"succeeded"`) {
+			t.Fatalf("run log: %s", log)
+		}
+	})
+	t.Run("fallback health unreadable", func(t *testing.T) {
+		f := newFixture(t) // the default fixture has fallbacks
+		f.run("enable")
+		dir := loadFixture(t, f.cfg).Loop.StateDir
+		write(t, filepath.Join(dir, "health.json"), "not json", 0600)
+		code, out, _ := f.run("tick")
+		if r := tickResult(t, out); code != exitOK || r["outcome"] != "failed" || r["reason"] != "could not read fallback health; no action taken" {
+			t.Fatalf("exit %d %v", code, r)
+		}
+		if f.read("thr_primary.told") != "" {
+			t.Fatal("acted without fallback health")
 		}
 	})
 	t.Run("send failed", func(t *testing.T) {
