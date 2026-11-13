@@ -47,6 +47,12 @@ func panelShortDir(t *testing.T) string {
 // itself and the fixture tree's root.
 func panelServeInProcess(t *testing.T, idle time.Duration) (string, panelRecord, string) {
 	t.Helper()
+	return panelServeInProcessWith(t, idle, false)
+}
+
+// panelServeInProcessWith starts the server with or without --allow-changes.
+func panelServeInProcessWith(t *testing.T, idle time.Duration, changes bool) (string, panelRecord, string) {
+	t.Helper()
 	root := t.TempDir()
 	registryDir := dockScratch(t, root, dockNow)
 	runsClock(t, dockNow)
@@ -57,7 +63,7 @@ func panelServeInProcess(t *testing.T, idle time.Duration) (string, panelRecord,
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: idle, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: idle, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, changes: changes, now: time.Now})
 	}()
 	stopped := false
 	t.Cleanup(func() {
@@ -1410,14 +1416,19 @@ func TestPanelAndDockSayWhichCommandServesThePage(t *testing.T) {
 	dir, rec, _ := panelServeInProcess(t, 45*time.Minute)
 	page, c := panelSession(t, dir, rec)
 	resp, body := dockRequest(t, http.MethodGet, page+dockServerPath, withCookie(c))
-	if resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"panel","idleSeconds":2700}` {
+	var got dockServed
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.SchemaVersion != 1 || got.ServedBy != "panel" || got.IdleSeconds != 2700 ||
+		got.Changes != "off" || got.Form != "" || got.ChangesSince != nil || !strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only: started without --allow-changes.") {
 		t.Fatalf("panel: %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := dockRequest(t, http.MethodGet, page+dockServerPath, nil); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("without a session: %d", resp.StatusCode)
 	}
 	base, _, _ := dockServe(t)
-	if resp, body := dockRequest(t, http.MethodGet, base+dockServerPath, nil); resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"dock"}` {
+	resp, body = dockRequest(t, http.MethodGet, base+dockServerPath, nil)
+	got = dockServed{}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.ServedBy != "dock" || got.Changes != "" || got.Form != "" ||
+		!strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only. keepgoing dock never pauses") {
 		t.Fatalf("dock: %d %s", resp.StatusCode, body)
 	}
 	// The expired page shows no button until its script runs, and that
