@@ -96,6 +96,33 @@ func (f addFixture) ids(t *testing.T) string {
 	return strings.Join(ids, ",")
 }
 
+// records is every runtime record a fallback command may touch, so a
+// refusal can be shown to have left all of them alone.
+func (f addFixture) records(t *testing.T) string {
+	t.Helper()
+	stateDir := filepath.Join(f.destination, "state")
+	var b strings.Builder
+	b.WriteString(f.files(t))
+	for _, name := range []string{health.FileName, state.FileName} {
+		raw, err := os.ReadFile(filepath.Join(stateDir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		b.WriteString(name + "\n" + string(raw) + "\n")
+	}
+	for _, dir := range []string{"targets", "removed-targets"} {
+		entries, _ := os.ReadDir(filepath.Join(stateDir, dir))
+		for _, e := range entries {
+			name := e.Name()
+			if dir == "removed-targets" { // timestamped
+				name = name[:strings.LastIndex(name, "-")]
+			}
+			b.WriteString(dir + "/" + name + "\n")
+		}
+	}
+	return b.String()
+}
+
 func (f addFixture) modes(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -214,6 +241,17 @@ func TestFallbacksRemove(t *testing.T) {
 	if err := reg.Save(cfg.Loop.StateDir); err != nil {
 		t.Fatal(err)
 	}
+	if err := state.Save(cfg.Loop.StateDir, state.File{HandoffBriefs: map[string]state.BriefRecord{"second": {Failed: 2}, "third": {Failed: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"second", "third"} {
+		if err := os.MkdirAll(filepath.Join(cfg.Loop.StateDir, "targets", id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cfg.Loop.StateDir, "targets", id, "session"), []byte("fictional-session\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	failures := filepath.Join(cfg.Loop.StateDir, "probe-failures", "second")
 	if err := os.MkdirAll(failures, 0o700); err != nil {
 		t.Fatal(err)
@@ -221,15 +259,15 @@ func TestFallbacksRemove(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(failures, "example.out"), []byte("fictional\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, cfgBefore := f.files(t), mustRead(t, f.cfg)
-	if code, out, _ := f.manage(t, "\n", "remove", "second"); code != exitOK || !strings.Contains(out, "Cancelled: nothing written.") || f.files(t) != before {
+	before, cfgBefore := f.records(t), mustRead(t, f.cfg)
+	if code, out, _ := f.manage(t, "\n", "remove", "second"); code != exitOK || !strings.Contains(out, "Cancelled: nothing written.") || f.records(t) != before {
 		t.Fatalf("%d %s", code, out)
 	}
 	code, out, errOut := f.manage(t, "yes\n", "remove", "second")
 	if code != exitOK {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	for _, want := range []string{"Remove fallback second from loop \"example-loop\" (nothing written yet)", "Handoff order afterwards", "Removed: second, which was at place 2.", "The saved check results for second are deleted", "probe-failures) is left in place", "health.json", "Remove this fallback? (yes/no) [no]", "Removed fallback second."} {
+	for _, want := range []string{"Remove fallback second from loop \"example-loop\" (nothing written yet)", "Handoff order afterwards", "Removed: second, which was at place 2.", "Comment lines directly above it are removed with it:\n    # about second", "Records of second", "deleted   saved check results (health.json)", "deleted   count of rejected handoff messages (state.json)", "archived  saved session and turn files, moved to removed-targets/", "kept      saved output from failed checks (probe-failures/), if any", "starts a new session with no check results", "Remove this fallback? (yes/no) [no]", "Removed fallback second."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -254,6 +292,22 @@ func TestFallbacksRemove(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(failures, "example.out")); err != nil {
 		t.Fatalf("saved failure output was removed: %v", err)
 	}
+	// The session a later fallback with this id would resume is moved aside,
+	// and its rejected-handoff count is cleared; other targets keep theirs.
+	if _, err := os.Stat(filepath.Join(cfg.Loop.StateDir, "targets", "second")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed fallback's session directory is still in place: %v", err)
+	}
+	archived, _ := filepath.Glob(filepath.Join(cfg.Loop.StateDir, "removed-targets", "second-*", "session"))
+	if len(archived) != 1 || string(mustRead(t, archived[0])) != "fictional-session\n" {
+		t.Fatalf("session was not archived intact: %v", archived)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Loop.StateDir, "targets", "third", "session")); err != nil {
+		t.Fatalf("another target's session was touched: %v", err)
+	}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil || len(st.HandoffBriefs) != 1 || st.HandoffBriefs["third"].Failed != 1 {
+		t.Fatalf("handoff counts: %v %+v", err, st.HandoffBriefs)
+	}
 	if !bytes.Equal(cfgBefore, mustRead(t, f.cfg)) {
 		t.Error("keepgoing.yaml was rewritten")
 	}
@@ -262,13 +316,13 @@ func TestFallbacksRemove(t *testing.T) {
 	if err := state.Save(cfg.Loop.StateDir, state.File{ActiveTarget: "third"}); err != nil {
 		t.Fatal(err)
 	}
-	before = f.files(t)
+	before = f.records(t)
 	for name, tc := range map[string]struct{ id, want string }{
 		"in use":  {"third", "The loop is running on \"third\" right now. Move it first with:\n    keepgoing retarget primary"},
 		"unknown": {"absent", "No fallback has the id \"absent\". This loop has: first, third."},
 	} {
 		code, out, errOut := f.manage(t, "yes\n", "remove", tc.id)
-		if code != exitUsage || out != "" || !strings.Contains(errOut, tc.want) || f.files(t) != before {
+		if code != exitUsage || out != "" || !strings.Contains(errOut, tc.want) || f.records(t) != before {
 			t.Fatalf("%s: %d %s", name, code, errOut)
 		}
 	}
@@ -411,14 +465,19 @@ func TestFallbacksManageGuards(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := control.Save(cfg.Loop.StateDir, control.File{BBTarget: "thr_example_moved"}); err != nil {
-			t.Fatal(err)
-		}
-		before := f.files(t)
-		for sub, args := range commands {
-			code, stdout, stderr := f.manage(t, "", sub, append(args, "--yes")...)
-			if code != exitSkipped || stdout != "" || !strings.Contains(stderr, "nothing written") || f.files(t) != before {
-				t.Fatalf("%s: %d %q %s", sub, code, stdout, stderr)
+		for name, ctl := range map[string]control.File{
+			"pending transfer record": {AwaitingUser: true, PendingTransfer: &control.PendingBBTransfer{}},
+			"moved BB target":         {BBTarget: "thr_example_moved"},
+		} {
+			if err := control.Save(cfg.Loop.StateDir, ctl); err != nil {
+				t.Fatal(err)
+			}
+			before := f.records(t)
+			for sub, args := range commands {
+				code, stdout, stderr := f.manage(t, "", sub, append(args, "--yes")...)
+				if code != exitSkipped || stdout != "" || !strings.Contains(stderr, "nothing written") || f.records(t) != before {
+					t.Fatalf("%s, %s: %d %q %s", name, sub, code, stdout, stderr)
+				}
 			}
 		}
 	})
@@ -486,4 +545,215 @@ func TestFallbacksManageGuards(t *testing.T) {
 			t.Fatalf("changed source: %d %v", code, err)
 		}
 	})
+}
+
+func TestFallbacksHandoffKeepsOtherClassesAndComments(t *testing.T) {
+	set := func(t *testing.T, f addFixture, value string) {
+		t.Helper()
+		lines := strings.Split(string(mustRead(t, f.cfg)), "\n")
+		for i, l := range lines {
+			if at := strings.Index(l, "failover_on"); at >= 0 {
+				lines[i] = l[:at] + value
+				if strings.HasSuffix(strings.TrimSpace(lines[i+1]), "- rate_limit") {
+					lines = append(lines[:i+1], lines[i+2:]...)
+				}
+				break
+			}
+		}
+		if err := os.WriteFile(f.cfg, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, tc := range map[string]struct{ before, after string }{
+		"one other class":   {"[overloaded]", "overloaded,rate_limit"},
+		"two other classes": {"[auth, network]", "auth,network,rate_limit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newManageFixture(t)
+			set(t, f, "failover_on: "+tc.before+" # keep this note")
+			var r fallbackEditReport
+			code, out, errOut := f.manage(t, "", "handoff", "on", "--json", "--dry-run")
+			if err := json.Unmarshal([]byte(out), &r); code != exitOK || err != nil || r.Outcome != "preview" || !r.RateLimitAdded || strings.Join(r.Handoff.FailoverOn, ",") != tc.after || !r.Handoff.FailoverOnWritten {
+				t.Fatalf("%d %s %s", code, out, errOut)
+			}
+			code, out, errOut = f.manage(t, "yes\n", "handoff", "on")
+			if code != exitOK || !strings.Contains(out, "but not for rate limits") || !strings.Contains(out, "Rate limits are added to the error types that already hand off") || !strings.Contains(out, "Add rate limits to automatic handoff? (yes/no) [no]") {
+				t.Fatalf("%d %s\n%s", code, errOut, out)
+			}
+			cfg, err := config.Load(f.cfg)
+			if err != nil || strings.Join(cfg.Loop.Errors.FailoverOn, ",") != tc.after {
+				t.Fatalf("%v %v", err, cfg.Loop.Errors.FailoverOn)
+			}
+			if raw := string(mustRead(t, f.cfg)); !strings.Contains(raw, "# keep this note") || !strings.HasPrefix(raw, "# config note\n") {
+				t.Fatalf("a comment was dropped:\n%s", raw)
+			}
+			if code, out, _ := f.manage(t, "", "handoff", "on"); code != exitOK || !strings.Contains(out, "already on for: "+strings.ReplaceAll(tc.after, ",", ", ")+". Nothing was changed.") {
+				t.Fatalf("%d %s", code, out)
+			}
+		})
+	}
+	// Turning a custom list off says it will not come back, and keeps the comment.
+	f := newManageFixture(t)
+	set(t, f, "failover_on: [rate_limit, overloaded] # keep this note")
+	listBefore := string(mustRead(t, f.cfg))
+	code, out, errOut := f.manage(t, "yes\n", "handoff", "off")
+	if code != exitOK || !strings.Contains(out, "The current list (rate_limit, overloaded) is not remembered: turning handoff") || !strings.Contains(out, "restores rate limits only.") {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	if raw := string(mustRead(t, f.cfg)); raw != strings.Replace(listBefore, "failover_on: [rate_limit, overloaded] # keep this note", "failover_on: [] # keep this note", 1) {
+		t.Fatalf("more than the list changed:\n%s", raw)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) > 80 && !strings.Contains(line, f.root) {
+			t.Errorf("line wider than 80 columns: %q", line)
+		}
+	}
+}
+
+// Only a comment block directly above an entry belongs to it. Headings and
+// notes set apart by a blank line are layout and stay where they are, and
+// every byte outside the entry's own lines is left as it was.
+func TestFallbacksRemoveAndMoveLeaveDetachedCommentsAndLayout(t *testing.T) {
+	for _, eol := range []string{"\n", "\r\n"} {
+		name := map[string]string{"\n": "LF", "\r\n": "CRLF"}[eol]
+		t.Run(name, func(t *testing.T) {
+			f := newManageFixture(t)
+			entry := func(id, group string) []string {
+				return []string{"  - id: " + id, "    adapter: claude", "    group: " + group, "    claude: {workdir: " + f.project + ", model: example}", "    probe: {kind: claude}"}
+			}
+			head := []string{"# header note", "version: 1", "", "candidates:", "  # ---- Claude accounts ----", ""}
+			first := append([]string{"  # about first"}, entry("first", "pool-a")...)
+			gapA := []string{"  # below first, set apart", "", "  # ---- more accounts ----", ""}
+			second := entry("second", "pool-b")
+			gapB := []string{""}
+			third := append([]string{"  # about third", "  # second line about third"}, entry("third", "pool-c")...)
+			tail := []string{"", "# closing note", "redundancy: {min_healthy: 1, span: group}", ""}
+			join := func(parts ...[]string) string {
+				var all []string
+				for _, p := range parts {
+					all = append(all, p...)
+				}
+				return strings.Join(all, eol)
+			}
+			original := join(head, first, gapA, second, gapB, third, tail)
+			reset := func() {
+				if err := os.WriteFile(f.fallbacks, []byte(original), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, tc := range map[string]struct {
+				sub  string
+				args []string
+				want string
+				says string
+			}{
+				"remove first":    {"remove", []string{"first"}, join(head, gapA, second, gapB, third, tail), "removed with it:\n    # about first"},
+				"remove second":   {"remove", []string{"second"}, join(head, first, gapA, gapB, third, tail), ""},
+				"remove third":    {"remove", []string{"third"}, join(head, first, gapA, second, gapB, tail), "# second line about third"},
+				"move first last": {"move", []string{"first", "--to", "3"}, join(head, gapA, second, gapB, third, first, tail), "move with it:\n    # about first"},
+				"move third up":   {"move", []string{"third", "--to", "1"}, join(head, third, first, gapA, second, gapB, tail), "move with it:\n    # about third\n    # second line about third"},
+				"move second up":  {"move", []string{"second", "--to", "1"}, join(head, second, first, gapA, gapB, third, tail), ""},
+			} {
+				reset()
+				code, out, errOut := f.manage(t, "", tc.sub, append(tc.args, "--yes")...)
+				if code != exitOK {
+					t.Fatalf("%s: %d %s", name, code, errOut)
+				}
+				if got := string(mustRead(t, f.fallbacks)); got != tc.want {
+					t.Errorf("%s: file differs from the original with only the entry's lines cut or pasted:\n%q\nwant\n%q", name, got, tc.want)
+				}
+				if tc.says != "" && !strings.Contains(out, tc.says) || tc.says == "" && strings.Contains(out, "with it:") {
+					t.Errorf("%s: preview does not list exactly the comment lines that travel:\n%s", name, out)
+				}
+				if strings.Contains(out, "Claude accounts") || strings.Contains(out, "set apart") {
+					t.Errorf("%s: preview lists a detached comment:\n%s", name, out)
+				}
+			}
+		})
+	}
+	t.Run("layouts that cannot be cut by line are refused", func(t *testing.T) {
+		f := newManageFixture(t)
+		flow := "version: 1\ncandidates: [{id: first, adapter: claude, group: pool-a, claude: {workdir: " + f.project + "}, probe: {kind: claude}}, {id: second, adapter: claude, group: pool-b, claude: {workdir: " + f.project + "}, probe: {kind: claude}}]\n"
+		if err := os.WriteFile(f.fallbacks, []byte(flow), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		before := f.records(t)
+		for sub, args := range map[string][]string{"remove": {"first"}, "move": {"first", "--to", "2"}} {
+			code, out, errOut := f.manage(t, "", sub, append(args, "--yes")...)
+			if code != exitUsage || out != "" || !strings.Contains(errOut, "edit it by hand") || f.records(t) != before {
+				t.Fatalf("%s: %d %s", sub, code, errOut)
+			}
+		}
+	})
+}
+
+func TestFallbacksRemoveDecidesRecordsUnderTheLockAndCanBeFinished(t *testing.T) {
+	f := newManageFixture(t)
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing is recorded at the preview; a check records the fallback before the answer.
+	plan, err := planFallbackRemove(cfg, "second")
+	if err != nil || plan.leftovers.any() {
+		t.Fatalf("%v %+v", err, plan.leftovers)
+	}
+	reg := &health.Registry{Candidates: map[string]*health.Entry{"second": {ProbesToday: 1}, "third": {ProbesToday: 1}}}
+	if err := reg.Save(cfg.Loop.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := writeFallbackEdit(plan); code != exitOK || err != nil {
+		t.Fatalf("%d %v", code, err)
+	}
+	after, err := health.Load(cfg.Loop.StateDir)
+	if err != nil || after.Candidates["second"] != nil || after.Candidates["third"] == nil {
+		t.Fatalf("a record written after the preview survived the removal: %v %+v", err, after.Candidates)
+	}
+
+	// The health write fails after the file is written: the error says so, and
+	// running the command again finishes the job.
+	if err := os.MkdirAll(filepath.Join(cfg.Loop.StateDir, "targets", "third"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { fallbackHealthSave = func(r *health.Registry, dir string) error { return r.Save(dir) } })
+	fallbackHealthSave = func(*health.Registry, string) error { return errors.New("injected failure") }
+	code, out, errOut := f.manage(t, "", "remove", "third", "--yes")
+	if code != exitFailed || !strings.Contains(errOut, "the fallback was removed, but its saved check results could not be deleted. Run the same command again to finish; do not reuse the id third until it succeeds") {
+		t.Fatalf("%d %s %s", code, out, errOut)
+	}
+	if got := f.ids(t); got != "first" {
+		t.Fatalf("order %s", got)
+	}
+	if after, _ := health.Load(cfg.Loop.StateDir); after.Candidates["third"] == nil {
+		t.Fatal("fixture: the record should still be there")
+	}
+	fallbackHealthSave = func(r *health.Registry, dir string) error { return r.Save(dir) }
+	filesBefore := f.files(t)
+	code, out, errOut = f.manage(t, "yes\n", "remove", "third")
+	if code != exitOK || !strings.Contains(out, "third is no longer a fallback of loop \"example-loop\", but left records behind") || !strings.Contains(out, "Clear these leftover records? (yes/no) [no]") || !strings.Contains(out, "Cleared the leftover records of third.") {
+		t.Fatalf("%d %s\n%s", code, errOut, out)
+	}
+	if after, _ := health.Load(cfg.Loop.StateDir); after.Candidates["third"] != nil {
+		t.Fatal("retry did not clear the record")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Loop.StateDir, "targets", "third")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("retry did not move the session aside")
+	}
+	if f.files(t) != filesBefore {
+		t.Fatal("a cleanup rewrote the YAML files")
+	}
+	// With nothing left, the id is simply unknown again; odd ids never reach the filesystem.
+	for _, id := range []string{"third", "../first", "primary"} {
+		before := f.records(t)
+		if code, out, errOut := f.manage(t, "", "remove", id, "--yes"); code != exitUsage || out != "" || !strings.Contains(errOut, "No fallback has the id") || f.records(t) != before {
+			t.Fatalf("%s: %d %s", id, code, errOut)
+		}
+	}
+	// An unreadable state file is reported as that, not as a handoff.
+	if err := os.WriteFile(filepath.Join(cfg.Loop.StateDir, state.FileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := f.manage(t, "", "handoff", "off", "--yes"); code != exitUsage || !strings.Contains(errOut, "saved state is unreadable") {
+		t.Fatalf("%d %s", code, errOut)
+	}
 }

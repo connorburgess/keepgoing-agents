@@ -107,13 +107,28 @@ keepgoing fallbacks remove claude-pool-b -c /private/example-loop/keepgoing.yaml
 
 Each command prints what will change, the handoff order (marking the target in use now) and the files it will update, then asks; the default answer is `no`. `--yes` writes without asking, `--dry-run` only previews, and `--json` (with `--yes` or `--dry-run`) prints a `fallback_handoff`, `fallback_remove` or `fallback_move` object with `schemaVersion: 1` and an `outcome` of `preview`, `changed` or `unchanged`. Nothing is run: no agent, model or check. The guards are those of `fallbacks add`: the owning BB thread, no pending transfer, the tick lock, unchanged files since the preview, and no symbolic links.
 
-- **`handoff on|off`** sets `errors.failover_on` to `[rate_limit]` or `[]`, keeping the rest of `keepgoing.yaml` and its comments. `on` does nothing when handoff is already on, including for other error classes or through the default of an absent key; `off` does nothing when it is already off. Turning handoff off does not move a loop that is running on a fallback back to its primary; use `keepgoing retarget primary` for that. Scheduled checks of the fallbacks continue either way.
-- **`move ID --to N`** changes only the order, which decides which fallback is tried first at the next handoff. Recorded health is kept and the loop stays on its current target. A comment above an entry moves with it.
-- **`remove ID`** takes the entry out, with the comment above it. The entry's saved check results are deleted from `health.json`, so a fallback added later under the same id starts with no history. Saved output from failed checks under `probe-failures/` is left in place, and the supervisor's own `state.json` is not edited. It refuses the fallback the loop is running on (move the loop first with `keepgoing retarget primary`) and a loop's only fallback, because a fallbacks file cannot be empty; turn handoff off instead. If the fallbacks left cannot meet the redundancy rule, the preview warns that handoffs will be refused.
+- **`handoff on|off`.** `on` makes rate limits hand off: an empty or absent list becomes `[rate_limit]`, and a list of other error classes gains `rate_limit` and keeps the rest (JSON reports `rateLimitAdded`). It does nothing only when `rate_limit` is already listed. `off` writes `[]`, and does nothing when handoff is already off. A custom list is not remembered: the preview says that turning handoff on again restores rate limits only. Turning handoff off does not move a loop that is running on a fallback back to its primary; use `keepgoing retarget primary` for that. Scheduled checks of the fallbacks continue either way.
+- **`move ID --to N`** changes only the order, which decides which fallback is tried first at the next handoff. Recorded health is kept and the loop stays on its current target.
+- **`remove ID`** takes the entry out. It refuses the fallback the loop is running on (move the loop first with `keepgoing retarget primary`) and a loop's only fallback, because a fallbacks file cannot be empty; turn handoff off instead. If the fallbacks left cannot meet the redundancy rule, the preview warns that handoffs will be refused.
 
-Both files are re-emitted as described for `fallbacks add`: other entries, rules and comments are kept, permission bits are preserved, indentation is normalized, CRLF becomes LF and blank lines between entries are dropped.
+What `remove` does with the fallback's records, decided again under the lock when the change is written, not from the preview:
 
-## Candidates
+| Record | What happens |
+| --- | --- |
+| Saved check results in `health.json` | deleted |
+| Count of rejected handoff messages in `state.json` | deleted |
+| Saved session and turn files in `targets/<id>/` | moved to `removed-targets/<id>-<time>/` |
+| Saved output from failed checks in `probe-failures/<id>/` | kept |
+
+So a fallback added later under the same id starts a new session with no check results, and nothing is thrown away that cannot be recovered except those two records. If a step after the file edit fails, the command says which, and running the same `remove ID` again finishes the cleanup even though the id is no longer in the file.
+
+How the files are edited:
+
+- `move` and `remove` cut and paste the entry's own lines. A comment block directly above an entry, with no blank line between, belongs to it and moves or goes with it; the preview lists those lines. Headings and notes set apart by a blank line stay where they are. Every other byte is left as it was, including line endings, blank lines and inline `{...}` values. A candidates list written inline on one line is refused; edit it by hand.
+- `handoff` changes only the list itself when `errors.failover_on` is written inline (`failover_on: [...]`), keeping a comment after it. When the key is absent or written as a block list, `keepgoing.yaml` is re-emitted as described for `fallbacks add`: comments and permission bits are kept, indentation is normalized, CRLF becomes LF and blank lines between entries are dropped.
+
+A running daemon rereads its configuration on its interval or at the next control change and uses the new setup from then on; until it has, its checks are skipped because the files no longer match what it loaded. See [loaded configuration checks](operations.md#loaded-configuration-checks).
+
 ## Candidates
 
 Each candidate is a full agent definition plus an id and a probe:

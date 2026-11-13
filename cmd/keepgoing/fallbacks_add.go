@@ -932,6 +932,10 @@ func editLoopYAML(raw []byte, setFallbacks bool, failoverOn *[]string) ([]byte, 
 		for _, class := range *failoverOn {
 			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: class})
 		}
+		// Comments written beside the old value stay beside the new one.
+		if old := yamlMapValue(errs, "failover_on"); old != nil {
+			seq.HeadComment, seq.LineComment, seq.FootComment = old.HeadComment, old.LineComment, old.FootComment
+		}
 		yamlMapSet(errs, "failover_on", seq)
 	}
 	return yaml.Marshal(&doc)
