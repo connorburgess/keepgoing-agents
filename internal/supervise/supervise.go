@@ -536,6 +536,7 @@ func (t *tick) run() error {
 	}
 	t.reserve = reserveSend + reserveReports + t.reserveNetwork // the fingerprint has been taken
 	unchangedFor = t.stallAfterRetry(obs, target, unchangedFor)
+	unchangedFor = t.stallSinceActive(obs, unchangedFor)
 	sinceWake := 100 * 365 * 24 * time.Hour
 	if !t.st.LastWakeAt.IsZero() {
 		sinceWake = t.now.Sub(t.st.LastWakeAt)
@@ -1704,4 +1705,26 @@ func (t *tick) lateScheduledProbes(target, group string) bool {
 func (t *tick) releaseNetworkReserve() {
 	t.reserve -= t.reserveNetwork
 	t.reserveNetwork = 0
+}
+
+// stallSinceActive keeps the stall clock from counting time in which the
+// session could not have been working: while it was idle or in error, while
+// the network was down, and while no check ran. A session is stalled when it
+// has been active with no Git change for stall_after, so the clock starts
+// when it is seen active again, not at the last Git change before an outage.
+func (t *tick) stallSinceActive(obs decide.Observation, unchanged time.Duration) time.Duration {
+	since := t.st.ActiveSince
+	switch {
+	case obs.State != decide.Active:
+		since = time.Time{}
+	case t.st.LastState != string(decide.Active) || t.missedTime() > 0 || t.networkGated:
+		since = t.now
+	}
+	if !t.opts.DryRun {
+		t.st.ActiveSince = since
+	}
+	if obs.State == decide.Active && !since.IsZero() {
+		unchanged = min(unchanged, max(time.Duration(0), t.now.Sub(since)))
+	}
+	return unchanged
 }

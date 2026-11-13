@@ -176,7 +176,7 @@ The connectivity check made before an error re-prompt, a handoff and fallback pr
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
-| `url` | none | An `http` or `https` URL with a host that answers a GET when the network is up. Any response counts. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
 | `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
 | `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
 | `verify_after` | `1h` | Once the check has failed this long, and again at this interval, ask the provider directly with one probe and attempt a `network_wait` report. If the provider answers, the check is set aside for that outage. At least `1m`. |

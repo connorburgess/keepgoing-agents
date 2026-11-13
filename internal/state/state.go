@@ -42,9 +42,13 @@ type File struct {
 	// current run of failures; zero once a check did not find it down.
 	// the most recent gap. They tell a long gap in which no check ran from an
 	// ordinary interval.
-	CheckInterval    time.Duration `json:"checkIntervalNs,omitempty"`
-	LastCheckGap     time.Duration `json:"lastCheckGapNs,omitempty"`
-	NetworkDownSince time.Time     `json:"networkDownSince,omitempty"`
+	CheckInterval time.Duration `json:"checkIntervalNs,omitempty"`
+	LastCheckGap  time.Duration `json:"lastCheckGapNs,omitempty"`
+	// ActiveSince is when the target was first seen active after it was seen
+	// in another state, after an outage, or after a gap with no check. The
+	// stall clock does not reach back past it. Zero means unknown.
+	ActiveSince      time.Time `json:"activeSince,omitempty"`
+	NetworkDownSince time.Time `json:"networkDownSince,omitempty"`
 	// NetworkVerifiedAt is when the provider was last tested directly during
 	// that outage, and NetworkReportedAt when the outage was reported.
 	// NetworkDistrusted says the check is no longer believed, because the

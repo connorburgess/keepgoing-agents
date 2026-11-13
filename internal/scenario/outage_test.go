@@ -43,51 +43,36 @@ var outages = []outage{
 		// One check just after the drop, then the host sleeps until the
 		// network is back.
 		checks: []time.Duration{3 * time.Minute},
-		known: map[string][]Waiting{
-			expectNoSendOffline:  Waits(WaitNetworkGate),
-			expectWaitsAtPortal:  Waits(WaitCaptivePortal),
-			expectNetworkShown:   Waits(WaitNetworkGate),
-			expectRecoveredOnce:  Waits(WaitTurnRetry),
-			expectChildRecovered: Waits(WaitChildRecovery),
-			expectTwoSends:       Waits(WaitNetworkGate, WaitTurnRetry),
-		},
+		known:  outageKnown,
 	},
 	{
 		name:   "4h",
 		length: 4 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 50 * time.Minute, 51 * time.Minute, 2*time.Hour + 40*time.Minute, 3*time.Hour + 59*time.Minute},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 	{
 		name:   "3d",
 		length: 72 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 9 * time.Hour, 9*time.Hour + time.Minute, 30 * time.Hour, 30*time.Hour + 2*time.Minute, 71 * time.Hour},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 	{
 		name:   "3w",
 		length: 21 * 24 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 48 * time.Hour, 48*time.Hour + time.Minute, 9 * 24 * time.Hour, 15 * 24 * time.Hour, 15*24*time.Hour + 5*time.Minute, 20*24*time.Hour + 23*time.Hour},
-		known:  longOutageKnown,
+		known:  outageKnown,
 	},
 }
 
-// On main the default allowance of three re-prompts is spent into the dead
-// network and the loop is held for a person, so it stays stopped when the
-// network returns.
-var longOutageKnown = map[string][]Waiting{
-	expectNoSendOffline:   Waits(WaitNetworkGate),
-	expectNoHoldOffline:   Waits(WaitNetworkGate),
-	expectNetworkShown:    Waits(WaitNetworkGate),
-	expectNoReportOffline: Waits(WaitNetworkGate),
-	expectRecoveredOnce:   Waits(WaitNetworkGate, WaitTurnRetry),
-	expectWaitsAtPortal:   Waits(WaitNetworkGate, WaitCaptivePortal),
-	expectNotHeldOnline:   Waits(WaitNetworkGate),
-	expectNoPerson:        Waits(WaitNetworkGate),
-	expectNoNudge:         Waits(WaitStallClock),
-	expectChildRecovered:  Waits(WaitChildRecovery),
-	expectTwoSends:        Waits(WaitNetworkGate, WaitTurnRetry),
-	expectOnlyComplete:    Waits(WaitNetworkGate),
+// What still fails at every length. The network check waits the outage out,
+// through the captive portal, without a send, a hold or a report, and the
+// loop recovers without a person. It recovers with a new prompt, though, not
+// by retrying the failed turn, and the child's failed turn is not retried.
+var outageKnown = map[string][]Waiting{
+	expectRecoveredOnce:  Waits(WaitTurnRetry),
+	expectChildRecovered: Waits(WaitChildRecovery),
+	expectTwoSends:       Waits(WaitTurnRetry),
 }
 
 // TestScenarioOutage is the owner's outage: the network drops in the middle

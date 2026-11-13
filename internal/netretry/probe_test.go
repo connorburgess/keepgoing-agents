@@ -67,41 +67,42 @@ func TestProbeOnline(t *testing.T) {
 	}
 }
 
-// Behind a captive portal the target does not answer as itself. A redirect
-// to another host (the portal's login page) and a TLS handshake presented by
-// a certificate this machine does not trust both read as offline. A redirect
-// within the same host is the target answering.
+// Behind a captive portal the target does not answer the request itself. A
+// redirect, to another host or within the same name, a 511, and a TLS
+// handshake presented with a certificate this machine does not trust all read
+// as offline. Any other status from the target is online.
 func TestCaptivePortalReadsAsOffline(t *testing.T) {
 	ctx := context.Background()
-	login := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("sign in")) }))
-	defer login.Close()
-	// The login page is on another host name for the same listener.
-	loginURL := strings.Replace(login.URL, "127.0.0.1", "localhost", 1)
-	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, loginURL+"/login", http.StatusFound)
-	}))
-	defer portal.Close()
-	if (Probe{URL: portal.URL + "/zen"}).Online(ctx) {
-		t.Fatal("a redirect to a portal's login page counted as online")
+	serve := func(h http.HandlerFunc) string {
+		srv := httptest.NewServer(h)
+		t.Cleanup(srv.Close)
+		return srv.URL
 	}
-	sameHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/zen" {
-			http.Redirect(w, r, "/moved", http.StatusMovedPermanently)
+	login := serve(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("sign in")) })
+	for name, tc := range map[string]struct {
+		handler http.HandlerFunc
+		online  bool
+	}{
+		"redirect to another host": {func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, strings.Replace(login, "127.0.0.1", "localhost", 1)+"/login", http.StatusFound)
+		}, false},
+		"redirect on the same name": {func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/portal", http.StatusFound) }, false},
+		"temporary redirect": {func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/portal", http.StatusTemporaryRedirect)
+		}, false},
+		"511":              {func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNetworkAuthenticationRequired) }, false},
+		"200":              {func(http.ResponseWriter, *http.Request) {}, true},
+		"204":              {func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }, true},
+		"403 rate limited": {func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) }, true},
+		"503":              {func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }, true},
+	} {
+		if got := (Probe{URL: serve(tc.handler) + "/zen"}).Online(ctx); got != tc.online {
+			t.Errorf("%s: online=%t, want %t", name, got, tc.online)
 		}
-	}))
-	defer sameHost.Close()
-	if !(Probe{URL: sameHost.URL + "/zen"}).Online(ctx) {
-		t.Fatal("a redirect within the target's own host counted as offline")
 	}
 	intercepted := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer intercepted.Close()
 	if (Probe{URL: intercepted.URL}).Online(ctx) {
 		t.Fatal("a TLS handshake with an untrusted certificate counted as online")
-	}
-	loop := httptest.NewServer(nil)
-	defer loop.Close()
-	loop.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, r.URL.Path+"x", http.StatusFound) })
-	if (Probe{URL: loop.URL + "/", Timeout: 5 * time.Second}).Online(ctx) {
-		t.Fatal("an endless redirect counted as online")
 	}
 }

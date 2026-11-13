@@ -169,23 +169,20 @@ func (p Probe) Online(ctx context.Context) bool {
 	return defaultOnline(ctx)
 }
 
-// errOtherHost stops a redirect that leaves the requested host. A captive
-// portal answers any request with a redirect to its own login page; that is
-// an answer from the portal, not from the target, so it means offline.
-var errOtherHost = errors.New("redirected to another host")
-
-var client = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-	if len(via) >= 5 || req.URL.Hostname() != via[0].URL.Hostname() {
-		return errOtherHost
-	}
-	return nil
+// client never follows a redirect: the redirect itself is the answer.
+var client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }}
 
-// get reports whether url's own host answered. Any status counts, because a
-// server that answers at all shows the network works. A transport error does
-// not, and neither does a redirect to another host. A TLS handshake that a
-// gateway intercepts with a certificate this machine does not trust fails as
-// a transport error, so an https target reads as offline behind a portal.
+// get reports whether url's target answered the request itself. Online means
+// a response that is not a redirect and not 511 Network Authentication
+// Required: whatever else the status, a server that answers shows the
+// network works. Offline means a transport error, or an answer that sends
+// the client elsewhere, which is what a captive portal gives, on the target's
+// own name or another. A TLS handshake that a gateway intercepts with a
+// certificate this machine does not trust is a transport error. A portal that
+// answers a plain http request in place, with a page of its own and an
+// ordinary status, cannot be told from the target; use https.
 func get(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -196,7 +193,8 @@ func get(ctx context.Context, url string) bool {
 		return false
 	}
 	resp.Body.Close()
-	return true
+	redirect := resp.StatusCode >= 300 && resp.StatusCode < 400
+	return !redirect && resp.StatusCode != http.StatusNetworkAuthenticationRequired
 }
 
 // shell runs a command line with the platform's shell.

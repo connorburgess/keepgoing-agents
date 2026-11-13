@@ -506,3 +506,47 @@ func TestNoProgressTimeoutCountsOnlyTimeWorkWasPossible(t *testing.T) {
 		t.Fatalf("first check after the outage: %+v", r)
 	}
 }
+
+// The stall clock measures time in which the session was active with no Git
+// change. A turn that works again after an outage, here restarted by the
+// provider and not by keepgoing, is not nudged for the hours it could not
+// work: it used to be nudged at once ("no progress for 72h").
+func TestStallClockDoesNotCountTheOutage(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Progress.Repositories = []string{"/example/project"}
+	w.cfg.Loop.Progress.MaxNudges = 3
+	p := w.primary(decide.Observation{State: decide.Active})
+	run := func(after time.Duration, obs decide.Observation, online bool) Result {
+		t.Helper()
+		p.obs = obs
+		opts := w.opts(t0.Add(after))
+		opts.Fingerprint = func([]string) (string, error) { return "same", nil }
+		opts.Online = func(context.Context) bool { return online }
+		r, err := Tick(context.Background(), w.cfg, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	active := decide.Observation{State: decide.Active}
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
+	run(0, active, true)
+	for _, h := range []int{1, 24, 71} { // three days in error with the network down
+		if r := run(time.Duration(h)*time.Hour, failed, false); r.Action != "none" || r.Reason != decide.NetworkDownReason {
+			t.Fatalf("+%dh: %+v", h, r)
+		}
+	}
+	back := 72 * time.Hour
+	// The provider's own retry has the turn working again when the network
+	// returns. It has been active for no time at all.
+	if r := run(back, active, true); r.Action != "none" || r.Reason != "active" || len(p.sent) != 0 {
+		t.Fatalf("nudged for the outage: %+v", r)
+	}
+	if r := run(back+20*time.Minute, active, true); r.Action != "none" {
+		t.Fatalf("nudged before stall_after of active time: %+v", r)
+	}
+	// Thirty minutes of active time without a Git change is a stall, as ever.
+	if r := run(back+30*time.Minute, active, true); r.Action != "nudge" || !strings.HasPrefix(r.Reason, "no progress for 30m") {
+		t.Fatalf("an ordinary stall is no longer nudged: %+v", r)
+	}
+}
