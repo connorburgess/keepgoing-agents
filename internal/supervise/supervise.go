@@ -1033,12 +1033,13 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
 		reserved := false
 		if r, ok := a.(adapter.TurnRetrier); ok && decide.RecoverBy(d, t.decisionInput.Obs, true) == decide.RecoverByTurnRetry {
-			done, err := t.retryTurn(r, d)
+			done, err := t.retryTurn(a, r, d)
 			if done {
 				return err
 			}
-			// The provider reported no failed turn: fall back to the prompt,
-			// under the send already reserved for this recovery.
+			// The provider reported no failed turn and the session is still in
+			// error, or the provider cannot retry a turn: fall back to the
+			// prompt, under the send already reserved for this recovery.
 			reserved = true
 		}
 		text, err := prompt.ComposeWake(loop)
@@ -1049,7 +1050,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if d.Action == decide.Nudge {
 			mode = adapter.ModeQueue
 		}
-		childErrors := decide.ChildErrorNote(t.decisionInput, d)
+		childErrors := childErrorNote(t.decisionInput, d)
 		if d.ChildErrorWake {
 			// Notice only: the parent is waiting on other children on purpose.
 			text = prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren)
@@ -1067,18 +1068,7 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
 		t.reserve = reserveReports // the send has been made
-		switch {
-		case childErrors == 0:
-		case err == nil:
-			// Announced: the newly errored children are recorded as told.
-			t.st.ChildErrorsAnnounced = decide.CoverChildren(t.childNoticeKept, t.childNoticeNew, t.now, childErrorMaxCovered)
-			t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = "", 0
-		default:
-			// Rejected (failed or unsupported): try again on a later wake, up
-			// to the cap. It may have been delivered, so it must not repeat
-			// without bound.
-			t.st.ChildErrorNoticeAttempts++
-		}
+		t.childNoticeSent(childErrors, err)
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
 		// per-episode caps and spacing.
@@ -1122,6 +1112,28 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
 	}
 	return nil
+}
+
+// childErrorNote is the rule for carrying the errored-children notice on a
+// send. It is a variable so a test can exercise a rule under which a
+// re-prompt carries the notice.
+var childErrorNote = decide.ChildErrorNote
+
+// childNoticeSent records the result of a send that carried the notice about
+// errored children. childErrors is zero when the send carried none.
+func (t *tick) childNoticeSent(childErrors int, err error) {
+	switch {
+	case childErrors == 0:
+	case err == nil:
+		// Announced: the newly errored children are recorded as told.
+		t.st.ChildErrorsAnnounced = decide.CoverChildren(t.childNoticeKept, t.childNoticeNew, t.now, childErrorMaxCovered)
+		t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = "", 0
+	default:
+		// Rejected (failed or unsupported): try again on a later wake, up to
+		// the cap. It may have been delivered, so it must not repeat without
+		// bound.
+		t.st.ChildErrorNoticeAttempts++
+	}
 }
 
 // send records only a returned adapter call. It is persisted with the completed

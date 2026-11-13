@@ -16,23 +16,30 @@ import (
 // BB reports there is nothing to retry or has no such command.
 func TestTickRetriesAFailedBBTurnByReference(t *testing.T) {
 	for name, tc := range map[string]struct {
-		answer   string
-		prompts  int
-		recovery string
-		marker   string
-		status   string
+		answer    string
+		showAfter string // what BB reports once the retry has been asked for
+		prompts   int
+		counted   int
+		recovery  string
+		marker    string
+		status    string
 	}{
-		"dispatched again": {"", 0, "turn_retry", "retried", "the failed turn was re-run by reference; no prompt was sent"},
-		"queued":           {`{"ok":true,"delivery":"queued","turnRequestId":"req_example1","attempt":3,"queuedMessageId":"qm_example1","waitingOn":{"kind":"thread-busy"},"sendAt":null}`, 0, "turn_retry", "queued", "the failed turn was re-run by reference; no prompt was sent"},
-		"no failed turn":   {`{"ok":false,"error":{"code":"no_failed_turn","message":"PRIVATE_RETRY_MESSAGE"}}`, 1, "prompt", "nothing_to_retry", "the provider reported no failed turn, so the prompt was sent instead"},
-		"BB without retry": {`{"ok":false,"error":{"code":"unknown_command","message":"unknown command 'retry'"}}`, 1, "prompt", "unsupported", "this provider version cannot retry a turn, so the prompt was sent instead"},
-		"already queued":   {`{"ok":false,"error":{"code":"retry_already_queued","message":"PRIVATE_RETRY_MESSAGE"}}`, 0, "turn_retry", "already_queued", "a retry of that turn was already waiting; nothing was sent"},
+		"dispatched again": {"", "", 0, 1, "turn_retry", "retried", "the failed turn was re-run by reference; no prompt was sent"},
+		"queued":           {`{"ok":true,"delivery":"queued","turnRequestId":"req_example1","attempt":3,"queuedMessageId":"qm_example1","waitingOn":{"kind":"thread-busy"},"sendAt":null}`, "", 0, 1, "turn_retry", "queued", "the failed turn was re-run by reference; no prompt was sent"},
+		"no failed turn":   {`{"ok":false,"error":{"code":"no_failed_turn","message":"PRIVATE_RETRY_MESSAGE"}}`, "", 1, 1, "prompt", "nothing_to_retry", "the provider reported no failed turn, so the prompt was sent instead"},
+		// BB's own retry, or a person, restarted the thread after it was observed.
+		"no longer in error": {`{"ok":false,"error":{"code":"no_failed_turn","message":"PRIVATE_RETRY_MESSAGE"}}`, `{"thread":{"status":"active"}}`, 0, 0, "turn_retry", "not_in_error", "nothing was sent and no attempt was counted"},
+		"BB without retry":   {`{"ok":false,"error":{"code":"unknown_command","message":"unknown command 'retry'"}}`, "", 1, 1, "prompt", "unsupported", "this provider version cannot retry a turn, so the prompt was sent instead"},
+		"already queued":     {`{"ok":false,"error":{"code":"retry_already_queued","message":"PRIVATE_RETRY_MESSAGE"}}`, "", 0, 0, "turn_retry", "already_queued", "a retry of that turn was already waiting; nothing was sent and no attempt was counted"},
 	} {
 		f := newFixture(t)
 		write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0o600)
 		write(t, filepath.Join(f.bbDir, "thr_primary.log"), `[{"seq":1,"type":"turn/started","data":{"providerThreadId":"provider_example"}},{"seq":2,"type":"turn/completed","data":{"providerThreadId":"provider_example","status":"failed"}},{"seq":3,"type":"system/error","data":{"code":"thread_command_failed"}}]`, 0o600)
 		if tc.answer != "" {
 			write(t, filepath.Join(f.bbDir, "thr_primary.retry"), tc.answer, 0o600)
+		}
+		if tc.showAfter != "" {
+			write(t, filepath.Join(f.bbDir, "thr_primary.show-after-retry"), tc.showAfter, 0o600)
 		}
 		f.run("enable")
 		v := f.tick()
@@ -45,7 +52,7 @@ func TestTickRetriesAFailedBBTurnByReference(t *testing.T) {
 		}
 		dir := filepath.Join(f.dir, "state")
 		st, err := state.Load(dir)
-		if err != nil || st.LastTurnRetry == nil || st.LastTurnRetry.Outcome != tc.marker || st.Reprompts != 1 {
+		if err != nil || st.LastTurnRetry == nil || st.LastTurnRetry.Outcome != tc.marker || st.Reprompts != tc.counted {
 			t.Fatalf("%s: %+v %v", name, st.LastTurnRetry, err)
 		}
 		code, out, errs := f.run("status")
@@ -64,10 +71,12 @@ func TestTickRetriesAFailedBBTurnByReference(t *testing.T) {
 		if err != nil || j.Records[len(j.Records)-1].TurnRetry != tc.marker {
 			t.Fatalf("%s: %v", name, err)
 		}
-		// Inside the backoff the next check asks and sends nothing more.
-		f.tick()
-		if c := f.read("calls"); strings.Count(c, "thread retry ") != 1 || strings.Count(c, "thread tell ") != tc.prompts {
-			t.Fatalf("%s: repeated inside the backoff\n%s", name, c)
+		// A counted attempt starts the backoff: the next check asks and sends nothing more.
+		if tc.counted == 1 {
+			f.tick()
+			if c := f.read("calls"); strings.Count(c, "thread retry ") != 1 || strings.Count(c, "thread tell ") != tc.prompts {
+				t.Fatalf("%s: repeated inside the backoff\n%s", name, c)
+			}
 		}
 	}
 }

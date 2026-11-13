@@ -717,10 +717,12 @@ func describeIncident(r incident.Record) string {
 		text += "; TURN RETRY: a retry of the failed turn was queued by reference and no prompt was sent"
 	case "nothing_to_retry":
 		text += "; TURN RETRY: the provider reported no failed turn, so the prompt was sent instead"
+	case "not_in_error":
+		text += "; TURN RETRY: the provider reported no failed turn and the session was no longer in error, so nothing was sent and no attempt was counted"
 	case "unsupported":
 		text += "; TURN RETRY: this provider version cannot retry a turn, so the prompt was sent instead"
 	case "already_queued":
-		text += "; TURN RETRY: a retry of the failed turn was already waiting, so nothing was sent"
+		text += "; TURN RETRY: a retry of the failed turn was already waiting, so nothing was sent and no attempt was counted"
 	case "refused":
 		text += "; TURN RETRY: the provider refused the retry or its result could not be read, so nothing was sent"
 	}

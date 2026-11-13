@@ -69,6 +69,11 @@ type TurnRetrier interface {
 	// Any other error means the provider refused or the result could not be
 	// read; the supervisor then sends nothing else this check.
 	RetryFailedTurn(ctx context.Context) (TurnRetry, error)
+	// StillFailed re-reads the session's status after the provider answered
+	// that there is no failed turn. It reports true only when the session is
+	// still in error with nothing queued, the one case where a prompt is the
+	// right recovery. It reads status only: no log, no children, no send.
+	StillFailed(ctx context.Context) (bool, error)
 }
 
 // TurnRetryOutcome is what the provider reported for a retry request.

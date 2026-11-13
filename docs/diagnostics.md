@@ -375,7 +375,7 @@ Invalid filters exit 2 with a fixed message that does not repeat the rejected va
 
 When the latest retained check is a limit wait, `nextSteps` says so. keepgoing sends no prompt during that wait. The check that first finds the reset further away than `errors.report_wait_after`, with no handoff possible, is marked `limit_wait_report` and says whether its one report was requested, failed or not subscribed; `summary.lastLimitWaitReport` references it. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). The marker is incident schema 7 (`limitWaitReport` on tick records: `none`, `requested`, `delivery_failed` or `not_subscribed`); a marked check is never collapsed and is kept in the `condition` tier. Timeline JSON is schema 4 with this addition.
 
-Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`, `nothing_to_retry`, `already_queued`, `refused` or `unsupported`. `summary.lastTurnRetry` references the newest marked check, and timeline JSON is schema 5 with it. Older binaries refuse a schema-8 journal, as with earlier upgrades.
+Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`, `nothing_to_retry`, `not_in_error`, `already_queued`, `refused` or `unsupported`. `summary.lastTurnRetry` references the newest marked check, and timeline JSON is schema 5 with it. Older binaries refuse a schema-8 journal, as with earlier upgrades.
 
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 

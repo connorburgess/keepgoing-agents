@@ -72,3 +72,32 @@ func TestRetryFailedTurnReadsOnlyTheStructuredResult(t *testing.T) {
 	}
 	var _ adapter.TurnRetrier = New(config.BB{Thread: "thr_example123"})
 }
+
+func TestStillFailedReadsOnlyTheThreadStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		out    string
+		err    error
+		want   bool
+		failed bool
+	}{
+		"in error":                  {`{"thread":{"status":"error"}}`, nil, true, false},
+		"in error, retry queued":    {`{"thread":{"status":"error","queuedMessageCount":1}}`, nil, false, false},
+		"active again":              {`{"thread":{"status":"active"}}`, nil, false, false},
+		"idle again":                {`{"thread":{"status":"idle"}}`, nil, false, false},
+		"archived":                  {`{"thread":{"status":"error","archivedAt":1}}`, nil, false, false},
+		"unknown status":            {`{"thread":{"status":"PRIVATE_STATUS"}}`, nil, false, false},
+		"not found":                 {`{"ok":false,"error":{"code":"thread_not_found","message":"PRIVATE_MESSAGE"}}`, errors.New("exit status 1"), false, true},
+		"not JSON":                  {`PRIVATE_MESSAGE`, nil, false, true},
+		"command failed, no output": {``, errors.New("exit status 1"), false, true},
+	} {
+		a, calls := retryFake(tc.out, tc.err)
+		got, err := a.StillFailed(context.Background())
+		if got != tc.want || (err != nil) != tc.failed || (err != nil && strings.Contains(err.Error(), "PRIVATE")) {
+			t.Errorf("%s: %t %v", name, got, err)
+		}
+		// One status read: no log, no children, no interactions, no send.
+		if len(*calls) != 1 || strings.Join((*calls)[0].args, " ") != "thread show thr_example123 --json" || (*calls)[0].stdin != "" {
+			t.Errorf("%s: %+v", name, *calls)
+		}
+	}
+}

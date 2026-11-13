@@ -13,6 +13,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -20,8 +21,19 @@ import (
 // reference. answer decides each retry; the default accepts it.
 type retryingAdapter struct {
 	*fakeAdapter
-	retries int
-	answer  func(n int) (adapter.TurnRetry, error)
+	retries  int
+	rechecks int
+	answer   func(n int) (adapter.TurnRetry, error)
+	// stillFailed answers the status re-read; the default is still in error.
+	stillFailed func() (bool, error)
+}
+
+func (r *retryingAdapter) StillFailed(context.Context) (bool, error) {
+	r.rechecks++
+	if r.stillFailed != nil {
+		return r.stillFailed()
+	}
+	return true, nil
 }
 
 func (r *retryingAdapter) RetryFailedTurn(context.Context) (adapter.TurnRetry, error) {
@@ -133,33 +145,44 @@ func TestTurnRetryHonoursBackoffAcrossRestarts(t *testing.T) {
 
 func TestTurnRetryOutcomes(t *testing.T) {
 	refused := errors.New("bb thread retry: refused (thread_host_offline)")
+	nothing := adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}
 	for name, tc := range map[string]struct {
-		answer    adapter.TurnRetry
-		err       error
-		prompts   int
-		tickFails bool
-		recovery  string
-		marker    string
-		reports   string
+		answer      adapter.TurnRetry
+		err         error
+		stillFailed func() (bool, error)
+		prompts     int
+		counted     int // re-prompt attempts and sends spent
+		tickFails   bool
+		recovery    string
+		marker      string
+		reports     string
 	}{
-		"queued behind a busy thread": {adapter.TurnRetry{Outcome: adapter.TurnRetryQueued, Attempt: 2}, nil, 0, false, "turn_retry", "queued", "reprompt"},
-		"no failed turn":              {adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}, nil, 1, false, "prompt", "nothing_to_retry", "reprompt"},
-		"a retry is already waiting":  {adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil, 0, false, "turn_retry", "already_queued", ""},
-		"refused":                     {adapter.TurnRetry{}, refused, 0, true, "turn_retry", "refused", "error"},
-		"a BB without thread retry":   {adapter.TurnRetry{}, adapter.ErrUnsupported{Op: "turn retry"}, 1, false, "prompt", "unsupported", "reprompt"},
+		"queued behind a busy thread":        {adapter.TurnRetry{Outcome: adapter.TurnRetryQueued, Attempt: 2}, nil, nil, 0, 1, false, "turn_retry", "queued", "reprompt"},
+		"no failed turn, still in error":     {nothing, nil, nil, 1, 1, false, "prompt", "nothing_to_retry", "reprompt"},
+		"no failed turn, no longer in error": {nothing, nil, func() (bool, error) { return false, nil }, 0, 0, false, "turn_retry", "not_in_error", ""},
+		"no failed turn, status unreadable":  {nothing, nil, func() (bool, error) { return false, errors.New("bb thread show: exit 1") }, 0, 0, false, "turn_retry", "not_in_error", ""},
+		"a retry is already waiting":         {adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil, nil, 0, 0, false, "turn_retry", "already_queued", ""},
+		"refused":                            {adapter.TurnRetry{}, refused, nil, 0, 1, true, "turn_retry", "refused", "error"},
+		"a BB without thread retry":          {adapter.TurnRetry{}, adapter.ErrUnsupported{Op: "turn retry"}, nil, 1, 1, false, "prompt", "unsupported", "reprompt"},
 	} {
 		w := newRetryWorld(t, decide.ErrNetwork)
 		w.cfg.Loop.Limits.MaxSends = 5
 		w.a.answer = func(int) (adapter.TurnRetry, error) { return tc.answer, tc.err }
+		w.a.stillFailed = tc.stillFailed
 		res, err := w.tick(t, t0)
 		if (err != nil) != tc.tickFails || res.Action != "reprompt" || res.Recovery != tc.recovery {
 			t.Fatalf("%s: %+v %v", name, res, err)
 		}
 		st := savedState(t, w.dir)
-		// One recovery attempt and one reserved send, whatever the provider said.
+		// One recovery attempt and one send at most. An answer that says BB did
+		// nothing for this request spends neither.
 		used, _ := state.LoadSends(w.dir)
-		if w.a.retries != 1 || len(w.a.sent) != tc.prompts || st.Reprompts != 1 || !st.LastRepromptAt.Equal(t0) || used != 1 {
+		if w.a.retries != 1 || len(w.a.sent) != tc.prompts || st.Reprompts != tc.counted || used != int64(tc.counted) || (tc.counted == 1) != st.LastRepromptAt.Equal(t0) {
 			t.Fatalf("%s: retries %d prompts %d reprompts %d sends used %d", name, w.a.retries, len(w.a.sent), st.Reprompts, used)
+		}
+		// The status is re-read only when BB says there is no failed turn.
+		if (w.a.rechecks == 1) != (tc.answer.Outcome == adapter.TurnRetryNothing) {
+			t.Fatalf("%s: %d status re-reads", name, w.a.rechecks)
 		}
 		if st.LastTurnRetry == nil || st.LastTurnRetry.Outcome != tc.marker || w.reportTypes() != tc.reports {
 			t.Fatalf("%s: %+v reports %q", name, st.LastTurnRetry, w.reportTypes())
@@ -170,10 +193,12 @@ func TestTurnRetryOutcomes(t *testing.T) {
 		if j, _ := incident.Load(w.dir); j.Records[0].TurnRetry != tc.marker {
 			t.Fatalf("%s: incident marker %s", name, j.Records[0].TurnRetry)
 		}
-		// Inside the backoff nothing more is asked or sent.
-		w.mustTick(t, t0.Add(5*time.Minute))
-		if w.a.retries != 1 || len(w.a.sent) != tc.prompts {
-			t.Fatalf("%s: repeated inside the backoff", name)
+		// A counted attempt starts the backoff: nothing more is asked or sent inside it.
+		if tc.counted == 1 {
+			w.mustTick(t, t0.Add(5*time.Minute))
+			if w.a.retries != 1 || len(w.a.sent) != tc.prompts {
+				t.Fatalf("%s: repeated inside the backoff", name)
+			}
 		}
 	}
 	// A provider that refuses every retry still ends in the hold, never a prompt.
@@ -186,6 +211,123 @@ func TestTurnRetryOutcomes(t *testing.T) {
 	ctl, _ := control.Load(w.dir)
 	if w.a.retries != 2 || len(w.a.sent) != 0 || !ctl.AwaitingUser || last.Reason != "awaiting user" {
 		t.Fatalf("retries %d prompts %d control %+v last %+v", w.a.retries, len(w.a.sent), ctl, last)
+	}
+}
+
+// BB answers "no failed turn" for a thread that is no longer in error. If
+// BB's own retry or a person restarted it between the observation and the
+// call, the prompt would steer a live turn. The status is read again, and a
+// session that recovered is left alone, at no cost, however often it happens.
+func TestNoFailedTurnOnARecoveredSessionSendsNothing(t *testing.T) {
+	w := newRetryWorld(t, decide.ErrNetwork)
+	w.cfg.Loop.Limits.MaxSends = 3
+	w.a.answer = func(int) (adapter.TurnRetry, error) { return adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}, nil }
+	w.a.stillFailed = func() (bool, error) { return false, nil }
+	for i := 0; i < 6; i++ {
+		res := w.mustTick(t, t0.Add(time.Duration(i)*time.Minute))
+		if res.Action != "reprompt" || !strings.Contains(strings.Join(res.Warnings, ";"), "no longer in error; nothing was sent") {
+			t.Fatalf("check %d: %+v", i, res)
+		}
+	}
+	st := savedState(t, w.dir)
+	used, _ := state.LoadSends(w.dir)
+	ctl, _ := control.Load(w.dir)
+	if len(w.a.sent) != 0 || st.Reprompts != 0 || !st.LastRepromptAt.IsZero() || used != 0 || ctl.AwaitingUser || len(w.reports) != 0 {
+		t.Fatalf("prompts %d reprompts %d used %d held %t reports %s", len(w.a.sent), st.Reprompts, used, ctl.AwaitingUser, w.reportTypes())
+	}
+}
+
+// A turn retry has no text to carry the errored-children notice. Under a rule
+// where a re-prompt carries it, the retry is followed by the short
+// notice-only message, never by the task prompt, and the notice is recorded
+// as announced exactly as when a prompt carries it.
+func TestTurnRetryIsFollowedByTheChildErrorNotice(t *testing.T) {
+	original := childErrorNote
+	t.Cleanup(func() { childErrorNote = original })
+	childErrorNote = func(in decide.Input, d decide.Decision) int {
+		if d.Action != decide.Reprompt {
+			return original(in, d)
+		}
+		return len(in.Obs.ErroredChildren)
+	}
+	errored := decide.Observation{State: decide.Error, ErrorClass: decide.ErrNetwork, ErroredChildren: []string{"thr_child_one", "thr_child_two"}}
+
+	w := newRetryWorld(t, decide.ErrNetwork)
+	w.cfg.Loop.Limits.MaxSends = 5
+	w.a.obs = errored
+	res := w.mustTick(t, t0)
+	used, _ := state.LoadSends(w.dir)
+	if res.Action != "reprompt" || res.Recovery != "turn_retry" || w.a.retries != 1 || len(w.a.sent) != 1 || used != 2 {
+		t.Fatalf("%+v retries %d sent %d used %d", res, w.a.retries, len(w.a.sent), used)
+	}
+	notice := w.a.sent[0]
+	if !strings.HasPrefix(notice, "[keepgoing:child-errors count=2 running=0]") || strings.Contains(notice, "keep going") || strings.Contains(notice, "thr_child") {
+		t.Fatalf("not the notice-only message: %q", notice)
+	}
+	st := savedState(t, w.dir)
+	if len(st.ChildErrorsAnnounced) == 0 || st.ChildErrorNoticeAttempts != 0 || st.Reprompts != 1 {
+		t.Fatalf("announced %v attempts %d reprompts %d", st.ChildErrorsAnnounced, st.ChildErrorNoticeAttempts, st.Reprompts)
+	}
+
+	// A notice the adapter rejects is counted for a later wake, not marked announced.
+	w = newRetryWorld(t, decide.ErrNetwork)
+	w.a.obs = errored
+	w.a.sendErr = errors.New("send failed")
+	if res := w.mustTick(t, t0); res.Action != "reprompt" || len(w.a.sent) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	if st = savedState(t, w.dir); len(st.ChildErrorsAnnounced) != 0 || st.ChildErrorNoticeAttempts != 1 {
+		t.Fatalf("announced %v attempts %d", st.ChildErrorsAnnounced, st.ChildErrorNoticeAttempts)
+	}
+
+	// Nothing was retried, so nothing is announced: a refusal, a queued retry
+	// of someone else's, and a recovered session send no notice either.
+	for name, answer := range map[string]func(int) (adapter.TurnRetry, error){
+		"refused": func(int) (adapter.TurnRetry, error) { return adapter.TurnRetry{}, errors.New("refused") },
+		"already queued": func(int) (adapter.TurnRetry, error) {
+			return adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, nil
+		},
+	} {
+		w = newRetryWorld(t, decide.ErrNetwork)
+		w.a.obs, w.a.answer = errored, answer
+		w.tick(t, t0)
+		if len(w.a.sent) != 0 || len(savedState(t, w.dir).ChildErrorsAnnounced) != 0 {
+			t.Fatalf("%s: sent %v", name, w.a.sent)
+		}
+	}
+	// With no allowance left for it, the notice waits and the retry stands.
+	w = newRetryWorld(t, decide.ErrNetwork)
+	w.cfg.Loop.Limits.MaxSends = 1
+	w.a.obs = errored
+	if res := w.mustTick(t, t0); w.a.retries != 1 || len(w.a.sent) != 0 || !strings.Contains(strings.Join(res.Warnings, ";"), "errored-children notice not sent") {
+		t.Fatalf("%+v retries %d sent %d", res, w.a.retries, len(w.a.sent))
+	}
+
+	// Under the rule on main a re-prompt carries no notice, and none is sent.
+	childErrorNote = original
+	w = newRetryWorld(t, decide.ErrNetwork)
+	w.a.obs = errored
+	if res := w.mustTick(t, t0); w.a.retries != 1 || len(w.a.sent) != 0 || res.ChildErrorNote {
+		t.Fatalf("%+v sent %v", res, w.a.sent)
+	}
+}
+
+// The send graph shows a turn retry as a re-prompt attempt with no prompt.
+func TestTurnRetryIsRecordedInTheRunGraph(t *testing.T) {
+	w := newRetryWorld(t, decide.ErrNetwork)
+	w.mustTick(t, t0)
+	g, availability := rungraph.Load(w.dir)
+	if len(g.Attempts) != 1 {
+		t.Fatalf("%s: %d attempts", availability, len(g.Attempts))
+	}
+	if a := g.Attempts[0]; a.Action != "reprompt" || a.Mode != "turn_retry" || a.Target != state.Primary || string(a.Outcome) != "adapter_returned" || a.GoalID != "" {
+		t.Fatalf("%+v", a)
+	}
+	w = newRetryWorld(t, decide.ErrNetwork)
+	w.a.answer = func(int) (adapter.TurnRetry, error) { return adapter.TurnRetry{}, errors.New("refused") }
+	w.tick(t, t0)
+	if g, _ = rungraph.Load(w.dir); len(g.Attempts) != 1 || string(g.Attempts[0].Outcome) != "adapter_error" || g.Attempts[0].Mode != "turn_retry" {
+		t.Fatalf("%+v", g.Attempts)
 	}
 }
 
@@ -276,10 +418,9 @@ func TestTurnRetryAfterAnOutageOfAnyLength(t *testing.T) {
 			prompts int
 			marker  string
 		}{
-			"still retryable":                  {adapter.TurnRetry{Outcome: adapter.TurnRetried, Attempt: 2}, 0, "retried"},
-			"queued":                           {adapter.TurnRetry{Outcome: adapter.TurnRetryQueued, Attempt: 2}, 0, "queued"},
-			"the provider has no failed turn":  {adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}, 1, "nothing_to_retry"},
-			"a retry was queued while offline": {adapter.TurnRetry{Outcome: adapter.TurnRetryAlreadyQueued}, 0, "already_queued"},
+			"still retryable":                 {adapter.TurnRetry{Outcome: adapter.TurnRetried, Attempt: 2}, 0, "retried"},
+			"queued":                          {adapter.TurnRetry{Outcome: adapter.TurnRetryQueued, Attempt: 2}, 0, "queued"},
+			"the provider has no failed turn": {adapter.TurnRetry{Outcome: adapter.TurnRetryNothing}, 1, "nothing_to_retry"},
 		} {
 			label := fmt.Sprintf("%s after %s", name, gap)
 			w := newRetryWorld(t, decide.ErrUnknown)

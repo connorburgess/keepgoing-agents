@@ -366,6 +366,27 @@ func (a *Adapter) RetryFailedTurn(ctx context.Context) (adapter.TurnRetry, error
 	return adapter.TurnRetry{}, fmt.Errorf("bb thread retry: refused (%s)", codeToken(code))
 }
 
+// StillFailed implements adapter.TurnRetrier with one `bb thread show`. BB
+// answers no_failed_turn both for a thread that failed before it dispatched a
+// turn and for one that is no longer in error, for example because BB's own
+// retry or a person restarted it a moment earlier. Only the first may be
+// prompted; a prompt sent in auto mode to the second would steer a live turn.
+func (a *Adapter) StillFailed(ctx context.Context) (bool, error) {
+	out, err := a.run(ctx, "", "thread", "show", a.cfg.Thread, "--json")
+	if code, ok := envelopeError(out); ok {
+		return false, fmt.Errorf("bb thread show: %s", codeToken(code))
+	}
+	if err != nil {
+		return false, fmt.Errorf("bb thread show: %w", err)
+	}
+	var resp showResponse
+	if json.Unmarshal(out, &resp) != nil || resp.Thread == nil {
+		return false, errors.New("bb thread show: unexpected JSON")
+	}
+	t := resp.Thread
+	return adapter.ParseState(t.Status) == decide.Error && t.Queued == 0 && t.ArchivedAt == nil && t.DeletedAt == nil, nil
+}
+
 // codeToken keeps a code that looks like one and replaces anything else.
 func codeToken(code string) string {
 	if code == "" || len(code) > 48 {

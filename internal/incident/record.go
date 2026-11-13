@@ -462,7 +462,7 @@ func clean(r Record) Record {
 	// Whether this check detected a long limit wait and what it did about the one report.
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
 	// What a re-prompt that retried the failed turn by reference was told.
-	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "already_queued", "refused", "unsupported")
+	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "refused", "unsupported")
 	if r.Kind != "tick" {
 		r.LimitWaitReport, r.TurnRetry = "none", "none"
 	}
