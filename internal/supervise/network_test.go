@@ -367,16 +367,19 @@ func TestOutageWithoutAProbeIsReportedAndWaitedOut(t *testing.T) {
 	}
 }
 
-// The outage shown by status must not outlive it. A check that needs no
-// connectivity check and finds the session not in error clears it.
+// The outage shown by status must not outlive it, and must not be forgotten
+// while it lasts. An idle session needs no connectivity check, so finding it
+// idle clears the record. An active session is checked again: the record
+// stays while the check still fails and goes when it passes.
 func TestRecordedOutageIsClearedWhenTheSessionRecovers(t *testing.T) {
 	w := newWorld(t, true, false)
 	p := w.primary(decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
 	checks := 0
+	online := false
 	run := func(minute int, obs decide.Observation) state.File {
 		p.obs = obs
 		opts := w.opts(t0.Add(time.Duration(minute) * time.Minute))
-		opts.Online = func(context.Context) bool { checks++; return false }
+		opts.Online = func(context.Context) bool { checks++; return online }
 		if _, err := Tick(context.Background(), w.cfg, opts); err != nil {
 			t.Fatal(err)
 		}
@@ -390,12 +393,20 @@ func TestRecordedOutageIsClearedWhenTheSessionRecovers(t *testing.T) {
 	if st := run(10, decide.Observation{State: decide.Unknown}); st.NetworkDownSince.IsZero() {
 		t.Fatal("an unknown observation cleared the outage")
 	}
-	for _, obs := range []decide.Observation{{State: decide.Active}, {State: decide.Idle}} {
-		run(20, decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown})
-		before := checks
-		if st := run(30, obs); !st.NetworkDownSince.IsZero() || checks != before {
-			t.Fatalf("%s: outage still recorded (checks made: %d)", obs.State, checks-before)
-		}
+	failed := decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
+	run(20, failed)
+	before := checks
+	if st := run(30, decide.Observation{State: decide.Idle}); !st.NetworkDownSince.IsZero() || checks != before {
+		t.Fatalf("idle: outage still recorded (checks made: %d)", checks-before)
+	}
+	run(40, failed)
+	before = checks
+	if st := run(50, decide.Observation{State: decide.Active}); st.NetworkDownSince.IsZero() || checks != before+1 {
+		t.Fatalf("active, still offline: outage forgotten (checks made: %d)", checks-before)
+	}
+	online = true
+	if st := run(60, decide.Observation{State: decide.Active}); !st.NetworkDownSince.IsZero() {
+		t.Fatal("active, back online: outage still recorded")
 	}
 }
 
@@ -498,19 +509,21 @@ func TestNoProgressTimeoutCountsOnlyTimeWorkWasPossible(t *testing.T) {
 	// A three-week gap with no check at all counts as one usual interval
 	// (ten minutes here), not as three weeks.
 	_, _, run = setup()
+	run(-30*time.Minute, true)
+	run(-20*time.Minute, true)
 	run(-10*time.Minute, true)
 	run(0, true)
 	if r := run(21*24*time.Hour, true); held(r) {
 		t.Fatalf("held because the clock advanced while nothing ran: %+v", r)
 	}
-	// From there ordinary checks count again: the ten minutes before the
-	// gap, ten of the gap and 100 more reach the two hours.
-	for m := 10; m <= 90; m += 10 {
+	// From there ordinary checks count again: the thirty minutes before the
+	// gap, ten of the gap and 80 more reach the two hours.
+	for m := 10; m <= 70; m += 10 {
 		if r := run(21*24*time.Hour+time.Duration(m)*time.Minute, true); held(r) {
 			t.Fatalf("held before two hours of countable time, at +%dm: %+v", m, r)
 		}
 	}
-	if r := run(21*24*time.Hour+100*time.Minute, true); !held(r) {
+	if r := run(21*24*time.Hour+80*time.Minute, true); !held(r) {
 		t.Fatalf("the limit no longer applies after a gap: %+v", r)
 	}
 

@@ -1644,21 +1644,22 @@ func (t *tick) verifyOutage() {
 // Cadence. A gap between two checks is ordinary when it is no more than
 // missedGapFactor times the loop's usual interval, and the usual interval is
 // what the loop itself has shown: the longest of its last cadenceWindow gaps,
-// or daemon.interval if that is longer. Before the loop has shown any gap
-// there is nothing to judge by, and no gap is judged. So a scheduler that
+// or daemon.interval if that is longer. Before the loop has shown
+// cadenceMinGaps gaps there is too little to judge by, and no gap is judged. So a scheduler that
 // runs every hour, or at uneven times, is not mistaken for a host that
 // sleeps, whatever daemon.interval says. The longest gap and not a typical
 // one, because a check run by hand between two scheduled ones must not make
 // the scheduled interval look like an outage.
 const (
 	cadenceWindow   = 5
+	cadenceMinGaps  = 3
 	missedGapFactor = 3
 )
 
 // usualInterval is the loop's usual time between checks. Zero means there is
 // nothing to judge a gap by.
 func (t *tick) usualInterval() time.Duration {
-	if len(t.st.RecentCheckGaps) == 0 {
+	if len(t.st.RecentCheckGaps) < cadenceMinGaps {
 		return 0
 	}
 	usual := t.loop.Daemon.Interval.Duration

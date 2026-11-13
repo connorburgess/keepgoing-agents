@@ -86,25 +86,27 @@ func TestStalledSessionIsNudgedAndHeldOnScheduleAtAnyCadence(t *testing.T) {
 // before the gap still counts.
 func TestGapWithNoCheckPausesTheStallClock(t *testing.T) {
 	_, p, run, _ := stalledWorld(t)
-	for m := 0; m <= 20; m += 10 {
-		run(time.Duration(m)*time.Minute, true) // twenty minutes active, checked every ten
+	// Twenty minutes with no Git change, checked every five. Then the host
+	// sleeps for three days. Of the gap one usual interval counts: 25 minutes
+	// of active time, which is not yet a stall.
+	for m := 0; m <= 20; m += 5 {
+		run(time.Duration(m)*time.Minute, true)
 	}
-	// The host sleeps for nine hours. Of the gap, one usual interval counts:
-	// thirty minutes of active time, which is a stall.
-	if r := run(20*time.Minute+9*time.Hour, true); r.Action != "nudge" || !strings.HasPrefix(r.Reason, "no progress for 30m") {
-		t.Fatalf("after the gap: %+v", r)
-	}
-	// A gap right after the session was first seen: the ten minutes before it
-	// and one usual interval of it count, so the nudge comes ten minutes on.
-	_, p, run, _ = stalledWorld(t)
-	run(0, true)
-	run(10*time.Minute, true)
-	back := 10*time.Minute + 72*time.Hour
+	back := 20*time.Minute + 72*time.Hour
 	if r := run(back, true); r.Action != "none" || len(p.sent) != 0 {
 		t.Fatalf("nudged for time in which nothing ran: %+v", r)
 	}
-	if r := run(back+10*time.Minute, true); r.Action != "nudge" || !strings.HasPrefix(r.Reason, "no progress for 30m") {
-		t.Fatalf("+10m: %+v", r)
+	// Five more minutes of active time make thirty.
+	if r := run(back+5*time.Minute, true); r.Action != "nudge" || !strings.HasPrefix(r.Reason, "no progress for 30m") {
+		t.Fatalf("the active time before the gap was not counted: %+v", r)
+	}
+	// Before the loop has shown three gaps there is too little to judge by,
+	// and a gap counts in full.
+	_, _, run, _ = stalledWorld(t)
+	run(0, true)
+	run(10*time.Minute, true)
+	if r := run(10*time.Minute+9*time.Hour, true); r.Action != "nudge" {
+		t.Fatalf("a gap was judged from one earlier interval: %+v", r)
 	}
 }
 
