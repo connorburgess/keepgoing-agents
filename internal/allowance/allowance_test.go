@@ -58,6 +58,10 @@ func TestAddBuildsOneSeriesPerWindowInstance(t *testing.T) {
 	if len(h.Find("seven_day").Samples) != 2 {
 		t.Fatal("Add changed the history it was given")
 	}
+	// An earlier reading of another instance does not replace a later one.
+	if s := Add(h2, reading("account-a", 6.5, win("seven_day", 0.9, &reset))).Find("seven_day"); len(s.Samples) != 1 || !s.ResetsAt.Equal(next) {
+		t.Fatalf("older instance replaced the newer: %+v", s)
+	}
 
 	// Another identity starts over.
 	h3 := Add(h, reading("account-b", 7, win("seven_day", 0.5, &reset)))

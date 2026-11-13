@@ -73,10 +73,10 @@ func (h *History) For(identity string) bool {
 //   - A reading of another identity starts a new history.
 //   - A series whose reset time is at or before the reading's time has reset
 //     and is dropped.
-//   - A window whose reset time differs from its series' by more than
-//     SameReset starts a new instance.
 //   - A reading at or before the series' newest one is ignored, so the same
 //     reading recorded twice, or a clock set back, adds nothing.
+//   - A later window whose reset time differs from its series' by more than
+//     SameReset starts a new instance.
 //   - Each series keeps its newest MaxSamples readings.
 func Add(h *History, u *probe.Usage) *History {
 	if !u.Available() {
@@ -100,11 +100,11 @@ func Add(h *History, u *probe.Usage) *History {
 			out.Windows = append(out.Windows, Series{Key: w.Key, ResetsAt: w.ResetsAt.UTC(), Samples: []Sample{sample}})
 			continue
 		}
-		if absDuration(s.ResetsAt.Sub(*w.ResetsAt)) > SameReset {
-			*s = Series{Key: w.Key, ResetsAt: w.ResetsAt.UTC(), Samples: []Sample{sample}}
+		if !sample.At.After(s.Samples[len(s.Samples)-1].At) {
 			continue
 		}
-		if !sample.At.After(s.Samples[len(s.Samples)-1].At) {
+		if absDuration(s.ResetsAt.Sub(*w.ResetsAt)) > SameReset {
+			*s = Series{Key: w.Key, ResetsAt: w.ResetsAt.UTC(), Samples: []Sample{sample}}
 			continue
 		}
 		s.ResetsAt = w.ResetsAt.UTC()
