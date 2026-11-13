@@ -171,6 +171,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
+- [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 
 ## Contributing
 
