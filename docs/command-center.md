@@ -16,7 +16,7 @@ flowchart LR
     KG["keepgoing daemon or scheduler<br/>decisions, holds, bounds, fallbacks"]
     ST[("private state<br/>outside any checkout")]
     LOGIN["agent CLIs and their logins<br/>(never copied by keepgoing)"]
-    DOCK["dock: local page on loopback (planned)<br/>menu-bar item (read-only preview)"]
+    DOCK["dock: read-only local page on loopback (unreleased)<br/>menu-bar item (read-only preview)"]
     KG --- ST
     KG --> LOGIN
     DOCK -->|reads| ST
@@ -42,9 +42,9 @@ flowchart LR
 Solid lines exist on `main`; dashed lines are planned or analysis.
 
 - **Command center.** The process that checks loops (`keepgoing daemon`, `start`, a managed LaunchAgent or systemd user unit, or an external scheduler running `tick`) plus its private state directory. It runs the agents' own CLIs with the logins already on that machine; `keepgoing` never logs in, creates accounts or copies credentials ([README](../README.md#fallbacks-several-subscriptions-accounts-or-models)). This is how keepgoing works today.
-- **Dock.** Where a person looks and acts. Today that is the CLI (`status`, `timeline`, `runs`, `pause`, `resume`, `stop`), the [registered client commands](local-clients.md) and an unreleased, read-only [macOS menu preview](../integrations/macos/README.md). A local page served on loopback is planned; its design so far is loopback-only, with a per-run token and no write endpoints. The only network listener keepgoing has today is the daemon's [diagnostic endpoint](diagnostics.md#live-daemon-diagnostics), bound to `127.0.0.1` and answering a challenge with a private key.
+- **Dock.** Where a person looks and acts. Today that is the CLI (`status`, `timeline`, `runs`, `pause`, `resume`, `stop`), the [registered client commands](local-clients.md) and an unreleased, read-only [macOS menu preview](../integrations/macos/README.md). In unreleased source, `keepgoing dock` serves a read-only page for every registered loop, the [keepgoing panel](dock.md): bound to `127.0.0.1`, with a per-run token in the address, refusing any `Host` other than its own loopback address and port, any foreign `Origin` and every method but `GET` and `HEAD`. It has no write endpoint and is tested with fixtures only. The other listener keepgoing has is the daemon's [diagnostic endpoint](diagnostics.md#live-daemon-diagnostics), also bound to `127.0.0.1`, answering a challenge with a private key.
 - **Remote reach.** How a person who is elsewhere learns what happened and, later, acts. Today: [signed webhook reports](configuration.md#report-yield-daemon) for handoff, holds, limit waits, child errors, completion, stop and errors, using the Standard Webhooks HMAC scheme. Nothing comes back: there is no inbound control path. Options for a remote view and for replies are set out [below](#reaching-the-dock-from-elsewhere).
-- **Targets.** What the command center supervises. Today: BB threads, headless Claude Code and Codex, the unreleased Cursor CLI runner, and the generic process adapter ([capability matrix](adapters.md#matrix)). Cloud sessions and small-device targets are planned in the [runner kit](roadmap.md#runner-kit-one-contract-for-every-command-line-agent).
+- **Targets.** What the command center supervises. Today: BB threads, headless Claude Code and Codex, the generic process adapter and, in unreleased source, the Cursor CLI runner and agents defined in configuration ([capability matrix](adapters.md#matrix)). Cloud sessions and small-device targets are planned in the [runner kit](roadmap.md#runner-kit-one-contract-for-every-command-line-agent).
 
 ## What other tools do
 
@@ -90,7 +90,7 @@ Only Cursor and Devin document both halves, observe and continue, as an API toda
 
 ## Reaching the dock from elsewhere
 
-None of this section exists. It sets out how a remote view and remote control could be added without moving the supervisor.
+No remote access exists. The read-only local page it would build on exists in unreleased source ([the keepgoing panel](dock.md)); everything else in this section sets out how a remote view and remote control could be added without moving the supervisor.
 
 ### How others do it
 
@@ -104,7 +104,7 @@ None of this section exists. It sets out how a remote view and remote control co
 | Option | What it costs | What it exposes | What must hold before remote control is safe |
 | --- | --- | --- | --- |
 | **0. Outbound reports only** (exists) | Nothing beyond a receiver the user already has | Event summaries, signed, to one configured URL | Read-only by design; nothing comes back |
-| **1. Local page over the user's own private network or tunnel** (`tailscale serve`, WireGuard, `ssh -L`) | Free tiers or existing SSH keys; no server to run ([Tailscale personal plan](https://tailscale.com/pricing): 6 users, non-commercial) | The page to devices on the user's network; nothing public | The page must stop trusting "it came from loopback": a tunnel delivers remote requests to 127.0.0.1. Check `Host` and `Origin`, keep the per-run token, add a per-device credential before any write endpoint |
+| **1. Local page over the user's own private network or tunnel** (`tailscale serve`, WireGuard, `ssh -L`) | Free tiers or existing SSH keys; no server to run ([Tailscale personal plan](https://tailscale.com/pricing): 6 users, non-commercial) | The page to devices on the user's network; nothing public | A tunnel delivers remote requests to 127.0.0.1, so "it came from loopback" proves nothing. Today's page already checks `Host` and `Origin` and needs the per-run token; because it accepts only its own loopback address and port as `Host`, an SSH forward of the same port reaches it and a published tailnet name is refused. Supporting this option means an explicit setting for the names the page may be reached by, and a per-device credential before any write endpoint |
 | **2. Signed replies through a receiver** (a reply to a report, pulled by the command center) | A message service the user chooses, or a self-hosted one | Report contents to that service; a narrow set of commands back | Per-device keys or HMAC with timestamp and message ID, replay rejection, and commands bound to the exact hold they answer (like today's [single-use resume ticket](local-clients.md#registered-resume)) |
 | **3. A relay the user runs** (for example a self-hosted end-to-end encrypted relay) | A small always-on host: a few dollars a month (see [cost](#cost)) and its upkeep | Encrypted traffic to the user's own server | End-to-end encryption with keys paired on the devices, so the relay host can be compromised without granting control |
 | **4. A hosted relay** | A service someone must run and pay for | Metadata, and contents unless end-to-end encrypted, to a third party | Everything in 3, plus trust in the operator for availability; the relay must never hold provider credentials |
@@ -116,7 +116,7 @@ What remote control would mean, in order of risk:
 3. **Approving a handoff** moves work to another account or provider. It spends a different quota and needs the same binding to the exact handoff proposed.
 4. **Answering a permission prompt** lets the agent do something it asked a person about. It is the most sensitive: it needs per-device authentication, a binding to that exact prompt, an expiry, and a record in the incident history of which device answered.
 
-Recommended order: keep 0; build the local page read-only; document option 1 as the supported way to see it from elsewhere; then add pause and stop as the first write endpoints with Host/Origin checks, the per-run token and a per-device credential; then option 2 for answering holds from a phone, starting with resume through a ticket; consider 3 only if 1 and 2 are not enough; treat 4 as out of scope for this project unless it is end-to-end encrypted and holds no provider credentials. Approving a handoff and answering permission prompts remotely come last, after the local versions exist.
+Recommended order: keep 0; keep the local page read-only, as it now is in unreleased source; document option 1 as the supported way to see it from elsewhere, with the setting it needs; then add pause and stop as the first write endpoints with Host/Origin checks, the per-run token and a per-device credential; then option 2 for answering holds from a phone, starting with resume through a ticket; consider 3 only if 1 and 2 are not enough; treat 4 as out of scope for this project unless it is end-to-end encrypted and holds no provider credentials. Approving a handoff and answering permission prompts remotely come last, after the local versions exist.
 
 ## Alternatives considered
 
@@ -279,7 +279,7 @@ On-device supervision moves the supervisor's cost from a monthly bill to hardwar
 - **Cloud-session interfaces are thin.** Only two of five services document an API to both observe and continue a session; a target built on a CLI that cannot read the reply may not meet the structured-signal rule.
 - **It cannot judge the work.** Persistence without judgment relies entirely on the provider's safeguards and on the rules in [safeguards](#safeguards-and-the-limit-of-what-a-supervisor-can-do); a declined turn is not distinguishable from a finished one today.
 - **Many devices look like a fleet under one command.** The [fleet model](#fleets-of-devices) is what keeps that legitimate, and none of it is built.
-- **Most of the remote and edge parts are unbuilt.** The dock page, every remote write path, cloud targets and the small-device target are plans.
+- **Most of the remote and edge parts are unbuilt.** The local page is read-only, unreleased and tested with fixtures only; every remote path, every write from the page, cloud targets and the small-device target are plans.
 
 What would change the decision:
 
@@ -293,7 +293,7 @@ What would change the decision:
 - **A headless service on small Linux ARM devices.** A target environment with no desktop and no login session: a boot-time service, a remote view only, reports queued until the connection returns, and network-aware waiting. New runner-kit item.
 - **Safety before reach.** A held state for refusals and restrictions, a bound on repeated wakes without progress, and the fleet rules (enrolment by a person, pull, a local stop the root cannot override, default bounds) come before any multi-device feature.
 - **Starting at boot is the person's act (decided).** keepgoing never enables login lingering and never installs a system unit itself; that would be the tool extending its own reach on the machine. Planned instead: `doctor` and `service status` detect that the user unit will not start at boot and print the exact command for the person to run, and a separate command prints a system unit for whoever builds a device image to install. There will be no flag that enables lingering for the person. None of this is built.
-- **The remote view.** The dock's local page stays loopback-only and read-only until the authentication above exists; reaching it from elsewhere is documented first through the user's own private network. Remote writes come in the order recommended above.
+- **The remote view.** The local page, which exists read-only in unreleased source, stays loopback-only and read-only until the authentication above exists; reaching it from elsewhere is documented first through the user's own private network. Remote writes come in the order recommended above.
 
 ## Sources
 
