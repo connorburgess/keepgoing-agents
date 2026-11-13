@@ -550,7 +550,14 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
 		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
 		if c.ErroredChildren > 0 {
-			fmt.Fprintf(w, "children:  %d direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", c.ErroredChildren)
+			count := fmt.Sprintf("%d", c.ErroredChildren)
+			if c.ErroredChildrenPartial {
+				count = "at least " + count + " (child discovery was incomplete)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+		}
+		if c.ChildErrorNoticeStopped {
+			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
 		}
 		if c.DryRun {
 			fmt.Fprintln(w, "dry run:   true; the decision was not executed")
@@ -660,8 +667,9 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 		// that was repaired gets fresh takeover briefs. The tick lock is held.
 		if st, err := state.Load(cfg.Loop.StateDir); err != nil {
 			e.errf("warning: could not clear rejected takeover briefs: %v", err)
-		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 {
+		} else if len(st.HandoffBriefs) > 0 || st.SwitchBackRejected > 0 || st.ChildErrorNoticeAttempts > 0 {
 			st.ClearBriefs()
+			st.ChildErrorNoticeAttempts = 0 // a child-error notice that was given up is tried again
 			if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 				e.errf("warning: could not clear rejected takeover briefs: %v", err)
 			}
@@ -751,8 +759,8 @@ func retarget(e env, cfg *config.Config, id, note string) int {
 	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
-	st.ClearBriefs()             // an operator's retarget starts a new episode
-	st.ErroredChildrenNoted = "" // children belong to the previous target
+	st.ClearBriefs()      // an operator's retarget starts a new episode
+	st.ClearChildErrors() // children belong to the previous target
 	if err := state.Save(cfg.Loop.StateDir, st); err != nil {
 		e.errf("%v", err)
 		return exitFailed

@@ -45,8 +45,21 @@ func WithChildErrors(m Message, n int) Message {
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
 		"keepgoing has not retried, messaged or stopped them and has not read their content. "+
 		"You own that work: decide whether to retry or replace it. "+
-		"This notice is sent once per change in the set of errored child threads.\n", n, n)
+		"This notice is sent once when a child newly enters an error state.\n", n, n)
 	return m
+}
+
+// ChildErrorsOnly is the whole message of the wake that errored children cause
+// while other children still run. It carries no task prompt and no goal
+// context: the session is waiting on purpose, and a "continue" instruction
+// would invite the duplicate work that waiting avoids. Fixed wording, counts only.
+func ChildErrorsOnly(errored, running int) Message {
+	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
+		"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
+		"This is not an instruction to continue the task: the running children are still working. "+
+		"You own the errored work: decide whether to retry or replace it. "+
+		"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
 }
 
 // WithGoal adds only the latest revision, including private text and references,

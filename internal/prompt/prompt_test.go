@@ -89,8 +89,23 @@ func TestWithChildErrorsIsFixedWording(t *testing.T) {
 		"keepgoing notice: 3 direct child thread(s) of this thread were in an error state at this check. " +
 		"keepgoing has not retried, messaged or stopped them and has not read their content. " +
 		"You own that work: decide whether to retry or replace it. " +
-		"This notice is sent once per change in the set of errored child threads.\n"
+		"This notice is sent once when a child newly enters an error state.\n"
 	if got.Text != want || got.GoalID != m.GoalID || got.GoalRevision != m.GoalRevision {
 		t.Fatalf("got %q", got.Text)
+	}
+}
+
+// The wake that errored children cause carries the notice alone: no task
+// prompt and no goal, and it says other children are still running.
+func TestChildErrorsOnlyIsFixedWordingWithoutATaskPrompt(t *testing.T) {
+	got := ChildErrorsOnly(2, 3)
+	want := "[keepgoing:child-errors count=2 running=3]\n" +
+		"keepgoing notice: 2 direct child thread(s) of this thread were in an error state at this check, and 3 other direct child thread(s) are still running. " +
+		"keepgoing has not retried, messaged or stopped any of them and has not read their content. " +
+		"This is not an instruction to continue the task: the running children are still working. " +
+		"You own the errored work: decide whether to retry or replace it. " +
+		"This notice is sent once when a child newly enters an error state.\n"
+	if got.Text != want || got.GoalID != "" || got.GoalRevision != 0 {
+		t.Fatalf("got %+v", got)
 	}
 }

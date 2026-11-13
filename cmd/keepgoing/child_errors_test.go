@@ -36,7 +36,9 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 			t.Fatalf("check %d: %v", i, r)
 		}
 	}
-	if told := f.read("thr_primary.told"); strings.Count(told, "[keepgoing:child-errors count=2]") != 1 || strings.Count(told, "Continue the fictional loop.") != 1 {
+	// That message is the notice alone: no task prompt for a parent that is
+	// waiting on a running child.
+	if told := f.read("thr_primary.told"); strings.Count(told, "[keepgoing:child-errors count=2 running=1]") != 1 || strings.Contains(told, "Continue the fictional loop.") {
 		t.Fatalf("told: %q", told)
 	}
 	// It fails too: the set changed, and the idle parent's ordinary wake
@@ -49,16 +51,21 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 		}
 	}
 	told := f.read("thr_primary.told")
-	if strings.Count(told, "[keepgoing:child-errors count=3]") != 1 || strings.Count(told, "Continue the fictional loop.") != 4 ||
+	if strings.Count(told, "[keepgoing:child-errors count=3]") != 1 || strings.Count(told, "Continue the fictional loop.") != 3 ||
 		strings.Contains(told, "thr_child") || strings.Contains(told, "fictional-private-title") {
 		t.Fatalf("told: %q", told)
 	}
-	// One is retried by its owner and recovers: the set changed, so one more notice.
+	// One is retried by its owner and recovers: the set only shrank, so
+	// nothing new is said. When it fails again, it is announced again.
 	child("thr_child_b", "idle")
-	if r := f.tick(); r["childErrorNote"] != true || r["erroredChildren"] != float64(2) {
+	if r := f.tick(); r["action"] != "wake" || r["childErrorNote"] == true || r["erroredChildren"] != float64(2) {
 		t.Fatalf("%v", r)
 	}
-	if told := f.read("thr_primary.told"); strings.Count(told, "[keepgoing:child-errors count=2]") != 2 {
+	child("thr_child_b", "error")
+	if r := f.tick(); r["childErrorNote"] != true || r["erroredChildren"] != float64(3) {
+		t.Fatalf("%v", r)
+	}
+	if told := f.read("thr_primary.told"); strings.Count(told, "[keepgoing:child-errors count=3]") != 2 || strings.Contains(told, "[keepgoing:child-errors count=2]") {
 		t.Fatalf("told: %q", told)
 	}
 
@@ -77,12 +84,12 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 	}
 
 	code, out, errs := f.run("status")
-	if code != exitOK || !strings.Contains(out, "children:  2 direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n") || strings.Contains(out, "thr_child") {
+	if code != exitOK || !strings.Contains(out, "children:  3 direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n") || strings.Contains(out, "thr_child") {
 		t.Fatalf("%d %s %s", code, out, errs)
 	}
 	var status statusOut
 	_, out, _ = f.run("status", "--json")
-	if err := json.Unmarshal([]byte(out), &status); err != nil || status.State.LastCheck == nil || status.State.LastCheck.ErroredChildren != 2 {
+	if err := json.Unmarshal([]byte(out), &status); err != nil || status.State.LastCheck == nil || status.State.LastCheck.ErroredChildren != 3 || strings.Contains(out, "thr_child") {
 		t.Fatalf("%v %s", err, out)
 	}
 	code, out, errs = f.run("timeline")
@@ -97,7 +104,42 @@ func TestEndToEndErroredChildrenAreAnnouncedOnceAndNeverTouched(t *testing.T) {
 	if code, _, errs := f.run("retarget", "primary"); code != exitOK {
 		t.Fatal(errs)
 	}
-	if st, _ := state.Load(filepath.Join(f.dir, "state")); st.ErroredChildrenNoted != "" {
-		t.Fatalf("retarget kept %q", st.ErroredChildrenNoted)
+	if st, _ := state.Load(filepath.Join(f.dir, "state")); len(st.ChildErrorsAnnounced) != 0 {
+		t.Fatalf("retarget kept %v", st.ChildErrorsAnnounced)
+	}
+
+	// A listing that cannot be completed: the count is a lower bound, and both
+	// status and timeline say so.
+	write(t, filepath.Join(f.bbDir, "thr_child_c.show"), `fictional unreadable reply`, 0600)
+	if r := f.tick(); r["action"] != "none" || r["reason"] != "child status unverified" || r["erroredChildrenPartial"] != true {
+		t.Fatalf("%v", r)
+	}
+	for _, cmd := range []string{"status", "timeline"} {
+		if _, out, _ := f.run(cmd); !strings.Contains(out, "at least 2 (child discovery was incomplete) direct child thread(s) in error") {
+			t.Fatalf("%s: %s", cmd, out)
+		}
+	}
+}
+
+// A notice the adapter keeps rejecting is given up, status says so, and
+// resume lets it be tried again.
+func TestStatusShowsAGivenUpChildNoticeAndResumeRetriesIt(t *testing.T) {
+	f := newFixture(t)
+	f.run("enable")
+	dir := filepath.Join(f.dir, "state")
+	st, _ := state.Load(dir)
+	st.ChildErrorNoticeFor, st.ChildErrorNoticeAttempts = "fictional-pending", 3
+	st.LastCheck = &state.Check{Action: "none", Reason: "child work running", Outcome: "succeeded", ObservedState: "idle", ErroredChildren: 2, ChildErrorNoticeStopped: true}
+	if err := state.Save(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := f.run("status"); !strings.Contains(out, "child notice: not accepted after 3 attempts; keepgoing has stopped sending it until another child fails or resume\n") {
+		t.Fatalf("status: %s", out)
+	}
+	if code, _, errs := f.run("resume"); code != exitOK {
+		t.Fatal(errs)
+	}
+	if st, _ := state.Load(dir); st.ChildErrorNoticeAttempts != 0 {
+		t.Fatalf("resume kept %d attempts", st.ChildErrorNoticeAttempts)
 	}
 }

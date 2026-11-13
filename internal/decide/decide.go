@@ -76,8 +76,9 @@ type Observation struct {
 	// AwaitingChildren contains verified child IDs with pending human input.
 	AwaitingChildren []string
 	// ErroredChildren contains verified direct child IDs whose status is
-	// error. They are not running work and never change which action Decide
-	// picks; ChildErrorNote says when a wake should mention them.
+	// error. They are not running work. They change the action Decide picks
+	// in one case only, childErrorWake; ChildErrorNote says when a wake should
+	// mention them.
 	ErroredChildren []string
 }
 
@@ -111,9 +112,14 @@ type Input struct {
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
 
-	// ErroredChildrenNoted: the current set of errored children has already
-	// been announced to the session in an earlier wake.
-	ErroredChildrenNoted bool
+	// UnannouncedErroredChildren counts errored children the session has not
+	// been told about. Children it was told about that are still in error do
+	// not count, so a shrinking set announces nothing.
+	UnannouncedErroredChildren int
+	// ChildErrorNoticeAttempts counts sends of the current announcement that
+	// the adapter did not accept. At MaxChildErrorNotices it is given up.
+	ChildErrorNoticeAttempts int
+	MaxChildErrorNotices     int
 
 	Nudges    int // nudges since progress or the most recent turn end
 	MaxNudges int
@@ -170,6 +176,10 @@ type Decision struct {
 	Action    Action
 	Reason    string
 	LimitWait LimitWait
+	// ChildErrorWake is set only when errored children caused this wake, so a
+	// caller never matches on Reason text. The parent is idle on purpose while
+	// other children run: it gets the notice alone, not the task prompt.
+	ChildErrorWake bool
 	// DeferredInteraction is set only when the deferred-interaction rule itself
 	// produced an AwaitUser, so a caller never matches on Reason text.
 	DeferredInteraction bool
@@ -229,7 +239,7 @@ func Decide(in Input) Decision {
 	}
 	if o.ActiveChildren > 0 {
 		if childErrorWake(in) {
-			return Decision{Action: Wake, Reason: ChildErrorWakeReason}
+			return Decision{Action: Wake, Reason: ChildErrorWakeReason, ChildErrorWake: true}
 		}
 		return none("child work running")
 	}
@@ -346,17 +356,23 @@ func Attempted(a Action, c Counters, at time.Time) Counters {
 // cause by themselves.
 const ChildErrorWakeReason = "children in error while other children run"
 
+// childErrorNoticeDue: some errored child has not been announced, and the
+// announcement has not been given up after repeated rejected sends.
+func childErrorNoticeDue(in Input) bool {
+	return len(in.Obs.ErroredChildren) > 0 && in.UnannouncedErroredChildren > 0 && in.ChildErrorNoticeAttempts < in.MaxChildErrorNotices
+}
+
 // childErrorWake is the single exception to "a parent with an active child is
-// busy". Some children are in error while others still run, and the parent
-// has not been told about this set: without a wake it would not hear until
-// the last active child finished. It applies only where an idle wake would
-// otherwise be allowed (idle, in the window, nothing queued or running in the
-// background, discovery complete, no provider retry pending), only once per
-// set of errored children, and no sooner than MinWakeInterval after the last
-// send, so a notice that fails to deliver is not retried on every check.
+// busy". A child the parent has not been told about is in error while others
+// still run: without a wake it would not hear until the last active child
+// finished. It applies only where an idle wake would otherwise be allowed
+// (idle, in the window, nothing queued or running in the background,
+// discovery complete, no provider retry pending), only for newly errored
+// children, no sooner than MinWakeInterval after the last send, and no more
+// than MaxChildErrorNotices rejected sends per announcement.
 func childErrorWake(in Input) bool {
 	o := in.Obs
-	return len(o.ErroredChildren) > 0 && !in.ErroredChildrenNoted &&
+	return childErrorNoticeDue(in) &&
 		o.State == Idle && in.InWindow && !o.ChildrenUnverified &&
 		!o.RetryUnverified && !o.Retrying && o.Queued == 0 && o.Background == 0 &&
 		in.SinceWake >= in.MinWakeInterval
@@ -364,34 +380,54 @@ func childErrorWake(in Input) bool {
 
 // ChildErrorNote returns how many errored children a message should announce,
 // or zero for none. Only a wake of an idle session carries the note, and only
-// once per set of errored children: the supervisor never retries, messages or
-// stops a child, so the owning session is told and decides. Every hold and
-// gate that stops the wake stops the note with it. The note rides on the
-// ordinary idle wake, or on the one wake childErrorWake allows.
+// while a newly errored child is unannounced: the supervisor never retries,
+// messages or stops a child, so the owning session is told and decides. The
+// count is every child now in error, including ones announced before. Every
+// hold and gate that stops the wake stops the note with it. The note rides on
+// the ordinary idle wake, or is the whole message of the one wake
+// childErrorWake allows.
 func ChildErrorNote(in Input, d Decision) int {
-	if d.Action != Wake || in.ErroredChildrenNoted || in.Obs.ChildrenUnverified {
+	if d.Action != Wake || !childErrorNoticeDue(in) || in.Obs.ChildrenUnverified {
 		return 0
 	}
 	return len(in.Obs.ErroredChildren)
 }
 
-// ErroredChildrenKey identifies a set of errored children regardless of
-// order or repeats. It is empty for an empty set and holds no child ID.
-func ErroredChildrenKey(ids []string) string {
+// ChildHashes returns one short hash per distinct child ID, sorted. Records of
+// what was announced hold these instead of IDs.
+func ChildHashes(ids []string) []string {
 	seen := map[string]bool{}
 	for _, id := range ids {
-		seen[id] = true
+		sum := sha256.Sum256([]byte(id))
+		seen[hex.EncodeToString(sum[:12])] = true
 	}
-	if len(seen) == 0 {
-		return ""
+	hashes := make([]string, 0, len(seen))
+	for h := range seen {
+		hashes = append(hashes, h)
 	}
-	unique := make([]string, 0, len(seen))
-	for id := range seen {
-		unique = append(unique, id)
+	sort.Strings(hashes)
+	return hashes
+}
+
+// ChildAnnouncements compares the children now in error with those already
+// announced. kept is the announced record pruned to children still in error,
+// so one that recovers and errors again is announced again. unannounced lists
+// errored children not in the record: only growth announces, never a set that
+// merely shrank.
+func ChildAnnouncements(errored, announced []string) (kept, unannounced []string) {
+	was := map[string]bool{}
+	for _, h := range announced {
+		was[h] = true
 	}
-	sort.Strings(unique)
-	sum := sha256.Sum256([]byte(strings.Join(unique, "\n")))
-	return hex.EncodeToString(sum[:16])
+	kept, unannounced = []string{}, []string{}
+	for _, h := range errored {
+		if was[h] {
+			kept = append(kept, h)
+		} else {
+			unannounced = append(unannounced, h)
+		}
+	}
+	return kept, unannounced
 }
 
 // BriefAttempts records one target's rejected takeover briefs within the

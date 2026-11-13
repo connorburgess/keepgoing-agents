@@ -3,6 +3,10 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +32,8 @@ func notes(f *fakeAdapter) []int {
 
 // An outage puts every child into error. The idle parent is told once, with
 // the count, in a wake it would have received anyway; it is told again only
-// when the set of errored children changes.
-func TestErroredChildrenAreAnnouncedOncePerChangeInTheSet(t *testing.T) {
+// when a child newly enters error, never because the set shrank.
+func TestErroredChildrenAreAnnouncedOnlyWhenOneNewlyFails(t *testing.T) {
 	w := newWorld(t, true, false)
 	p := w.primary(decide.Observation{State: decide.Idle})
 	all := children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d", "thr_child_e")
@@ -42,9 +46,11 @@ func TestErroredChildrenAreAnnouncedOncePerChangeInTheSet(t *testing.T) {
 		{"outage: five in error", all, 5},
 		{"still five", all, 0},
 		{"still five, listed in another order", children("thr_child_e", "thr_child_d", "thr_child_c", "thr_child_b", "thr_child_a"), 0},
-		{"one retried and recovered", all[:4], 4},
+		{"one retried and recovered: the set only shrank", all[:4], 0},
 		{"still four", all[:4], 0},
-		{"a different four", all[1:], 4},
+		{"another recovered", all[:3], 0},
+		{"the one that recovered first fails again", children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 4},
+		{"still those four", children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_e"), 0},
 		{"all recovered", nil, 0},
 		{"still none", nil, 0},
 		{"the same five fail again", all, 5},
@@ -70,8 +76,12 @@ func TestErroredChildrenAreAnnouncedOncePerChangeInTheSet(t *testing.T) {
 		}
 	}
 	st, _ := state.Load(w.dir)
-	if st.ErroredChildrenNoted != decide.ErroredChildrenKey(all) || st.LastCheck.ErroredChildren != 5 {
-		t.Fatalf("state: noted=%q last=%+v", st.ErroredChildrenNoted, st.LastCheck)
+	if !reflect.DeepEqual(st.ChildErrorsAnnounced, decide.ChildHashes(all)) || st.LastCheck.ErroredChildren != 5 {
+		t.Fatalf("state: announced=%v last=%+v", st.ChildErrorsAnnounced, st.LastCheck)
+	}
+	raw, _ := os.ReadFile(filepath.Join(w.dir, state.FileName))
+	if strings.Contains(string(raw), "thr_child") {
+		t.Fatalf("state.json holds a child ID: %s", raw)
 	}
 	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
 		t.Fatal("errored children raised a hold")
@@ -150,8 +160,8 @@ func TestChildErrorNoticeDeliveryLimitsAndDryRun(t *testing.T) {
 			p := w.primary(decide.Observation{State: decide.Idle, ErroredChildren: errored})
 			p.sendErr = sendErr
 			Tick(context.Background(), w.cfg, w.opts(t0))
-			if st, _ := state.Load(w.dir); st.ErroredChildrenNoted != "" || len(notes(p)) != 1 {
-				t.Fatalf("marked announced after a %s send: %q", name, st.ErroredChildrenNoted)
+			if st, _ := state.Load(w.dir); len(st.ChildErrorsAnnounced) != 0 || st.ChildErrorNoticeAttempts != 1 || len(notes(p)) != 1 {
+				t.Fatalf("after a %s send: announced=%v attempts=%d", name, st.ChildErrorsAnnounced, st.ChildErrorNoticeAttempts)
 			}
 			p.sendErr = nil
 			runTick(t, w, t0.Add(time.Minute))
@@ -180,8 +190,8 @@ func TestChildErrorNoticeDeliveryLimitsAndDryRun(t *testing.T) {
 		opts.DryRun = true
 		res, err := Tick(context.Background(), w.cfg, opts)
 		st, _ := state.Load(w.dir)
-		if err != nil || res.Action != "wake" || !res.ChildErrorNote || res.ErroredChildren != 2 || len(p.sent) != 0 || st.ErroredChildrenNoted != "" {
-			t.Fatalf("%+v noted=%q %v", res, st.ErroredChildrenNoted, err)
+		if err != nil || res.Action != "wake" || !res.ChildErrorNote || res.ErroredChildren != 2 || len(p.sent) != 0 || len(st.ChildErrorsAnnounced) != 0 {
+			t.Fatalf("%+v announced=%v %v", res, st.ChildErrorsAnnounced, err)
 		}
 	})
 }
@@ -210,9 +220,9 @@ func TestChildErrorNoticeStatePersists(t *testing.T) {
 }
 
 // The one wake errored children cause: the parent is idle and would be left
-// alone because another child is still running. It is woken once for that set,
-// then left alone again; a changed set wakes it once more, no sooner than
-// min_wake_interval after the last send.
+// alone because another child is still running. It is woken once when a child
+// newly fails, with the notice alone and no task prompt, then left alone
+// again. A set that only shrinks never wakes it.
 func TestErroredChildrenWakeAParentWaitingOnOtherChildrenOnce(t *testing.T) {
 	w := newWorld(t, true, false) // min_wake_interval 1h
 	w.cfg.Loop.Limits.MaxSends = 10
@@ -234,7 +244,12 @@ func TestErroredChildrenWakeAParentWaitingOnOtherChildrenOnce(t *testing.T) {
 		{"a fourth fails inside the wake interval: waits", 80 * time.Minute, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d"), 1, "none", "child work running", false},
 		{"still waiting just before the interval ends", 130 * time.Minute, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d"), 1, "none", "child work running", false},
 		{"the interval has passed", 131 * time.Minute, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d"), 1, "wake", decide.ChildErrorWakeReason, true},
-		{"the last child finishes: ordinary wake, set already announced", 132 * time.Minute, children("thr_child_a", "thr_child_b", "thr_child_c", "thr_child_d"), 0, "wake", "idle", false},
+		// The parent retries one child, which runs again; the errored set shrank.
+		{"one is retried and runs again", 200 * time.Minute, children("thr_child_b", "thr_child_c", "thr_child_d"), 2, "none", "child work running", false},
+		{"another is archived", 300 * time.Minute, children("thr_child_c", "thr_child_d"), 2, "none", "child work running", false},
+		{"still shrunk hours later", 600 * time.Minute, children("thr_child_c", "thr_child_d"), 2, "none", "child work running", false},
+		{"the retried child fails again", 601 * time.Minute, children("thr_child_a", "thr_child_c", "thr_child_d"), 1, "wake", decide.ChildErrorWakeReason, true},
+		{"the last child finishes: ordinary wake, nothing new to announce", 602 * time.Minute, children("thr_child_a", "thr_child_c", "thr_child_d"), 0, "wake", "idle", false},
 	}
 	sends := 0
 	for _, step := range steps {
@@ -246,13 +261,23 @@ func TestErroredChildrenWakeAParentWaitingOnOtherChildrenOnce(t *testing.T) {
 		if step.wantAction == "wake" {
 			sends++
 		}
-		if len(p.sent) != sends || (step.wantNote && !strings.Contains(p.sent[len(p.sent)-1], "[keepgoing:child-errors count=")) {
+		if len(p.sent) != sends {
 			t.Fatalf("%s: sends=%d want %d", step.name, len(p.sent), sends)
 		}
+		if step.wantNote {
+			// Notice only, with both counts; never the "keep going" task prompt.
+			want := fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n", len(step.errored), step.active)
+			if text := p.sent[len(p.sent)-1]; !strings.HasPrefix(text, want) || strings.Contains(text, "keep going") || strings.Contains(text, "thr_child") {
+				t.Fatalf("%s: %q", step.name, text)
+			}
+		}
+	}
+	if last := p.sent[len(p.sent)-1]; last != "keep going" {
+		t.Fatalf("ordinary wake: %q", last)
 	}
 	// Each of those wakes was reserved against the loop-wide send limit.
-	sendsUsed(t, w, 4)
-	if got := notes(p); len(got) != 3 {
+	sendsUsed(t, w, 5)
+	if got := notes(p); len(got) != 4 {
 		t.Fatalf("notices at %v", got)
 	}
 }
@@ -300,20 +325,103 @@ func TestChildErrorWakeRespectsHoldsLimitsAndFailedSends(t *testing.T) {
 			t.Fatalf("%+v", res)
 		}
 	})
-	t.Run("failed send is retried only after the wake interval", func(t *testing.T) {
-		w := newWorld(t, true, false)
-		p := w.primary(obs)
-		p.sendErr = errors.New("uncertain delivery")
-		var attempts []int
-		for minute := 0; minute < 150; minute += 10 {
-			before := len(p.sent)
-			Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(minute)*time.Minute)))
-			if len(p.sent) > before {
-				attempts = append(attempts, minute)
+	for name, sendErr := range map[string]error{"failed": errors.New("uncertain delivery"), "unsupported": adapter.ErrUnsupported{Op: "send"}} {
+		t.Run(name+" send is spaced, capped, then given up", func(t *testing.T) {
+			w := newWorld(t, true, false) // max_reprompts 2, min_wake_interval 1h
+			p := w.primary(obs)
+			p.sendErr = sendErr
+			var attempts []int
+			var last Result
+			for minute := 0; minute <= 720; minute += 10 {
+				before := len(p.sent)
+				last, _ = Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(minute)*time.Minute)))
+				if len(p.sent) > before {
+					attempts = append(attempts, minute)
+				}
 			}
+			if len(attempts) != 2 || attempts[0] != 0 || attempts[1] != 60 {
+				t.Fatalf("attempts at %v", attempts)
+			}
+			st, _ := state.Load(w.dir)
+			if last.Action != "none" || last.Reason != "child work running" || !last.ChildErrorNoticeStopped || !st.LastCheck.ChildErrorNoticeStopped || st.ChildErrorNoticeAttempts != 2 || len(st.ChildErrorsAnnounced) != 0 {
+				t.Fatalf("%+v state=%+v", last, st)
+			}
+			if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
+				t.Fatal("a given-up notice raised a hold")
+			}
+			// A different child failing is a new announcement with its own attempts.
+			p.obs.ErroredChildren = children("thr_child_a", "thr_child_b", "thr_child_c")
+			p.sendErr = nil
+			res := runTick(t, w, t0.Add(800*time.Minute))
+			if res.Action != "wake" || !res.ChildErrorNote || res.ChildErrorNoticeStopped || !strings.HasPrefix(p.sent[len(p.sent)-1], "[keepgoing:child-errors count=3 running=1]") {
+				t.Fatalf("%+v", res)
+			}
+		})
+	}
+}
+
+// The notice on ordinary idle wakes is capped too: a send the adapter keeps
+// rejecting may still be arriving, so after the cap later wakes go without it.
+func TestRejectedNoticeOnOrdinaryWakesIsGivenUp(t *testing.T) {
+	w := newWorld(t, true, false) // max_reprompts 2
+	p := w.primary(decide.Observation{State: decide.Idle, ErroredChildren: children("thr_child_a", "thr_child_b")})
+	p.sendErr = errors.New("uncertain delivery")
+	var last Result
+	for i := 0; i < 6; i++ {
+		last, _ = Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(i)*time.Minute)))
+	}
+	if got := notes(p); len(p.sent) != 6 || len(got) != 2 || got[1] != 1 || last.ChildErrorNote || !last.ChildErrorNoticeStopped {
+		t.Fatalf("sends=%d notices at %v last=%+v", len(p.sent), got, last)
+	}
+}
+
+// Children belong to one thread. A handoff or switch-back moves the loop to
+// another, so what was announced is forgotten, as on retarget and transfer.
+func TestChildAnnouncementsAreForgottenWhenTheTargetMoves(t *testing.T) {
+	errored := children("thr_child_a", "thr_child_b")
+	seed := func(dir string, target string) {
+		st, _ := state.Load(dir)
+		st.ChildErrorsAnnounced, st.ChildErrorNoticeFor, st.ChildErrorNoticeAttempts = decide.ChildHashes(errored), "pending", 1
+		if err := state.Save(dir, st); err != nil {
+			t.Fatal(err)
 		}
-		if len(attempts) != 3 || attempts[0] != 0 || attempts[1] != 60 || attempts[2] != 120 {
-			t.Fatalf("attempts at %v", attempts)
+	}
+	t.Run("handoff", func(t *testing.T) {
+		w := newWorld(t, true, true)
+		w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+		obs := limited
+		obs.ErroredChildren = errored
+		w.primary(obs)
+		seed(w.dir, state.Primary)
+		if res := runTick(t, w, t0); res.Action != "handoff" {
+			t.Fatalf("%+v", res)
+		}
+		if st, _ := state.Load(w.dir); len(st.ChildErrorsAnnounced) != 0 || st.ChildErrorNoticeFor != "" || st.ChildErrorNoticeAttempts != 0 {
+			t.Fatalf("kept after handoff: %+v", st)
 		}
 	})
+	t.Run("switch-back", func(t *testing.T) {
+		w, p, fb := switchBackWorld(t)
+		w.probeOK["primary"] = true
+		p.obs = decide.Observation{State: decide.Idle}
+		fb.obs.ErroredChildren = errored
+		seed(w.dir, "claude-other")
+		if res := runTick(t, w, t0.Add(2*time.Hour+time.Minute)); res.Action != "switch_back" {
+			t.Fatalf("%+v", res)
+		}
+		if st, _ := state.Load(w.dir); len(st.ChildErrorsAnnounced) != 0 || st.ChildErrorNoticeFor != "" || st.ChildErrorNoticeAttempts != 0 {
+			t.Fatalf("kept after switch-back: %+v", st)
+		}
+	})
+}
+
+// A count from an incomplete child listing is marked as a lower bound.
+func TestPartialChildScanIsMarked(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.primary(decide.Observation{State: decide.Idle, ChildrenUnverified: true, ErroredChildren: children("thr_child_a")})
+	res := runTick(t, w, t0)
+	st, _ := state.Load(w.dir)
+	if res.Action != "none" || res.ErroredChildren != 1 || !res.ErroredChildrenPartial || !st.LastCheck.ErroredChildrenPartial {
+		t.Fatalf("%+v last=%+v", res, st.LastCheck)
+	}
 }
