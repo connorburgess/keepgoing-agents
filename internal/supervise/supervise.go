@@ -38,15 +38,24 @@ type Options struct {
 	Probe       ProbeFunc
 	Reporter    report.Reporter
 	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	// Clock reads wall time for the check's time budget. Now is the logical
+	// check time and may be fixed; Clock always advances.
+	Clock func() time.Time
+	// MissingWorktrees counts registered worktrees that are gone from disk.
+	MissingWorktrees func([]string) int
 }
 
 // ProbeNote summarises a probe that ran during the tick.
 type ProbeNote struct {
-	ID         string     `json:"id"`
-	Tier       probe.Tier `json:"tier"`
-	OK         bool       `json:"ok"`
-	ErrorClass string     `json:"errorClass,omitempty"`
-	Detail     string     `json:"detail,omitempty"`
+	ID   string     `json:"id"`
+	Tier probe.Tier `json:"tier"`
+	OK   bool       `json:"ok"`
+	// Skipped says why the probe produced no result: "tick_timeout" when it
+	// was not started, "cut_short" when it was stopped by the check's time
+	// budget before its own timeout. Neither is recorded as a probe failure.
+	Skipped    string `json:"skipped,omitempty"`
+	ErrorClass string `json:"errorClass,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // HandoffNote describes a handoff attempt.
@@ -93,6 +102,14 @@ type Result struct {
 	Yielded                 bool            `json:"yielded,omitempty"`
 	DryRun                  bool            `json:"dryRun,omitempty"`
 	Warnings                []string        `json:"warnings,omitempty"`
+	// Outcome is the recorded result of the check: succeeded, failed or
+	// dry_run. It is empty when the check could not be recorded at all.
+	Outcome string `json:"outcome,omitempty"`
+	// MissingWorktrees counts registered Git worktrees left out of the
+	// progress fingerprint because their directories are gone.
+	MissingWorktrees int `json:"missingWorktrees,omitempty"`
+	// Recorded: state, the event line and incident history were all written.
+	Recorded bool `json:"-"`
 }
 
 type tick struct {
@@ -128,6 +145,9 @@ type tick struct {
 	res                 *Result
 	st                  state.File
 	reg                 *health.Registry
+	deadline            time.Time // wall time after which optional work is skipped
+	probesDeferred      bool      // a needed probe was skipped for lack of time
+	budgetWarned        bool
 	graphFailed         bool
 	graphClosed         bool
 }
@@ -140,7 +160,11 @@ func (t *tick) report(typ, text string, data map[string]any) {
 	if t.opts.DryRun {
 		return
 	}
-	if err := t.opts.Reporter.Report(t.ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
+	// A report is part of recording the check, so it is still attempted after
+	// the budget is spent, but briefly.
+	ctx, cancel := context.WithTimeout(t.ctx, max(t.deadline.Sub(t.opts.Clock()), minReportTime))
+	defer cancel()
+	if err := t.opts.Reporter.Report(ctx, report.Event{Type: typ, Loop: t.loop.Name, Text: text, At: t.now, Data: data}); err != nil {
 		t.warn("report %s: %v", typ, err)
 	}
 }
@@ -165,15 +189,23 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Busy == nil {
 		opts.Busy = runBusy
 	}
+	if opts.Clock == nil {
+		opts.Clock = time.Now
+	}
+	if opts.MissingWorktrees == nil {
+		opts.MissingWorktrees = state.MissingWorktrees
+	}
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
+	t.deadline = opts.Clock().Add(tickBudget(cfg.Loop))
 	t.graphSync()
 	err := t.run()
 	t.graphClose()
 	if journalErr := t.recordIncident(err != nil); journalErr != nil {
 		t.warn("incident history write failed; diagnostic evidence is incomplete")
 		err = errors.Join(err, journalErr)
+		res.Recorded = false
 	}
 	return res, err
 }
@@ -382,6 +414,10 @@ func (t *tick) run() error {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
 		}
+		if n := t.opts.MissingWorktrees(loop.Progress.Repositories); n > 0 {
+			t.warn("%d registered Git worktree(s) no longer exist on disk and were left out of the progress fingerprint; run `git worktree prune` in the repository", n)
+			res.MissingWorktrees = n
+		}
 		// A first baseline is not progress.
 		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && f != t.st.Fingerprint
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
@@ -488,11 +524,19 @@ func (t *tick) run() error {
 		} else if !moved {
 			// No candidate took over: fall back to the ordinary error rules
 			// for the current target. A dry run only previews that decision.
-			in.Failover.Available = false
-			d = t.decide("handoff_failed", in)
 			why := " (no fallback could take over; see probes and warnings)"
-			if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
-				why = " (every confirmed fallback is capped or backing off after rejecting its handoff brief)"
+			if t.probesDeferred {
+				// A candidate could not be confirmed because the check ran out
+				// of time, not because it failed. Spend nothing on that: no
+				// re-prompt and no hold. The next check retries the handoff.
+				d = decide.Decision{Action: decide.None, Reason: "error: " + string(obs.ErrorClass)}
+				why = " (the check's time budget ran out before a fallback could be confirmed; the next check retries)"
+			} else {
+				in.Failover.Available = false
+				d = t.decide("handoff_failed", in)
+				if res.Handoff != nil && len(res.Handoff.Tried) == 0 && len(res.Handoff.Skipped) > 0 {
+					why = " (every confirmed fallback is capped or backing off after rejecting its handoff brief)"
+				}
 			}
 			// The hold note and report carry the explanation too.
 			d.Reason += why
@@ -562,7 +606,19 @@ func (t *tick) scheduledProbes(active, activeGroup string) {
 		if !due {
 			continue
 		}
-		r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
+		// Scheduled probes are optional and run before the decision. They may
+		// use only the first half of the check's budget, so observing, deciding
+		// and sending still fit; a probe left out stays due for the next check.
+		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, tickBudget(t.loop)/2)
+		if !ok {
+			t.skipProbe(c.ID, probe.Scheduled, "tick_timeout")
+			continue
+		}
+		r := t.opts.Probe(t.ctx, c, probe.Scheduled, timeout)
+		if t.cutShort(r, timeout, t.fb.Probe.Timeout.Duration) {
+			t.skipProbe(c.ID, probe.Scheduled, "cut_short")
+			continue
+		}
 		r.At, r.Tier = t.now, probe.Scheduled
 		t.reg.Record(c.ID, r)
 		t.keepFailure(c.ID, r)
@@ -606,7 +662,18 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if err != nil {
 			return false, fmt.Errorf("handoff brief: %w", err)
 		}
-		r := t.opts.Probe(t.ctx, c, probe.Exact, t.fb.Probe.Timeout.Duration)
+		timeout, ok := t.probeBudget(t.fb.Probe.Timeout.Duration, 0)
+		if !ok {
+			t.skipProbe(id, probe.Exact, "tick_timeout")
+			t.probesDeferred = true
+			break
+		}
+		r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+		if t.cutShort(r, timeout, t.fb.Probe.Timeout.Duration) {
+			t.skipProbe(id, probe.Exact, "cut_short")
+			t.probesDeferred = true
+			break
+		}
 		r.At, r.Tier = t.now, probe.Exact
 		t.reg.Record(id, r)
 		t.keepFailure(id, r)
@@ -700,13 +767,23 @@ func (t *tick) switchBackReady(target string) bool {
 // switchBack confirms the primary with an exact probe, then activates it and
 // sends it a brief. It returns false when the primary is not ready.
 func (t *tick) switchBack(from string) (bool, error) {
-	t.st.LastSwitchBackTry = t.now
 	c := t.loop.PrimaryCandidate()
-	timeout := config.DefaultProbeTimeout
+	configured := config.DefaultProbeTimeout
 	if t.fb != nil {
-		timeout = t.fb.Probe.Timeout.Duration
+		configured = t.fb.Probe.Timeout.Duration
+	}
+	// Out of time: leave the retry spacing alone so the next check tries.
+	timeout, ok := t.probeBudget(configured, 0)
+	if !ok {
+		t.skipProbe(state.Primary, probe.Exact, "tick_timeout")
+		return false, nil
 	}
 	r := t.opts.Probe(t.ctx, c, probe.Exact, timeout)
+	if t.cutShort(r, timeout, configured) {
+		t.skipProbe(state.Primary, probe.Exact, "cut_short")
+		return false, nil
+	}
+	t.st.LastSwitchBackTry = t.now
 	r.At, r.Tier = t.now, probe.Exact
 	if t.reg != nil {
 		t.reg.Record(state.Primary, r)
@@ -899,6 +976,7 @@ func (t *tick) record(actErr error) error {
 	if err := state.Append(t.loop.StateDir, ev); err != nil {
 		return err
 	}
+	t.res.Outcome, t.res.Recorded = outcome, true
 	return actErr
 }
 
@@ -981,4 +1059,46 @@ func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adap
 		c.CheckAt(t.now)
 	}
 	return ad, err
+}
+
+// minProbeTime is the least time worth giving a probe, and minReportTime the
+// least a report gets once the budget is spent.
+const (
+	minProbeTime  = 10 * time.Second
+	minReportTime = 10 * time.Second
+)
+
+// tickBudget is the configured time budget for a check's optional work.
+func tickBudget(l config.Loop) time.Duration {
+	if d := l.TickTimeout.Duration; d > 0 {
+		return d
+	}
+	return config.DefaultTickTimeout
+}
+
+// probeBudget returns the timeout a probe may use now, at most configured.
+// reserve is time that must be left for the rest of the check. ok is false
+// when too little remains for the probe to be worth starting.
+func (t *tick) probeBudget(configured, reserve time.Duration) (time.Duration, bool) {
+	left := t.deadline.Sub(t.opts.Clock()) - reserve
+	if left < minProbeTime {
+		return 0, false
+	}
+	return min(configured, left), true
+}
+
+// cutShort reports whether a probe timed out under a timeout the check's
+// budget had shortened. That says nothing about the candidate.
+func (t *tick) cutShort(r probe.Result, used, configured time.Duration) bool {
+	return used < configured && !r.OK && r.Detail == "timeout"
+}
+
+// skipProbe notes a probe that produced no result. It is not recorded in the
+// health registry, the probe cap or incident history as a failure.
+func (t *tick) skipProbe(id string, tier probe.Tier, why string) {
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: id, Tier: tier, Skipped: why})
+	if !t.budgetWarned {
+		t.budgetWarned = true
+		t.warn("the check's time budget (loop.tick_timeout) left no room for every fallback probe; skipped probes stay due")
+	}
 }

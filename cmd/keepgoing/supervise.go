@@ -84,6 +84,14 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		if errors.Is(err, lock.ErrHeld) {
 			return exitSkipped
 		}
+		// The exit code says whether keepgoing ran and recorded the check, not
+		// whether the session, provider or repository was healthy. A recorded
+		// check that could not observe or act has outcome "failed" in its
+		// output and in status, and exits 0, so an external scheduler that
+		// counts non-zero exits does not disable supervision over an outage.
+		if res.Recorded {
+			return exitOK
+		}
 		return exitFailed
 	}
 	if res.Yielded {

@@ -51,11 +51,66 @@ Background mode survives the launching terminal closing. It does not install a u
 | Code | Meaning |
 | --- | --- |
 | 0 | ok |
-| 1 | failed: the target could not be observed, an action failed, or `fallbacks check` found redundancy unmet |
+| 1 | failed: keepgoing could not run or could not record its result, or `fallbacks check` found redundancy unmet. For `tick`, see [the contract for schedulers](#exit-codes-for-external-schedulers) |
 | 2 | usage or config error |
 | 3 | `ci-wait`: no run appeared for the commit |
 | 75 | skipped: the lock is held, a yield check reported other work, or `net-retry` waited longer than `--max-wait` for the network |
 | 124 | `ci-wait`: timed out |
+
+### Exit codes for external schedulers
+
+Unreleased; fixture-tested only. The exit code of `keepgoing tick` says whether keepgoing ran and recorded the check. It does not say whether the session, the provider, the network or a repository was healthy. That is in the check's output and in `status`.
+
+| `tick` exits | When | What a scheduler should do |
+| --- | --- | --- |
+| 0 | The check ran and was recorded. This includes a check that took no action or failed to act because of its environment: the session could not be observed, a send or stop failed, a tracked repository could not be read, or the time budget left probes out. Such a check has `"outcome":"failed"` in its JSON line, `outcome failed` in `status`, a line on stderr and an `error` report. | Nothing; run again on schedule. |
+| 75 | The check was skipped: another tick holds the lock, the yield command reported other work, or the configuration files changed while loading. | Treat as success. |
+| 1 | The check could not be recorded or could not start: `control.json`, `state.json`, the run log or incident history could not be read or written, the lock could not be taken, or loop ownership was refused. | Treat as a failure; a person should look. |
+| 2 | Usage or configuration error. | Treat as a failure. |
+
+Before this change a check that could not observe or act exited 1. A scheduler that disables a job after a few consecutive failures (a BB automation does after three) was therefore switched off by an outage, and nothing ran when the network came back. Scripts that relied on exit 1 to detect a failed send should read `outcome` from the JSON line instead.
+
+### External schedulers can stop on their own
+
+keepgoing cannot run itself when an external scheduler stops calling it. Known ways this happens:
+
+- The scheduler disables the job after consecutive failures or timeouts. A tick killed by the scheduler's own timeout writes nothing, so keepgoing's history simply ends.
+- The host sleeps, reboots or loses the user session.
+
+What keepgoing shows afterwards, when someone runs it:
+
+- `status` prints `history: stale` once the last check is older than the stale threshold, with the reason `no recent check; inspect the supervisor and its scheduler`. It does not query any scheduler.
+- `doctor --bb-automation <id> --bb-project <id>` reads the selected BB automation and warns `The selected automation is disabled; scheduled runs are not expected.` See [BB automation diagnostics](diagnostics.md#bb-automation-diagnostics).
+- Nothing notifies anyone. No report is sent when checks stop, because nothing is running to send it. A self-check that reports the gap on the next run is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+Prefer `keepgoing start`, the daemon or a managed [service](services.md) where one is available: the service manager restarts it, and it does not depend on a scheduler's failure counting. If you keep an external scheduler, give its timeout a comfortable margin over `loop.tick_timeout` (below) and treat exit 75 as success.
+
+### Check time budget
+
+Unreleased; fixture-tested only. `loop.tick_timeout` (default `3m`, minimum `30s`) is a time budget for one check's optional work, so a check records its result and exits well inside a scheduler timeout of five minutes.
+
+What can take time in a check, and how each part is bounded:
+
+| Step | Bound | Affected by the budget |
+| --- | --- | --- |
+| Observing a BB thread (status, children, log, interactions) | 30s per `bb` command | no |
+| Yield command | `yield.timeout` (10s) | no |
+| Git progress fingerprint | 30s per `git` command | no |
+| Scheduled fallback probes, one after another | `probe.timeout` each (90s) | yes: they may use only the first half of the budget |
+| Exact probes before a handoff or switch-back | `probe.timeout` each | yes: they get what is left of the budget |
+| Sending a wake, nudge, re-prompt or brief | the adapter's command timeout | no |
+| Webhook reports | `report.timeout` each (20s) | once the budget is spent, each report gets 10s |
+
+With the network down, each due fallback's scheduled probe ran to its 90-second timeout and was followed by a 20-second failed report, before the session was considered at all. Four due fallbacks made one check last over seven minutes (fixture `TestTickBudgetBoundsProbesDuringAnOutage`), so a scheduler with a five-minute timeout killed it before it wrote anything.
+
+With the budget:
+
+- A probe that would not fit is not started. It is listed in the check's `probes` with `"skipped":"tick_timeout"`, and a warning names `loop.tick_timeout`. A probe that was given less than its own timeout and then timed out is listed with `"skipped":"cut_short"`. Neither is recorded as a failed probe, counted against the daily probe cap or reported, and the candidate stays due for the next check.
+- Observing, deciding, sending and recording are never cut by the budget, so a wake or re-prompt is not lost to slow probes and nothing is stopped in the middle of a write.
+- If a handoff is due but there is no time left to confirm a fallback, the check does nothing and says so: `the check's time budget ran out before a fallback could be confirmed; the next check retries`. No re-prompt is spent and no hold is raised. A switch-back that cannot be confirmed in time is likewise left for the next check.
+- Stop, pause and the other holds are handled before any optional work and do not depend on the budget.
+
+The budget is not a hard limit on the whole check. In the worst case every command of the mandatory steps runs to its own timeout: about two minutes of `bb` commands, then the send and reports. A check is not killed from inside; if its scheduler kills it anyway, nothing is recorded for that run.
 
 ## Status for other tools
 

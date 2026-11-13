@@ -62,7 +62,11 @@ type Loop struct {
 	Report    *Report    `yaml:"report,omitempty"`
 	Yield     *Yield     `yaml:"yield,omitempty"`
 	Daemon    Daemon     `yaml:"daemon"`
-	Limits    Limits     `yaml:"limits,omitempty"`
+	// TickTimeout bounds the optional work of one check (fallback probes), so
+	// a check records its result and exits well inside an external
+	// scheduler's own timeout.
+	TickTimeout Duration `yaml:"tick_timeout,omitempty"`
+	Limits      Limits   `yaml:"limits,omitempty"`
 
 	// SwitchBack returns the loop to its primary after a handoff, once the
 	// primary's limit has reset and an exact probe of it passes. Off by default.
@@ -185,6 +189,7 @@ const (
 	DefaultProcessTimeout    = 20 * time.Second
 	DefaultBBCLI             = "bb"
 	DefaultDaemonInterval    = 5 * time.Minute
+	DefaultTickTimeout       = 3 * time.Minute
 	DefaultControlPoll       = 2 * time.Second
 	DefaultReportTimeout     = 20 * time.Second
 	DefaultYieldTimeout      = 10 * time.Second
@@ -300,6 +305,7 @@ func (c *Config) applyDefaults() {
 		}
 	}
 	setDur(&l.Daemon.Interval, DefaultDaemonInterval)
+	setDur(&l.TickTimeout, DefaultTickTimeout)
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
 		if r.URLEnv == "" {
@@ -389,6 +395,9 @@ func (c *Config) Validate() error {
 		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
+	}
+	if l.TickTimeout.Duration < 30*time.Second {
+		add("loop.tick_timeout must be at least 30s")
 	}
 	if l.Daemon.Interval.Duration < 10*time.Second {
 		add("loop.daemon.interval must be at least 10s")
