@@ -20,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // Build the real entrypoint and a local process fixture. No provider CLI is
@@ -30,20 +31,22 @@ func TestStartBackgroundProcess(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("BB_THREAD_ID", "thr_start_fixture")
-	build := func(name, source string) string {
+	// Both programs are built here and run by this test. testexec runs each
+	// once as it is built, so a refusal by the host of a file it has not
+	// seen is retried there and never reaches an assertion below.
+	tools, err := testexec.NewDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(name, source string, firstRun ...string) string {
 		t.Helper()
-		bin := filepath.Join(dir, name)
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, source).CombinedOutput(); err != nil {
-			t.Fatalf("build: %v %s", err, out)
+		bin, err := tools.Build(name, source, nil, firstRun...)
+		if err != nil {
+			t.Fatal(err)
 		}
 		return bin
 	}
-	bin := build("keepgoing", ".")
+	bin := build("keepgoing", ".", "version")
 	fixtureSource := filepath.Join(dir, "fixture.go")
 	if err := os.WriteFile(fixtureSource, []byte(`package main
 import ("fmt"; "os"; "path/filepath")
