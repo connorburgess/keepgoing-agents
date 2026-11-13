@@ -2,9 +2,11 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 )
 
 // Direct command-layer tests can launch a headless turn from the test binary.
@@ -20,7 +22,16 @@ func TestMain(m *testing.M) {
 	// No test may open a real browser: unless a test names its own stand-in,
 	// the panel's launcher is a program that does nothing.
 	os.Setenv("KEEPGOING_PANEL_OPENER", "/usr/bin/true")
+	// No test reads or writes the person's own registry or session claims.
+	// The variables are inherited by every binary a test runs.
+	private, err := os.MkdirTemp("", "keepgoing-test-user")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv(registryDirEnv, filepath.Join(private, "registry"))
+	os.Setenv(session.DirEnv, filepath.Join(private, "sessions"))
 	code := m.Run()
 	panelTestCleanup() // the binary and launcher the panel tests share
+	os.RemoveAll(private)
 	os.Exit(code)
 }

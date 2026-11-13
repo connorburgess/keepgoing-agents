@@ -145,9 +145,11 @@ func TestExpiredRetrySignalOnActiveSessionUsesStallRules(t *testing.T) {
 }
 
 // A retry notice on a rate-limited, errored session is honored only while a
-// retry is actually queued or the structured reset is within
-// wait_if_reset_within. A far reset with nothing queued goes to the ordinary
-// limit rules, so a healthy fallback is used instead of waiting hours.
+// retry is actually queued or no structured reset is ahead. With a reset
+// ahead and nothing queued the ordinary limit rules apply: a far reset uses a
+// healthy fallback instead of waiting hours, and a reset inside
+// wait_if_reset_within is a limit wait and is recorded as one, not as
+// "provider is retrying the turn".
 func TestRetryNoticeYieldsToFarRateLimitReset(t *testing.T) {
 	h, m := time.Hour, time.Minute
 	for _, tc := range []struct {
@@ -164,9 +166,11 @@ func TestRetryNoticeYieldsToFarRateLimitReset(t *testing.T) {
 		{"far, not queued, fallback", 5 * h, 0, true, true, Handoff, "error: rate_limit", ""},
 		{"far, not queued, no fallback", 5 * h, 0, true, false, None, "limit resets in 5h0m0s; no confirmed fallback", WaitNoFallback},
 		{"far, not queued, failover off", 5 * h, 0, false, true, None, "limit resets in 5h0m0s; failover disabled; waiting", WaitFailoverDisabled},
-		{"near, not queued, fallback", 20 * m, 0, true, true, None, "provider is retrying the turn", ""},
+		{"near, not queued, fallback", 20 * m, 0, true, true, None, "limit resets in 20m0s; waiting", WaitResetSoon},
+		{"near, not queued, no fallback", 20 * m, 0, true, false, None, "limit resets in 20m0s; waiting", WaitResetSoon},
+		{"near, not queued, failover off", 20 * m, 0, false, true, None, "limit resets in 20m0s; failover disabled; waiting", WaitFailoverDisabled},
 		{"near, queued, fallback", 20 * m, 1, true, true, None, "provider is retrying the turn", ""},
-		{"at the boundary", 30 * m, 0, true, true, None, "provider is retrying the turn", ""},
+		{"at the boundary", 30 * m, 0, true, true, None, "limit resets in 30m0s; waiting", WaitResetSoon},
 		{"just past the boundary", 30*m + time.Second, 0, true, true, Handoff, "error: rate_limit", ""},
 		{"no structured reset, fallback", 0, 0, true, true, None, "provider is retrying the turn", ""},
 	} {

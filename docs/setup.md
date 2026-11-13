@@ -110,6 +110,7 @@ Schema version 1 has these fields:
 | --- | --- |
 | `schemaVersion`, `version` | Contract version and CLI build label. Reject unsupported contract versions. |
 | `outcome` | `preview` means no files written; `created` means private setup files were written. Neither starts supervision. |
+| `startJson` | Unreleased. `true` when this build's `start` accepts `--background --json`, which reports a [second loop on one session](operations.md#one-loop-per-session) as a structured refusal. Absent in older results: do not pass the flag. |
 | `loop`, `project`, `configPath`, `stateDir`, `promptPath` | Resolved setup identity and paths. These paths are private metadata; handle the response accordingly. |
 | `taskPath`, `goal` | Additive fields in v0.1.5, present only with `--with-goal`. `taskPath` identifies the private snapshot; `goal` describes `promptContext: true`, `titleSource: "loop_name"`, `specificationSource: "task_snapshot"`, and, after creation only, `record` with generated ID/revision/state. Preview has no saved record. Private task text and goal references are omitted. |
 | `taskBinding` | `snapshot`: task input is imported once into `promptPath` (or `taskPath` for goal setup in v0.1.5); the original input is not tracked. Added in v0.1.4; absent in older results means this metadata is unavailable. |
@@ -120,6 +121,8 @@ Schema version 1 has these fields:
 | `probes` | Present only with fallbacks: `every`, `ttl`, `dailyCapPerCandidate`, `exactOutsideCap`, and `manualOutsideCap`. The cap does not include exact/manual calls. No probe runs during setup. |
 | `next` | `doctor`, `startForeground`, and `startBackground` argv arrays, including the executable and exact config path. Execute as argument arrays, never concatenate into a shell command. These are suggestions, not actions performed by init. |
 | `limitations` | Human-readable scope and review reminders; do not parse these strings to make decisions. |
+
+**Refused (unreleased).** When another enabled loop already supervises the same session (see [one loop per session](operations.md#one-loop-per-session)), `init --json` writes nothing, exits 1, and prints exactly `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"example-loop"}}` on stdout: `outcome: "refused"`, a `refusal.code`, and the other loop's name in `refusal.otherLoop`, never its path. The sentence for people, which does name the other loop's configuration, is on stderr. Show `otherLoop`; do not parse stderr. `--allow-second-loop` sets the loop up anyway. Other codes may be added; treat an unknown code as a refusal without a reason.
 
 The result omits task/prompt text, raw YAML, environment maps, and account-directory values. It does not verify the supplied BB identity, provider/model availability, authenticated subscription, independent quota, or scheduler state. After creation, an integration can use the existing `doctor --json` flow to display diagnostics, then offer an explicit start choice. Review the resolved target and limits before starting; do not automatically run `next` commands when parsing a result. Preview paths do not yet exist, and a preview does not reserve them or guarantee later creation will succeed.
 

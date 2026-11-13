@@ -60,11 +60,15 @@ func TestControlHistoryAcrossCommandsAndHeldTicks(t *testing.T) {
 			t.Fatal(r)
 		}
 	}
-	pause, resume, noop := j.Records[1], j.Records[7], j.Records[9]
+	pause, complete, resume, noop := j.Records[1], j.Records[5], j.Records[7], j.Records[9]
 	if pause.ControlBefore.Paused || !pause.ControlAfter.Paused {
 		t.Fatal(pause)
 	}
-	if !resume.ControlBefore.Paused || !resume.ControlBefore.Stop || !resume.ControlBefore.Completed || !resume.ControlBefore.AwaitingUser || resume.ControlAfter.Enabled || resume.ControlAfter.Paused || resume.ControlAfter.Stop || resume.ControlAfter.Completed || resume.ControlAfter.AwaitingUser {
+	// Completing ends the wait on a person; the operator's pause and stop stay.
+	if !complete.ControlBefore.AwaitingUser || complete.ControlAfter.AwaitingUser || !complete.ControlAfter.Completed || !complete.ControlAfter.Paused || !complete.ControlAfter.Stop {
+		t.Fatal(complete)
+	}
+	if !resume.ControlBefore.Paused || !resume.ControlBefore.Stop || !resume.ControlBefore.Completed || resume.ControlBefore.AwaitingUser || resume.ControlAfter.Enabled || resume.ControlAfter.Paused || resume.ControlAfter.Stop || resume.ControlAfter.Completed || resume.ControlAfter.AwaitingUser {
 		t.Fatal(resume)
 	}
 	if *noop.ControlBefore != *noop.ControlAfter || noop.ControlChange.OwnershipChanged {
@@ -189,7 +193,7 @@ func TestStartHistoryFailureKeepsSavedControlButDoesNotStart(t *testing.T) {
 	}
 	defer l.Release()
 	var errs bytes.Buffer
-	code := startForeground(env{context.Background(), io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("acknowledged startup"); return nil })
+	code := startForeground(env{context.Background(), io.Discard, &errs}, cfg, f.cfg, func(control.File) error { t.Error("acknowledged startup"); return nil }, false)
 	if code != exitFailed || !strings.Contains(errs.String(), "control saved") || !strings.Contains(errs.String(), "daemon was not started") {
 		t.Fatal(code, &errs)
 	}

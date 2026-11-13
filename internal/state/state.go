@@ -79,6 +79,15 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// ClaimUnavailable is set while checks run without a session claim
+	// because there is no user state directory to keep claims in; its start
+	// and end are reported once each.
+	ClaimUnavailable bool `json:"claimUnavailable,omitempty"`
+	// ClaimReport and StuckClaimReport carry those reports, and the report of
+	// another loop's stuck claim, until each is delivered: at most three
+	// attempts each.
+	ClaimReport      *OnceReport `json:"claimReport,omitempty"`
+	StuckClaimReport *OnceReport `json:"stuckClaimReport,omitempty"`
 	// PrimaryResetsAt is when the primary's limit was reported to lift at the
 	// handoff away from it; switch-back waits for it.
 	PrimaryResetsAt   time.Time `json:"primaryResetsAt,omitempty"`
@@ -108,6 +117,29 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// SendsRecorded is the sequence of the last intended send (sends.json)
+	// whose outcome this file records. An intent after it was made by a
+	// check that could not save what happened.
+	SendsRecorded int64 `json:"sendsRecorded,omitempty"`
+	// SendRecordUnreadable says sends.json could not be read at the last
+	// check, so its error is reported once. UnconfirmedReprompts counts the
+	// re-prompts of this episode that were recorded and then could not be
+	// confirmed as sent.
+	SendRecordUnreadable bool `json:"sendRecordUnreadable,omitempty"`
+	// SkipHandoffOnce: a person resumed a hold for a brief that may have
+	// been delivered, to keep the loop where it is. The next check that
+	// would hand off or switch back does not, once.
+	SkipHandoffOnce bool `json:"skipHandoffOnce,omitempty"`
+	// ResumedBriefs are the briefs a person settled with resume. A record
+	// for one of them that no check settled yet is taken as settled.
+	ResumedBriefs        []Brief `json:"resumedBriefs,omitempty"`
+	UnconfirmedReprompts int     `json:"unconfirmedReprompts,omitempty"`
+	// ResumeEpisodes counts the error episodes started by an explicit resume
+	// of a held loop, and LastResumeEpisodeAt is when the latest one was.
+	// Each is a fresh allowance of re-prompts and nudges granted by a person
+	// or by the owning agent, so the count is shown in status.
+	ResumeEpisodes      int       `json:"resumeEpisodes,omitempty"`
+	LastResumeEpisodeAt time.Time `json:"lastResumeEpisodeAt,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -234,6 +266,18 @@ func (f File) CandidateAgent(c config.Candidate) (a config.Agent, ok bool) {
 	return a, true
 }
 
+// OnceReport is a report keepgoing sends once per episode: Key names the
+// episode, and a failed delivery is tried again, at most MaxOnceAttempts
+// times in all.
+type OnceReport struct {
+	Key      string `json:"key"`
+	Attempts int    `json:"attempts"`
+	Sent     bool   `json:"sent"`
+}
+
+// MaxOnceAttempts bounds the deliveries of one OnceReport.
+const MaxOnceAttempts = 3
+
 // BriefRecord is one target's rejected takeover briefs.
 type BriefRecord struct {
 	Failed int       `json:"failed"`
@@ -251,6 +295,30 @@ func (f *File) ClearChildErrors() {
 func (f *File) ClearBriefs() {
 	f.HandoffBriefs, f.SwitchBackRejected = nil, 0
 	f.ClearDeferrals()
+}
+
+// RetryRepaired is what every explicit resume does, held or not: a fallback
+// or a primary that was repaired gets fresh takeover briefs, and a
+// child-error notice that was given up is tried again.
+func (f *File) RetryRepaired() {
+	f.ChildErrorNoticeAttempts = 0
+	f.ClearBriefs()
+}
+
+// NewEpisode starts a new error episode because a person resumed a loop that
+// a check had held for a spent per-episode allowance. On top of RetryRepaired it clears what is counted per episode or per
+// stalled turn: re-prompts and their backoff, nudges and the silent-retry
+// clock. It counts itself, so status can show how often it has happened.
+// It never touches a loop-wide limit: sends used, the deadline, the
+// no-progress ledger and the new-thread cap live elsewhere and stay spent.
+// Nor does it touch TurnRetryNoOps, which counts a provider that keeps
+// answering a turn retry with nothing to do, whoever resumed.
+func (f *File) NewEpisode(at time.Time) {
+	f.Reprompts, f.LastRepromptAt, f.Nudges = 0, time.Time{}, 0
+	f.SilentRetry = nil
+	f.RetryRepaired()
+	f.ResumeEpisodes++
+	f.LastResumeEpisodeAt = at
 }
 
 // ClearDeferrals forgets handoffs put off for lack of time.
@@ -403,4 +471,11 @@ func Append(stateDir string, e Event) error {
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// Brief names a brief to another conversation: Action is handoff or
+// switch_back, Target the route it went to.
+type Brief struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
 }
