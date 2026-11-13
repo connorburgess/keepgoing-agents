@@ -28,6 +28,8 @@ const (
 	dockMaxIssues     = 8
 	dockMaxText       = 120 // runes of a name, alias, model or provider label
 	dockMaxChain      = 32  // handoff chain entries per loop
+	dockMaxRoutes     = 128 // routes in the route view
+	dockMaxRouteLoops = 64  // loops listed under one route, per list
 )
 
 type dockReport struct {
@@ -42,6 +44,10 @@ type dockReport struct {
 	Registry          dockRegistry `json:"registry"`
 	NeedsYou          []dockNeed   `json:"needsYou"`
 	Loops             []dockLoop   `json:"loops"`
+	// Routes is the same data grouped by route: a model on an account, as
+	// configured (provider, quota group and model). Each loop's chain entries
+	// name their route by key, so the two views are one feed.
+	Routes []dockRoute `json:"routes"`
 }
 
 type dockRegistry struct {
@@ -189,6 +195,9 @@ type dockChain struct {
 type dockChainEntry struct {
 	Position int    `json:"position"` // 0 is the main target
 	ID       string `json:"id"`
+	// Route is the key of this target's route in the report's routes.
+	Route    string `json:"route"`
+	Account  string `json:"account,omitempty"` // the configured quota group
 	Tool     string `json:"tool,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -200,6 +209,93 @@ type dockChainEntry struct {
 	ProbedAt  *time.Time      `json:"probedAt,omitempty"`
 	ProbeAge  *int64          `json:"probeAgeSeconds,omitempty"`
 	Usage     dockUsageTarget `json:"usage"`
+}
+
+// dockRoute is one route across every loop that names it. keepgoing
+// knows it from configuration only: it does not verify which account or model
+// a BB thread is actually using. Child conversations are not attributed to a
+// route, because keepgoing records a loop's children only as counts.
+type dockRoute struct {
+	Key      string `json:"key"`
+	Provider string `json:"provider,omitempty"`
+	Account  string `json:"account,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Tool     string `json:"tool,omitempty"`
+	// Readiness is ready, not_ready, not_probed or unknown: the newest probe
+	// result any loop holds for this route. A route used only as a main target
+	// is never probed and reads unknown.
+	Readiness string          `json:"readiness"`
+	Phrase    string          `json:"phrase"`
+	ProbeAge  *int64          `json:"probeAgeSeconds,omitempty"`
+	Usage     dockUsageTarget `json:"usage"` // the newest reading any loop holds
+	// RunningNow are loops whose current target is this route; PreferredBy
+	// are loops that list it without using it now.
+	RunningNow  []dockRouteLoop `json:"runningNow"`
+	PreferredBy []dockRouteLoop `json:"preferredBy"`
+	Omitted     int             `json:"omitted"`
+	// ChildLanes is always unknown in this schema.
+	ChildLanes string `json:"childLanes"`
+}
+
+type dockRouteLoop struct {
+	Key      string `json:"key"`
+	Loop     string `json:"loop"`
+	State    string `json:"state"`
+	Phrase   string `json:"phrase"`
+	Position int    `json:"position"`
+	Working  int    `json:"childrenWorking"`
+}
+
+func dockRouteKey(provider, account, model, tool string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{"keepgoing-dock-route", provider, account, model, tool}, "\x00")))
+	return "r" + hex.EncodeToString(h[:6])
+}
+
+// dockRoutes groups every loop's chain by route. Newest evidence wins.
+func dockRoutes(loops []dockLoop) []dockRoute {
+	index := map[string]int{}
+	routes := []dockRoute{}
+	for _, l := range loops {
+		for _, e := range l.Chain.Entries {
+			i, ok := index[e.Route]
+			if !ok {
+				if len(routes) >= dockMaxRoutes {
+					continue
+				}
+				i = len(routes)
+				index[e.Route] = i
+				routes = append(routes, dockRoute{Key: e.Route, Provider: e.Provider, Account: e.Account, Model: e.Model, Tool: e.Tool, Readiness: "unknown", Phrase: "Unknown",
+					Usage: dockUsageTarget{Availability: "unavailable", Windows: []dockUsageWindow{}}, RunningNow: []dockRouteLoop{}, PreferredBy: []dockRouteLoop{}, ChildLanes: "unknown"})
+			}
+			n := &routes[i]
+			switch {
+			case e.ProbeAge != nil && (n.ProbeAge == nil || *e.ProbeAge < *n.ProbeAge):
+				n.Readiness, n.Phrase, n.ProbeAge = e.Readiness, e.Phrase, e.ProbeAge
+			case e.Position > 0 && n.ProbeAge == nil && n.Readiness == "unknown":
+				// Never probed anywhere: say why (turned off, or not checked yet).
+				n.Readiness, n.Phrase = e.Readiness, e.Phrase
+			}
+			if u := e.Usage; u.AgeSeconds != nil && (n.Usage.AgeSeconds == nil || *u.AgeSeconds < *n.Usage.AgeSeconds) {
+				n.Usage = u
+				n.Usage.Name = ""
+			}
+			ref := dockRouteLoop{Key: l.Key, Loop: l.Name, State: l.State, Phrase: l.Phrase, Position: e.Position}
+			list := &n.PreferredBy
+			if e.Active {
+				list = &n.RunningNow
+				if l.Children.Availability == "current" {
+					ref.Working = l.Children.Working
+				}
+			}
+			if len(*list) >= dockMaxRouteLoops {
+				n.Omitted++
+				continue
+			}
+			*list = append(*list, ref)
+		}
+	}
+	sort.SliceStable(routes, func(i, j int) bool { return len(routes[i].RunningNow) > len(routes[j].RunningNow) })
+	return routes
 }
 
 // dockChainInput is the configuration-derived part of the chain plus the
@@ -284,7 +380,7 @@ var dockStatePriority = map[string]int{
 // buildDockReport sorts loops so the ones that want attention come first.
 func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time.Duration, identifiers bool, registryOK bool, omitted int) dockReport {
 	r := dockReport{SchemaVersion: dockSchemaVersion, ReadOnly: true, ReadAt: now, RefreshSeconds: int(refresh / time.Second),
-		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Loops: []dockLoop{},
+		StaleAfterSeconds: int(staleAfter / time.Second), Identifiers: identifiers, NeedsYou: []dockNeed{}, Loops: []dockLoop{}, Routes: []dockRoute{},
 		Registry: dockRegistry{Availability: "unavailable"}}
 	if !registryOK {
 		return r
@@ -304,6 +400,7 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 		}
 		return strings.ToLower(r.Loops[i].Name) < strings.ToLower(r.Loops[j].Name)
 	})
+	r.Routes = dockRoutes(r.Loops)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
 		if a == nil || b == nil {
@@ -746,6 +843,7 @@ func dockHandoffChain(in *dockChainInput, active string, now time.Time) dockChai
 	entry := func(pos int, cand config.Candidate) dockChainEntry {
 		ref := refOf(cand.Agent)
 		return dockChainEntry{Position: pos, ID: clip(cand.ID, dockMaxText), Tool: dockTool(ref.Adapter), Provider: clip(ref.Provider, dockMaxText),
+			Route: dockRouteKey(ref.Provider, ref.Group, ref.Model, ref.Adapter), Account: clip(ref.Group, dockMaxText),
 			Model: clip(ref.Model, dockMaxText), Active: cand.ID == active, Disabled: cand.Disabled, Readiness: "unknown", Phrase: "Unknown",
 			Usage: dockUsageTarget{Name: clip(cand.ID, dockMaxText), Availability: "unavailable", Windows: []dockUsageWindow{}}}
 	}
