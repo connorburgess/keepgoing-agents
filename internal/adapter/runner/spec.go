@@ -271,10 +271,12 @@ func SpecForProvider(provider string) (*Spec, bool) {
 }
 
 // KeepsSessionFile reports whether an adapter saves a resume identifier in
-// its target directory. Cursor does and is not on the contract yet.
+// its target directory that diagnostics and the run graph may show. Cursor
+// does and is not on the contract yet. A defined agent's identifier is used
+// to resume but its shape is the agent's own, so it is not shown.
 func KeepsSessionFile(adapterName string) bool {
 	_, ok := SpecFor(adapterName)
-	return ok || adapterName == "cursor" || adapterName == config.CustomAdapter
+	return ok || adapterName == "cursor"
 }
 
 // Headless runs one agent from its Spec: one turn per Send, resuming the same

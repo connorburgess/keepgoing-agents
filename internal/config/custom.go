@@ -234,7 +234,8 @@ func (c Custom) validate(add func(format string, args ...any)) {
 	if d.Prompt != "stdin" && !file {
 		add("custom.definition.prompt must be stdin or file; a prompt is never passed as an argument")
 	}
-	checkArgv := func(where string, argv Argv, session bool) (usesSession bool) {
+	// prompted says the command receives a prompt (a turn or the probe).
+	checkArgv := func(where string, argv Argv, session, prompted bool) (usesSession bool) {
 		if len(argv) == 0 || len(argv) > maxCustomArgs {
 			add("%s must have between 1 and %d arguments", where, maxCustomArgs)
 			return false
@@ -261,8 +262,10 @@ func (c Custom) validate(add func(format string, args ...any)) {
 						usesSession = true
 					case name == "session":
 						add("%s: {session} is available to resume only", where)
-					case name == "prompt_file" && file:
+					case name == "prompt_file" && file && prompted:
 						usesFile = true
+					case name == "prompt_file" && file:
+						add("%s: this command receives no prompt", where)
 					case name == "prompt_file":
 						add("%s: {prompt_file} needs prompt: file", where)
 					case name == "prompt":
@@ -275,15 +278,15 @@ func (c Custom) validate(add func(format string, args ...any)) {
 				}
 			}
 		}
-		if file && !usesFile {
+		if file && prompted && !usesFile {
 			add("%s: prompt is file, so the command must refer to {prompt_file}", where)
 		}
 		return usesSession
 	}
-	checkArgv("custom.definition.start", d.Start, false)
+	checkArgv("custom.definition.start", d.Start, false, true)
 	resumeUsesSession := false
 	if d.Resume != nil {
-		resumeUsesSession = checkArgv("custom.definition.resume", d.Resume, true)
+		resumeUsesSession = checkArgv("custom.definition.resume", d.Resume, true, true)
 	}
 
 	if d.Output.Format != "json" && d.Output.Format != "jsonl" {
@@ -384,10 +387,10 @@ func (c Custom) validate(add func(format string, args ...any)) {
 		}
 	}
 	if p := d.Probe; p != nil {
-		checkArgv("custom.definition.probe.argv", p.Argv, false)
+		checkArgv("custom.definition.probe.argv", p.Argv, false, true)
 	}
 	if l := d.Limits; l != nil {
-		checkArgv("custom.definition.limits.argv", l.Argv, false)
+		checkArgv("custom.definition.limits.argv", l.Argv, false, false)
 		checkMatch("custom.definition.limits.blocked", l.Blocked, true)
 		if len(l.Blocked.ExitCodes) != 0 {
 			add("custom.definition.limits.blocked is read from a field, not an exit code")

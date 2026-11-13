@@ -111,8 +111,8 @@ func TestDefinitionBecomesASpecification(t *testing.T) {
 	if _, ok := SpecFor("custom"); ok {
 		t.Fatal("a defined agent is registered as built in")
 	}
-	if !KeepsSessionFile("custom") {
-		t.Fatal("KeepsSessionFile")
+	if KeepsSessionFile("custom") {
+		t.Fatal("a defined agent's session identifier is not one diagnostics show")
 	}
 	if _, _, ok := Resolve(config.Agent{Adapter: "custom"}); ok {
 		t.Fatal("resolved a custom agent with no definition")

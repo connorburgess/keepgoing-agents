@@ -97,6 +97,11 @@ var Adapters = []Adapter{
 	{ID: "process", Title: "Generic process", Registered: true,
 		Files:  []string{"internal/adapter/process/process.go"},
 		Inputs: []string{"AwaitingInput", "Background", "ErrorClass", "Evidence", "Gone", "Queued", "State"}},
+	// An agent defined in configuration. Its Inputs are the most a
+	// definition can produce; a definition that declares less produces less.
+	{ID: "custom", Title: "Agent defined in configuration", Registered: true,
+		Files:  []string{"internal/adapter/runner/definition.go", "internal/adapter/runner/spec.go"},
+		Inputs: []string{"DeferredInteraction", "ErrorClass", "Evidence", "ResetsAt", "State"}},
 }
 
 // ObservationFields is every field of decide.Observation. A new field must be
@@ -277,6 +282,46 @@ var Matrix = []Behaviour{
 			"cursor":  {Missing, None, "No force or approval flag is added, and print mode has no typed permission-wait signal.", []Ref{d("docs/cursor.md")}},
 			"process": {Yes, Fixture, "awaitingInput in the status JSON.", []Ref{t(processTest, "TestObserveAwaitingInput")}},
 		}, map[string]Cell{"antigravity": {Missing, Fixture, "An internal ACP gate cancels permission requests and saves a hold, and an unregistered runner reports that hold once its worker has exited, with stand-in fixtures only. No adapter is registered.", []Ref{d("docs/antigravity.md")}}})},
+}
+
+const (
+	definedTest     = "internal/adapter/runner/definition_unix_test.go"
+	definedReadTest = "internal/adapter/runner/definition_test.go"
+	definedScenario = "internal/scenario/defined_agent_test.go"
+	definedDoc      = "docs/configuration.md#an-agent-defined-in-configuration"
+)
+
+// customCells is the column for an agent defined in configuration. What it
+// can do depends on what its definition declares, so most cells are partial:
+// the note says which declaration the behaviour needs. Every fixture uses a
+// stand-in; no real agent has been run from a definition.
+var customCells = map[string]Cell{
+	"observe":          {Yes, Fixture, "The turn's process state, its exit code and the JSON fields the definition names. Output over the definition's limit is not read.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedTest, "TestDefinedAgentOutputBound")}},
+	"error_classes":    {Partial, Fixture, "With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown.", []Ref{t(definedTest, "TestDefinedAgentErrorClassification"), t(definedReadTest, "TestDefinitionReadings")}},
+	"retry_expiry":     {NA, None, "A turn is one process that is running, finished or gone, as for the built-in headless agents.", nil},
+	"reprompt":         {Yes, Fixture, "Run end to end with a stand-in agent.", []Ref{t(definedScenario, "TestDefinedAgentJourney")}},
+	"session_resume":   {Partial, Fixture, "With exact_resume: the resume command with the saved session identifier, read from a declared field or file. Without it every turn starts a new session.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle"), t(definedReadTest, "TestDefinitionSessionFile")}},
+	"turn_retry":       {Missing, None, "A re-prompt is always a new turn.", nil},
+	"network":          {Missing, None, "An outage is unknown unless the definition maps a code or exit code to network, and that is handled like any other error.", nil},
+	"child_awareness":  {NA, None, "A definition cannot declare work that outlives a turn, so none is assumed.", nil},
+	"child_notice":     {NA, None, "No child conversations.", nil},
+	"handoff_source":   {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
+	"handoff_target":   {Partial, Fixture, "With a probe in the definition, or a command probe. Guided setup does not create it; the candidate is written by hand.", []Ref{t("internal/config/custom_test.go", "TestCustomAgentDefinition"), d(definedDoc)}},
+	"switch_back":      {Yes, Fixture, fakeDecision, []Ref{t(superTest, "TestSwitchBackAfterThePrimaryResets")}},
+	"probes":           {Partial, Fixture, "With a probe in the definition: one small request with the prompt passed as a turn's is, judged by the finished and error rules.", []Ref{t("internal/probe/custom_test.go", "TestCustomProbe")}},
+	"quota":            {Missing, None, "No usage reading is taken. A limit lookup, when defined, only says whether an unclassified failure is a usage limit and when it resets.", []Ref{t(definedTest, "TestDefinedAgentLimitLookup")}},
+	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
+	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
+	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
+}
+
+func init() {
+	for i := range Matrix {
+		if c, ok := customCells[Matrix[i].ID]; ok {
+			Matrix[i].Cells["custom"] = c
+		}
+	}
 }
 
 // Render returns the generated part of docs/adapters.md.
