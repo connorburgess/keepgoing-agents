@@ -205,8 +205,12 @@ A saved session identity is checked again each time it is read. A value that is 
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
 | `max_nudges` | `3` | Nudge attempts a stalled session gets, delivered or not, before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
+| `flag_after_sends` | `6` | Sends (wakes, nudges and re-prompts) with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag); `0` turns this fact off. From 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. |
+| `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. From 0 to 1000. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
+
+Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
 Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
 

@@ -152,6 +152,24 @@ Throughout:
 
 The page follows the browser's light or dark setting and text size, works with a keyboard, and reflows to a phone-width window. When it reads again, the keyboard focus, the scroll position and any text being selected stay where they were. A screen reader is told when what needs you changes and when a read fails, not the time of every read.
 
+### The no-progress flag
+
+A loop that keeps being prompted without results is flagged. The flag is built only from recorded facts: the transcript is never read, and no quality is judged. It informs a person and does nothing else. It is never "needs you", never stops "nothing needs you" being said, is never sent in a report or webhook, and never pauses, moves or stops anything. A flagged loop's row in the picker says "no progress", it is listed under "Worth knowing" with the fact that raised the flag, and its page has a Progress card and a Progress line under "Checks and limits". `keepgoing panel list --json` and the macOS menu carry the same sentence. `status` prints it as a "no progress:" line, and `status --json` carries it as `noProgress`, from the same function, so they cannot disagree.
+
+The facts, all counted after the last recorded change to the loop's progress repositories (or their first fingerprint, so "in 3 h" means no change is recorded in at least that time):
+
+- **Sends:** successful wakes, nudges and re-prompts. A failed send and a dry run are not sends. Six raise the flag by default (`progress.flag_after_sends`).
+- **Errors and retries:** checks that found the session in error or re-prompted it. Four raise the flag by default (`progress.flag_after_errors`).
+- **Held for a person:** how long the loop was held waiting for a person in that time, worded "Held for a person for 2 h 10 min of the last 6 h". It comes from the hold changes in the history and the control record now, and it raises nothing. No "working" time is given, because keepgoing sees a session only at its checks.
+
+The history is pruned. When it no longer reaches back to the last change for the kind of record a fact counts, the count reads "at least N". Retention keeps the newest pruned time for each tier, so this is exact, not a guess. A run of identical checks that the history folded into one record counts each check when the whole run is after the change, and otherwise reads "at least".
+
+Without `progress.repositories` the flag reads "Not available: no progress source is configured". Before any check has fingerprinted the repositories it reads "Not available: no check has recorded its progress repositories yet". With both thresholds at 0 it is off.
+
+Not in this flag:
+- **Lanes:** keepgoing records a loop's lanes only as counts and hashed keys, with no sends or progress of their own, so a lane cannot be flagged until lanes have their own records.
+- **Allowance used:** only the newest usage reading is kept, with no history, so "used since the last change" cannot be computed.
+
 ## What it reads, and what it never does
 
 Each read goes through the code paths of commands that already exist, and adds no evidence of its own:
