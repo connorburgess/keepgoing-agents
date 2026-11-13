@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,5 +222,89 @@ func TestRunsCommandShowsWhatTicksRecordedWithoutProviderCalls(t *testing.T) {
 		if after := snapshotTree(t, stateDir); after != before {
 			t.Fatalf("%s: runs changed the state directory", hold)
 		}
+	}
+}
+
+// A scheduler supplies its identity with --routine. It is recorded with the
+// run it opens or triggers; it never opens, reopens or closes one by itself,
+// and it changes nothing a check decides.
+func TestRoutineFlagRecordsSchedulerIdentityWithoutChangingSupervision(t *testing.T) {
+	f := newFixture(t)
+	stateDir := filepath.Join(f.dir, "state")
+	ok := func(args ...string) string {
+		t.Helper()
+		code, out, errs := f.run(args...)
+		if code != exitOK {
+			t.Fatalf("%v: %d %s %s", args, code, out, errs)
+		}
+		return out
+	}
+	// A scheduled check before anything is enabled records nothing.
+	ok("tick", "--routine", "example-scheduler/nightly/inv-0")
+	if _, availability := rungraph.Load(stateDir); availability != rungraph.Missing {
+		t.Fatal("a trigger on a disabled loop created a graph")
+	}
+	ok("enable", "--routine", "example-scheduler/nightly/inv-1")
+	g := graphOf(t, f)
+	run := g.CurrentRun
+	if g.Runs[0].Origin != rd.Explicit || g.Runs[0].Routine == nil || g.Runs[0].Routine.Invocation != "inv-1" || len(g.Links) != 0 {
+		t.Fatalf("%#v", g.Runs)
+	}
+	// The check's result is the same with or without the identity.
+	plain := f.tick()
+	var withRoutine map[string]any
+	if err := json.Unmarshal([]byte(ok("tick", "--routine", "example-scheduler/nightly/inv-2")), &withRoutine); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"control", "target", "warnings"} {
+		if fmt.Sprint(plain[key]) != fmt.Sprint(withRoutine[key]) {
+			t.Fatalf("%s differs: %v vs %v", key, plain[key], withRoutine[key])
+		}
+	}
+	ok("tick", "--routine", "example-scheduler/nightly/inv-2")              // repeated trigger: one link
+	ok("tick", "--dry-run", "--routine", "example-scheduler/nightly/inv-9") // dry runs record nothing
+	ok("enable", "--routine", "example-scheduler/nightly/inv-3")            // a scheduled enable of an open run is a trigger
+	g = graphOf(t, f)
+	var triggers []string
+	for _, l := range g.Links {
+		if l.Kind == rd.InvocationLink {
+			triggers = append(triggers, l.Routine.Invocation)
+		}
+	}
+	if g.CurrentRun != run || len(g.Runs) != 1 || strings.Join(triggers, " ") != "inv-2 inv-3" {
+		t.Fatalf("runs=%d triggers=%v", len(g.Runs), triggers)
+	}
+	// After completion a trigger and a scheduled enable relate to no run and
+	// reopen nothing. Only resume opens the next run, and carries its invocation.
+	ok("complete")
+	ok("tick", "--routine", "example-scheduler/nightly/inv-4")
+	ok("enable", "--routine", "example-scheduler/nightly/inv-5")
+	if g = graphOf(t, f); len(g.Runs) != 1 || !g.Completed || len(g.Links) != len(triggers)+1 {
+		t.Fatalf("a trigger after completion changed the graph: %#v", g.Links)
+	}
+	ok("resume", "--routine", "example-scheduler/nightly/inv-6")
+	g = graphOf(t, f)
+	if len(g.Runs) != 2 || g.Runs[1].Origin != rd.Reopened || g.Runs[1].Reopens != run || g.Runs[1].Routine.Invocation != "inv-6" {
+		t.Fatalf("%#v", g.Runs)
+	}
+	// routine → both runs, through the reader.
+	out := ok("runs", "--id", "routine:example-scheduler/nightly")
+	if !strings.Contains(out, "run -> "+run) || !strings.Contains(out, "run -> "+g.CurrentRun) || !strings.Contains(out, "opened by invocation: routine:example-scheduler/nightly/inv-6") {
+		t.Fatal(out)
+	}
+	// A malformed or misplaced identity is a usage error: nothing changes and
+	// the supplied value is not echoed.
+	before := snapshotTree(t, stateDir)
+	for _, args := range [][]string{
+		{"tick", "--routine", "PRIVATE value"}, {"enable", "--routine", "nightly"}, {"resume", "--routine", "a/b/c/d"},
+		{"tick", "--routine", "example-scheduler/nightly/"}, {"pause", "--routine", "example-scheduler/nightly"}, {"status", "--routine", "example-scheduler/nightly"},
+	} {
+		code, out, errs := f.run(args...)
+		if code != exitUsage || strings.Contains(out+errs, "PRIVATE") || strings.Contains(out+errs, "a/b/c/d") {
+			t.Fatalf("%v: %d %s %s", args, code, out, errs)
+		}
+	}
+	if snapshotTree(t, stateDir) != before {
+		t.Fatal("a rejected --routine changed runtime records")
 	}
 }

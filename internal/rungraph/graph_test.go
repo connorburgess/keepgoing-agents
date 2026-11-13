@@ -138,7 +138,7 @@ func TestAdoptionCompletionWithoutARunAndRoutineInvocation(t *testing.T) {
 		t.Fatalf("%#v", g.Runs)
 	}
 	n, status := g.Lookup(InvocationRef(routine))
-	if status != Found || n.Type != InvocationNode || len(n.Edges) != 1 || n.Edges[0].To != id("run_", 1) {
+	if status != Found || n.Type != InvocationNode || len(n.Edges) != 2 || n.Edges[0].To != id("run_", 1) || n.Edges[1].Type != EdgeRoutine || n.Edges[1].To != RoutineNodeRef(routine) {
 		t.Fatalf("%s %#v", status, n)
 	}
 	// A malformed supplied identity is refused and nothing is written.
@@ -604,7 +604,7 @@ func TestReferencesOfDifferentIdentitiesNeverCollide(t *testing.T) {
 	})
 	g := load(t, dir)
 	for _, r := range []rd.RoutineRef{a, b} {
-		if n, status := g.Lookup(InvocationRef(r)); status != Found || len(n.Edges) != 1 {
+		if n, status := g.Lookup(InvocationRef(r)); status != Found || len(n.Edges) != 2 || n.Edges[1].To != RoutineNodeRef(r) {
 			t.Fatalf("%s %#v", status, n)
 		}
 	}
@@ -643,5 +643,102 @@ func TestSkipsAreKeptOncePerRunAndBounded(t *testing.T) {
 	}
 	if g = load(t, dir); len(g.Unrecorded) != 0 || g.Runs[0].ID == id("run_", 1) {
 		t.Fatalf("%d skips outlived their run", len(g.Unrecorded))
+	}
+}
+
+// Routine → runs → chats: one scheduler entry opens a run, triggers it again,
+// and after completion opens the next. Triggers never open or close a run.
+func TestRoutineResolvesToItsInvocationsAndRuns(t *testing.T) {
+	dir := t.TempDir()
+	nightly := func(invocation string) rd.RoutineRef {
+		return rd.RoutineRef{Source: "example-scheduler", Routine: "nightly", Invocation: invocation}
+	}
+	trigger := func(r rd.RoutineRef) {
+		t.Helper()
+		update(t, dir, func(g *Graph) (bool, error) { return g.Trigger(r, at) })
+	}
+	open := func(operation string, run int, r rd.RoutineRef) {
+		t.Helper()
+		update(t, dir, func(g *Graph) (bool, error) {
+			return g.Sync(Boundary{Gate: enabled, Operation: operation, At: at, NewRunID: id("run_", run), Routine: r})
+		})
+	}
+	// A trigger with no run records nothing and creates no graph.
+	trigger(nightly("inv-0"))
+	if _, availability := Load(dir); availability != Missing {
+		t.Fatal("a trigger alone created a graph")
+	}
+	open("enable", 1, nightly("inv-1"))
+	trigger(nightly("inv-1")) // the opening invocation is already on the run
+	trigger(nightly("inv-2"))
+	trigger(nightly("inv-2")) // a repeated trigger is one link
+	trigger(rd.RoutineRef{Source: "example-scheduler", Routine: "hourly"})
+	trigger(rd.RoutineRef{Source: "example-scheduler", Routine: "hourly"}) // no invocation ID: indistinguishable
+	update(t, dir, func(g *Graph) (bool, error) {
+		return g.Relate(session("primary", "bb", "thr_example_a", SourceConfigured))
+	})
+	g := load(t, dir)
+	if len(g.Runs) != 1 || len(g.Links) != 3 || routineRef(g.Runs[0].Routine) != nightly("inv-1") {
+		t.Fatalf("runs=%d links=%d", len(g.Runs), len(g.Links))
+	}
+	sync(t, dir, Gate{Enabled: true, Completed: true}, "complete", 0)
+	trigger(nightly("inv-3")) // after completion: related to no run, reopens nothing
+	if g = load(t, dir); len(g.Runs) != 1 || len(g.Links) != 3 || !g.Completed {
+		t.Fatal("a trigger after completion changed the graph")
+	}
+	open("resume", 2, nightly("inv-4"))
+	g = load(t, dir)
+
+	refs := func(n Node, edgeType string) string {
+		var out []string
+		for _, e := range n.Edges {
+			if e.Type == edgeType {
+				out = append(out, e.To)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	routine, status := g.Lookup(RoutineNodeRef(nightly("")))
+	if status != Found || routine.Type != RoutineNode || routine.Source != SourceControl {
+		t.Fatalf("%s %#v", status, routine)
+	}
+	// routine → runs, each once, and → its invocations
+	if got := refs(routine, EdgeRun); got != id("run_", 1)+" "+id("run_", 2) {
+		t.Fatalf("routine runs: %q", got)
+	}
+	if got := refs(routine, EdgeInvocation); got != InvocationRef(nightly("inv-1"))+" "+InvocationRef(nightly("inv-4"))+" "+InvocationRef(nightly("inv-2")) { // opening invocations, then later triggers
+		t.Fatalf("routine invocations: %q", got)
+	}
+	// run → the invocation that opened it and the triggers it saw → back to the routine
+	first, _ := g.Lookup(id("run_", 1))
+	if got := refs(first, EdgeInvocation); got != InvocationRef(nightly("inv-1"))+" "+InvocationRef(nightly("inv-2"))+" routine:example-scheduler/hourly/" {
+		t.Fatalf("run invocations: %q", got)
+	}
+	invocation, _ := g.Lookup(InvocationRef(nightly("inv-2")))
+	if invocation.Source != SourceExternal || refs(invocation, EdgeRun) != id("run_", 1) || refs(invocation, EdgeRoutine) != RoutineNodeRef(nightly("")) {
+		t.Fatalf("%#v", invocation)
+	}
+	// routine → run → chat
+	if chats := g.Follow(g.Follow(routine, EdgeRun)[0], EdgeSession); len(chats) != 1 || chats[0].Ref != SessionRef("bb", "thr_example_a") {
+		t.Fatalf("%#v", chats)
+	}
+	// A routine and an invocation never share a reference, and unknown ones stay explicit.
+	if hourly, status := g.Lookup("routine:example-scheduler/hourly"); status != Found || hourly.Type != RoutineNode || refs(hourly, EdgeInvocation) != "routine:example-scheduler/hourly/" {
+		t.Fatalf("%s %#v", status, hourly)
+	}
+	for _, ref := range []string{InvocationRef(nightly("inv-0")), InvocationRef(nightly("inv-3")), "routine:example-scheduler/weekly"} {
+		if _, status := g.Lookup(ref); status != NotRecorded {
+			t.Fatalf("%s: %s", ref, status)
+		}
+	}
+	// A malformed identity is refused and nothing is written.
+	before, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if err := Update(dir, at, func(g *Graph) (bool, error) {
+		return g.Trigger(rd.RoutineRef{Source: "example-scheduler", Routine: "has space"}, at)
+	}); !errors.Is(err, rd.ErrInvalid) {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, FileName)); !bytes.Equal(before, after) {
+		t.Fatal("a refused trigger changed the graph")
 	}
 }

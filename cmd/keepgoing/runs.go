@@ -120,7 +120,12 @@ type runsRun struct {
 	ClosedAt     *time.Time      `json:"closedAt,omitempty"`
 	ClosedSource rungraph.Source `json:"closedSource,omitempty"`
 	Reopens      string          `json:"reopens,omitempty"`
-	Invocation   string          `json:"invocation,omitempty"`
+	// Invocation is the routine invocation carried by the operation that
+	// opened this run. Triggers are later invocations recorded while it was
+	// open; none of them opened, reopened or closed it.
+	Invocation      string        `json:"invocation,omitempty"`
+	Triggers        []runsTrigger `json:"triggers"`
+	OmittedTriggers int           `json:"omittedTriggers"`
 	// SessionEvidence is unavailable when Sessions is empty, otherwise the
 	// strongest label among them.
 	SessionEvidence      string           `json:"sessionEvidence"`
@@ -141,6 +146,12 @@ type runsSession struct {
 	Source     rungraph.Source `json:"source"`
 	RecordedAt time.Time       `json:"recordedAt"`
 	Link       runsUnavailable `json:"link"`
+}
+
+type runsTrigger struct {
+	Ref        string          `json:"ref"`
+	Source     rungraph.Source `json:"source"`
+	RecordedAt time.Time       `json:"recordedAt"`
 }
 
 type runsGoal struct {
@@ -459,7 +470,7 @@ func (c *runsContext) projectRun(id string) runsRun {
 	n, _ := g.Lookup(id)
 	r := *n.Run
 	out := runsRun{ID: r.ID, State: "open", Origin: r.Origin, RecordedAt: r.RecordedAt, Source: r.Source, Reopens: r.Reopens,
-		SessionEvidence: evidenceUnavailable, Sessions: []runsSession{}, GoalRevisions: []runsGoal{}, Unrecorded: []runsUnrecorded{}, Attempts: runsAttempts{Latest: []runsAttempt{}}}
+		SessionEvidence: evidenceUnavailable, Sessions: []runsSession{}, GoalRevisions: []runsGoal{}, Unrecorded: []runsUnrecorded{}, Triggers: []runsTrigger{}, Attempts: runsAttempts{Latest: []runsAttempt{}}}
 	closed := !r.ClosedAt.IsZero()
 	if closed {
 		at := r.ClosedAt
@@ -497,9 +508,16 @@ func (c *runsContext) projectRun(id string) runsRun {
 		case rungraph.EdgeAttempt:
 			attempts = append(attempts, e.To)
 		case rungraph.EdgeInvocation:
+			// The run's own opening invocation is always its first such edge.
 			if r.Routine != nil && out.Invocation == "" {
 				out.Invocation = e.To
+				continue
 			}
+			if len(out.Triggers) >= c.limit {
+				out.OmittedTriggers++
+				continue
+			}
+			out.Triggers = append(out.Triggers, runsTrigger{Ref: e.To, Source: e.Source, RecordedAt: e.RecordedAt})
 		}
 	}
 	for _, u := range n.Unrecorded {
@@ -721,6 +739,15 @@ func printRun(w io.Writer, label string, run runsRun) {
 		fmt.Fprintf(w, "  closed %s", run.ClosedAt.Format(time.RFC3339))
 	}
 	fmt.Fprintln(w)
+	if run.Invocation != "" {
+		fmt.Fprintf(w, "  opened by invocation: %s\n", runsSafe(run.Invocation))
+	}
+	for _, tr := range run.Triggers {
+		fmt.Fprintf(w, "  trigger while open: %s\n", runsSafe(tr.Ref))
+	}
+	if run.OmittedTriggers > 0 {
+		fmt.Fprintf(w, "  %d more triggers not shown; raise --limit\n", run.OmittedTriggers)
+	}
 	if len(run.Sessions) == 0 {
 		fmt.Fprintln(w, "  chat/session: unavailable (none recorded)")
 	}

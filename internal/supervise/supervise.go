@@ -21,6 +21,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/prompt"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
+	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
 )
@@ -38,6 +39,9 @@ type Options struct {
 	Probe       ProbeFunc
 	Reporter    report.Reporter
 	Busy        func(ctx context.Context, y config.Yield) (bool, error)
+	// Routine is the scheduler identity supplied with this check, if any. It
+	// is recorded in the run graph only and never reaches a decision.
+	Routine rd.RoutineRef
 }
 
 // ProbeNote summarises a probe that ran during the tick.

@@ -303,3 +303,41 @@ func TestHeadlessTargetRecordsItsSavedSession(t *testing.T) {
 		t.Fatalf("%#v", sessions)
 	}
 }
+
+// A scheduler identity supplied with a check is recorded as a trigger of the
+// open run and changes nothing the check does.
+func TestSuppliedRoutineIsRecordedAndNeverChangesTheCheck(t *testing.T) {
+	routine := rd.RoutineRef{Source: "example-scheduler", Routine: "nightly", Invocation: "inv-1"}
+	type outcome struct {
+		action, reason, state string
+		sent                  int
+	}
+	run := func(supplied rd.RoutineRef, enabled bool) (outcome, *world) {
+		w := newWorld(t, enabled, false)
+		p := w.primary(decide.Observation{State: decide.Idle})
+		o := w.opts(t0)
+		o.Routine = supplied
+		res, err := Tick(context.Background(), w.cfg, o)
+		if err != nil || len(res.Warnings) != 0 {
+			t.Fatalf("%+v %v", res, err)
+		}
+		return outcome{res.Action, res.Reason, res.State, len(p.sent)}, w
+	}
+	plain, _ := run(rd.RoutineRef{}, true)
+	with, w := run(routine, true)
+	if plain != with {
+		t.Fatalf("%+v vs %+v", plain, with)
+	}
+	g := loadGraph(t, w.dir)
+	current, _ := g.Current()
+	triggers := g.Follow(current, rungraph.EdgeInvocation)
+	// The run was adopted by the check, not opened by the trigger.
+	if current.Run.Origin != rd.Adopted || current.Run.Routine != nil || len(triggers) != 1 || triggers[0].Ref != rungraph.InvocationRef(routine) || triggers[0].Source != rungraph.SourceExternal {
+		t.Fatalf("%#v %#v", current.Run, triggers)
+	}
+	// A trigger for a disabled loop opens nothing and records nothing.
+	off, disabled := run(routine, false)
+	if _, availability := rungraph.Load(disabled.dir); availability != rungraph.Missing || off.sent != 0 {
+		t.Fatalf("%s %+v", availability, off)
+	}
+}

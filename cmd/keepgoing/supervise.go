@@ -72,7 +72,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		e.errf("%v; no tick performed; reload and retry", err)
 		return exitSkipped
 	}
-	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg)}
+	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx)}
 	if fixedNow {
 		opts.Now = now
 	}
@@ -653,7 +653,7 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			f.Note = ""
 		}
 		return nil
-	})
+	}, suppliedRoutine(e.ctx))
 	historyFailed := errors.Is(err, errControlHistory)
 	if historyFailed {
 		e.errf("warning: %v", err)

@@ -753,3 +753,108 @@ func TestRunsTextOutputNeutralisesControlCharacters(t *testing.T) {
 		t.Fatal(text.String())
 	}
 }
+
+// `registry add` maps a reference only when the loop already has a graph, and
+// never creates a runtime file. Repeating it after the first run records it.
+func TestRunsRegistryAddRecordsTheReferenceOnceAGraphExists(t *testing.T) {
+	regDir, entry := clientFixture(t)
+	registration := func() string {
+		t.Helper()
+		code, r, raw := runsExec(t, "--registry-id", entry.ID, "--directory", regDir)
+		if code != exitOK {
+			t.Fatal(code, raw)
+		}
+		return r.Loops[0].Registration
+	}
+	if _, err := os.Stat(entry.StateDir); !os.IsNotExist(err) || registration() != recordNotRecorded {
+		t.Fatal("registration before the first run created runtime files or was reported as recorded")
+	}
+	// Runtime files without a graph: a repeated add still writes nothing.
+	if err := control.Save(entry.StateDir, control.File{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, entry.StateDir)
+	if code, out, errs := registryRun(t, regDir, "add", "-c", entry.ConfigPath); code != 0 {
+		t.Fatal(out, errs)
+	}
+	if snapshotTree(t, entry.StateDir) != before || registration() != recordNotRecorded {
+		t.Fatal("registry add wrote into a runtime directory that has no graph")
+	}
+	// After the first run the same command records the same reference.
+	runsSync(t, entry.StateDir, false, "start", 1)
+	if registration() != recordNotRecorded {
+		t.Fatal("the reference was recorded without a command that used it")
+	}
+	code, out, errs := registryRun(t, regDir, "add", "-c", entry.ConfigPath)
+	if code != 0 || !strings.Contains(out, entry.ID) {
+		t.Fatal(out, errs)
+	}
+	if registration() != recordRecorded {
+		t.Fatal("repeating registry add did not record the reference")
+	}
+	g, _ := rungraph.Load(entry.StateDir)
+	if len(g.Registrations) != 1 || g.Registrations[0].ID != entry.ID || g.Registrations[0].Source != rungraph.SourceRegistered || len(g.Runs) != 1 {
+		t.Fatalf("%#v", g.Registrations)
+	}
+	// Removing and adding again creates a new reference. It is recorded as
+	// its own entry with its own time; the old one stays as history.
+	if code, out, errs := registryRun(t, regDir, "remove", "--id", entry.ID); code != 0 {
+		t.Fatal(out, errs)
+	}
+	if code, out, errs := registryRun(t, regDir, "add", "-c", entry.ConfigPath); code != 0 {
+		t.Fatal(out, errs)
+	}
+	f, _ := registry.Load(regDir)
+	g, _ = rungraph.Load(entry.StateDir)
+	if len(f.Entries) != 1 || f.Entries[0].ID == entry.ID || len(g.Registrations) != 2 || g.Registrations[1].ID != f.Entries[0].ID {
+		t.Fatalf("%#v %#v", f.Entries, g.Registrations)
+	}
+	// An unusable graph is left alone.
+	path := filepath.Join(entry.StateDir, rungraph.FileName)
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := registryRun(t, regDir, "add", "-c", entry.ConfigPath); code != 0 {
+		t.Fatal(out, errs)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "{" {
+		t.Fatal("registry add rewrote an unusable graph")
+	}
+}
+
+func TestRunsShowsRoutineInvocationsAndTriggers(t *testing.T) {
+	dir := t.TempDir()
+	nightly := func(invocation string) rd.RoutineRef {
+		return rd.RoutineRef{Source: "example-scheduler", Routine: "nightly", Invocation: invocation}
+	}
+	if err := control.Save(dir, control.File{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	recordRunBoundary(dir, "enable", nightly("inv-1"))
+	recordRunBoundary(dir, "enable", nightly("inv-2")) // a later scheduled enable is a trigger of the open run
+	for n := 3; n < 9; n++ {
+		runsUpdate(t, dir, func(g *rungraph.Graph) (bool, error) { return g.Trigger(nightly(fmt.Sprintf("inv-%d", n)), runsAt) })
+	}
+	_, r, raw := runsExec(t, "--state-dir", dir, "--limit", "3")
+	cur := r.Loops[0].Current
+	if cur == nil || cur.Origin != rd.Explicit || cur.Invocation != "routine:example-scheduler/nightly/inv-1" || len(cur.Triggers) != 3 || cur.OmittedTriggers != 4 ||
+		cur.Triggers[0].Ref != "routine:example-scheduler/nightly/inv-2" || cur.Triggers[0].Source != rungraph.SourceExternal || len(r.Loops[0].Recent) != 0 {
+		t.Fatalf("%s", raw)
+	}
+	// routine → its runs, and an invocation → its run and routine, in text.
+	var text, errs bytes.Buffer
+	run(context.Background(), []string{"runs", "--state-dir", dir, "--id", "routine:example-scheduler/nightly", "--limit", "20"}, &text, &errs)
+	for _, want := range []string{"(routine,", "run -> " + cur.ID, "invocation -> routine:example-scheduler/nightly/inv-1", "invocation -> routine:example-scheduler/nightly/inv-8",
+		"opened by invocation: routine:example-scheduler/nightly/inv-1", "trigger while open: routine:example-scheduler/nightly/inv-2"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("lacks %q:\n%s", want, text.String())
+		}
+	}
+	_, r, _ = runsExec(t, "--state-dir", dir, "--id", "routine:example-scheduler/nightly/inv-5")
+	if r.Node.Status != rungraph.Found || r.Node.Type != rungraph.InvocationNode || len(r.Node.Edges) != 2 || r.Node.Edges[0].To != cur.ID || r.Node.Edges[1].To != "routine:example-scheduler/nightly" {
+		t.Fatalf("%+v", r.Node)
+	}
+	if _, r, _ = runsExec(t, "--state-dir", dir, "--id", "routine:example-scheduler/weekly"); r.Node.Status != rungraph.NotRecorded {
+		t.Fatal(r.Node.Status)
+	}
+}

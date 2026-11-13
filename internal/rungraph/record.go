@@ -163,3 +163,19 @@ func (g *Graph) Skip(target, reason string, at time.Time) (bool, error) {
 	g.Unrecorded = append(g.Unrecorded, Unrecorded{Run: g.CurrentRun, Target: target, Reason: reason, RecordedAt: at})
 	return true, nil
 }
+
+// Trigger records that an externally identified routine invocation arrived
+// while a run was open. It never opens, reopens or closes a run: with no open
+// run nothing is recorded. The invocation that opened the run is already on
+// the run and is not recorded again. A routine that supplies no invocation ID
+// has one link per run, because its triggers cannot be told apart.
+func (g *Graph) Trigger(r rd.RoutineRef, at time.Time) (bool, error) {
+	run := g.run(g.CurrentRun)
+	if run == nil || g.Completed {
+		return false, nil
+	}
+	if run.Routine != nil && routineRef(run.Routine) == r {
+		return false, nil
+	}
+	return g.Relate(Link{Kind: rd.InvocationLink, Routine: routineOf(r), Source: SourceExternal, RecordedAt: at})
+}

@@ -287,3 +287,20 @@ func TestRegistrationIsAnExplicitReferenceNotLoopIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRoutine(t *testing.T) {
+	for in, want := range map[string]RoutineRef{
+		"example-scheduler/nightly":            {Source: "example-scheduler", Routine: "nightly"},
+		"example-scheduler/nightly/2026-11-13": {Source: "example-scheduler", Routine: "nightly", Invocation: "2026-11-13"},
+		"a:b/c@d/e.f_g":                        {Source: "a:b", Routine: "c@d", Invocation: "e.f_g"},
+	} {
+		if got, err := ParseRoutine(in); err != nil || got != want {
+			t.Fatalf("%q: %#v %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "nightly", "/nightly", "example//1", "example/nightly/", "a/b/c/d", "example/has space", "example/nightly/\n", "-example/nightly", "example/" + string(make([]byte, 129))} {
+		if got, err := ParseRoutine(in); !errors.Is(err, ErrInvalid) || got != (RoutineRef{}) {
+			t.Fatalf("%q accepted: %#v", in, got)
+		}
+	}
+}

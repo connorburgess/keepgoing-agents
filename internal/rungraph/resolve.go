@@ -16,6 +16,7 @@ const (
 	SessionNode      = "session"
 	GoalRevisionNode = "goal_revision"
 	InvocationNode   = "invocation"
+	RoutineNode      = "routine"
 )
 
 // Edge types. Every edge is a recorded relationship, not a live observation.
@@ -29,6 +30,7 @@ const (
 	EdgeSession      = "session"
 	EdgeGoalRevision = "goal_revision"
 	EdgeInvocation   = "invocation"
+	EdgeRoutine      = "routine"
 )
 
 // Status of a lookup.
@@ -79,7 +81,13 @@ func GoalRevisionRef(id string, revision uint64) string {
 	return id + "@" + strconv.FormatUint(revision, 10)
 }
 
-// InvocationRef is the stable reference of a routine invocation node.
+// RoutineNodeRef is the stable reference of an external routine: every
+// invocation of it, and every run those invocations opened or triggered.
+func RoutineNodeRef(r rd.RoutineRef) string { return "routine:" + r.Source + "/" + r.Routine }
+
+// InvocationRef is the stable reference of a routine invocation node. It
+// always has three parts, so it never equals a routine reference; an
+// invocation with no ID ends in "/".
 func InvocationRef(r rd.RoutineRef) string {
 	return "routine:" + r.Source + "/" + r.Routine + "/" + r.Invocation
 }
@@ -96,6 +104,27 @@ func (g *Graph) build() {
 	}
 	edge := func(n *Node, typ, to, target string, source Source, at time.Time) {
 		n.Edges = append(n.Edges, Edge{Type: typ, To: to, Target: target, Source: source, RecordedAt: at})
+	}
+	// invocation records one trigger of a routine for a run, and keeps the
+	// routine node's edges to each invocation and run listed once.
+	invocation := func(run *Node, r rd.RoutineRef, source Source, at time.Time) {
+		ref, routine := InvocationRef(r), RoutineNodeRef(r)
+		edge(run, EdgeInvocation, ref, "", source, at)
+		in := node(ref, InvocationNode, at, source)
+		edge(in, EdgeRun, run.Ref, "", source, at)
+		rn := node(routine, RoutineNode, at, source)
+		seenInvocation, seenRun := false, false
+		for _, e := range rn.Edges {
+			seenInvocation = seenInvocation || (e.Type == EdgeInvocation && e.To == ref)
+			seenRun = seenRun || (e.Type == EdgeRun && e.To == run.Ref)
+		}
+		if !seenInvocation {
+			edge(in, EdgeRoutine, routine, "", source, at)
+			edge(rn, EdgeInvocation, ref, "", source, at)
+		}
+		if !seenRun {
+			edge(rn, EdgeRun, run.Ref, "", source, at)
+		}
 	}
 	if g.LoopID == "" {
 		return
@@ -125,9 +154,7 @@ func (g *Graph) build() {
 			edge(n, EdgeReopens, r.Reopens, "", r.Source, r.RecordedAt)
 		}
 		if r.Routine != nil {
-			ref := InvocationRef(routineRef(r.Routine))
-			edge(n, EdgeInvocation, ref, "", r.Source, r.RecordedAt)
-			edge(node(ref, InvocationNode, r.RecordedAt, r.Source), EdgeRun, r.ID, "", r.Source, r.RecordedAt)
+			invocation(n, routineRef(r.Routine), r.Source, r.RecordedAt)
 		}
 	}
 	for i := range g.Attempts {
@@ -141,14 +168,16 @@ func (g *Graph) build() {
 		}
 	}
 	for _, l := range g.Links {
+		if l.Kind == rd.InvocationLink {
+			invocation(g.index[l.Run], routineRef(l.Routine), l.Source, l.RecordedAt)
+			continue
+		}
 		var ref, typ, edgeType string
 		switch l.Kind {
 		case rd.SessionLink:
 			ref, typ, edgeType = SessionRef(l.Provider, l.Session), SessionNode, EdgeSession
 		case rd.GoalLink:
 			ref, typ, edgeType = GoalRevisionRef(l.GoalID, l.GoalRevision), GoalRevisionNode, EdgeGoalRevision
-		case rd.InvocationLink:
-			ref, typ, edgeType = InvocationRef(routineRef(l.Routine)), InvocationNode, EdgeInvocation
 		}
 		edge(g.index[l.Run], edgeType, ref, l.Target, l.Source, l.RecordedAt)
 		edge(node(ref, typ, l.RecordedAt, l.Source), EdgeRun, l.Run, l.Target, l.Source, l.RecordedAt)
