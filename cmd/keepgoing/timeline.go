@@ -692,6 +692,9 @@ func describeIncident(r incident.Record) string {
 		}
 		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
 	}
+	if r.NewThread {
+		text += "; NEW THREAD: keepgoing created a BB thread for this handoff and left the earlier conversation as it was (`keepgoing runs` shows both references)"
+	}
 	if r.Action == "handoff" || r.Action == "switch_back" {
 		if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter == r.TargetKey && !r.DryRun && r.Outcome != "dry_run" {
 			text += "; the target did not change, so this is not a recorded move"

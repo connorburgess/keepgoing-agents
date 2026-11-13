@@ -355,5 +355,14 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		// Stopped at the limit: whatever it printed, the command did not end
+		// on its own.
+		err = fmt.Errorf("%w: %w", errStopped, err)
+	}
 	return stdout.Bytes(), err
 }
+
+// errStopped marks a bb command that was killed at its time limit or because
+// the check was cancelled.
+var errStopped = errors.New("bb command stopped before it finished")

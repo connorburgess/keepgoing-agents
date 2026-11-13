@@ -68,6 +68,7 @@ Control:
   complete                 Mark the task finished; hold until resume
   await-user               Mark the loop as waiting for a person
   retarget <id|primary>    Point the loop at a fallback or back at the primary
+                           (--discard-pending-thread: give up on an unsettled BB thread creation)
 
 Fallbacks:
   fallbacks add            Guide adding a provider, account or model; preview, then confirm
@@ -184,6 +185,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		note:       fs.String("note", "", "a short note stored in control.json"),
 		id:         fs.String("id", "", "fallbacks check: only this candidate"),
 		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		discard:    fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
 		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
 		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
@@ -194,6 +196,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	positional = append(positional, fs.Args()...)
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
+		return exitUsage
+	}
+	if *f.discard && cmd != "retarget" {
+		e.errf("--discard-pending-thread is only supported by retarget")
 		return exitUsage
 	}
 	if *f.takeOver && *f.dryRun && cmd == "daemon" {
@@ -250,10 +256,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
 	case "retarget":
 		if len(positional) != 1 {
-			e.errf("usage: keepgoing retarget <candidate-id|primary> [-c keepgoing.yaml]")
+			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")
 			return exitUsage
 		}
-		return retarget(e, cfg, positional[0], *f.note)
+		return retarget(e, cfg, positional[0], *f.note, *f.discard)
 	case "fallbacks check":
 		if len(positional) != 0 {
 			e.errf("fallbacks check: use --id to select a candidate; positional arguments are not accepted")
@@ -273,6 +279,7 @@ type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
+	discard                         *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in

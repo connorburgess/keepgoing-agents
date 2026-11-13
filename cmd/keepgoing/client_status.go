@@ -254,8 +254,7 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 			agent = cfg.Loop.Agent
 			configured = true
 		} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
-			agent = c.Agent
-			configured = true
+			agent, configured = st.CandidateAgent(c)
 		}
 		if configured {
 			target := &clientTarget{Alias: st.Target(), Adapter: agent.Adapter, IdentityEvidence: "configuration_only"}
