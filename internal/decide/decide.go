@@ -354,13 +354,16 @@ func Decide(in Input) Decision {
 }
 
 // limitOutranksRetry reports whether a retry notice must yield to the limit
-// rules. A rate-limited, errored session whose structured reset is further
-// away than wait_if_reset_within, with no retry actually queued, is handled
-// by decideError (handoff when allowed, a limit wait otherwise), so a notice
-// cannot hold the loop on a limited account past a healthy fallback.
+// rules. A rate-limited, errored session with a structured reset still
+// ahead, and no retry actually queued, is handled by decideError: a handoff
+// when allowed, a limit wait otherwise. So a notice cannot hold the loop on a
+// limited account past a healthy fallback, and a reset inside
+// wait_if_reset_within is recorded as the limit wait it is, with its reset
+// time, not as "provider is retrying the turn". For such a session decideError never
+// prompts: every path is a wait or a handoff.
 func limitOutranksRetry(in Input) bool {
 	o, f := in.Obs, in.Failover
-	return o.State == Error && o.ErrorClass == ErrRateLimit && o.Queued == 0 && f.ResetIn > 0 && f.ResetIn > f.WaitIfResetWithin
+	return o.State == Error && o.ErrorClass == ErrRateLimit && o.Queued == 0 && f.ResetIn > 0
 }
 
 // SilentRetryPatience is how long an untracked active session may stay silent
