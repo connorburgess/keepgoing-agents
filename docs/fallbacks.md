@@ -239,7 +239,7 @@ Verification uses fictional fixtures only: malformed, partial, multi-event and a
 
 ### Reading history and projection
 
-Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#preferred-routes-planned) (U1 and U2).
+Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
 
 **History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept. The history is bounded to 48 readings per window, the newest kept (eight days at a probe every four hours), and to eight windows. A window is dropped once its reset time has passed. The whole history is dropped when the candidate is probed as another account, as the latest reading is. A reading no later than the newest one already kept is ignored, so the same reading recorded twice, or a clock set back, adds nothing. A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
 
