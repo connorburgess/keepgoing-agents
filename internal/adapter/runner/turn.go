@@ -25,6 +25,11 @@ const (
 // as one. Call it first thing in main, and in TestMain for tests that spawn
 // turns. It returns normally otherwise.
 func MaybeRunTurn() {
+	// Asked which wrapper this binary is: answer and run nothing.
+	if os.Getenv(envTurnProbe) != "" {
+		fmt.Println(turnProtocol)
+		os.Exit(0)
+	}
 	dir := os.Getenv(envTurnDir)
 	if dir == "" {
 		return
@@ -52,6 +57,9 @@ func MaybeRunTurn() {
 		os.Exit(2)
 	}
 	if rec, err := Dir(dir).record(); err != nil || rec.StopKey != key || rec.Abandoned {
+		if onDecline != nil {
+			onDecline()
+		}
 		os.Exit(2)
 	}
 	if os.WriteFile(filepath.Join(dir, startedName), []byte(key), 0o600) != nil {
@@ -112,7 +120,7 @@ func turnChildEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) {
+		if !strings.EqualFold(name, envTurnDir) && !strings.EqualFold(name, envTurnArgv) && !strings.EqualFold(name, envTurnKey) && !strings.EqualFold(name, envTurnACP) && !strings.EqualFold(name, envTurnProbe) {
 			env = append(env, kv)
 		}
 	}
@@ -157,8 +165,9 @@ var (
 	turnKey      string
 )
 
-// afterPublish runs once the exit code is visible. Only tests set it.
-var afterPublish func()
+// afterPublish runs once the exit code is visible, and onDecline when a
+// wrapper finds it is not wanted. Only tests set them.
+var afterPublish, onDecline func()
 
 func holdTurnLock(dir string) bool {
 	held, err := acquireTurnLock(dir)

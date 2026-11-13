@@ -15,12 +15,18 @@ import (
 func TestMain(m *testing.M) {
 	// Faults for a process started as a turn wrapper. The agent it starts does
 	// not get the wrapper's variables, so these never apply to the agent.
+	// A binary from another build does not know the question a start asks.
+	if os.Getenv(envTurnProbe) != "" && os.Getenv("KEEPGOING_TEST_WRAPPER") == "other-build" {
+		os.Stdout.WriteString("usage: keepgoing <command>\n")
+		os.Exit(2)
+	}
 	if os.Getenv(envTurnDir) != "" {
 		switch fault := os.Getenv("KEEPGOING_TEST_WRAPPER"); fault {
 		case "dead": // ends before it takes the turn lock
 			os.Exit(3)
 		case "late": // takes the turn lock long after Start stopped waiting
 			time.Sleep(1500 * time.Millisecond)
+			onDecline = func() { os.WriteFile(os.Getenv("KEEPGOING_TEST_DECLINED"), nil, 0o600) }
 		case "linger": // stays alive after its exit code can be seen
 			afterPublish = func() { time.Sleep(3 * time.Second) }
 		}

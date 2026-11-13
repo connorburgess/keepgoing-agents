@@ -11,14 +11,18 @@
 package runner
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -355,6 +359,107 @@ func (d Dir) Start(argv []string, workdir, prompt string, env []string) error {
 	return err
 }
 
+// turnFiles are what one turn leaves, the exit code last: it is what makes a
+// turn read as finished, so it is the last to go.
+var turnFiles = []string{"exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName, "exit"}
+
+// renameFile is os.Rename. Tests replace it to make one file immovable.
+var renameFile = os.Rename
+
+// clearTurn removes the previous turn's files, all of them or none. A stale
+// exit code would make the new turn read as finished before it ran, and an
+// exit code removed while another file stayed would make a finished turn read
+// as crashed. So each file is first moved aside; if one cannot be, the ones
+// already moved are put back and the start is refused with the previous
+// turn's record as it was. Only then are they deleted.
+func (d Dir) clearTurn() error {
+	aside := func(name string) string { return d.path(name + ".old") }
+	var moved []string
+	for _, name := range turnFiles {
+		err := renameFile(d.path(name), aside(name))
+		if err == nil {
+			moved = append(moved, name)
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		for i := len(moved) - 1; i >= 0; i-- {
+			_ = renameFile(aside(moved[i]), d.path(moved[i]))
+		}
+		return errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))
+	}
+	for _, name := range moved {
+		_ = os.Remove(aside(name)) // a leftover is replaced by the next start
+	}
+	return nil
+}
+
+// turnProtocol is what a binary of this build answers when asked which
+// wrapper it is. A binary that answers anything else, or nothing, is another
+// build: started as a wrapper it would run the agent without the turn lock.
+const (
+	turnProtocol = "keepgoing-turn-wrapper 2"
+	envTurnProbe = "KEEPGOING_RUN_TURN_PROBE"
+)
+
+var agreed struct {
+	sync.Mutex
+	path string
+	size int64
+	mod  time.Time
+}
+
+// wrapperAgrees asks the binary on disk which wrapper it is, once per binary:
+// the answer is kept until the file changes. It starts no turn.
+func wrapperAgrees(env []string) error {
+	// A process that was itself started to answer the question starts no
+	// turn. This only matters for a program that does not call MaybeRunTurn
+	// first: it stops the question from being asked again by its own copy.
+	if os.Getenv(envTurnProbe) != "" {
+		return errors.New("runner: this program does not answer as a turn wrapper; call MaybeRunTurn first in main")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return errors.New("runner: this program's own path could not be found")
+	}
+	info, err := os.Stat(self)
+	if err != nil {
+		return errors.New("runner: the keepgoing binary is no longer where this process was started from; restart the daemon" + errnoText(err))
+	}
+	agreed.Lock()
+	defer agreed.Unlock()
+	if agreed.path == self && agreed.size == info.Size() && agreed.mod.Equal(info.ModTime()) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, self)
+	cmd.Env = append(append(os.Environ(), env...), envTurnProbe+"=1")
+	cmd.WaitDelay = time.Second
+	var out bytes.Buffer
+	cmd.Stdout = &limitedWriter{w: &out, left: 256}
+	if err := cmd.Run(); err != nil || strings.TrimSpace(out.String()) != turnProtocol {
+		return errors.New("runner: the keepgoing binary on disk is not the build this process is running, so it cannot be trusted to run a turn; stop the daemon before replacing or restoring a binary, then start it again")
+	}
+	agreed.path, agreed.size, agreed.mod = self, info.Size(), info.ModTime()
+	return nil
+}
+
+// limitedWriter keeps the first bytes written and discards the rest.
+type limitedWriter struct {
+	w    io.Writer
+	left int
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if n := min(len(p), l.left); n > 0 {
+		l.w.Write(p[:n])
+		l.left -= n
+	}
+	return len(p), nil
+}
+
 // notSpawned marks a start after which no process runs or will run the turn:
 // none was created, or the wrapper was shut out before it began. Its text is
 // the underlying error's.
@@ -368,6 +473,11 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 	if len(argv) == 0 {
 		return "", notSpawned{errors.New("runner: empty command")}
 	}
+	// The binary on disk is the wrapper. If it is not this build, it would run
+	// the agent without taking the turn lock: refuse before anything changes.
+	if err := wrapperAgrees(env); err != nil {
+		return "", notSpawned{err}
+	}
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
 		return "", notSpawned{err}
 	}
@@ -380,13 +490,8 @@ func (d Dir) start(argv []string, workdir, prompt string, env []string, acp stri
 		return "", notSpawned{err}
 	}
 	defer setup.Release()
-	// The previous turn's exit code goes first. If it cannot be removed the
-	// new turn would read as finished, with that code, before it had run: so
-	// refuse, with everything still as it was.
-	for _, name := range []string{"exit", "exit.tmp", "stdout", "stderr", "stop-request.json", "stop-ack.json", startedName, finishingName} {
-		if err := os.Remove(d.path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", notSpawned{errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))}
-		}
+	if err := d.clearTurn(); err != nil {
+		return "", notSpawned{err}
 	}
 	if err := os.WriteFile(d.path("prompt"), []byte(prompt), 0o600); err != nil {
 		return "", notSpawned{err}

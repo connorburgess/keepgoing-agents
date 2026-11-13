@@ -228,7 +228,10 @@ func (c *Cursor) Send(ctx context.Context, prompt string, mode adapter.Mode) err
 	if err != nil {
 		return err
 	}
-	if st.Phase != NeverRun && session == "" {
+	// An abandoned turn is one no process ever ran: its wrapper was shut out
+	// before it began. Like a turn that was never started, it left no
+	// conversation that a new one could duplicate.
+	if st.Phase != NeverRun && session == "" && !st.Record.Abandoned {
 		return errors.New("cursor: previous turn has no verified session identity; refusing to start a new conversation")
 	}
 	return c.dir.Start(c.args(session), c.cfg.Workdir, prompt, envList(c.cfg.Env))

@@ -126,7 +126,8 @@ func TestALateWrapperRunsNothing(t *testing.T) {
 		d := Dir(t.TempDir())
 		log := filepath.Join(t.TempDir(), "runs")
 		cli := fakeCLI(t, "echo run >> '"+log+"'")
-		if err := d.Start([]string{cli}, string(d), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=late"}); err == nil {
+		declined := filepath.Join(t.TempDir(), "declined")
+		if err := d.Start([]string{cli}, string(d), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=late", "KEEPGOING_TEST_DECLINED=" + declined}); err == nil {
 			t.Fatal("Start returned before the wrapper held the lock")
 		}
 		want := ""
@@ -138,7 +139,17 @@ func TestALateWrapperRunsNothing(t *testing.T) {
 			waitPhase(t, d, Finished)
 			want = "run\n"
 		}
-		time.Sleep(2500 * time.Millisecond) // the late wrapper has come and gone
+		// Wait until the late wrapper has taken the lock, read the record and
+		// declined. Without that this would pass for a wrapper still asleep.
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(declined); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("again=%t: the late wrapper never reached its check", again)
+			}
+		}
+		time.Sleep(200 * time.Millisecond) // long enough for an agent to have run
 		if got, _ := os.ReadFile(log); string(got) != want {
 			t.Fatalf("again=%t: the agent ran %q, want %q", again, got, want)
 		}
@@ -262,5 +273,66 @@ func TestStartRefusesWhenThePreviousExitCodeCannotBeRemoved(t *testing.T) {
 	}
 	if st := waitPhase(t, d, Finished); st.ExitCode != 0 || st.Record.StopKey == first.Record.StopKey {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// The same when a file other than the exit code is the one that cannot be
+// moved: the exit code is put back, so the finished turn still reads as
+// finished and the next start is not refused for ever.
+func TestStartRefusedPartWayLeavesThePreviousTurnIntact(t *testing.T) {
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	if err := d.Start([]string{fakeCLI(t, "echo first; exit 7")}, filepath.Dir(string(d)), "first prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := waitPhase(t, d, Finished)
+	// A stop request too, so more than one file is moved before the failure.
+	if err := os.WriteFile(d.path("stop-request.json"), []byte("earlier request"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing := func() string {
+		var b strings.Builder
+		entries, _ := os.ReadDir(string(d))
+		for _, e := range entries {
+			if e.Name() == "turn.lock" {
+				continue
+			}
+			body, _ := os.ReadFile(d.path(e.Name()))
+			b.WriteString(e.Name() + "=" + string(body) + ";")
+		}
+		return b.String()
+	}
+	before := listing()
+	for _, immovable := range []string{"stdout", "stop-request.json", "exit"} {
+		renameFile = func(from, to string) error {
+			if filepath.Base(from) == immovable {
+				return syscall.EPERM
+			}
+			return os.Rename(from, to)
+		}
+		err := d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Dir(string(d)), "second prompt", nil)
+		renameFile = os.Rename
+		var none notSpawned
+		if !errors.As(err, &none) {
+			t.Fatalf("%s immovable: Start returned %v", immovable, err)
+		}
+		if after := listing(); after != before {
+			t.Fatalf("%s immovable: the previous turn's files changed\n before: %s\n after:  %s", immovable, before, after)
+		}
+		if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 7 || st.Record.StopKey != first.Record.StopKey {
+			t.Fatalf("%s immovable: the earlier turn reads as %+v %v", immovable, st, err)
+		}
+	}
+	// Nothing was left that stops a later start.
+	if err := d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Dir(string(d)), "third prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if st := waitPhase(t, d, Finished); st.ExitCode != 0 {
+		t.Fatalf("%+v", st)
+	}
+	entries, _ := os.ReadDir(string(d))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".old") {
+			t.Errorf("%s was left behind", e.Name())
+		}
 	}
 }

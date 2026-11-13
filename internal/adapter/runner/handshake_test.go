@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
@@ -211,5 +213,122 @@ func TestLegacyRecordFromBeforeTheMachineStartedIsCrashed(t *testing.T) {
 		if !ok || at.After(time.Now()) || at.Year() < 2001 {
 			t.Fatalf("machine start read as %s %t", at, ok)
 		}
+	}
+}
+
+// A binary on disk that is not this build would run the agent as a wrapper
+// without taking the turn lock, so the daemon would see no turn and start
+// another. Start asks the binary which wrapper it is first, and refuses,
+// changing nothing and running nothing, when the answer is not its own.
+func TestStartRefusesABinaryFromAnotherBuild(t *testing.T) {
+	forget := func() {
+		agreed.Lock()
+		agreed.path = ""
+		agreed.Unlock()
+	}
+	forget()
+	t.Cleanup(forget)
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	cli := helperCLI(t, "{}", 0, 0)
+	err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"})
+	var none notSpawned
+	if !errors.As(err, &none) || !strings.Contains(err.Error(), "stop the daemon before replacing or restoring a binary") {
+		t.Fatalf("Start with another build's binary on disk returned %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, statErr := os.Stat(string(d)); !os.IsNotExist(statErr) || ranAgent(cli) {
+		t.Fatal("a refused start created the turn directory or ran the agent")
+	}
+	if strings.Contains(err.Error(), filepath.Dir(string(d))) {
+		t.Fatalf("the refusal names a path: %v", err)
+	}
+	// This build's own binary answers, once: a second start does not ask again.
+	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, d, Finished)
+	agreed.Lock()
+	remembered := agreed.path != ""
+	agreed.Unlock()
+	if !remembered {
+		t.Fatal("the answer was not kept")
+	}
+	// Kept answers are not asked for again, even by a turn whose environment
+	// would make the binary answer wrongly; a changed file is asked again.
+	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"}); err != nil {
+		t.Fatalf("a kept answer was asked for again: %v", err)
+	}
+	waitFor(t, d, Finished)
+	agreed.Lock()
+	agreed.size++
+	agreed.Unlock()
+	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=other-build"}); err == nil {
+		t.Fatal("a binary that changed on disk was not asked again")
+	}
+}
+
+// An abandoned first turn left no conversation: no process ever ran it. The
+// Cursor runner treats it like a turn that never started, so the next send
+// starts normally. It used to refuse every later send.
+func TestCursorSendsAgainAfterAnAbandonedFirstTurn(t *testing.T) {
+	shortStartLimit(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	capture := filepath.Join(root, "sent.json")
+	env := map[string]string{"KEEPGOING_TEST_HELPER": "cursor", "KEEPGOING_TEST_RESULT": capture, "KEEPGOING_CURSOR_FIXTURE_STDOUT": cursorSuccess, "KEEPGOING_TEST_WRAPPER": "dead"}
+	c := NewCursor(config.Cursor{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+	if err := c.Send(context.Background(), "fictional task", adapter.ModeAuto); !errors.Is(err, errNoWrapper) {
+		t.Fatalf("a send whose wrapper never started returned %v", err)
+	}
+	if st, err := c.dir.Status(); err != nil || st.Phase != Crashed || !st.Record.Abandoned {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if _, err := os.Stat(capture); err == nil {
+		t.Fatal("the agent ran")
+	}
+	delete(env, "KEEPGOING_TEST_WRAPPER")
+	c = NewCursor(config.Cursor{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+	if err := c.Send(context.Background(), "fictional task", adapter.ModeAuto); err != nil {
+		t.Fatalf("the send after an abandoned first turn was refused: %v", err)
+	}
+	waitFor(t, c.dir, Finished)
+	if _, err := os.Stat(capture); err != nil {
+		t.Fatal("the agent did not run")
+	}
+	// A turn that did run and left no session is still refused.
+	if err := os.WriteFile(c.dir.path("stdout"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(c.dir.path("session"))
+	c = NewCursor(config.Cursor{CLI: self, Workdir: root, Env: env}, filepath.Join(root, "target"))
+	if err := c.Send(context.Background(), "fictional task", adapter.ModeAuto); err == nil {
+		t.Fatal("a turn that ran and left no session was followed by a new conversation")
+	}
+}
+
+// A finishing marker dated in the future, after a clock step, is waited for
+// no longer than the usual limit.
+func TestAFinishingMarkerFromTheFutureIsWaitedForOnlyTheLimit(t *testing.T) {
+	previous := finishingWait
+	finishingWait = 300 * time.Millisecond
+	defer func() { finishingWait = previous }()
+	d := writeRecord(t, Record{StartedAt: time.Now(), Argv0: "stand-in", Liveness: livenessLock})
+	if err := os.WriteFile(d.path(finishingName), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(d.path(finishingName), later, later); err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	st, err := d.Status()
+	if err != nil || st.Phase != Crashed {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if took := time.Since(began); took < 250*time.Millisecond || took > 3*time.Second {
+		t.Fatalf("a read waited %s on a marker dated an hour ahead, with a %s limit", took, finishingWait)
 	}
 }
