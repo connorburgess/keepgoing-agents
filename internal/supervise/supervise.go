@@ -63,6 +63,9 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
+	// RetrySignal is "expired" when a stale provider retry notice was seen
+	// and not honored, so ordinary error or stall handling applied.
+	RetrySignal  string     `json:"retrySignal,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
 	Target       string     `json:"target"`
@@ -277,7 +280,7 @@ func (t *tick) run() error {
 		}
 	}
 
-	a, err := t.opts.NewAdapter(agent, loop.StateDir, target)
+	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
 		return err
 	}
@@ -293,6 +296,9 @@ func (t *tick) run() error {
 	res.State = string(obs.State)
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
+	}
+	if obs.RetryExpired {
+		res.RetrySignal = "expired"
 	}
 	if len(obs.AwaitingChildren) > 0 {
 		// Escalate before probes, fingerprints, and recovery. Child input must
@@ -340,8 +346,6 @@ func (t *tick) run() error {
 		return err
 	}
 	res.Window = why
-	// Kept to tell verified Git progress from a first baseline further down.
-	priorFingerprint, priorProgressAt := t.st.Fingerprint, t.st.LastProgressAt
 
 	// Fallback health: scheduled probes, then the redundancy picture.
 	var summary health.Summary
@@ -365,6 +369,7 @@ func (t *tick) run() error {
 	}
 
 	unchangedFor := time.Duration(0)
+	progressed := false // verified Git metadata changed since the last check
 	if len(loop.Progress.Repositories) > 0 {
 		var f string
 		var err error
@@ -377,6 +382,8 @@ func (t *tick) run() error {
 			res.Reason = "could not fingerprint repositories; no action taken"
 			return t.record(err)
 		}
+		// A first baseline is not progress.
+		progressed = t.st.Fingerprint != "" && !t.st.LastProgressAt.IsZero() && f != t.st.Fingerprint
 		if f != t.st.Fingerprint || t.st.LastProgressAt.IsZero() {
 			t.st.Fingerprint, t.st.LastProgressAt = f, t.now
 			t.st.Nudges = 0
@@ -396,21 +403,18 @@ func (t *tick) run() error {
 	if !t.st.LastRepromptAt.IsZero() {
 		sinceReprompt = t.now.Sub(t.st.LastRepromptAt)
 	}
-	if obs.State == decide.Active || obs.State == decide.Idle {
+	// One error episode covers the re-prompt count and the rejected handoff
+	// briefs. It ends on evidence that the session recovered: a turn finished
+	// without an error (idle), or verified Git progress while active. Merely
+	// seeing the session active does not end it: our own re-prompt, or a
+	// provider retry, makes it active, and a turn that errors again must spend
+	// the same allowances, or neither cap is ever reached.
+	if obs.State == decide.Idle || (obs.State == decide.Active && progressed) {
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
+		t.st.HandoffBriefs = nil
 	}
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
-	}
-
-	// Rejected handoff briefs cover one error episode. It ends on evidence that
-	// the session recovered: a turn that finished without an error (idle), or
-	// verified Git progress while active. Seeing the session active is not
-	// enough: our own re-prompt, or a provider retry, makes it active, and a
-	// turn that errors again must not hand every fallback a fresh allowance.
-	gitProgress := priorFingerprint != "" && !priorProgressAt.IsZero() && t.st.Fingerprint != priorFingerprint
-	if obs.State == decide.Idle || (obs.State == decide.Active && gitProgress) {
-		t.st.HandoffBriefs = nil
 	}
 
 	failover := decide.Failover{
@@ -424,6 +428,7 @@ func (t *tick) run() error {
 	in := decide.Input{
 		Obs: obs, Control: gate, InWindow: inWindow,
 		UnchangedFor: unchangedFor, SinceWake: sinceWake,
+		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
 		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
@@ -519,7 +524,7 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
-	a, err := t.opts.NewAdapter(agent, t.loop.StateDir, target)
+	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err != nil {
 		return err
 	}
@@ -611,7 +616,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, class decide.ErrorCl
 		if !r.OK {
 			continue
 		}
-		ta, err := t.opts.NewAdapter(c.Agent, t.loop.StateDir, c.ID)
+		ta, err := t.newAdapter(c.Agent, t.loop.StateDir, c.ID)
 		if err != nil {
 			t.warn("handoff to %s: %v", id, err)
 			t.rejectHandoffBrief(id)
@@ -717,7 +722,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("switch-back brief: %w", err)
 	}
-	pa, err := t.opts.NewAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
+	pa, err := t.newAdapter(t.loop.Agent, t.loop.StateDir, state.Primary)
 	if err != nil {
 		t.rejectSwitchBack(from)
 		return false, err
@@ -862,7 +867,7 @@ func (t *tick) record(actErr error) error {
 		outcome = "failed"
 	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
-		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
+		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		return err
@@ -967,4 +972,13 @@ func (t *tick) observeProgress() (state.Progress, error) {
 		return state.Progress{}, fmt.Errorf("could not verify Git progress; no automatic provider work")
 	}
 	return state.ObserveProgress(t.loop.StateDir, previous, state.ProgressSources(repositories), fingerprint, t.now, t.opts.DryRun)
+}
+
+// newAdapter builds an adapter and gives it this check's time.
+func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
+	ad, err := t.opts.NewAdapter(a, stateDir, target)
+	if c, ok := ad.(adapter.CheckTimer); ok && err == nil {
+		c.CheckAt(t.now)
+	}
+	return ad, err
 }
