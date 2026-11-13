@@ -1067,6 +1067,7 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 		}
 		var errs []error
 		var stopped []string
+		waiting := false // a briefed session's stop waits for another loop's live check
 		stopOne := func(id string, a adapter.Adapter) {
 			if _, err := t.reserveSend("stop", id); err != nil {
 				t.warn("the stop to %s could not be recorded before it was made: %v", id, err)
@@ -1091,6 +1092,21 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 				}
 			}
 			id, agent := t.resolve(b.Target)
+			// The same claim rule as the loop's own stop: wait only while
+			// another loop's live check holds that session; go ahead past a
+			// stuck holder, and without the claim if it cannot be taken.
+			claimed, err := t.claimOther(agent)
+			switch {
+			case claimed != nil && claimed.Stuck():
+				t.reportStuckClaim(claimed)
+				t.warn("stop of %s proceeds past a stuck session claim", b.Target)
+			case claimed != nil:
+				t.warn("stop of %s waits: another loop's check is acting on that session; the next check stops it", b.Target)
+				waiting = true
+				continue
+			case err != nil:
+				t.warn("stop of %s proceeds without the session claim: %v", b.Target, err)
+			}
 			ba, err := t.newAdapter(agent, t.loop.StateDir, id)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("stop %s: %w", b.Target, err))
@@ -1099,8 +1115,8 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			stopOne(b.Target, ba)
 		}
 		t.stopsMade = stopped
-		if len(errs) == 0 {
-			t.st.StopRequestedSent = true
+		if len(errs) == 0 && !waiting {
+			t.st.StopRequestedSent = true // otherwise the next check stops them all again
 		}
 		if len(t.unsettledBriefs) > 0 {
 			if err := t.holdForBriefs(); err != nil {
