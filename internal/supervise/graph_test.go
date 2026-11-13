@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
@@ -275,5 +276,30 @@ func TestUnrecordableSessionIdentifierIsNotedOnce(t *testing.T) {
 				t.Fatalf("rejected identifier stored, or sends not recorded: %s", b)
 			}
 		})
+	}
+}
+
+// A headless runner has no configured chat: its reference is the resume ID it
+// saved, read from disk without running the provider.
+func TestHeadlessTargetRecordsItsSavedSession(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Agent = config.Agent{Adapter: "claude", Provider: "claude-code"}
+	w.primary(decide.Observation{State: decide.Idle})
+	runTick(t, w, t0)
+	g := loadGraph(t, w.dir)
+	run, _ := g.Current()
+	if len(g.Follow(run, rungraph.EdgeSession)) != 0 || len(run.Unrecorded) != 0 {
+		t.Fatalf("a session was recorded before the runner saved one: %#v", run)
+	}
+	const id = "11111111-2222-3333-4444-555555555555"
+	if err := runner.Dir(filepath.Join(w.dir, "targets", state.Primary)).SaveSession(id); err != nil {
+		t.Fatal(err)
+	}
+	runTick(t, w, t0.Add(2*time.Hour))
+	g = loadGraph(t, w.dir)
+	run, _ = g.Current()
+	sessions := g.Follow(run, rungraph.EdgeSession)
+	if len(sessions) != 1 || sessions[0].Ref != rungraph.SessionRef("claude", id) || sessions[0].Source != rungraph.SourceRunnerFile {
+		t.Fatalf("%#v", sessions)
 	}
 }
