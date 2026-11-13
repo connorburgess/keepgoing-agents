@@ -96,8 +96,9 @@ func (d Dir) AntigravityACPHold() (AntigravityACPHold, bool, error) {
 // prompt; the rest are refused, as is any prompt after human-input evidence.
 // Human-input evidence requires this turn's reservation, so two exchanges can
 // never leave records that disagree. A different turn or session, and saved
-// records that are inconsistent with each other, are refused. There is deliberately no rollover: starting a later turn needs the
-// send/session reconciliation that no runner implements yet.
+// records that are inconsistent with each other, are refused. One directory never
+// rolls over to a later turn: the detached runner gives every turn its own
+// directory and reconciles the previous one first.
 //
 // Human-input evidence is saved once per turn. Later permission requests in the
 // same cancelled turn add nothing, including after adoption.
@@ -232,7 +233,16 @@ func (d Dir) publishAntigravityACPRecord(name string, id acpHoldID) (bool, error
 		Turn      string `json:"turn"`
 		SessionID string `json:"sessionId"`
 	}{1, id.turn, id.session})
-	if err != nil || len(b)+1 > antigravityACPHoldLimit {
+	if err != nil {
+		return false, errAntigravityACPHold
+	}
+	return d.publishAntigravityOnce(name, b)
+}
+
+// publishAntigravityOnce is the create-once write every saved Antigravity
+// record uses; see publishAntigravityACPRecord for its guarantees and limits.
+func (d Dir) publishAntigravityOnce(name string, b []byte) (bool, error) {
+	if len(b)+1 > antigravityACPHoldLimit {
 		return false, errAntigravityACPHold
 	}
 	if err := os.MkdirAll(string(d), 0o700); err != nil {
