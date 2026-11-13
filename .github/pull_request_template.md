@@ -21,5 +21,6 @@ unverified roadmap acceptance. For unrelated changes, state why not applicable. 
 
 - [ ] Title and commit subjects use Conventional Commits.
 - [ ] Each commit has an author-matching sign-off (`git commit -s`).
+- [ ] Every contributor other than the project steward has personally accepted the contributor agreement as described in CONTRIBUTING.md, with a link to the agreement revision. Maintainer verification is required before merging.
 - [ ] No real transcripts, prompts, webhook URLs, credentials, or personal paths.
 - [ ] No tool credits, generated-with footers, or session links.
