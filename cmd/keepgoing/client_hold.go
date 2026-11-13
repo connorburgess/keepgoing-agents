@@ -61,12 +61,15 @@ func clientHoldCommand(e env, args []string) int {
 }
 
 func applyClientHold(ctx context.Context, directory, id, operation string) (clientHoldReport, int) {
-	return applyClientHoldFrom(ctx, directory, id, operation, "")
+	return applyClientHoldFrom(ctx, directory, id, operation, "", "")
 }
 
 // applyClientHoldFrom is applyClientHold for a change from origin ("" for a
 // command, "panel" for the keepgoing panel), which the history records.
-func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin string) (clientHoldReport, int) {
+// expect, when set, is the controlDigest of the control record a person
+// reviewed: the hold is refused as observation_changed, inside the control
+// lock, when the record is no longer that one.
+func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, expect string) (clientHoldReport, int) {
 	r := clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}
 	reject := errors.New("client hold rejected")
 	fail := func(issue string) error { r.Issues = append(r.Issues, issue); return reject }
@@ -108,6 +111,9 @@ func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin s
 			var checked control.File
 			if readTransferRecord(entry.StateDir, control.FileName, &checked) != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("control_unavailable")
+			}
+			if expect != "" && controlDigest(checked) != expect {
+				return fail("observation_changed")
 			}
 			// Like ordinary pause/stop, this never claims ownership, rejects another
 			// caller merely for its identity, clears holds, or repairs transfer state.

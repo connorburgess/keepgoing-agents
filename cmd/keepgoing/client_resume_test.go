@@ -39,7 +39,7 @@ func newResumeFixture(t *testing.T) resumeFixture {
 	return resumeFixture{dir, entry, time.Now().UTC()}
 }
 func (f resumeFixture) call(op, ticket string, private bool, hook func() error) (clientResumeReport, int) {
-	return clientResume(context.Background(), f.dir, f.entry.ID, op, ticket, private, os.Getenv("BB_THREAD_ID"), "", func() time.Time { return f.at }, hook)
+	return clientResume(context.Background(), f.dir, f.entry.ID, op, ticket, private, os.Getenv("BB_THREAD_ID"), "", "", func() time.Time { return f.at }, hook)
 }
 func (f resumeFixture) prepare(t *testing.T) clientResumeReport {
 	t.Helper()
@@ -400,7 +400,7 @@ func TestClientResumeExpiryDuringConsumption(t *testing.T) {
 	path := filepath.Join(f.entry.StateDir, control.FileName)
 	before := resumeBytes(t, path)
 	at := f.at
-	r, c := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, os.Getenv("BB_THREAD_ID"), "", func() time.Time { return at }, func() error { at = at.Add(clientResumeTTL); return nil })
+	r, c := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, os.Getenv("BB_THREAD_ID"), "", "", func() time.Time { return at }, func() error { at = at.Add(clientResumeTTL); return nil })
 	if c != exitFailed || r.ControlSave != "not_attempted" || !bytes.Equal(before, resumeBytes(t, path)) {
 		t.Fatal(c, r)
 	}
@@ -423,10 +423,10 @@ func TestClientResumeCommandActsAsItsEnvironmentsThread(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &p); err != nil || p.Ticket == "" {
 		t.Fatal(err, out.String())
 	}
-	if r, code := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, "", "", time.Now, nil); code == 0 || r.ControlSave != "not_attempted" {
+	if r, code := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, "", "", "", time.Now, nil); code == 0 || r.ControlSave != "not_attempted" {
 		t.Fatalf("a ticket prepared for thr_example_owner was used with no caller: %d %+v", code, r)
 	}
-	if r, code := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, "thr_different", "", time.Now, nil); code == 0 || r.ControlSave != "not_attempted" {
+	if r, code := clientResume(context.Background(), f.dir, f.entry.ID, "resume", p.Ticket, false, "thr_different", "", "", time.Now, nil); code == 0 || r.ControlSave != "not_attempted" {
 		t.Fatalf("a ticket prepared for thr_example_owner was used by thr_different: %d %+v", code, r)
 	}
 	out.Reset()

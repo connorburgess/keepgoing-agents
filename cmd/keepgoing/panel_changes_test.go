@@ -312,17 +312,20 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 		}
 	}
 	key := dockKey(held.ID)
+	// The loop is owned by one thread and the server's environment names
+	// another. Acting as the environment's thread would be refused by the
+	// owner check; acting as no thread, as a terminal outside BB, is not.
+	if _, err := control.Update(held.StateDir, func(f *control.File) { f.Ownership = &control.Ownership{ThreadID: "thr_example_other", Generation: 1} }); err != nil {
+		t.Fatal(err)
+	}
+	if r, code := clientResume(context.Background(), d.directory, held.ID, "prepare-resume", "", false, "thr_example_owner", "", "", time.Now, nil); code == 0 || r.Ticket != "" {
+		t.Fatalf("the environment's thread could prepare a resume of another thread's loop: %+v", r)
+	}
 	p := c.prepare("session-a", key, "resume")
 	if p.Preview == nil {
 		t.Fatalf("%+v", p.Result)
 	}
-	form := c.forms[p.Preview.Form]
-	// The ticket was prepared for no thread: the environment's thread cannot use it.
-	if r, code := clientResume(context.Background(), d.directory, held.ID, "resume", form.ticket, false, "thr_example_owner", "", time.Now, nil); code == 0 || r.ControlSave != "not_attempted" {
-		t.Fatalf("the environment's thread used the panel's ticket: %+v", r)
-	}
-	// That refusal changed nothing, so the page's own confirmation still works.
-	if r := c.confirm("session-a", key, "resume", p.Preview.Form); r.Result == nil || r.Result.Outcome != "done" {
+	if r := c.confirm("session-a", key, "resume", p.Preview.Form); r.Result == nil || r.Result.Outcome != "done" || controlOf(t, held).AwaitingUser {
 		t.Fatalf("%+v", r.Result)
 	}
 	// A loop in the middle of a check: refused, offered again, nothing saved.
@@ -452,5 +455,178 @@ func TestPanelResumeOfASpentCapHoldStartsANewEpisode(t *testing.T) {
 	}
 	if ctl := controlOf(t, e); ctl.EpisodeHold || ctl.AwaitingUser {
 		t.Fatalf("%+v", ctl)
+	}
+}
+
+// A confirmation acts only on the control record the person reviewed: a
+// change made from a terminal in between makes all three actions "review
+// again", with nothing changed by the panel.
+func TestPanelConfirmRefusesAChangedRecord(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	now := time.Now()
+	c, err := newPanelChanges(context.Background(), d.directory, d, now, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := registry.Load(d.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]registry.Entry{}
+	for _, e := range f.Entries {
+		byName[e.Loop] = e
+	}
+	for _, x := range []struct{ loop, action, between string }{
+		{"docs-site-refresh", "stop", "pause"},
+		{"inventory-sync", "pause", "stop"},
+		{"mobile-onboarding", "resume", "stop"},
+	} {
+		e := byName[x.loop]
+		p := c.prepare("session-a", dockKey(e.ID), x.action)
+		if p.Preview == nil {
+			t.Fatalf("%s: %+v", x.loop, p.Result)
+		}
+		// From a terminal, between the review and the confirmation.
+		if r, code := applyClientHold(context.Background(), d.directory, e.ID, x.between); code != 0 || r.ControlSave != "confirmed" {
+			t.Fatalf("%s: %+v", x.loop, r)
+		}
+		before := controlOf(t, e)
+		r := c.confirm("session-a", dockKey(e.ID), x.action, p.Preview.Form)
+		if r.Result == nil || r.Result.Outcome != "review_again" || !r.Result.Retry {
+			t.Errorf("%s %s after a %s: %+v", x.loop, x.action, x.between, r.Result)
+		}
+		if after := controlOf(t, e); after != before {
+			t.Errorf("%s: the panel changed a record it had not reviewed: %+v -> %+v", x.loop, before, after)
+		}
+	}
+}
+
+// The resume review says everything the resume does, from the same function
+// the resume saves with: the holds, the note, the open question and a new
+// error episode, each only when it applies.
+func TestPanelResumeReviewSaysWhatResumeDoes(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	now := time.Now()
+	c, err := newPanelChanges(context.Background(), d.directory, d, now, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := registry.Load(d.directory)
+	var e registry.Entry
+	for _, x := range f.Entries {
+		if x.Loop == "billing-api-migration" {
+			e = x
+		}
+	}
+	review := func() string {
+		p := c.prepare("session-a", dockKey(e.ID), "resume")
+		if p.Preview == nil {
+			t.Fatalf("%+v", p.Result)
+		}
+		out := ""
+		for _, l := range p.Preview.Lines {
+			out += l.render(now) + "\n"
+		}
+		return out
+	}
+	episode, question := "resume starts a new error episode: those counts start over", "removes the record of the question that was open for a person"
+	if text := review(); strings.Contains(text, episode) || strings.Contains(text, question) || !strings.Contains(text, "Resume clears: waiting for you and the note left with the hold.") {
+		t.Errorf("plain hold:\n%s", text)
+	}
+	if _, err := control.Update(e.StateDir, func(f *control.File) {
+		f.EpisodeHold, f.Completed, f.OpenQuestion = true, true, &control.OpenQuestion{Note: "fictional question", At: now}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text := review()
+	if !strings.Contains(text, episode) || !strings.Contains(text, question) || !strings.Contains(text, "Resume clears: waiting for you, finished and the note left with the hold.") {
+		t.Errorf("spent-cap hold with an open question:\n%s", text)
+	}
+	// What the review lists is what the resume clears.
+	ctl := controlOf(t, e)
+	after := ctl
+	got := clearForResume(&after)
+	if got != (resumeEffect{AwaitingUser: true, Completed: true, Note: true, OpenQuestion: true, NewEpisode: true}) || after.AwaitingUser || after.Completed || after.Note != "" || after.OpenQuestion != nil || after.EpisodeHold {
+		t.Errorf("%+v %+v", got, after)
+	}
+}
+
+// Each check on a change request on its own: a request that fails only that
+// check is refused. (The table in TestPanelChangeRequestsPassEveryCheck
+// varies several headers at once for some cases.)
+func TestPanelChangeRequestChecksEachHoldAlone(t *testing.T) {
+	w := newPanelChangeWorld(t, true)
+	e := w.entry(t, "docs-site-refresh")
+	key := dockKey(e.ID)
+	other := w.entry(t, "inventory-sync")
+	foreign := "attacker.example:" + strconv.Itoa(w.rec.Port)
+	padded := `{"action":"pause"}` + strings.Repeat(" ", panelMaxBody)
+	for name, c := range map[string]struct {
+		body string
+		edit func(*http.Request)
+	}{
+		// The Origin matches the foreign Host, so only the Host check stands.
+		"a foreign Host with its own Origin": {`{"action":"pause"}`, func(r *http.Request) { r.Host = foreign; r.Header.Set("Origin", "http://"+foreign) }},
+		"localhost, though loopback": {`{"action":"pause"}`, func(r *http.Request) {
+			r.Host = "localhost:" + strconv.Itoa(w.rec.Port)
+			r.Header.Set("Origin", "http://"+r.Host)
+		}},
+		"Sec-Fetch-Dest alone":         {`{"action":"pause"}`, func(r *http.Request) { r.Header.Set("Sec-Fetch-Dest", "document") }},
+		"Sec-Fetch-Mode alone":         {`{"action":"pause"}`, func(r *http.Request) { r.Header.Set("Sec-Fetch-Mode", "navigate") }},
+		"a valid body over 4 KiB":      {padded, nil},
+		"a body sent in chunks":        {`{"action":"pause"}`, func(r *http.Request) { r.ContentLength = -1; r.TransferEncoding = []string{"chunked"} }},
+		"the key in another case":      {`{"Action":"pause"}`, nil},
+		"a second key in another case": {`{"action":"pause","Action":"stop"}`, nil},
+		"the key twice":                {`{"action":"pause","action":"stop"}`, nil},
+	} {
+		resp, reply := w.post(t, key, "prepare", w.form, c.body, c.edit)
+		if resp.StatusCode == http.StatusOK || reply.Preview != nil {
+			t.Errorf("%s: %d %+v", name, resp.StatusCode, reply)
+		}
+	}
+	// A confirmation value for one loop does not confirm on another.
+	_, p := w.post(t, key, "prepare", w.form, `{"action":"pause"}`, nil)
+	if p.Preview == nil {
+		t.Fatal("no review")
+	}
+	if _, r := w.post(t, dockKey(other.ID), "confirm", p.Preview.Form, `{"action":"pause"}`, nil); r.Result == nil || r.Result.Outcome != "review_again" {
+		t.Errorf("another loop's key: %+v", r)
+	}
+	if controlOf(t, e).Paused || controlOf(t, other).Paused {
+		t.Fatal("a confirmation for one loop changed a loop")
+	}
+	// The exposure is said where changes are turned on.
+	_, body := dockRequest(t, http.MethodGet, w.page+dockServerPath, withCookie(w.cookie))
+	if !strings.Contains(body, panelExposure) {
+		t.Errorf("footer: %s", body)
+	}
+	var out, errs bytes.Buffer
+	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"--allow-changes", "--no-open", "--panel-directory", w.dir, "--directory", filepath.Join(w.root, "registry")}); code != exitOK || !strings.Contains(out.String(), panelExposure) {
+		t.Errorf("%d %s", code, out.String())
+	}
+}
+
+// A review reads the control record under its lock: while a check or a
+// command holds it, the review is refused as busy, with nothing prepared.
+func TestPanelReviewReadsTheRecordUnderItsLock(t *testing.T) {
+	d, _ := dockFixtureReader(t)
+	now := time.Now()
+	c, err := newPanelChanges(context.Background(), d.directory, d, now, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := registry.Load(d.directory)
+	e := f.Entries[0]
+	lk, err := lock.AcquireNamed(e.StateDir, lock.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.prepare("session-a", dockKey(e.ID), "pause")
+	_ = lk.Release()
+	if r.Preview != nil || r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "keepgoing is in the middle of a check on this loop. Nothing was changed." || len(c.forms) != 0 {
+		t.Fatalf("%+v %+v", r.Preview, r.Result)
+	}
+	if r := c.prepare("session-a", dockKey(e.ID), "pause"); r.Preview == nil {
+		t.Fatalf("after the lock is released: %+v", r.Result)
 	}
 }

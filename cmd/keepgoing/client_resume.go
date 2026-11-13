@@ -71,7 +71,7 @@ func clientResumeCommand(e env, args []string) int {
 		return exitUsage
 	}
 	// The CLI acts as the BB thread it runs in, or as nobody outside BB.
-	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, os.Getenv("BB_THREAD_ID"), "", time.Now, nil)
+	r, code := clientResume(e.ctx, *dir, *id, args[0], *ticket, *private, os.Getenv("BB_THREAD_ID"), "", "", time.Now, nil)
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(r) != nil {
 			return exitFailed
@@ -90,6 +90,36 @@ func clientResumeCommand(e env, args []string) int {
 		}
 	}
 	return code
+}
+
+// resumeEffect is what a registered resume does to a control record: each
+// hold it clears, the note, the recorded open question, and whether it starts
+// a new error episode (when the hold was raised because a per-episode
+// allowance was spent).
+type resumeEffect struct {
+	Paused, Stop, AwaitingUser, Completed, Note, OpenQuestion, NewEpisode bool
+}
+
+// clearForResume applies a registered resume to f and says what it changed.
+// client resume saves its result; the panel's review runs it on a copy, so
+// the review says exactly what the save will do.
+func clearForResume(f *control.File) resumeEffect {
+	e := resumeEffect{Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed,
+		Note: f.Note != "", OpenQuestion: f.OpenQuestion != nil, NewEpisode: f.EpisodeHold}
+	f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+	f.Note, f.EpisodeHold, f.OpenQuestion = "", false, nil
+	return e
+}
+
+// controlDigest identifies one saved control record, so a change reviewed
+// against it can be refused when the record has changed since.
+func controlDigest(f control.File) string {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return "unavailable"
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
 
 func loadClientTicket(dir string) (clientResumeTicket, error) {
@@ -170,10 +200,13 @@ func clientResumeBinding(entry registry.Entry, cfg *config.Config, caller string
 }
 
 // caller is the BB thread the request acts as, "" for none; the ticket is
-// bound to it. origin is where the change comes from, as in updateControlFrom. afterConsume is nil in production; tests simulate process exit
+// bound to it. origin is where the change comes from, as in updateControlFrom.
+// expect, when set, is the controlDigest of the control record a person
+// reviewed; the resume is refused as observation_changed if the record is not
+// that one when it is saved. afterConsume is nil in production; tests simulate process exit
 // at the durable consume-before-save boundary. There is deliberately no
 // automatic recovery.
-func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, caller, origin string, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
+func clientResume(ctx context.Context, directory, id, operation, ticket string, private bool, caller, origin, expect string, now func() time.Time, afterConsume func() error) (clientResumeReport, int) {
 	r := clientResumeReport{clientHoldReport: clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}}
 	reject := errors.New("client resume rejected")
 	fail := func(code string) error { r.Issues = append(r.Issues, code); return reject }
@@ -254,6 +287,9 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			if err != nil || !reflect.DeepEqual(checked, *f) {
 				return fail("resume_evidence_unavailable")
 			}
+			if expect != "" && controlDigest(checked) != expect {
+				return fail("observation_changed")
+			}
 			t, err := loadClientTicket(entry.StateDir)
 			at := now().UTC()
 			if err != nil || t.ID != ticket || t.Consumed || at.Before(t.IssuedAt) || !at.Before(t.ExpiresAt) {
@@ -288,9 +324,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			if resumeEpisode(entry.StateDir, f.EpisodeHold, at) != nil {
 				return fail("new_episode_unconfirmed")
 			}
-			newEpisode = f.EpisodeHold
-			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
-			f.Note, f.EpisodeHold, f.OpenQuestion = "", false, nil
+			newEpisode = clearForResume(f).NewEpisode
 			r.ControlSave = "unconfirmed"
 			return nil
 		}, func(_ control.File, c *incident.ControlChange) {

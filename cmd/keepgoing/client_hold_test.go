@@ -236,7 +236,7 @@ func TestClientHoldFromThePanelIsRecordedAsSuch(t *testing.T) {
 		// Already stopped: the save is recorded, and nothing changed to word.
 		{"panel", "stop", "panel_stop", "A control change was saved; no hold changed"},
 	} {
-		r, code := applyClientHoldFrom(context.Background(), dir, entry.ID, c.op, c.origin)
+		r, code := applyClientHoldFrom(context.Background(), dir, entry.ID, c.op, c.origin, "")
 		if code != 0 || r.ControlSave != "confirmed" {
 			t.Fatalf("%+v: %d %+v", c, code, r)
 		}

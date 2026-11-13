@@ -581,7 +581,10 @@
       method: "POST", cache: "no-store", credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-Keepgoing-Form": form }, body: JSON.stringify(body)
     })
-      .then(function (r) { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+      .then(function (r) {
+        if (!r.ok) { var e = new Error("status " + r.status); e.status = r.status; throw e; }
+        return r.json();
+      })
       .then(function (d) { if (!d || d.schemaVersion !== 1) throw new Error("schema"); return d; });
   }
   function focusOn(name) {
@@ -610,8 +613,12 @@
     render(false, true);
     post("api/v1/loops/" + c.key + "/confirm", p.form, { action: p.action })
       .then(function (d) { state.change = { key: c.key, action: c.action, result: d.result }; })
-      // No reply: whether it was saved is not known, and it is not sent again.
-      .catch(function () { state.change = { key: c.key, action: c.action, result: { outcome: "uncertain", text: p.lost } }; })
+      // A refusal (4xx) comes before anything is done. Anything else, or no
+      // reply: whether it was saved is not known, and it is not sent again.
+      .catch(function (err) {
+        var refused = err && err.status >= 400 && err.status < 500;
+        state.change = { key: c.key, action: c.action, result: refused ? { outcome: "refused", retry: true, text: p.refused } : { outcome: "uncertain", text: p.lost } };
+      })
       .then(function () {
         render(false, true);
         focusOn("change-result");

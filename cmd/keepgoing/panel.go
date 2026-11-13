@@ -611,7 +611,7 @@ func panelCommand(e env, args []string) int {
 	}
 	mode := ""
 	if rec.Changes {
-		mode = " Changes are allowed from the page: pause, stop and resume, each after a review. keepgoing panel stop turns them off."
+		mode = " Changes are allowed from the page: pause, stop and resume, each after a review. " + panelExposure + " keepgoing panel stop turns them off."
 	}
 	if browser == nil {
 		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.%s\n", opening, mode)
@@ -704,7 +704,7 @@ func panelStatusCommand(e env, args []string) int {
 			fmt.Fprintf(e.stdout, "It stops by itself after %s without a page reading from it: in about %s if nothing does.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
 		}
 		if st.ChangesAllowed {
-			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, each after a review. keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second))
+			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
 		} else {
 			fmt.Fprintln(e.stdout, "Read-only: started without --allow-changes.")
 		}
