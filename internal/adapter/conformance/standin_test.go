@@ -21,6 +21,8 @@ import (
 //	situation   what the stand-in should do next
 //	sent.jsonl  every prompt it received
 //	stops       one line per stop command it received
+//	live        "begin" and "finish" lines of agents that run one turn each
+//	quit        tells an agent that is waiting to end
 
 const (
 	envPart = "CONFORMANCE_STANDIN"
@@ -45,6 +47,11 @@ func situationOf(dir string) Situation {
 }
 
 func record(dir string, s Sent) {
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, Token) {
+			s.InEnv = true
+		}
+	}
 	f, err := os.OpenFile(filepath.Join(dir, "sent.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		os.Exit(96)
@@ -52,6 +59,22 @@ func record(dir string, s Sent) {
 	defer f.Close()
 	b, _ := json.Marshal(s)
 	f.Write(append(b, '\n'))
+}
+
+func mark(dir, line string) {
+	if f, err := os.OpenFile(filepath.Join(dir, "live"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+		f.WriteString(line + "\n")
+		f.Close()
+	}
+}
+
+// work is an agent that keeps working until it is stopped or told to quit.
+func work(dir string) {
+	for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(dir, "quit")); err == nil {
+			return
+		}
+	}
 }
 
 func filler(n int) {
@@ -71,10 +94,18 @@ func standIn(part, dir string, args []string) int {
 		return 0
 	case "process":
 		return standInProcess(dir, situation, args)
-	case "claude":
-		return standInClaude(dir, situation, args)
-	case "codex":
-		return standInCodex(dir, situation, args)
+	case "claude", "codex":
+		if part == "codex" && len(args) > 0 && args[0] == "app-server" {
+			return codexAppServer(situation)
+		}
+		mark(dir, "begin")
+		play := standInClaude
+		if part == "codex" {
+			play = standInCodex
+		}
+		code := play(dir, situation, args)
+		mark(dir, "finish")
+		return code
 	}
 	return 97
 }
@@ -109,6 +140,14 @@ func standInProcess(dir string, situation Situation, args []string) int {
 		fmt.Println(`{"state":"error","errorClass":"You have hit your usage limit, try again later"}`)
 	case Garbage:
 		fmt.Println("the agent is doing fine, probably idle")
+	case ExitNonZero:
+		fmt.Println(`{"state":"idle"}`)
+		return 3
+	case FailedUnmapped:
+		fmt.Println(`{"state":"error","errorClass":"E_FICTIONAL_17"}`)
+	case FailedStderr:
+		fmt.Println(`{"state":"error"}`)
+		fmt.Fprintln(os.Stderr, "rate limit exceeded (429), try again later")
 	case Hanging:
 		time.Sleep(10 * time.Minute)
 	case Oversized:
@@ -146,8 +185,17 @@ func standInClaude(dir string, situation Situation, args []string) int {
 		return 1
 	case Garbage:
 		fmt.Println("All done! The task is complete.")
-	case Active, Hanging:
-		time.Sleep(10 * time.Minute)
+	case ExitNonZero:
+		fmt.Println(ok)
+		return 1
+	case FailedUnmapped:
+		fmt.Println(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"` + standInSession + `","api_error_status":418}`)
+		return 1
+	case FailedStderr:
+		fmt.Fprintln(os.Stderr, "rate limit exceeded (429), try again later")
+		return 1
+	case Active, Hanging, Crashed:
+		work(dir)
 	case Oversized:
 		filler(oversize)
 		fmt.Println(ok)
@@ -155,11 +203,41 @@ func standInClaude(dir string, situation Situation, args []string) int {
 	return 0
 }
 
-// standInCodex plays `codex exec --json`, and has no app-server.
-func standInCodex(dir string, situation Situation, args []string) int {
-	if len(args) > 0 && args[0] == "app-server" {
-		return 1
+// codexLimitStream is the shape of a real Codex usage-limit failure, as
+// recorded in internal/adapter/runner's fixtures: the limit is only prose.
+// What tells a limit from any other failure is the app-server's answer.
+func codexLimitStream() {
+	fmt.Println(`{"type":"thread.started","thread_id":"` + standInSession + `"}`)
+	fmt.Println(`{"type":"turn.started"}`)
+	fmt.Println(`{"type":"error","message":"Example usage limit message, try again later."}`)
+	fmt.Println(`{"type":"turn.failed","error":{"message":"Example usage limit message, try again later."}}`)
+}
+
+// codexAppServer answers the initialize handshake and account/rateLimits/read
+// over stdio. Only in the coded-failure situation does it report a limit.
+func codexAppServer(situation Situation) int {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var m struct {
+			ID *int `json:"id"`
+		}
+		if json.Unmarshal(sc.Bytes(), &m) != nil || m.ID == nil {
+			continue
+		}
+		switch {
+		case *m.ID == 1:
+			fmt.Println(`{"id":1,"result":{"userAgent":"stand-in"}}`)
+		case *m.ID == 2 && situation == FailedCoded:
+			fmt.Println(`{"id":2,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1794393286}}}}`)
+		case *m.ID == 2:
+			fmt.Println(`{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1794393286}}}}`)
+		}
 	}
+	return 0
+}
+
+// standInCodex plays `codex exec --json`.
+func standInCodex(dir string, situation Situation, args []string) int {
 	session := ""
 	if len(args) > 2 && args[1] == "resume" {
 		session = args[len(args)-2]
@@ -171,18 +249,25 @@ func standInCodex(dir string, situation Situation, args []string) int {
 	case Idle:
 		fmt.Println(started)
 		fmt.Println(`{"type":"turn.completed","usage":{}}`)
-	case FailedCoded:
-		fmt.Println(started)
-		fmt.Println(`{"type":"turn.failed","error":{"code":"usage_limit_reached"}}`)
+	case FailedCoded, FailedProse:
+		codexLimitStream()
 		return 1
-	case FailedProse:
+	case FailedUnmapped:
 		fmt.Println(started)
-		fmt.Println(`{"type":"turn.failed","error":{"message":"You have hit your usage limit"}}`)
+		fmt.Println(`{"type":"turn.failed","error":{"code":"fictional_new_code","message":"Example failure."}}`)
+		return 1
+	case FailedStderr:
+		fmt.Println(started)
+		fmt.Fprintln(os.Stderr, "rate limit exceeded (429), try again later")
+		return 1
+	case ExitNonZero:
+		fmt.Println(started)
+		fmt.Println(`{"type":"turn.completed","usage":{}}`)
 		return 1
 	case Garbage:
 		fmt.Println("All done! The task is complete.")
-	case Active, Hanging:
-		time.Sleep(10 * time.Minute)
+	case Active, Hanging, Crashed:
+		work(dir)
 	case Oversized:
 		fmt.Println(started)
 		filler(oversize)

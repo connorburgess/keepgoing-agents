@@ -15,7 +15,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume, transfer, control, fallbacks, report, adapter check, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
@@ -25,6 +25,7 @@ internal/adapter/bb         BB threads over the bb CLI's JSON
 internal/adapter/process    any session described by three commands
 internal/adapter/runner     headless turns, run detached; one Spec per agent (Claude Code, Codex)
 internal/adapter/factory    builds the adapter for an agent definition
+internal/adapter/conformance  the adapter contract as cases that run against any adapter; used by the test suite and by `adapter check`, which runs only the case that reads; see adapters.md
 internal/probe              one tiny real request to confirm a candidate works
 internal/health             probe evidence and the redundancy rule
 internal/handoff            the brief a fallback receives

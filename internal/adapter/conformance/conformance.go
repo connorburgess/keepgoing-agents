@@ -4,8 +4,8 @@
 // adapter. Each case states its contract in plain words and fails with a
 // message that says what to change.
 //
-// A Subject without a Rig is a real agent. Only the cases that read status
-// run against it, plus the ones that send a prompt when Options.Send allows.
+// A Subject without a Rig is a real agent. Only the case that reads status
+// runs against it. Nothing in this package sends a prompt to a real agent.
 package conformance
 
 import (
@@ -15,8 +15,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
@@ -35,13 +37,26 @@ const (
 	Garbage     Situation = "garbage"      // output that is not the agent's format
 	Hanging     Situation = "hanging"      // a command that never returns
 	Oversized   Situation = "oversized"    // far more output than any real status
+	// ExitNonZero is output that looks healthy from a command that failed.
+	ExitNonZero Situation = "exit_nonzero"
+	// Crashed is a turn that ended without leaving any result.
+	Crashed Situation = "crashed"
+	// FailedUnmapped is a failure whose machine-readable code maps to no class.
+	FailedUnmapped Situation = "failed_unmapped"
+	// FailedStderr is a failure described only on standard error.
+	FailedStderr Situation = "failed_stderr"
 )
+
+// Token is in every prompt a case sends, so a stand-in can look for it.
+const Token = "conformance-token-7f3a"
 
 // Sent is one prompt a stand-in received.
 type Sent struct {
 	Prompt  string   `json:"prompt"`
 	Argv    []string `json:"argv"`
 	Session string   `json:"session,omitempty"` // the session it was asked to resume
+	// InEnv is true when the prompt was in the stand-in's environment.
+	InEnv bool `json:"inEnv,omitempty"`
 }
 
 // Rig drives a stand-in agent. Stage does whatever it takes for this kind of
@@ -69,6 +84,12 @@ type ForeignWork interface {
 	StartForeign() (alive func() bool, end func(), err error)
 }
 
+// AgentCounter is implemented by a rig whose adapter starts the agent itself,
+// one process per turn. Running is how many of them are alive.
+type AgentCounter interface {
+	Running() (int, error)
+}
+
 // Declared is what the adapter says about itself.
 type Declared struct {
 	ExactResume       bool `json:"exactResume"`
@@ -90,6 +111,9 @@ type Subject struct {
 	Protected []string
 	// CallLimit is the longest one status read may take. Zero means 30s.
 	CallLimit time.Duration
+	// StateDir is the loop's state directory, when the subject has one. Cases
+	// that look at what the adapter saved are skipped without it.
+	StateDir string
 }
 
 // Outcome of one case.
@@ -109,18 +133,15 @@ type Result struct {
 	Detail   string  `json:"detail,omitempty"`
 }
 
-// Options select what may run.
+// Options select how cases run.
 type Options struct {
-	// Send allows cases that send a prompt to a real agent. Stand-ins are
-	// always sent to.
-	Send bool
 	// Fresh, when set, returns a new subject with empty state for each case,
 	// so one case cannot affect another. A real agent has none.
 	Fresh func() (Subject, error)
 }
 
-// CheckPrompt is what a send case sends. It is plain text with no task.
-const CheckPrompt = "keepgoing adapter check: reply OK and stop. conformance-token-7f3a"
+// CheckPrompt is what a send case sends to a stand-in. It carries no task.
+const CheckPrompt = "keepgoing adapter check: reply OK and stop. " + Token
 
 type run struct {
 	ctx context.Context
@@ -148,18 +169,21 @@ type note string
 func (n note) Error() string { return string(n) }
 
 var cases = []caseDef{
-	{id: "one-state", contract: "A status read returns exactly one of idle, active, error or unknown, inside the call limit. An error carries rate_limit, auth, overloaded or network only when something structured says so, and unknown otherwise.",
+	{id: "one-state", contract: "A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries rate_limit, auth, overloaded or network only when something structured says so, and unknown otherwise.",
 		run: caseOneState},
 	{id: "known-situations", contract: "An idle agent reads as idle and a working agent as active.", needsRig: true, needs: []Situation{Idle, Active}, run: caseKnown},
 	{id: "never-guess", contract: "Output that is not the agent's status format reads as unknown, or as an error of class unknown. It is never read as idle, active or a specific error class.", needsRig: true, needs: []Situation{Garbage}, run: caseGarbage},
 	{id: "waiting-on-person", contract: "An agent that is blocked on a person is reported as awaiting input, so the supervisor holds and does not send to it.", needsRig: true, needs: []Situation{Waiting}, run: caseWaiting},
-	{id: "structured-errors-only", contract: "A failure is classified from a machine-readable code. A failure whose only evidence is prose, even prose that names a limit, is unknown, so it can never cause a handoff.", needsRig: true, needs: []Situation{FailedCoded, FailedProse}, run: caseErrors},
-	{id: "send-once", contract: "One send delivers the prompt to the agent exactly once, unchanged, on standard input or in a private file. The prompt never appears in a command's arguments, and reading status again or restarting the supervisor does not deliver it again.", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseSendOnce},
-	{id: "exact-resume", contract: "After the supervisor is stopped and started, the next send continues exactly the session the agent reported, never a new one and never \"the most recent\".", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseResume},
+	{id: "structured-errors-only", contract: "A failure is classified from a machine-readable code. A failure whose only evidence is prose, on standard output or standard error, even prose that names a limit, is unknown, and so is a code that maps to no class. Neither can ever cause a handoff.", needsRig: true, needs: []Situation{FailedCoded, FailedProse}, run: caseErrors},
+	{id: "failed-is-not-healthy", contract: "A command that exits with a failure, or a turn that ends without leaving a result, is a failure of class unknown, whatever it printed. It is never read as idle or working, and never given a specific class.", needsRig: true, run: caseNotHealthy},
+	{id: "send-once", contract: "One send delivers the prompt to the agent exactly once, unchanged, on standard input or in a file only the owner can read. The prompt never appears in a command's arguments or environment, and reading status again or restarting the supervisor does not deliver it again.", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseSendOnce},
+	{id: "send-while-working", contract: "A send while the agent is working is refused or reaches that same agent. It never starts a second agent beside the first.", needsRig: true, needs: []Situation{Active}, sends: true, run: caseSendWorking},
+	{id: "observe-during-send", contract: "Status can be read while a send is in progress: every read is one valid state, and the prompt is still delivered exactly once.", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseObserveDuringSend},
+	{id: "state-unwritable", contract: "When the state directory cannot be written, a send either fails and says so or still delivers the prompt once. It never reports success for a prompt that did not arrive.", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseUnwritable},
+	{id: "exact-resume", contract: "The session the agent reported is saved in the state directory, and after the supervisor is stopped and started the next send continues exactly that session, never a new one and never \"the most recent\".", needsRig: true, needs: []Situation{Idle}, sends: true, run: caseResume},
 	{id: "hang-is-cut", contract: "A status read returns inside the call limit even when the agent's command never returns, and does not report the agent as idle or as failed with a specific class.", needsRig: true, needs: []Situation{Hanging}, run: caseHang},
 	{id: "stop-own-work", contract: "Stop ends a turn this supervisor started, and leaves alone anything it did not start.", needsRig: true, needs: []Situation{Active}, run: caseStop},
 	{id: "bounded-output", contract: "Output far larger than any real status is not read as healthy: the read ends inside the call limit and reports unknown or an error of class unknown.", needsRig: true, needs: []Situation{Oversized}, run: caseBounded},
-	{id: "live-send", contract: "A prompt sent to the real agent is accepted, and the agent's status afterwards is one valid state.", sends: true, run: caseLiveSend},
 }
 
 // Cases lists every case's ID and contract, in order.
@@ -173,7 +197,7 @@ func Cases() []Result {
 }
 
 const (
-	contractOutside  = "Nothing outside the loop's state directory is created, changed or removed."
+	contractOutside  = "Nothing is created, changed or removed in the project, the home directory or the temporary directory: everything the adapter writes is under the loop's state directory."
 	contractDeclared = "What the adapter declares about itself matches what it does: every capability it declares passed its case."
 )
 
@@ -185,13 +209,8 @@ func Run(ctx context.Context, s Subject, opt Options) []Result {
 		res := Result{ID: c.id, Contract: c.contract}
 		subject := s
 		reason := ""
-		switch {
-		case c.id == "live-send" && s.Rig != nil:
-			reason = "covered by send-once with a stand-in"
-		case c.needsRig && s.Rig == nil:
+		if (c.needsRig || c.sends) && s.Rig == nil {
 			reason = "needs a stand-in agent; not run against a real one"
-		case c.sends && s.Rig == nil && !opt.Send:
-			reason = "sends a prompt; allow it explicitly to run it"
 		}
 		if reason == "" && s.Rig != nil {
 			for _, need := range c.needs {
@@ -217,7 +236,10 @@ func Run(ctx context.Context, s Subject, opt Options) []Result {
 		before := snapshot(subject.Protected)
 		a, err := subject.New()
 		if err != nil {
-			res.Outcome, res.Detail = Fail, "the adapter could not be built: "+err.Error()
+			res.Outcome, res.Detail = Fail, "the adapter could not be built"
+			if subject.Rig != nil { // a real agent's error may quote a command or a path
+				res.Detail += ": " + err.Error()
+			}
 		} else {
 			err = c.run(&run{ctx: ctx, s: subject, a: a, opt: opt})
 			var s skip
@@ -329,9 +351,15 @@ func knownClass(c decide.ErrorClass) bool {
 // valid checks that an observation is one state with a consistent class.
 func valid(obs decide.Observation) error {
 	switch obs.State {
-	case decide.Idle, decide.Active:
+	case decide.Idle, decide.Pending, decide.Stopping:
 		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone {
 			return fmt.Errorf("state %q carries error class %q. Report an error class only with state error.", obs.State, obs.ErrorClass)
+		}
+	case decide.Active:
+		// A session that is working through its own retry of a failed request
+		// is active and names what it is retrying.
+		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone && !knownClass(obs.ErrorClass) {
+			return fmt.Errorf("state active carries class %q. Use rate_limit, auth, overloaded, network or unknown.", obs.ErrorClass)
 		}
 	case decide.Unknown:
 		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone && obs.ErrorClass != decide.ErrUnknown {
@@ -342,7 +370,7 @@ func valid(obs decide.Observation) error {
 			return fmt.Errorf("state error carries class %q. Use rate_limit, auth, overloaded, network or unknown.", obs.ErrorClass)
 		}
 	default:
-		return fmt.Errorf("state %q is not one of idle, active, error, unknown.", obs.State)
+		return fmt.Errorf("state %q is not one of idle, active, pending, stopping, error, unknown.", obs.State)
 	}
 	return nil
 }
@@ -446,6 +474,45 @@ func caseErrors(r *run) error {
 	if obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
 		return fmt.Errorf("a failure described only in prose was read as state %q, class %q; want error, class unknown. Never match words in the agent's output: a sentence that mentions a limit is not evidence of one.", obs.State, obs.ErrorClass)
 	}
+	for situation, what := range map[Situation]string{
+		FailedUnmapped: "a failure whose code maps to no class was read as state %q, class %q; want error, class unknown. Map only the codes you know; every other code is unknown.",
+		FailedStderr:   "a failure described only on standard error was read as state %q, class %q; want error, class unknown. Never read standard error to classify a failure.",
+	} {
+		if !r.s.Rig.Supports(situation) {
+			continue
+		}
+		obs, err := r.staged(situation)
+		if err != nil {
+			return err
+		}
+		if obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
+			return fmt.Errorf(what, obs.State, obs.ErrorClass)
+		}
+	}
+	return nil
+}
+
+func caseNotHealthy(r *run) error {
+	ran := false
+	for situation, what := range map[Situation]string{
+		ExitNonZero: "output that looks healthy from a command that exited with a failure",
+		Crashed:     "a turn that ended without leaving a result",
+	} {
+		if !r.s.Rig.Supports(situation) {
+			continue
+		}
+		ran = true
+		obs, err := r.staged(situation)
+		if err != nil {
+			return err
+		}
+		if obs.State != decide.Error || obs.ErrorClass != decide.ErrUnknown {
+			return fmt.Errorf("%s was read as state %q, class %q; want error, class unknown. Check the exit code before the output, and treat a turn with no result as failed.", what, obs.State, obs.ErrorClass)
+		}
+	}
+	if !ran {
+		return skip("this adapter's agent can neither exit with a failure nor end without a result")
+	}
 	return nil
 }
 
@@ -491,9 +558,15 @@ func caseSendOnce(r *run) error {
 		return fmt.Errorf("the agent received %q, not the prompt that was sent. Pass the prompt through unchanged.", got.Prompt)
 	}
 	for _, arg := range got.Argv {
-		if strings.Contains(arg, "conformance-token-7f3a") {
+		if strings.Contains(arg, Token) {
 			return errors.New("the prompt appeared in the command's arguments, where other users of the machine can read it. Pass it on standard input or in a private file.")
 		}
+	}
+	if got.InEnv {
+		return errors.New("the prompt appeared in the agent's environment, which child processes inherit and other tools print. Pass it on standard input or in a private file.")
+	}
+	if open := r.openPromptFile(); open != "" {
+		return fmt.Errorf("the prompt was saved in %s, which other users of the machine can read. Create every file that holds a prompt with mode 0600.", open)
 	}
 	count := func() (int, error) {
 		sent, err := r.sent()
@@ -526,6 +599,203 @@ func caseSendOnce(r *run) error {
 	return nil
 }
 
+// openPromptFile names a file under the state directory that holds the check
+// prompt and that someone other than its owner can read, or "".
+func (r *run) openPromptFile() string {
+	if r.s.StateDir == "" || runtime.GOOS == "windows" {
+		return ""
+	}
+	found := ""
+	_ = filepath.WalkDir(r.s.StateDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || found != "" || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Mode().Perm()&0o077 == 0 || info.Size() > 1<<20 {
+			return nil
+		}
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), Token) {
+			found, _ = filepath.Rel(r.s.StateDir, path)
+		}
+		return nil
+	})
+	return found
+}
+
+// savedUnder reports whether some file under the state directory holds text.
+func savedUnder(dir, text string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || found || !d.Type().IsRegular() {
+			return nil
+		}
+		if info, err := d.Info(); err != nil || info.Size() > 1<<20 {
+			return nil
+		}
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), text) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+func caseSendWorking(r *run) error {
+	counter, counts := r.s.Rig.(AgentCounter)
+	if err := r.s.Rig.Stage(r.ctx, r.a, Active); err != nil {
+		return fmt.Errorf("the stand-in could not be put in the %q situation: %v", Active, err)
+	}
+	defer func() { _ = r.a.Stop(r.ctx) }()
+	var err error
+	running := 0
+	if counts {
+		// Wait for the working agent to have begun.
+		for deadline := time.Now().Add(20 * time.Second); running < 1; time.Sleep(10 * time.Millisecond) {
+			if running, err = counter.Running(); err != nil {
+				return err
+			}
+			if time.Now().After(deadline) {
+				return errors.New("the stand-in agent did not begin working")
+			}
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // the working agent has recorded its own prompt
+	before, err := r.sent()
+	if err != nil {
+		return err
+	}
+	sendErr := r.a.Send(r.ctx, CheckPrompt, adapter.ModeAuto)
+	time.Sleep(300 * time.Millisecond) // long enough for a second agent to begin
+	after, err := r.sent()
+	if err != nil {
+		return err
+	}
+	delivered := len(after) - len(before)
+	if counts {
+		now, err := counter.Running()
+		if err != nil {
+			return err
+		}
+		if now > running || delivered > 0 {
+			return fmt.Errorf("a send while the agent was working started another agent beside it (%d running before, %d after). Refuse a send while a turn this supervisor started is still running.", running, now)
+		}
+		if sendErr == nil {
+			return errors.New("a send while the agent was working reported success, but nothing was delivered. Return an error when a prompt is not sent.")
+		}
+		return nil
+	}
+	if delivered > 1 || (sendErr == nil && delivered != 1) {
+		return fmt.Errorf("a send while the agent was working was delivered %d times and reported error %v. Deliver it once or refuse it.", delivered, sendErr)
+	}
+	return nil
+}
+
+func caseObserveDuringSend(r *run) error {
+	if err := r.s.Rig.Stage(r.ctx, r.a, Idle); err != nil {
+		return err
+	}
+	before, err := r.sent()
+	if err != nil {
+		return err
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var bad error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// A read may fail while the turn's files are being replaced; what
+			// it returns must still be one valid state.
+			obs, _ := r.a.Observe(r.ctx)
+			if err := valid(obs); err != nil && bad == nil {
+				bad = fmt.Errorf("a status read during a send was not one valid state: %v", err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	sendErr := r.a.Send(r.ctx, CheckPrompt, adapter.ModeAuto)
+	settleErr := r.s.Rig.Settle(r.ctx, r.a)
+	close(stop)
+	wg.Wait()
+	switch {
+	case sendErr != nil:
+		return fmt.Errorf("the send was refused while status was being read: %v", sendErr)
+	case settleErr != nil:
+		return settleErr
+	case bad != nil:
+		return bad
+	}
+	after, err := r.sent()
+	if err != nil {
+		return err
+	}
+	if got := len(after) - len(before); got != 1 {
+		return fmt.Errorf("one send made while status was being read reached the agent %d times. Deliver each prompt exactly once.", got)
+	}
+	return nil
+}
+
+func caseUnwritable(r *run) error {
+	if r.s.StateDir == "" {
+		return skip("the subject names no state directory")
+	}
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return skip("a directory cannot be made unwritable for this user on this platform")
+	}
+	if err := r.s.Rig.Stage(r.ctx, r.a, Idle); err != nil {
+		return err
+	}
+	before, err := r.sent()
+	if err != nil {
+		return err
+	}
+	var dirs []string
+	_ = filepath.WalkDir(r.s.StateDir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	for _, dir := range dirs {
+		_ = os.Chmod(dir, 0o500)
+	}
+	sendErr := r.a.Send(r.ctx, CheckPrompt, adapter.ModeAuto)
+	for _, dir := range dirs {
+		_ = os.Chmod(dir, 0o700)
+	}
+	if err := r.s.Rig.Settle(r.ctx, r.a); err != nil {
+		return err
+	}
+	// A send that reported success is given time to arrive.
+	delivered := 0
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		after, err := r.sent()
+		if err != nil {
+			return err
+		}
+		if delivered = len(after) - len(before); sendErr != nil || delivered >= 1 || time.Now().After(deadline) {
+			break
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // long enough for a duplicate to show
+	if after, err := r.sent(); err == nil {
+		delivered = len(after) - len(before)
+	}
+	switch {
+	case sendErr == nil && delivered != 1:
+		return fmt.Errorf("with the state directory unwritable, the send reported success but the agent received the prompt %d times. Return the error when the prompt or its record cannot be written.", delivered)
+	case delivered > 1:
+		return fmt.Errorf("with the state directory unwritable, the prompt was delivered %d times.", delivered)
+	}
+	return nil
+}
+
 func caseResume(r *run) error {
 	if !r.s.Declared.ExactResume {
 		return skip("the adapter does not declare exact resume; the agent or its wrapper owns which session continues")
@@ -537,7 +807,13 @@ func caseResume(r *run) error {
 	if err != nil {
 		return err
 	}
+	if _, _, slow := r.observe(); slow != nil {
+		return slow
+	}
 	// A stopped and started supervisor has only the state directory.
+	if want := r.s.Rig.ReportedSession(); r.s.StateDir != "" && !savedUnder(r.s.StateDir, want) {
+		return errors.New("the session the agent reported is not saved in the state directory, so a supervisor that is stopped and started could not resume it. Save it in a file there as soon as it is reported.")
+	}
 	again, err := r.s.New()
 	if err != nil {
 		return fmt.Errorf("the adapter could not be rebuilt: %v", err)
@@ -622,22 +898,6 @@ func caseBounded(r *run) error {
 		return err
 	}
 	return unknownOnly(obs, "output far larger than any real status")
-}
-
-// caseLiveSend is the only send a real agent receives, and only when allowed.
-func caseLiveSend(r *run) error {
-	if err := r.a.Send(r.ctx, CheckPrompt, adapter.ModeAuto); err != nil {
-		var unsupported adapter.ErrUnsupported
-		if errors.As(err, &unsupported) {
-			return skip("the agent is busy and this adapter cannot send to a running turn; try again when it is idle")
-		}
-		return fmt.Errorf("the send was refused: %v", err)
-	}
-	obs, _, slow := r.observe()
-	if slow != nil {
-		return slow
-	}
-	return valid(obs)
 }
 
 type entry struct {

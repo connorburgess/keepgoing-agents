@@ -43,7 +43,7 @@ Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
   validate                 Check keepgoing.yaml and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
-  adapter check            Check that the loop's agent keeps the adapter contract; reads status only unless --send
+  adapter check            Check that the loop's agent keeps the adapter contract; runs the status command once and changes nothing
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
 
 Transfer planning:

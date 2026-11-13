@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,13 +67,50 @@ func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
 	if !r.turns {
 		return nil
 	}
+	os.Remove(filepath.Join(r.dir, "quit"))
+	before, _ := r.running()
 	if err := a.Send(ctx, "stand-in staging turn", adapter.ModeAuto); err != nil {
 		return err
 	}
 	if s == Active || s == Hanging {
 		return nil
 	}
+	if s == Crashed {
+		// End the turn's wrapper before it can record anything, then let the
+		// agent it started go.
+		for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if now, _ := r.running(); now > before {
+				break
+			}
+			if time.Now().After(deadline) {
+				return errors.New("the stand-in agent did not begin")
+			}
+		}
+		st, err := runner.Dir(filepath.Join(r.stateDir, "targets", "primary")).Status()
+		if err != nil || st.Phase != runner.Running {
+			return fmt.Errorf("the staging turn reads as %s: %v", st.Phase, err)
+		}
+		wrapper, err := os.FindProcess(st.Record.PID)
+		if err != nil {
+			return err
+		}
+		if err := wrapper.Kill(); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(r.dir, "quit"), nil, 0o600); err != nil {
+			return err
+		}
+	}
 	return r.Settle(ctx, a)
+}
+
+// running counts the stand-in agents that began and have not finished.
+func (r *rig) running() (int, error) {
+	b, err := os.ReadFile(filepath.Join(r.dir, "live"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return strings.Count(string(b), "begin\n") - strings.Count(string(b), "finish\n"), err
 }
 
 // Settle waits on the runner's own record of the turn, not on a timer.
@@ -82,8 +120,9 @@ func (r *rig) Settle(ctx context.Context, a adapter.Adapter) error {
 	}
 	dir := runner.Dir(filepath.Join(r.stateDir, "targets", "primary"))
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		// A turn whose output cannot be read has still ended: go by its phase.
 		st, err := dir.Status()
-		if err == nil && st.Phase != runner.Running {
+		if st.Phase != "" && st.Phase != runner.Running {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -96,6 +135,9 @@ func (r *rig) Settle(ctx context.Context, a adapter.Adapter) error {
 // turnRig is the rig of an agent that runs one turn per process. Only such an
 // agent has turn records that foreign work can be planted in.
 type turnRig struct{ *rig }
+
+// Running implements AgentCounter.
+func (r turnRig) Running() (int, error) { return r.running() }
 
 // StartForeign starts a process this supervisor did not start and records its
 // PID as an old build would have recorded a turn. A stop must not reach it.
@@ -137,8 +179,8 @@ func subject(t *testing.T, kind string) Subject {
 	t.Helper()
 	root := t.TempDir()
 	r := &rig{dir: filepath.Join(root, "stand-in"), stateDir: filepath.Join(root, "state")}
-	project := filepath.Join(root, "project")
-	for _, dir := range []string{r.dir, r.stateDir, project} {
+	project, home, temp := filepath.Join(root, "project"), filepath.Join(root, "home"), filepath.Join(root, "tmp")
+	for _, dir := range []string{r.dir, r.stateDir, project, home, temp} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -146,10 +188,20 @@ func subject(t *testing.T, kind string) Subject {
 	if err := os.WriteFile(filepath.Join(project, "README.md"), []byte("fictional project\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{envPart: kind, envDir: r.dir}
-	all := map[Situation]bool{Idle: true, Active: true, FailedCoded: true, FailedProse: true, Garbage: true, Hanging: true, Oversized: true}
+	// The adapter, its wrapper and the stand-in all see a home and a temporary
+	// directory that are watched, so a write to either is caught.
+	for _, name := range []string{"HOME", "USERPROFILE"} {
+		t.Setenv(name, home)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	// A binary built with the race detector waits a second at exit by default.
+	env := map[string]string{envPart: kind, envDir: r.dir, "GORACE": "atexit_sleep_ms=0"}
+	all := map[Situation]bool{Idle: true, Active: true, FailedCoded: true, FailedProse: true, Garbage: true, Hanging: true, Oversized: true,
+		ExitNonZero: true, FailedUnmapped: true, FailedStderr: true}
 	var agent config.Agent
-	s := Subject{Name: kind, Rig: r, Protected: []string{project}, CallLimit: 10 * time.Second}
+	s := Subject{Name: kind, Rig: r, Protected: []string{project, home, temp}, CallLimit: 10 * time.Second, StateDir: r.stateDir}
 	switch kind {
 	case "process":
 		all[Waiting] = true
@@ -167,6 +219,7 @@ func subject(t *testing.T, kind string) Subject {
 	}
 	if spec, ok := runner.SpecFor(kind); ok {
 		s.Rig = turnRig{r}
+		all[Crashed] = true
 		c := spec.Capabilities
 		s.Declared = Declared{ExactResume: c.ExactResume, Stoppable: c.Stoppable, StructuredErrors: c.StructuredErrors, StructuredWaiting: c.StructuredWaiting}
 	}
@@ -178,15 +231,21 @@ func subject(t *testing.T, kind string) Subject {
 // known lists, per adapter, the contracts it does not keep today and why.
 // A known failure is reported and does not fail the suite. When one starts to
 // pass, the suite fails until its entry is removed, so a fix is recorded.
-var known = map[string]map[string]string{
+//
+// An entry names the case and the words of the failure it expects. A case
+// that fails for any other reason is an ordinary failure, so a gap closed in
+// a way that breaks the case differently is not hidden behind its entry.
+type gap struct{ why, says string }
+
+var known = map[string]map[string]gap{
 	"process": {
-		"bounded-output": "the status command's output is read without a bound",
+		"bounded-output": {"the status command's output is read without a bound", "output far larger than any real status was read as"},
 	},
 	"claude": {
-		"bounded-output": "a turn's output is read without a bound",
+		"bounded-output": {"a turn's output is read without a bound", "output far larger than any real status was read as"},
 	},
 	"codex": {
-		"bounded-output": "a turn's output is read without a bound",
+		"bounded-output": {"a turn's output is read without a bound", "output far larger than any real status was read as"},
 	},
 }
 
@@ -199,14 +258,16 @@ func TestBuiltInAdaptersKeepTheContract(t *testing.T) {
 			seen := map[string]bool{}
 			for _, r := range results {
 				seen[r.ID] = true
-				reason, isKnown := known[kind][r.ID]
+				gap, isKnown := known[kind][r.ID]
 				switch {
+				case r.Outcome == Fail && isKnown && strings.Contains(r.Detail, gap.says):
+					t.Logf("KNOWN GAP [%s] %s: %s (%s)", kind, r.ID, gap.why, r.Detail)
 				case r.Outcome == Fail && isKnown:
-					t.Logf("KNOWN GAP [%s] %s: %s (%s)", kind, r.ID, reason, r.Detail)
+					t.Errorf("%s: %s is a known gap, but it now fails differently; fix it or update its entry\n  expected: %s\n  got: %s", kind, r.ID, gap.says, r.Detail)
 				case r.Outcome == Fail:
 					t.Errorf("%s: %s\n  contract: %s\n  %s", kind, r.ID, r.Contract, r.Detail)
-				case isKnown && r.Outcome == Pass:
-					t.Errorf("FIXED KNOWN GAP [%s] %s now passes; remove its entry from known", kind, r.ID)
+				case isKnown:
+					t.Errorf("FIXED KNOWN GAP [%s] %s no longer fails (%s); remove its entry from known", kind, r.ID, r.Outcome)
 				case r.Outcome == Skipped:
 					t.Logf("skipped [%s] %s: %s", kind, r.ID, r.Detail)
 				}

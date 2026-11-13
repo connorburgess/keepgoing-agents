@@ -309,34 +309,43 @@ The matrix says what each adapter supports. The contract says what every adapter
 
 | Case | Contract |
 | --- | --- |
-| `one-state` | A status read returns exactly one of idle, active, error or unknown, inside the call limit. An error carries `rate_limit`, `auth`, `overloaded` or `network` only when something structured says so. |
+| `one-state` | A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries `rate_limit`, `auth`, `overloaded` or `network` only when something structured says so. |
 | `known-situations` | An idle agent reads as idle and a working agent as active. |
 | `never-guess` | Output that is not the agent's status format reads as unknown, never as idle, active or a specific error class. |
 | `waiting-on-person` | An agent blocked on a person is reported as awaiting input, so the supervisor holds and does not send to it. |
-| `structured-errors-only` | A failure is classified from a machine-readable code. Prose, even prose that names a limit, is `unknown`, so it can never cause a handoff. |
-| `send-once` | One send delivers the prompt exactly once, unchanged, on standard input or in a private file, never in a command's arguments. Reading status again or restarting the supervisor does not deliver it again. |
-| `exact-resume` | After the supervisor is stopped and started, the next send continues exactly the session the agent reported. |
+| `structured-errors-only` | A failure is classified from a machine-readable code. Prose on standard output or standard error, even prose that names a limit, is `unknown`, and so is a code that maps to no class. Neither can cause a handoff. |
+| `failed-is-not-healthy` | A command that exits with a failure, or a turn that ends without leaving a result, is a failure of class unknown whatever it printed. |
+| `send-once` | One send delivers the prompt exactly once, unchanged, on standard input or in a file only the owner can read, never in a command's arguments or environment. Reading status again or restarting the supervisor does not deliver it again. |
+| `send-while-working` | A send while the agent is working is refused or reaches that same agent. It never starts a second agent beside the first. |
+| `observe-during-send` | Status can be read while a send is in progress: every read is one valid state and the prompt is still delivered once. |
+| `state-unwritable` | When the state directory cannot be written, a send fails and says so or still delivers once. It never reports success for a prompt that did not arrive. |
+| `exact-resume` | The session the agent reported is saved in the state directory, and after the supervisor is stopped and started the next send continues exactly that session. |
 | `hang-is-cut` | A status read returns inside the call limit when the agent's command never returns, and does not report idle or a specific class. |
 | `stop-own-work` | Stop ends a turn this supervisor started and leaves alone anything it did not start. |
 | `bounded-output` | Output far larger than any real status is not read as healthy. |
-| `writes-stay-inside` | Nothing outside the loop's state directory is created, changed or removed. |
+| `writes-stay-inside` | Nothing is created, changed or removed in the project, the home directory or the temporary directory. |
 | `declared-matches` | Every capability the adapter declares (exact resume, can be stopped, structured errors, structured waiting) passed its case. |
-| `live-send` | A prompt sent to the real agent is accepted, and its status afterwards is one valid state. Runs only with `--send`. |
 
-The cases live in `internal/adapter/conformance`. The test suite runs all of them against the process adapter and the headless Claude Code and Codex adapters, each built by the real factory and driven by a stand-in executable that is put into each situation in turn. A second test breaks an in-memory adapter in sixteen ways and requires each fault to fail its own case with a message that says what to change.
+The cases live in `internal/adapter/conformance`. The test suite runs all of them against the process adapter and the headless Claude Code and Codex adapters, each built by the real factory and driven by a stand-in executable that is put into each situation in turn. The Codex stand-in fails the way the recorded Codex limit does: the turn's output carries only prose, and the limit is told from any other failure by what the stand-in's app-server answers. A second test breaks an in-memory adapter in twenty-six ways and requires each fault to fail its own case with a message that says what to change.
 
 Current results, with stand-ins only:
 
 | Adapter | Result |
 | --- | --- |
-| Generic process | Passes every case except `bounded-output`. `exact-resume` does not apply: the wrapper owns its session. |
+| Generic process | Passes every case except `bounded-output`. `exact-resume` does not apply: the wrapper owns its session. A turn that ends without a result is not staged: the adapter starts no turn. |
 | Headless Claude Code | Passes every case except `bounded-output`. `waiting-on-person` does not apply: it has no such state. |
 | Headless Codex | The same as Claude Code. |
 | BB, Cursor | Not run. Neither has a stand-in for the kit yet; their own fixtures are the evidence in the matrix. |
 
-`bounded-output` is a known gap, listed below. The suite records it by name and fails when an adapter starts passing, so the record cannot go stale.
+`bounded-output` is a known gap, listed above. The suite records it with the words of the failure it expects and fails when the case passes, is skipped, or fails for any other reason, so the record cannot go stale.
 
-The kit checks an adapter, not a check. These parts of the contract are decided above the adapter and are covered elsewhere, not by the kit: that a session awaiting input is never sent to and an unknown failure never causes a handoff (the decision tables in `internal/decide`), that a check ends inside its time limit (`internal/supervise`), and the offline scenario (`internal/scenario`). A send that times out is not exercised by the kit either. The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
+What the kit does not check:
+
+- It checks an adapter, not a check. That a session awaiting input is never sent to and that an unknown failure never causes a handoff are decided in `internal/decide`; that a check ends inside its time limit, in `internal/supervise`; the offline scenario, in `internal/scenario`.
+- `writes-stay-inside` watches the project, the home directory and the temporary directory. A write to some other absolute path is not seen.
+- `state-unwritable` and the file-mode part of `send-once` do not run on Windows or as root.
+- A send that times out is not exercised.
+- The four declarations about what an agent does for itself (retries, provider failover, scheduling, child work) are not yet compared with behaviour.
 
 ### Checking your own wrapper
 
@@ -344,9 +353,13 @@ The kit checks an adapter, not a check. These parts of the contract are decided 
 keepgoing adapter check -c keepgoing.yaml
 ```
 
-This builds the adapter the loop is configured with and reads the real agent's status once, the way a check does. It sends nothing and stops nothing, and takes no lock. It reports the state it read, so a wrapper that always answers unknown is visible, and fails when the read takes longer than `--limit` (default 30s) or returns something that is not one valid state. For a headless adapter the read can record, inside the state directory, the session ID a finished turn reported, as a check would. The cases that need the agent put into a situation are listed as skipped: they cannot be staged against a real agent.
+For a loop on the process adapter this runs the loop's status command once, the way a check does, and reports the state it read, so a wrapper that always answers unknown is visible. It fails when the read takes longer than `--limit` (default 30s) or returns something that is not one valid state. It runs no resume or stop command, takes no lock and writes no file. `--target ID` checks a fallback candidate. `--json` prints a versioned report (`schemaVersion` 1). The exit code is 1 when a case fails. The report never prints the task prompt, a command, a path or the wrapper's output.
 
-`--send` also sends one fixed prompt, which asks the agent to reply with a token and do nothing else, and reads status again. It uses the account the loop is configured with. It is refused unless the loop is paused, held, completed or disabled, so that supervision does not act on that turn, and it holds the check lock while it runs. `--target ID` checks a fallback candidate. `--json` prints a versioned report (`schemaVersion` 1). The exit code is 1 when a case fails. The report never prints the task prompt, a command, a path or the agent's output.
+The cases that need the agent put into a situation are listed as skipped: they cannot be staged against a real agent, and the kit is not yet something a wrapper's author can run against their own stand-in.
+
+It is refused for every other adapter, before anything is built or started, because their status reads are not free of side effects: a BB read advances the loop's saved position in the thread's log and takes notices a check is waiting for, a Codex read of a failed turn starts the Codex app-server, and a Claude Code, Codex or Cursor read saves the session a finished turn reported. Those adapters' contracts are checked in the test suite.
+
+The command cannot send a prompt. A way to send one test prompt to a real agent would have to pass the same ownership, pause and stop rules as a check, count against the send limit and appear in the timeline; that is a [roadmap](roadmap.md) item, not part of this command.
 
 ## Chats already open in an IDE
 
