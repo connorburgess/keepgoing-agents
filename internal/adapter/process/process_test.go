@@ -11,6 +11,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // script writes a test command: a shell script on Unix, a batch file on
@@ -26,9 +27,7 @@ func script(t *testing.T, sh, bat string) string {
 		return p
 	}
 	p := filepath.Join(dir, "cmd.sh")
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+sh+"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.Script(t, p, "#!/bin/sh\n"+sh+"\n")
 	return p
 }
 

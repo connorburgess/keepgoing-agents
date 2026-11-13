@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // FileName of the state record.
@@ -142,10 +145,17 @@ func (f File) Target() string {
 // Load reads state.json; a missing file is an empty record.
 func Load(stateDir string) (File, error) {
 	var f File
-	b, err := os.ReadFile(filepath.Join(stateDir, FileName))
+	// Status readers poll this file while a daemon replaces it. Open it so a
+	// reader never makes the writer's replacement fail (Windows).
+	r, err := snapshot.Open(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return f, nil
 	}
+	if err != nil {
+		return f, err
+	}
+	b, err := io.ReadAll(r)
+	r.Close()
 	if err != nil {
 		return f, err
 	}
@@ -182,10 +192,16 @@ func Save(stateDir string, f File) error {
 		tmp.Close()
 		return err
 	}
+	// This record is what stops a stop or prompt being repeated. Sync it
+	// before publishing, as the send ledger does. Not a power-loss guarantee.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return snapshot.Replace(name, path)
 }
 
 // Event is one line of runs.jsonl.
