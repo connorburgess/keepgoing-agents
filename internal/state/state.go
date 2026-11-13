@@ -484,14 +484,14 @@ type Brief struct {
 }
 
 // HungTurn is the watch kept on one active turn after an outage. Turn names
-// the turn; OutageAt is when the outage was first seen; BackAt is the first
-// check after it that found the network working; Since is when every sign of
-// a hung turn first held, zero while they do not; Reported says its report
-// was sent.
+// the turn; OutageAt is when the silence must have begun by (the outage, or
+// after a gap the computer's waking); Since is when every sign of a hung
+// turn first held, zero while they do not; Revived says the turn logged
+// again after OutageAt; Reported says its report was sent.
 type HungTurn struct {
 	Turn     string    `json:"turn"`
 	OutageAt time.Time `json:"outageAt"`
-	BackAt   time.Time `json:"backAt,omitempty"`
 	Since    time.Time `json:"since,omitempty"`
+	Revived  bool      `json:"revived,omitempty"`
 	Reported bool      `json:"reported,omitempty"`
 }

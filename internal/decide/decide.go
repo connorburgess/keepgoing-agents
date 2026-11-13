@@ -165,13 +165,13 @@ type Input struct {
 	// person because of it. The session is looked at again on the next check.
 	NetworkDown bool
 	// HungTurn: an active session's turn meets every sign of having hung
-	// through a network outage (see the supervisor's hung turn watch), and
-	// HungTurnFor is how long it has. HungTurnPatience is how long that
-	// may last before a person is asked: max_nudges times stall_after, the
-	// time the nudges it replaces would have taken.
-	HungTurn         bool
-	HungTurnFor      time.Duration
-	HungTurnPatience time.Duration
+	// through an outage (see the supervisor's hung turn watch). It is waited
+	// on, not nudged, and a person is asked when the stall rule would have
+	// held it (HungTurnHoldDue). HungTurnGrace: the watched turn logged
+	// something again less than stall_after ago; it is not nudged, and the
+	// same hold applies.
+	HungTurn      bool
+	HungTurnGrace bool
 
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
@@ -261,8 +261,9 @@ func none(reason string) Decision { return Decision{Action: None, Reason: reason
 // HungTurnReason is recorded while a turn that may have hung through an
 // outage is waited on, and HungTurnHoldReason when a person is asked.
 const (
-	HungTurnReason     = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it"
-	HungTurnHoldReason = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+	HungTurnReason      = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it"
+	HungTurnGraceReason = "turn logged again after an outage; not nudged until it has been silent for stall_after"
+	HungTurnHoldReason  = "turn silent since before a network outage; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
 )
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
@@ -369,12 +370,15 @@ func Decide(in Input) Decision {
 		// after it may be hung. Nothing is sent into it: a nudge would only
 		// queue behind it and arrive later. It is waited on, and a person is
 		// asked after the time the nudges would have taken.
-		if in.HungTurn {
+		if in.HungTurn || in.HungTurnGrace {
 			if in.NetworkDown {
 				return none(NetworkDownReason)
 			}
-			if in.HungTurnFor >= in.HungTurnPatience {
+			if HungTurnHoldDue(in) {
 				return Decision{Action: AwaitUser, Reason: HungTurnHoldReason}
+			}
+			if in.HungTurnGrace {
+				return none(HungTurnGraceReason)
 			}
 			return none(HungTurnReason)
 		}
@@ -419,7 +423,50 @@ func limitOutranksRetry(in Input) bool {
 // SilentRetryPatience is how long an untracked active session may stay silent
 // after its retry notice expired before a person is asked.
 func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges int) time.Duration {
-	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
+	return addSat(stallAfter, mulSat(minWakeInterval, max(maxNudges, 1)))
+}
+
+// hungTurnNeeds is what the stall rule still needs before it holds: the
+// stall clock at stall_after plus one min_wake_interval per nudge it has
+// left, and the time since the last wake or nudge at one more interval than
+// that. max_nudges 0 counts as one, so a hung turn is held in the end.
+func hungTurnNeeds(in Input) (unchanged, sinceWake time.Duration) {
+	left := max(max(in.MaxNudges, 1)-in.Nudges, 0)
+	return addSat(in.StallAfter, mulSat(in.MinWakeInterval, left)), mulSat(in.MinWakeInterval, left+1)
+}
+
+// HungTurnHoldDue says the stall rule would have held this session by now,
+// had it nudged it on time: so the hung-turn hold never comes later.
+func HungTurnHoldDue(in Input) bool {
+	unchanged, sinceWake := hungTurnNeeds(in)
+	return in.UnchangedFor >= unchanged && in.SinceWake >= sinceWake
+}
+
+// HungTurnHoldIn is how long until HungTurnHoldDue, if nothing changes.
+func HungTurnHoldIn(in Input) time.Duration {
+	unchanged, sinceWake := hungTurnNeeds(in)
+	return max(0, unchanged-in.UnchangedFor, sinceWake-in.SinceWake)
+}
+
+const maxDuration = time.Duration(1<<63 - 1)
+
+// mulSat and addSat saturate instead of wrapping, so a very long interval
+// means never rather than a negative time.
+func mulSat(d time.Duration, n int) time.Duration {
+	if d <= 0 || n <= 0 {
+		return 0
+	}
+	if d > maxDuration/time.Duration(n) {
+		return maxDuration
+	}
+	return d * time.Duration(n)
+}
+
+func addSat(a, b time.Duration) time.Duration {
+	if a > maxDuration-b {
+		return maxDuration
+	}
+	return a + b
 }
 
 // decideError bounds recovery from an errored session. A handoff happens

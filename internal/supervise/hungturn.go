@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
@@ -19,15 +20,17 @@ const hungTurnEvent = "hung_turn"
 //
 // All of these must hold, from structured evidence only:
 //
-//  0. The loop tracks Git progress. Without it the stall rule never acts on
-//     an active turn, and neither does this.
+//  0. The loop tracks Git progress, and the check is inside the operating
+//     window. Otherwise the watch does nothing and is left as it is.
 //  1. An outage happened while this turn was active: a connectivity check
-//     found the network down, or a check found a gap the missed-time rule
-//     judges missed (the host slept or the scheduler was down).
+//     found the network down, or this is the first check after a gap the
+//     missed-time rule judges missed (the host slept or the scheduler was
+//     down).
 //  2. It is still the same turn.
-//  3. It has logged nothing since before the outage or gap began, and the
-//     stall clock, which restarts when the network is back, has reached
-//     stall_after: the moment the stall rule would first nudge.
+//  3. It has logged nothing since the outage began, or, after a gap, since
+//     the computer woke (taken as one usual interval before this check), and
+//     the stall clock has reached stall_after: the moment the stall rule
+//     would first nudge.
 //  4. It is waiting on the model, not on a tool: no tool item it started is
 //     still open, and the item bookkeeping is not in doubt.
 //  5. Nothing else explains the silence: nothing queued, no background
@@ -35,87 +38,93 @@ const hungTurnEvent = "hung_turn"
 //     provider retry, no Git change.
 //
 // While they hold, the session is waited on, not nudged, and the wait is
-// reported once. It ends by itself the moment any of them stops holding. A
-// turn whose activity could not be read leaves the watch as it was: unknown
-// never acts. Nothing is evaluated while the network is down: the watch only
-// records that the outage happened.
+// reported once. A person is asked when the stall rule would have held it.
+// A watched turn that logs again has come back: it is not nudged until it has
+// been silent for stall_after again (grace), and is then waited on again; the
+// hold stays where the stall rule would have put it. A turn whose activity
+// cannot be read leaves the watch as it was: unknown never acts. Nothing is
+// evaluated while the network is down.
 //
-// revived says the watched turn logged something after the outage: the
-// caller restarts the stall clock at this check, so a turn that comes back
-// gets a full stall_after before any nudge.
-func (t *tick) hungTurn(obs decide.Observation, progressed bool, unchanged time.Duration) (hung, revived bool) {
+// The watch never makes a request the stall rule would not: connectivity is
+// checked for it only on a check where the stall rule would nudge or hold.
+// in is the decision input without the watch.
+func (t *tick) hungTurn(obs decide.Observation, progressed bool, in decide.Input) (hung, grace bool) {
+	stall, unchanged, inWindow := t.loop.Progress.StallAfter.Duration, in.UnchangedFor, in.InWindow
 	w := t.st.HungTurn
 	keep := func(w *state.HungTurn) {
 		if !t.opts.DryRun {
 			t.st.HungTurn = w
 		}
 	}
-	if obs.State == decide.Active && obs.TurnUnknown {
-		return false, false // the turn could not be read: keep the watch as it was
+	if !inWindow || (obs.State == decide.Active && obs.TurnUnknown) {
+		return false, false // outside the window, or the turn could not be read
 	}
 	if len(t.loop.Progress.Repositories) == 0 || obs.State != decide.Active || obs.Turn == nil || progressed {
 		keep(nil) // no Git tracking, the turn ended, it has no turn, or work was done
 		return false, false
 	}
+	last := obs.Turn.LastActivityAt
+	if last.IsZero() {
+		return false, false // when it last did anything is not known
+	}
 	if w != nil && w.Turn != obs.Turn.ID {
 		w = nil // another turn: whatever the old one did, this one is new
 	}
-	gap := t.missedTime() > 0
-	if w == nil {
-		// A turn that has been silent for stall_after would be nudged, and
-		// a nudge checks connectivity first; check now, once, so a silent
-		// turn's outage is seen whatever is decided next.
-		if since := obs.Turn.LastActivityAt; !since.IsZero() && t.now.Sub(since) >= t.loop.Progress.StallAfter.Duration {
-			t.networkDown()
+	signs := !obs.Turn.ToolsRunning && obs.Queued == 0 && obs.Background == 0 && obs.ActiveChildren == 0 && !obs.ChildrenUnverified &&
+		!obs.AwaitingInput && !obs.Retrying && !obs.RetryUnverified
+	if w == nil && signs && stallRuleActs(in) {
+		t.networkDown() // the stall rule checks connectivity before this nudge too
+	}
+	// The outage this check found, if any: when the silence must have begun.
+	var outageAt time.Time
+	switch {
+	case t.networkGated:
+		outageAt = t.st.NetworkDownSince
+		if outageAt.IsZero() {
+			outageAt = t.now
 		}
-		var outageAt time.Time
-		switch {
-		case t.networkGated:
-			outageAt = t.st.NetworkDownSince
-			if outageAt.IsZero() {
-				outageAt = t.now
-			}
-		case gap:
-			outageAt = t.st.CheckedAt // the last check before the gap
-		default:
-			return false, false // no outage seen during this turn
+	case t.missedTime() > 0:
+		// After a gap, the computer woke at most one usual interval before
+		// this check. Silence that began before then counts.
+		if outageAt = t.now.Add(-t.usualInterval()); outageAt.Before(t.st.CheckedAt) {
+			outageAt = t.st.CheckedAt
+		}
+	}
+	if w == nil {
+		if outageAt.IsZero() || !last.Before(outageAt) {
+			return false, false // no outage, or the turn has logged since it
 		}
 		w = &state.HungTurn{Turn: obs.Turn.ID, OutageAt: outageAt}
 	} else {
 		copy := *w
 		w = &copy
-		if t.networkGated || gap {
-			// Another outage: the time since the network came back starts
-			// again, and so does any wait.
-			w.BackAt, w.Since = time.Time{}, time.Time{}
+		if !outageAt.IsZero() && last.Before(outageAt) {
+			// Another outage, with the turn silent since before it: the
+			// wait starts again from it.
+			w.OutageAt, w.Since, w.Revived = outageAt, time.Time{}, false
 		}
 	}
 	if t.networkGated {
 		keep(w)
 		return false, false
 	}
-	if w.BackAt.IsZero() {
-		w.BackAt = t.now
+	if !w.Revived && !last.Before(w.OutageAt) {
+		w.Revived, w.Since = true, time.Time{} // the watched turn logged again: it came back
 	}
-	last := obs.Turn.LastActivityAt
-	if last.IsZero() || !last.Before(w.OutageAt) {
-		keep(nil) // the turn did something after the outage: it is alive
-		return false, true
-	}
-	holds := !obs.Turn.ToolsRunning && obs.Queued == 0 && obs.Background == 0 && obs.ActiveChildren == 0 && !obs.ChildrenUnverified &&
-		!obs.AwaitingInput && !obs.Retrying && !obs.RetryUnverified &&
-		unchanged >= t.loop.Progress.StallAfter.Duration
-	if !holds {
+	silent := unchanged >= stall && (!w.Revived || t.now.Sub(last) >= stall)
+	if !signs || !silent {
 		w.Since = time.Time{}
 		keep(w)
-		return false, false
+		// A turn that came back is not nudged until it has been silent for
+		// stall_after again.
+		return false, signs && w.Revived && t.now.Sub(last) < stall
 	}
 	if w.Since.IsZero() {
 		w.Since = t.now
 		if !w.Reported && (t.opts.DryRun || t.reserveReport(hungTurnEvent)) {
 			w.Reported = true
-			askAt := t.now.Add(max(0, t.hungTurnPatience()-unchanged))
-			t.report(hungTurnEvent, fmt.Sprintf("%s: the turn on %s has logged nothing since %s, before a network outage or a time in which no check ran, and may be hung. keepgoing is waiting on it, not nudging it, and has not stopped it; it asks a person at %s if the turn is still silent, when the nudges it replaces would have ended.",
+			askAt := t.now.Add(decide.HungTurnHoldIn(in))
+			t.report(hungTurnEvent, fmt.Sprintf("%s: the turn on %s has logged nothing since %s, before a network outage or a time in which no check ran, and may be hung. keepgoing is waiting on it, not nudging it, and has not stopped it; it asks a person at %s if the turn is still silent, when the stall rule would have held it.",
 				t.loop.Name, t.res.Target, last.UTC().Format(time.RFC3339), askAt.UTC().Format(time.RFC3339)),
 				map[string]any{"target": t.res.Target, "silentSince": last, "outageAt": w.OutageAt, "askAt": askAt})
 		}
@@ -124,11 +133,10 @@ func (t *tick) hungTurn(obs decide.Observation, progressed bool, unchanged time.
 	return true, false
 }
 
-// hungTurnPatience is how long the stall clock runs before a person is asked
-// about a hung turn: the time the stall rule takes to reach its own hold
-// under the same configuration (one stall_after, then a nudge every
-// min_wake_interval), so the hold never comes later than it would have.
-func (t *tick) hungTurnPatience() time.Duration {
-	p := t.loop.Progress
-	return decide.SilentRetryPatience(p.StallAfter.Duration, p.MinWakeInterval.Duration, p.MaxNudges)
+// stallRuleActs says the stall rule would nudge, or hold after its nudges,
+// on this check: the only checks on which it looks at the network.
+func stallRuleActs(in decide.Input) bool {
+	in.HungTurn, in.HungTurnGrace = false, false
+	d := decide.Decide(in)
+	return d.Action == decide.Nudge || (d.Action == decide.AwaitUser && strings.HasPrefix(d.Reason, "no progress after"))
 }

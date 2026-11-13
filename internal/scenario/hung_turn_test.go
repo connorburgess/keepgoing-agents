@@ -93,3 +93,76 @@ func TestScenarioHungTurnAfterAShortOutageAndASleep(t *testing.T) {
 	}
 	w.Check(s, "a person is asked when the stall rule would have held", err)
 }
+
+// TestScenarioHungTurnAfterALidClose is the usual lid-close: checks every
+// five minutes, the turn logs once more two minutes after the last of them,
+// and the computer sleeps a minute later until the network and the computer
+// are back. No connectivity check ever fails: only the gap shows what
+// happened, and the turn's last log came after the last check before it. It
+// is waited on, never nudged, reported once, and held no later than the
+// stall rule alone would have held it (lidCloseStallRuleHold, measured with
+// the watch switched off).
+func TestScenarioHungTurnAfterALidClose(t *testing.T) {
+	t.Parallel()
+	w := NewWorld(t, scenarioStart)
+	w.Init("await_user", "hung_turn", "complete", "stop")
+	w.EditConfig(func(loop map[string]any) {
+		loop["daemon"] = map[string]any{"interval": "5m"}
+	})
+	primary := w.Thread(primaryThread)
+	start := w.Now
+
+	w.Control("enable")
+	w.Advance(time.Minute)
+	s := w.Tick()
+	w.Check(s, "first wake", all(action(s, "wake"), sentExactly(s, Send{Kind: "tell", Thread: primaryThread, Mode: "auto"})))
+	for i := 0; i < 4; i++ {
+		w.Advance(5 * time.Minute)
+		s = w.Tick()
+		w.Check(s, "working", all(action(s, "none"), nothingSent(s)))
+	}
+	// One more log, then the lid closes.
+	w.At(start.Add(23 * time.Minute))
+	primary.Event("item/completed", map[string]any{"item": map[string]any{"id": "item_example1", "type": "agentMessage"}})
+
+	var hungReports int
+	var holdAt time.Duration
+	var sent []string
+	for at := 2 * time.Hour; at <= 10*time.Hour && holdAt == 0; at += 5 * time.Minute {
+		w.At(start.Add(at))
+		s = w.Tick()
+		for _, m := range s.Sent {
+			sent = append(sent, fmt.Sprintf("+%s %s %s", at, m.Kind, m.Mode))
+		}
+		for _, r := range s.Reports {
+			if r.Type == "keepgoing.hung_turn" {
+				hungReports++
+			}
+		}
+		if s.action() == "await_user" {
+			holdAt = at
+		}
+	}
+	var err error
+	if len(sent) != 0 {
+		err = fmt.Errorf("sent into the hung turn: %v", sent)
+	}
+	w.Check(s, "nothing is sent into the hung turn", err)
+	err = nil
+	if hungReports != 1 {
+		err = fmt.Errorf("%d hung_turn reports", hungReports)
+	}
+	w.Check(s, "the wait is reported once", err)
+	err = nil
+	if holdAt == 0 || holdAt > lidCloseStallRuleHold {
+		err = fmt.Errorf("held at +%s, the stall rule alone at +%s", holdAt, lidCloseStallRuleHold)
+	} else if !strings.HasPrefix(s.reason(), decide.HungTurnReason) {
+		err = fmt.Errorf("held with %q", s.reason())
+	}
+	w.Check(s, "held with the hung-turn reason, no later than the stall rule", err)
+}
+
+// lidCloseStallRuleHold is when the stall rule alone holds that journey,
+// after three nudges at +2h5m, +3h5m and +4h5m: measured with the watch
+// switched off.
+const lidCloseStallRuleHold = 5*time.Hour + 5*time.Minute

@@ -56,19 +56,23 @@ func TestHungTurnHoldIsNoLaterThanTheStallRule(t *testing.T) {
 	}
 }
 
-// A turn that logs something during the wait has come back: the stall clock
-// starts again at that check, so it gets a full stall_after before a nudge.
-func TestHungTurnThatComesBackGetsAFullStallAfter(t *testing.T) {
+// A turn that logs something during the wait has come back: it is not
+// nudged while it has logged within stall_after, then it is waited on
+// again, and it is held when the stall rule would have held it, not later.
+func TestHungTurnThatComesBackIsNotNudgedAndHeldOnTime(t *testing.T) {
 	_, p, run, back := hungJourney(t, 4*time.Hour)
 	waitFrom(t, run, back)
 	p.obs.Turn = &decide.TurnActivity{ID: "turn-example-1", LastActivityAt: t0.Add(back + 45*time.Minute)}
 	for _, after := range []time.Duration{50 * time.Minute, 60 * time.Minute, 70 * time.Minute} {
-		if r := run(back+after, true, "same"); r.Action != "none" || r.Reason != "active" || len(p.sent) != 0 {
-			t.Fatalf("+%s after it came back: %s (%s)", after-50*time.Minute, r.Action, r.Reason)
+		if r := run(back+after, true, "same"); r.Reason != decide.HungTurnGraceReason || len(p.sent) != 0 {
+			t.Fatalf("+%s: %s (%s)", after, r.Action, r.Reason)
 		}
 	}
-	if r := run(back+80*time.Minute, true, "same"); r.Action != "nudge" || r.Reason != "no progress for 30m0s" {
-		t.Fatalf("stall_after after it came back: %s (%s)", r.Action, r.Reason)
+	if r := run(back+80*time.Minute, true, "same"); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
+		t.Fatalf("silent for stall_after again: %s (%s)", r.Action, r.Reason)
+	}
+	if got := holdOffset(t, run, back+90*time.Minute) + 90*time.Minute; got > 3*time.Hour+30*time.Minute || len(p.sent) != 0 {
+		t.Fatalf("held %s after the network came back, later than the stall rule's 3h30m; %d sends", got, len(p.sent))
 	}
 }
 
@@ -139,8 +143,8 @@ func TestHungTurnSecondOutageRestartsTheGrace(t *testing.T) {
 	if r := run(again, true, "same"); r.Action != "none" || r.Reason != "active" {
 		t.Fatalf("first check after the second outage: %s (%s)", r.Action, r.Reason)
 	}
-	if st, _ := state.Load(w.dir); st.HungTurn == nil || !st.HungTurn.BackAt.Equal(t0.Add(again)) || !st.HungTurn.Since.IsZero() {
-		t.Fatalf("back not reset: %+v", st.HungTurn)
+	if st, _ := state.Load(w.dir); st.HungTurn == nil || !st.HungTurn.Since.IsZero() {
+		t.Fatalf("the wait did not start again: %+v", st.HungTurn)
 	}
 	if r := run(again+30*time.Minute, true, "same"); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
 		t.Fatalf("stall_after after the second outage: %s (%s)", r.Action, r.Reason)

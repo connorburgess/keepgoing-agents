@@ -184,8 +184,9 @@ func TestHungTurnNeedsEverySign(t *testing.T) {
 		{name: "another turn", change: func(o *decide.Observation) {
 			o.Turn = &decide.TurnActivity{ID: "turn-example-2", LastActivityAt: t0.Add(-5 * time.Minute)}
 		}, reason: "no progress for"},
-		// A turn that came back gets a full stall_after from this check.
-		{name: "activity after the outage", change: func(o *decide.Observation) { o.Turn.LastActivityAt = t0.Add(time.Hour) }, reason: "active"},
+		// A turn that came back is not nudged until it has been silent for
+		// stall_after again.
+		{name: "activity after the outage", change: func(o *decide.Observation) { o.Turn.LastActivityAt = t0.Add(80 * time.Minute) }, reason: decide.HungTurnGraceReason},
 		{name: "no turn seen", change: func(o *decide.Observation) { o.Turn = nil }, reason: "no progress for"},
 		// The log could not be read: nothing is decided, and the watch is
 		// kept (TestHungTurnWatchSurvivesAFailedLogRead).
