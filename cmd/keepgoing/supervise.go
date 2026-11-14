@@ -296,8 +296,8 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
-	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
-	monitor.Update("waiting", &deadline)
+	plan := planWait(cfg, time.Now())
+	monitor.Update("waiting", &plan.deadline)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -310,14 +310,70 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 			if ctx.Err() != nil {
 				return false
 			}
-			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
+			if now.After(plan.deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
+			}
+			if plan.online != nil && !now.Before(plan.nextNetwork) {
+				plan.nextNetwork = now.Add(plan.networkEvery)
+				if networkBack(ctx, cfg, plan.online) {
+					return ctx.Err() == nil // the network is back: check now
+				}
 			}
 			if poll(ctx) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
 	}
+}
+
+// networkRecheck is how often a waiting daemon checks whether the network is
+// back, while its last check found it down.
+var networkRecheck = time.Minute
+
+// connectivity is the loop's connectivity check; replaced in tests.
+var connectivity = supervise.Connectivity
+
+// waitPlan is when a daemon's next pass starts: at the end of its interval,
+// or at the structured reset of a provider limit the last check waited on if
+// that comes first; and, while the last check found the network down, as
+// soon as a connectivity check passes, tried every networkEvery.
+type waitPlan struct {
+	deadline, nextNetwork time.Time
+	networkEvery          time.Duration
+	online                func(context.Context) bool
+}
+
+func planWait(cfg *config.Config, now time.Time) waitPlan {
+	p := waitPlan{deadline: now.Add(cfg.Loop.Daemon.Interval.Duration)}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return p // the next pass reads the records and says what is wrong
+	}
+	if r := st.LimitResetsAt; r.After(now) && r.Before(p.deadline) {
+		p.deadline = r
+	}
+	if !st.NetworkDownSince.IsZero() {
+		if online := connectivity(cfg); online != nil {
+			p.online = online
+			p.networkEvery = max(networkRecheck, cfg.Loop.Daemon.ControlPoll.Duration)
+			p.nextNetwork = now.Add(p.networkEvery)
+		}
+	}
+	return p
+}
+
+// networkBack makes the loop's connectivity check under the tick lock, so it
+// never runs beside a check, and says whether it passed. A held lock is not
+// a pass: a check is under way.
+func networkBack(ctx context.Context, cfg *config.Config, online func(context.Context) bool) bool {
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		return false
+	}
+	defer l.Release()
+	ctx, cancel := context.WithTimeout(ctx, max(cfg.Loop.NetworkCheckTimeout(), time.Second))
+	defer cancel()
+	return online(ctx)
 }
 
 // Share the tick lock with manual ticks and retargets, and bound the whole

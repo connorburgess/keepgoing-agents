@@ -165,6 +165,10 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// LimitResetsAt is the structured reset of the provider limit the last
+	// check waited on, when it waited on one with a reset still ahead; zero
+	// otherwise. A daemon checks again at it.
+	LimitResetsAt time.Time `json:"limitResetsAt,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
 	// Lanes is the record of lane recovery (bb.children.retry_errored). It

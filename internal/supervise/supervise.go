@@ -177,6 +177,7 @@ type Result struct {
 }
 
 type tick struct {
+	limitResetsAt time.Time // the structured reset of the limit this check waits on
 	// routeOutsideList: a loop following the standard list is on a route that
 	// list no longer resolves; the route is kept from its saved record.
 	routeOutsideList bool
@@ -363,9 +364,8 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	if timeout := cfg.Loop.NetworkCheckTimeout(); opts.Online == nil && timeout > 0 {
-		n := cfg.Loop.Network
-		opts.Online = netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+	if opts.Online == nil {
+		opts.Online = Connectivity(cfg)
 	}
 	if opts.Threads == nil {
 		opts.Threads = bbThreads
@@ -1897,6 +1897,7 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	t.st.LimitResetsAt = t.limitResetsAt
 	// Something was sent this check when the time of the last wake moved
 	// and it was not for a held-back nudge.
 	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
@@ -2585,6 +2586,17 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 // something that needs the network is about to be done. It reports whether
 // that work should wait. Without a configured check, in a dry run, or once a
 // failing check has been shown wrong, it reports false and nothing is gated.
+// Connectivity is the loop's connectivity check, as each check makes it, or
+// nil when none is configured.
+func Connectivity(cfg *config.Config) func(context.Context) bool {
+	timeout := cfg.Loop.NetworkCheckTimeout()
+	if timeout <= 0 {
+		return nil
+	}
+	n := cfg.Loop.Network
+	return netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+}
+
 func (t *tick) networkDown() bool {
 	if t.opts.Online == nil || t.opts.DryRun {
 		return false // a dry run makes no request
