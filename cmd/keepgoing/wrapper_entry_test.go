@@ -42,8 +42,13 @@ func TestMain(m *testing.M) {
 		os.Unsetenv(v.Legacy())
 	}
 	// Nor the BB thread identity of the shell that runs the tests: a test
-	// that is a BB thread says so with t.Setenv.
-	os.Unsetenv("BB_THREAD_ID")
+	// that is a BB thread says so with t.Setenv. Only the first test process
+	// clears it: a copy of this binary a test starts as a helper inherits the
+	// marker, and keeps the identity the test gave it on purpose.
+	if os.Getenv("KEEPGOING_TEST_IDENTITY_CLEARED") == "" {
+		os.Unsetenv("BB_THREAD_ID")
+		os.Setenv("KEEPGOING_TEST_IDENTITY_CLEARED", "1")
+	}
 	code := m.Run()
 	panelTestCleanup() // the binary and launcher the panel tests share
 	os.RemoveAll(private)
