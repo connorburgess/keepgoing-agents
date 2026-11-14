@@ -194,6 +194,10 @@ type dockServed struct {
 	// IdleSeconds is how long the panel server runs with no page reading
 	// from it. Zero for dock, which has no such limit.
 	IdleSeconds int `json:"idleSeconds,omitempty"`
+	// Version is this binary's build label; VersionText says it in the
+	// footer's words.
+	Version     string `json:"version"`
+	VersionText string `json:"versionText"`
 	// Changes is set by the panel server only: "on" when it was started with
 	// --allow-changes, otherwise "off". keepgoing dock never allows them.
 	// ChangesText says so in the footer's words. Form is the session's
@@ -206,6 +210,7 @@ type dockServed struct {
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
 	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
+		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
 		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
 }
 
@@ -444,7 +449,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
 		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled}
-		if fb := cfg.FallbackSet; fb != nil {
+		if fb := currentRoutes(cfg); fb != nil {
 			in.Chain.Candidates = fb.Candidates
 			if !fb.Probe.Disabled {
 				in.Chain.ProbeEvery = fb.Probe.Every.Duration

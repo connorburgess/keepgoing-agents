@@ -95,6 +95,18 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	r.Loop = cfg.Loop.Name
 	r.add("config", "ok", "Configuration and configured fallbacks validate.", "")
+	// Timing probes are paid requests the owner turned on; doctor says what
+	// they are for, what they cost and where their readings come from.
+	if ts := cfg.TimingSummary(); ts != nil {
+		r.add("timing", "ok", ts.Collecting+". "+ts.Cost+".", "Set loop.timing.enabled to false to stop these probes.")
+		for i, w := range ts.Warnings {
+			fix := "Check that this computer's CLI is signed in to the account BB uses for this thread; the readings describe whichever account the CLI uses."
+			if strings.Contains(w, "scheduled_disabled") {
+				fix = "Remove probe.scheduled_disabled from the fallbacks file, or turn timing off."
+			}
+			r.add(fmt.Sprintf("timing.warning.%d", i+1), "warning", w+".", fix)
+		}
+	}
 	// The variables move what every command reads, so doctor says where.
 	if dir := os.Getenv(registryDirEnv); dir != "" {
 		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
@@ -152,7 +164,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		a := cfg.Loop.Agent
 		valid := true
 		if r.Target != state.Primary {
-			candidate, ok := cfg.FallbackSet.Find(r.Target)
+			candidate, ok := effectiveRoutes(cfg, st).Find(r.Target)
 			if !ok || candidate.Disabled {
 				valid = false
 				r.add("target", "error", "Recorded active target is missing or disabled in the fallback configuration.", "Review the intended target and use retarget explicitly before resuming.")
@@ -198,8 +210,10 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	checkAgent("primary", cfg.Loop.Agent)
-	if cfg.FallbackSet != nil {
-		for _, c := range cfg.FallbackSet.Candidates {
+	// The effective routes: for a loop that follows the standard list, a
+	// current route that is no longer in it is checked too.
+	if fb := currentRoutes(cfg); fb != nil {
+		for _, c := range fb.Candidates {
 			if c.Disabled {
 				continue
 			}
@@ -228,10 +242,20 @@ func doctor(e env, args []string, run doctorRun) int {
 	}
 	doctorCheckVersion(&r, st.LastCheck, stateErr == nil)
 	doctorFailedChecks(&r, st, stateErr == nil)
+	if stateErr == nil {
+		if ctl, err := control.Load(cfg.Loop.StateDir); err == nil {
+			if level, text, fix, ok := scheduleDoctorLine(describeSchedule(&cfg.Loop, st, ctl, &d, r.CheckedAt)); ok {
+				r.add("supervisor.schedule", level, text, fix)
+			}
+		}
+	}
 	if _, err := state.LoadLedger(cfg.Loop.StateDir); err != nil {
 		r.add("supervisor.send_record", "error", "The send record sends.json cannot be read, so no check sends anything.", "Restore sends.json from a copy. Deleting it loses the record of sends not yet counted, which may then be repeated, and resets the count against loop.limits.max_sends.")
 	} else {
 		r.add("supervisor.send_record", "ok", "The send record sends.json is readable.", "")
+	}
+	if stateErr == nil && st.StartRefused != nil {
+		r.add("runner.wrapper", "error", fmt.Sprintf("No turn can be started, since %s: %s.", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason), "Stop the daemon, make sure the keepgoing binary at its path is the one you mean to run, and start the daemon again. Nothing is sent or counted until then.")
 	}
 	doctorTickBudget(&r, cfg.Loop)
 	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)

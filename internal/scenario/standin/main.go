@@ -22,6 +22,7 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	bb.down                if present, every bb command fails with no output
 //	kill.<command>         if present, after `thread <command>` has answered, the
 //	                       stand-in kills the keepgoing process that ran it
 //	killbefore.<command>   if present, the stand-in kills the keepgoing process
@@ -155,6 +156,11 @@ func play(world, name string, args []string) int {
 
 func run(world string, args []string) int {
 	appendLine(filepath.Join(world, "calls.jsonl"), args)
+	// bb.down: BB cannot be reached. Every command fails with no output.
+	if _, err := os.Stat(filepath.Join(world, "bb.down")); err == nil {
+		fmt.Fprintln(os.Stderr, "fictional: bb is unavailable")
+		return 1
+	}
 	// BB's optional retry plugin: its last decision for a thread, from
 	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
 	if len(args) >= 3 && args[0] == "provider-retry" {
@@ -164,6 +170,16 @@ func run(world string, args []string) int {
 			return emit(world, args[2]+".retry-decision", string(b))
 		case "status":
 			return emit(world, args[2]+".retries", `{"retries":[]}`)
+		case "cancel":
+			// As BB's plugin: no pending retry unless <thread>.retry-pending exists.
+			if _, err := os.Stat(filepath.Join(world, args[2]+".retry-pending")); err != nil {
+				fmt.Println(`{"ok":false,"error":{"code":"no_pending_retry","message":"fictional"}}`)
+				return 1
+			}
+			os.Remove(filepath.Join(world, args[2]+".retry-pending"))
+			b, _ := json.Marshal(map[string]any{"ok": true, "threadId": args[2], "queuedMessageId": "qm_example1"})
+			fmt.Println(string(b))
+			return 0
 		}
 	}
 	if len(args) < 2 || args[0] != "thread" {

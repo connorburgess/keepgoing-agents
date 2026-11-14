@@ -251,3 +251,57 @@ func TestUsageHistoryAccumulatesPerAccount(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+// When the first route's timing probe is due, in table form.
+func TestTimingProbeTable(t *testing.T) {
+	c := config.Candidate{ID: "primary"}
+	timing := config.Timing{Enabled: true, Windows: []string{"seven_day"}, NearReset: config.Duration{Duration: 6 * time.Hour}, ProbeEvery: config.Duration{Duration: 12 * time.Hour}}
+	policy := config.ProbePolicy{DailyCap: 2}
+	week := now.Add(5 * time.Hour)
+	reading := func(at time.Time, identity string, windows ...probe.UsageWindow) *probe.Usage {
+		return &probe.Usage{At: at, Source: probe.UsageSourceClaude, Identity: identity, Windows: windows}
+	}
+	weekWin := probe.UsageWindow{Key: "seven_day", Used: 0.4, ResetsAt: &week}
+	shortWin := probe.UsageWindow{Key: "five_hour", Used: 0.4, ResetsAt: &week}
+	for name, tc := range map[string]struct {
+		entry  *Entry
+		policy config.ProbePolicy
+		due    bool
+		why    string
+		near   bool
+	}{
+		"never probed":                                   {nil, policy, true, TimingDue, false},
+		"scheduled probes off":                           {nil, config.ProbePolicy{DailyCap: 2, Disabled: true}, false, TimingScheduledOff, false},
+		"probed 11 h ago":                                {&Entry{LastSched: now.Add(-11 * time.Hour)}, policy, false, TimingRecent, false},
+		"passed a probe of any tier 11 h ago":            {&Entry{Last: &probe.Result{At: now.Add(-11 * time.Hour), OK: true}}, policy, false, TimingRecent, false},
+		"probed 12 h ago":                                {&Entry{LastSched: now.Add(-12 * time.Hour)}, policy, true, TimingDue, false},
+		"cap reached today":                              {&Entry{ProbeDay: now.Format("2006-01-02"), ProbesToday: 2}, policy, false, TimingCapReached, false},
+		"named window resets in 5 h, last read 11 h ago": {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin)}, policy, true, TimingNearReset, true},
+		"that instance already had its probe": {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin),
+			NearReset: []NearResetMark{{Key: "seven_day", ResetsAt: week}}}, policy, false, TimingRecent, false},
+		"already read within the near period":   {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-time.Hour), "account-a", weekWin)}, policy, false, TimingRecent, false},
+		"a window not named":                    {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-a", shortWin)}, policy, false, TimingRecent, false},
+		"a reading of another account":          {&Entry{LastSched: now.Add(-11 * time.Hour), Usage: reading(now.Add(-11*time.Hour), "account-b", weekWin)}, policy, false, TimingRecent, false},
+		"near the reset but the cap is reached": {&Entry{ProbeDay: now.Format("2006-01-02"), ProbesToday: 2, Usage: reading(now.Add(-11*time.Hour), "account-a", weekWin)}, policy, false, TimingCapReached, false},
+	} {
+		r := &Registry{Candidates: map[string]*Entry{}}
+		if tc.entry != nil {
+			r.Candidates["primary"] = tc.entry
+		}
+		due, why, near := r.TimingProbe(c, timing, tc.policy, "account-a", now)
+		if due != tc.due || why != tc.why || (near != nil) != tc.near {
+			t.Errorf("%s: due %v %q near %+v", name, due, why, near)
+		}
+		if near != nil && (near.Key != "seven_day" || !near.ResetsAt.Equal(week)) {
+			t.Errorf("%s: mark %+v", name, near)
+		}
+	}
+	// Marks of instances that have reset are dropped; the newest are kept.
+	r := &Registry{Candidates: map[string]*Entry{}}
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: now.Add(-time.Hour)}, now.Add(-2*time.Hour))
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: week}, now)
+	r.MarkNearReset("primary", NearResetMark{Key: "seven_day", ResetsAt: week}, now)
+	if m := r.Candidates["primary"].NearReset; len(m) != 1 || !m[0].ResetsAt.Equal(week) {
+		t.Fatalf("marks: %+v", m)
+	}
+}

@@ -48,7 +48,7 @@ func loopSessions(cfg *config.Config) (primary session.Identity, havePrimary boo
 	if havePrimary {
 		all[primary] = "primary"
 	}
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := currentRoutes(cfg); fb != nil {
 		for _, c := range fb.Candidates {
 			if c.Disabled {
 				continue
@@ -66,10 +66,11 @@ func loopSessions(cfg *config.Config) (primary session.Identity, havePrimary boo
 // activeAgent is the agent a loop's records name as current.
 func activeAgent(cfg *config.Config) config.Agent {
 	st, err := state.Load(cfg.Loop.StateDir)
-	if err != nil || st.Target() == state.Primary || cfg.FallbackSet == nil {
+	fb := effectiveRoutes(cfg, st)
+	if err != nil || st.Target() == state.Primary || fb == nil {
 		return cfg.Loop.Agent
 	}
-	c, ok := cfg.FallbackSet.Find(st.Target())
+	c, ok := fb.Find(st.Target())
 	if !ok || c.Disabled {
 		return cfg.Loop.Agent
 	}

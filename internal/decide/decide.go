@@ -46,9 +46,15 @@ type Observation struct {
 	Evidence   evidence.Detail
 	State      State
 	ErrorClass ErrorClass
-	Queued     int  // messages already waiting for the session
-	Background int  // background workers still running
-	Gone       bool // target deleted or archived
+	// Turn is what the adapter knows of the running turn, from structured
+	// events. Nil means nothing is known. TurnUnknown: the session is
+	// active but its turn could not be read this time (the log read
+	// failed), as opposed to having no turn the adapter can see.
+	Turn        *TurnActivity
+	TurnUnknown bool
+	Queued      int  // messages already waiting for the session
+	Background  int  // background workers still running
+	Gone        bool // target deleted or archived
 	// Retrying means the provider itself has scheduled a retry of the
 	// failed turn, so the supervisor should leave it alone.
 	Retrying bool
@@ -148,8 +154,11 @@ type Input struct {
 	ChildErrorNoticeAttempts int
 	MaxChildErrorNotices     int
 
-	Nudges    int // nudges since progress or the most recent turn end
-	MaxNudges int
+	Nudges int // nudges since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because
+	// the turn looked hung. It changes only how the hold is worded.
+	HeldNudges int
+	MaxNudges  int
 
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
@@ -161,6 +170,12 @@ type Input struct {
 	// wake, nudge or switch-back, and an errored session is not held for a
 	// person because of it. The session is looked at again on the next check.
 	NetworkDown bool
+	// HungTurn: an active session's turn meets every sign of having hung
+	// through an outage or the computer sleeping (see the supervisor's hung
+	// turn watch). The stall rule decides as always; a nudge it would send is
+	// held back: counted and recorded as sent, but not sent. Its own hold
+	// after its nudges follows at the same check.
+	HungTurn bool
 
 	// HandoffDeferred: a handoff is due and a fallback is listed healthy, but
 	// this check ran out of time to confirm one. Nothing is spent on that.
@@ -207,6 +222,17 @@ const (
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
 )
 
+// TurnActivity is what an adapter knows of an active session's current
+// turn. ID names the turn; it changes when a new turn starts. LastActivityAt
+// is the newest event the turn logged that is not requested input.
+// ToolsRunning: the turn has a tool item open, or its item bookkeeping is
+// uncertain, so it may be waiting on a tool rather than on the model.
+type TurnActivity struct {
+	ID             string
+	LastActivityAt time.Time
+	ToolsRunning   bool
+}
+
 // Decision is an action and the rule that produced it. LimitWait is set only
 // when the action is None because a provider limit has a known reset.
 type Decision struct {
@@ -225,6 +251,12 @@ type Decision struct {
 	// patience for a silent provider retry. An explicit resume of such a hold,
 	// and of no other, starts a new episode.
 	EpisodeSpent bool
+	// StallHold is set only on the stall rule's hold after its nudges.
+	StallHold bool
+	// HeldNudge: the stall rule would nudge, and the nudge is held back
+	// because the turn may be hung (Input.HungTurn). It is recorded exactly
+	// as a nudge is, and not sent.
+	HeldNudge bool
 }
 
 // DeferredInteractionReason is fixed text; it carries no provider content.
@@ -235,6 +267,18 @@ func limitWait(kind LimitWait, reason string) Decision {
 }
 
 func none(reason string) Decision { return Decision{Action: None, Reason: reason} }
+
+// HungTurnReason is recorded while a turn that may have hung through an
+// outage is waited on, HungTurnNudgeReason when a nudge is held back, and
+// HungTurnHoldReason is added to the stall rule's hold.
+const (
+	HungTurnReason      = "turn silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it"
+	HungTurnNudgeReason = "nudge held back, not sent: the turn has been silent since before an outage or the computer sleeping and may be hung"
+	HungTurnHoldReason  = "the turn has been silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+	// HeldNudgesClause follows the count of held-back nudges in the stall
+	// rule's hold: "no progress after 3 nudges (3 held back, ...)".
+	HeldNudgesClause = " held back, not sent, because the turn looked hung"
+)
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
 const NetworkDownReason = "network down; waiting for connectivity"
@@ -336,29 +380,62 @@ func Decide(in Input) Decision {
 		}
 		return Decision{Action: Wake, Reason: "idle"}
 	case Active:
-		// Without Git tracking there is no stall evidence and no nudge would
-		// help. A session whose retry notice expired and which has stayed
-		// silent for the patience a tracked loop would have shown (one stall
-		// interval, then every nudge interval) needs a person.
-		if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
-			if in.NetworkDown {
-				return none(NetworkDownReason)
-			}
-			return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+		// A turn that went silent before a network outage and stayed silent
+		// after it may be hung. Nothing is sent into it: a nudge would only
+		// queue behind it and arrive later. It is waited on, and a person is
+		// asked after the time the nudges would have taken.
+		if in.HungTurn {
+			return heldBack(decideActive(in))
 		}
-		if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
-			if in.NetworkDown {
-				// Neither a nudge nor the hold that follows the last one.
-				return none(NetworkDownReason)
-			}
-			if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
-				return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
-			}
-			return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
-		}
-		return none("active")
+		return decideActive(in)
 	}
 	return none("unrecognised state")
+}
+
+// heldBack is the stall rule's decision for a turn that may be hung: a nudge
+// is held back, the hold after the nudges says why they were, and the rest
+// is the stall rule's own.
+func heldBack(d Decision) Decision {
+	switch {
+	case d.Action == Nudge:
+		return Decision{Action: None, Reason: HungTurnNudgeReason, HeldNudge: true}
+	case d.StallHold:
+		d.Reason += "; " + HungTurnHoldReason
+		return d
+	case d.Action == None && d.Reason == "active":
+		return none(HungTurnReason)
+	}
+	return d
+}
+
+// decideActive is the stall rule for an active session.
+func decideActive(in Input) Decision {
+	o := in.Obs
+	// Without Git tracking there is no stall evidence and no nudge would
+	// help. A session whose retry notice expired and which has stayed
+	// silent for the patience a tracked loop would have shown (one stall
+	// interval, then every nudge interval) needs a person.
+	if o.RetryExpired && !in.ProgressTracked && in.RetrySilentFor >= SilentRetryPatience(in.StallAfter, in.MinWakeInterval, in.MaxNudges) {
+		if in.NetworkDown {
+			return none(NetworkDownReason)
+		}
+		return Decision{Action: AwaitUser, EpisodeSpent: true, Reason: "provider retry went silent on an active session for " + in.RetrySilentFor.Truncate(time.Minute).String() + "; no Git progress tracking to nudge by"}
+	}
+	if in.UnchangedFor >= in.StallAfter && in.SinceWake >= in.MinWakeInterval {
+		if in.NetworkDown {
+			// Neither a nudge nor the hold that follows the last one.
+			return none(NetworkDownReason)
+		}
+		if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
+			reason := "no progress after " + itoa(in.Nudges) + " nudges"
+			if in.HeldNudges > 0 {
+				reason += " (" + itoa(min(in.HeldNudges, in.Nudges)) + HeldNudgesClause + ")"
+			}
+			return Decision{Action: AwaitUser, EpisodeSpent: true, StallHold: true, Reason: reason}
+		}
+		return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
+	}
+	return none("active")
 }
 
 // limitOutranksRetry reports whether a retry notice must yield to the limit
@@ -377,7 +454,59 @@ func limitOutranksRetry(in Input) bool {
 // SilentRetryPatience is how long an untracked active session may stay silent
 // after its retry notice expired before a person is asked.
 func SilentRetryPatience(stallAfter, minWakeInterval time.Duration, maxNudges int) time.Duration {
-	return stallAfter + time.Duration(max(maxNudges, 1))*minWakeInterval
+	return addSat(stallAfter, mulSat(minWakeInterval, max(maxNudges, 1)))
+}
+
+// StallHoldAt is when the stall rule would hold this active session after
+// its nudges, if nothing changes and every check comes on time: each nudge
+// it has left at the first moment it may send one, then the hold. Zero when
+// it never holds (max_nudges 0) or not within a year.
+func StallHoldAt(in Input, now time.Time) time.Time {
+	if in.MaxNudges <= 0 || in.MaxNudges-in.Nudges > 10000 || in.MinWakeInterval > 365*24*time.Hour || in.StallAfter > 365*24*time.Hour {
+		return time.Time{}
+	}
+	at := now
+	if reach := now.Add(in.StallAfter - min(in.UnchangedFor, in.StallAfter)); reach.After(at) {
+		at = reach
+	}
+	if in.SinceWake < in.MinWakeInterval {
+		at = maxTime(at, now.Add(in.MinWakeInterval-in.SinceWake))
+	}
+	for n := in.Nudges; n < in.MaxNudges; n++ {
+		at = at.Add(in.MinWakeInterval) // the nudge at `at`, then the wait for the next
+	}
+	if at.After(now.AddDate(1, 0, 0)) {
+		return time.Time{}
+	}
+	return at
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+const maxDuration = time.Duration(1<<63 - 1)
+
+// mulSat and addSat saturate instead of wrapping, so a very long interval
+// means never rather than a negative time.
+func mulSat(d time.Duration, n int) time.Duration {
+	if d <= 0 || n <= 0 {
+		return 0
+	}
+	if d > maxDuration/time.Duration(n) {
+		return maxDuration
+	}
+	return d * time.Duration(n)
+}
+
+func addSat(a, b time.Duration) time.Duration {
+	if a > maxDuration-b {
+		return maxDuration
+	}
+	return a + b
 }
 
 // decideError bounds recovery from an errored session. A handoff happens

@@ -1,6 +1,6 @@
 # Fallbacks
 
-`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`.
+`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (unreleased source).
 
 ## Add a fallback with guided setup
 
@@ -285,7 +285,7 @@ How much a projection can say depends on how often the account is probed:
 - It needs three readings over at least six hours in one window instance, and readings covering at least a quarter of the time left to the reset.
 - A seven-day window probed every 12 hours gets about 14 readings a week. A projection from the start of the week needs over a day of them.
 - A five-hour window cannot be projected from probes four or more hours apart.
-- A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on usually has no projection today.
+- A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on has no projection unless [`loop.timing`](configuration.md#timing) is on: it probes the first route every 12 hours by default, which gives a seven-day window about 14 readings a week.
 
 Verification uses fictional fixtures only:
 - table tests of adding readings, instances, resets, bounds, identity changes, a clock set back or far ahead, and stored records that are not valid;

@@ -33,6 +33,14 @@ import (
 var keepgoingBin, standinDir string
 
 func TestMain(m *testing.M) {
+	// The suite builds the command and its stand-in, so it cannot run from
+	// the test bundle for machines without Go. Say so instead of failing.
+	if _, err := exec.LookPath("go"); err != nil {
+		if _, err := os.Stat(filepath.Join(runtime.GOROOT(), "bin", "go"+exe)); err != nil {
+			fmt.Fprintln(os.Stderr, "scenario suite NOT RUN: it builds the keepgoing command and a stand-in, and the Go toolchain is not available")
+			os.Exit(0)
+		}
+	}
 	dir, err := os.MkdirTemp("", "keepgoing-scenario-build-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -540,6 +548,7 @@ type Timeline struct {
 	Control struct {
 		State string `json:"state"`
 	} `json:"control"`
+	Sources timelineSources `json:"sources"`
 	Summary struct {
 		LatestCheck *struct {
 			Sequence    int       `json:"sequence"`
@@ -550,6 +559,33 @@ type Timeline struct {
 		HeldChecks     int `json:"heldChecks"`
 	} `json:"summary"`
 	Raw string `json:"-"`
+}
+
+// timelineSources is the list of records the timeline was read from.
+type timelineSources []struct {
+	Source       string `json:"source"`
+	Availability string `json:"availability"`
+	Retained     int    `json:"retained"`
+}
+
+// retained is how many records the timeline kept from one source.
+func (ts timelineSources) retained(source string) int {
+	for _, x := range ts {
+		if x.Source == source {
+			return x.Retained
+		}
+	}
+	return 0
+}
+
+// availability is how the timeline describes one source.
+func (ts timelineSources) availability(source string) string {
+	for _, x := range ts {
+		if x.Source == source {
+			return x.Availability
+		}
+	}
+	return ""
 }
 
 // Runs is the part of `runs --json` the scenarios read.
@@ -743,8 +779,9 @@ func (w *World) Check(s *Step, name string, err error) {
 type Waiting string
 
 const (
-	// WaitChildRecovery is the lane recovering a direct child's failed turn.
-	WaitChildRecovery Waiting = "child recovery, in progress"
+	// WaitChildRecovery is lane recovery, which retries a direct child's
+	// failed turn. It is opt-in, so a loop without it keeps these failures.
+	WaitChildRecovery Waiting = "lane recovery is opt-in and off here (bb.children.retry_errored)"
 )
 
 // Known records an assertion that fails today because of open work. It never

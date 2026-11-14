@@ -107,6 +107,7 @@ func clearForResume(f *control.File) resumeEffect {
 	e := resumeEffect{Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed,
 		Note: f.Note != "", OpenQuestion: f.OpenQuestion != nil, NewEpisode: f.EpisodeHold}
 	f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+	f.StopLanesAt, f.StopLanesDropQueued = nil, false
 	f.Note, f.EpisodeHold, f.OpenQuestion, f.BriefHold = "", false, nil, nil
 	return e
 }
@@ -249,9 +250,14 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 				return err
 			}
 			defer held.Release()
-			before, _, err := binding()
+			before, checked, err := binding()
 			if err != nil {
 				return fail("resume_evidence_unavailable")
+			}
+			// A reviewed resume (expect) is refused before its ticket would
+			// replace one another client prepared.
+			if expect != "" && controlDigest(checked) != expect {
+				return fail("observation_changed")
 			}
 			snapshot := readClientStatus(ctx, dir, id, private, true, defaultStaleAfter, now().UTC(), inspectDaemon)
 			if snapshot.Outcome != "available" {

@@ -4,12 +4,17 @@
 package state
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -44,6 +49,21 @@ type File struct {
 	// The longest of them is the loop's usual interval, which tells a gap in
 	// which no check ran from a scheduler that is simply slow.
 	RecentCheckGaps []time.Duration `json:"recentCheckGapsNs,omitempty"`
+	// StartedBy is the scheduler identity the last check was started with,
+	// when one was supplied with tick --routine. ScheduleGaps are the
+	// overdue rule's own record of the last few gaps between checks, not
+	// capped as RecentCheckGaps are. CheckGapPending is a gap a dry run saw,
+	// for the next real check to report. A reported gap needs no record: the
+	// check that reports it saves its own time first, which ends the gap.
+	// CheckFinishedAt is when the last check finished: CheckedAt is when it
+	// began.
+	CheckFinishedAt time.Time       `json:"checkFinishedAt,omitempty"`
+	StartedBy       *Routine        `json:"startedBy,omitempty"`
+	ScheduleGaps    []time.Duration `json:"scheduleGapsNs,omitempty"`
+	// ScheduleWindowID names the operating window ScheduleGaps were
+	// recorded under; empty for none.
+	ScheduleWindowID string `json:"scheduleWindow,omitempty"`
+	CheckGapPending  *Gap   `json:"checkGapPending,omitempty"`
 	// ActiveSince is the earliest moment the stall clock may count from: when
 	// the target was seen active again after an error or an outage, or the
 	// last Git change moved forward by time in which no check ran. Zero means
@@ -56,16 +76,21 @@ type File struct {
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
 	// until the check itself passes or the session is seen active or idle.
-	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
-	NetworkVerifications int            `json:"networkVerifications,omitempty"`
-	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`
-	NetworkDistrusted    bool           `json:"networkDistrusted,omitempty"`
-	FailedChecks         int            `json:"failedChecks,omitempty"`
-	FailedSince          time.Time      `json:"failedSince,omitempty"`
-	HandoffDeferrals     int            `json:"handoffDeferrals,omitempty"`
-	ExactCut             map[string]int `json:"exactCut,omitempty"`
-	Fingerprint          string         `json:"fingerprint,omitempty"`
-	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
+	NetworkVerifiedAt    time.Time `json:"networkVerifiedAt,omitempty"`
+	NetworkVerifications int       `json:"networkVerifications,omitempty"`
+	NetworkReportedAt    time.Time `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted    bool      `json:"networkDistrusted,omitempty"`
+	// StartRefused records that the adapter refused to start a turn before
+	// anything could reach the agent, since when, and its fixed reason. It
+	// is cleared by the next send the adapter accepts or fails in any other
+	// way. Nothing is counted while it stands.
+	StartRefused     *StartRefused  `json:"startRefused,omitempty"`
+	FailedChecks     int            `json:"failedChecks,omitempty"`
+	FailedSince      time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals int            `json:"handoffDeferrals,omitempty"`
+	ExactCut         map[string]int `json:"exactCut,omitempty"`
+	Fingerprint      string         `json:"fingerprint,omitempty"`
+	LastProgressAt   time.Time      `json:"lastProgressAt,omitempty"`
 	// ProgressChangedAt is when a check last saw the repositories' fingerprint
 	// change, or, with ProgressBaseline, when one first recorded it (no change
 	// is known before then). Unlike LastProgressAt it is never moved forward
@@ -79,13 +104,31 @@ type File struct {
 	LastCheck         *Check    `json:"lastCheck,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
 	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because the
+	// turn looked hung, and LastHeldNudgeAt when the latest was. A held-back
+	// nudge sets LastWakeAt as a sent one does, to keep the stall rule's
+	// spacing; LastSentAt is when something was last actually sent.
+	HeldNudges        int       `json:"heldNudges,omitempty"`
+	LastHeldNudgeAt   time.Time `json:"lastHeldNudgeAt,omitempty"`
+	LastSentAt        time.Time `json:"lastSentAt,omitempty"`
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
+	// BBPath is the absolute path of the bb executable the latest check
+	// started, as the system resolved the configured command. A stop or a
+	// lane count run with a shorter PATH (the panel, the menu) uses it when
+	// the configured command is a bare name it cannot find.
+	BBPath string `json:"bbPath,omitempty"`
+	// LaneStop is the latest stop that covered the lanes: what it found and
+	// did, by count. It is about the request in control.json's stopLanesAt.
+	LaneStop *LaneStop `json:"laneStop,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// RoutesUnreadable is true while a loop that follows the standard route
+	// list cannot read it, so that beginning and ending are each reported once.
+	RoutesUnreadable bool `json:"routesUnreadable,omitempty"`
 	// ClaimUnavailable is set while checks run without a session claim
 	// because there is no user state directory to keep claims in; its start
 	// and end are reported once each.
@@ -122,8 +165,15 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// LimitResetsAt is the structured reset of the provider limit the last
+	// check waited on, when it waited on one with a reset still ahead; zero
+	// otherwise. A daemon checks again at it.
+	LimitResetsAt time.Time `json:"limitResetsAt,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// Lanes is the record of lane recovery (bb.children.retry_errored). It
+	// holds hashes of lane IDs, never the IDs.
+	Lanes *LaneRecovery `json:"lanes,omitempty"`
 	// SendsRecorded is the sequence of the last intended send (sends.json)
 	// whose outcome this file records. An intent after it was made by a
 	// check that could not save what happened.
@@ -147,6 +197,9 @@ type File struct {
 	// or by the owning agent, so the count is shown in status.
 	ResumeEpisodes      int       `json:"resumeEpisodes,omitempty"`
 	LastResumeEpisodeAt time.Time `json:"lastResumeEpisodeAt,omitempty"`
+	// HungTurn watches an active turn through a network outage for signs
+	// that it hung. See the supervisor's hungTurn.
+	HungTurn *HungTurn `json:"hungTurn,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -187,6 +240,74 @@ type ChildErrorReport struct {
 	Errored  int  `json:"errored"`
 	Running  int  `json:"running"`
 	Complete bool `json:"complete"`
+}
+
+// LaneRecovery is what the supervisor remembers about the lanes of the
+// current target, for bb.children.retry_errored. Every key is a hash of a
+// lane ID keyed with the loop's lanes.key (LaneHash); no ID, title or text
+// is stored.
+type LaneRecovery struct {
+	// SeenActive is when each lane was last seen working. A lane absent from
+	// it is never retried.
+	SeenActive map[string]time.Time `json:"seenActive,omitempty"`
+	// Retries holds the lanes that were retried or looked at and not yet forgotten.
+	Retries map[string]LaneRetry `json:"retries,omitempty"`
+	// EpisodeRetries counts retries in the current episode: since the last
+	// check at which no lane was still being recovered (retried and not
+	// given up). A given-up lane does not keep an episode open.
+	EpisodeRetries int `json:"episodeRetries,omitempty"`
+	// Reports counts child_recovery reports in the same episode.
+	Reports int `json:"reports,omitempty"`
+	// Blocked says why no lane can be retried at all for now: the provider
+	// has no turn retry ("unsupported") or the sends left are kept for the
+	// supervised session ("send_allowance"). While it is set no lane is
+	// withheld from the notice to the session.
+	Blocked string `json:"blocked,omitempty"`
+	// Deferred lists lanes the last check did not reach for lack of time;
+	// the next check takes them first.
+	Deferred []string `json:"deferred,omitempty"`
+	// Last summarizes the latest check that did lane work, for status.
+	Last *LaneCheck `json:"last,omitempty"`
+}
+
+// LaneRetry is one lane's record.
+type LaneRetry struct {
+	Attempts int       `json:"attempts,omitempty"`
+	LastAt   time.Time `json:"lastAt,omitempty"`
+	// LookedAt is when the lane was last inspected and left alone. It spaces
+	// inspections the way LastAt spaces retries.
+	LookedAt time.Time `json:"lookedAt,omitempty"`
+	// NoOps counts consecutive retries the provider answered without doing
+	// anything. Three and the lane is given up.
+	NoOps int `json:"noOps,omitempty"`
+	// DayStart and DayRetries count the lane's retries in a 24-hour window
+	// that outlasts a recovery, so a lane that fails again an hour after
+	// each retry is bounded.
+	DayStart   time.Time `json:"dayStart,omitempty"`
+	DayRetries int       `json:"dayRetries,omitempty"`
+	// Outcome is the provider's answer to the last retry, or the reason the
+	// lane was last not retried.
+	Outcome string `json:"outcome,omitempty"`
+	GivenUp bool   `json:"givenUp,omitempty"`
+	// Reported: a child_recovery report has covered this lane's give-up or
+	// its failure class.
+	Reported bool `json:"reported,omitempty"`
+	// HealthySince is when the lane was first seen out of error since its
+	// last failure. The record is dropped once that has lasted
+	// progress.min_wake_interval.
+	HealthySince time.Time `json:"healthySince,omitempty"`
+}
+
+// LaneCheck is the lane work of one check. Counts only.
+type LaneCheck struct {
+	At       time.Time `json:"at"`
+	Retried  int       `json:"retried,omitempty"`
+	Deferred int       `json:"deferred,omitempty"`
+	GivenUp  int       `json:"givenUp,omitempty"`
+	// NotRetried counts lanes looked at and left alone, by reason.
+	NotRetried map[string]int `json:"notRetried,omitempty"`
+	// Waiting is "network" when the connectivity check failed.
+	Waiting string `json:"waiting,omitempty"`
 }
 
 // TurnRetry records the last time a failed turn was retried by reference
@@ -296,6 +417,8 @@ type BriefRecord struct {
 func (f *File) ClearChildErrors() {
 	f.ChildErrorsAnnounced, f.ChildErrorsAnnouncedV1, f.ChildErrorNoticeFor, f.ChildErrorNoticeAttempts = nil, nil, "", 0
 	f.ChildErrorReport = nil
+	// The lanes belong to the conversation that was left.
+	f.Lanes = nil
 }
 
 // ClearBriefs starts a new episode for handoff and switch-back briefs.
@@ -434,7 +557,7 @@ func Save(stateDir string, f File) error {
 	}
 	// This record is what stops a stop or prompt being repeated. Sync it
 	// before publishing, as the send ledger does. Not a power-loss guarantee.
-	if err := tmp.Sync(); err != nil {
+	if err := snapshot.Sync(tmp); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -485,4 +608,124 @@ func Append(stateDir string, e Event) error {
 type Brief struct {
 	Action string `json:"action"`
 	Target string `json:"target"`
+}
+
+// HungTurn is the watch kept on one active turn after an outage. Turn names
+// the turn; OutageAt is when the silence must have begun by (the outage, or
+// after a gap the computer's waking); Since is when every sign of a hung
+// turn first held, zero while they do not; HeldNudges counts the nudges held
+// back for it (each also counted in Nudges, as a sent one is); Reported
+// says its report was sent.
+type HungTurn struct {
+	Turn       string    `json:"turn"`
+	OutageAt   time.Time `json:"outageAt"`
+	Since      time.Time `json:"since,omitempty"`
+	HeldNudges int       `json:"heldNudges,omitempty"`
+	Reported   bool      `json:"reported,omitempty"`
+}
+
+// LaneStop is what a stop covering the lanes did, by count. No thread is
+// named in it.
+type LaneStop struct {
+	// For is the request it carries out (control.json's stopLanesAt).
+	For time.Time `json:"for"`
+	At  time.Time `json:"at"`
+	// Outcome: done (every thread inside the bounds was looked at),
+	// incomplete (the check ran out of time; the next one goes on), or
+	// not_applicable (the adapter has no lanes).
+	Outcome string `json:"outcome"`
+	// Parent is what is known of the supervised conversation itself:
+	// stopped (by this request's checks), stop_failed, stopped_earlier (by
+	// an earlier check for this stop), not_running, or not_observed.
+	Parent      string `json:"parent"`
+	Stopped     int    `json:"stopped"`
+	AlreadyIdle int    `json:"alreadyIdle"`
+	// OtherLoop counts lanes another loop supervises, left to that loop.
+	OtherLoop int `json:"otherLoop"`
+	// Failed counts lanes not stopped, by error class.
+	Failed map[string]int `json:"failed,omitempty"`
+	// NotChecked counts threads past the bounds. NotCheckedAtLeast: some
+	// were never listed, so the count is a lower bound.
+	NotChecked        int  `json:"notChecked"`
+	NotCheckedAtLeast bool `json:"notCheckedAtLeast,omitempty"`
+	// RetriesCancelled counts provider retries cancelled in lanes in error;
+	// QueuedNotCancelled counts lanes whose queued retry could not be.
+	RetriesCancelled   int `json:"retriesCancelled,omitempty"`
+	QueuedNotCancelled int `json:"queuedNotCancelled,omitempty"`
+	// ListingsUnread counts listings that could not be read in any of
+	// LaneStopListingTries checks; what is below them was not checked.
+	ListingsUnread int `json:"listingsUnread,omitempty"`
+	// NotStarted counts lanes that had not started (pending) or were idle
+	// with messages queued, and were left alone: QueuedKept messages are
+	// still queued in them, and BB may run them. Dequeued counts such lanes
+	// whose messages were deleted because the request asked for it
+	// (--drop-queued); QueuedDeleted counts those messages, whose text was
+	// not kept.
+	NotStarted    int `json:"notStarted,omitempty"`
+	QueuedKept    int `json:"queuedKept,omitempty"`
+	Dequeued      int `json:"dequeued,omitempty"`
+	QueuedDeleted int `json:"queuedDeleted,omitempty"`
+	// IncompleteBecause, with Outcome incomplete: "time" (the check's time
+	// ran out) or "listing" (a listing could not be read).
+	IncompleteBecause string `json:"incompleteBecause,omitempty"`
+	Reported          bool   `json:"reported,omitempty"`
+	// Carried between the checks of one request, under the loop's keyed
+	// lane hashes: the lanes stopped and those whose stop failed (by class),
+	// so a pass that goes on counts them once and never retries a failed
+	// stop; and how many checks found a listing they could not read.
+	StoppedLanes  []string          `json:"stoppedLanes,omitempty"`
+	DequeuedLanes []string          `json:"dequeuedLanes,omitempty"`
+	FailedLanes   map[string]string `json:"failedLanes,omitempty"`
+	ListingTries  int               `json:"listingTries,omitempty"`
+}
+
+// Counts is l without its bookkeeping (the lane hashes and the listing
+// tries), for what a person or a client is shown.
+func (l LaneStop) Counts() LaneStop {
+	l.StoppedLanes, l.DequeuedLanes, l.FailedLanes, l.ListingTries = nil, nil, nil, 0
+	return l
+}
+
+// LaneStopListingTries is how many checks try a listing that cannot be read
+// before the stop reports what is below it as not checked.
+const LaneStopListingTries = 3
+
+// LaneKeyName is the private key that names lanes in sends.json.
+const LaneKeyName = "lanes.key"
+
+// LaneKey returns the loop's lane key, making it the first time. Lanes are
+// recorded under a hash keyed with it, never by ID, so the same lane has a
+// different name in every loop. It is written before it is first used.
+func LaneKey(dir string) ([]byte, error) {
+	path := filepath.Join(dir, LaneKeyName)
+	if b, err := os.ReadFile(path); err == nil {
+		if key, err := hex.DecodeString(strings.TrimSpace(string(b))); err == nil && len(key) == 32 {
+			return key, nil
+		}
+		return nil, fmt.Errorf("%s is not a lane key", LaneKeyName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if err := saveAllowance(dir, LaneKeyName, []byte(hex.EncodeToString(key))); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// LaneHash names a lane with the loop's key.
+func LaneHash(key []byte, id string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil)[:12])
+}
+
+// StartRefused is a standing refusal to start turns. Reason is one of the
+// adapter's fixed texts, never agent output.
+type StartRefused struct {
+	Since  time.Time `json:"since"`
+	Reason string    `json:"reason"`
 }

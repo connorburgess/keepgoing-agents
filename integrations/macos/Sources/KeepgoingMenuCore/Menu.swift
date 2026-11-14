@@ -1,8 +1,8 @@
 import Foundation
 
 // The menu's contents, decided here so they can be tested without AppKit.
-// Every row except the last either opens the panel or is Refresh or Quit;
-// the last row is the single dimmed status line.
+// Every row except the last opens the panel, opens a loop's choices, stops
+// the panel's page or quits; the last row is the single dimmed status line.
 
 /// One loop as `keepgoing panel list --json` reports it. The phrase is the
 /// panel page's own wording; this file never invents a state.
@@ -15,14 +15,22 @@ public struct PanelLoop: Decodable, Equatable {
     /// The panel's no-progress sentence when that flag is raised, absent
     /// otherwise. It informs and is never a need: it changes no badge.
     public let noProgress: String?
+    /// Which changes fit the loop's control flags, as the page offers them:
+    /// pause, stop, resume. Absent from a CLI that has no client review.
+    public var can: [String]? = nil
+    /// The time of the loop's last check, when it needs a person because its
+    /// checks have stopped. See OverdueNotices.
+    public let overdueSince: String?
 
-    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil) {
+    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil, can: [String]? = nil, overdueSince: String? = nil) {
         self.key = key
         self.name = name
         self.state = state
         self.phrase = phrase
         self.needsYou = needsYou
         self.noProgress = noProgress
+        self.can = can
+        self.overdueSince = overdueSince
     }
 }
 
@@ -35,6 +43,9 @@ public struct PanelList: Decodable, Equatable {
     public let unread: Int
     public let omitted: Int
     public let loops: [PanelLoop]
+    /// Changes that can be made to every loop at once (`client review|apply
+    /// --all`). Absent from a CLI that cannot.
+    public var canAll: [String]? = nil
 }
 
 /// What `keepgoing panel status --json` says about the panel's background
@@ -43,6 +54,11 @@ public struct PanelStatus: Decodable, Equatable {
     let schemaVersion: Int
     public let running: Bool
     public let idleRemainingSeconds: Int?
+    /// Started with --allow-changes.
+    public var changesAllowed: Bool? = nil
+    /// The page footer's statement about allowing changes. Absent from a CLI
+    /// that predates it, and then the menu does not offer to allow them.
+    public var exposure: String? = nil
 }
 
 /// When the app reads without being asked. One list read a minute keeps the
@@ -90,14 +106,39 @@ extension Contract {
     }
 }
 
-/// What a row does when chosen. `nil` on a row means it cannot be chosen.
+/// Every command the menu can run, and what a row does when chosen. `nil`
+/// on a row means it cannot be chosen. `MenuBuilder.arguments` is the
+/// allow-list: nothing else is ever run.
 public enum MenuCommand: Equatable {
+    /// Runs `keepgoing panel list --json`. Never on a row.
+    case readList
+    /// Runs `keepgoing panel status --json`. Never on a row.
+    case readStatus
     /// Runs `keepgoing panel`: the page opens on what needs a person.
     case openPanel
     /// Runs `keepgoing panel --loop <key>`.
     case openLoop(key: String)
+    /// Runs `keepgoing panel --allow-changes`, after a confirmation.
+    case openPanelWithChanges
     /// Runs `keepgoing panel stop`. Supervision is not affected.
     case stopPanel
+    /// Runs `keepgoing client review <action> --loop <key> --json`, which
+    /// reads and changes nothing; its review is then shown for confirmation.
+    case review(LoopAction, key: String)
+    /// Runs `keepgoing client apply <action> --loop <key> --expect <digest>
+    /// [--lanes] [--immediately] --json`, only from a confirmed review.
+    /// `--drop-queued` deletes messages queued in lanes that have not
+    /// started; it is passed only with `--lanes`, and only for the stop
+    /// option that says so.
+    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool, dropQueued: Bool = false)
+    /// Runs `keepgoing client review pause|stop --all --json`, which reads
+    /// and changes nothing; its review is then shown for confirmation.
+    case reviewAll(LoopAction)
+    /// Runs `keepgoing client apply pause|stop --all --expect KEY=VALUE…
+    /// [--lanes] --json`, only from a confirmed review of every loop.
+    /// `--lanes` is for a stop, when its option says so; whether each loop
+    /// stops at once is what that loop's own review said.
+    case applyAll(LoopAction, expects: [LoopExpect], lanes: Bool = false)
     case quit
 }
 
@@ -117,7 +158,9 @@ public struct MenuRow: Equatable {
     /// The full text when the title was shortened; empty otherwise.
     public let toolTip: String
     public let command: MenuCommand?
-    public var isEnabled: Bool { command != nil }
+    /// A loop's choices, shown as its submenu.
+    public var submenu: [MenuRow] = []
+    public var isEnabled: Bool { command != nil || !submenu.isEmpty }
 }
 
 public struct MenuModel: Equatable {
@@ -249,9 +292,19 @@ public enum MenuBuilder {
                 // The panel's own words: its phrase, and "no progress" as the
                 // panel's picker row says it when that flag is raised.
                 let phrase = shortened(Contract.text(loop.phrase) + (flag.isEmpty ? "" : " · no progress"), to: maxPhrase)
+                let choices = loopChoices(loop)
                 rows.append(MenuRow(kind: .loop, title: short, detail: phrase, symbol: symbols[loop.state] ?? "questionmark.circle",
-                                    accessibilityLabel: flag.isEmpty ? "\(name), \(phrase)" : "\(name), \(Contract.text(loop.phrase)). \(flag)", accessibilityHelp: "Opens this loop in the panel.",
-                                    toolTip: short == name ? "" : name, command: .openLoop(key: loop.key)))
+                                    accessibilityLabel: flag.isEmpty ? "\(name), \(phrase)" : "\(name), \(Contract.text(loop.phrase)). \(flag)",
+                                    accessibilityHelp: choices.count > 1 ? "Shows what you can do with this loop." : "Opens this loop in the panel.",
+                                    toolTip: short == name ? "" : name, command: choices.count > 1 ? nil : .openLoop(key: loop.key), submenu: choices.count > 1 ? choices : []))
+            }
+            if list.canAll?.contains("pause") == true {
+                rows.append(action("Pause All Loops…", .reviewAll(.pause), symbol: "pause.circle",
+                                   help: "Shows which loops pausing every loop changes, then asks you to confirm."))
+            }
+            if list.canAll?.contains("stop") == true {
+                rows.append(action("Stop All Loops…", .reviewAll(.stop), symbol: "stop.circle",
+                                   help: "Shows which loops stopping every loop changes, then asks you to confirm."))
             }
             let total = list.loops.count + list.omitted
             // Whenever some loops are not listed here, whether this menu cut
@@ -272,6 +325,10 @@ public enum MenuBuilder {
             line = facts.isEmpty ? read : (facts + [read + "."]).joined(separator: " ")
         }
         rows.append(separator)
+        if let panel, panel.exposure != nil {
+            rows.append(action("Open Panel with Controls…", .openPanelWithChanges, symbol: "slider.horizontal.3",
+                               help: "Opens the panel so its page can pause, stop and resume loops. Asks first."))
+        }
         if let panel, panel.running {
             // Named for what it stops, the page, so it is not taken for
             // stopping a loop; what happens to the loops is in the help.
@@ -283,20 +340,59 @@ public enum MenuBuilder {
         return MenuModel(rows: rows, badge: badge, iconAccessibilityLabel: iconLabel)
     }
 
+    /// A loop's submenu: open it in the panel and, when the CLI says which
+    /// changes fit its flags, each of those, Stop last. With nothing to
+    /// change it has only the one choice, and the row opens the loop itself.
+    static func loopChoices(_ loop: PanelLoop) -> [MenuRow] {
+        let rows = [action("Open in Panel", .openLoop(key: loop.key), symbol: "macwindow", help: "Opens this loop in the panel.")]
+        let can = Set(loop.can ?? [])
+        var changes: [MenuRow] = []
+        if can.contains("pause") {
+            changes.append(action("Pause…", .review(.pause, key: loop.key), symbol: "pause.circle", help: "Shows what pausing does, then asks you to confirm."))
+        }
+        if can.contains("resume") {
+            changes.append(action("Resume…", .review(.resume, key: loop.key), symbol: "play.circle", help: "Shows what resuming clears, then asks you to confirm."))
+        }
+        if can.contains("stop") {
+            changes.append(action("Stop…", .review(.stop, key: loop.key), symbol: "stop.circle", help: "Shows what stopping does, then asks you to confirm."))
+        }
+        return changes.isEmpty ? rows : rows + [separator] + changes
+    }
+
     /// The arguments each command runs, before the registry and panel
-    /// directories are appended. Quit runs nothing.
+    /// directories are appended: the menu's whole allow-list. A value taken
+    /// from a reply is passed back only after it matches its pattern. Quit
+    /// runs nothing.
     public static func arguments(_ command: MenuCommand) -> [String]? {
         switch command {
+        case .readList: return ["panel", "list", "--json"]
+        case .readStatus: return ["panel", "status", "--json"]
         case .openPanel: return ["panel"]
         case .openLoop(let key): return Contract.validKey(key) ? ["panel", "--loop", key] : nil
+        case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]
+        case .review(let action, let key): return Contract.validKey(key) ? ["client", "review", action.rawValue, "--loop", key, "--json"] : nil
+        case .apply(let action, let key, let expect, let lanes, let immediately, let dropQueued):
+            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately && !dropQueued), !dropQueued || lanes else { return nil }
+            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : [])
+                + (dropQueued ? ["--drop-queued"] : []) + ["--json"]
+        case .reviewAll(let action): return action != .resume ? ["client", "review", action.rawValue, "--all", "--json"] : nil
+        case .applyAll(let action, let expects, let lanes):
+            let keys = expects.map(\.key)
+            guard action != .resume, !lanes || action == .stop, (1...128).contains(expects.count), Set(keys).count == keys.count,
+                  expects.allSatisfy({ Contract.validKey($0.key) && Contract.validExpect($0.expect) }) else { return nil }
+            var arguments: [String] = ["client", "apply", action.rawValue, "--all"]
+            for e in expects { arguments += ["--expect", e.key + "=" + e.expect] }
+            if lanes { arguments.append("--lanes") }
+            return arguments + ["--json"]
         case .quit: return nil
         }
     }
 
     /// Two models have the same shape when their rows are the same kinds
-    /// running the same commands, so an open menu can be updated in place.
+    /// running the same commands, with submenus of the same shape, so an open
+    /// menu can be updated in place.
     public static func sameShape(_ a: [MenuRow], _ b: [MenuRow]) -> Bool {
-        a.count == b.count && zip(a, b).allSatisfy { $0.kind == $1.kind && $0.command == $1.command }
+        a.count == b.count && zip(a, b).allSatisfy { $0.kind == $1.kind && $0.command == $1.command && sameShape($0.submenu, $1.submenu) }
     }
 }

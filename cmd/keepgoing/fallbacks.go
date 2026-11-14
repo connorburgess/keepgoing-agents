@@ -55,6 +55,7 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		e.errf("%v", err)
 		return exitUsage
 	}
+	plan.Timing = cfg.TimingSummary()
 	w := e.stderr
 	if dryRun {
 		w = e.stdout
@@ -123,8 +124,8 @@ func fallbacksList(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 }
 
 func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallbacksOut {
-	fb := cfg.FallbackSet
 	st, _ := state.Load(cfg.Loop.StateDir)
+	fb := effectiveRoutes(cfg, st)
 	group := cfg.Loop.Group
 	if c, ok := fb.Find(st.Target()); ok {
 		group = c.Group

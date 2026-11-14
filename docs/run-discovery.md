@@ -106,6 +106,8 @@ keepgoing enable -c loop.yaml --routine example-scheduler/nightly/2026-11-13
 keepgoing resume -c loop.yaml --routine example-scheduler/nightly/2026-11-14
 ```
 
+A BB script automation that runs `keepgoing tick` should pass `--routine bb-automation/<automation id>`: `status`, `doctor`, the panel and the `check_gap` report then name that automation when checks stop. The check also records the identity it was started with in `state.json` (`startedBy`), replaced at every check.
+
 The value is `source/routine` or `source/routine/invocation`. Each part is 1–128 letters, digits and `. _ : @ -`, starting with a letter or digit. A timestamp with `+00:00`, a name with a space or an ID containing `/` does not fit; pass an identifier that does. `start`, `daemon` and the other commands do not take the flag.
 
 A value that cannot be recorded, including an empty one, is handled by what the command is for:
@@ -368,7 +370,7 @@ Restart must retain the appropriate run reference while recording a new process/
 | Saved headless session ID | A locally recorded resume reference when valid | Provider existence, resumability, a UI URL or successful execution |
 | Last automatic prompt provenance | The latest returned send's target, goal revision and outcome | Pre-send intent, complete attempt history or confirmed provider delivery |
 | Incident journal and `runs.jsonl` | Structured diagnostic observations and events | A durable run-episode ID merely because the file is called `runs.jsonl` |
-| Read-only native menu preview | A view of registered status | Current-run/chat traversal or open-thread support |
+| Native menu preview | A view of registered status, with pause, stop and resume after a confirmation | Current-run/chat traversal or open-thread support |
 | `keepgoing runs` (unreleased) | Recorded runs, sends and chat/session references by exact ID; the child conversations and owner a loop is waiting on | Live session state, an openable link, who holds a lock, or which chat a send reached when its alias named several |
 
 D4–D6 must preserve these evidence boundaries. Local registration remains explicit; graph records live outside repositories. Separate identifiers and safe display labels from private task text, paths, credentials and URLs containing sensitive components. Private display is opt-in, and graph relationships or provider links must not silently extend webhook/report payloads or introduce central analytics. A future client uses the same versioned resolver; it must not infer more certainty than CLI output provides.

@@ -45,8 +45,26 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
 		e.errf("warning: %s", w)
 	}
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := cfg.FallbackSet; fb != nil && !l.FollowsStandard() {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+	}
+	if l.FollowsStandard() {
+		// Never a failure: a following loop is supervised whatever state the
+		// standard list is in.
+		switch fb := cfg.FallbackSet; {
+		case cfg.RouteList.Unreadable:
+			e.errf("warning: %s (%s: %s)", config.StandardRoutesUnreadable, cfg.RouteList.Problem, routesProblemText(cfg.RouteList.Problem))
+			if cfg.RouteList.Invalid != "" {
+				e.errf("  %s", strings.ReplaceAll(cfg.RouteList.Invalid, "\n", "\n  "))
+			}
+		case fb == nil:
+			e.errf("warning: follows the standard route list, but none of its routes applies to this loop; see keepgoing routes list")
+		default:
+			fmt.Fprintf(e.stdout, "ok: follows the standard route list (%d of its routes apply, min_healthy %d across %s)\n", len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+		}
+		for _, w := range cfg.RouteList.Warnings {
+			e.errf("warning: %s", w)
+		}
 	}
 	if limits := l.Limits.Configured(); len(limits) > 0 {
 		fmt.Fprintf(e.stdout, "bounds: %s\n", strings.Join(limits, ", "))
@@ -55,6 +73,13 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	}
 	if w := l.TickTimeoutWarning(); w != "" {
 		e.errf("warning: %s", w)
+	}
+	if ts := cfg.TimingSummary(); ts != nil {
+		fmt.Fprintln(e.stdout, ts.Collecting)
+		fmt.Fprintln(e.stdout, ts.Cost)
+		for _, w := range ts.Warnings {
+			e.errf("warning: %s", w)
+		}
 	}
 	if w := l.NetworkCheckWarning(); w != "" {
 		e.errf("warning: %s", w)
@@ -87,11 +112,40 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	return exitOK
 }
 
+// daemonKey carries what is known of the daemon running a pass.
+type daemonKey struct{}
+
+// daemonPassContext hands a pass what its daemon knows of itself: when it
+// started and when its last completed pass began and ended.
+func daemonPassContext(ctx context.Context, monitor *daemoninfo.Server) context.Context {
+	started := monitor.StartedAt()
+	if started.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, daemonKey{}, supervise.DaemonInfo{StartedAt: started, LastPassAt: monitor.LastPassAt(), LastPassStartedAt: monitor.LastPassStartedAt()})
+}
+
+// daemonOf is what a pass's context says of its daemon; zero outside one.
+func daemonOf(ctx context.Context) supervise.DaemonInfo {
+	d, _ := ctx.Value(daemonKey{}).(supervise.DaemonInfo)
+	return d
+}
+
+// tickOptions are a check's options from the command's context: the
+// scheduler identity, and the daemon running it, when one is.
+func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
+	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx)}
+}
+
 // tickOnce runs one pass under the tick lock.
 func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another tick holds the lock; skipping")
+		// Best effort, so the overdue rule can tell a hung check from a
+		// stopped scheduler: this check was started and turned away.
+		_ = state.NoteTurnedAway(cfg.Loop.StateDir, time.Now())
 		return exitSkipped
 	}
 	if err != nil {
@@ -106,7 +160,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		e.errf("%v; no tick performed; reload and retry", err)
 		return exitSkipped
 	}
-	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx), RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil}
+	opts := tickOptions(e, cfg, dryRun)
 	if fixedNow {
 		opts.Now = now
 	}
@@ -191,7 +245,9 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		pass := e
+		pass.ctx = daemonPassContext(e.ctx, monitor)
+		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
@@ -240,8 +296,8 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
-	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
-	monitor.Update("waiting", &deadline)
+	plan := planWait(cfg, time.Now())
+	monitor.Update("waiting", &plan.deadline)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -254,14 +310,70 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 			if ctx.Err() != nil {
 				return false
 			}
-			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
+			if now.After(plan.deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
+			}
+			if plan.online != nil && !now.Before(plan.nextNetwork) {
+				plan.nextNetwork = now.Add(plan.networkEvery)
+				if networkBack(ctx, cfg, plan.online) {
+					return ctx.Err() == nil // the network is back: check now
+				}
 			}
 			if poll(ctx) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
 	}
+}
+
+// networkRecheck is how often a waiting daemon checks whether the network is
+// back, while its last check found it down.
+var networkRecheck = time.Minute
+
+// connectivity is the loop's connectivity check; replaced in tests.
+var connectivity = supervise.Connectivity
+
+// waitPlan is when a daemon's next pass starts: at the end of its interval,
+// or at the structured reset of a provider limit the last check waited on if
+// that comes first; and, while the last check found the network down, as
+// soon as a connectivity check passes, tried every networkEvery.
+type waitPlan struct {
+	deadline, nextNetwork time.Time
+	networkEvery          time.Duration
+	online                func(context.Context) bool
+}
+
+func planWait(cfg *config.Config, now time.Time) waitPlan {
+	p := waitPlan{deadline: now.Add(cfg.Loop.Daemon.Interval.Duration)}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return p // the next pass reads the records and says what is wrong
+	}
+	if r := st.LimitResetsAt; r.After(now) && r.Before(p.deadline) {
+		p.deadline = r
+	}
+	if !st.NetworkDownSince.IsZero() {
+		if online := connectivity(cfg); online != nil {
+			p.online = online
+			p.networkEvery = max(networkRecheck, cfg.Loop.Daemon.ControlPoll.Duration)
+			p.nextNetwork = now.Add(p.networkEvery)
+		}
+	}
+	return p
+}
+
+// networkBack makes the loop's connectivity check under the tick lock, so it
+// never runs beside a check, and says whether it passed. A held lock is not
+// a pass: a check is under way.
+func networkBack(ctx context.Context, cfg *config.Config, online func(context.Context) bool) bool {
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		return false
+	}
+	defer l.Release()
+	ctx, cancel := context.WithTimeout(ctx, max(cfg.Loop.NetworkCheckTimeout(), time.Second))
+	defer cancel()
+	return online(ctx)
 }
 
 // Share the tick lock with manual ticks and retargets, and bound the whole
@@ -330,6 +442,7 @@ type statusOut struct {
 	PromptSend        promptSendStatus         `json:"promptSend"`
 	LimitWait         limitWaitStatus          `json:"limitWait"`
 	TurnRetry         turnRetryStatus          `json:"turnRetry"`
+	Lanes             lanesStatus              `json:"laneRecovery"`
 	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
 	NewThreads        newThreadStatus          `json:"newThreads"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
@@ -356,8 +469,12 @@ type statusOut struct {
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
-	StateDir       string               `json:"stateDir"`
-	Version        string               `json:"version"`
+	// Timing is what usage-aware timing does for this loop; absent when off.
+	Timing *config.TimingSummary `json:"timing,omitempty"`
+	// Routes is set for a loop that follows the standard route list.
+	Routes   *supervise.RouteNote `json:"routes,omitempty"`
+	StateDir string               `json:"stateDir"`
+	Version  string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -366,6 +483,7 @@ type statusOut struct {
 	TaskSource       string         `json:"taskSource"`
 	TaskFile         string         `json:"taskFile,omitempty"`
 	Runtime          runtimeStatus  `json:"runtime"`
+	Schedule         scheduleStatus `json:"schedule"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
 }
@@ -510,6 +628,7 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	printLimitWait(w, out.LimitWait)
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
+	printLanes(w, out.Lanes)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
@@ -550,6 +669,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintln(w)
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
+	}
+	if ctl.Stop && ctl.StopLanesAt != nil {
+		if l := out.State.LaneStop; l != nil && l.For.Equal(*ctl.StopLanesAt) {
+			fmt.Fprintf(w, "lane stop: at the check of %s, %s\n", when(l.At), describeLaneStop(*l))
+		} else {
+			fmt.Fprintf(w, "lane stop: requested at %s; the check that carries out the stop also stops the lanes\n", when(*ctl.StopLanesAt))
+		}
 	}
 	printDeliveryStatus(w, out.Notifications)
 	fmt.Fprintf(w, "window:    %s\n", out.Window)
@@ -606,7 +732,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			if c.ErroredChildrenPartial {
 				count = "at least " + count + " (child discovery was incomplete)"
 			}
-			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+			does := "keepgoing does not retry or message them, and stops them only for stop --lanes"
+			if out.Lanes.Enabled {
+				does = "keepgoing does not message them, and stops them only for stop --lanes; lane recovery is on and may ask BB to retry a failed turn (see lane recovery above)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); %s\n", count, does)
 		}
 		if c.ChildErrorNoticeStopped {
 			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
@@ -616,6 +746,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	if st.StartRefused != nil {
+		fmt.Fprintf(w, "turns:     none can be started, since %s: %s. Nothing is sent or counted while this stands\n", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason)
 	}
 	switch {
 	case st.NetworkDownSince.IsZero():
@@ -643,13 +776,33 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
 	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+	if out.Schedule.Overdue {
+		fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
+	}
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	// A held-back nudge moves LastWakeAt without sending anything.
+	lastSent := st.LastSentAt
+	if lastSent.IsZero() && st.LastHeldNudgeAt.IsZero() {
+		lastSent = st.LastWakeAt // recorded before lastSentAt existed
+	}
+	fmt.Fprintf(w, "last sent: %s\n", when(lastSent))
+	if st.HeldNudges > 0 {
+		fmt.Fprintf(w, "last nudge held back: %s (the turn looked hung; %d of %d nudges held back, not sent)\n", when(st.LastHeldNudgeAt), st.HeldNudges, st.Nudges)
+	}
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
 	}
 	if st.ResumeEpisodes > 0 {
 		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
+	}
+	if r := out.Routes; r != nil {
+		fmt.Fprintln(w, "routes:    follows the standard route list (keepgoing routes list)")
+		if r.Unreadable {
+			fmt.Fprintf(w, "  %s\n", config.StandardRoutesUnreadable)
+		}
+		if r.CurrentNotInList {
+			fmt.Fprintln(w, "  the current route is no longer in the list; the loop stays on it until the ordinary rules move it")
+		}
 	}
 	if r := out.Redundancy; r != nil {
 		verdict := "handoffs allowed"
@@ -665,6 +818,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
 	}
 	printUsage(w, "usage:     ", "projected: ", out.Usage)
+	if ts := out.Timing; ts != nil {
+		fmt.Fprintln(w, ts.Collecting)
+		fmt.Fprintln(w, ts.Cost)
+		for _, x := range ts.Warnings {
+			fmt.Fprintln(w, "warning: "+x)
+		}
+	}
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }
@@ -697,6 +857,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	if out.State.LaneStop != nil {
+		// Counts only: the lane hashes and listing tries are bookkeeping.
+		c := out.State.LaneStop.Counts()
+		out.State.LaneStop = &c
+	}
 	// The flag's three reads are not one snapshot. The send attempts and the
 	// history are read before the state that sets the window, so a check
 	// that runs during the read can only leave its own records out, for one
@@ -723,6 +888,10 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
+	// The lane record is per-lane hashes and their key. Status shows its
+	// counts above and never the record itself.
+	out.State.Lanes = nil
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
 	if _, err := state.LoadLedger(l.StateDir); err != nil {
 		out.SendRecord = sendRecordProblem
@@ -772,7 +941,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
-	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+	} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 		// A fallback that starts a new thread at handoff is a target only
 		// once its thread exists.
 		if a, known := st.CandidateAgent(c); known {
@@ -798,6 +967,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
+	out.Schedule = describeSchedule(&l, st, ctl, &out.Daemon, now)
 	if out.Daemon.State == "responsive" {
 		out.Runtime.NextCheck = out.Daemon.NextCheck
 	}
@@ -805,7 +975,12 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
 	out.Usage = []usageView{}
-	if fb := cfg.FallbackSet; fb != nil {
+	out.Timing = cfg.TimingSummary()
+	fb, outsideList := supervise.EffectiveRoutes(cfg, st)
+	if cfg.RouteList.Source == config.RoutesStandard {
+		out.Routes = &supervise.RouteNote{Source: cfg.RouteList.Source, Unreadable: cfg.RouteList.Unreadable, CurrentNotInList: outsideList}
+	}
+	if fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
@@ -922,8 +1097,27 @@ func controlCaller(f control.File) string {
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
+	return controlCmdLanes(e, cfg, cmd, note, false, false, takeOver...)
+}
+
+// controlCmdLanes is controlCmd, where for stop lanes asks for the stop to
+// cover the lanes as well, and dropQueued (with lanes) for the messages
+// queued in lanes that have not started to be deleted.
+func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQueued bool, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
-		l, err := lock.Acquire(cfg.Loop.StateDir)
+		acquire := lock.Acquire
+		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
+		if takingOver {
+			// The old owner's supervisor takes the check lock for each check
+			// and control poll; a takeover waits that out instead of being
+			// skipped, so the person asking for it does not have to guess.
+			acquire = func(dir string) (*lock.Lock, error) { return acquireWithin(e.ctx, dir, takeoverLockWait) }
+		}
+		l, err := acquire(cfg.Loop.StateDir)
+		if takingOver && errors.Is(err, lock.ErrHeld) {
+			e.errf("enable --take-over: the old owner's supervisor held this loop's check lock for all of %s, so nothing was taken over. It is busy with a check; run enable --take-over again.", takeoverLockWait)
+			return exitSkipped
+		}
 		if err != nil {
 			return ownershipError(e, err)
 		}
@@ -941,8 +1135,19 @@ func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) i
 			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
+			if !f.Stop {
+				f.StopLanesAt, f.StopLanesDropQueued = nil, false // the stop it belonged to has ended
+			}
 		},
-		"stop": func(f *control.File) { f.Stop = true },
+		"stop": func(f *control.File) {
+			f.Stop = true
+			if lanes {
+				// A new request each time, so asking again walks the lanes
+				// again.
+				at := time.Now().UTC()
+				f.StopLanesAt, f.StopLanesDropQueued = &at, dropQueued
+			}
+		},
 		"complete": func(f *control.File) {
 			if !f.Completed {
 				completionDeclaredAt = time.Now().UTC()
@@ -1161,6 +1366,12 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 			}
 		}
 	}
+	// The record of a route a following loop is on is saved before the target
+	// is, so a later change to the standard list cannot strand it.
+	if err := supervise.SaveCurrentRoute(cfg, cfg.FallbackSet, id); err != nil {
+		e.errf("retarget: could not save the record of route %s, so the target is unchanged: %v", id, err)
+		return exitFailed
+	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	st.ClearBriefs()      // an operator's retarget starts a new episode
@@ -1184,4 +1395,15 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// activeBB is the BB settings of the loop's active target, or nil.
+func activeBB(cfg *config.Config, target string) *config.BB {
+	if target == state.Primary {
+		return cfg.Loop.Agent.BB
+	}
+	if c, ok := currentRoutes(cfg).Find(target); ok {
+		return c.Agent.BB
+	}
+	return nil
 }

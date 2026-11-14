@@ -20,7 +20,7 @@ const laneSecret = "PRIVATE-LANE-TITLE"
 
 // laneFixture is a loop whose BB thread has three direct children: one with
 // a title, one whose title carries a control character, one with none.
-func laneFixture(t *testing.T) *fixture {
+func laneTitleFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t)
 	f.run("enable")
@@ -35,7 +35,7 @@ func laneFixture(t *testing.T) *fixture {
 // private file only, cleaned, keyed by the lanes' hashed keys, and dated by
 // the listing they came from; nothing else carries them.
 func TestLaneTitlesAreRecordedPrivatelyAndNowhereElse(t *testing.T) {
-	f := laneFixture(t)
+	f := laneTitleFixture(t)
 	f.tick()
 	dir := filepath.Join(f.dir, "state")
 	titles, err := state.LoadLaneTitles(dir)
@@ -86,7 +86,7 @@ func TestLaneTitlesAreRecordedPrivatelyAndNowhereElse(t *testing.T) {
 // by default a lane says one is withheld. A file written by another check
 // than the listing shown gives no titles.
 func TestLaneTitlesAreWithheldByDefaultInThePanel(t *testing.T) {
-	f := laneFixture(t)
+	f := laneTitleFixture(t)
 	f.tick()
 	regDir := filepath.Join(f.dir, "registry")
 	if code, out, errs := run2(f, "registry", "add", "--directory", regDir, "--json"); code != 0 {
@@ -141,7 +141,7 @@ func run2(f *fixture, args ...string) (int, string, string) {
 // An incomplete listing leaves the titles of the last complete one, dated by
 // it; removing the file changes no decision.
 func TestLaneTitlesChangeNoDecision(t *testing.T) {
-	f := laneFixture(t)
+	f := laneTitleFixture(t)
 	f.tick()
 	dir := filepath.Join(f.dir, "state")
 	first, _ := state.LoadLaneTitles(dir)

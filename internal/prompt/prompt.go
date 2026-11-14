@@ -37,16 +37,38 @@ func ComposeWake(loop config.Loop) (Message, error) {
 // WithChildErrors appends a fixed notice that n direct child threads are in
 // error. The wording never varies and carries only the count: no child ID,
 // title, task text or error detail.
-func WithChildErrors(m Message, n int) Message {
+func WithChildErrors(m Message, n int) Message { return WithChildErrorsRetried(m, n, 0) }
+
+// WithChildErrorsRetried is WithChildErrors for a loop that recovers lanes.
+// retried is how many of the n children keepgoing is recovering itself: it
+// has asked BB to retry them, or will on a coming check, and has not given
+// them up. With retried zero the wording is WithChildErrors'.
+func WithChildErrorsRetried(m Message, n, retried int) Message {
 	if n <= 0 {
 		return m
 	}
-	m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
+	if retried <= 0 {
+		m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d]\n"+
+			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
+			"keepgoing has not retried, messaged or stopped them and has not read their content. "+
+			"You own that work: decide whether to retry or replace it. "+
+			"This notice is sent once when a child newly enters an error state.\n", n, n)
+		return m
+	}
+	m.Text += fmt.Sprintf("\n\n[keepgoing:child-errors count=%d recovering=%d]\n"+
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check. "+
-		"keepgoing has not retried, messaged or stopped them and has not read their content. "+
-		"You own that work: decide whether to retry or replace it. "+
-		"This notice is sent once when a child newly enters an error state.\n", n, n)
+		"%s "+
+		"This notice is sent once when a child newly enters an error state.\n", n, retried, n, retriedSentence(n, retried))
 	return m
+}
+
+// retriedSentence says, with counts only, which of the n errored children
+// keepgoing is recovering and which are left to the session.
+func retriedSentence(n, retried int) string {
+	return fmt.Sprintf("keepgoing is recovering %d of them itself: it asks BB to retry their failed turn, by reference and without sending a message, "+
+		"and it will tell you if it gives one up. It does not name them, has not messaged any child and has not read their content. "+
+		"The other %d are yours: decide whether to retry or replace that work. "+
+		"Before you retry or replace any child, check its current state, so that work keepgoing has restarted is not started twice.", retried, max(0, n-retried))
 }
 
 // ChildErrorsOnly is the whole message of the wake that errored children cause
@@ -54,12 +76,25 @@ func WithChildErrors(m Message, n int) Message {
 // context: the session is waiting on purpose, and a "continue" instruction
 // would invite the duplicate work that waiting avoids. Fixed wording, counts only.
 func ChildErrorsOnly(errored, running int) Message {
-	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+	return ChildErrorsOnlyRetried(errored, running, 0)
+}
+
+// ChildErrorsOnlyRetried is ChildErrorsOnly for a loop that recovers lanes;
+// see WithChildErrorsRetried.
+func ChildErrorsOnlyRetried(errored, running, retried int) Message {
+	if retried <= 0 {
+		return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d]\n"+
+			"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
+			"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
+			"This is not an instruction to continue the task: the running children are still working. "+
+			"You own the errored work: decide whether to retry or replace it. "+
+			"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
+	}
+	return Message{Text: fmt.Sprintf("[keepgoing:child-errors count=%d running=%d recovering=%d]\n"+
 		"keepgoing notice: %d direct child thread(s) of this thread were in an error state at this check, and %d other direct child thread(s) are still running. "+
-		"keepgoing has not retried, messaged or stopped any of them and has not read their content. "+
+		"%s "+
 		"This is not an instruction to continue the task: the running children are still working. "+
-		"You own the errored work: decide whether to retry or replace it. "+
-		"This notice is sent once when a child newly enters an error state.\n", errored, running, errored, running)}
+		"This notice is sent once when a child newly enters an error state.\n", errored, running, retried, errored, running, retriedSentence(errored, retried))}
 }
 
 // WithGoal adds only the latest revision, including private text and references,

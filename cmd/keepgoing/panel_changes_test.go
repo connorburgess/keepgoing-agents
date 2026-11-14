@@ -326,7 +326,7 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 	if p.Preview == nil {
 		t.Fatalf("%+v", p.Result)
 	}
-	if r := c.confirm("session-a", key, "resume", p.Preview.Form); r.Result == nil || r.Result.Outcome != "done" || controlOf(t, held).AwaitingUser {
+	if r := c.confirm("session-a", key, "resume", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "done" || controlOf(t, held).AwaitingUser {
 		t.Fatalf("%+v", r.Result)
 	}
 	// A loop in the middle of a check: refused, offered again, nothing saved.
@@ -335,19 +335,19 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := c.confirm("session-a", key, "pause", p.Preview.Form)
+	r := c.confirm("session-a", key, "pause", p.Preview.Form, holdOptions{})
 	_ = lk.Release()
 	if r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "keepgoing is in the middle of a check on this loop. Nothing was changed." || controlOf(t, held).Paused {
 		t.Fatalf("%+v", r.Result)
 	}
 	// The value is spent by that attempt: a second confirmation is refused.
-	if r := c.confirm("session-a", key, "pause", p.Preview.Form); r.Result == nil || r.Result.Outcome != "review_again" || controlOf(t, held).Paused {
+	if r := c.confirm("session-a", key, "pause", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "review_again" || controlOf(t, held).Paused {
 		t.Fatalf("%+v", r.Result)
 	}
 	// An expired review.
 	p = c.prepare("session-a", key, "pause")
 	now = now.Add(panelHoldFormTTL)
-	if r := c.confirm("session-a", key, "pause", p.Preview.Form); r.Result == nil || r.Result.Outcome != "review_again" || r.Result.Text != "This review expired. Nothing was changed. Review it again." || controlOf(t, held).Paused {
+	if r := c.confirm("session-a", key, "pause", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "review_again" || r.Result.Text != "This review expired. Nothing was changed. Review it again." || controlOf(t, held).Paused {
 		t.Fatalf("%+v", r.Result)
 	}
 	// Every save evidence mapped to its words.
@@ -357,8 +357,8 @@ func TestPanelChangesActAsNoThreadAndRetryNothing(t *testing.T) {
 		text    string
 	}{
 		{clientHoldReport{ControlSave: "confirmed", Issues: []string{"incident_history_unavailable"}}, "done", "Paused: keepgoing will send nothing; a check already running finishes. Its history could not record this change."},
-		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state below before doing anything else."},
-		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state below before doing anything else."},
+		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
+		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"observation_changed"}}, "review_again", "The loop changed since you reviewed it, or the review expired. Nothing was changed. Review it again."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"binding_changed"}}, "refused", "Its configuration changed while it was being read. Nothing was changed."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"cancelled"}}, "refused", "The request was cut off before anything was saved. Nothing was changed."},
@@ -440,7 +440,7 @@ func TestPanelResumeOfASpentCapHoldStartsANewEpisode(t *testing.T) {
 	if p.Preview == nil {
 		t.Fatalf("%+v", p.Result)
 	}
-	if r := c.confirm("session-a", dockKey(e.ID), "resume", p.Preview.Form); r.Result == nil || r.Result.Outcome != "done" {
+	if r := c.confirm("session-a", dockKey(e.ID), "resume", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "done" {
 		t.Fatalf("%+v", r.Result)
 	}
 	after, err := state.Load(e.StateDir)
@@ -492,7 +492,7 @@ func TestPanelConfirmRefusesAChangedRecord(t *testing.T) {
 			t.Fatalf("%s: %+v", x.loop, r)
 		}
 		before := controlOf(t, e)
-		r := c.confirm("session-a", dockKey(e.ID), x.action, p.Preview.Form)
+		r := c.confirm("session-a", dockKey(e.ID), x.action, p.Preview.Form, holdOptions{})
 		if r.Result == nil || r.Result.Outcome != "review_again" || !r.Result.Retry {
 			t.Errorf("%s %s after a %s: %+v", x.loop, x.action, x.between, r.Result)
 		}

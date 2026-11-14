@@ -68,6 +68,11 @@ type panelForm struct {
 	session, key, action, id, loop string
 	digest                         string // the controlDigest of the record reviewed
 	expires                        time.Time
+	stop                           *stopChoices // the stop's options the review offered
+	// group: for a change to every loop, each loop it changes and the
+	// record reviewed for it; names, for the result.
+	group []panelGroupTarget
+	names map[string]string
 }
 
 func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader, since time.Time, now func() time.Time) (*panelChanges, error) {
@@ -113,29 +118,68 @@ func panelAllowPost(r *http.Request, port int) bool {
 // panelReadAction reads the only body a change request may carry,
 // {"action": "..."}: one object with exactly that key, spelled exactly so
 // (JSON field matching in Go ignores case), once, and nothing after it.
-func panelReadAction(body io.Reader) (string, bool) {
+// panelChangeRequest is a prepare or confirm request's body. Lanes and
+// Immediately are a stop's options, and are taken only on a confirmation.
+type panelChangeRequest struct {
+	Action      string `json:"action"`
+	Lanes       bool   `json:"lanes,omitempty"`
+	Immediately bool   `json:"immediately,omitempty"`
+	DropQueued  bool   `json:"dropQueued,omitempty"`
+}
+
+func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
+	var req panelChangeRequest
 	d := json.NewDecoder(body)
-	var action string
 	if t, err := d.Token(); err != nil || t != json.Delim('{') {
-		return "", false
+		return req, false
 	}
-	if t, err := d.Token(); err != nil || t != "action" {
-		return "", false
+	seen := map[string]bool{}
+	for d.More() {
+		t, err := d.Token()
+		key, ok := t.(string)
+		// Each key once, spelled exactly: no other key, case or repeat.
+		if err != nil || !ok || seen[key] {
+			return req, false
+		}
+		seen[key] = true
+		v, err := d.Token()
+		if err != nil {
+			return req, false
+		}
+		switch key {
+		case "action":
+			s, ok := v.(string)
+			if !ok {
+				return req, false
+			}
+			req.Action = s
+		case "lanes", "immediately", "dropQueued":
+			b, ok := v.(bool)
+			if !ok {
+				return req, false
+			}
+			switch key {
+			case "lanes":
+				req.Lanes = b
+			case "immediately":
+				req.Immediately = b
+			default:
+				req.DropQueued = b
+			}
+		default:
+			return req, false
+		}
 	}
-	if t, err := d.Token(); err != nil {
-		return "", false
-	} else if v, ok := t.(string); ok {
-		action = v
-	} else {
-		return "", false
-	}
-	if t, err := d.Token(); err != nil || t != json.Delim('}') {
-		return "", false
+	if t, err := d.Token(); err != nil || t != json.Delim('}') || !seen["action"] {
+		return req, false
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return "", false
+		return req, false
 	}
-	return action, panelActions[action] != ""
+	if (req.Action != "stop" && (req.Lanes || req.Immediately || req.DropQueued)) || (req.DropQueued && !req.Lanes) {
+		return req, false
+	}
+	return req, panelActions[req.Action] != ""
 }
 
 // panelPreview is what the page shows before the person confirms. Every
@@ -154,6 +198,9 @@ type panelPreview struct {
 	// which it gives before doing anything.
 	Lost    string `json:"lost"`
 	Refused string `json:"refused"`
+	// Stop is a stop's options, when the CLI can stop the lanes and stop at
+	// once: one button per option, in these words.
+	Stop *stopChoices `json:"stop,omitempty"`
 }
 
 // panelResult is the outcome of a change, or of a prepare that was refused.
@@ -166,6 +213,9 @@ type panelResult struct {
 	// Retry: the page may offer to prepare the same change again. It never
 	// does so by itself.
 	Retry bool `json:"retry,omitempty"`
+	// Lines: for a change to every loop, each loop's outcome, the loops that
+	// were not changed first. Outcome is then also partial when some were.
+	Lines []string `json:"lines,omitempty"`
 }
 
 type panelChangeReply struct {
@@ -180,15 +230,16 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
 	key, step, ok := strings.Cut(strings.TrimPrefix(rest, panelChangesPrefix), "/")
-	if !strings.HasPrefix(rest, panelChangesPrefix) || !ok || !panelKeyPattern.MatchString(key) || (step != "prepare" && step != "confirm") {
+	if !strings.HasPrefix(rest, panelChangesPrefix) || !ok || !(panelKeyPattern.MatchString(key) || key == panelGroupKey) || (step != "prepare" && step != "confirm") {
 		http.NotFound(w, r)
 		return
 	}
-	action, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
-	if !ok {
+	req, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
+	if !ok || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) {
 		http.Error(w, "refused", http.StatusBadRequest)
 		return
 	}
+	action := req.Action
 	value := r.Header.Get(panelFormHeader)
 	var reply panelChangeReply
 	if step == "prepare" {
@@ -199,7 +250,7 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 		}
 		reply = c.prepare(session, key, action)
 	} else {
-		reply = c.confirm(session, key, action, value)
+		reply = c.confirm(session, key, action, value, holdOptions{Lanes: req.Lanes, Now: req.Immediately, DropQueued: req.DropQueued})
 	}
 	reply.SchemaVersion = 1
 	w.Header().Set("Content-Type", "application/json")
@@ -208,8 +259,8 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 
 // entry finds the registration a loop key names. The page never sends a
 // registration ID, ticket or path; only the key, which the server maps.
-func (c *panelChanges) entry(key string) (registry.Entry, []registry.Entry, string, bool) {
-	dir, err := registryDirectory(c.registry)
+func panelEntry(registryDir, key string) (registry.Entry, []registry.Entry, string, bool) {
+	dir, err := registryDirectory(registryDir)
 	if err != nil {
 		return registry.Entry{}, nil, "", false
 	}
@@ -225,38 +276,91 @@ func (c *panelChanges) entry(key string) (registry.Entry, []registry.Entry, stri
 	return registry.Entry{}, nil, dir, false
 }
 
-func (c *panelChanges) prepare(session, key, action string) panelChangeReply {
-	entry, all, dir, ok := c.entry(key)
-	if !ok {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}}
-	}
+func (c *panelChanges) prepare(session, key string, action string) panelChangeReply {
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
-	now := c.now().UTC()
+	if key == panelGroupKey {
+		return c.prepareGroup(ctx, session, action)
+	}
+	r, refused := panelReview(ctx, c.registry, c.reader, key, action, c.now().UTC())
+	if refused != nil {
+		return panelChangeReply{Result: refused}
+	}
+	form := panelForm{session: session, key: key, action: action, id: r.entry.ID, loop: r.loop, digest: r.digest, expires: r.preview.ExpiresAt, stop: r.preview.Stop}
+	value, err := panelRandom(32)
+	if err != nil {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	}
+	c.keep(value, form)
+	p := r.preview
+	p.Form = value
+	return panelChangeReply{Preview: &p}
+}
+
+// prepareGroup prepares a change to every loop: one review, one form.
+func (c *panelChanges) prepareGroup(ctx context.Context, session, action string) panelChangeReply {
+	g, refused := panelGroupReview(ctx, c.registry, c.reader, action, c.now().UTC())
+	if refused != nil {
+		return panelChangeReply{Result: refused}
+	}
+	form := panelForm{session: session, key: panelGroupKey, action: action, expires: g.preview.ExpiresAt, names: map[string]string{}, stop: g.preview.Stop}
+	for _, it := range g.items {
+		if it.Fits {
+			form.group = append(form.group, panelGroupTarget{Key: it.Key, Digest: it.digest, Lanes: it.lanes(), Now: it.now()})
+			form.names[it.Key] = it.Name
+		}
+	}
+	value, err := panelRandom(32)
+	if err != nil {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	}
+	c.keep(value, form)
+	p := g.preview
+	p.Form = value
+	return panelChangeReply{Preview: &p}
+}
+
+// panelReviewed is one review and what its confirmation is bound to.
+type panelReviewed struct {
+	preview panelPreview
+	entry   registry.Entry
+	loop    string
+	digest  string // the controlDigest of the record reviewed
+}
+
+// panelReview reads one loop and words the review of one change. The page's
+// prepare and client review (the menu's review) both call it, so the two can
+// never say different things. refused is set, in the page's words, when no
+// review can be given now.
+func panelReview(ctx context.Context, registryDir string, reader *dockReader, key, action string, now time.Time) (panelReviewed, *panelResult) {
+	entry, all, dir, ok := panelEntry(registryDir, key)
+	if !ok {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}
+	}
 	// The control record, read once under its lock: every fact the review
 	// states about it comes from this one record, and the confirmation is
 	// bound to it, so a change made since is refused as "review again".
 	ctl, why := panelReadControl(entry.StateDir)
 	if why != "" {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: why, Retry: true}}
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: why, Retry: true}
 	}
 	// The rest of the loop as it is now, read the way the page reads it.
-	loop := c.loopNow(ctx, dir, entry, all, now)
+	loop := panelLoopNow(ctx, reader, dir, entry, all, now)
 	ttl := panelHoldFormTTL
 	if action == "resume" {
 		// A resume's own ticket is prepared when the person confirms, so
 		// opening a review never cancels one another client prepared.
 		ttl = clientResumeTTL
 	}
-	form := panelForm{session: session, key: key, action: action, id: entry.ID, loop: loop.Name, digest: controlDigest(ctl), expires: now.Add(ttl)}
-	value, err := panelRandom(32)
-	if err != nil {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	expires := now.Add(ttl)
+	p := panelPreviewOf(action, loop, ctl, expires, now)
+	p.Key, p.ExpiresAt = key, expires
+	if action == "stop" {
+		if cfg, ok := clientConfig(entry); ok {
+			p.Stop, p.Lines = stopChoicesFor(ctx, cfg, p.Lines)
+		}
 	}
-	c.keep(value, form)
-	p := panelPreviewOf(action, loop, ctl, form.expires, now)
-	p.Key, p.Form, p.ExpiresAt = key, value, form.expires
-	return panelChangeReply{Preview: &p}
+	return panelReviewed{preview: p, entry: entry, loop: loop.Name, digest: controlDigest(ctl)}, nil
 }
 
 // keep stores a prepared change, dropping expired ones and, past the cap, the
@@ -298,36 +402,53 @@ func (c *panelChanges) take(value string) (panelForm, bool) {
 	return found, ok
 }
 
-func (c *panelChanges) confirm(session, key, action, value string) panelChangeReply {
+func (c *panelChanges) confirm(session, key, action, value string, opts holdOptions) panelChangeReply {
 	f, ok := c.take(value)
 	now := c.now()
 	switch {
-	case !ok, f.session != session, f.key != key, f.action != action:
+	case !ok, f.session != session, f.key != key, f.action != action, !f.stop.offers(opts):
 		return panelChangeReply{Result: &panelResult{Outcome: "review_again", Text: "This review was already used, or is not this page's. Nothing was changed. Review it again.", Retry: true}}
 	case !now.Before(f.expires):
 		return panelChangeReply{Result: &panelResult{Outcome: "review_again", Text: "This review expired. Nothing was changed. Review it again.", Retry: true}}
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
-	// Each save is refused, inside the control lock, if the control record
-	// is not the one the person reviewed.
-	var r clientHoldReport
-	if action == "resume" {
-		// The same preparation and resume as client prepare-resume and
-		// resume, as no BB thread.
-		prepared, _ := clientResume(ctx, c.registry, f.id, "prepare-resume", "", false, "", panelChangeOrigin, "", time.Now, nil)
-		r = prepared.clientHoldReport
-		if prepared.Ticket != "" {
-			done, _ := clientResume(ctx, c.registry, f.id, "resume", prepared.Ticket, false, "", panelChangeOrigin, f.digest, time.Now, nil)
-			r = done.clientHoldReport
-		}
-	} else {
-		r, _ = applyClientHoldFrom(ctx, c.registry, f.id, action, panelChangeOrigin, f.digest)
+	if key == panelGroupKey {
+		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, "", f.group, f.names, opts.Lanes)
+		c.reader.forget()
+		return panelChangeReply{Result: &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}}
 	}
+	// The page acts as no BB thread, as a terminal outside BB does.
+	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, "", f.digest, opts)
 	// The next read shows the change, not a cached picture from before it.
 	c.reader.forget()
 	res := panelOutcome(action, r)
 	return panelChangeReply{Result: &res}
+}
+
+// panelApply makes one reviewed change. Each save is refused, inside the
+// control lock, if the control record is not the one reviewed (expect). A
+// resume is refused, as client resume refuses it, when caller (a BB thread,
+// or "" for none) may not resume a loop another thread owns. Pause and stop
+// never check the owner. client apply calls it too, with no origin.
+func panelApply(ctx context.Context, registryDir, id, action, origin, caller, expect string, opts holdOptions) clientHoldReport {
+	if action == "resume" {
+		// The same preparation and resume as client prepare-resume and
+		// resume, with the expect check before the ticket is prepared.
+		prepared, _ := clientResume(ctx, registryDir, id, "prepare-resume", "", false, caller, origin, expect, time.Now, nil)
+		if prepared.Ticket == "" {
+			return prepared.clientHoldReport
+		}
+		done, _ := clientResume(ctx, registryDir, id, "resume", prepared.Ticket, false, caller, origin, expect, time.Now, nil)
+		return done.clientHoldReport
+	}
+	if opts.Now {
+		// The thread a stop at once runs from: the BB thread of client apply,
+		// none for the page.
+		opts.CallerThread = caller
+	}
+	r, _ := applyClientHoldWith(ctx, registryDir, id, action, origin, expect, opts)
+	return r
 }
 
 // panelReadControl reads a loop's control record under its lock. why is
@@ -353,13 +474,13 @@ type panelLoop struct {
 	dockLoop
 }
 
-func (c *panelChanges) loopNow(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, now time.Time) panelLoop {
+func panelLoopNow(ctx context.Context, reader *dockReader, dir string, entry registry.Entry, all []registry.Entry, now time.Time) panelLoop {
 	validated := map[string]*config.Config{}
 	if cfg, ok := clientConfig(entry); ok {
 		validated[entry.ID] = cfg
 	}
-	in := c.reader.readLoop(ctx, dir, entry, all, validated, now)
-	l, _ := projectDockLoop(in, now, c.reader.staleAfter, false)
+	in := reader.readLoop(ctx, dir, entry, all, validated, now)
+	l, _ := projectDockLoop(in, now, reader.staleAfter, false)
 	return panelLoop{dockLoop: l}
 }
 
@@ -370,7 +491,7 @@ func (c *panelChanges) loopNow(ctx context.Context, dir string, entry registry.E
 // saves with, run on a copy of the record reviewed.
 func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now time.Time) panelPreview {
 	p := panelPreview{Action: action, Title: panelActions[action] + " " + l.Name + "?", Confirm: panelActions[action] + " " + l.Name, Lines: []dockText{},
-		Lost:    "keepgoing could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state below before doing anything else.",
+		Lost:    "keepgoing could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state before doing anything else.",
 		Refused: "The panel refused this request before doing anything. Nothing was changed."}
 	add := func(a ...any) { p.Lines = append(p.Lines, txt(a...)) }
 	owned := ctl.Ownership != nil
@@ -379,7 +500,8 @@ func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now t
 	case "pause":
 		add("keepgoing sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change.")
 	case "stop":
-		add("The loop's next check carries out the stop; this page cannot confirm that the session stopped. Nothing is sent until it is resumed.")
+		add("The loop's next check carries out the stop; this review cannot confirm that the session stopped. Nothing is sent until it is resumed.")
+		add("This stops the conversation only: its lanes, if it has any, keep running.")
 		if owned {
 			add("This loop is supervised for a conversation. Stopping here holds it for that conversation too; it does not tell the conversation why.")
 		}
@@ -431,7 +553,7 @@ func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now t
 		}
 		add("Confirming prepares this resume's own ticket, so a resume another client prepared and has not used yet can no longer be used.")
 	}
-	add("If the loop's control record changes before you confirm, nothing is changed and the panel asks you to review again.")
+	add("If the loop's control record changes before you confirm, nothing is changed and you are asked to review again.")
 	add("This review expires ", dockUntil(now, expires), ".")
 	return p
 }
@@ -449,6 +571,28 @@ func panelJoin(words []string) string {
 func panelOutcome(action string, r clientHoldReport) panelResult {
 	has := func(code string) bool { return slices.Contains(r.Issues, code) }
 	switch {
+	case r.ControlSave == "confirmed" && action == "stop" && r.CarriedOut == "now":
+		text := "Stopped now, as a check would stop it."
+		if r.Lanes != nil && r.Lanes.Result != nil {
+			text += " " + strings.ToUpper(describeLaneStop(*r.Lanes.Result)[:1]) + describeLaneStop(*r.Lanes.Result)[1:] + "."
+		}
+		if has("incident_history_unavailable") || has("run_history_unavailable") {
+			text += " Its history could not record this change."
+		}
+		return panelResult{Outcome: "done", Text: text}
+	case r.ControlSave == "confirmed" && action == "stop" && r.LeftBecause != "":
+		text := "Stop requested: " + map[string]string{
+			"check_running":   "a check of this loop was running, so that check or the next one carries it out.",
+			"session_claimed": "another loop's check is acting on this session, so the next check carries it out.",
+			"bb_not_found":    "bb could not be found from here, so the next check carries it out.",
+		}[r.LeftBecause]
+		if strings.HasSuffix(text, ": ") {
+			text = "Stop requested, but it could not be carried out now: the next check carries it out."
+		}
+		if r.Lanes != nil {
+			text += " That check stops the lanes too."
+		}
+		return panelResult{Outcome: "done", Text: text}
 	case r.ControlSave == "confirmed":
 		text := map[string]string{
 			"pause":  "Paused: keepgoing will send nothing; a check already running finishes.",
@@ -460,7 +604,7 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		}
 		return panelResult{Outcome: "done", Text: text}
 	case r.ControlSave == "unconfirmed", has("ticket_consumption_unconfirmed"), has("interrupted_after_consumption"):
-		return panelResult{Outcome: "uncertain", Text: "keepgoing could not confirm whether this loop was " + panelDone[action] + ". Check its state below before doing anything else."}
+		return panelResult{Outcome: "uncertain", Text: "keepgoing could not confirm whether this loop was " + panelDone[action] + ". Check its state before doing anything else."}
 	case has("busy"):
 		return panelResult{Outcome: "refused", Text: "keepgoing is in the middle of a check on this loop. Nothing was changed.", Retry: true}
 	case has("observation_changed"), has("ticket_unavailable_or_expired"):

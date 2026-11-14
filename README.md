@@ -15,8 +15,8 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 | Core CLI | Setup, start, controls, bounds, diagnostics, goals and BB transfer | v0.1.5 includes goal-aware setup; broad offline tests, with partial live BB evidence |
 | Headless Claude Code / Codex | New sessions, saved-session resume and configured account environments | Implemented; full live multi-turn, cancellation and separate-account handoff checks remain open |
 | BB plugin | Setup, status, controls and transfer for plugin-created loops | Separate installation; newer UI flows are fixture-tested, with live deployment verification open |
-| macOS menu preview | Read-only local loop and optional goal display | Developer build only; interactive controls, packaging and accessibility verification remain open |
-| Panel page | `keepgoing dock`: a read-only local page for every registered loop, on 127.0.0.1 only | Unreleased; fixtures only. Controls, configuration, a menu-bar or tray item, installation and remote access are planned |
+| macOS menu preview | Local loop list; pause, stop and resume a loop after a native confirmation showing the panel's review | Developer build only; no confirmation answered by a person yet; packaging and accessibility verification remain open |
+| Panel page | `keepgoing dock`: a read-only local page for every registered loop, on 127.0.0.1 only | Unreleased; fixtures only. Pause, stop and resume from the page (`keepgoing panel --allow-changes`) and from the macOS menu preview are unreleased; configuration, a tray item on other platforms, installation and remote access are planned |
 | Cursor CLI | Unreleased primary-only adapter, guided setup and doctor checks | Offline fixtures; one CLI version inspected on macOS, with one live walkthrough of first turn, resume and stop; cannot be a fallback; existing IDE-chat attachment remains open |
 | Agents defined in configuration | Unreleased `adapter: custom`: describe another command-line agent by its documented interface ([format](docs/configuration.md#an-agent-defined-in-configuration)) | Offline fixtures with stand-in agents; no real agent has been run from a definition, and guided setup does not create one |
 | Antigravity | Internal parser, ACP exchange, saved hold and an unregistered detached runner | Offline fixtures with a stand-in agent; Antigravity itself has never been run. No registered adapter, guided setup or verified existing IDE-chat attachment |
@@ -84,10 +84,11 @@ keepgoing status -c /private/example-loop/keepgoing.yaml
 keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
 keepgoing resume -c /private/example-loop/keepgoing.yaml
 keepgoing stop -c /private/example-loop/keepgoing.yaml
+keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
 keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
 ```
 
-`complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
+A plain `stop` is carried out by the next check and stops the supervised conversation only; in unreleased source `--lanes` also stops the conversations it started, and theirs, and `--immediately` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
 
 In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
 
@@ -143,7 +144,7 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 ### Optional macOS menu preview
 
-The [native menu preview](integrations/macos/README.md) opens the keepgoing panel (`keepgoing panel`) and lists each registered loop as a row, with its state in the panel's words, that opens that loop's page. A count beside the icon says how many loops need a person, and a `?` says the loops could not be read. It reads `keepgoing panel list` when started, when the menu opens and once a minute, with no provider call; it starts no supervisor. It is an unreleased, read-only developer build; controls for loops and optional installation remain planned.
+The [native menu preview](integrations/macos/README.md) opens the keepgoing panel (`keepgoing panel`) and lists each registered loop as a row, with its state in the panel's words, that opens that loop's page and, when keepgoing says which changes fit, Pause…, Resume… and Stop…. Each change shows the panel page's own review in a native confirmation (Cancel is the default) and acts only on the loop's control record as reviewed; Open Panel with Controls… starts the panel so its page can make changes, after saying who could then make them. A count beside the icon says how many loops need a person, and a `?` says the loops could not be read. It reads `keepgoing panel list` when started, when the menu opens and once a minute, with no provider call; it starts no supervisor. It is an unreleased developer build; optional installation remains planned, and no confirmation has yet been answered by a person.
 
 ## Why
 
@@ -153,7 +154,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. In unreleased source a session that is itself in error is recovered whether or not its BB children are working.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a child conversation retried the same way; a child is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. In unreleased source a session that is itself in error is recovered whether or not its BB children are working.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **One loop per session.** In unreleased source two loops never act on one BB thread or headless working directory at the same moment: a check claims its session first, and one that finds it claimed by another loop sends nothing. Turning on a second loop on a supervised session is refused, naming the first, unless asked for. See [one loop per session](docs/operations.md#one-loop-per-session).
@@ -182,6 +183,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
+- [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Unreleased source; reading it is built, editing it is not yet.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing

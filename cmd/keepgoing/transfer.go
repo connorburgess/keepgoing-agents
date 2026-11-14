@@ -112,7 +112,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		r.ConfiguredProvider, r.ConfiguredQuotaGroup, r.ConfiguredModel, r.ConfiguredReasoning = a.Provider, a.Group, a.BB.Model, a.BB.Reasoning
 		add("labels", "ok", "Configured labels have a supported shape; this does not verify accounts or model access.")
 	}
-	if cfg.FallbackSet != nil {
+	if cfg.Loop.HasRouteList() {
 		add("fallbacks", "error", "Fallback configurations require a broader transfer plan; this preview only assesses a single BB primary.")
 	}
 	var ctl control.File
