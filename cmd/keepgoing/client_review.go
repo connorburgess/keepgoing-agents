@@ -96,7 +96,7 @@ type clientReviewPreview struct {
 }
 
 const (
-	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes [--drop-queued]] [--immediately] [--directory private-registry] [--json]; keepgoing client review pause --all [--json]; keepgoing client apply pause --all --expect KEY=VALUE... [--json]"
+	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes [--drop-queued]] [--immediately] [--directory private-registry] [--json]; keepgoing client review pause|stop --all [--json]; keepgoing client apply pause|stop --all --expect KEY=VALUE... [--lanes] [--json]"
 	clientReviewExpired = "This review expired. Nothing was changed. Review it again."
 	clientReviewOther   = "This review is for another loop or another change. Nothing was changed. Review it again."
 	clientReviewOwned   = "This loop is supervised for another conversation, so it can be resumed only from that conversation or from outside BB. Nothing was changed."
@@ -113,7 +113,7 @@ func clientReviewCommand(e env, args []string) int {
 		expects = append(expects, v)
 		return nil
 	})
-	all := fs.Bool("all", false, "every loop at once (pause only)")
+	all := fs.Bool("all", false, "every loop at once (pause or stop; apply stop --all takes --lanes alone)")
 	asJSON := fs.Bool("json", false, "print JSON")
 	lanes := fs.Bool("lanes", false, "apply stop: also stop the lanes")
 	immediately := fs.Bool("immediately", false, "apply stop: carry the stop out in this command")
@@ -228,7 +228,7 @@ func clientReview(ctx context.Context, directory, key, action string, now time.T
 	}
 	p := r.preview
 	out := &clientReviewPreview{Action: p.Action, Key: p.Key, Title: p.Title, Lines: []string{}, Confirm: p.Confirm,
-		Expect: clientExpect(key, action, p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Stop: p.Stop}
+		Expect: clientExpect(key, clientStopTag(action, p.Stop), p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Stop: p.Stop}
 	for _, l := range p.Lines {
 		out.Lines = append(out.Lines, l.renderLocal(now, loc))
 	}
@@ -239,7 +239,12 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 	refuse := func(text string) (clientReviewReply, int) {
 		return clientReviewReply{Result: &panelResult{Outcome: "review_again", Text: text, Retry: true}}, exitFailed
 	}
-	digest, expires, ok := parseClientExpect(expect, key, action)
+	// A stop's value also binds the options its review offered: an option
+	// it did not offer is refused, as the page refuses it.
+	digest, expires, offered, ok := parseClientStopExpect(expect, key, action)
+	if ok && action == "stop" && !offered.offers(opts) {
+		return refuse("This review did not offer that stop. Nothing was changed. Review it again.")
+	}
 	switch {
 	case !ok:
 		return refuse(clientReviewOther)
@@ -392,7 +397,9 @@ func clientGroupApply(ctx context.Context, directory, action string, expects []s
 		digest, expires, loopLanes, loopNow, ok := parseClientGroupExpect(value, key, action)
 		switch {
 		case !ok:
-			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: panelGroupLoopText(name, action, panelResult{Outcome: "review_again"}, false)})
+			// A value for another loop, a loop registered after the review, or
+			// another change: this loop was not part of the review confirmed.
+			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: name + ": not part of this review, so it was not " + panelDone[action] + "; review it again."})
 		case !now.Before(expires):
 			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: name + ": the review expired, so it was not " + panelDone[action] + "; review it again."})
 		default:
@@ -417,7 +424,8 @@ func clientGroupApply(ctx context.Context, directory, action string, expects []s
 // offered: its lanes too, and a stop carried out at once.
 func clientGroupTag(action string, lanes, now bool) string {
 	if action != "stop" {
-		return action
+		// Its own, so a single loop's value never stands in for a group's.
+		return action + "+all"
 	}
 	t := "stop+all"
 	if lanes {
@@ -443,4 +451,53 @@ func parseClientGroupExpect(value, key, action string) (digest string, expires t
 		}
 	}
 	return "", time.Time{}, false, false, false
+}
+
+// clientStopTag is the change a single loop's expect value is made for. For
+// a stop it also binds the options the review offered: whether it can be
+// carried out at once, and which of the conversation (c), its lanes (l) and
+// its lanes with their queued messages (lq) it offered.
+func clientStopTag(action string, c *stopChoices) string {
+	if action != "stop" || c == nil {
+		return action
+	}
+	t := action
+	if c.Immediately {
+		t += "/now"
+	}
+	for _, o := range c.Options {
+		switch {
+		case o.Lanes && o.DropQueued:
+			t += "/lq"
+		case o.Lanes:
+			t += "/l"
+		default:
+			t += "/c"
+		}
+	}
+	return t
+}
+
+// parseClientStopExpect reads a single loop's expect value and, for a stop,
+// the options its review offered (nil: none, the plain stop).
+func parseClientStopExpect(value, key, action string) (string, time.Time, *stopChoices, bool) {
+	if action != "stop" {
+		d, e, ok := parseClientExpect(value, key, action)
+		return d, e, nil, ok
+	}
+	var shapes []*stopChoices
+	shapes = append(shapes, nil)
+	for _, now := range []bool{false, true} {
+		for _, opts := range [][]stopOption{
+			{{}}, {{}, {Lanes: true}}, {{}, {Lanes: true}, {Lanes: true, DropQueued: true}},
+		} {
+			shapes = append(shapes, &stopChoices{Immediately: now, Options: opts})
+		}
+	}
+	for _, c := range shapes {
+		if d, e, ok := parseClientExpect(value, key, clientStopTag(action, c)); ok {
+			return d, e, c, true
+		}
+	}
+	return "", time.Time{}, nil, false
 }

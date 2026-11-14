@@ -8,7 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // Pause all: one review for every registered loop, then one confirmation
@@ -212,6 +215,10 @@ func panelGroupItemLine(it panelGroupItem, phrase, action string) string {
 			more = " or more"
 		}
 		return fmt.Sprintf("%s will be stopped; %d%s of its lanes %s running.", name, n, more, plural(n, "is", "are"))
+	case it.Fits && action == "stop" && it.lanes() && it.stop.Lanes == nil && it.now():
+		return name + " will be stopped; its lanes could not be counted from here."
+	case it.Fits && action == "stop" && it.lanes() && it.stop.Lanes == nil:
+		return name + " will be stopped; its lanes could not be counted from here, and its next check stops them."
 	case it.Fits:
 		return name + " will be " + done + "."
 	case it.why == "already":
@@ -305,7 +312,7 @@ func panelGroupStopReview(items []panelGroupItem) (*stopChoices, []string) {
 		}
 		switch {
 		case counted == 0:
-			line += "; how many are running could not be counted from here, and each loop's next check stops them."
+			line += "; how many are running could not be counted from here."
 		case counted == withLanes:
 			line += fmt.Sprintf(": %d%s %s running now.", lanes, more, plural(lanes, "is", "are"))
 		default:
@@ -342,50 +349,112 @@ type panelLoopTo struct {
 	Name    string `json:"name"`
 	Outcome string `json:"outcome"`
 	Text    string `json:"text"`
-	now     bool   // a stop carried out at once
+	// For a stop that was saved: whether it was carried out at once, why
+	// not when it was to be, what happened to its lanes, and whether it is
+	// the loop of the conversation the command runs in.
+	now   bool
+	why   string
+	lanes bool
+	laneR *state.LaneStop
+	own   bool
 }
 
 // panelGroupApply makes one reviewed change to each target, on its own:
 // each is refused, inside its control lock, if its record is not the one
 // reviewed. A refusal for one loop does not stop the others. Nothing is
 // retried.
+//
+// A stop is two passes. The first saves every reviewed stop, checked against
+// its reviewed record and not yet carried out: milliseconds a loop, so the
+// time a change is given never leaves a loop unsaved. The second carries out
+// the stops each loop's own review offered at once, in the time left; one cut
+// off is left to that loop's next check. The loop of the conversation the
+// command runs in, if any, is carried out last, so its stop cannot end the
+// command before the others are carried out.
 func panelGroupApply(ctx context.Context, registryDir, action, origin, caller string, targets []panelGroupTarget, names map[string]string, lanes bool) panelGroupResult {
 	// One loop at a time: each change takes the registry's short lock, which
 	// a second change at the same moment would find busy.
 	out := panelGroupResult{}
+	type later struct {
+		i   int
+		cfg *config.Config
+	}
+	var carry []later
 	for _, t := range targets {
 		name := names[t.Key]
 		var res panelResult
-		now := false
-		if entry, _, _, ok := panelEntry(registryDir, t.Key); !ok {
+		loop := panelLoopTo{Key: t.Key}
+		entry, _, _, ok := panelEntry(registryDir, t.Key)
+		if !ok {
 			res = panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}
 		} else {
 			if name == "" {
 				name = clip(entry.Loop, dockMaxText)
 			}
 			// Each loop as its own review offered it: its lanes too only if
-			// it has them, and at once only if it can be.
+			// it has them. Saved only: carried out in the second pass.
 			opts := holdOptions{}
 			if action == "stop" {
-				opts = holdOptions{Lanes: lanes && t.Lanes, Now: t.Now}
+				loop.lanes = lanes && t.Lanes
+				opts = holdOptions{Lanes: loop.lanes}
 			}
-			r := panelApply(ctx, registryDir, entry.ID, action, origin, caller, t.Digest, opts)
-			res = panelOutcome(action, r)
-			now = r.CarriedOut == "now"
+			res = panelOutcome(action, panelApply(ctx, registryDir, entry.ID, action, origin, caller, t.Digest, opts))
+			if action == "stop" && res.Outcome == "done" && t.Now {
+				if cfg, ok := clientConfig(entry); ok {
+					id, isSession := session.Of(cfg.Loop.Agent)
+					loop.own = caller != "" && isSession && id.Kind == "bb" && id.ID == caller
+					carry = append(carry, later{len(out.Loops), cfg})
+				} else {
+					loop.why = "sources_changed"
+				}
+			}
 		}
-		out.Loops = append(out.Loops, panelLoopTo{Key: t.Key, Name: name, Outcome: res.Outcome, Text: panelGroupLoopText(name, action, res, now), now: now})
+		loop.Name, loop.Outcome, loop.Text = name, res.Outcome, res.Text
+		out.Loops = append(out.Loops, loop)
+	}
+	// The second pass: the caller's own loop last.
+	sort.SliceStable(carry, func(i, j int) bool { return !out.Loops[carry[i].i].own && out.Loops[carry[j].i].own })
+	for _, c := range carry {
+		r, _ := stopNow(ctx, c.cfg, stopNowWait, caller)
+		l := &out.Loops[c.i]
+		l.now, l.why, l.laneR = r.CarriedOut == "now", r.Why, r.Lanes
+	}
+	for i := range out.Loops {
+		l := &out.Loops[i]
+		l.Text = panelGroupLoopText(l.Name, action, panelResult{Outcome: l.Outcome, Text: l.Text}, *l)
 	}
 	return panelGroupTotal(action, out)
 }
 
 // panelGroupLoopText is one loop's line in a group result. A stop says
-// whether it was carried out now or waits for the loop's next check.
-func panelGroupLoopText(name, action string, res panelResult, now bool) string {
-	switch {
-	case res.Outcome == "done" && action == "stop" && now:
-		return name + ": stopped now."
-	case res.Outcome == "done" && action == "stop":
-		return name + ": stop requested; its next check carries it out."
+// whether it was carried out now, with what happened to its lanes, or was
+// requested and left to the loop's next check, and why.
+func panelGroupLoopText(name, action string, res panelResult, l panelLoopTo) string {
+	if res.Outcome == "done" && action == "stop" {
+		own := ""
+		if l.own {
+			own = " (the loop of this conversation, stopped last)"
+		}
+		if l.now {
+			return name + own + ": stopped now" + panelGroupLaneText(l) + "."
+		}
+		with := ""
+		if l.lanes {
+			with = ", with its lanes"
+		}
+		why := map[string]string{
+			"check_running":   "a check of it was running, so that check or the next one carries it out",
+			"session_claimed": "another loop's check is acting on its session, so its next check carries it out",
+			"bb_not_found":    "bb could not be found from here, so its next check carries it out",
+			"cancelled":       "there was no time left to carry it out here, so its next check does",
+		}[l.why]
+		if why == "" && l.why != "" {
+			why = "it could not be carried out here, so its next check does"
+		}
+		if why == "" {
+			why = "its next check carries it out"
+		}
+		return name + own + ": stop requested" + with + "; " + why + "."
 	}
 	switch res.Outcome {
 	case "done":
@@ -398,68 +467,136 @@ func panelGroupLoopText(name, action string, res panelResult, now bool) string {
 	return name + ": not " + panelDone[action] + ". " + res.Text
 }
 
+// panelGroupLaneText says what a stop carried out now did to the lanes it
+// was asked to stop: every running one stopped, or not all reached.
+func panelGroupLaneText(l panelLoopTo) string {
+	if !l.lanes {
+		return ""
+	}
+	r := l.laneR
+	if r == nil {
+		return "; its lanes were not reached, and its next check goes on"
+	}
+	failed := 0
+	for _, n := range r.Failed {
+		failed += n
+	}
+	if panelGroupLanesComplete(l) {
+		if r.Stopped == 0 {
+			return "; none of its lanes was running"
+		}
+		return fmt.Sprintf("; %d running %s stopped", r.Stopped, plural(r.Stopped, "lane", "lanes"))
+	}
+	if r.Stopped+failed > 0 {
+		return fmt.Sprintf("; %d of %d lanes stopped, lanes not all reached, and its next check goes on", r.Stopped, r.Stopped+failed)
+	}
+	return "; lanes not all reached, and its next check goes on"
+}
+
+// panelGroupLanesComplete: a stop carried out now reached every lane it was
+// asked to stop (or was not asked to stop any).
+func panelGroupLanesComplete(l panelLoopTo) bool {
+	if !l.lanes || !l.now {
+		return true
+	}
+	r := l.laneR
+	if r == nil {
+		return false
+	}
+	failed := 0
+	for _, n := range r.Failed {
+		failed += n
+	}
+	return (r.Outcome == "done" || r.Outcome == "not_applicable") && failed == 0 && r.NotChecked == 0 && r.ListingsUnread == 0
+}
+
 // panelGroupTotal words the total, never as success unless every loop was
-// changed, and lists the loops that were not first.
+// changed, and lists the loops that were not first. For a stop it says how
+// many were stopped now and how many requested, separately, and whether
+// every lane asked for was reached.
 func panelGroupTotal(action string, out panelGroupResult) panelGroupResult {
 	counts := map[string]int{}
+	now, requested, short := 0, 0, 0
 	for _, l := range out.Loops {
 		counts[l.Outcome]++
-	}
-	n, done := len(out.Loops), counts["done"]
-	verb := strings.ToUpper(panelDone[action][:1]) + panelDone[action][1:]
-	// A stop saved but left to the loop's next check is said so.
-	waiting := 0
-	if action == "stop" {
-		for _, l := range out.Loops {
-			if l.Outcome == "done" && !l.now {
-				waiting++
+		if l.Outcome == "done" && action == "stop" {
+			if l.now {
+				now++
+			} else {
+				requested++
+			}
+			if !panelGroupLanesComplete(l) {
+				short++
 			}
 		}
 	}
-	wait := ""
-	if waiting > 0 {
-		wait = fmt.Sprintf(" %d of them %s for %s next check.", waiting, plural(waiting, "waits", "wait"), plural(waiting, "its", "their"))
+	n, done := len(out.Loops), counts["done"]
+	verb := strings.ToUpper(panelDone[action][:1]) + panelDone[action][1:]
+	var failures []string
+	if c := counts["review_again"]; c > 0 {
+		failures = append(failures, fmt.Sprintf("%d %s a new review", c, plural(c, "needs", "need")))
+		out.Retry = true
 	}
-	if done == n {
-		out.Outcome, out.Text = "done", fmt.Sprintf("%s %d %s.", verb, n, plural(n, "loop", "loops"))
-		// A stop is said as it is: carried out now, or requested and left to
-		// the loop's next check.
+	if c := counts["refused"]; c > 0 {
+		failures = append(failures, fmt.Sprintf("%d %s refused", c, plural(c, "was", "were")))
+	}
+	if c := counts["uncertain"]; c > 0 {
+		failures = append(failures, fmt.Sprintf("%d could not be confirmed", c))
+	}
+	switch {
+	case action == "stop" && done == n:
 		switch {
-		case action != "stop":
-		case waiting == 0:
+		case requested == 0:
 			out.Text = fmt.Sprintf("Stopped %d %s now.", n, plural(n, "loop", "loops"))
-		case waiting == n:
+		case now == 0:
 			out.Text = fmt.Sprintf("Stop requested for %d %s; %s next check carries it out.", n, plural(n, "loop", "loops"), plural(n, "its", "each loop's"))
 		default:
-			out.Text = fmt.Sprintf("Stopped %d %s now; stop requested for %d, which %s next check carries out.", n-waiting, plural(n-waiting, "loop", "loops"), waiting, plural(waiting, "its", "their"))
+			out.Text = fmt.Sprintf("Stopped %d %s now; stop requested for %d, which %s next check carries out.", now, plural(now, "loop", "loops"), requested, plural(requested, "its", "their"))
 		}
-	} else {
+	case action == "stop":
 		var parts []string
-		if c := counts["review_again"]; c > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s a new review", c, plural(c, "needs", "need")))
-			out.Retry = true
+		if now > 0 {
+			parts = append(parts, fmt.Sprintf("%d stopped now", now))
 		}
-		if c := counts["refused"]; c > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s refused", c, plural(c, "was", "were")))
+		if requested > 0 {
+			parts = append(parts, fmt.Sprintf("%d with a stop requested for %s next check", requested, plural(requested, "its", "their")))
 		}
-		if c := counts["uncertain"]; c > 0 {
-			parts = append(parts, fmt.Sprintf("%d could not be confirmed", c))
-		}
-		out.Text = fmt.Sprintf("%s %d of %d; %s.%s", verb, done, n, panelJoin(parts), wait)
-		switch {
-		case done > 0:
-			out.Outcome = "partial"
-		case counts["uncertain"] > 0:
-			out.Outcome = "uncertain"
-		case counts["review_again"] > 0:
-			out.Outcome = "review_again"
-		default:
-			out.Outcome = "refused"
-		}
+		out.Text = fmt.Sprintf("Of %d %s: %s.", n, plural(n, "loop", "loops"), panelJoin(append(parts, failures...)))
+	case done == n:
+		out.Text = fmt.Sprintf("%s %d %s.", verb, n, plural(n, "loop", "loops"))
+	default:
+		out.Text = fmt.Sprintf("%s %d of %d; %s.", verb, done, n, panelJoin(failures))
 	}
-	// The loops that were not changed first, so they are always named.
+	if short > 0 {
+		out.Text += fmt.Sprintf(" Not every lane was reached for %d of them; %s next check goes on.", short, plural(short, "its", "their"))
+	}
+	switch {
+	case done == n && short == 0:
+		out.Outcome = "done"
+	case done > 0:
+		out.Outcome = "partial"
+	case counts["uncertain"] > 0:
+		out.Outcome = "uncertain"
+	case counts["review_again"] > 0:
+		out.Outcome = "review_again"
+	default:
+		out.Outcome = "refused"
+	}
+	// The caller's own loop first, then the loops that were not changed, so
+	// they are always named.
 	sorted := append([]panelLoopTo(nil), out.Loops...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Outcome != "done" && sorted[j].Outcome == "done" })
+	rank := func(l panelLoopTo) int {
+		switch {
+		case l.own:
+			return 0
+		case l.Outcome != "done":
+			return 1
+		case !panelGroupLanesComplete(l):
+			return 2
+		}
+		return 3
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return rank(sorted[i]) < rank(sorted[j]) })
 	out.Lines = []string{}
 	for i, l := range sorted {
 		if i == panelGroupShown {

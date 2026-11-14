@@ -13,7 +13,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // unpaused are the fixture's loops that are not paused, by name, sorted.
@@ -120,7 +123,7 @@ func TestPauseAllResultIsNeverPartialSuccess(t *testing.T) {
 		var r panelGroupResult
 		for i, o := range outcomes {
 			name := fmt.Sprintf("example-%02d", i)
-			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: o, Text: panelGroupLoopText(name, "pause", panelResult{Outcome: o, Text: "keepgoing is in the middle of a check on this loop. Nothing was changed."}, false)})
+			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: o, Text: panelGroupLoopText(name, "pause", panelResult{Outcome: o, Text: "keepgoing is in the middle of a check on this loop. Nothing was changed."}, panelLoopTo{})})
 		}
 		return panelGroupTotal("pause", r)
 	}
@@ -242,7 +245,7 @@ func TestPauseAllFromTheCommand(t *testing.T) {
 		if l.Expect == "" {
 			continue
 		}
-		if _, _, ok := parseClientExpect(l.Expect, l.Key, "pause"); !ok {
+		if _, _, ok := parseClientExpect(l.Expect, l.Key, "pause+all"); !ok {
 			t.Fatalf("%s: %q", l.Name, l.Expect)
 		}
 		args = append(args, "--expect", l.Key+"="+l.Expect)
@@ -285,7 +288,7 @@ func TestPauseAllFromTheCommand(t *testing.T) {
 		}
 		return ""
 	}()]))
-	old := clientExpect(key, "pause", time.Now().Add(-time.Second), digest)
+	old := clientExpect(key, "pause+all", time.Now().Add(-time.Second), digest)
 	if code, r := run("apply", "pause", "--all", "--expect", key+"="+old); code != exitFailed || r.Result.Outcome != "review_again" || !strings.Contains(r.Result.Lines[0], "the review expired") {
 		t.Fatalf("%d %+v", code, r.Result)
 	}
@@ -361,7 +364,7 @@ func TestStopAllReviewUsesEachLoopsOwnOptions(t *testing.T) {
 	}
 	// Every loop with lanes, none counted.
 	_, lines = panelGroupStopReview([]panelGroupItem{{Name: "a", Fits: true, stop: withLanes(false, nil, nil)}, {Name: "b", Fits: true, stop: withLanes(false, nil, nil)}})
-	if !strings.Contains(strings.Join(lines, "\n"), "Stop Them and Their Lanes also stops each loop's lanes; how many are running could not be counted from here, and each loop's next check stops them.") {
+	if !strings.Contains(strings.Join(lines, "\n"), "Stop Them and Their Lanes also stops each loop's lanes; how many are running could not be counted from here.") {
 		t.Errorf("%q", lines)
 	}
 }
@@ -419,7 +422,7 @@ func TestStopAllFromTheCommand(t *testing.T) {
 	if code != exitOK || r.Result.Outcome != "done" || r.Result.Text != fmt.Sprintf("Stop requested for %d loops; each loop's next check carries it out.", n) {
 		t.Fatalf("%d %+v", code, r.Result)
 	}
-	if !strings.HasSuffix(r.Result.Lines[0], ": stop requested; its next check carries it out.") {
+	if !strings.HasSuffix(r.Result.Lines[0], ": stop requested, with its lanes; its next check carries it out.") {
 		t.Errorf("%q", r.Result.Lines)
 	}
 	for name, e := range byName {
@@ -469,7 +472,7 @@ func TestStopAllTotalSaysWhatHappened(t *testing.T) {
 		var r panelGroupResult
 		for i, n := range now {
 			name := fmt.Sprintf("example-%02d", i)
-			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: "done", now: n, Text: panelGroupLoopText(name, "stop", panelResult{Outcome: "done"}, n)})
+			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: "done", now: n, Text: panelGroupLoopText(name, "stop", panelResult{Outcome: "done"}, panelLoopTo{now: n})})
 		}
 		return panelGroupTotal("stop", r).Text
 	}
@@ -485,5 +488,159 @@ func TestStopAllTotalSaysWhatHappened(t *testing.T) {
 		if got := total(x.now...); got != x.want {
 			t.Errorf("%v: %q", x.now, got)
 		}
+	}
+}
+
+// The reviewer's journey: ten loops, each to be stopped at once, each with
+// its check lock held by a running check. Every stop is saved before any is
+// carried out, so the time a change is given only leaves stops to the next
+// check, and never leaves a loop unsaved or "refused".
+func TestStopAllSavesEveryLoopBeforeCarryingAnyOut(t *testing.T) {
+	d, byName := clientReviewWorld(t)
+	var targets []panelGroupTarget
+	names := map[string]string{}
+	for name, e := range byName {
+		held, err := lock.Acquire(e.StateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { held.Release() })
+		targets = append(targets, panelGroupTarget{Key: dockKey(e.ID), Digest: controlDigest(controlOf(t, e)), Lanes: true, Now: true})
+		names[dockKey(e.ID)] = name
+	}
+	if len(targets) < 10 {
+		t.Fatalf("the fixture has %d loops", len(targets))
+	}
+	// Less time than one loop's wait for its running check.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	g := panelGroupApply(ctx, d.directory, "stop", "", "", targets, names, true)
+	if time.Since(start) > 12*time.Second {
+		t.Errorf("took %v", time.Since(start))
+	}
+	n := len(targets)
+	if g.Outcome != "done" || g.Retry || g.Text != fmt.Sprintf("Stop requested for %d loops; each loop's next check carries it out.", n) {
+		t.Fatalf("%+v", g)
+	}
+	for _, l := range g.Lines {
+		if strings.HasPrefix(l, "And ") {
+			continue
+		}
+		if !strings.Contains(l, ": stop requested, with its lanes; ") || strings.Contains(l, "refused") || strings.Contains(l, "cut off") {
+			t.Errorf("%q", l)
+		}
+	}
+	for name, e := range byName {
+		if c := controlOf(t, e); !c.Stop || c.StopLanesAt == nil {
+			t.Errorf("%s was not saved: %+v", name, c)
+		}
+	}
+}
+
+// Run from a BB thread, the loop of that conversation is carried out last,
+// and said first.
+func TestStopAllCarriesOutTheCallersOwnLoopLast(t *testing.T) {
+	d, byName := clientReviewWorld(t)
+	var targets []panelGroupTarget
+	names := map[string]string{}
+	caller, ownName := "", ""
+	for name, e := range byName {
+		cfg, ok := clientConfig(e)
+		if !ok {
+			continue
+		}
+		if id, ok := session.Of(cfg.Loop.Agent); ok && id.Kind == "bb" && caller == "" {
+			caller, ownName = id.ID, name
+		}
+		held, err := lock.Acquire(e.StateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { held.Release() })
+		targets = append(targets, panelGroupTarget{Key: dockKey(e.ID), Digest: controlDigest(controlOf(t, e)), Now: true})
+		names[dockKey(e.ID)] = name
+	}
+	if caller == "" {
+		t.Skip("no BB loop in the fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	g := panelGroupApply(ctx, d.directory, "stop", "", caller, targets, names, false)
+	if !strings.HasPrefix(g.Lines[0], ownName+" (the loop of this conversation, stopped last): stop requested") {
+		t.Errorf("%q", g.Lines)
+	}
+}
+
+// What a stop carried out now did to its lanes is said per loop, and a lane
+// stop that did not reach every lane is never a plain "Stopped N loops now".
+func TestStopAllSaysWhatHappenedToTheLanes(t *testing.T) {
+	loop := func(name string, lanes *state.LaneStop) panelLoopTo {
+		l := panelLoopTo{Key: name, Name: name, Outcome: "done", now: true, lanes: lanes != nil, laneR: lanes}
+		l.Text = panelGroupLoopText(name, "stop", panelResult{Outcome: "done"}, l)
+		return l
+	}
+	done := &state.LaneStop{Outcome: "done", Stopped: 3}
+	short := &state.LaneStop{Outcome: "incomplete", Stopped: 2, Failed: map[string]int{"transport": 1}}
+	none := &state.LaneStop{Outcome: "done"}
+	if got := loop("example-api", done).Text; got != "example-api: stopped now; 3 running lanes stopped." {
+		t.Errorf("%q", got)
+	}
+	if got := loop("example-api", short).Text; got != "example-api: stopped now; 2 of 3 lanes stopped, lanes not all reached, and its next check goes on." {
+		t.Errorf("%q", got)
+	}
+	if got := loop("example-api", none).Text; got != "example-api: stopped now; none of its lanes was running." {
+		t.Errorf("%q", got)
+	}
+	g := panelGroupTotal("stop", panelGroupResult{Loops: []panelLoopTo{loop("a", done), loop("b", short), loop("c", nil)}})
+	if g.Outcome != "partial" || g.Text != "Stopped 3 loops now. Not every lane was reached for 1 of them; its next check goes on." || !strings.HasPrefix(g.Lines[0], "b:") {
+		t.Errorf("%+v", g)
+	}
+	// A partial result words stopped now and requested apart, and a cut-off
+	// is a stop left to a check, not a refusal.
+	cut := panelLoopTo{Key: "d", Name: "d", Outcome: "done", why: "cancelled"}
+	cut.Text = panelGroupLoopText("d", "stop", panelResult{Outcome: "done"}, cut)
+	again := panelLoopTo{Key: "e", Name: "e", Outcome: "review_again"}
+	again.Text = panelGroupLoopText("e", "stop", panelResult{Outcome: "review_again"}, again)
+	g = panelGroupTotal("stop", panelGroupResult{Loops: []panelLoopTo{loop("a", done), cut, again}})
+	if g.Outcome != "partial" || !g.Retry || g.Text != "Of 3 loops: 1 stopped now, 1 with a stop requested for its next check and 1 needs a new review." {
+		t.Errorf("%+v", g)
+	}
+	if cut.Text != "d: stop requested; there was no time left to carry it out here, so its next check does." {
+		t.Errorf("%q", cut.Text)
+	}
+}
+
+// A single loop's stop value binds the options its review offered, as the
+// page does: an option it did not offer is refused.
+func TestClientApplyStopRefusesAnOptionTheReviewDidNotOffer(t *testing.T) {
+	d, byName := clientReviewWorld(t)
+	e := byName["docs-site-refresh"]
+	key := dockKey(e.ID)
+	_, review, _ := runClientReview(t, "review", "stop", "--loop", key, "--directory", d.directory, "--json")
+	if review.Preview == nil || review.Preview.Stop == nil || review.Preview.Stop.Immediately {
+		t.Fatalf("the fixture's stop review: %+v", review.Preview)
+	}
+	before := controlOf(t, e)
+	for _, extra := range [][]string{{"--lanes", "--drop-queued"}, {"--immediately"}, {"--lanes", "--immediately"}} {
+		code, r, _ := runClientReview(t, append([]string{"apply", "stop", "--loop", key, "--expect", review.Preview.Expect, "--directory", d.directory, "--json"}, extra...)...)
+		if code != exitFailed || r.Result == nil || r.Result.Text != "This review did not offer that stop. Nothing was changed. Review it again." {
+			t.Errorf("%q: %d %+v", extra, code, r.Result)
+		}
+	}
+	if !reflect.DeepEqual(controlOf(t, e), before) {
+		t.Fatal("a stop the review did not offer changed the loop")
+	}
+	code, r, _ := runClientReview(t, "apply", "stop", "--loop", key, "--expect", review.Preview.Expect, "--lanes", "--directory", d.directory, "--json")
+	if code != exitOK || r.Result.Outcome != "done" || controlOf(t, e).StopLanesAt == nil {
+		t.Fatalf("%d %+v", code, r.Result)
+	}
+	// Single-loop and every-loop pause values are not each other's.
+	other := byName["inventory-sync"]
+	_, single, _ := runClientReview(t, "review", "pause", "--loop", dockKey(other.ID), "--directory", d.directory, "--json")
+	var out, errs bytes.Buffer
+	clientCommand(env{context.Background(), &out, &errs}, []string{"apply", "pause", "--all", "--expect", dockKey(other.ID) + "=" + single.Preview.Expect, "--directory", d.directory, "--json"})
+	if !strings.Contains(out.String(), "not part of this review") || controlOf(t, other).Paused {
+		t.Errorf("%s", out.String())
 	}
 }
