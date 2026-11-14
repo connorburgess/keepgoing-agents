@@ -306,6 +306,7 @@ func (s *dockServer) asset(w http.ResponseWriter, name, contentType string) {
 // read runs on the reader's own context, never a request's: a page that
 // reloads mid-read must not cut the read short for everyone else.
 type dockReader struct {
+	builds     *buildSession
 	ctx        context.Context // the command's lifetime; nil means background
 	directory  string
 	refresh    time.Duration
@@ -472,6 +473,8 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	}
 	if d.versions {
 		in.ServiceFile = d.services.compare(ctx, entry.StateDir)
+		bc, _ := d.builds.assess(entry, daemon, now)
+		in.BuildChange = &bc
 	}
 	if in.Client.Snapshot == nil {
 		return in

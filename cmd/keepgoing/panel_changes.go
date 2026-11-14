@@ -43,7 +43,7 @@ const (
 	panelChangeOrigin   = "panel"
 	panelPrepareContext = "keepgoing-panel-prepare\x00"
 	// panelExposure is said wherever changes are turned on.
-	panelExposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops."
+	panelExposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops, and replace the file that runs a loop's checks with this panel's build."
 )
 
 // panelChanges is the change half of a panel server started with changes
@@ -179,7 +179,7 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 	if (req.Action != "stop" && (req.Lanes || req.Immediately || req.DropQueued)) || (req.DropQueued && !req.Lanes) {
 		return req, false
 	}
-	return req, panelActions[req.Action] != ""
+	return req, panelActions[req.Action] != "" || panelBuildActions[req.Action] != ""
 }
 
 // panelPreview is what the page shows before the person confirms. Every
@@ -235,7 +235,8 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 		return
 	}
 	req, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
-	if !ok || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) {
+	// A build change is for one loop only, never for every loop at once.
+	if !ok || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) || (key == panelGroupKey && panelBuildActions[req.Action] != "") {
 		http.Error(w, "refused", http.StatusBadRequest)
 		return
 	}
@@ -282,6 +283,9 @@ func (c *panelChanges) prepare(session, key string, action string) panelChangeRe
 	if key == panelGroupKey {
 		return c.prepareGroup(ctx, session, action)
 	}
+	if panelBuildActions[action] != "" {
+		return c.prepareBuild(ctx, session, key, action)
+	}
 	r, refused := panelReview(ctx, c.registry, c.reader, key, action, c.now().UTC())
 	if refused != nil {
 		return panelChangeReply{Result: refused}
@@ -295,6 +299,47 @@ func (c *panelChanges) prepare(session, key string, action string) panelChangeRe
 	p := r.preview
 	p.Form = value
 	return panelChangeReply{Preview: &p}
+}
+
+// prepareBuild prepares a build change for one loop.
+func (c *panelChanges) prepareBuild(ctx context.Context, session, key, action string) panelChangeReply {
+	entry, all, dir, ok := panelEntry(c.registry, key)
+	if !ok {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}}
+	}
+	ctl, why := panelReadControl(entry.StateDir)
+	if why != "" {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: why, Retry: true}}
+	}
+	now := c.now().UTC()
+	loop := panelLoopNow(ctx, c.reader, dir, entry, all, now)
+	daemon := c.reader.query(ctx, entry.StateDir, version, false)
+	r, refused := c.reader.builds.review(ctx, entry, loop, ctl, action, daemon, now)
+	if refused != nil {
+		return panelChangeReply{Result: refused}
+	}
+	value, err := panelRandom(32)
+	if err != nil {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	}
+	c.keep(value, panelForm{session: session, key: key, action: action, id: entry.ID, loop: loop.Name, digest: r.digest, expires: r.preview.ExpiresAt})
+	p := r.preview
+	p.Form = value
+	return panelChangeReply{Preview: &p}
+}
+
+// confirmBuild makes a confirmed build change, bound to what was reviewed.
+func (c *panelChanges) confirmBuild(f panelForm) panelChangeReply {
+	ctx, cancel := context.WithTimeout(c.ctx, buildChangeTimeout)
+	defer cancel()
+	entry, _, _, ok := panelEntry(c.registry, f.key)
+	if !ok || entry.ID != f.id {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}}
+	}
+	daemon := c.reader.query(ctx, entry.StateDir, version, false)
+	res := c.reader.builds.apply(ctx, entry, f.action, f.digest, daemon, c.now)
+	c.reader.forget()
+	return panelChangeReply{Result: &res}
 }
 
 // prepareGroup prepares a change to every loop: one review, one form.
@@ -410,6 +455,9 @@ func (c *panelChanges) confirm(session, key, action, value string, opts holdOpti
 		return panelChangeReply{Result: &panelResult{Outcome: "review_again", Text: "This review was already used, or is not this page's. Nothing was changed. Review it again.", Retry: true}}
 	case !now.Before(f.expires):
 		return panelChangeReply{Result: &panelResult{Outcome: "review_again", Text: "This review expired. Nothing was changed. Review it again.", Retry: true}}
+	}
+	if panelBuildActions[action] != "" {
+		return c.confirmBuild(f)
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()

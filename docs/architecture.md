@@ -154,6 +154,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `goal.json` | operator, via goal commands | bounded private specification history, stable goal identity and owning loop; independent of controls/completion |
 | `sends.json` | the tool | versioned total reserved send attempts while `max_sends` is enabled; independent of diagnostic state, saved before adapter sends under the tick lock |
 | `progress.json` | the tool | versioned Git source/fingerprint hashes, last verified change and observation time for the optional no-progress timeout; independent of diagnostic/per-turn counters |
+| `check-executable.json` | the check | private path/build and executable identity, separate from status; written only when changed |
 | `state.json` | the tool | fingerprint, last progress, last send, re-prompt budget, active target, retry/recovery stall grace, last check decision/outcome and build label; latest returned automatic prompt provenance |
 | `health.json` | the tool | probe evidence, the latest usage reading and its history per candidate |
 | `route-current.yaml` | the tool | for a loop that follows the [standard route list](routes.md): the template of the route it is on (never the loop's environment), so it can stay there if the list changes or cannot be read |
@@ -325,3 +326,7 @@ There is no pre-send intent or complete attempt ledger: process termination or a
 `internal/rungraph` persists that contract as `graph.json` in the state directory and validates every stored record against it. The command layer records a run boundary after a saved control change. A tick records the boundary implied by saved control state before it runs, a send intent before each adapter send and its return afterwards, and the goal revision and chat/session reference known without a provider query. These calls sit beside the tick, not in it: they return nothing to the decision path, take only the graph lock, and a failure adds one warning. The decision engine never reads the graph. See [the persisted graph](run-discovery.md#persisted-reference-graph-d2).
 
 Current-target resolution after transfer and lock-holder identification remain unimplemented. Graph records and adapter-return outcomes grant no authority or proof of delivery.
+
+### Panel build replacement storage
+
+The panel owns `build-replacements/<key>/build-update.json` and its `upgrade-backups/<time>/` binary/configuration/state snapshots under its private runtime directory, outside loop state. The key binds registration ID, configuration and state directory. The receipt expires after seven days. A startup executable handle and hash supply replacement bytes; opened-directory-relative operations bind the target. Undo only swaps the binary and invalidates the private receipt; it never writes a loop record. See [the panel protocol](dock.md#changes-from-the-page-keepgoing-panel---allow-changes).

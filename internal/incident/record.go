@@ -549,7 +549,10 @@ func clean(r Record) Record {
 				// The same three changes made from the keepgoing panel.
 				"panel_pause", "panel_stop", "panel_resume",
 				// A question the loop raised for a person, and its end.
-				"question_raised", "question_answered", "question_withdrawn")
+				"question_raised", "question_answered", "question_withdrawn",
+				// The file that runs a loop's checks, replaced with the panel's
+				// build or restored from its backup (no path, no label).
+				"panel_replace_build", "panel_undo_replace_build")
 			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
 			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
 			if !questionIDPattern.MatchString(c.QuestionID) {
