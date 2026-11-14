@@ -129,9 +129,7 @@ func Reserve(dir string, limit, recorded int64, intent SendIntent) (int64, error
 			kept = append(kept, p)
 		}
 	}
-	if len(kept) >= maxPending {
-		kept = kept[len(kept)-maxPending+1:]
-	}
+	kept = trimPending(kept, maxPending-1)
 	l.Pending = append(kept, intent)
 	l.Settled = max(l.Settled, recorded)
 	b, _ := json.Marshal(l)
@@ -182,13 +180,32 @@ func SettleIntoEpisode(dir string, f *File) error {
 		if p.Action == "handoff" || p.Action == "switch_back" {
 			break
 		}
-		agentSend := p.Action != "stop" && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
+		agentSend := p.Action != "stop" && !strings.HasPrefix(p.Action, "stop:") && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
 		if agentSend && p.At.After(f.LastWakeAt) {
 			f.LastWakeAt = p.At
 		}
 		f.SendsRecorded = max(f.SendsRecorded, p.Seq)
 	}
 	return nil
+}
+
+// trimPending keeps at most limit records, dropping the oldest first. A
+// brief to another conversation (handoff, switch_back) is never dropped: the
+// next check must hold for a person over it. A lane stop goes before
+// anything else, since stopping a lane again is harmless.
+func trimPending(p []SendIntent, limit int) []SendIntent {
+	drop := func(match func(SendIntent) bool) {
+		for i := 0; i < len(p) && len(p) > limit; {
+			if match(p[i]) {
+				p = append(p[:i:i], p[i+1:]...)
+				continue
+			}
+			i++
+		}
+	}
+	drop(func(s SendIntent) bool { return strings.HasPrefix(s.Action, "stop:") })
+	drop(func(s SendIntent) bool { return s.Action != "handoff" && s.Action != "switch_back" })
+	return p
 }
 
 // RefundSend gives back the reservation seq. It is only for an attempt the

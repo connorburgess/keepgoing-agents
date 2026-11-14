@@ -242,7 +242,14 @@ At or after this time, the next ordinary check persists an awaiting-user hold be
 
 ## window
 
-This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start (or the same) runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+
+Times are read on the local clock in `tz`, including on the days it changes for daylight saving: a `22:00` start opens at 22:00 local time whatever the offset. Each time means the first moment on its day at which the local clock shows that time or later:
+
+- A time the clock skips when it is set forward (for example `02:30` in New York on Sun 10 Mar 2030, when 01:59 is followed by 03:00) opens or closes the window at that jump. A span that lies wholly inside the skipped time is empty that day.
+- A time the clock shows twice when it is set back (for example `01:30` in New York on Sun 3 Nov 2030) means its first occurrence. A span ending at `01:30` is closed through the repeated hour; a span starting at `01:30` stays open through it.
+
+Unreleased source; before, a span's times on a day the clock changed were counted in hours from midnight, so every edge after the change was off by the size of the change.
 
 ## errors
 
@@ -287,7 +294,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source; `check_gap`, also unreleased, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |

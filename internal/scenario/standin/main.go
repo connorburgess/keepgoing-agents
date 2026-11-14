@@ -164,6 +164,16 @@ func run(world string, args []string) int {
 			return emit(world, args[2]+".retry-decision", string(b))
 		case "status":
 			return emit(world, args[2]+".retries", `{"retries":[]}`)
+		case "cancel":
+			// As BB's plugin: no pending retry unless <thread>.retry-pending exists.
+			if _, err := os.Stat(filepath.Join(world, args[2]+".retry-pending")); err != nil {
+				fmt.Println(`{"ok":false,"error":{"code":"no_pending_retry","message":"fictional"}}`)
+				return 1
+			}
+			os.Remove(filepath.Join(world, args[2]+".retry-pending"))
+			b, _ := json.Marshal(map[string]any{"ok": true, "threadId": args[2], "queuedMessageId": "qm_example1"})
+			fmt.Println(string(b))
+			return 0
 		}
 	}
 	if len(args) < 2 || args[0] != "thread" {

@@ -2,6 +2,22 @@
 
 `keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available. The [Windows investigation](windows-services.md) describes the proposed Task Scheduler backend and the gates that must pass before Windows service commands can ship.
 
+## The recommended way to keep checks running
+
+On macOS and Linux, `keepgoing service install` is the recommended way to keep a loop's checks running: the operating system restarts the service, and it does not depend on another scheduler's failure counting. `init` prints the command. A `start --background` daemon and an external scheduler, including a BB automation, stay supported; an external scheduler can disable itself, and the [overdue rule](operations.md#external-schedulers-can-stop-on-their-own) says so when it does.
+
+**Moving a loop from a BB automation to the service.** Nothing does this for you. For a loop whose checks a BB script automation runs:
+
+1. Preview: `keepgoing service install -c /private/example-loop/keepgoing.yaml --dry-run`.
+2. Disable the BB automation in BB's Automations. Keep it, rather than deleting it, so you can go back.
+3. Install: `keepgoing service install -c /private/example-loop/keepgoing.yaml`.
+4. Check: `keepgoing service status -c /private/example-loop/keepgoing.yaml` reports the service healthy, and within one interval `keepgoing status` shows a new check.
+5. To go back: `keepgoing service remove -c /private/example-loop/keepgoing.yaml`, then enable the automation again.
+
+Run one scheduler per loop. A short overlap during the move is safe: the tick lock makes a second check at the same moment exit 75 without acting.
+
+If you keep the automation, have it identify itself, `keepgoing tick -c <config> --routine bb-automation/<automation id>`, so a stopped automation is named in `status`, the panel and the `check_gap` report.
+
 ## Health findings in service status
 
 `service status` now adds a read-only assessment in both text and JSON. The JSON `health` object contains `status` and a `findings` array; each finding has a stable `code`, a `status` (`warning` or `unavailable`), a message, and a suggested next step. Install/remove previews do not claim a health assessment.

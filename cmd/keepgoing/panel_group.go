@@ -211,7 +211,7 @@ func panelGroupApply(ctx context.Context, registryDir, action, origin, caller st
 			if name == "" {
 				name = clip(entry.Loop, dockMaxText)
 			}
-			res = panelOutcome(action, panelApply(ctx, registryDir, entry.ID, action, origin, caller, t.Digest))
+			res = panelOutcome(action, panelApply(ctx, registryDir, entry.ID, action, origin, caller, t.Digest, holdOptions{}))
 		}
 		out.Loops = append(out.Loops, panelLoopTo{Key: t.Key, Name: name, Outcome: res.Outcome, Text: panelGroupLoopText(name, action, res)})
 	}

@@ -15,20 +15,99 @@ public enum LoopAction: String, Equatable, CaseIterable {
 /// review. A CLI that offers none (today's) stops the conversation only, at
 /// its next check. The words on each button come from the CLI, never from
 /// this app.
+///
+/// Read so that the next additive change cannot break Stop: an option this
+/// menu does not fully understand (a field it does not know, or a known
+/// field of the wrong type) is not offered, and the rest of the review is
+/// still shown. It is never offered without the field, because its button
+/// would then do less than its words say.
 public struct StopOptions: Decodable, Equatable {
     /// Whether the stop is carried out at once (`--immediately`) rather than
-    /// at the loop's next check.
+    /// at the loop's next check. When it is not a boolean, no option is
+    /// offered and the one plain stop is.
     public let immediately: Bool
-    /// One button each, in order: its words, and whether it also stops the
-    /// loop's lanes (`--lanes`).
+    /// Every option the CLI gave, understood or not, in order.
     public let options: [StopOption]
     public init(immediately: Bool, options: [StopOption]) { self.immediately = immediately; self.options = options }
+
+    private enum Keys: String, CodingKey { case immediately, options }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let now = try? c.decode(Bool.self, forKey: .immediately)
+        immediately = now ?? false
+        var list: [StopOption] = []
+        // Without a readable `immediately` no option is offered: its words
+        // may promise a stop at once that would then wait.
+        if now != nil, var items = try? c.nestedUnkeyedContainer(forKey: .options) {
+            while !items.isAtEnd && list.count < 16 {
+                // An entry that is not even an object is skipped like any
+                // option this menu does not understand.
+                if let option = try? items.decode(StopOption.self) {
+                    list.append(option)
+                } else if (try? items.decode(Skipped.self)) == nil {
+                    break
+                }
+            }
+        }
+        options = list
+    }
+
+    /// The options offered, in order, at most four: those understood, with
+    /// words, that drop queued messages only together with the lanes, and
+    /// not alike in what they do as an earlier one.
+    public var offered: [StopOption] {
+        var seen = Set<String>(), out: [StopOption] = []
+        for o in options where o.understood && !Contract.text(o.label).isEmpty && Contract.text(o.label).count <= 60 && (!o.dropsQueued || o.lanes) {
+            if out.count < 4, seen.insert("\(o.lanes) \(o.dropsQueued)").inserted { out.append(o) }
+        }
+        return out
+    }
+}
+
+/// Anything, read only to step past it.
+private struct Skipped: Decodable {
+    init(from decoder: Decoder) throws {}
+}
+
+private struct AnyKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
 }
 
 public struct StopOption: Decodable, Equatable {
     public let label: String
     public let lanes: Bool
-    public init(label: String, lanes: Bool) { self.label = label; self.lanes = lanes }
+    /// Also deletes the messages queued in lanes that have not started
+    /// (`--drop-queued`), whose text is then lost. Absent means false; only
+    /// the option that says so passes it.
+    public let dropQueued: Bool?
+    /// False when the option has a field this menu does not know, or a
+    /// known field of the wrong type: it is then not offered.
+    public let understood: Bool
+    public var dropsQueued: Bool { dropQueued == true }
+    public init(label: String, lanes: Bool, dropQueued: Bool? = nil) {
+        self.label = label; self.lanes = lanes; self.dropQueued = dropQueued; understood = true
+    }
+
+    static let known: Set<String> = ["label", "lanes", "dropQueued"]
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        var ok = c.allKeys.allSatisfy { StopOption.known.contains($0.stringValue) }
+        let label = try? c.decode(String.self, forKey: AnyKey(stringValue: "label"))
+        let lanes = try? c.decode(Bool.self, forKey: AnyKey(stringValue: "lanes"))
+        var drop: Bool? = nil
+        if c.contains(AnyKey(stringValue: "dropQueued")) {
+            drop = try? c.decode(Bool.self, forKey: AnyKey(stringValue: "dropQueued"))
+            ok = ok && drop != nil
+        }
+        ok = ok && label != nil && lanes != nil
+        self.label = label ?? ""
+        self.lanes = lanes ?? false
+        self.dropQueued = drop
+        self.understood = ok
+    }
 }
 
 /// The review `keepgoing client review ACTION --loop KEY --json` prints.
@@ -104,7 +183,7 @@ extension Contract {
         if let p = r.preview, r.result == nil, exit == 0 {
             guard p.action == action.rawValue, p.key == key, validExpect(p.expect), !text(p.title).isEmpty, !text(p.confirm).isEmpty,
                   p.lines.count <= 40, p.lines.allSatisfy({ !text($0).isEmpty }), !text(p.lost).isEmpty, !text(p.refused).isEmpty, !text(p.expired).isEmpty,
-                  action == .stop || p.stop == nil, validStop(p.stop) else {
+                  action == .stop || p.stop == nil else {
                 throw ClientFailure.invalidResponse
             }
             return .review(p)
@@ -113,14 +192,6 @@ extension Contract {
             return .refused(res)
         }
         throw ClientFailure.invalidResponse
-    }
-
-    /// Stop options, when given, are one to four buttons with words, no two
-    /// alike in what they stop.
-    static func validStop(_ stop: StopOptions?) -> Bool {
-        guard let stop else { return true }
-        return (1...4).contains(stop.options.count) && stop.options.allSatisfy({ !text($0.label).isEmpty && text($0.label).count <= 60 })
-            && Set(stop.options.map(\.lanes)).count == stop.options.count
     }
 
     /// What client apply said. Its exit code is not needed: the outcome says it.
@@ -164,10 +235,10 @@ public enum ConfirmationBuilder {
         let lines = review.lines.map(Contract.text)
         if action == .stop {
             let immediately = review.stop?.immediately ?? false
-            if let options = review.stop?.options, !options.isEmpty {
+            if let options = review.stop?.offered, !options.isEmpty {
                 for option in options {
                     buttons.append(ConfirmButton(title: Contract.text(option.label), destructive: true,
-                                                 command: .apply(.stop, key: review.key, expect: review.expect, lanes: option.lanes, immediately: immediately)))
+                                                 command: .apply(.stop, key: review.key, expect: review.expect, lanes: option.lanes, immediately: immediately, dropQueued: option.dropsQueued)))
                 }
             } else {
                 buttons.append(ConfirmButton(title: name, destructive: true,

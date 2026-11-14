@@ -55,6 +55,7 @@ function useLoop(threadId: string) {
 }
 
 function label(loop: LoopView): string {
+  if (loop.controlState === "enabled" && loop.details?.schedule?.overdue) return "keepgoing: checks have stopped";
   if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: enabled" : `keepgoing: watching ${loop.details?.targetThread ?? loop.target}`;
   return `keepgoing: ${loop.controlState}`;
 }
@@ -64,6 +65,7 @@ function describe(loop: LoopView): string[] {
     `Loop ${loop.loop}`,
     ...diagnosticLines(loop.details, loop.target, loop.supervising),
     loop.note ? `Note: ${loop.note}` : null,
+    loop.details?.schedule?.overdue ? `Needs you: ${loop.details.schedule.message ?? "no check has run for longer than usual"}` : null,
     dateLabel(loop.lastWakeAt) !== "unavailable" ? `Last sent ${dateLabel(loop.lastWakeAt)}` : "Last sent: unavailable",
     loop.handoffs > 0 ? `${loop.handoffs} handoffs` : null,
     loop.fallbacks ? `Fallbacks: ${loop.fallbacks}` : null,

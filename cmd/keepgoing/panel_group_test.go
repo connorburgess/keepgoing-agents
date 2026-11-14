@@ -176,11 +176,11 @@ func TestPauseAllFromThePage(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	// Another session's confirmation, or another action, is refused.
-	if r := c.confirm("session-b", panelGroupKey, "pause", p.Preview.Form); r.Result == nil || r.Result.Outcome != "review_again" {
+	if r := c.confirm("session-b", panelGroupKey, "pause", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "review_again" {
 		t.Fatalf("%+v", r.Result)
 	}
 	p = c.prepare("session-a", panelGroupKey, "pause")
-	if r := c.confirm("session-a", panelGroupKey, "stop", p.Preview.Form); r.Result == nil || r.Result.Outcome != "review_again" || controlOf(t, byName[open[1]]).Paused {
+	if r := c.confirm("session-a", panelGroupKey, "stop", p.Preview.Form, holdOptions{}); r.Result == nil || r.Result.Outcome != "review_again" || controlOf(t, byName[open[1]]).Paused {
 		t.Fatalf("%+v", r.Result)
 	}
 	p = c.prepare("session-a", panelGroupKey, "pause")
@@ -192,7 +192,7 @@ func TestPauseAllFromThePage(t *testing.T) {
 	if r, code := applyClientHold(context.Background(), d.directory, changed.ID, "pause"); code != 0 || r.ControlSave != "confirmed" {
 		t.Fatalf("%+v", r)
 	}
-	r := c.confirm("session-a", panelGroupKey, "pause", p.Preview.Form)
+	r := c.confirm("session-a", panelGroupKey, "pause", p.Preview.Form, holdOptions{})
 	if r.Result == nil || r.Result.Outcome != "partial" || !strings.HasSuffix(r.Result.Text, "; 1 needs a new review.") || !strings.Contains(r.Result.Lines[0], changedName+": changed since you reviewed it") {
 		t.Fatalf("%+v", r.Result)
 	}
@@ -206,7 +206,7 @@ func TestPauseAllFromThePage(t *testing.T) {
 		}
 	}
 	// The form was spent.
-	if again := c.confirm("session-a", panelGroupKey, "pause", p.Preview.Form); again.Result == nil || again.Result.Outcome != "review_again" {
+	if again := c.confirm("session-a", panelGroupKey, "pause", p.Preview.Form, holdOptions{}); again.Result == nil || again.Result.Outcome != "review_again" {
 		t.Fatalf("%+v", again.Result)
 	}
 }
