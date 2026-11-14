@@ -225,7 +225,7 @@ func Remove(path string) error {
 // new record, which could reset a cap or permit a duplicate send.
 func recordReadError(path string, err error, marked bool) error {
 	if errors.Is(err, os.ErrNotExist) && marked {
-		return fmt.Errorf("record unavailable after replacement wait: %s", path)
+		return &os.PathError{Op: "read record", Path: path, Err: errors.New("record unavailable after replacement wait")}
 	}
 	return err
 }

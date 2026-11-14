@@ -125,8 +125,13 @@ func TestWindowsMarkedRecordTimeoutNeverLooksLikeANewRecord(t *testing.T) {
 		"read":  func() error { _, err := ReadRecord(path); return err },
 		"lstat": func() error { _, err := LstatRecord(path); return err },
 	} {
-		if err := read(); err == nil || errors.Is(err, os.ErrNotExist) {
+		err := read()
+		if err == nil || errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s: must refuse instead of creating an empty record: %v", name, err)
+		}
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) {
+			t.Errorf("%s: missing filesystem error type: %T", name, err)
 		}
 	}
 }
