@@ -551,7 +551,7 @@ func (b *buildSession) undo(ctx context.Context, entry registry.Entry, now time.
 	// No loop record is written, removed or restored by Undo. Invalidate only
 	// the panel's private receipt. A failed removal is safe: identity mismatch
 	// makes a later attempt refuse rather than overwriting another change.
-	_ = os.Remove(filepath.Join(b.recordDir(entry), buildUpdateName))
+	_ = snapshot.Remove(filepath.Join(b.recordDir(entry), buildUpdateName))
 	return panelResult{Outcome: "done", Text: "Restored only the file backed up at " + u.At.UTC().Format(time.RFC3339) + ". Nothing was restarted."}
 }
 func buildHistory(stateDir, operation string) {
@@ -613,7 +613,7 @@ var errBuildTooLarge = errors.New("state too large")
 // buildSkipState excludes locks, legacy receipts and backup trees from manual
 // recovery snapshots. Undo never restores this tree.
 func buildSkipState(name string) bool {
-	return strings.HasSuffix(name, ".lock") || name == buildUpdateName || name == buildBackupsDir
+	return strings.HasSuffix(name, ".lock") || name == buildUpdateName || name == buildUpdateName+".present" || name == buildBackupsDir
 }
 
 func buildCopyFile(src, dst string, mode os.FileMode) error {
@@ -696,14 +696,14 @@ func saveBuildUpdate(stateDir string, u buildUpdate) error {
 
 func loadBuildUpdate(stateDir string) (*buildUpdate, error) {
 	path := filepath.Join(stateDir, buildUpdateName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<10 {
 		return nil, errors.New("unreadable")
 	}
-	b, err := snapshot.ReadFile(path)
+	b, err := snapshot.ReadRecord(path)
 	if err != nil {
 		return nil, err
 	}

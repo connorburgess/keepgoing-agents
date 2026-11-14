@@ -93,12 +93,12 @@ func SaveCheckExecutable(dir, path, label string, at time.Time, expected ...File
 // LoadCheckExecutable reads the record: nil with no error when there is none.
 func LoadCheckExecutable(dir string) (*CheckExecutable, error) {
 	path := filepath.Join(dir, CheckExecutableName)
-	if info, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	if info, err := snapshot.LstatRecord(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil || !info.Mode().IsRegular() || info.Size() > maxCheckExecutable {
 		return nil, ErrCheckExecutable
 	}
-	b, err := snapshot.ReadFile(path)
+	b, err := snapshot.ReadRecord(path)
 	if err != nil || len(b) > maxCheckExecutable {
 		return nil, ErrCheckExecutable
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
@@ -148,7 +149,7 @@ func buildSchemasMatch(backup, current string) error {
 			if !d.Type().IsRegular() {
 				return errors.New("nonregular record")
 			}
-			data, e := os.ReadFile(path)
+			data, e := snapshot.ReadFile(path)
 			if e != nil {
 				return e
 			}
