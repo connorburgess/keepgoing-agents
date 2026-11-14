@@ -32,7 +32,7 @@ const statusSchema = z.object({
 });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function savedTarget(r: SetupRecord): SetupTarget {
-  const { id, configPath, loop, ...target } = r;
+  const { id, configPath, loop, startJson, startJsonBin, ...target } = r;
   return target;
 }
 function compatible(a: SetupTarget, b: SetupTarget) {

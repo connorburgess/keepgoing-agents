@@ -5,7 +5,9 @@ import type { z } from "zod";
 import type { setupInput } from "./setup-contract.ts";
 
 type Call = (input: z.infer<typeof setupInput>) => Promise<SetupResult>;
-export function SetupPanel({ threadId, call, onChanged }: { threadId: string; call: Call; onChanged(): void }) {
+// `hideStart` leaves starting to another control on the same thread, so a
+// thread never shows two buttons that start the same loop.
+export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { threadId: string; call: Call; onChanged(): void; hideStart?: boolean }) {
   const [name, setName] = useState(`bb-${threadId.replace(/[^a-z0-9-]/g, "-").slice(0, 50)}`);
   const [withGoal, setWithGoal] = useState(true);
   const [task, setTask] = useState("");
@@ -55,7 +57,7 @@ export function SetupPanel({ threadId, call, onChanged }: { threadId: string; ca
       <span>{goalLabel(result.goal, result.goalState)}</span>
       <span>Configuration: {result.record.configPath}</span>
       <button type="button" disabled={busy} onClick={() => void act("inspect")}>Refresh diagnostics</button>
-      {result.canStart && <>
+      {result.canStart && !hideStart && <>
         <span>Starting enables the loop and launches a background supervisor on this thread’s host. It may prompt the agent when eligible. Other timers are not detected or changed.</span>
         <button type="button" disabled={busy} onClick={() => void act("start")}>Start background supervision</button>
       </>}
