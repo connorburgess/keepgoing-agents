@@ -65,7 +65,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 	}
 	fs := flag.NewFlagSet("transfer preview", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", config.DefaultPath(), "configuration path")
 	thread := fs.String("thread", "", "existing destination BB thread ID")
 	asJSON := fs.Bool("json", false, "versioned advisory preview")
 	offline := fs.Bool("offline", false, "skip BB identity queries")

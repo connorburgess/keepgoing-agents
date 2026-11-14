@@ -24,7 +24,7 @@ func goalCommand(e env, args []string) int {
 	}
 	fs := flag.NewFlagSet("goal "+cmd, flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", config.DefaultPath(), "configuration path")
 	file := fs.String("file", "", "private JSON goal specification (create/revise)")
 	id := fs.String("id", "", "expected goal identity (revise)")
 	revision := fs.Uint64("revision", 0, "expected current revision (revise)")

@@ -234,7 +234,7 @@ var runsLimitations = []string{
 func runsCommand(e env, args []string) int {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Never echo parser or config values.
-	path := fs.String("c", "keepgoing.yaml", "configuration used only to locate state_dir")
+	path := fs.String("c", config.DefaultPath(), "configuration used only to locate state_dir")
 	dir := fs.String("state-dir", "", "read this directory without loading configuration")
 	registration := fs.String("registry-id", "", "select a registered loop by its loop_ reference")
 	all := fs.Bool("all", false, "list every registered loop with its current run")

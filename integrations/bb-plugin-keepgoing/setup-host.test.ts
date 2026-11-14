@@ -24,6 +24,15 @@ test("host setup uses stdin, fixed flags and verified CLI output", async () => {
     await assert.rejects(setupOnHost(input, undefined, run));
     reply.primary.agent.bbThread = target.threadId; reply.schemaVersion = 99;
     await assert.rejects(setupOnHost(input, undefined, run));
+    // A CLI that writes the configuration under its current name, and one
+    // from before the rename, are both accepted; no other name is.
+    reply.schemaVersion = 1;
+    for (const name of ["looptender.yaml", "keepgoing.yaml"]) {
+      reply.configPath = join(root, "outside", name);
+      assert.equal((await setupOnHost(input, undefined, run)).plan.configPath, reply.configPath);
+    }
+    reply.configPath = join(root, "outside", "other.yaml");
+    await assert.rejects(setupOnHost(input, undefined, run));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -33,8 +33,8 @@ check full scripts/ci-scope.sh
 check full scripts/README.md
 check full .github/workflows/checks.yml
 check full .github/pull_request_template.md
-check full schema/keepgoing.schema.json
-check full examples/keepgoing.bb.yaml
+check full schema/looptender.schema.json
+check full examples/looptender.bb.yaml
 check full examples/README.md
 check full go.mod
 check full go.sum

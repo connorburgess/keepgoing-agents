@@ -38,7 +38,7 @@ func newAddFixture(t *testing.T, initArgs ...string) addFixture {
 	if code, _, errOut := f.run(t, args, ""); code != 0 {
 		t.Fatalf("init: %d %s", code, errOut)
 	}
-	f.cfg = filepath.Join(f.destination, "keepgoing.yaml")
+	f.cfg = filepath.Join(f.destination, config.FileName)
 	f.fallbacks = filepath.Join(f.destination, "fallbacks.yaml")
 	return f
 }
@@ -354,7 +354,7 @@ func TestFallbacksAddRefusesUnsupportedCombinations(t *testing.T) {
 		if code, _, errOut := c.run(t, args, ""); code != 0 {
 			t.Fatalf("init: %s", errOut)
 		}
-		c.cfg, c.fallbacks = filepath.Join(c.destination, "keepgoing.yaml"), filepath.Join(c.destination, "fallbacks.yaml")
+		c.cfg, c.fallbacks = filepath.Join(c.destination, config.FileName), filepath.Join(c.destination, "fallbacks.yaml")
 		was := c.files(t)
 		code, _, errOut := c.add(t, "", "--non-interactive", "--agent", "codex")
 		if code != exitUsage || !strings.Contains(errOut, "Cursor primary supports standalone loops only") || c.files(t) != was {
@@ -807,7 +807,7 @@ func TestFallbacksAddWriteFailuresLeaveAConsistentLoop(t *testing.T) {
 		f := newAddFixture(t)
 		p := plan(t, f, fallbackAddOptions{agent: "claude", group: "pool-b", enableHandoff: true})
 		before := f.files(t)
-		fallbackAddReplace = failing("keepgoing.yaml")
+		fallbackAddReplace = failing(config.FileName)
 		code, err := writeFallbackAdd(p)
 		fallbackAddReplace = replaceFile
 		if code != exitFailed || err == nil || !strings.Contains(err.Error(), "nothing written") || f.files(t) != before {
@@ -848,7 +848,7 @@ func TestFallbacksAddWriteFailuresLeaveAConsistentLoop(t *testing.T) {
 		f := existing(t)
 		p := plan(t, f, fallbackAddOptions{agent: "codex", account: f.account("codex-b"), enableHandoff: true})
 		cfgBefore, _ := os.ReadFile(f.cfg)
-		fallbackAddReplace = failing("keepgoing.yaml")
+		fallbackAddReplace = failing(config.FileName)
 		code, err := writeFallbackAdd(p)
 		fallbackAddReplace = replaceFile
 		if code != exitFailed || err == nil || !strings.Contains(err.Error(), "the fallback was added") || strings.Contains(err.Error(), "nothing written") {

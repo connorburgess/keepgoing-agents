@@ -1,6 +1,6 @@
 # looptender for BB
 
-**keepgoing is being renamed to looptender.** From plugin v0.3.1 (on `main`, not yet in a release) BB shows this plugin as looptender, and its labels and messages say looptender. Everything you type is unchanged for now: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting, the `keepgoing` executable and `keepgoing.yaml`. Updating keeps the plugin's settings, secrets and schedules, because BB keeps them under the plugin id. The rest of this page still says keepgoing where it means the tool or something you type.
+**keepgoing is being renamed to looptender.** From plugin v0.3.1 (on `main`, not yet in a release) BB shows this plugin as looptender, and its labels and messages say looptender. Everything you type is unchanged for now: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting and the `keepgoing` executable. Guided setup with a CLI from after v0.2.0 creates `looptender.yaml` in place of `keepgoing.yaml` (plugin v0.3.2 accepts either; existing loops keep their file). Updating keeps the plugin's settings, secrets and schedules, because BB keeps them under the plugin id. The rest of this page still says keepgoing where it means the tool or something you type.
 
 A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
@@ -26,7 +26,7 @@ bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
 bb plugin config keepgoing set configs "/absolute/path/to/keepgoing.yaml"
 ```
 
-`configs` takes one existing server-local `keepgoing.yaml` path per line. Those loops and setups created through the UI are shown and controlled. UI-created setups are registered separately with their host and configuration path in private plugin storage. A path sent from the browser is checked against this list, so the plugin never runs keepgoing against an arbitrary file. The plugin needs a keepgoing build whose `status --json` includes `primaryAgent` and `targetAgent`, which is any build after 0.1.0.
+`configs` takes one existing server-local configuration file path per line (`looptender.yaml`, or `keepgoing.yaml` from releases up to v0.2.0). Those loops and setups created through the UI are shown and controlled. UI-created setups are registered separately with their host and configuration path in private plugin storage. A path sent from the browser is checked against this list, so the plugin never runs keepgoing against an arbitrary file. The plugin needs a keepgoing build whose `status --json` includes `primaryAgent` and `targetAgent`, which is any build after 0.1.0.
 
 ## Supervise this thread
 

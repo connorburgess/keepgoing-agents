@@ -1,4 +1,6 @@
-// Package config loads and validates keepgoing.yaml and fallbacks.yaml.
+// Package config loads and validates a loop's configuration file
+// (looptender.yaml, or keepgoing.yaml from before the rename) and
+// fallbacks.yaml.
 package config
 
 import (
@@ -37,7 +39,7 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes the duration back as a string.
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
-// Config is the top-level keepgoing.yaml document.
+// Config is the top-level document of a loop's configuration file.
 type Config struct {
 	Version int  `yaml:"version"`
 	Loop    Loop `yaml:"loop"`
@@ -375,6 +377,9 @@ var (
 // Load reads, defaults, and validates a config file and its fallbacks file.
 // Relative paths inside a file resolve against that file's directory.
 func Load(path string) (*Config, error) {
+	if path == ambiguousDefault {
+		return nil, ErrDefaultAmbiguous
+	}
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs // so state_dir and every relative path become absolute
 	}

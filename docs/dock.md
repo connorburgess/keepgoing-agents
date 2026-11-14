@@ -208,7 +208,7 @@ It is shown only for a loop that is on. An off, stopped or finished loop reads "
 - With both thresholds at 0, the flag is off.
 - Thresholds must be whole numbers from 0 to 1000; `2.5` or `"6"` is refused.
 - The flag reads the run graph, then the history, then the loop's state, without a lock, so it is not one snapshot. The state that sets the window is read last. A read made while a check is writing can therefore leave that check's own records out for one refresh, but it cannot make a change look like no change.
-- **Rolling back** to a binary from before this flag: it drops `progressChangedAt` when it saves the loop's state, which only means the flag starts a new baseline after upgrading again. It also refuses a configuration that sets `progress.flag_after_sends` or `progress.flag_after_errors` as unknown fields, so remove them first. `examples/keepgoing.bb.yaml` sets both.
+- **Rolling back** to a binary from before this flag: it drops `progressChangedAt` when it saves the loop's state, which only means the flag starts a new baseline after upgrading again. It also refuses a configuration that sets `progress.flag_after_sends` or `progress.flag_after_errors` as unknown fields, so remove them first. `examples/looptender.bb.yaml` sets both.
 
 Not in this flag:
 - **Lanes:** keepgoing records a loop's lanes only as counts and hashed keys, with no sends or progress of their own, so a lane cannot be flagged until lanes have their own records.

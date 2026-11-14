@@ -128,7 +128,7 @@ func initTargetOf(a config.Agent) initTarget {
 }
 
 func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal) int {
-	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
+	cfgPath := filepath.Join(o.directory, config.FileName)
 	r := initReport{
 		SchemaVersion: 1, Version: version, Outcome: "created", StartJSON: true, Loop: o.name,
 		Project: o.project, ConfigPath: cfgPath, StateDir: cfg.Loop.StateDir,

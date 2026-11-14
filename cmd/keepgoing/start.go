@@ -26,7 +26,7 @@ type startReady func(control.File) error
 func startCommand(e env, args []string, ready startReady) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", "keepgoing.yaml", "path to the config file")
+	path := fs.String("c", config.DefaultPath(), "path to the config file")
 	foreground := fs.Bool("foreground", false, "run in this terminal (default)")
 	background := fs.Bool("background", false, "detach the daemon; return after startup succeeds")
 	allowShare := fs.Bool("allow-second-loop", false, "start this loop even though another enabled loop supervises the same session")

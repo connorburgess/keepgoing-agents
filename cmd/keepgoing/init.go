@@ -141,7 +141,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		}
 		return printInitJSON(e, o, cfg, goal)
 	}
-	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
+	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, config.FileName), cfg.Loop.StateDir)
 	fmt.Fprintln(e.stdout, initBindingNotice(o))
 	if o.agent == "cursor" {
 		fmt.Fprintln(e.stdout, initCursorNotice)
@@ -179,7 +179,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: %v", err)
 		return exitFailed
 	}
-	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
+	cfgPath := filepath.Join(o.directory, config.FileName)
 	if goal != nil {
 		printGoal(e, goal.Summary(), false)
 	}
@@ -526,11 +526,11 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 	if len(fallbacks.Candidates) > 0 {
 		cfg.FallbackSet, _ = config.ParseFallbacks(files["fallbacks.yaml"])
 	}
-	files["keepgoing.yaml"] = b
-	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, "keepgoing.yaml")))
+	files[config.FileName] = b
+	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, config.FileName)))
 	if o.withGoal {
 		files["task.md"] = []byte(o.task + "\n")
-		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, "keepgoing.yaml")))
+		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, config.FileName)))
 	}
 	return files, cfg, nil
 }
@@ -690,7 +690,7 @@ func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*co
 			return nil, err
 		}
 		defer l.Release()
-		cfg, err := config.Load(filepath.Join(dir, "keepgoing.yaml"))
+		cfg, err := config.Load(filepath.Join(dir, config.FileName))
 		if err != nil || cfg.Loop.StateDir != stateDir || !cfg.Loop.PromptGoal {
 			return nil, errors.New("goal setup configuration changed or unavailable")
 		}

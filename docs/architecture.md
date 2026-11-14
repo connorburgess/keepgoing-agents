@@ -17,7 +17,7 @@
 
 ```
 cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, ci-wait, net-retry
-internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
+internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
 internal/prompt             opt-in current-goal context for wake and handoff messages
