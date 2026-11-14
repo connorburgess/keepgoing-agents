@@ -222,7 +222,15 @@ func (j *cursorJourney) capture(n int, resume bool) {
 }
 func (j *cursorJourney) release(n int, mode string) {
 	j.t.Helper()
-	if err := os.WriteFile(filepath.Join(j.root, fmt.Sprintf("turn-%d", n), "release"), []byte(mode), 0600); err != nil {
+	// Publish the mode with a rename. The stand-in polls for this file and
+	// acts on whatever it reads, so it must never see the file created but
+	// not yet written: an empty read is taken as a failed turn.
+	dir := filepath.Join(j.root, fmt.Sprintf("turn-%d", n))
+	staged := filepath.Join(dir, "release.staged")
+	if err := os.WriteFile(staged, []byte(mode), 0600); err != nil {
+		j.t.Fatal(err)
+	}
+	if err := os.Rename(staged, filepath.Join(dir, "release")); err != nil {
 		j.t.Fatal(err)
 	}
 	j.waitPhase(runner.Finished)
