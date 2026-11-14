@@ -1,6 +1,6 @@
 # looptender menu preview
 
-The development menu still uses the **keepgoing Menu** bundle name and **Open keepgoing Panel** label; these are literal interface labels, not a different product.
+Unreleased source displays **looptender Menu** and **Open looptender Panel**. The development bundle/executable path remains `KeepgoingMenu.app`/`KeepgoingMenu`, with its existing bundle identifier and CLI contract; rebuilding source does not replace a running menu.
 
 An optional native macOS menu-bar item that opens the [looptender panel](../../docs/dock.md) and lists explicitly registered local loops. It can pause, stop and resume a loop, each only after a native confirmation that shows the panel's own review. This is a v0.2.0 **development preview**, built separately from the Go executable. It uses AppKit's native status item and menus. It is not installed by Homebrew or `keepgoing init`.
 
@@ -20,7 +20,7 @@ For a non-default registry, pass `--directory /private/example-registry` to the 
 ## What the menu shows
 
 ```text
-Open keepgoing Panel
+Open looptender Panel
 1 loop needs you
 ---------------------------------------------
 example-api     Waiting for you   >
@@ -29,12 +29,12 @@ example-site    Paused            >    Open in Panel
 ---------------------------------      -------------
 Open Panel with Controls…              Resume…
 Stop the Panel Page   stops by…        Stop…
-Quit keepgoing Menu
+Quit looptender Menu
 ---------------------------------
 Read 2 min ago
 ```
 
-- **Open keepgoing Panel** runs `keepgoing panel`, which starts the panel's background process when none is running and opens the page in your browser. It is always there and always tries, whatever the menu could read.
+- **Open looptender Panel** runs `keepgoing panel`, which starts the panel's background process when none is running and opens the page in your browser. It is always there and always tries, whatever the menu could read.
 - **N loops need you** appears only when a loop is held for a person, its checks have stopped, or it can't be read ("1 loop needs you, 2 can't be read"). It opens the panel, whose first view is what needs you. The same count sits beside the icon in the menu bar. The icon is plain only when a complete read found that nothing needs a person. It shows `?` when looptender could not be read, when the list of loops could not be read, or when not every loop was read, so none of those is ever taken for "nothing needs you".
 - **One row per registered loop**: its name and its state in the panel's own words, loops that want attention first. A row opens the loop's choices, below, whose first is its page (`keepgoing panel --loop`). At most 25 are listed; when there are more, **All N Loops in the Panel** opens the rest. A name longer than 28 characters is shortened in the middle, because loop names often share a beginning; the full name is in the row's tooltip and its accessibility label. A loop the panel flags for [no progress](../../docs/dock.md#the-no-progress-flag) adds "· no progress" to its row, as the panel's picker does, and the flag's sentence to its accessibility label; the flag never counts as needing a person.
 - **A loop's choices.** When looptender says which changes fit a loop's control flags (`can` in `panel list --json`, as the page offers them), its row opens a submenu: **Open in Panel**, then **Pause…** when it is not paused, **Resume…** when any hold is set, and **Stop…** when no stop is requested, Stop last. A looptender without `can` gives the row of before, which opens the loop's page.
@@ -96,7 +96,7 @@ Every subprocess uses a fixed argument array without a shell and a 1 MiB cap per
 | `keepgoing client apply pause\|stop --all --expect KEY=VALUE … [--lanes] --json` | pause or stop each loop of a confirmed review, each only if its record is the one reviewed; `--lanes` for a stop whose option says so | 120 s |
 | `keepgoing client apply pause\|stop\|resume --loop KEY --expect VALUE [--lanes] [--immediately] [--drop-queued] --json` | make a confirmed change; `--lanes`, `--immediately` and `--drop-queued` only for a stop, and only when the review offered them; `--drop-queued` only with `--lanes`, for the one option that says so | 25 s |
 
-The only values ever taken from a reply and passed back are a loop's page key and a review's `expect` value (with `--all`, each loop's, as `KEY=VALUE`), each only after it matches its pattern, and a stop option's choice of `--lanes`. There is no command path that enables a loop, takes it over, or reaches a provider; the reads never start the panel. **The menu acts as no BB thread:** every command gets the environment the panel gives its own server (a fixed `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TZ`, the locale and the XDG directories) and nothing else, so `BB_THREAD_ID` never reaches looptender wherever the menu was started, and a resume acts as a person at a terminal outside BB. That also drops `LOOPTENDER_REGISTRY_DIR`, `LOOPTENDER_SESSION_DIR` and `LOOPTENDER_PANEL_OPENER`, and their earlier `KEEPGOING_` names: give a non-default registry with `--registry-directory`, which the menu passes as `--directory` to every command that reads the registry (the list, opening the panel, review and apply), and a panel directory with `--panel-directory`, which it passes to the panel commands. A change is recorded in the loop's history as an ordinary `pause`, `stop` or `resume`. Subprocess errors and stderr are never shown as raw text. A missing binary, malformed reply, timeout or failed read shows one plain line and leaves **Open keepgoing panel** working. Loop names and review sentences are shown as inert text with control characters removed. New additive JSON fields are tolerated.
+The only values ever taken from a reply and passed back are a loop's page key and a review's `expect` value (with `--all`, each loop's, as `KEY=VALUE`), each only after it matches its pattern, and a stop option's choice of `--lanes`. There is no command path that enables a loop, takes it over, or reaches a provider; the reads never start the panel. **The menu acts as no BB thread:** every command gets the environment the panel gives its own server (a fixed `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TZ`, the locale and the XDG directories) and nothing else, so `BB_THREAD_ID` never reaches looptender wherever the menu was started, and a resume acts as a person at a terminal outside BB. That also drops `LOOPTENDER_REGISTRY_DIR`, `LOOPTENDER_SESSION_DIR` and `LOOPTENDER_PANEL_OPENER`, and their earlier `KEEPGOING_` names: give a non-default registry with `--registry-directory`, which the menu passes as `--directory` to every command that reads the registry (the list, opening the panel, review and apply), and a panel directory with `--panel-directory`, which it passes to the panel commands. A change is recorded in the loop's history as an ordinary `pause`, `stop` or `resume`. Subprocess errors and stderr are never shown as raw text. A missing binary, malformed reply, timeout or failed read shows one plain line and leaves **Open looptender panel** working. Loop names and review sentences are shown as inert text with control characters removed. New additive JSON fields are tolerated.
 
 `keepgoing panel` starts the panel's background process, for this computer only, which stops by itself when unused; see [the panel](../../docs/dock.md#opening-it-with-one-command-keepgoing-panel). The menu never starts it except when a row that opens the panel is chosen.
 

@@ -347,7 +347,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { [self] in
                 switch reading {
                 case .none:
-                    tell("keepgoing could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --loop \(key) in a terminal to see why.")
+                    tell("looptender could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --loop \(key) in a terminal to see why.")
                 case .refused(let result):
                     tell("Nothing was changed", Contract.text(result.text))
                 case .review(let review):
@@ -363,7 +363,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 // Seen on the next look at the menu.
                                 notice = Contract.text(result.text)
                             } else {
-                                tell(result.outcome == "uncertain" ? "keepgoing could not confirm the change" : "Nothing was changed", Contract.text(result.text))
+                                tell(result.outcome == "uncertain" ? "looptender could not confirm the change" : "Nothing was changed", Contract.text(result.text))
                             }
                             refresh()
                         }
@@ -383,7 +383,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { [self] in
                 switch reading {
                 case .none:
-                    tell("keepgoing could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --all in a terminal to see why.")
+                    tell("looptender could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --all in a terminal to see why.")
                 case .refused(let result):
                     tell("Nothing was changed", Contract.text(result.text))
                 case .review(let review):
@@ -417,7 +417,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 render()
                 // Offered only with the footer's statement, which is always shown.
                 guard let status = fresh, status.exposure != nil else {
-                    tell("The keepgoing panel could not be read", "Nothing was started. Run keepgoing panel status in a terminal to see why. Your loops are not affected.")
+                    tell("The looptender panel could not be read", "Nothing was started. Run keepgoing panel status in a terminal to see why. Your loops are not affected.")
                     return
                 }
                 if let confirmation = ConfirmationBuilder.openWithControls(status) {
@@ -427,7 +427,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
                     if restart, (try? client.open(.stopPanel)) == nil {
                         DispatchQueue.main.async { [self] in
-                            tell("The keepgoing panel could not be stopped", "Run keepgoing panel stop in a terminal to see why, then keepgoing panel --allow-changes. Your loops are not affected.")
+                            tell("The looptender panel could not be stopped", "Run keepgoing panel stop in a terminal to see why, then keepgoing panel --allow-changes. Your loops are not affected.")
                             refresh()
                         }
                         return
@@ -449,7 +449,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let opener = command == .openPanelWithChanges ? "keepgoing panel --allow-changes" : "keepgoing panel"
                     notice = stopping ? "The panel could not be stopped. Run keepgoing panel stop in a terminal." : "The panel could not be opened. Run \(opener) in a terminal."
                     let alert = NSAlert()
-                    alert.messageText = stopping ? "The keepgoing panel could not be stopped" : "The keepgoing panel could not be opened"
+                    alert.messageText = stopping ? "The looptender panel could not be stopped" : "The looptender panel could not be opened"
                     alert.informativeText = stopping ? "Run keepgoing panel stop in a terminal to see why. Your loops are not affected." : "Run \(opener) in a terminal to see why. Your loops are not affected."
                     NSApp.activate(ignoringOtherApps: true)
                     alert.runModal()
