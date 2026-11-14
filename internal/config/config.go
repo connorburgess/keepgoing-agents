@@ -50,6 +50,7 @@ type Config struct {
 	RouteList    RouteStatus `yaml:"-"`
 	routesSource sourceSnapshot
 	source       sourceSnapshot
+	readAt       time.Time // successful configuration load, private runtime metadata
 }
 
 // Loop describes one supervised agent loop.
@@ -389,6 +390,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	cfg.source = snapshot(path, raw)
+	cfg.readAt = time.Now().UTC()
 	base := filepath.Dir(path)
 	l := &cfg.Loop
 	l.StateDir = resolve(base, l.StateDir)

@@ -225,6 +225,9 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *ownerLease, monitor *daemoninfo.Server) int {
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "started"})
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
+	// stopDone is the control signature of the last saved stop this daemon
+	// saw carried out, so the fast retry below is for a stop still to do.
+	stopDone := ""
 	for {
 		// Reload so edits to the configuration or fallbacks file apply without
 		// a restart. A broken edit retains the timing/diagnostic context,
@@ -248,14 +251,31 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		monitor.Update("checking", nil)
 		pass := e
 		pass.ctx = daemonPassContext(e.ctx, monitor)
-		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
+		stop := stopRequested(cfg.Loop.StateDir)
+		var code int
+		if stop && sig != stopDone && !dryRun && cfg.SourcesUnavailable() {
+			// Stop wins even when the configuration can no longer be read:
+			// the stop, and nothing else, is carried out from the last
+			// configuration this daemon read.
+			code = stopFromLastConfig(pass, cfg, lease)
+		} else {
+			code = tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
+		}
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
+		if stop && code == exitOK {
+			if saved, err := state.Load(cfg.Loop.StateDir); err == nil && saved.LastCheck != nil && saved.LastCheck.Outcome == "succeeded" {
+				stopDone = sig // the stop check succeeded and was saved
+			}
+		}
 		// Stop wins: a stop that was skipped (another loop's check held the
 		// session, or another tick held the lock) is tried again at the next
-		// control poll, not after a whole interval.
-		if code == exitSkipped && stopRequested(cfg.Loop.StateDir) {
+		// control poll, not after a whole interval. A stop already carried
+		// out is not: the loop waits as any other.
+		if code == exitSkipped && stop && sig != stopDone {
+			// The pass has ended: a daemon retrying is not one asleep.
+			monitor.Update("waiting", nil)
 			if !sleepContext(e.ctx, cfg.Loop.Daemon.ControlPoll.Duration) {
 				return exitOK
 			}
@@ -295,6 +315,9 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 // Keep timer/control behavior testable independently of subprocess latency.
 func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server, poll func(context.Context) bool) bool {
 	if controlSignature(cfg.Loop.StateDir) != sig {
+		// A control change during the pass starts the next one now, but
+		// this pass has ended: a daemon that ends no pass reads as asleep.
+		monitor.Update("waiting", nil)
 		return ctx.Err() == nil
 	}
 	plan := planWait(cfg, time.Now())

@@ -76,3 +76,25 @@ func TestDaemonHandsItsPassesToItsChecks(t *testing.T) {
 		t.Fatalf("outside a daemon: %+v", outside.Daemon)
 	}
 }
+
+// A control change during a pass starts the next pass at once, and the pass
+// that saw it has ended: a daemon that never ends a pass reads as a computer
+// asleep, and is never overdue.
+func TestAControlChangeDuringAPassEndsThePass(t *testing.T) {
+	dir := t.TempDir()
+	s, err := daemoninfo.Start(dir, version, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	cfg := &config.Config{Loop: config.Loop{StateDir: dir}}
+	cfg.Loop.Daemon.Interval.Duration, cfg.Loop.Daemon.ControlPoll.Duration = time.Hour, time.Hour
+	s.Update("checking", nil)
+	began := time.Now()
+	if !waitForNextWithPoll(context.Background(), cfg, "a signature from before the change", s, func(context.Context) bool { return false }) {
+		t.Fatal("the daemon was told to exit")
+	}
+	if at := s.LastPassAt(); at.Before(began) {
+		t.Fatalf("the pass did not end: %v", at)
+	}
+}
