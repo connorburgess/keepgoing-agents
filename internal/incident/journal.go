@@ -27,7 +27,9 @@ const FileName = "incidents.json"
 // records: a change to a loop's own route list, with who made it.
 // Version 12 adds the refusal and model-fallback markers on tick records,
 // and the question IDs on control records.
-const SchemaVersion = 12
+// Version 13 (returns and manual probes) adds the return to the primary on
+// tick records and the probe records of a manual `fallbacks check`.
+const SchemaVersion = 13
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -194,6 +196,13 @@ func Load(dir string) (Journal, error) {
 		if j.SchemaVersion < 10 {
 			r.Lanes = LaneWork{}
 		}
+		if j.SchemaVersion < 13 {
+			// Older writers recorded no return and no manual probes.
+			r.Returned = nil
+			if r.Kind == "probe" {
+				return Journal{}, ErrUnavailable
+			}
+		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
 		}
@@ -334,10 +343,31 @@ func (j *Journal) add(r Record) {
 	if r.Kind == "route_change" {
 		j.capRouteChanges()
 	}
+	// Manual probe records are capped, oldest out first, so a schedule of
+	// `fallbacks check` cannot fill the condition or activity tier.
+	if r.Kind == "probe" {
+		n := 0
+		for _, x := range j.Records {
+			if x.Kind == "probe" {
+				n++
+			}
+		}
+		for i := 0; n > MaxProbeRecords && i < len(j.Records)-1; {
+			if j.Records[i].Kind == "probe" {
+				j.prune(i)
+				n--
+				continue
+			}
+			i++
+		}
+	}
 	for len(j.Records) > MaxRecords {
 		j.dropFromFullestTier()
 	}
 }
+
+// MaxProbeRecords bounds the manual probe records retained.
+const MaxProbeRecords = 16
 
 // capRouteChanges prunes the oldest route_change records past their cap.
 func (j *Journal) capRouteChanges() {
@@ -399,17 +429,23 @@ func (j *Journal) dropOldest(tier string) bool {
 		if r.Tier != tier {
 			continue
 		}
-		p := j.Pruned.tier(tier)
-		p.Count++
-		if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
-			at := r.CheckStartedAt
-			p.NewestAt = &at
-		}
-		j.Dropped++
-		j.Records = append(j.Records[:i], j.Records[i+1:]...)
+		j.prune(i)
 		return true
 	}
 	return false
+}
+
+// prune removes record i, counting it as pruned from its tier.
+func (j *Journal) prune(i int) {
+	r := j.Records[i]
+	p := j.Pruned.tier(r.Tier)
+	p.Count++
+	if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
+		at := r.CheckStartedAt
+		p.NewestAt = &at
+	}
+	j.Dropped++
+	j.Records = append(j.Records[:i], j.Records[i+1:]...)
 }
 
 func validRecord(r Record) bool {
@@ -431,6 +467,10 @@ func validRecord(r Record) bool {
 		return false
 	}
 	if r.Kind == "route_change" && (r.RouteChange == nil || !keyPattern.MatchString(r.RouteChange.TargetKey)) {
+		return false
+	}
+	// A manual probe record holds at least one captured result.
+	if r.Kind == "probe" && (r.Probes.Availability != "captured" || len(r.Probes.Results) == 0) {
 		return false
 	}
 	return r.Kind != "control" || (r.ControlChange != nil && !r.ControlChange.SaveObservedAt.IsZero() && r.ControlBefore != nil && r.ControlAfter != nil)

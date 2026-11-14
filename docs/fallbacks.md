@@ -312,7 +312,7 @@ The plan shows the selected candidates, providers, quota groups, probe kinds, ef
 
 With `--json`, stdout contains a versioned `probe_plan` object with `schemaVersion: 1`. `estimatedCostUSD` is `null` and `costStatus` is `unknown`, except when no candidates are selected (`0` and `no_probes`). `scheduledCapApplies` is always false for this command. `invocationCount` counts selected probe invocations, not provider requests, tokens, or successful checks.
 
-Remove `--dry-run` to execute. The command prints the plan to stderr before probing, while stdout retains its existing health-result format. `--json` also formats that stderr plan as JSON. Execution proceeds without an interactive confirmation; failure to write the plan aborts it. The plan is not a reservation or a health check. Doctor never invokes these probes automatically. Offline fixtures verify selection, privacy, unchanged holds, and plan-before-execution ordering using a fake command; no paid model calls were used to test this feature.
+Remove `--dry-run` to execute. Each executed check also leaves one record in the [event log](diagnostics.md#navigating-events), with hashed candidate aliases and pass/fail only; `timeline --kind probe` lists it. The command prints the plan to stderr before probing, while stdout retains its existing health-result format. `--json` also formats that stderr plan as JSON. Execution proceeds without an interactive confirmation; failure to write the plan aborts it. The plan is not a reservation or a health check. Doctor never invokes these probes automatically. Offline fixtures verify selection, privacy, unchanged holds, and plan-before-execution ordering using a fake command; no paid model calls were used to test this feature.
 
 ## Defaults
 
