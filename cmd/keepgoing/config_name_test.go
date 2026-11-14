@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -76,5 +77,79 @@ func TestInitWritesTheConfigurationUnderTheCurrentName(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(f.destination, config.LegacyFileName)); err == nil {
 		t.Fatal("a keepgoing.yaml was written")
+	}
+}
+
+// Two different files under the two names: every command that reads the
+// default says why it reads neither, before resolving or loading anything,
+// and changes nothing. -c still chooses.
+func TestEveryCommandRefusesAnAmbiguousDefault(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	for _, name := range []string{config.FileName, config.LegacyFileName} {
+		if err := os.WriteFile(name, []byte(configNameLoop), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const why = "both looptender.yaml and keepgoing.yaml are in this directory; choose one with -c"
+	runCmd := func(args ...string) (int, string, string) {
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), args, &out, &errOut)
+		return code, out.String(), errOut.String()
+	}
+	cases := [][]string{{"stop"}, {"pause"}, {"status"}, {"tick"}, {"start"}, {"runs"}, {"timeline"}, {"goal", "show"}, {"fallbacks", "remove", "example"}}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		cases = append(cases, []string{"service", "install", "--dry-run", "--json"})
+	}
+	for _, args := range cases {
+		code, out, errOut := runCmd(args...)
+		if code != exitUsage || !strings.Contains(errOut, why) {
+			t.Errorf("%v: %d %s %s", args, code, out, errOut)
+		}
+	}
+	// start --background --json: one object, with the reason.
+	code, out, _ := runCmd("start", "--background", "--json")
+	var v startJSON
+	if err := json.Unmarshal([]byte(out), &v); err != nil || code != exitUsage || v.Outcome != "failed" || v.Reason != "ambiguous_default_config" {
+		t.Errorf("start --background --json: %d %s %v", code, out, err)
+	}
+	// Nothing was written: no state directory, no control record.
+	if _, err := os.Lstat(filepath.Join(dir, "state")); err == nil {
+		t.Error("a command wrote the loop's state")
+	}
+	if code, _, errOut := runCmd("stop", "-c", config.FileName); code != exitOK {
+		t.Errorf("stop -c: %d %s", code, errOut)
+	}
+}
+
+// One file under both names, as someone links them so a release from before
+// the rename and this one both find it without -c: it is one
+// configuration, read by its current name.
+func TestALinkedConfigurationIsOneConfiguration(t *testing.T) {
+	for _, kind := range []string{"symbolic", "hard"} {
+		t.Run(kind, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+			if err := os.WriteFile(config.LegacyFileName, []byte(configNameLoop), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := os.Symlink
+			if kind == "hard" {
+				link = os.Link
+			}
+			if err := link(config.LegacyFileName, config.FileName); err != nil {
+				t.Skipf("no %s links here: %v", kind, err)
+			}
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), []string{"validate"}, &out, &errOut); code != exitOK || !strings.Contains(out.String()+errOut.String(), "ok: "+config.FileName) {
+				t.Fatalf("%d %s %s", code, out.String(), errOut.String())
+			}
+		})
 	}
 }

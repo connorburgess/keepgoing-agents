@@ -136,7 +136,7 @@ func TestInitOffersTheStandardListOnlyWhenAsked(t *testing.T) {
 	if code, _, errOut := f.run(t, f.args(), ""); code != 0 {
 		t.Fatalf("script: %d %s", code, errOut)
 	}
-	if cfg := loadFixture(t, filepath.Join(f.destination, "keepgoing.yaml")); cfg.Loop.FollowsStandard() {
+	if cfg := loadFixture(t, filepath.Join(f.destination, config.FileName)); cfg.Loop.FollowsStandard() {
 		t.Fatal("a script followed the list without --routes standard")
 	}
 	other := filepath.Join(f.root, "following")
@@ -148,7 +148,7 @@ func TestInitOffersTheStandardListOnlyWhenAsked(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Routes != "standard" || len(rep.Fallbacks) != 1 || rep.Fallbacks[0].ID != "codex-headless" || strings.Join(rep.Limits.FailoverOn, ",") != "rate_limit" {
 		t.Fatalf("report: %v %s", err, out)
 	}
-	cfg := loadFixture(t, filepath.Join(other, "keepgoing.yaml"))
+	cfg := loadFixture(t, filepath.Join(other, config.FileName))
 	if !cfg.Loop.FollowsStandard() || strings.Join(candidateIDs(cfg.FallbackSet), ",") != "codex-headless" {
 		t.Fatalf("follower: %+v", cfg.RouteList)
 	}
@@ -165,7 +165,7 @@ func TestInitOffersTheStandardListOnlyWhenAsked(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Follow your standard route list for handoffs? 1 of its 4 routes applies to this loop. (yes/no) [yes]") || strings.Contains(out, "Next fallback agent") || !strings.Contains(out, "Routes: follows your standard route list; 1 apply to this loop: codex-headless.") {
 		t.Fatalf("wizard: %d %s %s", code, out, errOut)
 	}
-	if cfg := loadFixture(t, filepath.Join(wizard, "keepgoing.yaml")); !cfg.Loop.FollowsStandard() {
+	if cfg := loadFixture(t, filepath.Join(wizard, config.FileName)); !cfg.Loop.FollowsStandard() {
 		t.Fatal("wizard default did not follow")
 	}
 	// An empty list is refused too.

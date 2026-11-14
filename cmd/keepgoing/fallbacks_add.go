@@ -179,7 +179,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		fmt.Fprint(e.stderr, fallbackAddUsage)
 		fs.PrintDefaults()
 	}
-	fs.StringVar(&o.cfgPath, "c", config.DefaultPath(), "path to the loop's config file")
+	fs.StringVar(&o.cfgPath, "c", "", configFlagHelp("path to the loop's config file"))
 	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless), or bb (an existing BB thread)")
 	fs.StringVar(&o.thread, "thread", "", "bb: existing thread ID; may be the primary's thread with another model")
 	fs.BoolVar(&o.newThread, "new-thread", false, "bb: instead of --thread, let a handoff start a new BB thread on this provider and model")
@@ -226,6 +226,9 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
 	// Relative paths in a config resolve against the directory it was opened
 	// from, so a symlinked path would describe a different loop than its target.
+	if !configDefault(e, "fallbacks add", &o.cfgPath) {
+		return exitUsage
+	}
 	if info, err := os.Lstat(o.cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return refuse(errors.New("The config path is a symbolic link. Pass the real configuration file instead."))
 	}

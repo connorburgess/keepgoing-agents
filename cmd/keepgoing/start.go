@@ -26,7 +26,7 @@ type startReady func(control.File) error
 func startCommand(e env, args []string, ready startReady) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", config.DefaultPath(), "path to the config file")
+	path := fs.String("c", "", configFlagHelp("path to the config file"))
 	foreground := fs.Bool("foreground", false, "run in this terminal (default)")
 	background := fs.Bool("background", false, "detach the daemon; return after startup succeeds")
 	allowShare := fs.Bool("allow-second-loop", false, "start this loop even though another enabled loop supervises the same session")
@@ -43,6 +43,12 @@ func startCommand(e env, args []string, ready startReady) int {
 	}
 	if *asJSON && !*background {
 		e.errf("start: --json is supported with --background only")
+		return exitUsage
+	}
+	if !configDefault(e, "start", path) {
+		if *asJSON {
+			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "failed", ExitCode: exitUsage, Reason: "ambiguous_default_config"})
+		}
 		return exitUsage
 	}
 	if *asJSON {
@@ -67,6 +73,10 @@ type startJSON struct {
 	PID           int    `json:"pid,omitempty"`
 	Control       string `json:"control,omitempty"`
 	ExitCode      int    `json:"exitCode,omitempty"`
+	// Reason is set for a failure before any configuration was read:
+	// ambiguous_default_config when -c was not given and both
+	// looptender.yaml and keepgoing.yaml are in the working directory.
+	Reason string `json:"reason,omitempty"`
 }
 
 // startJSONWriter holds what --json prints until the command ends, so a

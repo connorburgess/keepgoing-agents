@@ -72,7 +72,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	cmd := args[0]
 	fs := flag.NewFlagSet("transfer "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("c", config.DefaultPath(), "configuration path")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
 	from := fs.String("from", "", "expected current BB primary (apply)")
 	to := fs.String("thread", "", "new existing BB primary (apply)")
 	id := fs.String("id", "", "pending transfer identity (recover)")
@@ -98,6 +98,9 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 			return exitSkipped
 		}
 		return exitFailed
+	}
+	if !configDefault(e, "transfer", path) {
+		return exitUsage
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {

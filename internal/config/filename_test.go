@@ -7,34 +7,64 @@ import (
 )
 
 // With no -c, a command reads looptender.yaml in the working directory, or
-// keepgoing.yaml when only that is there. With both there it reads neither,
-// and says which two and what to do. With neither it names the new file.
+// keepgoing.yaml when only that is there. With both there as two files it
+// reads neither. Both there as one file, through a symbolic or a hard link,
+// is one configuration, read by its current name. With neither it names the
+// new file.
 func TestDefaultPath(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if got := DefaultPath(); got != FileName {
-		t.Fatalf("neither: %q", got)
+	want := func(path string, err error) {
+		t.Helper()
+		got, gotErr := DefaultPath()
+		if got != path || !errors.Is(gotErr, err) || (err == nil && gotErr != nil) {
+			t.Fatalf("DefaultPath = %q %v, want %q %v", got, gotErr, path, err)
+		}
 	}
-	if err := os.WriteFile(LegacyFileName, nil, 0o600); err != nil {
+	want(FileName, nil)
+	if err := os.WriteFile(LegacyFileName, []byte("one"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultPath(); got != LegacyFileName {
-		t.Fatalf("the earlier name only: %q", got)
-	}
-	if err := os.WriteFile(FileName, nil, 0o600); err != nil {
+	want(LegacyFileName, nil)
+	if err := os.WriteFile(FileName, []byte("two"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := DefaultPath()
-	if _, err := Load(got); !errors.Is(err, ErrDefaultAmbiguous) {
-		t.Fatalf("both: %q %v", got, err)
+	want("", ErrDefaultAmbiguous)
+	// A file whose name once stood for "both" is just a file.
+	if err := os.WriteFile(FileName+"|"+LegacyFileName, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
+	want("", ErrDefaultAmbiguous)
+	if err := os.Remove(FileName); err != nil {
+		t.Fatal(err)
+	}
+	// One file under both names: a symbolic link, either way round, and a
+	// hard link.
+	for _, link := range []func() error{
+		func() error { return os.Symlink(LegacyFileName, FileName) },
+		func() error { return os.Link(LegacyFileName, FileName) },
+	} {
+		if err := link(); err != nil {
+			t.Skipf("links are not available here: %v", err)
+		}
+		want(FileName, nil)
+		if err := os.Remove(FileName); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(LegacyFileName, FileName); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(FileName, LegacyFileName); err != nil {
+		t.Fatal(err)
+	}
+	want(FileName, nil)
 	if err := os.Remove(LegacyFileName); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultPath(); got != FileName {
-		t.Fatalf("the current name only: %q", got)
+	want(FileName, nil)
+	// A link that leads nowhere is not the same file as anything.
+	if err := os.Symlink("absent.yaml", LegacyFileName); err != nil {
+		t.Fatal(err)
 	}
-	// The stand-in for "both" is never a file Load would open.
-	if _, err := os.Lstat(ambiguousDefault); err == nil {
-		t.Fatal("the stand-in exists as a file")
-	}
+	want("", ErrDefaultAmbiguous)
 }

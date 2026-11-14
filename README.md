@@ -80,12 +80,12 @@ keepgoing init
 Use the generated config path for subsequent commands. For example, replacing this fictional path with yours:
 
 ```sh
-keepgoing status -c /private/example-loop/keepgoing.yaml
-keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
-keepgoing resume -c /private/example-loop/keepgoing.yaml
-keepgoing stop -c /private/example-loop/keepgoing.yaml
-keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
-keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
+keepgoing status -c /private/example-loop/looptender.yaml
+keepgoing pause -c /private/example-loop/looptender.yaml --note "reviewing by hand"
+keepgoing resume -c /private/example-loop/looptender.yaml
+keepgoing stop -c /private/example-loop/looptender.yaml
+keepgoing stop --lanes --immediately -c /private/example-loop/looptender.yaml
+keepgoing complete -c /private/example-loop/looptender.yaml --note "Task verified"
 ```
 
 A plain `stop` is carried out by the next check and stops the supervised conversation only; `--lanes` also stops the conversations it started, and theirs, and `--immediately` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
@@ -119,7 +119,7 @@ A loop can name other agents to move to when its current one reports a usage lim
 Set fallbacks up at creation with `keepgoing init` (wizard, or repeated `--fallback`). To add one to an existing loop, there is a guided command:
 
 ```sh
-keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
+keepgoing fallbacks add -c /private/example-loop/looptender.yaml
 ```
 
 It looks up installed agent CLIs without running them, asks for the provider, account directory or BB thread, quota group and model, previews the candidate and the resulting handoff order, and writes only after confirmation. It leaves handoff off unless you turn it on, and refuses a candidate on the same login and model as an existing target. Flags with `--non-interactive`, `--dry-run` and `--json` script the same path. `fallbacks handoff on|off`, `fallbacks move` and `fallbacks remove` change an existing setup the same way: preview, then confirm.

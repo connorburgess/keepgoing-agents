@@ -67,7 +67,7 @@ type doctorRun func(context.Context, string, []string, map[string]string, string
 func doctor(e env, args []string, run doctorRun) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", config.DefaultPath(), "path to the config file")
+	path := fs.String("c", "", configFlagHelp("path to the config file"))
 	asJSON := fs.Bool("json", false, "print the versioned diagnostic report")
 	offline := fs.Bool("offline", false, "inspect local files only; do not execute CLIs")
 	timeout := fs.Duration("timeout", 5*time.Second, "timeout per read-only CLI command")
@@ -90,7 +90,14 @@ func doctor(e env, args []string, run doctorRun) int {
 		return exitUsage
 	}
 	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: unknownNextCheck, Checks: []doctorCheck{}}
-	cfg, err := config.Load(*path)
+	var cfg *config.Config
+	var err error
+	if *path == "" {
+		*path, err = config.DefaultPath()
+	}
+	if err == nil {
+		cfg, err = config.Load(*path)
+	}
 	if errors.Is(err, config.ErrDefaultAmbiguous) {
 		r.add("config", "error", "No -c was given, and both "+config.FileName+" and "+config.LegacyFileName+" are in this directory, so which loop is meant cannot be told.", "Pass -c with the one you mean.")
 		doctorVariables(&r)

@@ -377,9 +377,6 @@ var (
 // Load reads, defaults, and validates a config file and its fallbacks file.
 // Relative paths inside a file resolve against that file's directory.
 func Load(path string) (*Config, error) {
-	if path == ambiguousDefault {
-		return nil, ErrDefaultAmbiguous
-	}
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs // so state_dir and every relative path become absolute
 	}

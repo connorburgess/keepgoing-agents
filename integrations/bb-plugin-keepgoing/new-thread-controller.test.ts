@@ -494,4 +494,3 @@ test("new thread setup works with a CLI that names the configuration looptender.
     assert.equal((await ok.outcome()).state, "ready", name);
   }
 });
-

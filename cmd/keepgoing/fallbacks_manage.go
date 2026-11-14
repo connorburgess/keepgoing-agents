@@ -101,7 +101,7 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		fmt.Fprint(e.stderr, fallbackManageUsage)
 		fs.PrintDefaults()
 	}
-	cfgPath := fs.String("c", config.DefaultPath(), "path to the loop's config file")
+	cfgPath := fs.String("c", "", configFlagHelp("path to the loop's config file"))
 	yes := fs.Bool("yes", false, "write without asking")
 	dryRun := fs.Bool("dry-run", false, "preview only; write nothing")
 	asJSON := fs.Bool("json", false, "print a versioned result; requires --yes or --dry-run")
@@ -133,6 +133,9 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 	refuse := func(code int, err error) int {
 		e.errf("fallbacks %s: refused, nothing written.\n  %v", sub, err)
 		return code
+	}
+	if !configDefault(e, "fallbacks "+sub, cfgPath) {
+		return exitUsage
 	}
 	if info, err := os.Lstat(*cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return refuse(exitUsage, errors.New("The config path is a symbolic link. Pass the real configuration file instead."))

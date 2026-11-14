@@ -34,7 +34,7 @@ const usage = `keepgoing keeps a coding-agent loop going.
 Usage:
   keepgoing <command> [flags]
 
-Supervision (read -c looptender.yaml, default ./keepgoing.yaml):
+Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when only that is there):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
   start                    Validate, enable, and run (--foreground or --background)
   service install|remove|status  Manage a macOS/Linux user service
@@ -199,7 +199,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath:     fs.String("c", config.DefaultPath(), "path to the config file"),
+		cfgPath:     fs.String("c", "", configFlagHelp("path to the config file")),
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
@@ -273,6 +273,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			e.errf("--routine takes source/routine or source/routine/invocation; each part is 1-128 letters, digits and . _ : @ -, starting with a letter or digit")
 			return exitUsage
 		}
+	}
+	if !configDefault(e, "config", f.cfgPath) {
+		return exitUsage
 	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {

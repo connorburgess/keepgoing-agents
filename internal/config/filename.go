@@ -13,29 +13,35 @@ const (
 	LegacyFileName = "keepgoing.yaml"
 )
 
-// ErrDefaultAmbiguous is returned by Load for the path DefaultPath gives
-// when both names are in the working directory: which loop was meant
-// cannot be told, so neither is read.
+// ErrDefaultAmbiguous is DefaultPath's answer when both names are in the
+// working directory as two different files: which loop was meant cannot be
+// told, so neither is read.
 var ErrDefaultAmbiguous = errors.New("both " + FileName + " and " + LegacyFileName + " are in this directory; choose one with -c")
 
-// ambiguousDefault stands for "both names are here"; no file is ever given
-// this name.
-const ambiguousDefault = FileName + "|" + LegacyFileName
+// DefaultHelp describes the default in a -c flag's help.
+const DefaultHelp = "default ./" + FileName + ", or ./" + LegacyFileName + " when only that is there"
 
 // DefaultPath is the configuration a command reads when it is given no -c:
 // looptender.yaml in the working directory, or keepgoing.yaml when only that
-// is there. When both are there it is a path that Load refuses with
-// ErrDefaultAmbiguous. When neither is, it is looptender.yaml, so the error
-// names the file a new loop would have.
-func DefaultPath() string {
+// is there. When both are there and are one file (one a link to the other,
+// symbolic or hard), that file is meant, by its current name. When both are
+// there as two files it is ErrDefaultAmbiguous. When neither is, it is
+// looptender.yaml, so the error a command then gives names the file a new
+// loop would have. It reads the directory only.
+func DefaultPath() (string, error) {
 	current, legacy := present(FileName), present(LegacyFileName)
 	switch {
 	case current && legacy:
-		return ambiguousDefault
+		a, aerr := os.Stat(FileName)
+		b, berr := os.Stat(LegacyFileName)
+		if aerr == nil && berr == nil && os.SameFile(a, b) {
+			return FileName, nil
+		}
+		return "", ErrDefaultAmbiguous
 	case legacy:
-		return LegacyFileName
+		return LegacyFileName, nil
 	}
-	return FileName
+	return FileName, nil
 }
 
 func present(name string) bool {
