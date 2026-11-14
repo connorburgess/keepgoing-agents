@@ -139,6 +139,10 @@ func StandardRoutesPath() (string, error) {
 	return filepath.Join(base, "keepgoing", RoutesFileName), nil
 }
 
+// InsideCheckout reports whether path is inside a Git checkout, by the rule
+// KEEPGOING_ROUTES_FILE is held to.
+func InsideCheckout(path string) bool { return insideCheckout(path) }
+
 // insideCheckout reports whether path or one of its parents holds a .git
 // entry. A parent that cannot be inspected counts as a checkout.
 func insideCheckout(path string) bool {
@@ -222,7 +226,7 @@ func readPrivateFile(path string) ([]byte, error) {
 	if err := checkRoutesFile(target); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openRoutesFile(path)
 	if err != nil {
 		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be opened")
 	}

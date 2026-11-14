@@ -209,16 +209,28 @@ func routeLists(configPaths []routeLoopRef, now time.Time) routeListsOut {
 
 func standardList() (view standardListView) {
 	view = standardListView{State: "unreadable", Routes: []standardRouteRow{}, Followers: []string{}, Can: []string{}}
+	var path string
+	// Can offers only what would work now: nothing for an agent or an
+	// unreadable list, only add for an empty or missing list, and no add
+	// while the history cannot be read.
 	defer func() {
 		switch {
 		case os.Getenv("BB_THREAD_ID") != "":
 			view.CanReason = "agent_identity"
-		case view.State == "ok":
+			return
+		case view.State == "ok" && len(view.Routes) > 0:
 			view.Can = []string{"add", "move", "remove", "off", "on"}
-		case view.State == "missing":
+		case view.State == "ok", view.State == "missing":
 			view.Can = []string{"add"}
 		default:
 			view.CanReason = "list_unreadable"
+			return
+		}
+		if _, _, err := routeHistoryIDs(filepath.Dir(path)); err != nil {
+			view.Can = view.Can[1:]
+			if len(view.Can) == 0 {
+				view.CanReason = "history_unreadable"
+			}
 		}
 	}()
 	path, err := config.StandardRoutesPath()
@@ -444,13 +456,18 @@ func followsStandardRefusal(sub string) string {
 
 // ownListCan is what this caller may change in a loop's own list: all of it
 // for the loop's owner, or a person outside BB, and nothing for another
-// thread. It only reads; the write checks again under the lock.
+// thread, or for any thread when the loop has no recorded owner. It only
+// reads; the write checks again under the lock.
 func ownListCan(stateDir string) ([]string, string) {
 	f, err := control.Load(stateDir)
 	if err != nil {
 		return []string{}, "ownership_unknown"
 	}
-	if control.CheckOwner(f, os.Getenv("BB_THREAD_ID"), false) != nil {
+	caller := os.Getenv("BB_THREAD_ID")
+	if caller != "" && f.Ownership == nil {
+		return []string{}, "agent_identity"
+	}
+	if control.CheckOwner(f, caller, false) != nil {
 		return []string{}, "not_owner"
 	}
 	return []string{"move", "remove", "off", "on"}, ""

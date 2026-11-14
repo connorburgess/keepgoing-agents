@@ -365,6 +365,8 @@ Released in v0.2.0; **offline fixtures only**. Every event carries one or more k
 | `limit_wait_report` | The check that detected a long limit wait with no handoff possible and requested its one report (or recorded that none was sent). |
 | `turn_retry` | A re-prompt that asked the provider to re-run the failed turn by reference. The row says what the provider answered and whether a prompt was sent instead. |
 | `child_retry` | A check that did [lane recovery](operations.md#lane-recovery) work: lanes whose failed turn BB was asked to retry, lanes given up, lanes put off for lack of time. Counts only. |
+| `route_list` | A check of a loop that follows the [standard route list](routes.md) that read it changed since the loop's previous check. Recorded once per change. |
+| `route_change` | A saved change to the loop's own route list (`routes --loop`, `fallbacks move` or `remove`): the operation, the route's hashed key, and who made it as a role (`owner_thread` or `terminal`). |
 | `hold` | A check or control save that entered a stop, pause, disable, awaiting-user or completed state. |
 | `control` | Any saved control command. |
 | `collapsed` | A check that also summarizes identical earlier checks. |
@@ -383,6 +385,8 @@ Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`,
 Incident schema 9 adds two fields to a control record's `controlChange`: `caller`, the role that saved the control (`owner_thread`, `other_thread`, `terminal`, `client`, or `unavailable` where it is not recorded; never an identity), and `newEpisode`, true when a `resume` cleared a hold keepgoing had raised for a spent per-episode allowance and so [started a new error episode](operations.md#what-resume-starts-over). `timeline` prints both. Older binaries do not read a schema 9 journal.
 
 Incident schema 10 adds `lanes` on tick records: the counts `retried`, `givenUp` and `deferred` of that check's [lane recovery](operations.md#lane-recovery) work, all zero for a loop without `bb.children.retry_errored` and for records loaded from an older journal. A check that did lane work is never folded into its neighbours and is kept in the `condition` tier. The timeline JSON is schema 6: it adds the `child_retry` kind and `summary.lastChildRetry`. A build older than this change refuses a schema 10 journal.
+
+Incident schema 11 adds `routeListChanged` on tick records, set when a loop that follows the standard route list read it changed since its previous check; such a check is never folded into its neighbours. It adds `route_change` records, kept in the `key` tier, with `routeChange`: `operation` (`move`, `remove`, `off` or `on`), `targetKey` (the route's hashed key) and `caller` (`owner_thread` or `terminal`). The timeline JSON is schema 7: it adds the `route_list` and `route_change` kinds. A build older than this change refuses a schema 11 journal; move `incidents.json` aside to run one.
 
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 

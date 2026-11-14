@@ -185,6 +185,7 @@ func (t *tick) noteRouteList() {
 	if list.Digest != "" && !t.opts.DryRun {
 		t.st.RoutesDigest = list.Digest
 	}
+	t.incidentRouteListChanged = changed && !t.opts.DryRun
 	if list.Unreadable || t.routeOutsideList || changed {
 		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList, ListChanged: changed}
 	}

@@ -80,8 +80,12 @@ func listSpans(raw []byte, key, byHand, invalid string) (*yamlListFile, error) {
 		if start < 0 || start >= limit || !strings.HasPrefix(strings.TrimSpace(f.lines[start]), "-") || (i > 0 && start <= f.spans[i-1].start+f.spans[i-1].comments) {
 			return nil, errors.New(byHand)
 		}
+		// Only comments at the entry's own indentation, directly above it,
+		// belong to it. A heading less indented than the entries, or a
+		// commented-out key of the entry before (more indented), stays put.
+		dash := strings.Index(f.lines[start], "-")
 		first := start
-		for first > 0 && yamlComment(f.lines[first-1]) {
+		for first > 0 && yamlComment(f.lines[first-1]) && indentOf(f.lines[first-1]) == dash {
 			first--
 		}
 		f.spans[i] = candidateSpan{start: first, comments: start - first}
@@ -148,15 +152,24 @@ func (f *yamlListFile) insertEntry(key string, entry string, at int) []string {
 			terminateLines(lines, f.eol)
 			return append(lines, key+":"+f.eol, item)
 		}
-		// "key:" or "key: []" on one line becomes "key:" and the entry below it.
+		// "key:" stays as it is, with any comment after it; "key: []" or
+		// "key: null" becomes "key:", keeping its comment. The entry goes
+		// below it.
 		i := f.key.Line - 1
-		comment := ""
-		if c := strings.Index(lines[i], "#"); c >= 0 && f.list != nil && f.list.Style&yaml.FlowStyle != 0 && c > f.list.Column {
-			comment = " " + strings.TrimRight(lines[i][c:], "\r\n")
+		indent := lines[i][:indentOf(lines[i])]
+		if f.list != nil && f.list.Value != "" || f.list != nil && f.list.Style&yaml.FlowStyle != 0 {
+			comment := f.key.LineComment
+			if comment == "" {
+				comment = f.list.LineComment
+			}
+			if comment != "" {
+				comment = " " + comment
+			}
+			lines[i] = indent + key + ":" + comment + f.eol
 		}
-		indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " "))]
-		lines[i] = indent + key + ":" + comment + f.eol
-		return append(append(append([]string{}, lines[:i+1]...), indent+item), lines[i+1:]...)
+		head := append([]string{}, lines[:i+1]...)
+		terminateLines(head, f.eol)
+		return append(append(head, indent+item), lines[i+1:]...)
 	}
 	first := f.lines[f.spans[0].start+f.spans[0].comments]
 	indent := first[:strings.Index(first, "-")]
@@ -278,3 +291,6 @@ func flowClose(line string, open int) int {
 	}
 	return -1
 }
+
+// indentOf is the number of spaces a line starts with.
+func indentOf(line string) int { return len(line) - len(strings.TrimLeft(line, " ")) }
