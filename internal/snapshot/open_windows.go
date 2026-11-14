@@ -102,7 +102,6 @@ func replacementInProgress(err error) bool {
 	return errors.As(err, &code) && (code == syscall.ERROR_ACCESS_DENIED || code == 32 /* ERROR_SHARING_VIOLATION */ || code == syscall.ERROR_FILE_NOT_FOUND)
 }
 
-
 func snapshotWindowsPath(path string) ([]uint16, error) {
 	// CreateFile does not apply os.Open's extended-path conversion. Preserve
 	// support for long local/UNC paths, including relative and non-ASCII inputs.
