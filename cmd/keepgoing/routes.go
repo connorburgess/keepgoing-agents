@@ -446,7 +446,7 @@ func currentRoutes(cfg *config.Config) *config.Fallbacks {
 // follows the standard route list, which has no fallbacks file to edit.
 func followsStandardRefusal(sub string) string {
 	if sub == "handoff" {
-		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml."
+		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in the loop's configuration file."
 	}
 	return "This loop follows the standard route list. Change that list instead with keepgoing routes add, move, remove, off or on."
 }

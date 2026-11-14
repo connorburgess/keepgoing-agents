@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../schema/keepgoing.schema.json
+# yaml-language-server: $schema=../schema/looptender.schema.json
 # Supervise a BB thread, with confirmed fallbacks and signed reports.
 # Fictional values throughout.
 version: 1

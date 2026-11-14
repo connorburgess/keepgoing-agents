@@ -103,7 +103,7 @@ export default async function plugin(bb: BbPluginApi) {
     configs: {
       type: "string",
       label: "Loop configs",
-      description: "One keepgoing.yaml path per line. Only these loops are shown and controlled.",
+      description: "One loop configuration file (looptender.yaml or keepgoing.yaml) per line. Only these loops are shown and controlled.",
       experimental_multiline: true,
       default: "",
     },

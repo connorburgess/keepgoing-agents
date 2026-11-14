@@ -14,7 +14,7 @@ Published v0.1.5 detects `codex`, `claude`, and `bb` on `PATH`. v0.2.0 also disc
 
 The wizard shows the target, project, account directory when explicitly selected, quota groups, fallback order, operating limits, and future probe behavior. It does not run providers, test authentication, create accounts, alter permissions, enable supervision, or install a scheduler.
 
-It writes `keepgoing.yaml`, `prompt.md`, and, if needed, `fallbacks.yaml` into a **new** directory beneath the OS user configuration directory:
+It writes `looptender.yaml` (releases up to v0.2.0 wrote `keepgoing.yaml`, which is still read), `prompt.md`, and, if needed, `fallbacks.yaml` into a **new** directory beneath the OS user configuration directory:
 
 - macOS: `~/Library/Application Support/looptender/loops/<name>`
 - Linux: `$XDG_CONFIG_HOME/looptender/loops/<name>` or `~/.config/looptender/loops/<name>`

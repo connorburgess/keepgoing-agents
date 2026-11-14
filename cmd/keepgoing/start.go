@@ -26,7 +26,7 @@ type startReady func(control.File) error
 func startCommand(e env, args []string, ready startReady) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", "keepgoing.yaml", "path to the config file")
+	path := fs.String("c", "", configFlagHelp("path to the config file"))
 	foreground := fs.Bool("foreground", false, "run in this terminal (default)")
 	background := fs.Bool("background", false, "detach the daemon; return after startup succeeds")
 	allowShare := fs.Bool("allow-second-loop", false, "start this loop even though another enabled loop supervises the same session")
@@ -44,6 +44,19 @@ func startCommand(e env, args []string, ready startReady) int {
 	if *asJSON && !*background {
 		e.errf("start: --json is supported with --background only")
 		return exitUsage
+	}
+	if resolved, err := configPath(fs, *path); err != nil {
+		e.errf("start: %v", err)
+		if *asJSON {
+			reason := "ambiguous_default_config"
+			if errors.Is(err, errEmptyConfig) {
+				reason = "empty_config_path"
+			}
+			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "failed", ExitCode: exitUsage, Reason: reason})
+		}
+		return exitUsage
+	} else {
+		*path = resolved
 	}
 	if *asJSON {
 		// Every outcome is one object on stdout; people still get stderr.
@@ -67,6 +80,11 @@ type startJSON struct {
 	PID           int    `json:"pid,omitempty"`
 	Control       string `json:"control,omitempty"`
 	ExitCode      int    `json:"exitCode,omitempty"`
+	// Reason is set for a failure before any configuration was read:
+	// ambiguous_default_config when -c was not given and both
+	// looptender.yaml and keepgoing.yaml are in the working directory as two
+	// files, and empty_config_path when -c was given an empty value.
+	Reason string `json:"reason,omitempty"`
 }
 
 // startJSONWriter holds what --json prints until the command ends, so a
