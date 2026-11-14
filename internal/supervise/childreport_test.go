@@ -534,10 +534,10 @@ func TestFailureDuringAHoldIsReportedAfterResume(t *testing.T) {
 }
 
 // A failure after the episode has ended is report 1 of a new episode with the
-// whole cap, whether or not a check ran while the child was healthy. Without
-// a check in between (the host slept), the report count used to carry over.
+// whole cap after a previously observed recovery's forgetting interval has
+// elapsed. Without a check at that interval's end, the count used to carry over.
 func TestChildReportEpisodeEndsEvenWhenNoCheckSawTheRecovery(t *testing.T) {
-	for name, checkInBetween := range map[string]bool{"a check saw the child healthy": true, "no check ran while it was healthy": false} {
+	for name, checkInBetween := range map[string]bool{"a check ran after the forgetting interval": true, "no check ran after the forgetting interval": false} {
 		w, p := childReportWorld(t)
 		all := children("thr_child_a", "thr_child_b", "thr_child_c")
 		// Three failures, one after another: the episode's three reports.
