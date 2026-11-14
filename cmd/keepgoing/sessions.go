@@ -48,7 +48,7 @@ func loopSessions(cfg *config.Config) (primary session.Identity, havePrimary boo
 	if havePrimary {
 		all[primary] = "primary"
 	}
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := currentRoutes(cfg); fb != nil {
 		for _, c := range fb.Candidates {
 			if c.Disabled {
 				continue

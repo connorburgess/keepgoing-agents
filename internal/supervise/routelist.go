@@ -31,7 +31,7 @@ type RouteNote struct {
 // CurrentRouteName is the saved record of the route a following loop is on.
 const CurrentRouteName = "route-current.yaml"
 
-const currentRouteLimit = 64 << 10
+const currentRouteLimit = 1 << 20
 
 type currentRoute struct {
 	Version   int              `yaml:"version"`
@@ -104,34 +104,54 @@ func EffectiveRoutes(cfg *config.Config, st state.File) (*config.Fallbacks, bool
 		return fb, false
 	}
 	c, ok := LoadCurrentRoute(cfg.Loop.StateDir)
-	if !ok || c.ID != target {
+	// Only a route the standard list could have resolved for this loop as it
+	// is configured now: never another adapter, command, directory or
+	// executable, whatever the file says.
+	if !ok || c.ID != target || !config.ResolvedFor(cfg.Loop, c, fb) {
 		return fb, false
 	}
 	c.Disabled = false
 	return config.WithCurrentRoute(fb, c), true
 }
 
-// keepCurrentRoute applies EffectiveRoutes to this check, and saves the record
-// of the route a following loop is on while that route is still in its list.
+// keepCurrentRoute applies EffectiveRoutes to this check.
 func (t *tick) keepCurrentRoute() {
 	if !t.loop.FollowsStandard() {
 		return
 	}
-	target := t.st.Target()
 	fb, outside := EffectiveRoutes(t.cfg, t.st)
 	t.fb, t.routeOutsideList = fb, outside
 	if outside {
-		t.warn("current route %q is no longer in this loop's route list; staying on it until the ordinary rules move the loop", target)
+		t.warn("current route %q is no longer in this loop's route list; staying on it until the ordinary rules move the loop", t.st.Target())
+	}
+}
+
+// saveRouteRecord saves the record of the route a following loop ends this
+// check on. It runs before state.json is saved, so a target that changed
+// during the check (a handoff, a switch-back, a reconciled conversation) has
+// its record before any later check can need it.
+func (t *tick) saveRouteRecord() {
+	if t.opts.DryRun {
 		return
 	}
-	if target == state.Primary || t.opts.DryRun {
-		return
+	if err := SaveCurrentRoute(t.cfg, t.fb, t.st.Target()); err != nil {
+		t.warn("could not save the current route record: %v", err)
 	}
-	if c, ok := fb.Find(target); ok {
-		if err := saveCurrentRoute(t.loop.StateDir, c); err != nil {
-			t.warn("could not save the current route record: %v", err)
-		}
+}
+
+// SaveCurrentRoute saves the record of target for a loop that follows the
+// standard list, from the routes the caller is using. It does nothing for
+// another loop, for the primary, or for a target those routes do not hold.
+func SaveCurrentRoute(cfg *config.Config, fb *config.Fallbacks, target string) error {
+	if !cfg.Loop.FollowsStandard() || target == state.Primary {
+		return nil
 	}
+	c, ok := fb.Find(target)
+	if !ok {
+		return nil
+	}
+	c.Disabled = false
+	return saveCurrentRoute(cfg.Loop.StateDir, c)
 }
 
 // noteRouteList records the route-list picture in the result and reports,
@@ -139,6 +159,10 @@ func (t *tick) keepCurrentRoute() {
 func (t *tick) noteRouteList() {
 	list := t.cfg.RouteList
 	if list.Source != config.RoutesStandard {
+		// A loop that no longer follows the list has nothing to report.
+		if t.st.RoutesUnreadable && !t.opts.DryRun {
+			t.st.RoutesUnreadable = false
+		}
 		return
 	}
 	for _, w := range list.Warnings {

@@ -221,7 +221,8 @@ func TestRoutesListWithUnusableStandardListStillAnswers(t *testing.T) {
 		}
 		broken := false
 		for _, l := range v.Loops {
-			broken = broken || l.Problem == "configuration_unavailable"
+			// Named by its registered name, not its directory.
+			broken = broken || (l.Problem == "configuration_unavailable" && l.Loop == "follower-loop")
 		}
 		if !broken || len(v.Standard.Followers) != 0 {
 			t.Fatalf("%+v", v)
@@ -270,6 +271,13 @@ func TestRoutesListMarksCurrentRouteNoLongerInTheList(t *testing.T) {
 	if f.Current != "large-same" || len(f.Routes) != 1 || !f.Routes[0].Current || !f.Routes[0].NotInList || f.Routes[0].Source != "standard" || !strings.Contains(strings.Join(f.Warnings, "\n"), "no longer in its list") {
 		t.Fatalf("read side: %s", raw)
 	}
+	// Doctor and status agree that the target is the route the loop is on.
+	out.Reset()
+	errb.Reset()
+	run(context.Background(), []string{"doctor", "-c", r.follower, "--offline", "--json"}, &out, &errb)
+	if strings.Contains(out.String(), "Recorded active target is missing") {
+		t.Fatalf("doctor disagrees with status: %s", &out)
+	}
 	// And when the whole list becomes unreadable, the loop is still there.
 	if err := os.Remove(r.list); err != nil {
 		t.Fatal(err)
@@ -279,5 +287,57 @@ func TestRoutesListMarksCurrentRouteNoLongerInTheList(t *testing.T) {
 	}
 	if st, _ := state.Load(stateDir); st.Target() != "large-same" || !st.RoutesUnreadable {
 		t.Fatalf("state: %+v", st)
+	}
+}
+
+func TestFallbacksCommandsOnAFollowingLoopPointToTheStandardList(t *testing.T) {
+	r := newRoutesFixture(t)
+	write(t, r.list, routesStandardList, 0o600)
+	for _, args := range [][]string{
+		{"fallbacks", "add", "--non-interactive", "--agent", "bb", "--thread", "thr_example_other", "--provider", "codex", "--dry-run"},
+		{"fallbacks", "move", "large-same", "--to", "1", "--dry-run"},
+		{"fallbacks", "remove", "large-same", "--dry-run"},
+		{"fallbacks", "handoff", "off", "--dry-run"},
+	} {
+		t.Run(args[1], func(t *testing.T) {
+			var out, errb bytes.Buffer
+			code := run(context.Background(), append(args, "-c", r.follower), &out, &errb)
+			want := "Edit routes.yaml"
+			if args[1] == "handoff" {
+				want = "errors.failover_on"
+			}
+			if code == 0 || !strings.Contains(errb.String(), "follows the standard route list") || !strings.Contains(errb.String(), want) {
+				t.Fatalf("%d %s %s", code, &out, &errb)
+			}
+		})
+	}
+}
+
+// Retarget saves the record of the route first, so removing that route from
+// the list straight afterwards, with no check in between, leaves the loop on it.
+func TestRetargetThenRouteRemovedKeepsTheLoopThere(t *testing.T) {
+	r := newRoutesFixture(t)
+	write(t, r.list, routesStandardList, 0o600)
+	var out, errb bytes.Buffer
+	for _, args := range [][]string{{"enable"}, {"retarget", "large-same", "--note", "fictional test"}} {
+		out.Reset()
+		errb.Reset()
+		if code := run(context.Background(), append(args, "-c", r.follower), &out, &errb); code != 0 {
+			t.Fatalf("%v: %d %s %s", args, code, &out, &errb)
+		}
+	}
+	write(t, r.list, strings.Replace(routesStandardList, "  - {id: large-same, provider: claude-code, model: example-large, effort: high, group: claude-large, enter: same_conversation, probe: {model: example-small}}\n", "", 1), 0o600)
+	out.Reset()
+	errb.Reset()
+	if code := run(context.Background(), []string{"tick", "-c", r.follower}, &out, &errb); code != 0 {
+		t.Fatalf("tick %d: %s %s", code, &out, &errb)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	routes, _ := v["routes"].(map[string]any)
+	if v["target"] != "large-same" || routes == nil || routes["currentNotInList"] != true {
+		t.Fatalf("%v", v)
 	}
 }

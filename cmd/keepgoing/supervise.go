@@ -1286,6 +1286,12 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 			}
 		}
 	}
+	// The record of a route a following loop is on is saved before the target
+	// is, so a later change to the standard list cannot strand it.
+	if err := supervise.SaveCurrentRoute(cfg, cfg.FallbackSet, id); err != nil {
+		e.errf("retarget: could not save the record of route %s, so the target is unchanged: %v", id, err)
+		return exitFailed
+	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	st.ClearBriefs()      // an operator's retarget starts a new episode

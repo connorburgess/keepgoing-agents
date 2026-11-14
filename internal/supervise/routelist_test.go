@@ -3,6 +3,7 @@ package supervise
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -114,91 +117,238 @@ func TestUnreadableStandardListDryRunAndHoldsRecordNothing(t *testing.T) {
 	}
 }
 
-// A route removed from the list (or a list that cannot be read) while the
-// loop is on that route: the loop stays there, is still observed and can be
-// stopped, and is never returned to the primary by the change itself.
+const supervisedList = `version: 1
+redundancy: {min_healthy: 1, span: none}
+probe: {every: 4h, ttl: 6h, timeout: 1s}
+routes:
+  - {id: large, provider: claude-code, model: example-large, group: claude-large, enter: same_conversation}
+  - {id: huge, provider: claude-code, model: example-huge, group: claude-huge, enter: same_conversation}
+`
+
+// standardWorld is a loop that follows a real standard list, resolved by the
+// config package exactly as Load does. without names routes to leave out.
+func standardWorld(t *testing.T) *world {
+	t.Helper()
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Routes = config.RoutesStandard
+	setList(t, w)
+	return w
+}
+
+func setList(t *testing.T, w *world, without ...string) {
+	t.Helper()
+	r, err := config.ParseRoutes([]byte(supervisedList))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := r.Routes[:0]
+	for _, rt := range r.Routes {
+		if !slices.Contains(without, rt.ID) {
+			kept = append(kept, rt)
+		}
+	}
+	r.Routes = kept
+	fb, skipped := r.Resolve(w.cfg.Loop)
+	w.cfg.FallbackSet = fb
+	w.cfg.RouteList = config.RouteStatus{Source: config.RoutesStandard, Skipped: skipped}
+}
+
+// healthy records a passing scheduled check for every route, so a handoff
+// meets the redundancy rule.
+func healthy(t *testing.T, w *world) {
+	t.Helper()
+	reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+	for _, c := range w.cfg.FallbackSet.Candidates {
+		reg.Record(c.ID, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+		w.probeOK[c.ID] = true
+	}
+	if err := reg.Save(w.dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// One check hands off; before the next, the standard list changes. The loop
+// must still be on the route doing the work, with no check in between to
+// save anything.
+func TestHandoffThenListChangeKeepsTheRouteDoingTheWork(t *testing.T) {
+	for _, change := range []string{"route_removed", "list_unreadable", "stop_requested"} {
+		t.Run(change, func(t *testing.T) {
+			w := standardWorld(t)
+			healthy(t, w)
+			p := w.primary(limited)
+			res := runTick(t, w, t0)
+			if res.Action != "handoff" || res.Target != "large" {
+				t.Fatalf("handoff: %+v %+v", res, res.Handoff)
+			}
+			large := w.adapters["large"]
+			large.obs = decide.Observation{State: decide.Active}
+			sentBefore := len(large.sent)
+			switch change {
+			case "route_removed":
+				setList(t, w, "large")
+				healthy(t, w)
+			case "list_unreadable":
+				followStandard(w, true)
+			case "stop_requested":
+				setList(t, w, "large")
+				if _, err := control.Update(w.dir, func(f *control.File) { f.Stop = true }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res = runTick(t, w, t0.Add(time.Minute))
+			if res.Target != "large" || res.Handoff != nil || res.Action == "handoff" {
+				t.Fatalf("left the route doing the work: %+v %+v", res, res.Handoff)
+			}
+			// A stop check acts first and does not describe the list.
+			if change != "stop_requested" && (res.Routes == nil || !res.Routes.CurrentNotInList) {
+				t.Fatalf("not marked: %+v", res.Routes)
+			}
+			if huge := w.adapters["huge"]; huge != nil && len(huge.sent) != 0 {
+				t.Fatal("a second route was given the task")
+			}
+			if len(p.sent) != 0 || len(large.sent) != sentBefore {
+				t.Fatalf("sent: primary %d, route %d (was %d)", len(p.sent), len(large.sent), sentBefore)
+			}
+			if change == "stop_requested" && (res.Action != "stop" || large.stopped != 1 || p.stopped != 0) {
+				t.Fatalf("stop did not reach the route: %+v route=%d primary=%d", res, large.stopped, p.stopped)
+			}
+			if st, _ := state.Load(w.dir); st.Target() != "large" {
+				t.Fatalf("state moved to %s", st.Target())
+			}
+		})
+	}
+}
+
+// A route removed (or a list that cannot be read) while the loop has been on
+// it for some checks: the loop stays, is still observed and can be stopped.
 func TestRouteRemovedFromStandardListWhileInUseStaysAndIsMarked(t *testing.T) {
 	for _, kind := range []string{"removed", "unreadable", "switched_off"} {
 		t.Run(kind, func(t *testing.T) {
-			w := newWorld(t, true, true)
-			followStandard(w, false)
-			full := w.cfg.FallbackSet
+			w := standardWorld(t)
 			w.primary(decide.Observation{State: decide.Idle})
 			onRoute := &fakeAdapter{obs: decide.Observation{State: decide.Active}}
-			w.adapters["claude-other"] = onRoute
-			if err := state.Save(w.dir, state.File{ActiveTarget: "claude-other", LastWakeAt: t0}); err != nil {
+			w.adapters["large"] = onRoute
+			if err := state.Save(w.dir, state.File{ActiveTarget: "large", LastWakeAt: t0}); err != nil {
 				t.Fatal(err)
 			}
-			// While the route is in the list, each check saves its record.
-			if res := runTick(t, w, t0); res.Target != "claude-other" || res.Routes != nil {
+			if res := runTick(t, w, t0); res.Target != "large" || res.Routes != nil {
 				t.Fatalf("before: %+v", res)
 			}
-			if c, ok := LoadCurrentRoute(w.dir); !ok || c.ID != "claude-other" || c.BB == nil || c.BB.Thread != "thr_claude-other" {
+			if c, ok := LoadCurrentRoute(w.dir); !ok || c.ID != "large" || c.BB == nil || c.BB.Thread != "thr_primary" || c.BB.Model != "example-large" {
 				t.Fatalf("saved record: %+v %t", c, ok)
 			}
 			switch kind {
 			case "removed":
-				without := *full
-				without.Candidates = []config.Candidate{full.Candidates[0], full.Candidates[2]}
-				w.cfg.FallbackSet = &without
+				setList(t, w, "large")
 			case "switched_off":
-				off := *full
-				off.Candidates = append([]config.Candidate{}, full.Candidates...)
-				off.Candidates[1].Disabled = true
+				off := *w.cfg.FallbackSet
+				off.Candidates = append([]config.Candidate{}, off.Candidates...)
+				off.Candidates[0].Disabled = true
 				w.cfg.FallbackSet = &off
 			case "unreadable":
 				followStandard(w, true)
 			}
 			for i := 1; i <= 3; i++ {
 				res := runTick(t, w, t0.Add(time.Duration(i)*time.Minute))
-				if res.Target != "claude-other" || res.State != "active" || res.Routes == nil || !res.Routes.CurrentNotInList || res.Routes.Unreadable != (kind == "unreadable") {
+				if res.Target != "large" || res.State != "active" || res.Routes == nil || !res.Routes.CurrentNotInList || res.Routes.Unreadable != (kind == "unreadable") {
 					t.Fatalf("check %d left the route: %+v %+v", i, res, res.Routes)
 				}
 				if !strings.Contains(strings.Join(res.Warnings, "\n"), "no longer in this loop's route list") {
 					t.Fatalf("warnings: %v", res.Warnings)
 				}
 			}
-			if st, _ := state.Load(w.dir); st.Target() != "claude-other" {
-				t.Fatalf("state moved to %s", st.Target())
-			}
 			if len(w.adapters[state.Primary].sent) != 0 || len(onRoute.sent) != 0 {
 				t.Fatal("the change itself caused a send")
 			}
-			// Stop still reaches the route the loop is on.
 			if _, err := control.Update(w.dir, func(f *control.File) { f.Stop = true }); err != nil {
 				t.Fatal(err)
 			}
-			if res := runTick(t, w, t0.Add(10*time.Minute)); res.Action != "stop" || onRoute.stopped != 1 || res.Target != "claude-other" {
+			if res := runTick(t, w, t0.Add(10*time.Minute)); res.Action != "stop" || onRoute.stopped != 1 || res.Target != "large" {
 				t.Fatalf("stop: %+v stopped=%d", res, onRoute.stopped)
 			}
 		})
 	}
 }
 
-func TestCurrentRouteRecordIsOnlyUsedForItsOwnTargetAndStandardLoops(t *testing.T) {
-	w := newWorld(t, true, true)
-	full := w.cfg.FallbackSet
-	if err := saveCurrentRoute(w.dir, full.Candidates[1]); err != nil {
+// Only a record the standard list could have produced for this loop, as it
+// is configured now, is used. Anything else returns the loop to its first
+// route, as for any target that is not in its list.
+func TestSavedRouteRecordMustBeAShapeTheListCanProduce(t *testing.T) {
+	w := standardWorld(t)
+	real := w.cfg.FallbackSet.Candidates[0]
+	for _, tc := range []struct {
+		name string
+		edit func(*config.Candidate)
+	}{
+		{"process_adapter", func(c *config.Candidate) {
+			c.Adapter, c.BB = "process", nil
+			c.Process = &config.Process{StatusCommand: []string{"/fictional/status"}, ResumeCommand: []string{"/fictional/resume"}}
+		}},
+		{"two_adapters", func(c *config.Candidate) { c.Claude = &config.Claude{Workdir: "/fictional/elsewhere"} }},
+		{"another_thread", func(c *config.Candidate) { c.BB.Thread = "thr_somebody_else" }},
+		{"another_bb_cli", func(c *config.Candidate) { c.BB.CLI = "/fictional/other-bb" }},
+		{"command_probe", func(c *config.Candidate) { c.Probe.Kind, c.Probe.Command = "command", []string{"/fictional/probe"} }},
+		{"probe_env", func(c *config.Candidate) { c.Probe.Env = map[string]string{"PATH": "/fictional"} }},
+		{"bad_id", func(c *config.Candidate) { c.ID = "Not An ID" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := real
+			bb := *real.BB
+			c.BB = &bb
+			tc.edit(&c)
+			if err := saveCurrentRoute(w.dir, c); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.Save(w.dir, state.File{ActiveTarget: c.ID}); err != nil {
+				t.Fatal(err)
+			}
+			setList(t, w, "large")
+			if fb, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: c.ID}); outside {
+				t.Fatalf("record accepted: %+v", fb)
+			}
+			w.primary(decide.Observation{State: decide.Idle})
+			if res := runTick(t, w, t0); res.Target != state.Primary {
+				t.Fatalf("an untrusted record was used: %+v", res)
+			}
+		})
+	}
+	// The genuine record is used.
+	if err := saveCurrentRoute(w.dir, real); err != nil {
 		t.Fatal(err)
 	}
-	without := *full
-	without.Candidates = []config.Candidate{full.Candidates[0], full.Candidates[2]}
-	w.cfg.FallbackSet = &without
+	setList(t, w, "large")
+	if _, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"}); !outside {
+		t.Fatal("the genuine record was refused")
+	}
+	// A loop whose own configuration changed since (another thread) refuses it.
+	w.cfg.Loop.BB.Thread = "thr_moved"
+	if _, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"}); outside {
+		t.Fatal("a record for another configuration was used")
+	}
+}
+
+func TestCurrentRouteRecordIsOnlyUsedForItsOwnTargetAndStandardLoops(t *testing.T) {
+	w := standardWorld(t)
+	real := w.cfg.FallbackSet.Candidates[0]
+	if err := saveCurrentRoute(w.dir, real); err != nil {
+		t.Fatal(err)
+	}
+	setList(t, w, "large")
 	w.primary(decide.Observation{State: decide.Idle})
 
 	// A loop with a list of its own keeps today's rule: a removed target
 	// returns to the primary.
-	if err := state.Save(w.dir, state.File{ActiveTarget: "claude-other"}); err != nil {
+	w.cfg.Loop.Routes, w.cfg.RouteList = "", config.RouteStatus{Source: "own"}
+	if err := state.Save(w.dir, state.File{ActiveTarget: "large"}); err != nil {
 		t.Fatal(err)
 	}
 	if res := runTick(t, w, t0); res.Target != state.Primary || res.Routes != nil {
 		t.Fatalf("own list: %+v", res)
 	}
 
-	// A following loop on a different missing target does not borrow the
-	// record of another route.
-	followStandard(w, false)
-	w.cfg.FallbackSet = &without
+	// A following loop on a different missing target does not borrow it.
+	w.cfg.Loop.Routes = config.RoutesStandard
+	setList(t, w, "large")
 	if err := state.Save(w.dir, state.File{ActiveTarget: "another-route"}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,13 +356,84 @@ func TestCurrentRouteRecordIsOnlyUsedForItsOwnTargetAndStandardLoops(t *testing.
 		t.Fatalf("unrelated record used: %+v", res)
 	}
 
-	// Unusable records are no record.
-	for name, content := range map[string]string{"malformed": "version: [", "future": "version: 2\ncandidate: {id: claude-other}\n", "primary": "version: 1\ncandidate: {id: primary}\n", "unknown_field": "version: 1\ncandidate: {id: claude-other}\nextra: true\n", "oversized": "version: 1\n# " + strings.Repeat("x", currentRouteLimit) + "\n"} {
+	for name, content := range map[string]string{"malformed": "version: [", "future": "version: 2\ncandidate: {id: large}\n", "primary": "version: 1\ncandidate: {id: primary}\n", "unknown_field": "version: 1\ncandidate: {id: large}\nextra: true\n", "oversized": "version: 1\n# " + strings.Repeat("x", currentRouteLimit) + "\n"} {
 		if err := os.WriteFile(filepath.Join(w.dir, CurrentRouteName), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, ok := LoadCurrentRoute(w.dir); ok {
 			t.Fatalf("%s record accepted", name)
 		}
+	}
+}
+
+// Retarget saves the record before the target, so a list change right after
+// cannot strand the loop either.
+func TestSaveCurrentRouteOnlyForFollowingLoopsAndKnownRoutes(t *testing.T) {
+	w := standardWorld(t)
+	if err := SaveCurrentRoute(w.cfg, w.cfg.FallbackSet, state.Primary); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRoute(w.cfg, w.cfg.FallbackSet, "not-a-route"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadCurrentRoute(w.dir); ok {
+		t.Fatal("a record was saved for the primary or an unknown route")
+	}
+	if err := SaveCurrentRoute(w.cfg, w.cfg.FallbackSet, "huge"); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := LoadCurrentRoute(w.dir); !ok || c.ID != "huge" {
+		t.Fatalf("%+v %t", c, ok)
+	}
+	own := newWorld(t, true, true)
+	if err := SaveCurrentRoute(own.cfg, own.cfg.FallbackSet, "claude-other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := LoadCurrentRoute(own.dir); ok {
+		t.Fatal("a loop with its own list saved a record")
+	}
+}
+
+// A report of an unreadable list recorded, then not settled because the
+// check could not save state: the next check counts it as made, not as a
+// send to the agent, and does not send it again.
+func TestUnsettledRouteListReportIsNotRepeatedOrCountedAsASend(t *testing.T) {
+	for _, key := range []string{"report:routes-unreadable", "report:routes-readable"} {
+		t.Run(key, func(t *testing.T) {
+			w := newWorld(t, true, true)
+			followStandard(w, key == "report:routes-unreadable")
+			w.primary(decide.Observation{State: decide.Active})
+			if key == "report:routes-readable" {
+				if err := state.Save(w.dir, state.File{RoutesUnreadable: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			unsaved(t, w, t0, key, state.Primary)
+			res := runTick(t, w, t0.Add(time.Minute))
+			st, _ := state.Load(w.dir)
+			if routeReports(w) != "" || !st.LastWakeAt.IsZero() || st.RoutesUnreadable != (key == "report:routes-unreadable") {
+				t.Fatalf("%+v reports=%s state=%+v", res, w.reportTypes(), st)
+			}
+			if strings.Contains(strings.Join(res.Warnings, "\n"), "counted as sent") {
+				t.Fatalf("counted as a send: %v", res.Warnings)
+			}
+		})
+	}
+}
+
+// A loop that stops following the list forgets that it was unreadable, so it
+// reports nothing stale if it follows the list again.
+func TestStoppingFollowingClearsTheUnreadableMark(t *testing.T) {
+	w := newWorld(t, true, true)
+	followStandard(w, true)
+	w.primary(decide.Observation{State: decide.Active})
+	runTick(t, w, t0)
+	if st, _ := state.Load(w.dir); !st.RoutesUnreadable {
+		t.Fatal("not marked")
+	}
+	w.cfg.Loop.Routes, w.cfg.RouteList = "", config.RouteStatus{}
+	runTick(t, w, t0.Add(time.Hour))
+	if st, _ := state.Load(w.dir); st.RoutesUnreadable {
+		t.Fatal("mark kept after the loop stopped following the list")
 	}
 }

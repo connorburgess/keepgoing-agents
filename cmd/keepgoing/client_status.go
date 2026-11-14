@@ -203,7 +203,7 @@ func clientAlias(cfg *config.Config, alias string) string {
 	if alias == state.Primary {
 		return alias
 	}
-	if c, ok := cfg.FallbackSet.Find(alias); ok && !c.Disabled {
+	if c, ok := currentRoutes(cfg).Find(alias); ok && !c.Disabled {
 		return c.ID
 	}
 	return "unavailable"

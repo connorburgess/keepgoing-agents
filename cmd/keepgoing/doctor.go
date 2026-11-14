@@ -164,7 +164,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		a := cfg.Loop.Agent
 		valid := true
 		if r.Target != state.Primary {
-			candidate, ok := cfg.FallbackSet.Find(r.Target)
+			candidate, ok := effectiveRoutes(cfg, st).Find(r.Target)
 			if !ok || candidate.Disabled {
 				valid = false
 				r.add("target", "error", "Recorded active target is missing or disabled in the fallback configuration.", "Review the intended target and use retarget explicitly before resuming.")

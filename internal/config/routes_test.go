@@ -301,3 +301,206 @@ func TestStandardRoutesFileIsValidated(t *testing.T) {
 		t.Fatalf("oversized list: %v", err)
 	}
 }
+
+// A headless route on the loop's own tool keeps the loop's execution
+// settings; on the other tool only what means the same thing carries over.
+func TestHeadlessRoutesCarryTheLoopsSettings(t *testing.T) {
+	list := `version: 1
+routes:
+  - {id: claude-other, provider: claude-code, model: example-large, group: claude-second, enter: headless}
+  - {id: codex-plain, provider: codex, model: example-codex, group: codex-main, enter: headless}
+  - {id: codex-effort, provider: codex, model: example-codex, effort: high, group: codex-other, enter: headless}
+`
+	claudeLoop := "  adapter: claude\n  provider: claude-code\n  group: claude-main\n  claude: {workdir: ./project, model: example-medium, permission_mode: acceptEdits, max_budget_usd: 5, extra_args: [--fictional-claude-flag], env: {EXAMPLE_SETTING: one}}\n  routes: standard\n"
+	codexLoop := "  adapter: codex\n  provider: codex\n  group: codex-first\n  codex: {workdir: ./project, model: example-mini, sandbox: workspace-write, extra_args: [--fictional-codex-flag], env: {EXAMPLE_SETTING: two}}\n  routes: standard\n"
+
+	t.Run("claude_loop_with_budget", func(t *testing.T) {
+		writeRoutes(t, list)
+		cfg, err := Load(loopFile(t, claudeLoop))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids(cfg.FallbackSet) != "claude-other" {
+			t.Fatalf("resolved %q (skipped %+v)", ids(cfg.FallbackSet), cfg.RouteList.Skipped)
+		}
+		c := cfg.FallbackSet.Candidates[0].Claude
+		if c.MaxBudgetUSD != 5 || c.PermissionMode != "acceptEdits" || len(c.ExtraArgs) != 1 || c.ExtraArgs[0] != "--fictional-claude-flag" || c.Env["EXAMPLE_SETTING"] != "one" {
+			t.Fatalf("same-tool settings not carried: %+v", c)
+		}
+		reasons := skips(cfg.RouteList.Skipped)
+		// The loop's budget cannot be kept on Codex, so that route is left out
+		// rather than run without it.
+		if !strings.Contains(reasons["codex-plain"], "max_budget_usd") || !strings.Contains(reasons["codex-effort"], "effort") {
+			t.Fatalf("skips: %v", reasons)
+		}
+	})
+
+	t.Run("claude_loop_without_budget_on_codex", func(t *testing.T) {
+		writeRoutes(t, list)
+		cfg, err := Load(loopFile(t, strings.Replace(claudeLoop, ", max_budget_usd: 5", "", 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, ok := cfg.FallbackSet.Find("codex-plain")
+		if !ok {
+			t.Fatalf("codex route left out: %+v", cfg.RouteList.Skipped)
+		}
+		if !strings.HasSuffix(c.Codex.Workdir, "project") || c.Codex.Env["EXAMPLE_SETTING"] != "one" || len(c.Codex.ExtraArgs) != 0 || c.Codex.Sandbox != "" {
+			t.Fatalf("cross-tool settings: %+v", c.Codex)
+		}
+	})
+
+	t.Run("codex_loop", func(t *testing.T) {
+		writeRoutes(t, list)
+		cfg, err := Load(loopFile(t, codexLoop))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, ok := cfg.FallbackSet.Find("claude-other")
+		if !ok || len(cl.Claude.ExtraArgs) != 0 || cl.Claude.Env["EXAMPLE_SETTING"] != "two" || cl.Claude.MaxBudgetUSD != 0 {
+			t.Fatalf("cross-tool claude route: %+v %t", cl.Claude, ok)
+		}
+		cx, ok := cfg.FallbackSet.Find("codex-plain")
+		if !ok || cx.Codex.Sandbox != "workspace-write" || len(cx.Codex.ExtraArgs) != 1 || cx.Codex.Env["EXAMPLE_SETTING"] != "two" {
+			t.Fatalf("same-tool codex route: %+v %t", cx.Codex, ok)
+		}
+		if !strings.Contains(skips(cfg.RouteList.Skipped)["codex-effort"], "effort") {
+			t.Fatalf("effort on a codex route silently dropped: %+v", cfg.RouteList.Skipped)
+		}
+	})
+
+	t.Run("account_dir_overrides_the_loops_account", func(t *testing.T) {
+		writeRoutes(t, strings.Replace(list, "enter: headless}\n  - {id: codex-plain", "enter: headless, account_dir: /fictional/second}\n  - {id: codex-plain", 1))
+		cfg, err := Load(loopFile(t, strings.Replace(claudeLoop, "env: {EXAMPLE_SETTING: one}", "env: {EXAMPLE_SETTING: one, CLAUDE_CONFIG_DIR: /fictional/first}", 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := cfg.FallbackSet.Find("claude-other")
+		if c.Claude.Env["CLAUDE_CONFIG_DIR"] != "/fictional/second" {
+			t.Fatalf("%+v", c.Claude.Env)
+		}
+		// Each resolved route is accepted back as one the list produced, and
+		// a changed one is not.
+		if !ResolvedFor(cfg.Loop, c, cfg.FallbackSet) {
+			t.Fatal("a resolved route was not recognised")
+		}
+		c.Claude.ExtraArgs = append(c.Claude.ExtraArgs, "--another")
+		if ResolvedFor(cfg.Loop, c, cfg.FallbackSet) {
+			t.Fatal("a changed route was recognised")
+		}
+	})
+}
+
+func TestStandardRoutesFileChecks(t *testing.T) {
+	writeFile := func(t *testing.T, path string, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(standardList), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("private_file", func(t *testing.T) {
+		p := writeRoutes(t, standardList)
+		if _, err := LoadRoutes(p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("readable_by_others", func(t *testing.T) {
+		p := writeRoutes(t, "")
+		writeFile(t, p, 0o644)
+		if _, err := LoadRoutes(p); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%v", err)
+		}
+		cfg, err := Load(loopFile(t, bbLoop))
+		if err != nil || !cfg.RouteList.Unreadable {
+			t.Fatalf("%v %+v", err, cfg.RouteList)
+		}
+	})
+	t.Run("symlink_owned_by_this_user", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "dotfiles-routes.yaml")
+		writeFile(t, real, 0o600)
+		link := filepath.Join(dir, RoutesFileName)
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(RoutesFileEnv, link)
+		cfg, err := Load(loopFile(t, bbLoop))
+		if err != nil || cfg.RouteList.Unreadable || ids(cfg.FallbackSet) != "large-same" {
+			t.Fatalf("%v %+v", err, cfg.RouteList)
+		}
+	})
+	t.Run("symlink_to_a_shared_file", func(t *testing.T) {
+		dir := t.TempDir()
+		real := filepath.Join(dir, "shared.yaml")
+		writeFile(t, real, 0o644)
+		link := filepath.Join(dir, RoutesFileName)
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadRoutes(link); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), RoutesFileName)
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadRoutes(p); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("oversized", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), RoutesFileName)
+		if err := os.WriteFile(p, []byte(standardList+"#"+strings.Repeat("x", 1<<20)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadRoutes(p); err == nil || !strings.Contains(err.Error(), "1 MiB") {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("override_inside_a_checkout", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, "config"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(repo, "config", RoutesFileName)
+		writeFile(t, p, 0o600)
+		t.Setenv(RoutesFileEnv, p)
+		if _, err := StandardRoutesPath(); err == nil || !strings.Contains(err.Error(), "Git checkout") {
+			t.Fatalf("%v", err)
+		}
+		cfg, err := Load(loopFile(t, bbLoop))
+		if err != nil || !cfg.RouteList.Unreadable {
+			t.Fatalf("%v %+v", err, cfg.RouteList)
+		}
+	})
+	t.Run("long_account_dir", func(t *testing.T) {
+		long := "version: 1\nroutes:\n  - {id: one, provider: codex, model: m, group: g, enter: headless, account_dir: /" + strings.Repeat("a", maxRoutePath) + "}\n"
+		if _, err := ParseRoutes([]byte(long)); err == nil || !strings.Contains(err.Error(), "at most") {
+			t.Fatalf("%v", err)
+		}
+	})
+}
+
+// A loop that follows the list cannot be prepared for a transfer even while
+// the list is unreadable and it has no routes: when the list comes back it
+// would have a route list a transfer does not cover.
+func TestTransferRefusesAFollowingLoopWhateverTheListsState(t *testing.T) {
+	for _, content := range []string{standardList, ""} {
+		writeRoutes(t, content)
+		cfg, err := Load(loopFile(t, bbLoop))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cfg.PrepareBBTransfer("thr_example_next"); err == nil {
+			t.Fatalf("transfer prepared (list present=%t)", content != "")
+		}
+	}
+}

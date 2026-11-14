@@ -122,14 +122,14 @@ func routesCommand(e env, args []string) int {
 		}
 		return exitUsage
 	}
-	var paths []string
+	var paths []routeLoopRef
 	if *cfgPath != "" {
 		abs, err := filepath.Abs(*cfgPath)
 		if err != nil {
 			e.errf("config unavailable")
 			return exitFailed
 		}
-		paths = []string{abs}
+		paths = []routeLoopRef{{path: abs}}
 	} else {
 		dir, err := registryDirectory(*directory)
 		if err != nil {
@@ -144,7 +144,7 @@ func routesCommand(e env, args []string) int {
 		found := false
 		for _, entry := range f.Entries {
 			if *loopName == "" || entry.Loop == *loopName {
-				paths = append(paths, entry.ConfigPath)
+				paths = append(paths, routeLoopRef{path: entry.ConfigPath, name: entry.Loop})
 				found = true
 			}
 		}
@@ -165,11 +165,15 @@ func routesCommand(e env, args []string) int {
 
 // routeLists reads the standard list and each loop's effective routes. It
 // only reads: no lock is taken, nothing is probed and nothing is written.
-func routeLists(configPaths []string, now time.Time) routeListsOut {
+// routeLoopRef is a loop to show: its config file and, when it came from the
+// registry, its registered name, used if the config cannot be loaded.
+type routeLoopRef struct{ path, name string }
+
+func routeLists(configPaths []routeLoopRef, now time.Time) routeListsOut {
 	out := routeListsOut{SchemaVersion: 1, Kind: "route_lists", Loops: []loopRoutesView{}}
 	out.Standard = standardList()
-	for _, path := range configPaths {
-		view := loopRoutes(path, now)
+	for _, ref := range configPaths {
+		view := loopRoutes(ref, now)
 		if view.List == config.RoutesStandard {
 			out.Standard.Followers = append(out.Standard.Followers, view.Loop)
 		}
@@ -226,9 +230,13 @@ func routeEnter(l config.Loop, c config.Candidate) string {
 	return "command"
 }
 
-func loopRoutes(path string, now time.Time) loopRoutesView {
-	view := loopRoutesView{Loop: strings.TrimSuffix(filepath.Base(filepath.Dir(path)), string(filepath.Separator)), List: "none", Handoff: "off", Routes: []loopRouteRow{}, Skipped: []skippedRoute{}, Warnings: []string{}}
-	cfg, err := config.Load(path)
+func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
+	name := ref.name
+	if name == "" {
+		name = filepath.Base(filepath.Dir(ref.path))
+	}
+	view := loopRoutesView{Loop: name, List: "none", Handoff: "off", Routes: []loopRouteRow{}, Skipped: []skippedRoute{}, Warnings: []string{}}
+	cfg, err := config.Load(ref.path)
 	if err != nil {
 		view.Problem = "configuration_unavailable"
 		return view
@@ -366,4 +374,23 @@ func dash(s string) string {
 func effectiveRoutes(cfg *config.Config, st state.File) *config.Fallbacks {
 	fb, _ := supervise.EffectiveRoutes(cfg, st)
 	return fb
+}
+
+// currentRoutes is effectiveRoutes with the loop's state read here. When the
+// state cannot be read, the configured list is used.
+func currentRoutes(cfg *config.Config) *config.Fallbacks {
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return cfg.FallbackSet
+	}
+	return effectiveRoutes(cfg, st)
+}
+
+// followsStandardRefusal is what a fallbacks command says for a loop that
+// follows the standard route list, which has no fallbacks file to edit.
+func followsStandardRefusal(sub string) string {
+	if sub == "handoff" {
+		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml; routes commands arrive with P10b."
+	}
+	return "This loop follows the standard route list. Edit routes.yaml instead (keepgoing routes list shows where); routes add, move and remove arrive with P10b."
 }

@@ -1851,6 +1851,7 @@ func (t *tick) record(actErr error) error {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
 	t.st.CheckFinishedAt = t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
+	t.saveRouteRecord()
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
@@ -2253,6 +2254,13 @@ func (t *tick) countUnrecordedSends() error {
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
 			t.st.SwitchBackRejected, agentSend = max(t.st.SwitchBackRejected, t.loop.Errors.MaxReprompts), false
+		case "report:routes-unreadable", "report:routes-readable":
+			t.st.RoutesUnreadable = p.Action == "report:routes-unreadable"
+		}
+		// A report is never a send to the agent, whatever its key, as in
+		// SettleIntoEpisode: a key added later cannot be counted as one.
+		if strings.HasPrefix(p.Action, "report:") {
+			agentSend = false
 		}
 		if agentSend && p.At.After(t.st.LastWakeAt) {
 			t.st.LastWakeAt = p.At

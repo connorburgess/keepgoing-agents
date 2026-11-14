@@ -730,8 +730,8 @@ func (c *Config) Validate() error {
 		default:
 			add("loop.probe.kind must be claude, codex, or command")
 		}
-		if l.Fallbacks == "" {
-			add("loop.timing needs loop.fallbacks: its probe policy (daily_cap, timeout) applies to the first route's timing probes")
+		if !l.HasRouteList() {
+			add("loop.timing needs loop.fallbacks or loop.routes: standard: that list's probe policy (daily_cap, timeout) applies to the first route's timing probes")
 		}
 		if len(tm.Windows) == 0 {
 			add("loop.timing.windows must name at least one usage window, for example seven_day")
