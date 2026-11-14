@@ -47,13 +47,19 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 	}
 	// The exit record is shared by the target. Only the current turn's worker
 	// may write it; a worker overtaken by a later turn leaves it alone.
+	var agentErr *os.File // the agent's stderr file, once opened
 	record := func(code int) int {
+		// Closed before the exit code can be seen: the next start may move
+		// the file, and on Windows an open file cannot be moved.
+		if agentErr != nil {
+			agentErr.Close()
+		}
 		if !current() {
 			return code
 		}
 		tmp := d.path("exit.tmp-" + spec.Turn)
 		if os.WriteFile(tmp, []byte(strconv.Itoa(code)+"\n"), 0o600) == nil {
-			if !current() || os.Rename(tmp, d.path("exit")) != nil {
+			if !current() || publishExit(dir, tmp) != nil {
 				os.Remove(tmp)
 			}
 		}
@@ -86,6 +92,7 @@ func runAntigravityACPTurn(dir string, argv []string, raw string) int {
 		return fail(2)
 	}
 	defer stderr.Close()
+	agentErr = stderr
 	// Explicit pipes, so this process decides when each end closes.
 	agentIn, toAgent, err := os.Pipe()
 	if err != nil {

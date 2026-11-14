@@ -76,16 +76,21 @@ type File struct {
 	// NetworkDistrusted says the check is no longer believed, because the
 	// provider answered a probe while the check was failing. It stays set
 	// until the check itself passes or the session is seen active or idle.
-	NetworkVerifiedAt    time.Time      `json:"networkVerifiedAt,omitempty"`
-	NetworkVerifications int            `json:"networkVerifications,omitempty"`
-	NetworkReportedAt    time.Time      `json:"networkReportedAt,omitempty"`
-	NetworkDistrusted    bool           `json:"networkDistrusted,omitempty"`
-	FailedChecks         int            `json:"failedChecks,omitempty"`
-	FailedSince          time.Time      `json:"failedSince,omitempty"`
-	HandoffDeferrals     int            `json:"handoffDeferrals,omitempty"`
-	ExactCut             map[string]int `json:"exactCut,omitempty"`
-	Fingerprint          string         `json:"fingerprint,omitempty"`
-	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
+	NetworkVerifiedAt    time.Time `json:"networkVerifiedAt,omitempty"`
+	NetworkVerifications int       `json:"networkVerifications,omitempty"`
+	NetworkReportedAt    time.Time `json:"networkReportedAt,omitempty"`
+	NetworkDistrusted    bool      `json:"networkDistrusted,omitempty"`
+	// StartRefused records that the adapter refused to start a turn before
+	// anything could reach the agent, since when, and its fixed reason. It
+	// is cleared by the next send the adapter accepts or fails in any other
+	// way. Nothing is counted while it stands.
+	StartRefused     *StartRefused  `json:"startRefused,omitempty"`
+	FailedChecks     int            `json:"failedChecks,omitempty"`
+	FailedSince      time.Time      `json:"failedSince,omitempty"`
+	HandoffDeferrals int            `json:"handoffDeferrals,omitempty"`
+	ExactCut         map[string]int `json:"exactCut,omitempty"`
+	Fingerprint      string         `json:"fingerprint,omitempty"`
+	LastProgressAt   time.Time      `json:"lastProgressAt,omitempty"`
 	// ProgressChangedAt is when a check last saw the repositories' fingerprint
 	// change, or, with ProgressBaseline, when one first recorded it (no change
 	// is known before then). Unlike LastProgressAt it is never moved forward
@@ -713,4 +718,11 @@ func LaneHash(key []byte, id string) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(id))
 	return hex.EncodeToString(mac.Sum(nil)[:12])
+}
+
+// StartRefused is a standing refusal to start turns. Reason is one of the
+// adapter's fixed texts, never agent output.
+type StartRefused struct {
+	Since  time.Time `json:"since"`
+	Reason string    `json:"reason"`
 }

@@ -727,6 +727,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
 	}
+	if st.StartRefused != nil {
+		fmt.Fprintf(w, "turns:     none can be started, since %s: %s. Nothing is sent or counted while this stands\n", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason)
+	}
 	switch {
 	case st.NetworkDownSince.IsZero():
 	case st.NetworkDistrusted:
