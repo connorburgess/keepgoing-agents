@@ -439,7 +439,7 @@ func everyMomentOfAMove(t *testing.T, swapped bool) {
 		t.Fatal("the earlier name is not in use after the move back")
 	}
 	want := 9 // the start, four in between, four after each step
-	if swapped {
+	if swapped && (runtime.GOOS == "darwin" || runtime.GOOS == "linux") {
 		want = 5 // a swap has no moment in between
 	}
 	if moments != want {
@@ -621,5 +621,31 @@ func TestRenameProblemNamesTheCause(t *testing.T) {
 		if got := renameProblem(err); !strings.Contains(got, want) {
 			t.Errorf("%v: %q", err, got)
 		}
+	}
+}
+
+// Something that appears at the current name after the place was looked at
+// is never replaced, even where a rename would replace a file (Windows).
+func TestMoveNeverReplacesWhatAppearsAtTheCurrentName(t *testing.T) {
+	for _, swapped := range []bool{true, false} {
+		t.Run(map[bool]string{true: "swapped", false: "renamed and linked"}[swapped], func(t *testing.T) {
+			base := t.TempDir()
+			needLinks(t, base)
+			if !swapped {
+				noSwap(t)
+			}
+			write(t, filepath.Join(base, LegacyName, "registry", "loops.json"), "registry")
+			p := status(t, base, Earlier)
+			write(t, p.Current, "something else")
+			if err := p.Move(); err == nil {
+				t.Fatal("moved over what appeared")
+			}
+			if read(t, p.Current) != "something else" || read(t, filepath.Join(p.Earlier, "registry", "loops.json")) != "registry" {
+				t.Fatal("something was replaced or lost")
+			}
+			if p.marked() {
+				t.Fatal("the marker was left")
+			}
+		})
 	}
 }

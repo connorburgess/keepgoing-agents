@@ -323,6 +323,12 @@ func (p Place) Move() error {
 			}
 			_ = os.Remove(p.Current)
 		}
+		// A rename replaces a file at its destination on some systems
+		// (Windows). Whatever is there now, it is not this move's to replace.
+		if _, err := os.Lstat(p.Current); !errors.Is(err, os.ErrNotExist) {
+			p.unmark()
+			return fmt.Errorf("something is already at %s, so %s was not renamed; nothing was moved", p.Current, p.Earlier)
+		}
 		if err := os.Rename(p.Earlier, p.Current); err != nil {
 			p.unmark()
 			return fmt.Errorf("%s could not be renamed (%s); nothing was moved", p.Earlier, renameProblem(err))
