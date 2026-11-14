@@ -120,7 +120,10 @@ public enum MenuCommand: Equatable {
     case review(LoopAction, key: String)
     /// Runs `keepgoing client apply <action> --loop <key> --expect <digest>
     /// [--lanes] [--immediately] --json`, only from a confirmed review.
-    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool)
+    /// `--drop-queued` deletes messages queued in lanes that have not
+    /// started; it is passed only with `--lanes`, and only for the stop
+    /// option that says so.
+    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool, dropQueued: Bool = false)
     case quit
 }
 
@@ -346,9 +349,10 @@ public enum MenuBuilder {
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]
         case .review(let action, let key): return Contract.validKey(key) ? ["client", "review", action.rawValue, "--loop", key, "--json"] : nil
-        case .apply(let action, let key, let expect, let lanes, let immediately):
-            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately) else { return nil }
-            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : []) + ["--json"]
+        case .apply(let action, let key, let expect, let lanes, let immediately, let dropQueued):
+            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately && !dropQueued), !dropQueued || lanes else { return nil }
+            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : [])
+                + (dropQueued ? ["--drop-queued"] : []) + ["--json"]
         case .quit: return nil
         }
     }
