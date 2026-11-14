@@ -168,6 +168,72 @@ func TestObservePolicyBlockIsRefused(t *testing.T) {
 	}
 }
 
+// BB records provider/modelFallback when the provider answered with another
+// model. Only a fallback after a refusal is reported, by its position in the
+// log, and it changes nothing else about the observation.
+func TestObserveModelFallbackAfterARefusal(t *testing.T) {
+	fallback := func(reason string) string {
+		return `{"type":"provider/modelFallback","data":{"providerThreadId":"p1","originalModel":"model-a","fallbackModel":"model-b","reason":"` + reason + `","message":"PRIVATE_TEXT"}}`
+	}
+	for _, tc := range []struct {
+		name string
+		log  string
+		want int64
+	}{
+		{"after a refusal", "[" + turnStarted + "," + fallback("refusal") + "]", 2},
+		{"for another reason", "[" + turnStarted + "," + fallback("provider") + "]", 0},
+		{"none", "[" + turnStarted + "]", 0},
+	} {
+		a, _ := newFake(`{"thread":{"status":"idle"}}`, tc.log, false)
+		obs, _ := a.Observe(context.Background())
+		if obs.ModelFallback != tc.want || obs.State != decide.Idle || obs.ErrorClass != decide.ErrNone {
+			t.Errorf("%s: %+v", tc.name, obs)
+		}
+	}
+}
+
+// A refusal or restriction stays for the rest of its turn: a later error
+// event does not replace it, so it cannot become a limit that hands off. A
+// refusal outranks a restriction, a new turn clears both, and so does the
+// model answering again.
+func TestRefusalOrRestrictionIsStickyForTheTurn(t *testing.T) {
+	refusal := providerError("policy", nil, "cyberPolicy", nil)
+	forbidden := providerError("unauthorized", 403, "unknown", nil)
+	limit := providerError("rate-limit", 429, "rate_limit_event", false)
+	systemErr := `{"type":"system/error","data":{"code":"rate_limit_error"}}`
+	failed := `{"type":"turn/failed","data":{"code":"overloaded_error"}}`
+	answer := `{"type":"item/agentMessage/delta","data":{"providerThreadId":"p1","itemId":"item_example"}}`
+	for _, tc := range []struct {
+		name   string
+		events []string
+		want   decide.ErrorClass
+	}{
+		{"refusal, then a rate limit that will not be retried", []string{refusal, limit}, decide.ErrRefused},
+		{"refusal, then a system error", []string{refusal, systemErr}, decide.ErrRefused},
+		{"refusal, then a failed event", []string{refusal, failed}, decide.ErrRefused},
+		{"restriction, then a rate limit", []string{forbidden, limit}, decide.ErrRestricted},
+		{"restriction, then a system error", []string{forbidden, systemErr}, decide.ErrRestricted},
+		{"restriction, then a refusal", []string{forbidden, refusal}, decide.ErrRefused},
+		{"refusal, then a restriction", []string{refusal, forbidden}, decide.ErrRefused},
+		{"a rate limit, then a refusal", []string{limit, refusal}, decide.ErrRefused},
+		{"a rate limit, then a restriction", []string{limit, forbidden}, decide.ErrRestricted},
+		{"refusal, then a new turn with a rate limit", []string{refusal, turnStarted, limit}, decide.ErrRateLimit},
+		{"refusal, then the model answers", []string{refusal, answer}, decide.ErrNone},
+		{"a rate limit, then a system error (unchanged: the later error decides)", []string{limit, systemErr}, decide.ErrRateLimit},
+	} {
+		log := "[" + turnStarted + "," + strings.Join(tc.events, ",") + "]"
+		a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+		obs, _ := a.Observe(context.Background())
+		got := obs.ErrorClass
+		if tc.want == decide.ErrNone && got == decide.ErrUnknown {
+			got = decide.ErrNone // no error left: the thread status alone says error
+		}
+		if got != tc.want {
+			t.Errorf("%s: %s, want %s (%+v)", tc.name, obs.ErrorClass, tc.want, obs)
+		}
+	}
+}
+
 // A summary saved by an earlier build keeps the class it derived then. One
 // that cached a forbidden error as auth is derived again from the log.
 func TestSummaryFromAnEarlierBuildIsDerivedAgain(t *testing.T) {

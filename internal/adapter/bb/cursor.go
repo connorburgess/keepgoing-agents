@@ -25,6 +25,16 @@ import (
 const pageSize = 500
 
 // Cursor is the persisted scan position and summary for one thread.
+// fallbackReason decodes BB's provider/modelFallback reason, a closed enum
+// ("refusal" or "provider"), and keeps only whether it is "refusal". No text
+// of the field is kept.
+type fallbackReason bool
+
+func (r *fallbackReason) UnmarshalJSON(b []byte) error {
+	*r = string(b) == `"refusal"`
+	return nil
+}
+
 type Cursor struct {
 	RetrySchema    int    `json:"retrySchema,omitempty"`
 	ProviderThread string `json:"providerThread,omitempty"`
@@ -61,7 +71,11 @@ type Cursor struct {
 	// cannot be trusted for this turn: an item without an ID or type, an item
 	// type not recognised, or more open items than are kept. A turn with an
 	// open or uncertain tool item is waiting on a tool, not on the model.
-	TurnStartSeq   int64           `json:"turnStartSeq,omitempty"`
+	TurnStartSeq int64 `json:"turnStartSeq,omitempty"`
+	// FallbackSeq is the sequence of the latest provider/modelFallback event
+	// whose reason is refusal: the provider answered with another model after
+	// the requested one declined. Only the sequence is kept.
+	FallbackSeq    int64           `json:"fallbackSeq,omitempty"`
 	OpenTools      map[string]bool `json:"openTools,omitempty"`
 	ToolsUncertain bool            `json:"toolsUncertain,omitempty"`
 }
@@ -253,7 +267,7 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if c.ProviderThread == "" {
 				c.ProviderThread = c.ref(d.ProviderThread)
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when}
+			c.setError(&errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: "bb_provider_error", Category: d.Info.Category, Code: d.Info.ProviderCode, HTTPStatus: d.Info.HTTPStatus}), Seq: e.Seq, Class: firstKnown(d.Info.Category, httpCode(d.Info.HTTPStatus), d.Info.ProviderCode), WillRetry: d.WillRetry != nil && *d.WillRetry, RetryKnown: d.WillRetry != nil, At: when})
 		}
 	case e.Type == "item/agentMessage/delta" || e.Type == "item/started" || e.Type == "turn/completed":
 		// Consume event metadata only. A new item the model produced is the
@@ -299,7 +313,15 @@ func (c *Cursor) apply(e event, seenAt time.Time) {
 			if e.Type != "system/error" {
 				source = "bb_failure_event"
 			}
-			c.Error = &errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when}
+			c.setError(&errorSignal{Evidence: evidence.Clean(evidence.Detail{Source: source, Code: d.Code}), Seq: e.Seq, Class: adapter.ClassifyCode(d.Code), At: when})
+		}
+	case e.Type == "provider/modelFallback":
+		var d struct {
+			ProviderThread string         `json:"providerThreadId"`
+			Refusal        fallbackReason `json:"reason"`
+		}
+		if json.Unmarshal(e.Data, &d) == nil && bool(d.Refusal) && (d.ProviderThread == "" || c.ProviderThread == "" || c.ref(d.ProviderThread) == c.ProviderThread) {
+			c.FallbackSeq = e.Seq
 		}
 	case e.Type == "provider/rateLimits/updated":
 		c.Blocked, c.ResetsAt = rateLimits(e.Data)
@@ -362,6 +384,19 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 	}
 	a.mem = &c
 	return true
+}
+
+// setError records a later error of the current turn. A refusal or a
+// restriction stays for the rest of the turn: a later error event, such as a
+// rate limit the provider reports after declining, does not replace it, so a
+// declined turn cannot be read as a limit and handed off. A refusal also
+// outranks a restriction. A new turn clears it, and so does the model
+// answering again in this turn (see the recovery events above).
+func (c *Cursor) setError(sig *errorSignal) {
+	if c.Error != nil && adapter.Prefer(c.Error.Class, sig.Class) == c.Error.Class && decide.Declined(c.Error.Class) && c.Error.Class != sig.Class {
+		return
+	}
+	c.Error = sig
 }
 
 // summarySchema versions how a summary is derived from the log. 2: a

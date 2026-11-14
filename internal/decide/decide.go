@@ -50,9 +50,14 @@ const (
 // Observation is what an adapter saw.
 type Observation struct {
 	// Evidence is diagnostic metadata and never changes Decide policy.
-	Evidence   evidence.Detail
-	State      State
-	ErrorClass ErrorClass
+	Evidence evidence.Detail
+	// ModelFallback is the position, in the session's own log, of the latest
+	// record that the provider fell back to another model after a refusal; 0
+	// when there is none. It is diagnostic: the supervisor notes a new one in
+	// the timeline, and it never changes Decide policy.
+	ModelFallback int64
+	State         State
+	ErrorClass    ErrorClass
 	// Turn is what the adapter knows of the running turn, from structured
 	// events. Nil means nothing is known. TurnUnknown: the session is
 	// active but its turn could not be read this time (the log read
@@ -149,8 +154,16 @@ type Input struct {
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
 	// DeclineAcknowledged: the loop was held because this session's turn was
-	// refused or restricted, and a person has since resumed it.
+	// restricted, and a person has since resumed it.
 	DeclineAcknowledged bool
+	// RefusalStreak counts consecutive refused turns of this session,
+	// including the current one. SinceRefusal is the time since the current
+	// refusal was first seen.
+	RefusalStreak int
+	SinceRefusal  time.Duration
+	// RefusalAskAfter is the streak at which a person is asked instead; 0
+	// never asks.
+	RefusalAskAfter int
 
 	// UnannouncedErroredChildren counts errored children the session has not
 	// been told about. Children it was told about that are still in error do
@@ -524,18 +537,30 @@ func Declined(c ErrorClass) bool { return c == ErrRestricted || c == ErrRefused 
 // carry provider text.
 const (
 	RestrictedReason = "provider denied permission for this request or account; not a limit, so no handoff"
-	RefusedReason    = "the model or provider declined this turn; not a limit, so no handoff"
+	// RefusedContinueReason is the plain continue sent to a refused turn.
+	RefusedContinueReason = "the model or provider declined this turn; continuing in the same session"
+	// RefusalWaitReason is a check that waits before that continue.
+	RefusalWaitReason = "the model or provider declined this turn; waiting before continuing"
+	// RefusalAskReason is the hold a long streak of refusals raises.
+	RefusalAskReason = "refusal streak: how should this loop proceed?"
 	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
 	// resuming a loop held for either reason.
 	DeclineAcknowledgedReason = "resumed by a person after a refusal or restriction; one re-prompt"
 )
 
-// declineReason is the hold reason for a declined class.
-func declineReason(c ErrorClass) string {
-	if c == ErrRefused {
-		return RefusedReason
+// RefusalSpacing is how long a refused turn waits before its continue: 1m
+// for the first refusal of a streak, 2m for the second, 5m for the third,
+// then 10m. There is no cap on the number of continues.
+func RefusalSpacing(streak int) time.Duration {
+	switch {
+	case streak <= 1:
+		return time.Minute
+	case streak == 2:
+		return 2 * time.Minute
+	case streak == 3:
+		return 5 * time.Minute
 	}
-	return RestrictedReason
+	return 10 * time.Minute
 }
 
 // decideError bounds recovery from an errored session. A handoff happens
@@ -552,18 +577,31 @@ func decideError(in Input) Decision {
 	if in.NetworkDown {
 		return none(NetworkDownReason)
 	}
-	// Ahead of the handoff rule: a provider that refused or restricted the
-	// request has made a decision about the work or the account. Moving to
-	// another route, or prompting again, would be a way around it.
-	if Declined(o.ErrorClass) {
-		// A person who resumes the loop held for this has seen the reason
-		// and asks for another try: exactly one, outside the re-prompt cap
-		// and its backoff, which bound keepgoing's own attempts. A turn that
-		// is declined again holds again.
+	// Ahead of the handoff rule. A refusal is often a false flag that a plain
+	// continue in the same session clears (the owner's decision), so it is
+	// answered with one, spaced by the streak and with no per-episode cap.
+	// It never moves: no handoff, no other model, no other route. Loop-wide
+	// limits and every control still come first.
+	if o.ErrorClass == ErrRefused {
+		// After AskAfter refusals in a row with none recovered, a person
+		// decides how the loop goes on; until then it holds.
+		if in.RefusalAskAfter > 0 && in.RefusalStreak >= in.RefusalAskAfter {
+			return Decision{Action: AwaitUser, Reason: RefusalAskReason}
+		}
+		if wait := RefusalSpacing(in.RefusalStreak); in.SinceRefusal < wait {
+			return none(RefusalWaitReason)
+		}
+		return Decision{Action: Reprompt, Reason: RefusedContinueReason}
+	}
+	// A restriction is the provider denying permission for the request or
+	// the account: prompting again cannot change that, and moving would be a
+	// way around it. It holds for a person, whose resume asks for exactly
+	// one more try, outside the re-prompt cap and its backoff.
+	if o.ErrorClass == ErrRestricted {
 		if in.DeclineAcknowledged {
 			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
 		}
-		return Decision{Action: AwaitUser, Reason: declineReason(o.ErrorClass)}
+		return Decision{Action: AwaitUser, Reason: RestrictedReason}
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {

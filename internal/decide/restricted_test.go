@@ -5,95 +5,104 @@ import (
 	"time"
 )
 
-var declinedClasses = []struct {
-	class  ErrorClass
-	reason string
-}{{ErrRestricted, RestrictedReason}, {ErrRefused, RefusedReason}}
-
-// A provider that denied permission, or a model or provider that declined the
-// turn, has decided something about the account or the work. That is not a
-// limit: it holds for a person, with its own fixed reason, and never moves to
-// another route however the loop is configured. keepgoing never prompts it
-// again by itself.
-func TestDeclinedHoldsAndNeverMoves(t *testing.T) {
+// A restricted turn is the provider denying permission: it holds for a
+// person at once and never moves, however the loop is configured.
+func TestRestrictedHoldsAndNeverMoves(t *testing.T) {
 	m := time.Minute
-	for _, dc := range declinedClasses {
-		for _, tc := range []struct {
-			name   string
-			mut    func(*Input)
-			action Action
-			reason string
-		}{
-			{"no fallbacks", func(*Input) {}, AwaitUser, dc.reason},
-			{"confirmed fallback available", func(i *Input) {
-				i.Failover = Failover{Eligible: true, Available: true}
-			}, AwaitUser, dc.reason},
-			{"fallback available and a reset reported", func(i *Input) {
-				i.Failover = Failover{Eligible: true, Available: true, ResetIn: 5 * m, WaitIfResetWithin: 10 * m}
-			}, AwaitUser, dc.reason},
-			{"re-prompts left", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 1, 60*m }, AwaitUser, dc.reason},
-			{"switch-back ready", func(i *Input) { i.SwitchBackReady = true }, AwaitUser, dc.reason},
-			{"stop", func(i *Input) { i.Control.Stop = true }, None, "stop requested; session not running"},
-			{"pause", func(i *Input) { i.Control.Paused = true }, None, "paused"},
-			{"already awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None, "awaiting user"},
-			{"network down waits", func(i *Input) { i.NetworkDown = true }, None, NetworkDownReason},
-			{"queued message", func(i *Input) { i.Obs.Queued = 1 }, None, "messages already queued after error"},
-		} {
-			t.Run(string(dc.class)+"/"+tc.name, func(t *testing.T) {
-				in := base()
-				in.Obs.State, in.Obs.ErrorClass = Error, dc.class
-				tc.mut(&in)
-				d := Decide(in)
-				if d.Action != tc.action || d.Reason != tc.reason {
-					t.Fatalf("got %s (%q), want %s (%q)", d.Action, d.Reason, tc.action, tc.reason)
-				}
-			})
+	for _, tc := range []struct {
+		name   string
+		mut    func(*Input)
+		action Action
+		reason string
+	}{
+		{"no fallbacks", func(*Input) {}, AwaitUser, RestrictedReason},
+		{"confirmed fallback available", func(i *Input) { i.Failover = Failover{Eligible: true, Available: true} }, AwaitUser, RestrictedReason},
+		{"fallback available and a reset reported", func(i *Input) {
+			i.Failover = Failover{Eligible: true, Available: true, ResetIn: 5 * m, WaitIfResetWithin: 10 * m}
+		}, AwaitUser, RestrictedReason},
+		{"re-prompts left", func(i *Input) { i.Reprompts, i.SinceLastReprompt = 1, 60*m }, AwaitUser, RestrictedReason},
+		{"switch-back ready", func(i *Input) { i.SwitchBackReady = true }, AwaitUser, RestrictedReason},
+		{"a person resumed", func(i *Input) { i.DeclineAcknowledged = true }, Reprompt, DeclineAcknowledgedReason},
+		{"stop", func(i *Input) { i.Control.Stop = true }, None, "stop requested; session not running"},
+		{"pause", func(i *Input) { i.Control.Paused = true }, None, "paused"},
+		{"already awaiting user", func(i *Input) { i.Control.AwaitingUser = true }, None, "awaiting user"},
+		{"network down waits", func(i *Input) { i.NetworkDown = true }, None, NetworkDownReason},
+		{"queued message", func(i *Input) { i.Obs.Queued = 1 }, None, "messages already queued after error"},
+	} {
+		in := base()
+		in.Obs.State, in.Obs.ErrorClass = Error, ErrRestricted
+		tc.mut(&in)
+		if d := Decide(in); d.Action != tc.action || d.Reason != tc.reason {
+			t.Errorf("%s: got %s (%q), want %s (%q)", tc.name, d.Action, d.Reason, tc.action, tc.reason)
 		}
-	}
-	if RestrictedReason == RefusedReason {
-		t.Fatal("a permission problem and a declined turn must not read the same")
 	}
 }
 
-// Whatever else is true of the input, a declined session never produces a
-// handoff, a switch-back, a wake or a nudge, and is re-prompted only when a
-// person has resumed the loop that was held for it.
-func TestDeclinedNeverMovesAndIsRepromptedOnlyOnAPersonsResume(t *testing.T) {
-	for _, dc := range declinedClasses {
-		for _, eligible := range []bool{false, true} {
-			for _, available := range []bool{false, true} {
-				for _, deferred := range []bool{false, true} {
-					for _, reprompts := range []int{0, 1, 3, 30} {
-						for _, acknowledged := range []bool{false, true} {
-							in := base()
-							in.Obs.State, in.Obs.ErrorClass = Error, dc.class
-							in.Failover = Failover{Eligible: eligible, Available: available}
-							in.HandoffDeferred, in.Reprompts, in.SinceLastReprompt = deferred, reprompts, time.Second
-							in.SwitchBackReady, in.DeclineAcknowledged = true, acknowledged
-							d := Decide(in)
-							want, reason := AwaitUser, dc.reason
-							if acknowledged {
-								// One try, outside the cap and backoff that bound
-								// keepgoing's own attempts.
-								want, reason = Reprompt, DeclineAcknowledgedReason
-							}
-							if d.Action != want || d.Reason != reason {
-								t.Fatalf("%s eligible=%v available=%v deferred=%v reprompts=%d acknowledged=%v: %s (%q)", dc.class, eligible, available, deferred, reprompts, acknowledged, d.Action, d.Reason)
-							}
-						}
-					}
+// A refused turn gets a plain continue in the same session, spaced by the
+// streak, with no per-episode cap; never a handoff, a switch-back or a turn
+// retry. At refusal.ask_after in a row it asks a person instead.
+func TestRefusedContinuesWithSpacingAndNeverMoves(t *testing.T) {
+	m := time.Minute
+	for _, tc := range []struct {
+		streak int
+		since  time.Duration
+		want   Action
+	}{
+		{1, 30 * time.Second, None}, {1, m, Reprompt},
+		{2, 90 * time.Second, None}, {2, 2 * m, Reprompt},
+		{3, 4 * m, None}, {3, 5 * m, Reprompt},
+		{4, 9 * m, None}, {4, 10 * m, Reprompt},
+		{40, 9 * m, None}, {40, 10 * m, Reprompt},
+	} {
+		in := base()
+		in.Obs.State, in.Obs.ErrorClass = Error, ErrRefused
+		in.RefusalStreak, in.SinceRefusal = tc.streak, tc.since
+		d := Decide(in)
+		if d.Action != tc.want {
+			t.Errorf("streak %d after %s: %s (%q), want %s", tc.streak, tc.since, d.Action, d.Reason, tc.want)
+		}
+		want := RefusalWaitReason
+		if tc.want == Reprompt {
+			want = RefusedContinueReason
+		}
+		if d.Reason != want {
+			t.Errorf("streak %d after %s: reason %q", tc.streak, tc.since, d.Reason)
+		}
+	}
+	// Whatever else is true, it never moves, and the re-prompt cap does not stop it.
+	for _, eligible := range []bool{false, true} {
+		for _, available := range []bool{false, true} {
+			for _, reprompts := range []int{0, 3, 300} {
+				in := base()
+				in.Obs.State, in.Obs.ErrorClass = Error, ErrRefused
+				in.Failover = Failover{Eligible: eligible, Available: available}
+				in.Reprompts, in.SwitchBackReady, in.RefusalStreak, in.SinceRefusal = reprompts, true, 7, time.Hour
+				if d := Decide(in); d.Action != Reprompt || d.Reason != RefusedContinueReason {
+					t.Fatalf("eligible=%v available=%v reprompts=%d: %s (%q)", eligible, available, reprompts, d.Action, d.Reason)
 				}
 			}
 		}
-		if got := RecoverBy(Decision{Action: Reprompt}, Observation{State: Error, ErrorClass: dc.class}, true); got != RecoverByPrompt {
-			t.Fatalf("%s: a declined turn must never be retried by reference: %s", dc.class, got)
+	}
+	if got := RecoverBy(Decision{Action: Reprompt, Reason: RefusedContinueReason}, Observation{State: Error, ErrorClass: ErrRefused}, true); got != RecoverByPrompt {
+		t.Fatalf("a refused turn is continued with the prompt, never retried by reference: %s", got)
+	}
+	// The threshold that asks a person; 0 never asks.
+	for _, tc := range []struct {
+		askAfter, streak int
+		want             Action
+	}{{10, 9, Reprompt}, {10, 10, AwaitUser}, {10, 25, AwaitUser}, {0, 500, Reprompt}, {1, 1, AwaitUser}} {
+		in := base()
+		in.Obs.State, in.Obs.ErrorClass = Error, ErrRefused
+		in.RefusalAskAfter, in.RefusalStreak, in.SinceRefusal = tc.askAfter, tc.streak, time.Hour
+		d := Decide(in)
+		if d.Action != tc.want || (tc.want == AwaitUser && d.Reason != RefusalAskReason) {
+			t.Errorf("ask_after %d at streak %d: %s (%q)", tc.askAfter, tc.streak, d.Action, d.Reason)
 		}
 	}
 }
 
-// A resume does not outrank the controls, the loop-wide limits, a dead
-// network or a queued message, and means nothing for any other class.
-func TestDeclineAcknowledgementIsNarrow(t *testing.T) {
+// Controls and loop-wide limits come before a continue.
+func TestRefusedContinueYieldsToControlsAndLimits(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mut  func(*Input)
@@ -106,12 +115,36 @@ func TestDeclineAcknowledgementIsNarrow(t *testing.T) {
 		{"network down", func(i *Input) { i.NetworkDown = true }, None},
 		{"queued message", func(i *Input) { i.Obs.Queued = 1 }, None},
 		{"outside window", func(i *Input) { i.InWindow = false }, None},
+	} {
+		in := base()
+		in.Obs.State, in.Obs.ErrorClass = Error, ErrRefused
+		in.RefusalStreak, in.SinceRefusal = 1, time.Hour
+		tc.mut(&in)
+		if d := Decide(in); d.Action != tc.want || d.Reason == RefusedContinueReason {
+			t.Errorf("%s: %s (%q), want %s", tc.name, d.Action, d.Reason, tc.want)
+		}
+	}
+	if RefusalSpacing(0) != time.Minute || RefusalSpacing(1) != time.Minute || RefusalSpacing(2) != 2*time.Minute || RefusalSpacing(3) != 5*time.Minute || RefusalSpacing(4) != 10*time.Minute || RefusalSpacing(1000) != 10*time.Minute {
+		t.Fatal("spacing")
+	}
+}
+
+// A person's resume is narrow: it outranks nothing else, and means nothing
+// for any other class.
+func TestDeclineAcknowledgementIsNarrow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*Input)
+		want Action
+	}{
+		{"stop", func(i *Input) { i.Control.Stop = true }, None},
+		{"deadline", func(i *Input) { i.DeadlineReached = true }, AwaitUser},
+		{"network down", func(i *Input) { i.NetworkDown = true }, None},
 		{"an auth error still holds", func(i *Input) { i.Obs.ErrorClass = ErrAuth }, AwaitUser},
-		{"a spent cap on an unknown error still holds", func(i *Input) { i.Obs.ErrorClass, i.Reprompts = ErrUnknown, 3 }, AwaitUser},
 		{"an idle session is woken as usual", func(i *Input) { i.Obs.State, i.Obs.ErrorClass = Idle, ErrNone }, Wake},
 	} {
 		in := base()
-		in.Obs.State, in.Obs.ErrorClass, in.DeclineAcknowledged = Error, ErrRefused, true
+		in.Obs.State, in.Obs.ErrorClass, in.DeclineAcknowledged = Error, ErrRestricted, true
 		tc.mut(&in)
 		if d := Decide(in); d.Action != tc.want || d.Reason == DeclineAcknowledgedReason {
 			t.Errorf("%s: %s (%q), want %s", tc.name, d.Action, d.Reason, tc.want)

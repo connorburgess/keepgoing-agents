@@ -22,7 +22,8 @@ const FileName = "incidents.json"
 // Version 9 adds, on control records, who saved the control and whether a
 // resume started a new error episode.
 // Version 10 adds the lane-work counts on tick records.
-const SchemaVersion = 10
+// Version 11 adds the refusal marker on tick records.
+const SchemaVersion = 11
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may

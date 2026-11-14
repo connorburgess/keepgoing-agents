@@ -147,13 +147,15 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
-	// DeclineHeldTarget is the target whose refused or restricted turn the
-	// loop was last held for. While that turn is still what the target
-	// shows, a check that runs at all means a person resumed the loop, which
-	// is their request for one more try. Cleared when that try has been
-	// attempted or the target no longer shows a declined turn.
+	// DeclineHeldTarget is the target whose restricted turn the loop was
+	// last held for. While that turn is still what the target shows, a check
+	// that runs at all means a person resumed the loop, which is their
+	// request for one more try. Cleared when a check sees that turn.
 	DeclineHeldTarget string    `json:"declineHeldTarget,omitempty"`
 	DeclineHeldAt     time.Time `json:"declineHeldAt,omitempty"`
+	// Refusals is the gauge of refused turns: how often the model or
+	// provider declined a turn, and how often a plain continue cleared it.
+	Refusals RefusalGauge `json:"refusals,omitzero"`
 	// ChildErrorsAnnounced covers the errored children the session has been
 	// told about, by hash, never by ID. A child is dropped once it has stayed
 	// out of error for min_wake_interval; the record is bounded.
@@ -735,4 +737,87 @@ func LaneHash(key []byte, id string) string {
 type StartRefused struct {
 	Since  time.Time `json:"since"`
 	Reason string    `json:"reason"`
+}
+
+// RefusalGauge counts refused turns of a loop's session. Counts and times
+// only: no text, no thread or turn identity.
+type RefusalGauge struct {
+	// Total and Recovered count every refused turn, and every one after which
+	// a continue was followed by a turn that ended without a refusal.
+	Total     int `json:"total,omitempty"`
+	Recovered int `json:"recovered,omitempty"`
+	// Streak counts consecutive refused turns, the current one included;
+	// LongestStreak is the longest there has been. LastAt is when the latest
+	// refused turn was first seen.
+	Streak        int       `json:"streak,omitempty"`
+	StreakSince   time.Time `json:"streakSince,omitzero"`
+	LongestStreak int       `json:"longestStreak,omitempty"`
+	LastAt        time.Time `json:"lastAt,omitzero"`
+	// Seen: the refused turn the session shows now has been counted.
+	// Continued: a continue was sent for the latest refusal, and its outcome
+	// has not been seen yet.
+	Seen      bool `json:"seen,omitempty"`
+	Continued bool `json:"continued,omitempty"`
+	// Asked: the streak raised a question for a person. A check that runs
+	// afterwards means the hold has ended, and the streak starts over.
+	Asked bool `json:"asked,omitempty"`
+	// Recent and RecentRecovered are the times of refusals and recoveries in
+	// the last day, for the 24-hour figures.
+	Recent          []time.Time `json:"recent,omitempty"`
+	RecentRecovered []time.Time `json:"recentRecovered,omitempty"`
+	// FallbackSeq and FallbackTarget are the latest model fallback after a
+	// refusal the target's log showed, so each is noted in the timeline once.
+	FallbackSeq    int64  `json:"fallbackSeq,omitempty"`
+	FallbackTarget string `json:"fallbackTarget,omitempty"`
+}
+
+// RefusalWindow is how far back the recent figures reach, and maxRecent how
+// many times each list keeps.
+const (
+	RefusalWindow = 24 * time.Hour
+	maxRecent     = 500
+)
+
+func keepRecent(times []time.Time, now time.Time) []time.Time {
+	out := times[:0:0]
+	for _, t := range times {
+		if now.Sub(t) < RefusalWindow && !t.After(now.Add(time.Minute)) {
+			out = append(out, t)
+		}
+	}
+	if len(out) > maxRecent {
+		out = out[len(out)-maxRecent:]
+	}
+	return out
+}
+
+// Refused counts a newly seen refused turn and returns the streak.
+func (g *RefusalGauge) Refused(now time.Time) int {
+	g.Total++
+	g.Streak++
+	if g.Streak == 1 {
+		g.StreakSince = now
+	}
+	g.LongestStreak = max(g.LongestStreak, g.Streak)
+	g.LastAt, g.Seen, g.Continued = now, true, false
+	g.Recent = keepRecent(append(g.Recent, now), now)
+	g.RecentRecovered = keepRecent(g.RecentRecovered, now)
+	return g.Streak
+}
+
+// Ended ends a streak because a turn ended without a refusal. It returns
+// true when that turn followed a continue for a refusal: a recovery.
+func (g *RefusalGauge) Ended(now time.Time, finished bool) bool {
+	recovered := finished && g.Continued
+	if recovered {
+		g.Recovered++
+		g.RecentRecovered = keepRecent(append(g.RecentRecovered, now), now)
+	}
+	g.Streak, g.StreakSince, g.Seen, g.Continued = 0, time.Time{}, false, false
+	return recovered
+}
+
+// InLastDay returns the refusals and recoveries of the last 24 hours.
+func (g RefusalGauge) InLastDay(now time.Time) (refused, recovered int) {
+	return len(keepRecent(g.Recent, now)), len(keepRecent(g.RecentRecovered, now))
 }

@@ -510,7 +510,7 @@ func TestOnlyALaneWithEveryFactEstablishedIsRetried(t *testing.T) {
 	set(7, func(f *decide.LaneFacts) { f.ClassKnown = false })
 	set(8, func(f *decide.LaneFacts) { f.Verified = false })
 	set(9, func(f *decide.LaneFacts) { f.Class = decide.ErrRestricted })
-	set(10, func(f *decide.LaneFacts) { f.Class = decide.ErrRefused })
+	set(10, func(f *decide.LaneFacts) { f.Class = decide.ErrRestricted })
 	res := w.tick(t, t0.Add(time.Minute))
 	if strings.Join(w.a.retried, ",") != ids[0] || res.Lanes.Retried != 1 {
 		t.Fatalf("retried %v: %+v", w.a.retried, res.Lanes)
@@ -525,7 +525,7 @@ func TestOnlyALaneWithEveryFactEstablishedIsRetried(t *testing.T) {
 		t.Fatal(w.reportTypes())
 	}
 	e := w.laneReports()[0]
-	if e.Data["rateLimited"] != 1 || e.Data["authFailed"] != 1 || e.Data["declined"] != 2 || e.Data["givenUp"] != 0 || e.Data["retried"] != 1 || !strings.Contains(e.Text, "1 were not retried because they are rate limited, 1 because they need a login and 2 because the provider refused or restricted them") {
+	if e.Data["rateLimited"] != 1 || e.Data["authFailed"] != 1 || e.Data["declined"] != 2 || e.Data["givenUp"] != 0 || e.Data["retried"] != 1 || !strings.Contains(e.Text, "1 were not retried because they are rate limited, 1 because they need a login and 2 because the provider restricted them") {
 		t.Fatalf("%+v", e)
 	}
 	// However long they stay that way they are never retried, and reported once.
@@ -783,6 +783,62 @@ func TestLaneBeingRecoveredIsAnnouncedOnlyWhenGivenUp(t *testing.T) {
 	for i, text := range w.a.sent {
 		if has := strings.Contains(text, "[keepgoing:child-errors count=2]"); has != (i == 3) {
 			t.Fatalf("send %d: %q", i, text)
+		}
+	}
+}
+
+// A lane the provider restricted is never retried, and the session is told
+// about it at once, as it is about a lane that needs a login.
+func TestRestrictedLaneIsAnnouncedAtOnceAndNeverRetried(t *testing.T) {
+	for _, class := range []decide.ErrorClass{decide.ErrRestricted} {
+		w := newLaneWorld(t)
+		ids := laneIDs(1)
+		w.working(t, t0, ids...)
+		w.failed(ids...)
+		c := retryable
+		c.Class = class
+		w.a.facts[ids[0]] = c
+		w.a.obs.State = decide.Idle
+		res := w.tick(t, t0.Add(time.Minute))
+		if !res.ChildErrorNote || res.Lanes.NotRetried["declined"] != 1 {
+			t.Fatalf("%s: not announced at once: %+v %+v", class, res, res.Lanes)
+		}
+		if len(w.a.sent) != 1 || !strings.Contains(w.a.sent[0], "[keepgoing:child-errors count=1]") || strings.Contains(w.a.sent[0], "recovering=") {
+			t.Fatalf("%s: %q", class, w.a.sent)
+		}
+		for minute := 12; minute <= 24*60; minute += 11 {
+			w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+		}
+		if len(w.a.retried) != 0 {
+			t.Fatalf("%s: retried %v", class, w.a.retried)
+		}
+		reports := w.laneReports()
+		if len(reports) != 1 || reports[0].Data["declined"] != 1 {
+			t.Fatalf("%s: %+v", class, reports)
+		}
+	}
+}
+
+// With lane recovery on, a refused lane is retried by reference, within the
+// lane's own caps, like a lane that lost its connection.
+func TestRefusedLaneIsRetriedWithinItsCaps(t *testing.T) {
+	w := newLaneWorld(t)
+	ids := laneIDs(1)
+	w.working(t, t0, ids...)
+	w.failed(ids...)
+	c := retryable
+	c.Class = decide.ErrRefused
+	w.a.facts[ids[0]] = c
+	w.a.obs.State = decide.Idle
+	for minute := 1; minute <= 24*60; minute += 11 {
+		w.tick(t, t0.Add(time.Duration(minute)*time.Minute))
+	}
+	if len(w.a.retried) != w.cfg.Loop.Errors.MaxReprompts {
+		t.Fatalf("retried %d times, want the lane cap %d", len(w.a.retried), w.cfg.Loop.Errors.MaxReprompts)
+	}
+	for _, id := range w.a.retried {
+		if id != ids[0] {
+			t.Fatalf("retried %s", id)
 		}
 	}
 }

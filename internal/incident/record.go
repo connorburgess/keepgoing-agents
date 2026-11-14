@@ -14,6 +14,9 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
+// questionIDPattern is control.QuestionIDPattern; the journal does not import control.
+var questionIDPattern = regexp.MustCompile(`^q_[0-9a-f]{32}$`)
+
 // Record describes a tick, a saved control update or a saved manual retarget.
 // Timestamps describe local operations, not provider event time. Unsupported
 // source details are explicitly unavailable.
@@ -24,6 +27,12 @@ type Record struct {
 	// handoff. The thread ID is in the run graph, not here.
 	NewThread bool   `json:"newThread,omitempty"`
 	TurnRetry string `json:"turnRetry"`
+	// Refusal is "refused" when this check counted a newly refused turn, and
+	// "recovered" when it saw a turn end without a refusal after a continue.
+	Refusal string `json:"refusal,omitempty"`
+	// ModelFallback says this check saw a new record that the provider fell
+	// back to another model after a refusal. keepgoing took no action on it.
+	ModelFallback bool `json:"modelFallback,omitempty"`
 	// Lanes counts the lane work of a check that recovers lanes. Counts only.
 	Lanes                LaneWork       `json:"lanes"`
 	Tier                 string         `json:"tier"`
@@ -67,6 +76,9 @@ type ControlChange struct {
 	// spent per-episode allowance, and so started a new error episode: the
 	// re-prompt and nudge counts started over.
 	NewEpisode bool `json:"newEpisode"`
+	// QuestionID is the question this record raised, answered or withdrew.
+	// The ID only: what was asked is rendered from the control record.
+	QuestionID string `json:"questionId,omitempty"`
 }
 
 // Retention tiers. Each has reserved room that the others cannot take, so
@@ -169,7 +181,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && r.Refusal == "" && !r.ModelFallback
 }
 
 func limitWaitCause(cause string) bool {
@@ -461,9 +473,14 @@ func clean(r Record) Record {
 			c := *r.ControlChange
 			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish",
 				// The same three changes made from the keepgoing panel.
-				"panel_pause", "panel_stop", "panel_resume")
+				"panel_pause", "panel_stop", "panel_resume",
+				// A question the loop raised for a person, and its end.
+				"question_raised", "question_answered", "question_withdrawn")
 			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
 			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
+			if !questionIDPattern.MatchString(c.QuestionID) {
+				c.QuestionID = ""
+			}
 			r.ControlChange = &c
 		}
 	} else {
@@ -490,8 +507,9 @@ func clean(r Record) Record {
 	// What a re-prompt that retried the failed turn by reference was told.
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
+	r.Refusal = oneOf(r.Refusal, "", "refused", "recovered")
 	if r.Kind != "tick" {
-		r.LimitWaitReport, r.TurnRetry, r.Lanes = "none", "none", LaneWork{}
+		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.Refusal, r.ModelFallback = "none", "none", LaneWork{}, "", false
 	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
@@ -549,8 +567,12 @@ func Cause(reason string) string {
 		return "input"
 	case decide.RestrictedReason:
 		return "restricted"
-	case decide.RefusedReason:
-		return "refused"
+	case decide.RefusedContinueReason:
+		return "refused_continue"
+	case decide.RefusalWaitReason:
+		return "refused_wait"
+	case decide.RefusalAskReason:
+		return "refusal_ask"
 	case decide.DeclineAcknowledgedReason:
 		return "decline_acknowledged"
 	case decide.HungTurnNudgeReason:
@@ -585,7 +607,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "restricted", "refused", "decline_acknowledged", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

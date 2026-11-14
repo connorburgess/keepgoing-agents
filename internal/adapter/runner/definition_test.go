@@ -319,6 +319,35 @@ func TestDefinitionDeclaredRefusalsAndRestrictions(t *testing.T) {
 	}
 }
 
+// A declared refusal or restriction wins over a matching finished rule: a
+// turn the agent reports as finished but declined is not counted as done. Any
+// other declared code leaves a finished turn finished, as before.
+func TestDeclinedTurnIsNotFinished(t *testing.T) {
+	spec, _ := exampleSpec(t, func(c *config.Custom) {
+		c.Definition.Finished = config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"ok"}}
+		c.Definition.Errors.Classes["content_blocked"] = "refused"
+		c.Definition.Errors.ExitCodes[0] = "restricted"
+	})
+	turn := func(out string) Status {
+		return Status{Phase: Finished, ExitCode: 0, ExitCodeKnown: true, Stdout: []byte(out)}
+	}
+	if r := spec.Read(turn(exampleResult("ok", `,"error":{"code":"content_blocked"}`))); r.Completed || r.Class != decide.ErrRefused {
+		t.Errorf("a finished turn with a declared refusal: %+v", r)
+	}
+	if r := spec.Read(turn(exampleResult("ok", ""))); r.Completed || r.Class != decide.ErrRestricted {
+		t.Errorf("a finished turn with a restricting exit code: %+v", r)
+	}
+	spec, _ = exampleSpec(t, func(c *config.Custom) {
+		c.Definition.Finished = config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"ok"}}
+	})
+	if r := spec.Read(turn(exampleResult("ok", `,"error":{"code":"quota_exceeded"}`))); !r.Completed {
+		t.Errorf("a finished turn with a declared limit: %+v", r)
+	}
+	if r := spec.Read(turn(exampleResult("ok", ""))); !r.Completed {
+		t.Errorf("a finished turn: %+v", r)
+	}
+}
+
 func TestDefinitionSessionFile(t *testing.T) {
 	work := t.TempDir()
 	agent := exampleAgent(t, "example-agent", work, func(c *config.Custom) {

@@ -258,6 +258,7 @@
                   "limit_wait",
                   "check_gap",
                   "hung_turn",
+                  "refusal_streak",
                   "network_wait",
                   "child_error",
                   "child_recovery",
@@ -342,6 +343,14 @@
             }
           },
           "description": "return to the primary after a handoff once its limit resets and an exact probe passes"
+        },
+        "refusal": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ask_after": {"type": "integer", "minimum": 0, "maximum": 1000, "description": "consecutive refused turns, with none recovered by a continue, after which the loop asks a person how to proceed; 0 never asks (default 10)"}
+          },
+          "description": "what a streak of refused turns does"
         },
         "timing": {
           "type": "object",

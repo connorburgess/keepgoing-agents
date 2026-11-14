@@ -405,7 +405,7 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 
 // reportLanes tells the owner, once per lane, that lanes were given up or
 // were left alone because their failure is a rate limit, an auth error, or a
-// refusal or restriction by the provider.
+// restriction by the provider.
 // Counts only. The record is saved before the single attempt, like the other
 // reports that say a person may be needed.
 func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[string]bool) {
@@ -464,7 +464,7 @@ func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[str
 		t.warn("report %s: not sent because the lane record could not be saved", laneRecoveryEvent)
 		return
 	}
-	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited, %d because they need a login and %d because the provider refused or restricted them. keepgoing asked BB to retry %d on this check. Lane recovery has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
+	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited, %d because they need a login and %d because the provider restricted them. keepgoing asked BB to retry %d on this check. Lane recovery has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
 		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, declined, retried)
 	ctx, cancel, ok := t.reportContext(laneRecoveryEvent, text)
 	if !ok {

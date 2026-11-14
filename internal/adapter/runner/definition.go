@@ -266,13 +266,27 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 		r.Waiting = true
 		return r
 	}
-	if matches(d.Finished, result, code, codeKnown) {
+	// A refusal or a restriction the definition declares is read before the
+	// finished rule, so a turn the agent reports as finished but declined is
+	// not counted as done.
+	class, detail, classified := definedErrorClass(d, result, code, codeKnown)
+	if matches(d.Finished, result, code, codeKnown) && !(classified && config.DeclinedClass(string(class))) {
 		r.Completed = true
 		return r
 	}
+	if !classified {
+		return r
+	}
+	r.Class, r.Evidence = class, detail
+	return r
+}
+
+// definedErrorClass reads the definition's declared error fields. Its last
+// result is false when the definition declares no structured errors.
+func definedErrorClass(d config.Definition, result map[string]any, code int, codeKnown bool) (decide.ErrorClass, evidence.Detail, bool) {
 	e := d.Errors
 	if e == nil || !d.Capabilities.StructuredErrors {
-		return r
+		return decide.ErrUnknown, evidence.Detail{}, false
 	}
 	detail := evidence.Detail{Source: "custom_result"}
 	if codeKnown {
@@ -302,9 +316,7 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 	if class, mapped := e.ExitCodes[code]; mapped && codeKnown {
 		byExit = decide.ErrorClass(class)
 	}
-	r.Class = adapter.Prefer(byCode, byStatus, byExit)
-	r.Evidence = evidence.Clean(detail)
-	return r
+	return adapter.Prefer(byCode, byStatus, byExit), evidence.Clean(detail), true
 }
 
 // readSessionFile reads a session identity the agent wrote: a small regular

@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -366,6 +366,9 @@ func timelineKinds(r incident.Record) []string {
 		if r.Lanes != (incident.LaneWork{}) {
 			kinds = append(kinds, "child_retry")
 		}
+		if r.Refusal != "" || r.ModelFallback {
+			kinds = append(kinds, "refusal")
+		}
 	case "control":
 		kinds = append(kinds, "control")
 		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
@@ -400,7 +403,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 6, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 7, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -724,6 +727,15 @@ func describeIncident(r incident.Record) string {
 	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
 		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; no prompt is sent while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+	}
+	switch r.Refusal {
+	case "refused":
+		text += "; REFUSAL: the model or provider declined the turn (counted once; a plain continue follows in the same session, never another route)"
+	case "recovered":
+		text += "; REFUSAL RECOVERED: a turn ended without a refusal after a continue"
+	}
+	if r.ModelFallback {
+		text += "; MODEL FALLBACK: the provider fell back to another model after a refusal (a note only; keepgoing took no action)"
 	}
 	switch r.TurnRetry {
 	case "retried":
