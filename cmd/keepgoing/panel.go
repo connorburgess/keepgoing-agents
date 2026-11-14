@@ -906,21 +906,29 @@ type panelListLoop struct {
 	// page offers them: pause, stop and resume. Empty when the flags could
 	// not be read. client review and client apply take them.
 	Can []string `json:"can"`
+	// OverdueSince is set when the loop needs a person because its checks
+	// have stopped: the time of its last check. A new value is a new gap, so
+	// a client can tell people once per gap.
+	OverdueSince *time.Time `json:"overdueSince,omitempty"`
 }
 
 func buildPanelList(r dockReport) panelList {
 	out := panelList{SchemaVersion: 1, ReadAt: r.ReadAt, Registry: r.Registry.Availability, Complete: r.Complete, AllClear: r.AllClear,
 		NeedsYou: len(r.NeedsYou), Unread: r.Unread, Omitted: r.Registry.Omitted, Loops: []panelListLoop{}}
 	needs := map[string]bool{}
+	overdue := map[string]*time.Time{}
 	for _, n := range r.NeedsYou {
 		needs[n.Key] = true
+		if n.Kind == "overdue" && n.Since != nil {
+			overdue[n.Key] = n.Since
+		}
 	}
 	out.CanAll = []string{}
 	for _, l := range r.Loops {
 		if slices.Contains(l.Can, "pause") && !slices.Contains(out.CanAll, "pause") {
 			out.CanAll = append(out.CanAll, "pause")
 		}
-		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can}
+		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can, OverdueSince: overdue[l.Key]}
 		if np := l.NoProgress; np != nil && np.Availability == "flagged" {
 			row.NoProgress = np.Text
 		}

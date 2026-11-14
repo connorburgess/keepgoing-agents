@@ -55,6 +55,26 @@ The state words are not written in this app. They come from `keepgoing panel lis
 
 **Accessibility.** Every row's spoken label says what it is ("example-api, Waiting for you") and its help says what choosing it does ("Opens this loop in the panel."), and the menu-bar item's label includes the count. State is carried by words and a symbol shape, never by colour alone; the symbols are decorative and are not read. Text and symbols use the system's menu colours. Loop names are laid out left to right whatever script they are in. Not yet checked by a person with VoiceOver, with Increase Contrast, or on a real menu's highlighted row.
 
+## Notifications when checks stop
+
+When a loop's [checks have stopped](../../docs/operations.md#external-schedulers-can-stop-on-their-own), its row says so and the count beside the icon includes it. The menu can also post a macOS notification, which stays in Notification Center until it is seen. macOS posts notifications only for an app bundle, so this needs the menu built as one:
+
+```sh
+integrations/macos/scripts/make-app.sh
+integrations/macos/.build/KeepgoingMenu.app/Contents/MacOS/KeepgoingMenu --executable /path/to/keepgoing
+```
+
+The script builds `integrations/macos/.build/KeepgoingMenu.app` (bundle identifier `local.keepgoing.menu-preview`, signed ad hoc for this computer) and does nothing else: it does not install, register, open or start it at login. Start it with the command above, with the same arguments as the bare executable. macOS asks once whether it may show notifications; if you decline, none are posted.
+
+- **One per gap.** A loop is told about once for each gap, named by the loop and the time of its last check (`overdueSince` in `panel list --json`). When checks run and then stop again, that is a new gap and a new notification. More than three new gaps in one read are one notification.
+- **What it says.** The loop's name and when it was last checked, and that the computer may have slept or its scheduler stopped. A loop that is paused, waiting for a person or complete is never overdue, so it is never notified about. No identifiers, reasons or notes: `panel list` carries none.
+- **When.** After the reads the menu already makes: when it starts, when it is opened, and once a minute. In Low Power Mode there is no timed read, so a notification waits until the menu is opened.
+- **Kept in memory only.** The preview keeps nothing on disk, so quitting and starting it again during a gap that is still open posts that gap once more.
+- **Turning it off.** Start the menu with `--no-notifications`, or turn notifications off for keepgoing Menu in System Settings. Run as a bare executable (`.build/debug/KeepgoingMenu`), the menu never asks for or posts notifications and says so once on standard error.
+- **Removing it.** Quit the menu and delete the bundle: `rm -rf integrations/macos/.build/KeepgoingMenu.app`. System Settings may still list keepgoing Menu under Notifications.
+
+Covered by `NoticesTests` (the one-per-gap rule, its text and decoding) and `TestPanelListGivesTheLastCheckOfAnOverdueLoop`. Not verified: a notification shown on a real screen.
+
 ## Bounds and failures
 
 Every subprocess uses a fixed argument array without a shell and a 1 MiB cap per output stream. The menu runs exactly nine commands, each listed in `MenuBuilder.arguments` with a test, and nothing else:

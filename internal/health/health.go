@@ -37,7 +37,20 @@ type Entry struct {
 	// window instance, bounded, for projecting use at a window's reset. Like
 	// Usage it belongs to one account identity, and no decision reads it.
 	UsageHistory *allowance.History `json:"usageHistory,omitempty"`
+	// NearReset records the window instances a timing probe was made for as
+	// their reset came near, so each gets one. No decision reads it but
+	// TimingDue.
+	NearReset []NearResetMark `json:"nearReset,omitempty"`
 }
+
+// NearResetMark is one window instance probed as its reset came near.
+type NearResetMark struct {
+	Key      string    `json:"key"`
+	ResetsAt time.Time `json:"resetsAt"`
+}
+
+// maxNearResetMarks bounds the marks kept: one per named window instance.
+const maxNearResetMarks = 16
 
 // Registry is health.json.
 type Registry struct {
@@ -215,4 +228,85 @@ func (r *Registry) IDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// Timing probe reasons, as TimingDue returns them.
+const (
+	TimingDue          = "due"
+	TimingNearReset    = "near_reset"
+	TimingRecent       = "probed recently"
+	TimingCapReached   = "daily cap reached"
+	TimingScheduledOff = "scheduled probes are off"
+)
+
+// TimingProbe reports whether the first route's timing probe should run now,
+// and for a probe as a named window's reset comes near, which window instance
+// it is for. Timing probes count against the route's own daily cap like any
+// scheduled probe. The order is:
+//
+//   - scheduled probes switched off in the fallbacks file, or the day's cap
+//     reached: none;
+//   - a named window whose reset, from the latest reading of this account,
+//     is within NearReset and has not been probed for: one probe, unless the
+//     latest reading was already taken that close to the reset;
+//   - otherwise every ProbeEvery since the last scheduled probe or the last
+//     passing probe of any tier.
+func (r *Registry) TimingProbe(c config.Candidate, t config.Timing, p config.ProbePolicy, identity string, now time.Time) (bool, string, *NearResetMark) {
+	if p.Disabled {
+		return false, TimingScheduledOff, nil
+	}
+	e := r.Candidates[c.ID]
+	if e != nil && e.ProbeDay == now.UTC().Format("2006-01-02") && e.ProbesToday >= p.DailyCap {
+		return false, TimingCapReached, nil
+	}
+	if e != nil && e.Usage.For(identity) {
+		for _, key := range t.Windows {
+			for _, w := range e.Usage.Windows {
+				if w.Key != key || w.ResetsAt == nil {
+					continue
+				}
+				at := *w.ResetsAt
+				if !now.Before(at) || at.Sub(now) > t.NearReset.Duration || !e.Usage.At.Before(at.Add(-t.NearReset.Duration)) {
+					continue
+				}
+				if e.markedNearReset(key, at) {
+					continue
+				}
+				return true, TimingNearReset, &NearResetMark{Key: key, ResetsAt: at.UTC()}
+			}
+		}
+	}
+	if e != nil && e.Last != nil && e.Last.OK && now.Sub(e.Last.At) < t.ProbeEvery.Duration {
+		return false, TimingRecent, nil
+	}
+	if e != nil && !e.LastSched.IsZero() && now.Sub(e.LastSched) < t.ProbeEvery.Duration {
+		return false, TimingRecent, nil
+	}
+	return true, TimingDue, nil
+}
+
+func (e *Entry) markedNearReset(key string, at time.Time) bool {
+	for _, m := range e.NearReset {
+		if m.Key == key && m.ResetsAt.Equal(at) {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkNearReset records that a timing probe was made for the window instance,
+// dropping marks whose reset has passed, newest kept.
+func (r *Registry) MarkNearReset(id string, m NearResetMark, now time.Time) {
+	e := r.entry(id)
+	kept := []NearResetMark{}
+	for _, x := range e.NearReset {
+		if x.ResetsAt.After(now) && !(x.Key == m.Key && x.ResetsAt.Equal(m.ResetsAt)) {
+			kept = append(kept, x)
+		}
+	}
+	kept = append(kept, m)
+	if len(kept) > maxNearResetMarks {
+		kept = kept[len(kept)-maxNearResetMarks:]
+	}
+	e.NearReset = kept
 }
