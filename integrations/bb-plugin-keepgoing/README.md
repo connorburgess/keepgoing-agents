@@ -4,10 +4,10 @@ A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows
 
 ## Install
 
-Use **CLI v0.1.5 + plugin v0.2.0** for goal-aware setup. Verify that the [v0.1.5 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) are available before using this pinned installation command:
+Use **CLI v0.2.0 + plugin v0.3.0**. Verify that the [v0.2.0 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) are available before using this pinned installation command:
 
 ```sh
-bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.1.5 --plugin keepgoing
+bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.2.0 --plugin keepgoing
 bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
 ```
 
@@ -53,7 +53,7 @@ Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller
 
 ## Move supervision here
 
-Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 is distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 and later are distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
 
 1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
@@ -79,7 +79,7 @@ BB shows thread context in one of two places. The plugin uses whichever one is s
 - **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
 - **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The keepgoing row sits in the card's lower group.
 
-The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup-unreleased). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
+The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
 
 Both read:
 

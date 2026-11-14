@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-11-14)
+
+**The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
+- the licence changes;
+- several behaviours change on upgrade;
+- v0.1.5 cannot read the records this version writes without the steps below.
+
+The BB plugin is released from the same tag as **0.3.0**. Its loop card says when checks have stopped, and it is under the same licence.
+
+**What is new.**
+- **Recovery that does not spend into a dead network:** a connectivity check before every recovery step.
+- **BB recovery:** a failed BB turn retried by reference, and stale or declined retry notices no longer waited on.
+- **Hung turns:** a turn that hung through an outage or a sleep has its nudges held back.
+- **Stopped schedulers and children:** a stopped scheduler is noticed; failed child threads are reported; failed lanes are recovered (opt-in); `stop --lanes`.
+- **Daemon timing:** the daemon checks again within a minute of the network returning, and at a limit's reported reset.
+- **Bounds:** one loop per session; every automatic send recorded before it is made; a hard time limit per check; the no-progress flag.
+- **The panel** (`keepgoing panel`, `dock`, with controls behind `--allow-changes`) and a rebuilt macOS menu preview, both with pause all and stop all.
+- **New commands:** `keepgoing runs`; a navigable `timeline`; usage readings; a standard route list kept once per user (`routes: standard`, `keepgoing routes list`; read-only in this release).
+- **Agents and fallbacks:** agents defined in configuration (`adapter: custom`); a primary-only Cursor adapter; handoff into a new BB conversation; `fallbacks` editing commands.
+
+**Behaviour changes.**
+- keepgoing makes one outbound request of its own (`GET https://api.github.com/zen`, no identifier) before a recovery step; `loop.network` changes or turns it off.
+- Sends are recorded before they are made.
+- `resume` of a loop held on a spent cap starts a new episode.
+- Three corrections to BB retry notices.
+- `no_progress_timeout` and the stall clock skip time in which nothing could run.
+- Time windows follow the local clock across daylight-saving changes.
+- `tick` exits 0 whenever the check was recorded.
+- `enable --take-over` waits up to 5 seconds for the lock.
+- The panel's runtime files move to the user state directory.
+- Windows needs 10 version 1709 or newer.
+
+**Upgrade.**
+1. Copy each loop's state directory.
+2. Replace the executable.
+3. Restart each daemon or service.
+
+No configuration change is needed. A `client prepare-resume` ticket made before the upgrade is refused after it; prepare it again. External schedulers such as BB automations keep working; the daemon's faster re-checks apply only under `start` or a service.
+
+**Going back to v0.1.5.** A loop that ran on 0.2.0 needs these steps first, each detailed in the [release notes](docs/releases/v0.2.0.md#going-back-to-v015):
+- restore or remove `incidents.json` (schema 9);
+- move aside a `deliveries.json` that records a new event;
+- remove settings and report events v0.1.5 does not know (it reads the configuration strictly);
+- do not run it against a run graph that records a new conversation.
+
+It drops the newer fields of `state.json`, `control.json` and `bb-cursor.json`.
+
+**Evidence.** The new reliability behaviour is implemented and fixture-tested only, and the [live outage check](docs/testing.md#live-check-a-long-time-offline) has not been run. Live so far:
+- one Cursor walkthrough on macOS (first turn, exact resume, stop);
+- the earlier BB, daemon, probe and report checks listed in [integrations](docs/integrations.md).
+
+### Detail
+
+- The release smoke check (`scripts/smoke-release.py`) runs in a home of its own, so running it no longer leaves session claims in the caller's state directory (#223).
+
+- Pull-request checks refuse a change that adds git conflict markers (#224).
+
+- `docs/devices.md` revises the proposed first-version defaults for moving loops between devices. It is a design document; nothing in it is implemented (#218).
+
 - **The daemon checks again as soon as it can tell recovery is possible.** Under `keepgoing start` or a service, while the last check found the network down, the daemon makes the same connectivity check at most once a minute and starts the next check when it passes, instead of waiting out `daemon.interval`. A check that waits on a provider limit records the limit's structured reset (`limitResetsAt` in `state.json`), and the daemon runs the next check at that reset when it comes before the end of the interval. Nothing is sent from the wait. External schedulers, including BB automations, are unchanged. See [network outages](docs/operations.md#network-outages).
 
 - Standard route list (first part). A loop with `routes: standard` follows one ordered list of routes kept once per user in `routes.yaml`, instead of a `fallbacks.yaml` of its own; existing loops are unchanged. `keepgoing routes list` (with `--json`) shows the standard list, which loops follow it and each loop's effective routes. If the list cannot be read, following loops keep being supervised on their current route with no other routes, say so, and report it once when it begins and once when it ends; a loop on a route that is removed from the list stays on it. The commands that edit the lists are not built yet. The private digest of a loop's loaded sources now covers the standard list too, so a `client prepare-resume` ticket made by an older build is refused after the upgrade; prepare it again. Offline fixtures only. See [the standard route list](docs/routes.md).
