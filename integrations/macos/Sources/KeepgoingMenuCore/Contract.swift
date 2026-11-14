@@ -91,7 +91,10 @@ public enum Contract {
     public static func text(_ value: String) -> String {
         let joiners: Set<UInt32> = [0x200C, 0x200D]
         let kept = value.unicodeScalars.filter { joiners.contains($0.value) || !(CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0)) }
-        return String(String.UnicodeScalarView(kept)).prefix(180).description
+        // At most 180 characters; a longer text ends in an ellipsis, so a cut
+        // is never taken for the whole.
+        let all = String(String.UnicodeScalarView(kept))
+        return all.count <= 180 ? all : all.prefix(179) + "…"
     }
 
     static func date(_ value: String?) -> Date? {

@@ -208,8 +208,8 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 
 // entry finds the registration a loop key names. The page never sends a
 // registration ID, ticket or path; only the key, which the server maps.
-func (c *panelChanges) entry(key string) (registry.Entry, []registry.Entry, string, bool) {
-	dir, err := registryDirectory(c.registry)
+func panelEntry(registryDir, key string) (registry.Entry, []registry.Entry, string, bool) {
+	dir, err := registryDirectory(registryDir)
 	if err != nil {
 		return registry.Entry{}, nil, "", false
 	}
@@ -226,37 +226,59 @@ func (c *panelChanges) entry(key string) (registry.Entry, []registry.Entry, stri
 }
 
 func (c *panelChanges) prepare(session, key, action string) panelChangeReply {
-	entry, all, dir, ok := c.entry(key)
-	if !ok {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}}
-	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
-	now := c.now().UTC()
+	r, refused := panelReview(ctx, c.registry, c.reader, key, action, c.now().UTC())
+	if refused != nil {
+		return panelChangeReply{Result: refused}
+	}
+	form := panelForm{session: session, key: key, action: action, id: r.entry.ID, loop: r.loop, digest: r.digest, expires: r.preview.ExpiresAt}
+	value, err := panelRandom(32)
+	if err != nil {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	}
+	c.keep(value, form)
+	p := r.preview
+	p.Form = value
+	return panelChangeReply{Preview: &p}
+}
+
+// panelReviewed is one review and what its confirmation is bound to.
+type panelReviewed struct {
+	preview panelPreview
+	entry   registry.Entry
+	loop    string
+	digest  string // the controlDigest of the record reviewed
+}
+
+// panelReview reads one loop and words the review of one change. The page's
+// prepare and client review (the menu's review) both call it, so the two can
+// never say different things. refused is set, in the page's words, when no
+// review can be given now.
+func panelReview(ctx context.Context, registryDir string, reader *dockReader, key, action string, now time.Time) (panelReviewed, *panelResult) {
+	entry, all, dir, ok := panelEntry(registryDir, key)
+	if !ok {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}
+	}
 	// The control record, read once under its lock: every fact the review
 	// states about it comes from this one record, and the confirmation is
 	// bound to it, so a change made since is refused as "review again".
 	ctl, why := panelReadControl(entry.StateDir)
 	if why != "" {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: why, Retry: true}}
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: why, Retry: true}
 	}
 	// The rest of the loop as it is now, read the way the page reads it.
-	loop := c.loopNow(ctx, dir, entry, all, now)
+	loop := panelLoopNow(ctx, reader, dir, entry, all, now)
 	ttl := panelHoldFormTTL
 	if action == "resume" {
 		// A resume's own ticket is prepared when the person confirms, so
 		// opening a review never cancels one another client prepared.
 		ttl = clientResumeTTL
 	}
-	form := panelForm{session: session, key: key, action: action, id: entry.ID, loop: loop.Name, digest: controlDigest(ctl), expires: now.Add(ttl)}
-	value, err := panelRandom(32)
-	if err != nil {
-		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
-	}
-	c.keep(value, form)
-	p := panelPreviewOf(action, loop, ctl, form.expires, now)
-	p.Key, p.Form, p.ExpiresAt = key, value, form.expires
-	return panelChangeReply{Preview: &p}
+	expires := now.Add(ttl)
+	p := panelPreviewOf(action, loop, ctl, expires, now)
+	p.Key, p.ExpiresAt = key, expires
+	return panelReviewed{preview: p, entry: entry, loop: loop.Name, digest: controlDigest(ctl)}, nil
 }
 
 // keep stores a prepared change, dropping expired ones and, past the cap, the
@@ -309,25 +331,32 @@ func (c *panelChanges) confirm(session, key, action, value string) panelChangeRe
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
-	// Each save is refused, inside the control lock, if the control record
-	// is not the one the person reviewed.
-	var r clientHoldReport
-	if action == "resume" {
-		// The same preparation and resume as client prepare-resume and
-		// resume, as no BB thread.
-		prepared, _ := clientResume(ctx, c.registry, f.id, "prepare-resume", "", false, "", panelChangeOrigin, "", time.Now, nil)
-		r = prepared.clientHoldReport
-		if prepared.Ticket != "" {
-			done, _ := clientResume(ctx, c.registry, f.id, "resume", prepared.Ticket, false, "", panelChangeOrigin, f.digest, time.Now, nil)
-			r = done.clientHoldReport
-		}
-	} else {
-		r, _ = applyClientHoldFrom(ctx, c.registry, f.id, action, panelChangeOrigin, f.digest)
-	}
+	// The page acts as no BB thread, as a terminal outside BB does.
+	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, "", f.digest)
 	// The next read shows the change, not a cached picture from before it.
 	c.reader.forget()
 	res := panelOutcome(action, r)
 	return panelChangeReply{Result: &res}
+}
+
+// panelApply makes one reviewed change. Each save is refused, inside the
+// control lock, if the control record is not the one reviewed (expect). A
+// resume is refused, as client resume refuses it, when caller (a BB thread,
+// or "" for none) may not resume a loop another thread owns. Pause and stop
+// never check the owner. client apply calls it too, with no origin.
+func panelApply(ctx context.Context, registryDir, id, action, origin, caller, expect string) clientHoldReport {
+	if action == "resume" {
+		// The same preparation and resume as client prepare-resume and
+		// resume, with the expect check before the ticket is prepared.
+		prepared, _ := clientResume(ctx, registryDir, id, "prepare-resume", "", false, caller, origin, expect, time.Now, nil)
+		if prepared.Ticket == "" {
+			return prepared.clientHoldReport
+		}
+		done, _ := clientResume(ctx, registryDir, id, "resume", prepared.Ticket, false, caller, origin, expect, time.Now, nil)
+		return done.clientHoldReport
+	}
+	r, _ := applyClientHoldFrom(ctx, registryDir, id, action, origin, expect)
+	return r
 }
 
 // panelReadControl reads a loop's control record under its lock. why is
@@ -353,13 +382,13 @@ type panelLoop struct {
 	dockLoop
 }
 
-func (c *panelChanges) loopNow(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, now time.Time) panelLoop {
+func panelLoopNow(ctx context.Context, reader *dockReader, dir string, entry registry.Entry, all []registry.Entry, now time.Time) panelLoop {
 	validated := map[string]*config.Config{}
 	if cfg, ok := clientConfig(entry); ok {
 		validated[entry.ID] = cfg
 	}
-	in := c.reader.readLoop(ctx, dir, entry, all, validated, now)
-	l, _ := projectDockLoop(in, now, c.reader.staleAfter, false)
+	in := reader.readLoop(ctx, dir, entry, all, validated, now)
+	l, _ := projectDockLoop(in, now, reader.staleAfter, false)
 	return panelLoop{dockLoop: l}
 }
 
@@ -370,7 +399,7 @@ func (c *panelChanges) loopNow(ctx context.Context, dir string, entry registry.E
 // saves with, run on a copy of the record reviewed.
 func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now time.Time) panelPreview {
 	p := panelPreview{Action: action, Title: panelActions[action] + " " + l.Name + "?", Confirm: panelActions[action] + " " + l.Name, Lines: []dockText{},
-		Lost:    "keepgoing could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state below before doing anything else.",
+		Lost:    "keepgoing could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state before doing anything else.",
 		Refused: "The panel refused this request before doing anything. Nothing was changed."}
 	add := func(a ...any) { p.Lines = append(p.Lines, txt(a...)) }
 	owned := ctl.Ownership != nil
@@ -379,7 +408,8 @@ func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now t
 	case "pause":
 		add("keepgoing sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change.")
 	case "stop":
-		add("The loop's next check carries out the stop; this page cannot confirm that the session stopped. Nothing is sent until it is resumed.")
+		add("The loop's next check carries out the stop; this review cannot confirm that the session stopped. Nothing is sent until it is resumed.")
+		add("This stops the conversation only: its lanes, if it has any, keep running.")
 		if owned {
 			add("This loop is supervised for a conversation. Stopping here holds it for that conversation too; it does not tell the conversation why.")
 		}
@@ -431,7 +461,7 @@ func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now t
 		}
 		add("Confirming prepares this resume's own ticket, so a resume another client prepared and has not used yet can no longer be used.")
 	}
-	add("If the loop's control record changes before you confirm, nothing is changed and the panel asks you to review again.")
+	add("If the loop's control record changes before you confirm, nothing is changed and you are asked to review again.")
 	add("This review expires ", dockUntil(now, expires), ".")
 	return p
 }
@@ -460,7 +490,7 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		}
 		return panelResult{Outcome: "done", Text: text}
 	case r.ControlSave == "unconfirmed", has("ticket_consumption_unconfirmed"), has("interrupted_after_consumption"):
-		return panelResult{Outcome: "uncertain", Text: "keepgoing could not confirm whether this loop was " + panelDone[action] + ". Check its state below before doing anything else."}
+		return panelResult{Outcome: "uncertain", Text: "keepgoing could not confirm whether this loop was " + panelDone[action] + ". Check its state before doing anything else."}
 	case has("busy"):
 		return panelResult{Outcome: "refused", Text: "keepgoing is in the middle of a check on this loop. Nothing was changed.", Retry: true}
 	case has("observation_changed"), has("ticket_unavailable_or_expired"):
