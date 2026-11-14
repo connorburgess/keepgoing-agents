@@ -84,11 +84,11 @@ keepgoing status -c /private/example-loop/keepgoing.yaml
 keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
 keepgoing resume -c /private/example-loop/keepgoing.yaml
 keepgoing stop -c /private/example-loop/keepgoing.yaml
-keepgoing stop --lanes --now -c /private/example-loop/keepgoing.yaml
+keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
 keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
 ```
 
-A plain `stop` is carried out by the next check and stops the supervised conversation only; in unreleased source `--lanes` also stops the conversations it started, and theirs, and `--now` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
+A plain `stop` is carried out by the next check and stops the supervised conversation only; in unreleased source `--lanes` also stops the conversations it started, and theirs, and `--immediately` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
 
 In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
 

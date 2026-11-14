@@ -27,7 +27,7 @@ func stopsIn(s *Step) []string {
 
 // TestScenarioStopLanesNow: a loop whose working session has three lanes,
 // one active, one idle, and one idle with an active child of its own. A
-// person runs `keepgoing stop --lanes --now`. The command itself stops the
+// person runs `keepgoing stop --lanes --immediately`. The command itself stops the
 // session and both active threads, leaves the idle ones alone, sends no
 // message, and sends one stop report. Later checks stop nothing more.
 func TestScenarioStopLanesNow(t *testing.T) {
@@ -47,7 +47,7 @@ func TestScenarioStopLanesNow(t *testing.T) {
 	parent.Child(laneGrandch).StartTurn()
 
 	w.Advance(time.Minute)
-	s = w.Control("stop", "--lanes", "--now")
+	s = w.Control("stop", "--lanes", "--immediately")
 	w.Check(s, "the command carried out the stop", all(exit(s, 0), nothingSent(s), reported(s, "keepgoing.stop")))
 	if !strings.Contains(s.Result.Stdout, "stop carried out now: stop") || !strings.Contains(s.Result.Stdout, "lanes: 2 stopped, 2 already idle, 0 left to another loop, 0 failed, 0 not checked") {
 		w.Failf(s, "output:\n%s", s.Result.Stdout)

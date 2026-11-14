@@ -43,12 +43,12 @@ func stopCalls(f *fixture) []string {
 	return out
 }
 
-// keepgoing stop --lanes --now stops the supervised thread and its running
+// keepgoing stop --lanes --immediately stops the supervised thread and its running
 // lanes inside the command, through the check's stop path, and records it as
 // a check. No message is sent to anyone.
 func TestStopLanesNowStopsTheLanesInTheCommand(t *testing.T) {
 	f := laneFixture(t)
-	code, out, errs := f.run("stop", "--lanes", "--now")
+	code, out, errs := f.run("stop", "--lanes", "--immediately")
 	if code != exitOK || !strings.Contains(out, "stop carried out now: stop") || !strings.Contains(out, "lanes: 2 stopped, 1 already idle, 0 left to another loop, 0 failed, 0 not checked") {
 		t.Fatalf("%d\n%s%s", code, out, errs)
 	}
@@ -83,7 +83,7 @@ func TestStopLanesNowStopsTheLanesInTheCommand(t *testing.T) {
 	}
 }
 
-// Without --now the stop is saved and the next check carries it out; plain
+// Without --immediately the stop is saved and the next check carries it out; plain
 // stop does not look at lanes.
 func TestStopLanesWithoutNowIsLeftToTheNextCheck(t *testing.T) {
 	f := laneFixture(t)
@@ -108,7 +108,7 @@ func TestStopLanesWithoutNowIsLeftToTheNextCheck(t *testing.T) {
 	}
 }
 
-// While another check holds the loop's check lock, stop --now waits no more
+// While another check holds the loop's check lock, stop --immediately waits no more
 // than a few seconds, says so, and leaves the stop to the checks.
 func TestStopNowLeavesTheStopToARunningCheck(t *testing.T) {
 	f := laneFixture(t)
@@ -117,7 +117,7 @@ func TestStopNowLeavesTheStopToARunningCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	code, out, _ := f.run("stop", "--lanes", "--now")
+	code, out, _ := f.run("stop", "--lanes", "--immediately")
 	held.Release()
 	if took := time.Since(start); took > stopNowWait+3*time.Second {
 		t.Fatalf("waited %s", took)
@@ -140,7 +140,7 @@ func TestLanesAndNowAreStopOnly(t *testing.T) {
 	}
 }
 
-// client stop takes --lanes and --now, and its JSON says what was done to the
+// client stop takes --lanes and --immediately, and its JSON says what was done to the
 // lanes and whether the stop ran in the command or was left to a check.
 func TestClientStopLanesNowJSON(t *testing.T) {
 	dir, entry := clientFixture(t)
@@ -159,7 +159,7 @@ func TestClientStopLanesNowJSON(t *testing.T) {
 	// it; the stop is still carried out in the command and recorded.
 	out.Reset()
 	errs.Reset()
-	code := run(context.Background(), []string{"client", "stop", "--lanes", "--now", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
+	code := run(context.Background(), []string{"client", "stop", "--lanes", "--immediately", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
 	r = clientHoldReport{}
 	if code != exitOK || json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "now" || r.Lanes == nil || !r.Lanes.Requested || r.Lanes.Result == nil || len(r.Issues) != 0 {
 		t.Fatal(out.String(), errs.String())
@@ -174,7 +174,7 @@ func TestClientStopLanesNowJSON(t *testing.T) {
 	}
 	defer held.Release()
 	out.Reset()
-	run(context.Background(), []string{"client", "stop", "--now", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
+	run(context.Background(), []string{"client", "stop", "--immediately", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
 	r = clientHoldReport{}
 	if json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "left_to_check" || r.LeftBecause != "check_running" {
 		t.Fatal(out.String())
@@ -217,14 +217,14 @@ func TestStopNowOutcomesAndExitCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, out, errs := f.run("stop", "--lanes", "--now")
+	code, out, errs := f.run("stop", "--lanes", "--immediately")
 	claim.Release()
 	if code != exitOK || !strings.Contains(out, "stop saved and left to the loop's checks: another loop's check is acting on this session") || strings.Contains(out, "carried out now") || len(stopCalls(f)) != 0 {
 		t.Fatalf("%d\n%s%s", code, out, errs)
 	}
 	g := laneFixture(t)
 	write(t, filepath.Join(g.bbDir, "thr_primary.show"), `not json`, 0o600)
-	code, out, errs = g.run("stop", "--lanes", "--now")
+	code, out, errs = g.run("stop", "--lanes", "--immediately")
 	if code != exitOK || !strings.Contains(out, "stop carried out now:") || !strings.Contains(out, "lanes: 2 stopped") {
 		t.Fatalf("%d\n%s%s", code, out, errs)
 	}
@@ -232,10 +232,30 @@ func TestStopNowOutcomesAndExitCodes(t *testing.T) {
 	// that a thread of its own is stopped last.
 	h := laneFixture(t)
 	t.Setenv("BB_THREAD_ID", "thr_child_a")
-	if _, out, _ := h.run("stop", "--lanes", "--now"); !strings.Contains(out, "this command runs in BB thread thr_child_a; if the stop covers it, it is stopped last") {
+	if _, out, _ := h.run("stop", "--lanes", "--immediately"); !strings.Contains(out, "this command runs in BB thread thr_child_a; if the stop covers it, it is stopped last") {
 		t.Fatalf("%s", out)
 	}
 	if got := strings.Join(stopCalls(h), ","); got != "thr_primary,thr_child_b1,thr_child_a" {
 		t.Fatalf("stopped %s", got)
+	}
+}
+
+// --immediately is an ordinary flag: a note before it is a note, and the
+// clock flag --now <time> keeps its meaning and its value.
+func TestImmediatelyIsAnOrdinaryFlag(t *testing.T) {
+	f := laneFixture(t)
+	if code, _, errs := f.run("stop", "--note", "reviewing", "--immediately"); code != exitOK {
+		t.Fatalf("%d %s", code, errs)
+	}
+	ctl, _ := control.Load(filepath.Join(f.dir, "state"))
+	if ctl.Note != "reviewing" || !ctl.Stop {
+		t.Fatalf("%+v", ctl)
+	}
+	g := laneFixture(t)
+	if code, _, errs := g.run("stop", "--now", "2030-03-04T12:00:00Z"); code != exitOK || len(stopCalls(g)) != 0 {
+		t.Fatalf("%d %s %v", code, errs, stopCalls(g))
+	}
+	if code, _, _ := g.run("pause", "--immediately"); code != exitUsage {
+		t.Fatal(code)
 	}
 }

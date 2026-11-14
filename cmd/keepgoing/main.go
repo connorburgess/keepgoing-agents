@@ -186,32 +186,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath:    fs.String("c", "keepgoing.yaml", "path to the config file"),
-		asJSON:     fs.Bool("json", false, "print machine-readable JSON"),
-		dryRun:     fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
-		now:        fs.String("now", "", "RFC 3339 time to use instead of the clock"),
-		note:       fs.String("note", "", "a short note stored in control.json"),
-		id:         fs.String("id", "", "fallbacks check: only this candidate"),
-		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
-		discard:    fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
-		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
-		keepStop:   fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
-		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
-		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
-		allowShare: fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
-		lanes:      fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
-		stopNow:    fs.Bool("stop-now", false, "stop: written --now; carry the stop out in this command instead of leaving it to the next check"),
-	}
-	if cmd == "stop" {
-		// For stop, --now takes no value: carry the stop out now.
-		for i, a := range rest {
-			switch a {
-			case "--now", "-now", "--now=true", "-now=true":
-				rest[i] = "--stop-now"
-			case "--now=false", "-now=false":
-				rest[i] = "--stop-now=false"
-			}
-		}
+		cfgPath:     fs.String("c", "keepgoing.yaml", "path to the config file"),
+		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
+		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
+		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		note:        fs.String("note", "", "a short note stored in control.json"),
+		id:          fs.String("id", "", "fallbacks check: only this candidate"),
+		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		discard:     fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
+		takeOver:    fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
+		keepStop:    fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
+		routine:     fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
+		staleAfter:  fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
+		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
+		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -221,8 +210,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
 		return exitUsage
 	}
-	if (*f.lanes || *f.stopNow) && cmd != "stop" {
-		e.errf("--lanes and --now (without a time) are only supported by stop")
+	if (*f.lanes || *f.immediately) && cmd != "stop" {
+		e.errf("--lanes and --immediately are only supported by stop")
 		return exitUsage
 	}
 	if *f.keepStop && cmd != "resume" {
@@ -299,7 +288,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	case "stop":
-		return stopCmd(e, cfg, *f.note, *f.lanes, *f.stopNow)
+		return stopCmd(e, cfg, *f.note, *f.lanes, *f.immediately)
 	case "disable", "pause", "resume", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
@@ -328,7 +317,7 @@ type cliFlags struct {
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
-	lanes, stopNow                  *bool
+	lanes, immediately              *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in

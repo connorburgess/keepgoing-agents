@@ -709,11 +709,11 @@ Evidence is offline: adapter fixtures for listing errored children and for askin
 Unreleased source; **offline fixtures and a stand-in bb only**, no live thread has been stopped this way. A plain `keepgoing stop` stops the supervised conversation only. To stop its lanes as well, the conversations it started and theirs, ask for it:
 
 ```sh
-keepgoing stop --lanes --now -c /private/example-loop/keepgoing.yaml
-keepgoing client stop --lanes --now --id loop_0123456789abcdef0123456789abcdef --json
+keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
+keepgoing client stop --lanes --immediately --id loop_0123456789abcdef0123456789abcdef --json
 ```
 
-`--lanes` saves the request in `control.json` (`stopLanesAt`) with the stop. The check that carries out the stop also stops the lanes. `--now` carries the stop out in the command itself instead of waiting for the next check: see [carrying a stop out now](#carrying-a-stop-out-now). Each `stop --lanes` is a new request, so asking again looks at the lanes again; a `resume` ends the stop and the request with it. Plain `stop` is unchanged.
+`--lanes` saves the request in `control.json` (`stopLanesAt`) with the stop. The check that carries out the stop also stops the lanes. `--immediately` carries the stop out in the command itself instead of waiting for the next check: see [carrying a stop out now](#carrying-a-stop-out-now). Each `stop --lanes` is a new request, so asking again looks at the lanes again; a `resume` ends the stop and the request with it. Plain `stop` is unchanged.
 
 **Which threads.** For a BB target, a lane is a direct child of the supervised thread, found by the listing that child discovery already uses (`bb thread list --parent-thread <thread> --include-hidden`) and verified on its own with `bb thread show`: it must name itself and its parent and be neither archived nor deleted. Its children are found and verified the same way, down to three levels below the supervised thread and fifty threads in all.
 
@@ -747,9 +747,9 @@ A lane is sent nothing but a stop, after a `bb provider-retry cancel` when a pro
 
 ### Carrying a stop out now
 
-`keepgoing stop --now` and `keepgoing client stop --now` save the stop and then carry it out in the command, through the same stop path a check uses, so the stop does not wait for the next scheduled check (with an external scheduler, up to its interval). The command takes the loop's check lock, runs one check that does nothing but the stop (a resume that lifts the stop first leaves it nothing to do), and records it as a check: `status`, `timeline` and the run graph show it like any other. Session claims apply as in any check: the stop waits only while another loop's live check holds the session.
+`keepgoing stop --immediately` and `keepgoing client stop --immediately` save the stop and then carry it out in the command, through the same stop path a check uses, so the stop does not wait for the next scheduled check (with an external scheduler, up to its interval). The command takes the loop's check lock, runs one check that does nothing but the stop (a resume that lifts the stop first leaves it nothing to do), and records it as a check: `status`, `timeline` and the run graph show it like any other. Session claims apply as in any check: the stop waits only while another loop's live check holds the session.
 
-If another check holds the lock, the command waits at most five seconds for it. If it is still running then, the stop is left to the checks, and the command says so: a check that read `control.json` before the stop was saved does not carry it out; the next one does, and a daemon starts that one at its next control poll. For `stop`, `--now` takes no value; the time override that `tick` takes with `--now <time>` does not apply.
+If another check holds the lock, the command waits at most five seconds for it. If it is still running then, the stop is left to the checks, and the command says so: a check that read `control.json` before the stop was saved does not carry it out; the next one does, and a daemon starts that one at its next control poll.
 
 Loop ownership follows the rules of `keepgoing stop`: anyone who may ask for a stop may have it carried out, and a different BB thread does not need to take the loop over. The check does only what the next check would do for the saved stop; if a resume has lifted the stop, it records a check that did nothing and leaves the counts of failed checks as they were. The panel and the menu act as no BB thread.
 

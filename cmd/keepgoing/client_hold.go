@@ -60,7 +60,7 @@ func clientHoldCommand(e env, args []string) int {
 	var opts holdOptions
 	if args[0] == "stop" {
 		fs.BoolVar(&opts.Lanes, "lanes", false, "also stop the lanes: the conversations the supervised one started, and theirs")
-		fs.BoolVar(&opts.Now, "now", false, "carry the stop out in this command instead of leaving it to the next check")
+		fs.BoolVar(&opts.Now, "immediately", false, "carry the stop out in this command instead of leaving it to the next check")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -121,7 +121,7 @@ func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, 
 
 // applyClientHoldWith is applyClientHoldFrom with the stop's options. A
 // stop with Now is carried out in the call, under the loop's check lock, as
-// keepgoing stop --now does; the panel and the menu act as no BB thread.
+// keepgoing stop --immediately does; the panel and the menu act as no BB thread.
 func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, expect string, opts holdOptions) (clientHoldReport, int) {
 	if operation != "stop" {
 		opts = holdOptions{}
