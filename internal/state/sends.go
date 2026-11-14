@@ -249,7 +249,7 @@ func saveAllowance(dir, name string, b []byte) error {
 	}
 	defer os.Remove(f.Name())
 	if _, err = f.Write(append(b, '\n')); err == nil {
-		err = f.Sync()
+		err = snapshot.Sync(f)
 	}
 	closeErr := f.Close()
 	if err != nil {

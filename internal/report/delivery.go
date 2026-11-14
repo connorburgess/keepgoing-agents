@@ -182,7 +182,7 @@ func saveDelivery(dir string, d Delivery) (uint64, error) {
 		f.Close()
 		return 0, ErrDeliveryHistory
 	}
-	if err = f.Sync(); err != nil {
+	if err = snapshot.Sync(f); err != nil {
 		f.Close()
 		return 0, ErrDeliveryHistory
 	}
