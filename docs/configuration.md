@@ -90,7 +90,7 @@ The status object looks like this:
 
 ## claude
 
-keepgoing runs `claude -p --output-format json` itself, one turn per send. Each turn after the first resumes the saved session.
+looptender runs `claude -p --output-format json` itself, one turn per send. Each turn after the first resumes the saved session.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ keepgoing runs `claude -p --output-format json` itself, one turn per send. Each 
 
 ## codex
 
-keepgoing runs `codex exec --json` itself, one turn per send. Later turns resume the session with `codex exec resume`.
+looptender runs `codex exec --json` itself, one turn per send. Later turns resume the session with `codex exec resume`.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back
 
 ## An agent defined in configuration
 
-v0.2.0 (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+v0.2.0 (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent looptender has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
 
 Three rules hold for every definition:
 
@@ -183,40 +183,40 @@ loop:
 | `finished` | The turn ended healthy: the exit code is one of `exit_codes` **and** `field` has one of `equals`, when a field is given. `exit_codes` defaults to `[0]`, also when a field is given: a field alone never makes a killed turn (exit 137) or one with an unreadable exit record healthy. |
 | `waiting` | The turn ended waiting on a person, with the same form and the same `exit_codes` default. It is read before `finished`, so a turn both rules match is a wait; a waiting rule that would leave `finished` nothing to match is refused. It raises one awaiting-user hold and one report; nothing is approved or answered. See [after a wait](#after-a-turn-that-waited-on-a-person). |
 | `errors` | Classifies a failed turn. `classes` maps the agent's codes in `field` to `rate_limit`, `auth`, `restricted`, `refused`, `overloaded`, `network` or `unknown`; `http_status_field` is read as an HTTP status; `exit_codes` maps failing exit codes. Anything unmatched is `unknown`. A `restricted` or `refused` result in any of the three outranks what the others say. |
-| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **keepgoing cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects. A hand-written fallbacks file, the only kind a defined agent gets, probes each fallback every 4 hours by default, up to 6 times a day (`probe.every`, `probe.daily_cap`), and once more before each handoff: **up to six full paid turns a day per fallback, plus one per handoff, while the loop runs**. Use the agent's cheapest documented check, or raise `probe.every` and lower `probe.daily_cap`. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
+| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **looptender cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects. A hand-written fallbacks file, the only kind a defined agent gets, probes each fallback every 4 hours by default, up to 6 times a day (`probe.every`, `probe.daily_cap`), and once more before each handoff: **up to six full paid turns a day per fallback, plus one per handoff, while the loop runs**. Use the agent's cheapest documented check, or raise `probe.every` and lower `probe.daily_cap`. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
 | `limits` | One command printing one JSON object, run only when a failed turn or probe is unclassified, in the same environment. `blocked` (a field and its values) says the account is blocked by a usage limit; `resets_at_field` is an RFC 3339 time or Unix seconds. |
 | `capabilities` | `exact_resume`, `can_be_stopped`, `structured_errors`, `structured_waiting`. |
 
-**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than keepgoing can check or carry rules that are silently ignored:
+**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than looptender can check or carry rules that are silently ignored:
 
 - `exact_resume` needs `session` and a `resume` command that refers to `{session}`. Without it every turn starts a new session.
 - `structured_errors` needs `errors`. Without it every failure is `unknown`.
 - `structured_waiting` needs `waiting`.
-- `can_be_stopped` needs nothing: the turn runs under keepgoing's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
-- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let keepgoing observe them.
+- `can_be_stopped` needs nothing: the turn runs under looptender's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
+- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let looptender observe them.
 
 ### What moves work to a fallback
 
 Your mapping decides it. A code, HTTP status or exit code that you map to a class in the loop's `errors.failover_on` (by default `rate_limit`) **moves work to a fallback**, and so does a `limits` lookup that reports the account blocked.
 
-**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): a restricted turn holds for a person at once and a `resume` asks for one more try, and a refused turn is continued in the same session with growing spacing until `refusal.ask_after` asks a person; neither ever moves ([operations](operations.md#a-refused-or-restricted-turn)). A declared refusal or restriction also wins over a matching `finished` rule, so a turn the agent reports as finished but declined is not counted as done. Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code keepgoing itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
+**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): a restricted turn holds for a person at once and a `resume` asks for one more try, and a refused turn is continued in the same session with growing spacing until `refusal.ask_after` asks a person; neither ever moves ([operations](operations.md#a-refused-or-restricted-turn)). A declared refusal or restriction also wins over a matching `finished` rule, so a turn the agent reports as finished but declined is not counted as done. Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code looptender itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. looptender is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
 
 ```text
 failover (primary, defined agent example-agent): exit code 75 is treated as a network failure and will move work to a fallback
 failover (primary, defined agent example-agent): a result whose error.code is "quota_exceeded" is treated as a rate limit and will move work to a fallback
 ```
 
-`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses keepgoing's own table: 429 is a rate limit, 401 an authentication failure, 403 a restriction, 503 and 529 an overloaded provider. A 403 therefore never moves work, whatever `failover_on` lists.
+`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses looptender's own table: 429 is a rate limit, 401 an authentication failure, 403 a restriction, 503 and 529 an overloaded provider. A 403 therefore never moves work, whatever `failover_on` lists.
 
 ### After a turn that waited on a person
 
-The hold's note is the fixed text keepgoing uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and a turn that matched `waiting` is never read as finished, even if it also matches `finished`. With the wait set aside it is a failed turn of `unknown` class, so the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. A later turn that ends waiting raises a new hold.
+The hold's note is the fixed text looptender uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and a turn that matched `waiting` is never read as finished, even if it also matches `finished`. With the wait set aside it is a failed turn of `unknown` class, so the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. A later turn that ends waiting raises a new hold.
 
 ### Saved session
 
-A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise keepgoing cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person with the reason `target gone (archived, deleted, or not found)`. Restore the identifier in `targets/<target>/session` under the state directory, or remove that file to start a new conversation on purpose, then `resume`.
+A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise looptender cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person with the reason `target gone (archived, deleted, or not found)`. Restore the identifier in `targets/<target>/session` under the state directory, or remove that file to start a new conversation on purpose, then `resume`.
 
-`keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+`keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets looptender do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
 
 ## progress
 
@@ -301,7 +301,7 @@ loop:
 | `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
 | `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
 | `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
-| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on, each on the loop's own BB thread with its own `bb.model` or `bb.reasoning`. The order is yours; keepgoing never ranks models or effort levels. Without steps timing only collects readings. |
+| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on, each on the loop's own BB thread with its own `bb.model` or `bb.reasoning`. The order is yours; looptender never ranks models or effort levels. Without steps timing only collects readings. |
 | `ceiling` | the last step | The strongest step timing may use, at or above `primary`. |
 | `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, finite, above 0 and below 1. |
 | `down_at` | `0.95` | The projected use at reset that makes timing step down, finite, above 0 and at most 1. |

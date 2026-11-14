@@ -1,6 +1,6 @@
 # Adapter capabilities
 
-keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It documents the source on `main`; see [integrations](integrations.md) for what is in a published release.
+looptender is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It documents the source on `main`; see [integrations](integrations.md) for what is in a published release.
 
 An adapter is how the supervisor talks to one kind of agent. The decision engine is the same for all of them, but it can only act on what an adapter reports and can only do what an adapter can carry out.
 
@@ -102,7 +102,7 @@ Recognise, from a structured field, a provider denying permission (restricted) o
 - **Cursor headless:** missing, evidence none. Every failure is unknown.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted or refused, or an exit code is mapped to either. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
-- **Agent defined in configuration:** partial, evidence fixture. A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code keepgoing itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn. [`TestDefinitionDeclaredRefusalsAndRestrictions`](../internal/adapter/runner/definition_test.go) [`TestDeclinedTurnIsNotFinished`](../internal/adapter/runner/definition_test.go) [`TestCustomDefinitionCannotRelabelARefusalAsALimit`](../internal/config/custom_test.go)
+- **Agent defined in configuration:** partial, evidence fixture. A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code looptender itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn. [`TestDefinitionDeclaredRefusalsAndRestrictions`](../internal/adapter/runner/definition_test.go) [`TestDeclinedTurnIsNotFinished`](../internal/adapter/runner/definition_test.go) [`TestCustomDefinitionCannotRelabelARefusalAsALimit`](../internal/config/custom_test.go)
 
 ### Stale retry-notice expiry
 
@@ -144,7 +144,7 @@ Continue the same conversation by its saved identifier, never "the most recent".
 
 Ask the provider to retry the failed turn itself, instead of sending a new prompt.
 
-- **BB thread:** yes, evidence fixture. A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by keepgoing. [`TestRetryFailedTurnReadsOnlyTheStructuredResult`](../internal/adapter/bb/turn_retry_test.go) [`TestFailedTurnIsRetriedByReferenceNotPromptedAgain`](../internal/supervise/turnretry_test.go) [`TestTurnRetryAfterAnOutageOfAnyLength`](../internal/supervise/turnretry_test.go) [`TestTickRetriesAFailedBBTurnByReference`](../cmd/looptender/turn_retry_test.go) [operations.md#recovering-a-failed-bb-turn-by-retry](operations.md#recovering-a-failed-bb-turn-by-retry)
+- **BB thread:** yes, evidence fixture. A re-prompt of a thread in a network, overloaded or unknown error runs `bb thread retry`, which re-submits the failed turn by reference with no new prompt, under the re-prompt cap, backoff and send allowance. The prompt is sent only when BB reports no failed turn or has no such command. No live thread has been retried by looptender. [`TestRetryFailedTurnReadsOnlyTheStructuredResult`](../internal/adapter/bb/turn_retry_test.go) [`TestFailedTurnIsRetriedByReferenceNotPromptedAgain`](../internal/supervise/turnretry_test.go) [`TestTurnRetryAfterAnOutageOfAnyLength`](../internal/supervise/turnretry_test.go) [`TestTickRetriesAFailedBBTurnByReference`](../cmd/looptender/turn_retry_test.go) [operations.md#recovering-a-failed-bb-turn-by-retry](operations.md#recovering-a-failed-bb-turn-by-retry)
 - **Claude Code headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Codex headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
 - **Cursor headless:** missing, evidence none. A re-prompt is always a new turn in the resumed session.
@@ -192,7 +192,7 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 
 Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
 
-- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/looptender/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
+- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by looptender. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/looptender/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
 - **Claude Code headless:** missing, evidence none. No child conversations to recover.
 - **Codex headless:** missing, evidence none. No child conversations to recover.
 - **Cursor headless:** missing, evidence none. No child conversations to recover.
@@ -264,7 +264,7 @@ Record how much of a usage window is used, from structured fields a probe alread
 
 Take the work over in a conversation that did not exist before the handoff.
 
-- **BB thread:** yes, evidence fixture. Opt-in: a candidate with bb.new_thread has keepgoing create the thread, within loop.limits.max_new_threads. [`TestHandoffToANewThreadCreatesItOnce`](../internal/supervise/newthread_test.go) [fallbacks.md](fallbacks.md)
+- **BB thread:** yes, evidence fixture. Opt-in: a candidate with bb.new_thread has looptender create the thread, within loop.limits.max_new_threads. [`TestHandoffToANewThreadCreatesItOnce`](../internal/supervise/newthread_test.go) [fallbacks.md](fallbacks.md)
 - **Claude Code headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestClaudeTurnLifecycle`](../internal/adapter/runner/runner_test.go)
 - **Codex headless:** yes, evidence fixture. A headless candidate has no saved session, so the handoff brief starts one. [`TestCodexTurn`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** missing, evidence none. Not a fallback candidate.
@@ -286,19 +286,19 @@ Record runs, sends and the conversation reference, and show them offline.
 
 ### Stop and owned cancellation
 
-Stop a running turn on request, signalling only a process keepgoing itself started and still owns.
+Stop a running turn on request, signalling only a process looptender itself started and still owns.
 
 - **BB thread:** yes, evidence live. bb thread stop on the configured thread. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestSendStopActivate`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. The live turn wrapper stops its own process group on a private per-turn request. A saved PID never authorizes a signal. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go) [testing.md#lifecycle-and-platform-review](testing.md#lifecycle-and-platform-review)
 - **Codex headless:** yes, evidence fixture. The same wrapper as Claude Code. [`TestStopKillsTurnAndCrashIsUnknown`](../internal/adapter/runner/runner_test.go)
 - **Cursor headless:** yes, evidence live. The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed. [cursor.md](cursor.md) [`TestCursorOwnedStopOnThisPlatform`](../internal/adapter/runner/cursor_test.go)
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
-- **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
+- **Generic process:** partial, evidence fixture. Only if a stop command is configured; looptender owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
 
 ### Stop the lanes too
 
-On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.
+On a person's request (`keepgoing stop --lanes`), stop the conversations the supervised one started, and theirs, along with it.
 
 - **BB thread:** yes, evidence fixture. Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only. [`TestStopWithLanesStopsTheRunningLanesOnce`](../internal/supervise/lanestop_test.go) [`TestLaneStopRecoversAfterACheckKilledMidStop`](../internal/supervise/lanestop_test.go) [`TestScenarioStopLanesNow`](../internal/scenario/stop_lanes_test.go) [operations.md#stopping-the-lanes-too](operations.md#stopping-the-lanes-too)
 - **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
@@ -327,10 +327,10 @@ The scenario: the network drops while a turn is running; the host may sleep; the
 
 What happens, with default settings and the connectivity check on (v0.2.0). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
 
-| Moment | What keepgoing does |
+| Moment | What looptender does |
 | --- | --- |
 | The CLI exits on the network failure | The runner records the exit code and the CLI's output for that turn. The saved session ID is not changed. |
-| Next check | The turn is an error. Before re-prompting, keepgoing checks connectivity; it fails, so nothing is sent. The check records `network down; waiting for connectivity`. |
+| Next check | The turn is an error. Before re-prompting, looptender checks connectivity; it fails, so nothing is sent. The check records `network down; waiting for connectivity`. |
 | Still offline, at 20 minutes, four hours, three days, three weeks | The same, at every check. No re-prompt is spent and no hold is raised. About once an hour the provider is asked directly with one probe, which does not get through. |
 | The network returns behind a captive portal | Still `network down`: the check target does not answer as itself. |
 | The portal is cleared | The first check sends one re-prompt, which resumes the saved session, and the loop carries on. |
@@ -342,7 +342,7 @@ The four questions:
 - **What does the runner record when the CLI exits on a network failure?** The exit code, standard output and standard error of that turn, in the target's private directory. No network state is recorded: an outage is not told apart from any other failure unless the CLI prints a recognised code.
 - **Is the saved session ID reused exactly?** Yes. Every send after the first passed the saved ID (`--resume <id>` for Claude Code, `exec resume … <id>` for Codex), including three weeks later. A failed turn does not change it.
 - **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go)). Files the earlier turns changed are still on disk either way.
-- **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
+- **What does a weeks-old session do on resume?** looptender always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
 
 Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test.
 
@@ -448,4 +448,4 @@ A different question from the adapters above: can an outside process observe and
 
 **Zed.** [External agents](https://zed.dev/docs/ai/external-agents) "run as separate processes that communicate with Zed over ACP": Zed drives other agents, and nothing documented drives Zed. The [CLI reference](https://zed.dev/docs/reference/cli) lists only file and window flags; none concerns the agent panel, a thread or a prompt. Zed's extension API was not read, so "an extension cannot reach a thread" is unverified.
 
-What this means for keepgoing: supervising the chat a person has open in one of these IDEs is not possible today through a documented interface. What is possible is supervising a session keepgoing starts itself through each vendor's CLI or protocol, which is what the headless adapters do, and, for the three vendors with hooks, a hook the user installs that reports turn ends to keepgoing. The second is a design option, not something implemented or tested.
+What this means for looptender: supervising the chat a person has open in one of these IDEs is not possible today through a documented interface. What is possible is supervising a session looptender starts itself through each vendor's CLI or protocol, which is what the headless adapters do, and, for the three vendors with hooks, a hook the user installs that reports turn ends to keepgoing. The second is a design option, not something implemented or tested.

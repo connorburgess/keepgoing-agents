@@ -1,5 +1,7 @@
 # Roadmap
 
+The product is now looptender; the released v0.2.0 executable remains `keepgoing`. Earlier milestone and verification records below retain the name and package labels used when the work was recorded. Naming changes do not release source-only features or close acceptance gaps. See the [README](../README.md) for current availability.
+
 ## Done
 
 **Milestone 1: supervise one loop.** Config validation, the pure decision engine, BB and process adapters, stall detection, time windows, the tick lock, control commands, and JSON tick output.
