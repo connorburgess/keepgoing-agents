@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix: a child failure seen after the previous `child_error` episode had ended was numbered inside the old episode, and counted against its cap of three reports, when no check had run at the moment the episode ended (the host slept, for example). It is now report 1 of a new episode, as the documentation said.
+
 - **The macOS menu says when a loop's checks have stopped.** Run from an app bundle (`integrations/macos/scripts/make-app.sh` builds one into `.build`, and never installs or opens it), the menu posts one notification per gap, named by the loop and its last check, from the reads it already makes. `--no-notifications` turns it off; a menu run as a bare executable posts none. `panel list --json` gives `overdueSince` for such a loop. See [notifications when checks stop](integrations/macos/README.md#notifications-when-checks-stop).
 
 - The macOS menu offers the stop option that also deletes the messages queued in a loop's lanes that have not started, passing `--drop-queued` for that option alone and only with `--lanes`. It now reads stop options so that an addition cannot break Stop: the review is shown whatever the options say, and only the options the menu fully understands are offered; an option with a field it does not know is never offered without it. Unit tests only; no confirmation answered by a person. See [stop options](docs/local-clients.md#reviewed-pause-stop-and-resume-client-review-client-apply).
