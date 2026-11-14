@@ -303,10 +303,10 @@ func (c *panelChanges) prepareGroup(ctx context.Context, session, action string)
 	if refused != nil {
 		return panelChangeReply{Result: refused}
 	}
-	form := panelForm{session: session, key: panelGroupKey, action: action, expires: g.preview.ExpiresAt, names: map[string]string{}}
+	form := panelForm{session: session, key: panelGroupKey, action: action, expires: g.preview.ExpiresAt, names: map[string]string{}, stop: g.preview.Stop}
 	for _, it := range g.items {
 		if it.Fits {
-			form.group = append(form.group, panelGroupTarget{Key: it.Key, Digest: it.digest})
+			form.group = append(form.group, panelGroupTarget{Key: it.Key, Digest: it.digest, Lanes: it.lanes(), Now: it.now()})
 			form.names[it.Key] = it.Name
 		}
 	}
@@ -414,7 +414,7 @@ func (c *panelChanges) confirm(session, key, action, value string, opts holdOpti
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
 	if key == panelGroupKey {
-		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, "", f.group, f.names)
+		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, "", f.group, f.names, opts.Lanes)
 		c.reader.forget()
 		return panelChangeReply{Result: &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}}
 	}
