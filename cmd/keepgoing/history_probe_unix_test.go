@@ -66,3 +66,25 @@ func TestFallbacksCheckRecordsItsProbesInTheHistory(t *testing.T) {
 		t.Fatalf("%+v", got.Events)
 	}
 }
+
+// Unwritable history fails the command after the probe results are saved,
+// without undoing them, even when every probe passed.
+func TestFallbacksCheckFailsWhenItsHistoryCannotBeWritten(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.dir, "state")
+	if code, _, errs := f.run("fallbacks", "check"); code != exitOK {
+		t.Fatalf("a healthy check: %d %s", code, errs)
+	}
+	healthBefore, _ := os.ReadFile(filepath.Join(dir, "health.json"))
+	write(t, filepath.Join(dir, incident.FileName), "{", 0o600)
+	code, out, errs := f.run("fallbacks", "check")
+	if code != exitFailed || !strings.Contains(errs, "fallbacks check: probe results saved; incident history write failed") || !strings.Contains(out, "claude-other-account") {
+		t.Fatalf("%d %s %s", code, out, errs)
+	}
+	if h, _ := os.ReadFile(filepath.Join(dir, "health.json")); string(h) == string(healthBefore) {
+		t.Fatal("the probe results were not saved")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, incident.FileName)); string(b) != "{" {
+		t.Fatal("corrupt history was replaced")
+	}
+}

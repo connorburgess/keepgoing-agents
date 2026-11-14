@@ -324,11 +324,11 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 	return false
 }
 
-// timelineReturned reports a check that returned the loop to the primary and
-// saved it. A dry run saves its state, so its return happened; a failed check
-// may not have saved it.
+// timelineReturned reports a check that returned the loop to the primary. A
+// return is recorded only once it is saved, so the check's outcome does not
+// matter, and a dry run, which saves its state, counts too.
 func timelineReturned(r incident.Record) bool {
-	return r.Kind == "tick" && r.Returned != nil && (r.Outcome == "succeeded" || r.Outcome == "dry_run")
+	return r.Kind == "tick" && r.Returned != nil
 }
 
 // timelineReturnReasons words why a check returned the loop to the primary.
@@ -343,7 +343,8 @@ func timelineLimitWait(cause string) bool {
 }
 
 // timelineKinds labels a record from its typed fields. A dry run decided an
-// action without executing it, so it is never labelled as a send or a move.
+// action without executing it, so it is never labelled as a send, and as a
+// move only for the return to the primary it saves.
 func timelineKinds(r incident.Record) []string {
 	var kinds []string
 	entered := !r.DryRun && r.Outcome != "dry_run" && enteredTimelineHold(r.ControlBefore, r.ControlAfter)
@@ -539,7 +540,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		{"supervisor_checks", historyAvailability(jerr, r.Summary.RetainedChecks), "Retained checks show past supervisor execution, including held checks; they do not prove present liveness or continuous scheduling."},
 		{"agent_connectivity", historyAvailability(jerr, observations), "Use each observed adapter/source/category/code and retry field. Active can include provider retries; stream errors do not establish an internet root cause."},
 		{"notifications", historyAvailability(derr, len(deliveries.Records)), "Attempts and HTTP responses are recorded separately. Application/human receipt is unverified; later acceptance does not erase earlier retained failures."},
-		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5, and a return to the primary after a fallback is removed or disabled from schema 11. Older records and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
+		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5, and a return to the primary after a fallback is removed or disabled, or has no created thread on record, from schema 11. Older records and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
 		{"scheduler", "unavailable", "No scheduler queried; registration, last scheduler result and next run are unavailable in this offline view."},
 		{"supervisor_liveness", "unavailable", "No daemon endpoint or process queried; recent records are not a live heartbeat."},
 		{"ci_waits", "unavailable", "No CI query or persisted CI-wait evidence read; provider errors and held checks are not evidence of a CI wait."},
@@ -736,9 +737,6 @@ func describeIncident(r incident.Record) string {
 			why = "could not be used (reason unavailable)"
 		}
 		text += fmt.Sprintf("; RETURNED TO THE PRIMARY: the loop was on %s, which %s, so this check ran on the primary", timelineTarget(ret.FromKey), why)
-		if !timelineReturned(r) {
-			text += " (the check failed, so the return may not have been saved)"
-		}
 	}
 	text += describeProbes(r.Probes)
 	if r.NewThread {

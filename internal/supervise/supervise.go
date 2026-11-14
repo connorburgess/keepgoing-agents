@@ -193,6 +193,7 @@ type tick struct {
 	incidentAdapter     string
 	incidentTarget      string
 	incidentReturn      *incident.Return
+	returnSaved         bool
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
@@ -1977,6 +1978,9 @@ func (t *tick) record(actErr error) error {
 		// send it refused to make is the cause, and the save its symptom.
 		return errors.Join(actErr, err)
 	}
+	// A return to the primary happened only once it is saved; the history
+	// records it from here, whatever the check's outcome.
+	t.returnSaved = t.incidentReturn != nil
 	// The outcomes are recorded: settle them beside the records too, so an
 	// older binary that rewrites state.json cannot unsettle them. Only a
 	// check that read the records, or made sends of its own, has moved

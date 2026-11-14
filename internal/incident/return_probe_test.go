@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func returnTick(n int, outcome string) Record {
@@ -16,17 +17,14 @@ func returnTick(n int, outcome string) Record {
 	return r
 }
 
-// A saved return to the primary is a move: it is kept in the key tier, and a
-// run of identical checks around it never folds it away.
+// A return to the primary, recorded only once saved, is a move whatever the
+// check's outcome: it is kept in the key tier, and a run of identical checks
+// around it never folds it away.
 func TestAReturnToThePrimaryIsAKeyEventAndIsNeverFolded(t *testing.T) {
-	for _, outcome := range []string{"succeeded", "dry_run"} {
+	for _, outcome := range []string{"succeeded", "dry_run", "failed"} {
 		if tier := clean(returnTick(0, outcome)).Tier; tier != TierKey {
 			t.Fatalf("%s: tier %s", outcome, tier)
 		}
-	}
-	// A failed check may not have saved the return.
-	if tier := clean(returnTick(0, "failed")).Tier; tier == TierKey {
-		t.Fatal("a failed check's return is a key event")
 	}
 	m := newMemJournal()
 	m.add(t, retentionTick(0)) // 1
@@ -123,6 +121,28 @@ func TestManualProbeRecords(t *testing.T) {
 	empty.Probes.Availability = "unavailable"
 	if err := Append(dir, empty); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("uncaptured probe record appended: %v", err)
+	}
+}
+
+// Manual probe records are capped, oldest out first, so a schedule of manual
+// checks cannot fill a tier: other records are untouched.
+func TestManualProbeRecordsAreCapped(t *testing.T) {
+	m := newMemJournal()
+	m.add(t, retentionTick(0)) // 1
+	for i := 1; i <= MaxProbeRecords+5; i++ {
+		r := manualProbe(ProbeResult{TargetKey: TargetKey("fictional-a"), Tier: "manual", ErrorClass: "rate_limit"})
+		r.CheckStartedAt = retentionStart.Add(time.Duration(i) * time.Hour)
+		m.add(t, r)
+	}
+	j := m.flush(t)
+	probes := 0
+	for _, r := range j.Records {
+		if r.Kind == "probe" {
+			probes++
+		}
+	}
+	if probes != MaxProbeRecords || !hasSequence(j, 1) || !hasSequence(j, uint64(MaxProbeRecords+6)) || hasSequence(j, 2) || j.Pruned.Condition.Count != 5 {
+		t.Fatalf("probes %d pruned %+v records %+v", probes, j.Pruned, j.Records)
 	}
 }
 

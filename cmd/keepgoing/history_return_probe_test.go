@@ -9,9 +9,9 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
-// The timeline shows a saved return to the primary as a move, finds it by
-// the fallback the loop was on, and does not claim one a failed check may
-// not have saved.
+// The timeline shows a return to the primary as a move, whatever the check's
+// outcome (it is recorded only once saved), and finds it by the fallback the
+// loop was on.
 func TestTimelineShowsAReturnToThePrimary(t *testing.T) {
 	dir := t.TempDir()
 	on := &incident.Controls{Enabled: true}
@@ -40,7 +40,7 @@ func TestTimelineShowsAReturnToThePrimary(t *testing.T) {
 		t.Fatalf("%+v", all.Summary.LastTargetMove)
 	}
 	for _, kind := range []string{"return", "moves"} {
-		if got := timelineSequences(timelineJSON(t, dir, "--kind", kind)); len(got) != 2 || got[0] != 2 || got[1] != 5 {
+		if got := timelineSequences(timelineJSON(t, dir, "--kind", kind)); len(got) != 3 || got[0] != 2 || got[1] != 3 || got[2] != 5 {
 			t.Fatalf("--kind %s: %v", kind, got)
 		}
 	}
@@ -51,13 +51,16 @@ func TestTimelineShowsAReturnToThePrimary(t *testing.T) {
 	code, out, _ := timelineCLI(t, dir)
 	for _, want := range []string{
 		"RETURNED TO THE PRIMARY: the loop was on " + short + ", which is disabled, so this check ran on the primary",
-		"RETURNED TO THE PRIMARY: the loop was on " + short + ", which is no longer configured, so this check ran on the primary (the check failed, so the return may not have been saved)",
+		"outcome failed; cause idle; controls enabled -> enabled; target primary; RETURNED TO THE PRIMARY: the loop was on " + short + ", which is no longer configured, so this check ran on the primary",
 		"which has no created thread on record, so this check ran on the primary; DRY RUN (no executed action)",
 		"last recorded target move (handoff, switch-back, return to the primary or retarget): incidents.json #5",
 	} {
 		if code != exitOK || !strings.Contains(out, want) {
 			t.Fatalf("lacks %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "may not have been saved") {
+		t.Fatalf("a recorded return is doubted:\n%s", out)
 	}
 }
 
@@ -88,11 +91,11 @@ func TestPanelWordsAReturnAndAManualCheck(t *testing.T) {
 	if ev.Detail != "Returned to Example primary, because the route it was on is no longer configured. Delivery is not confirmed." {
 		t.Fatalf("%+v", ev)
 	}
-	// A failed check may not have saved it: nothing is claimed.
+	// A failed check that saved its return still moved the loop.
 	r.Action, r.TargetKeyAfter, r.Outcome = "none", primary, "failed"
 	ev = dockEvent{}
 	dockWordIncident(&ev, r, names)
-	if strings.Contains(ev.Detail, "Returned") {
+	if !strings.HasPrefix(ev.Detail, "Returned to Example primary") {
 		t.Fatalf("%+v", ev)
 	}
 	p := incident.Record{Kind: "probe", Probes: incident.Probes{Availability: "captured", Results: []incident.ProbeResult{{OK: true}, {OK: false}, {OK: true}}}}
@@ -106,5 +109,34 @@ func TestPanelWordsAReturnAndAManualCheck(t *testing.T) {
 	dockWordIncident(&ev, p, names)
 	if ev.Detail != "1 passed, 0 failed." || ev.Tone == "problem" {
 		t.Fatalf("%+v", ev)
+	}
+}
+
+// The panel folds a run of identical idle checks into one line, but never a
+// return to the primary: the idle check after it stays a line of its own.
+func TestPanelDoesNotFoldAReturnIntoTheNextCheck(t *testing.T) {
+	dir := t.TempDir()
+	on := &incident.Controls{Enabled: true}
+	now := time.Now().UTC()
+	primary := incident.TargetKey(state.Primary)
+	check := func(i int) incident.Record {
+		return incident.Record{Kind: "tick", Adapter: "bb", TargetKey: primary, TargetKeyAfter: primary, CheckStartedAt: now.Add(time.Duration(i-10) * time.Minute),
+			Action: "none", Outcome: "succeeded", Cause: "idle", ControlBefore: on, ControlAfter: on, Observation: incident.Observation{Availability: "observed", State: "idle"},
+			Probes: incident.Probes{Availability: "captured"}, Decisions: incident.Decisions{Availability: "captured"}}
+	}
+	ret := check(0)
+	ret.Returned = &incident.Return{FromKey: incident.TargetKey("fictional-large"), Reason: incident.ReturnRemoved}
+	appendTimelineRecord(t, dir, ret)
+	appendTimelineRecord(t, dir, check(1))
+	tl := readTimeline(dir, now, time.Hour, 40, timelineFilter{})
+	got := dockRecentEvents(&tl, dockRouteNames{primary: "Example primary"}, now)
+	if len(got.Events) != 2 || got.Events[0].Folded != 0 || got.Events[1].Folded != 0 || !strings.HasPrefix(got.Events[1].Detail, "Returned to Example primary") {
+		t.Fatalf("%+v", got.Events)
+	}
+	// Two identical idle checks are still one line.
+	appendTimelineRecord(t, dir, check(2))
+	tl = readTimeline(dir, now, time.Hour, 40, timelineFilter{})
+	if got := dockRecentEvents(&tl, dockRouteNames{primary: "Example primary"}, now); len(got.Events) != 2 || got.Events[0].Folded != 1 {
+		t.Fatalf("%+v", got.Events)
 	}
 }

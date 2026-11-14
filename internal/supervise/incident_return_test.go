@@ -1,6 +1,9 @@
 package supervise
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
@@ -98,5 +101,57 @@ func TestADryRunRecordsTheReturnItSaves(t *testing.T) {
 	}
 	if st, _ := state.Load(w.dir); st.Target() != state.Primary {
 		t.Fatalf("the dry run did not save the return: %+v", st)
+	}
+}
+
+// A return is recorded once state.json holding it is saved, whatever the
+// check's outcome: a check that then fails still moved the loop. A check
+// whose save fails moved nothing, and records no return.
+func TestAReturnIsRecordedOnlyOnceItIsSaved(t *testing.T) {
+	disabled := func(t *testing.T) *world {
+		w := newWorld(t, true, true)
+		for i := range w.cfg.FallbackSet.Candidates {
+			if c := &w.cfg.FallbackSet.Candidates[i]; c.ID == "claude-other" {
+				c.Disabled = true
+			}
+		}
+		if err := state.Save(w.dir, state.File{ActiveTarget: "claude-other"}); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	w := disabled(t)
+	w.primary(decide.Observation{}).obsErr = errors.New("fictional observe failure")
+	if _, err := Tick(t.Context(), w.cfg, w.opts(t0)); err == nil {
+		t.Fatal("the check did not fail")
+	}
+	r := lastIncident(t, w)
+	if r.Outcome != "failed" || r.Returned == nil || r.Returned.Reason != incident.ReturnDisabled || r.Tier != incident.TierKey {
+		t.Fatalf("%+v %+v", r, r.Returned)
+	}
+	if st, _ := state.Load(w.dir); st.Target() != state.Primary {
+		t.Fatalf("the failed check did not save the return: %+v", st)
+	}
+
+	w = disabled(t)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	p.onSend = func() {
+		// state.json cannot be replaced by the save at the end of the check.
+		path := filepath.Join(w.dir, state.FileName)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Tick(t.Context(), w.cfg, w.opts(t0)); err == nil {
+		t.Fatal("the save did not fail")
+	}
+	if len(p.sent) != 1 {
+		t.Fatalf("the check did not reach its send: %v", p.sent)
+	}
+	if r := lastIncident(t, w); r.Returned != nil {
+		t.Fatalf("an unsaved return was recorded: %+v", r.Returned)
 	}
 }

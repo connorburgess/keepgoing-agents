@@ -210,7 +210,12 @@ func dockLastDecision(st *statusOut, tl *timelineReport, now time.Time) dockDeci
 	return d
 }
 
+// sameResult reports two checks that are one line on the panel. A return to
+// the primary is a move and always its own line.
 func sameResult(a, b incident.Record) bool {
+	if a.Returned != nil || b.Returned != nil {
+		return false
+	}
 	return a.Action == b.Action && a.Cause == b.Cause && a.Outcome == b.Outcome && a.DryRun == b.DryRun && a.TargetKey == b.TargetKey
 }
 

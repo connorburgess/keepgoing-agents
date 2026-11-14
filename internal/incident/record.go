@@ -28,9 +28,9 @@ type Record struct {
 	// Lanes counts the lane work of a check that recovers lanes. Counts only.
 	Lanes LaneWork `json:"lanes"`
 	// Returned is set on a check that began on a fallback no longer able to
-	// take the loop, and so returned it to the primary before doing anything
-	// else. TargetKey is then the primary's.
-	Returned             *Return        `json:"returned"`
+	// take the loop, returned it to the primary before doing anything else,
+	// and saved that. TargetKey is then the primary's.
+	Returned             *Return        `json:"returned,omitempty"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -192,11 +192,11 @@ func repeatable(r Record) bool {
 	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread
 }
 
-// returned reports a check that returned the loop to the primary and saved
-// it. A dry run saves its state too, so its return is a move; a failed check
-// may not have saved it, so it is not.
+// returned reports a check that returned the loop to the primary. The
+// supervisor records a return only once it is saved, so it is a move whatever
+// the check's outcome, a dry run included.
 func returned(r Record) bool {
-	return r.Kind == "tick" && r.Returned != nil && (r.Outcome == "succeeded" || r.Outcome == "dry_run")
+	return r.Kind == "tick" && r.Returned != nil
 }
 
 func limitWaitCause(cause string) bool {

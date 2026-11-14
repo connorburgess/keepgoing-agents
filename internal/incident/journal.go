@@ -331,10 +331,31 @@ func (j *Journal) add(r Record) {
 		return
 	}
 	j.Records = append(j.Records, r)
+	// Manual probe records are capped, oldest out first, so a schedule of
+	// `fallbacks check` cannot fill the condition or activity tier.
+	if r.Kind == "probe" {
+		n := 0
+		for _, x := range j.Records {
+			if x.Kind == "probe" {
+				n++
+			}
+		}
+		for i := 0; n > MaxProbeRecords && i < len(j.Records)-1; {
+			if j.Records[i].Kind == "probe" {
+				j.prune(i)
+				n--
+				continue
+			}
+			i++
+		}
+	}
 	for len(j.Records) > MaxRecords {
 		j.dropFromFullestTier()
 	}
 }
+
+// MaxProbeRecords bounds the manual probe records retained.
+const MaxProbeRecords = 16
 
 // dropFromFullestTier prunes the oldest record of a tier holding more than its
 // reservation, taking routine first and key last, so volume in a lower tier
@@ -370,17 +391,23 @@ func (j *Journal) dropOldest(tier string) bool {
 		if r.Tier != tier {
 			continue
 		}
-		p := j.Pruned.tier(tier)
-		p.Count++
-		if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
-			at := r.CheckStartedAt
-			p.NewestAt = &at
-		}
-		j.Dropped++
-		j.Records = append(j.Records[:i], j.Records[i+1:]...)
+		j.prune(i)
 		return true
 	}
 	return false
+}
+
+// prune removes record i, counting it as pruned from its tier.
+func (j *Journal) prune(i int) {
+	r := j.Records[i]
+	p := j.Pruned.tier(r.Tier)
+	p.Count++
+	if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
+		at := r.CheckStartedAt
+		p.NewestAt = &at
+	}
+	j.Dropped++
+	j.Records = append(j.Records[:i], j.Records[i+1:]...)
 }
 
 func validRecord(r Record) bool {
