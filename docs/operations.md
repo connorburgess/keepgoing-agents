@@ -158,7 +158,7 @@ How the time is spent:
 
 ## Status for other tools
 
-`keepgoing status --json` prints the control file, state, window, and redundancy summary. It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show keepgoing's state beside the right thread.
+`keepgoing status --json` prints the control file, state, window, and redundancy summary. Check the exit code, or `unreadable`, before reading them: when `control.json` or `state.json` cannot be read, `status` exits 1 and leaves out what it could not read, rather than printing an empty record as the loop's ([when a record cannot be read](#when-a-record-cannot-be-read)). It also prints `primaryAgent` and `targetAgent`, which describe the loop's own agent and the one it is supervising right now. Each has its `adapter`, `provider`, and `model`, plus `bbThread` for a BB thread or `workdir` for a headless runner. An agent workspace can use these to show keepgoing's state beside the right thread.
 
 ## Understanding recorded status
 
@@ -183,9 +183,17 @@ Existing `control.note` output is retained for compatibility; status is a privat
 
 ### When a record cannot be read
 
-If `control.json` or `state.json` in the state directory is damaged (empty, cut short, or not JSON), `status` names the file and the parse error on standard error, says what checks are doing meanwhile and what to do, then prints everything it could still read, and exits 1. `status --json` carries the same in an `unreadable` list, each entry with `file`, `problem` and `remedy`. With `control.json` unreadable the control state, the activity and the reason read `unavailable`: an empty record would otherwise read as disabled. With `state.json` unreadable the target reads `unavailable`. Status never rewrites the damaged file.
+If `control.json` or `state.json` in the state directory cannot be read, `status` says so on standard error, says what checks are doing meanwhile and what to do, then prints everything it could still read, and exits 1. The record may be damaged (empty, cut short, not JSON, or JSON of the wrong shape), or keepgoing may be unable to open it (permissions, something other than a regular file in its place, or Windows refusing it for longer than reads retry). Status never rewrites or moves the file.
 
-What to do: stop the daemon, service or scheduler, then restore the file from a copy of the state directory. Or move it aside. A loop with no `control.json` is disabled, and the next `enable`, `pause` or `stop` writes a new one, without the earlier holds, note and owner. A missing `state.json` is started again by the next check, without the re-prompt and nudge counts, the active target or the record of the last check and send.
+`status --json` lists such records under `unreadable`, each with `file`, a fixed `problem` (`not_json`, `wrong_shape`, `not_a_file` or `cannot_open`; never the file's content or the raw error), `offset` (the byte a parse stopped at, for the first two) and `remedy`. Nothing is shown that an empty record would fill in:
+
+- With `control.json` unreadable, there is no `control` object, and the control state, activity and reason read `unavailable`: an empty record would read as a disabled loop, and a stopped loop as not stopped. The schedule is not judged (`schedule.notJudged` is `control_unreadable`), and the lane-stop line says it is unavailable.
+- With `state.json` unreadable, the target reads `unavailable`, `targetConfigured` is false, and everything taken from it is left out: `state`, `targetAgent`, `targetSession`, `newThreads`, `redundancy`, `promptSend`, `limitWait`, `turnRetry`, `refusals`, `laneRecovery`, `childErrorReport` and `takeoverBriefs`. Activity and history read `unavailable`, and `schedule.notJudged` is `state_unreadable`. The text output prints one `state: unavailable` line for all of it.
+- With either one unreadable, the no-progress flag is `not_available` with reason `record_unreadable`.
+
+A damaged `sends.json` is reported differently, as `sendRecord` ([a send recorded before it is made](#a-send-recorded-before-it-is-made)), and does not by itself make `status` exit 1; when it is damaged beside `control.json` or `state.json`, the last line names all of them.
+
+What to do depends on the problem. **When the content is damaged** (`not_json`, `wrong_shape`): stop the daemon, service or scheduler, then restore the file from a copy of the state directory. Moving it aside instead loses what it held. A loop with no `control.json` reads as disabled, without its stop or pause (issue it again), a pending transfer, the `bbTarget` binding, the note and the owner, and the next `enable`, `pause` or `stop` writes a new one. A missing `state.json` is started again by the next check, without the re-prompt and nudge counts, the active target, the record of the last check and send, the new-thread count, the spacing between created threads and the hold on a creation whose outcome is unknown. **When it could not be opened** (`not_a_file`, `cannot_open`): the file may be intact. Fix its permissions or what is in its place, and do not move it aside or delete it.
 
 While `control.json` is unreadable, checks send nothing, but `pause`, `stop` and `resume` cannot be saved either, so nothing keepgoing offers holds the loop: stop the process that runs it.
 
