@@ -236,19 +236,28 @@ func TestLaneMessageTextIsNeverDecodedOrStored(t *testing.T) {
 // Every field the log reader, the lane inspection and the retry plugin decode
 // from BB is listed here. A new field fails this test, so decoding anything
 // that could hold what was said in a conversation cannot happen unnoticed.
+// A field that can hold text is added only with a named, display-only use
+// recorded here, and its one decoding site is pinned below.
 func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
+	// One use, display only: "title" is a direct child's thread title, read
+	// from the bb thread show reply in children.go and kept in the loop's
+	// private lane-titles.json for the panel's identifier view. No decision,
+	// record, report or other file carries it.
+	displayOnly := map[string]string{"title": "children.go"}
 	allowed := strings.Fields(`
 		archivedAt attempt category code complete count createdAt cursor data decision deletedAt delivery
 		diagnostic error errorInfo hashRefs httpStatusCode id initiator interaction item itemId kind lastEventAt lastSeq
 		observedAt ok outcomes parentThreadId pending providerCode providerThread providerThreadId queuedMessageCount
 		rateLimits resetsAt resetsAtMs retries retryOfRequestId retrySchema scannedAt seq status systemMessageKind
 		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes answeringRequest
-		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain`)
+		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain
+		title`)
 	want := map[string]bool{}
 	for _, tag := range allowed {
 		want[tag] = true
 	}
 	got := map[string]bool{}
+	sites := map[string][]string{} // display-only tag -> files that decode it
 	fset := token.NewFileSet()
 	for _, file := range []string{"cursor.go", "lanes.go", "retry_plugin.go", "children.go", "wake.go", "bb.go"} {
 		f, err := parser.ParseFile(fset, file, nil, 0)
@@ -263,6 +272,9 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 			tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`")).Get("json")
 			if name := strings.Split(tag, ",")[0]; name != "" && name != "-" {
 				got[name] = true
+				if _, ok := displayOnly[name]; ok {
+					sites[name] = append(sites[name], file)
+				}
 			}
 			return true
 		})
@@ -281,11 +293,17 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 	sort.Strings(unexpected)
 	sort.Strings(unused)
 	if len(unexpected) > 0 || len(unused) > 0 {
-		t.Fatalf("the BB adapter decodes fields %v that are not in the allowlist, and the allowlist names %v that it does not decode. A field that can hold message text, a title or tool output must never be added.", unexpected, unused)
+		t.Fatalf("the BB adapter decodes fields %v that are not in the allowlist, and the allowlist names %v that it does not decode. A field that can hold message text, a title or tool output is added only with a named, display-only use recorded here.", unexpected, unused)
 	}
-	for _, text := range []string{"text", "message", "content", "delta", "input", "output", "title", "detail", "prompt", "body", "summary", "reason", "command", "response"} {
+	// "title" is not denied: it has the one display-only use recorded above.
+	for _, text := range []string{"text", "message", "content", "delta", "input", "output", "detail", "prompt", "body", "summary", "reason", "command", "response"} {
 		if got[text] {
 			t.Errorf("the BB adapter decodes %q", text)
+		}
+	}
+	for tag, file := range displayOnly {
+		if len(sites[tag]) != 1 || sites[tag][0] != file {
+			t.Errorf("%q is decoded in %v; its one display-only use is in %s", tag, sites[tag], file)
 		}
 	}
 }
