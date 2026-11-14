@@ -266,6 +266,22 @@ tail -n 40 <state_dir>/runs.jsonl
 
 **What this does not show.** A check target that is unreachable while the provider works (test that separately with `keepgoing doctor` from the environment your scheduler uses), an outage of weeks, or an expired provider login after a long gap.
 
+### Observed once: a real outage (2026-11-14)
+
+The first live evidence of network-aware waiting and recovery comes from one incident on one machine. It was an unplanned network outage, not this procedure. It comes from the coordinator's reading of the loop's `runs.jsonl`. The loop supervised a BB chat and was run by a BB automation.
+
+- **While the network was down.** Checks were recorded at 08:40, 09:20, 09:30 and 09:40 UTC. Each had the reason `network down; waiting for connectivity`, and none sent anything.
+- **When it came back.** The check at 10:02 UTC recorded `network back: the connectivity check passed after failing for 1h21m57s`, and made one re-prompt.
+- **The scheduler.** Every check succeeded, so the BB automation stayed enabled. An external scheduler can turn itself off after failed runs; see [external schedulers can stop on their own](operations.md#external-schedulers-can-stop-on-their-own).
+
+**What it did not show:**
+- **Lanes.** Lanes were restarted by the coordinator, not by keepgoing. Lane recovery (`bb.children.retry_errored`) was not observed.
+- **Unrecorded details.** The record does not show whether the re-prompt was a turn retry by reference. It also doesn't show what `status` and `timeline` displayed, or how long after the network returned the 10:02 check ran.
+- **The daemon.** The daemon's re-check within a minute of the network returning was not exercised, because an external scheduler ran the checks.
+- **The procedure's other steps.** The lid, a captive portal, a second network and the pass criteria above as a whole were not covered.
+
+The full procedure still has to be run once.
+
 ## Run discovery tests (D1, D2)
 
 `go test -race ./internal/rundiscovery` exercises the pure identity and run-boundary contract with fictional caller-supplied IDs and timestamps: every run-boundary case, distinct attempts, run/session links and malformed input.
