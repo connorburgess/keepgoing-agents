@@ -592,6 +592,7 @@ Act
 
 - [ ] Pause, resume and stop a loop, with what will change shown before confirming. (V4a)
 - [ ] Open the conversation that needs an answer, and resume the loop once it is answered. (V4a)
+- [ ] Answer a "Decision needed": every hold is one question with its options, each saying what it will do, answered the same way from the panel, the BB thread, the menu bar item or a terminal, and recorded. (Q1 to Q6, [design](decision-prompts.md))
 - [ ] Check now: run one check of a loop outside its schedule, with the same rules as any check. (V4c)
 - [ ] Move to another route now, or return to the preferred one, at the next turn boundary. (V4d)
 - [ ] Mark a loop complete. (V4a)
