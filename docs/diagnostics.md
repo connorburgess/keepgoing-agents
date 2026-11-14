@@ -356,6 +356,8 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | `check` | Any recorded check. `dry_run` marks one that executed no action; a dry run is never labelled as a send or a move. |
 | `wake`, `nudge`, `reprompt`, `stop` | The check's final recorded action. An action is not proof that a message was delivered. |
 | `handoff`, `switch_back` | A check that moved the loop to a fallback or back to the primary. From schema 5 the row shows both targets, and the kind requires them to differ: a handoff or switch-back that failed without changing the target is only a `check`. Older records lack the second target, so the kind requires a succeeded outcome. |
+| `timing_move` | A check in which [usage-aware timing](configuration.md#timing) moved the loop: its cause is `timing_step_up`, `timing_step_down` or `timing_return`, and a timing evaluation among the record's decisions carries the decision's rule (stage `timing_<rule>`) and reason code (cause), beside the engine's own evaluation. It counts as the last move. |
+| `timing_repair` | A check that set the thread to the route on record (cause `timing_repair`, reason `unsettled_step` or `route_left_configuration`). Kept in the condition tier and never folded into a run of routine checks. |
 | `retarget` | A saved manual retarget. |
 | `ownership` | A control save that changed the loop owner, a daemon takeover, or a transfer step. Owner identities are withheld. |
 | `probe` | A check that ran at least one scheduled or exact probe, or that summarizes folded checks which did. |
