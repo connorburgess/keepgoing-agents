@@ -131,7 +131,11 @@ public struct ChangeResult: Decodable, Equatable {
     public let outcome: String
     public let text: String
     public var retry: Bool? = nil
-    public init(outcome: String, text: String, retry: Bool? = nil) { self.outcome = outcome; self.text = text; self.retry = retry }
+    /// For a change to every loop: each loop's outcome, those not changed first.
+    public var lines: [String]? = nil
+    public init(outcome: String, text: String, retry: Bool? = nil, lines: [String]? = nil) {
+        self.outcome = outcome; self.text = text; self.retry = retry; self.lines = lines
+    }
 }
 
 private struct ReviewReply: Decodable {
@@ -147,7 +151,8 @@ public enum ReviewReading: Equatable {
 }
 
 extension Contract {
-    static let outcomes: Set<String> = ["done", "refused", "review_again", "uncertain"]
+    /// partial: a change to every loop that changed some of them.
+    static let outcomes: Set<String> = ["done", "partial", "refused", "review_again", "uncertain"]
     /// A review's expect value: its expiry, the record's digest and a check
     /// over the loop and the action. Passed back only when it matches.
     static func validExpect(_ value: String) -> Bool {

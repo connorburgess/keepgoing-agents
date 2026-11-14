@@ -69,6 +69,10 @@ type panelForm struct {
 	digest                         string // the controlDigest of the record reviewed
 	expires                        time.Time
 	stop                           *stopChoices // the stop's options the review offered
+	// group: for a change to every loop, each loop it changes and the
+	// record reviewed for it; names, for the result.
+	group []panelGroupTarget
+	names map[string]string
 }
 
 func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader, since time.Time, now func() time.Time) (*panelChanges, error) {
@@ -209,6 +213,9 @@ type panelResult struct {
 	// Retry: the page may offer to prepare the same change again. It never
 	// does so by itself.
 	Retry bool `json:"retry,omitempty"`
+	// Lines: for a change to every loop, each loop's outcome, the loops that
+	// were not changed first. Outcome is then also partial when some were.
+	Lines []string `json:"lines,omitempty"`
 }
 
 type panelChangeReply struct {
@@ -223,7 +230,7 @@ var panelDone = map[string]string{"pause": "paused", "stop": "stopped", "resume"
 // serve answers one change request. rest is the path under the session.
 func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, session string) {
 	key, step, ok := strings.Cut(strings.TrimPrefix(rest, panelChangesPrefix), "/")
-	if !strings.HasPrefix(rest, panelChangesPrefix) || !ok || !panelKeyPattern.MatchString(key) || (step != "prepare" && step != "confirm") {
+	if !strings.HasPrefix(rest, panelChangesPrefix) || !ok || !(panelKeyPattern.MatchString(key) || key == panelGroupKey) || (step != "prepare" && step != "confirm") {
 		http.NotFound(w, r)
 		return
 	}
@@ -272,6 +279,9 @@ func panelEntry(registryDir, key string) (registry.Entry, []registry.Entry, stri
 func (c *panelChanges) prepare(session, key string, action string) panelChangeReply {
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
+	if key == panelGroupKey {
+		return c.prepareGroup(ctx, session, action)
+	}
 	r, refused := panelReview(ctx, c.registry, c.reader, key, action, c.now().UTC())
 	if refused != nil {
 		return panelChangeReply{Result: refused}
@@ -283,6 +293,29 @@ func (c *panelChanges) prepare(session, key string, action string) panelChangeRe
 	}
 	c.keep(value, form)
 	p := r.preview
+	p.Form = value
+	return panelChangeReply{Preview: &p}
+}
+
+// prepareGroup prepares a change to every loop: one review, one form.
+func (c *panelChanges) prepareGroup(ctx context.Context, session, action string) panelChangeReply {
+	g, refused := panelGroupReview(ctx, c.registry, c.reader, action, c.now().UTC())
+	if refused != nil {
+		return panelChangeReply{Result: refused}
+	}
+	form := panelForm{session: session, key: panelGroupKey, action: action, expires: g.preview.ExpiresAt, names: map[string]string{}}
+	for _, it := range g.items {
+		if it.Fits {
+			form.group = append(form.group, panelGroupTarget{Key: it.Key, Digest: it.digest})
+			form.names[it.Key] = it.Name
+		}
+	}
+	value, err := panelRandom(32)
+	if err != nil {
+		return panelChangeReply{Result: &panelResult{Outcome: "refused", Text: "A review could not be prepared. Nothing was changed."}}
+	}
+	c.keep(value, form)
+	p := g.preview
 	p.Form = value
 	return panelChangeReply{Preview: &p}
 }
@@ -380,6 +413,11 @@ func (c *panelChanges) confirm(session, key, action, value string, opts holdOpti
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
+	if key == panelGroupKey {
+		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, "", f.group, f.names)
+		c.reader.forget()
+		return panelChangeReply{Result: &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}}
+	}
 	// The page acts as no BB thread, as a terminal outside BB does.
 	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, "", f.digest, opts)
 	// The next read shows the change, not a cached picture from before it.
