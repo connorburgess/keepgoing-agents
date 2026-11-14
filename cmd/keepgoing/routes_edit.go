@@ -60,6 +60,8 @@ type routeChangeOut struct {
 	Warnings []string          `json:"warnings"`
 	Reason   string            `json:"reason,omitempty"` // why nothing changed
 	Refusal  *routeRefusal     `json:"refusal,omitempty"`
+	// FailoverOn is set when the change also sets errors.failover_on.
+	FailoverOn *failoverChange `json:"failoverOn,omitempty"`
 }
 
 type routeChangeLoop struct {
@@ -82,6 +84,12 @@ type routeChangeLoop struct {
 	BelowMinHealthy bool `json:"belowMinHealthy"`
 }
 
+// failoverChange is errors.failover_on before and after a change.
+type failoverChange struct {
+	Before []string `json:"before"`
+	After  []string `json:"after"`
+}
+
 // routeRefusal says why nothing was written, by a fixed code.
 type routeRefusal struct {
 	Code string `json:"code"`
@@ -100,6 +108,7 @@ type routeChangeRequest struct {
 	at       int          // add: the 1-based place, 0 for last
 	route    config.Route // add
 	like     string       // add: the LOOP:ID the route was copied from
+	handoff  bool         // follow-standard: also turn handoff on for rate limits, if it is off
 	loop     string       // a registered loop's own list; "" for the standard list
 	expect   string
 	caller   string // BB_THREAD_ID; "" for a person

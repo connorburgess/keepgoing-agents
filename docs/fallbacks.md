@@ -6,6 +6,8 @@
 
 Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
 
+**Following your standard route list instead** (unreleased). When the wizard starts on a `bb`, `claude` or `codex` loop with no other routes, on its first route, and your [standard route list](routes.md) has routes that apply to it, it first shows what following the list would change and asks `Follow your standard route list and hand off to it on a rate limit, instead of adding a fallback? N of its M routes apply to this loop. (yes/no) [yes]`. Yes makes the change as `routes follow-standard` does, with the same checks and timeline record, and also sets `errors.failover_on` to `[rate_limit]` when it is empty (an existing setting is kept, and the question then says how the loop already hands off); the preview shows that change on its own line. No changes nothing and the wizard goes on. It is never asked with `--non-interactive`; a script uses `keepgoing routes follow-standard`.
+
 ```sh
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 ```

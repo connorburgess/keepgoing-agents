@@ -8,7 +8,9 @@ export const targetSchema = z.object({
 export type SetupTarget = z.infer<typeof targetSchema>;
 // `startJson` and `startJsonBin` record that the preview this setup was created
 // from, run by that binary, advertised `start --json`. Absent on older records.
-export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, startJson: z.literal(true).optional(), startJsonBin: text.optional() });
+// `followsStandard` records that the loop was set up to follow the person's
+// standard route list. Absent on older records and on single-agent setups.
+export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, startJson: z.literal(true).optional(), startJsonBin: text.optional(), followsStandard: z.literal(true).optional() });
 export type SetupRecord = z.infer<typeof recordSchema>;
 export const planSchema = z.object({
   withGoal: z.literal(true).optional(),
@@ -17,6 +19,14 @@ export const planSchema = z.object({
   // Advertised by a CLI whose `start` accepts --json and reports a refusal in it.
   startJson: z.literal(true).optional(),
   limits: z.object({ wakeEvery: text, stallAfter: text, interval: text, backoff: text, maxNudges: z.number().int().positive(), maxReprompts: z.number().int().positive(), maxSends: z.number().int().positive().optional(), noProgressTimeout: text.optional() }),
+  // Set when the setup follows the standard route list: the routes that
+  // apply to this loop now, by id, model and group only (never a path,
+  // thread or login), and that handoff on a rate limit is turned on.
+  routes: z.object({
+    list: z.literal("standard"),
+    apply: z.array(z.object({ id: text, model: z.string().max(256), group: z.string().max(256) })).min(1).max(64),
+    handoffOn: z.literal("rate_limit"),
+  }).optional(),
 });
 export type SetupPlan = z.infer<typeof planSchema>;
 export const setupInput = z.object({
@@ -24,6 +34,8 @@ export const setupInput = z.object({
   withGoal: z.boolean().optional(),
   name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).optional(),
   task: z.string().max(262144).optional(), ticket: text.optional(),
+  // Follow the person's standard route list for handoffs. Off unless chosen.
+  followStandard: z.boolean().optional(),
 });
 /**
  * A refusal keepgoing reports in a structured form. The plugin shows a fixed
@@ -49,5 +61,8 @@ export const setupResult = z.object({
   started: z.boolean().optional(),
   // Set when keepgoing itself refused, with a structured reason.
   refused: refusalSchema.optional(),
+  // True when the host's looptender reports a usable standard route list
+  // with routes, so setup can offer to follow it. Absent otherwise.
+  standardRoutes: z.literal(true).optional(),
 });
 export type SetupResult = z.infer<typeof setupResult>;

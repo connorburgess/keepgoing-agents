@@ -17,6 +17,7 @@ export function fixture() {
     init: async (_bin, _target, name, task, dry) => { assert.equal(name, "example-loop"); assert.equal(task, "Fictional private task"); calls.push(dry ? "preview" : "create"); return { plan: structuredClone(plan) }; },
     command: async (_bin, record, op) => { assert.equal(record.hostId, "host_example"); calls.push(op); return { code: 0, data: op === "doctor" ? doctor : op === "status" ? state : null }; },
     changed: () => calls.push("changed"),
+    standardRoutes: async () => false,
   };
   const controller = createSetupController(d);
   const preview = () => controller.call({ action: "preview", threadId: target.threadId, name: "example-loop", task: "Fictional private task" });
@@ -229,4 +230,43 @@ test("a preview whose plan does not report the asked-for limits is refused befor
   const p = await f.controller.call({ action: "preview", threadId: "thr_example", name: "example-loop", task: "Fictional private task" }, bounds);
   assert.equal(p.ok, false); assert.match(p.message, /did not report the loop-wide limits/); assert.equal(p.ticket, undefined);
   assert.equal(f.records().length, 0); assert.ok(!f.calls.includes("create"));
+});
+
+test("following the standard list is offered only when available, bound to the preview, and recorded", async () => {
+  const f = fixture();
+  assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).standardRoutes, undefined);
+  f.d.standardRoutes = async () => true;
+  assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).standardRoutes, true);
+  f.d.standardRoutes = async () => { throw new Error("host unavailable"); };
+  assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).standardRoutes, undefined, "a failure to tell offers nothing");
+  const routes = { list: "standard" as const, handoffOn: "rate_limit" as const, apply: [{ id: "codex-large", model: "example-large", group: "codex-large" }] };
+  const seen: (boolean | undefined)[] = [];
+  const init = f.d.init;
+  f.d.init = async (bin, target, name, task, dry, goal, bounds, follow) => {
+    seen.push(follow);
+    const r = await init(bin, target, name, task, dry, goal, bounds, follow);
+    return follow && "plan" in r ? { plan: { ...r.plan, routes } } : r;
+  };
+  const call = (action: "preview" | "create", followStandard?: boolean, ticket?: string) => f.controller.call({ action, threadId: "thr_example", name: "example-loop", task: "Fictional private task", ticket, ...(followStandard ? { followStandard } : {}) });
+  const p = await call("preview", true);
+  assert.equal(p.ok, true); assert.deepEqual(p.plan?.routes, routes); assert.match(p.message, /hands off to it on a rate limit/);
+  // The choice cannot be dropped at creation.
+  assert.equal((await call("create", false, p.ticket)).ok, false);
+  const again = await call("preview", true);
+  const created = await call("create", true, again.ticket);
+  assert.equal(created.ok, true, created.message); assert.equal(f.records()[0].followsStandard, true);
+  assert.ok(seen.every(x => x === true), JSON.stringify(seen));
+  // A following loop reports its routes' redundancy; that is not a mismatch for it.
+  (f.state as Record<string, unknown>).redundancy = { healthy: [], min: 1 };
+  assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).ok, true);
+});
+
+test("a preview that does not come back with the route choice asked for is refused", async () => {
+  const f = fixture();
+  const asked = await f.controller.call({ action: "preview", threadId: "thr_example", name: "example-loop", task: "Fictional private task", followStandard: true });
+  assert.equal(asked.ok, false); assert.equal(asked.ticket, undefined);
+  // A single-agent setup whose status reports other routes is still refused.
+  const p = await f.preview(); await f.create(p.ticket);
+  (f.state as Record<string, unknown>).redundancy = { healthy: [], min: 1 };
+  assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).canStart, false);
 });

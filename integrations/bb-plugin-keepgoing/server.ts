@@ -253,7 +253,8 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun, withGoal, bounds) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal, bounds, followStandard) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}), ...(followStandard ? { followStandard: true as const } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    standardRoutes: async (bin, target) => (await host.call("standardRoutes", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).available,
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
