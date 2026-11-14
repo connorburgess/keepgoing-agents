@@ -65,7 +65,8 @@ func StopReachable(cfg *config.Config) bool {
 	if err != nil {
 		return true // the stop check says what is wrong
 	}
-	t := &tick{cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, st: st, res: &Result{}}
+	fb, _ := EffectiveRoutes(cfg, st)
+	t := &tick{cfg: cfg, loop: cfg.Loop, fb: fb, st: st, res: &Result{}}
 	_, agent := t.resolve(st.Target())
 	_, ok := stopAgent(agent, st)
 	return ok
