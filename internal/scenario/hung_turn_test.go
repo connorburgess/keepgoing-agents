@@ -15,9 +15,10 @@ import (
 // three minutes later, before the turn has been silent for stall_after, so
 // nothing checks connectivity; then the host sleeps until the network is
 // back. No connectivity check ever fails: the gap is the only evidence, and
-// the missed-time rule judges it missed. The turn is waited on, not nudged,
-// is reported once, and the loop asks a person when the stall rule would
-// have held it, with a reason that says what happened.
+// the missed-time rule judges it missed. The nudges the stall rule sends
+// (+20m, +80m, +140m, measured with the watch switched off) are held back
+// instead, the wait is reported once, and the stall rule's own hold comes
+// at the same check, +200m, with a reason that says what happened.
 func TestScenarioHungTurnAfterAShortOutageAndASleep(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
@@ -84,24 +85,22 @@ func TestScenarioHungTurnAfterAShortOutageAndASleep(t *testing.T) {
 	}
 	w.Check(s, "the wait is reported once", err)
 	err = nil
-	// Without the wait the stall rule nudges at +20m, +80m and +140m and
-	// holds at +200m. The wait asks a person when the stall clock reaches
-	// stall_after plus three min_wake_intervals: never later than that, and
-	// not before the stall rule's last nudge would have gone.
-	if holdAt == 0 || holdAt > 200 || holdAt <= 140 {
-		err = fmt.Errorf("held at +%dm, want after +140m and no later than +200m", holdAt)
+	// The stall rule alone holds at +200m: so does the watch, by counting
+	// the nudges it held back.
+	if holdAt != 200 {
+		err = fmt.Errorf("held at +%dm, the stall rule alone at +200m", holdAt)
 	}
-	w.Check(s, "a person is asked when the stall rule would have held", err)
+	w.Check(s, "held at the stall rule's own check", err)
 }
 
 // TestScenarioHungTurnAfterALidClose is the usual lid-close: checks every
 // five minutes, the turn logs once more two minutes after the last of them,
 // and the computer sleeps a minute later until the network and the computer
 // are back. No connectivity check ever fails: only the gap shows what
-// happened, and the turn's last log came after the last check before it. It
-// is waited on, never nudged, reported once, and held no later than the
-// stall rule alone would have held it (lidCloseStallRuleHold, measured with
-// the watch switched off).
+// happened, and the turn's last log came after the last check before it.
+// Its nudges are held back, the wait is reported once, and it is held at the
+// stall rule's own check (lidCloseStallRuleHold, measured with the watch
+// switched off).
 func TestScenarioHungTurnAfterALidClose(t *testing.T) {
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
@@ -154,12 +153,12 @@ func TestScenarioHungTurnAfterALidClose(t *testing.T) {
 	}
 	w.Check(s, "the wait is reported once", err)
 	err = nil
-	if holdAt == 0 || holdAt > lidCloseStallRuleHold {
+	if holdAt != lidCloseStallRuleHold {
 		err = fmt.Errorf("held at +%s, the stall rule alone at +%s", holdAt, lidCloseStallRuleHold)
 	} else if !strings.Contains(s.reason(), decide.HungTurnHoldReason) {
 		err = fmt.Errorf("held with %q", s.reason())
 	}
-	w.Check(s, "held with the hung-turn reason, no later than the stall rule", err)
+	w.Check(s, "held with the hung-turn reason, at the stall rule's own check", err)
 }
 
 // lidCloseStallRuleHold is when the stall rule alone holds that journey,

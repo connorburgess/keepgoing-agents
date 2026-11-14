@@ -108,7 +108,7 @@ func TestHungTurnIsWaitedOnThenHeldAtAnyOutageLength(t *testing.T) {
 				case after < 30*time.Minute:
 					want[after] = "active"
 				case after == hold:
-					want[after] = "no progress after 3 nudges; " + decide.HungTurnHoldReason
+					want[after] = "no progress after 3 nudges (3" + decide.HeldNudgesClause + "); " + decide.HungTurnHoldReason
 				case (after-30*time.Minute)%time.Hour == 0:
 					want[after] = decide.HungTurnNudgeReason
 				default:
@@ -126,7 +126,7 @@ func TestHungTurnIsWaitedOnThenHeldAtAnyOutageLength(t *testing.T) {
 			if strings.Count(w.reportTypes(), "hung_turn") != 1 || strings.Count(w.reportTypes(), "await_user") != 1 {
 				t.Fatalf("reports %s", w.reportTypes())
 			}
-			if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || ctl.Note != "no progress after 3 nudges; "+decide.HungTurnHoldReason {
+			if ctl, _ := control.Load(w.dir); !ctl.AwaitingUser || ctl.Note != "no progress after 3 nudges (3"+decide.HeldNudgesClause+"); "+decide.HungTurnHoldReason {
 				t.Fatalf("%+v", ctl)
 			}
 		})

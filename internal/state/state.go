@@ -79,6 +79,13 @@ type File struct {
 	LastCheck         *Check    `json:"lastCheck,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
 	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because the
+	// turn looked hung, and LastHeldNudgeAt when the latest was. A held-back
+	// nudge sets LastWakeAt as a sent one does, to keep the stall rule's
+	// spacing; LastSentAt is when something was last actually sent.
+	HeldNudges        int       `json:"heldNudges,omitempty"`
+	LastHeldNudgeAt   time.Time `json:"lastHeldNudgeAt,omitempty"`
+	LastSentAt        time.Time `json:"lastSentAt,omitempty"`
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
 

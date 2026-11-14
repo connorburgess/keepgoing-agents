@@ -174,3 +174,25 @@ func TestHungTurnReportSetsNoFarAwayTime(t *testing.T) {
 		t.Fatalf("%q", text)
 	}
 }
+
+// The count of held-back nudges outlives a hand-back: a turn whose three
+// nudges were held back and which then logs once is held by the stall rule
+// with a reason that says they were, and nothing was sent.
+func TestHeldNudgesAreCountedThroughAHandBack(t *testing.T) {
+	w, p, run, back := hungJourney(t, 4*time.Hour)
+	for after := time.Duration(0); after <= 150*time.Minute; after += 10 * time.Minute {
+		run(back+after, true, "same")
+	}
+	if st, _ := state.Load(w.dir); st.HeldNudges != 3 || st.Nudges != 3 || !st.LastSentAt.IsZero() || st.LastHeldNudgeAt.IsZero() {
+		t.Fatalf("after three held-back nudges: held %d, nudges %d, last sent %v", st.HeldNudges, st.Nudges, st.LastSentAt)
+	}
+	// The turn logs once: it is handed back to the stall rule.
+	p.obs.Turn = &decide.TurnActivity{ID: "turn-example-1", LastActivityAt: t0.Add(back + 155*time.Minute)}
+	var r Result
+	for after := 160 * time.Minute; after <= 210*time.Minute; after += 10 * time.Minute {
+		r = run(back+after, true, "same")
+	}
+	if r.Action != "await_user" || r.Reason != "no progress after 3 nudges (3"+decide.HeldNudgesClause+")" || len(p.sent) != 0 {
+		t.Fatalf("%s (%s), %d sends", r.Action, r.Reason, len(p.sent))
+	}
+}

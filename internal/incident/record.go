@@ -537,6 +537,14 @@ func Cause(reason string) string {
 		return "child_unverified"
 	case "waiting on a person (pending interaction)":
 		return "input"
+	case decide.HungTurnNudgeReason:
+		return "nudge_held"
+	case decide.HungTurnReason:
+		return "hung_wait"
+	}
+	// The stall rule's hold after nudges that were held back.
+	if strings.HasPrefix(reason, "no progress after ") && strings.Contains(reason, decide.HeldNudgesClause+")") {
+		return "stall_limit_held"
 	}
 	for _, c := range []struct{ prefix, code string }{
 		{"loop deadline reached;", "deadline"}, {"loop send limit reached;", "send_limit"},
@@ -561,7 +569,7 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "other")
 }
 func cleanAction(value string) string {
 	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")

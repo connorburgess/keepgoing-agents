@@ -151,8 +151,11 @@ type Input struct {
 	ChildErrorNoticeAttempts int
 	MaxChildErrorNotices     int
 
-	Nudges    int // nudges since progress or the most recent turn end
-	MaxNudges int
+	Nudges int // nudges since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because
+	// the turn looked hung. It changes only how the hold is worded.
+	HeldNudges int
+	MaxNudges  int
 
 	Reprompts         int // re-prompts sent since the session last ran cleanly
 	MaxReprompts      int
@@ -268,7 +271,10 @@ func none(reason string) Decision { return Decision{Action: None, Reason: reason
 const (
 	HungTurnReason      = "turn silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it"
 	HungTurnNudgeReason = "nudge held back, not sent: the turn has been silent since before an outage or the computer sleeping and may be hung"
-	HungTurnHoldReason  = "the nudges were held back because the turn has been silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+	HungTurnHoldReason  = "the turn has been silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it. Run `keepgoing stop`, then `keepgoing resume`, or retry the turn in BB"
+	// HeldNudgesClause follows the count of held-back nudges in the stall
+	// rule's hold: "no progress after 3 nudges (3 held back, ...)".
+	HeldNudgesClause = " held back, not sent, because the turn looked hung"
 )
 
 // NetworkDownReason is recorded when recovery waits for connectivity.
@@ -418,7 +424,11 @@ func decideActive(in Input) Decision {
 			return none(NetworkDownReason)
 		}
 		if in.MaxNudges > 0 && in.Nudges >= in.MaxNudges {
-			return Decision{Action: AwaitUser, EpisodeSpent: true, StallHold: true, Reason: "no progress after " + itoa(in.Nudges) + " nudges"}
+			reason := "no progress after " + itoa(in.Nudges) + " nudges"
+			if in.HeldNudges > 0 {
+				reason += " (" + itoa(min(in.HeldNudges, in.Nudges)) + HeldNudgesClause + ")"
+			}
+			return Decision{Action: AwaitUser, EpisodeSpent: true, StallHold: true, Reason: reason}
 		}
 		return Decision{Action: Nudge, Reason: "no progress for " + in.UnchangedFor.Truncate(time.Minute).String()}
 	}

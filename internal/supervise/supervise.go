@@ -151,6 +151,8 @@ type Result struct {
 }
 
 type tick struct {
+	heldNudge   bool      // this check held back a nudge
+	wakeAtStart time.Time // LastWakeAt as this check found it
 	// claims are the session claims this check holds, by key. A check holds
 	// its active session's claim from before it first observes it until it
 	// ends, and a fallback's or the primary's before it probes or sends there.
@@ -527,6 +529,7 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
@@ -819,6 +822,9 @@ func (t *tick) run() error {
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
 	}
+	if t.st.Nudges == 0 {
+		t.st.HeldNudges = 0 // held-back nudges are part of the same count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -834,7 +840,7 @@ func (t *tick) run() error {
 		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
-		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
+		Nudges:   t.st.Nudges, HeldNudges: t.st.HeldNudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
@@ -1516,6 +1522,8 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
 		}, t.now)
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		t.st.HeldNudges++
+		t.st.LastHeldNudgeAt, t.heldNudge = t.now, true
 		if t.st.HungTurn != nil {
 			t.st.HungTurn.HeldNudges++
 		}
@@ -1660,6 +1668,11 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	// Something was sent this check when the time of the last wake moved
+	// and it was not for a held-back nudge.
+	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
+		t.st.LastSentAt = t.st.LastWakeAt
+	}
 	t.noteCheckGap()
 	t.st.CheckedAt = t.now
 	// The count is of consecutive checks. Any check that did not end in that

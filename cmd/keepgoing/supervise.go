@@ -644,7 +644,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
 	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	// A held-back nudge moves LastWakeAt without sending anything.
+	lastSent := st.LastSentAt
+	if lastSent.IsZero() && st.LastHeldNudgeAt.IsZero() {
+		lastSent = st.LastWakeAt // recorded before lastSentAt existed
+	}
+	fmt.Fprintf(w, "last sent: %s\n", when(lastSent))
+	if st.HeldNudges > 0 {
+		fmt.Fprintf(w, "last nudge held back: %s (the turn looked hung; %d of %d nudges held back, not sent)\n", when(st.LastHeldNudgeAt), st.HeldNudges, st.Nudges)
+	}
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
 	}

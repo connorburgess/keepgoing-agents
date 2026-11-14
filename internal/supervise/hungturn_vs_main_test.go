@@ -29,6 +29,7 @@ type side struct {
 	p       *fakeAdapter
 	results []Result
 	probes  int
+	sent    []int // sends made so far, after each check
 }
 
 func (s side) holdAt(steps []step) (time.Duration, bool) {
@@ -76,6 +77,7 @@ func runSide(t *testing.T, steps []step, withTurn, fallbacks bool, configure ...
 			t.Fatalf("+%s: %v", st.at, err)
 		}
 		s.results = append(s.results, r)
+		s.sent = append(s.sent, len(p.sent))
 	}
 	return s
 }
@@ -116,8 +118,24 @@ func compareWith(t *testing.T, fallbacks bool, steps []step, configure ...func(*
 	if b, m := strings.Count(branch.w.reportTypes(), "network_wait"), strings.Count(main.w.reportTypes(), "network_wait"); b != m {
 		t.Errorf("%d network_wait reports, the stall rule %d", b, m)
 	}
-	if len(branch.p.sent) > len(main.p.sent) {
-		t.Errorf("%d sends, the stall rule %d", len(branch.p.sent), len(main.p.sent))
+	// Every send the stall rule makes is made with the watch too, except
+	// each nudge it held back: nothing is sent on those checks, and so far
+	// the watch has sent exactly the stall rule's sends less its held ones.
+	held := 0
+	for i := range steps {
+		before := 0
+		if i > 0 {
+			before = branch.sent[i-1]
+		}
+		if branch.results[i].Reason == decide.HungTurnNudgeReason {
+			held++
+			if branch.sent[i] != before {
+				t.Errorf("+%s: a held-back nudge sent %d", steps[i].at, branch.sent[i]-before)
+			}
+		}
+		if branch.sent[i] != main.sent[i]-held {
+			t.Errorf("+%s: %d sends so far, the stall rule %d less %d held back", steps[i].at, branch.sent[i], main.sent[i], held)
+		}
 	}
 	return branch, main
 }
