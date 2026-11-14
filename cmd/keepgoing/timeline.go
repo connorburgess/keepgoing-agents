@@ -680,7 +680,16 @@ func describeIncident(r incident.Record) string {
 		if by == "" {
 			by = "an unrecorded caller"
 		}
-		return fmt.Sprintf("route list change saved: %s route %s in the loop's own list, by %s; recorded build %s; the loop uses it after its next configuration reload", c.Operation, timelineTarget(c.TargetKey), by, r.Build)
+		what := map[string]string{
+			"handoff_on":      "automatic handoff turned on",
+			"handoff_off":     "automatic handoff turned off",
+			"follow_standard": "the loop now follows the standard route list",
+			"own":             "the loop now has its own list, copied from the standard route list",
+		}[c.Operation]
+		if what == "" {
+			what = fmt.Sprintf("%s route %s in the loop's own list", c.Operation, timelineTarget(c.TargetKey))
+		}
+		return fmt.Sprintf("route list change saved: %s, by %s; recorded build %s; the loop uses it after its next configuration reload", what, by, r.Build)
 	}
 	if r.Kind != "tick" {
 		return "incident kind unavailable; no check or control save inferred"

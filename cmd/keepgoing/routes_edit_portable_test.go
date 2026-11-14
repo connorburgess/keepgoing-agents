@@ -102,3 +102,24 @@ func TestRouteEditReplacesTheListWhileItIsRead(t *testing.T) {
 		t.Fatalf("%d reads failed while the list was replaced", n)
 	}
 }
+
+// timelineOps lists the route_change events in a loop's timeline, as
+// operation/caller.
+func timelineOps(t *testing.T, cfg string) []string {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"timeline", "--json", "-c", cfg}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	var tl timelineReport
+	if err := json.Unmarshal(out.Bytes(), &tl); err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	for _, ev := range tl.Events {
+		if ev.Incident != nil && ev.Incident.RouteChange != nil {
+			ops = append(ops, ev.Incident.RouteChange.Operation+"/"+ev.Incident.RouteChange.Caller)
+		}
+	}
+	return ops
+}

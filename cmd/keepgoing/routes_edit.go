@@ -22,6 +22,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
@@ -1141,6 +1142,17 @@ func ownListAuthority(stateDir, caller string) *routeRefusal {
 		return refuseRoute("agent_identity", "This loop has no recorded owner, so only a person can change its list. Run this outside a BB thread, or from the thread that owns the loop.")
 	}
 	return nil
+}
+
+// recordRouteChange adds a change to a loop's routes to its timeline. A
+// change that names no route (handoff, follow-standard, own) passes "".
+func recordRouteChange(stateDir, op, id, caller string) error {
+	key := "unavailable"
+	if id != "" {
+		key = incident.TargetKey(id)
+	}
+	return incident.Append(stateDir, incident.Record{Kind: "route_change", CheckStartedAt: time.Now().UTC(), Build: version,
+		RouteChange: &incident.RouteChange{Operation: op, TargetKey: key, Caller: ownListCaller(caller)}})
 }
 
 // ownListCaller is who made a change to a loop's own list, as a role.

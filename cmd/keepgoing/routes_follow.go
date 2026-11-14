@@ -107,29 +107,33 @@ func routesFollow(e env, op string, args []string, input io.Reader) int {
 		printRouteSource(e, o)
 		return code
 	}
-	preview, code := routeSourceChange(req, path, *file, false)
-	if preview.Outcome != "preview" || *dryRun {
-		if *dryRun && preview.Outcome == "preview" && !*asJSON {
+	// A reviewed apply goes straight to the lock, where the plan is made
+	// again and compared: a no-op or a refusal there is review_again too.
+	if req.expect == "" {
+		preview, code := routeSourceChange(req, path, *file, false)
+		if preview.Outcome != "preview" || *dryRun {
+			if *dryRun && preview.Outcome == "preview" && !*asJSON {
+				printRouteSource(e, preview)
+				fmt.Fprintln(e.stdout, "\nDry run: nothing written.")
+				return exitOK
+			}
+			return out(preview, code)
+		}
+		if !*yes {
 			printRouteSource(e, preview)
-			fmt.Fprintln(e.stdout, "\nDry run: nothing written.")
-			return exitOK
+			fmt.Fprintln(e.stdout)
+			w := &fallbackAddWizard{e: e, r: bufio.NewReader(input)}
+			ok, err := w.askYesNo("Write this change? (yes/no)", "no")
+			if err != nil {
+				e.errf("routes %s: %v; nothing written", op, err)
+				return exitUsage
+			}
+			if !ok {
+				fmt.Fprintln(e.stdout, "\nCancelled: nothing written.")
+				return exitOK
+			}
+			req.expect = preview.Expect
 		}
-		return out(preview, code)
-	}
-	if !*yes {
-		printRouteSource(e, preview)
-		fmt.Fprintln(e.stdout)
-		w := &fallbackAddWizard{e: e, r: bufio.NewReader(input)}
-		ok, err := w.askYesNo("Write this change? (yes/no)", "no")
-		if err != nil {
-			e.errf("routes %s: %v; nothing written", op, err)
-			return exitUsage
-		}
-		if !ok {
-			fmt.Fprintln(e.stdout, "\nCancelled: nothing written.")
-			return exitOK
-		}
-		req.expect = preview.Expect
 	}
 	if err := e.ctx.Err(); err != nil {
 		e.errf("routes %s: %v", op, err)
@@ -170,16 +174,21 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 	if info, err := os.Lstat(cfg.Path()); err != nil || !info.Mode().IsRegular() {
 		return routeChangeRefused(req, refuseRoute("edit_by_hand", "keepgoing.yaml is a symbolic link or not a regular file.")), exitUsage
 	}
+	if ref := ownListAuthority(cfg.Loop.StateDir, req.caller); ref != nil {
+		return routeChangeRefused(req, ref), exitUsage
+	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
-		reason := "sources_changed"
-		if strings.HasPrefix(err.Error(), "Ownership:") {
-			reason = "not_owner"
-		}
-		return routeChangeRefused(req, refuseRoute(reason, "%v", err)), code
+		return routeChangeRefused(req, allowedRefusal(err)), code
 	}
 	p, ref := planRouteSource(req, cfg, file)
 	if ref != nil {
+		if apply && req.expect != "" {
+			return routeReviewAgain(newRouteChangeOut(req)), exitSkipped
+		}
 		return routeChangeRefused(req, ref), exitUsage
+	}
+	if apply && req.expect != "" && req.expect != p.out.Expect {
+		return routeReviewAgain(p.out), exitSkipped
 	}
 	if !apply || p.out.Outcome == "unchanged" {
 		return p.out, exitOK
@@ -192,7 +201,13 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 		return routeChangeRefused(req, refuseRoute("busy", "The loop's lock could not be taken; nothing written.")), exitFailed
 	}
 	defer l.Release()
+	if ref := ownListAuthority(cfg.Loop.StateDir, req.caller); ref != nil {
+		return routeChangeRefused(req, ref), exitUsage
+	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
+		if ref := allowedRefusal(err); ref.Code == "not_owner" {
+			return routeChangeRefused(req, ref), code
+		}
 		return routeReviewAgain(p.out), code
 	}
 	// Under the lock the plan is made again from what is on disk now, and
@@ -211,6 +226,9 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 	}
 	if err := writeRouteSource(again); err != nil {
 		return routeChangeRefused(req, refuseRoute("write_failed", "%v", err)), exitFailed
+	}
+	if recordRouteChange(cfg.Loop.StateDir, req.op, "", req.caller) != nil {
+		again.out.Warnings = append(again.out.Warnings, "the change was saved, but could not be recorded in the loop's history (keepgoing timeline)")
 	}
 	again.out.Outcome = "changed"
 	return again.out, exitOK

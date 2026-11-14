@@ -41,6 +41,9 @@ func TestMain(m *testing.M) {
 	for _, v := range envvar.Set {
 		os.Unsetenv(v.Legacy())
 	}
+	// Nor the BB thread identity of the shell that runs the tests: a test
+	// that is a BB thread says so with t.Setenv.
+	os.Unsetenv("BB_THREAD_ID")
 	code := m.Run()
 	panelTestCleanup() // the binary and launcher the panel tests share
 	os.RemoveAll(private)

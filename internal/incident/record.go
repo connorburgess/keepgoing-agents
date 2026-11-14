@@ -78,7 +78,9 @@ type ControlChange struct {
 // is named by its hashed key, as targets are; who made it is a role, never
 // an identity.
 type RouteChange struct {
-	// Operation is move, remove, off or on.
+	// Operation is move, remove, off, on or add, which name a route, or
+	// handoff_on, handoff_off, follow_standard or own, which change the list
+	// as a whole and have targetKey unavailable.
 	Operation string `json:"operation"`
 	TargetKey string `json:"targetKey"`
 	// Caller is owner_thread (the BB thread that owns the loop) or terminal
@@ -465,7 +467,7 @@ func clean(r Record) Record {
 	if r.Kind == "route_change" && r.RouteChange != nil {
 		// A route-list change runs no check: only what was changed and by whom.
 		c := *r.RouteChange
-		c.Operation = oneOf(c.Operation, "unavailable", "move", "remove", "off", "on")
+		c.Operation = oneOf(c.Operation, "unavailable", "move", "remove", "off", "on", "add", "handoff_on", "handoff_off", "follow_standard", "own")
 		c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "terminal")
 		if !keyPattern.MatchString(c.TargetKey) {
 			c.TargetKey = "unavailable"

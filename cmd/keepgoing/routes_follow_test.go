@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -162,5 +164,43 @@ func TestInitOffersTheStandardListOnlyWhenAsked(t *testing.T) {
 	os.Remove(list)
 	if code, _, errOut = f.run(t, append(f.args(), "--directory", filepath.Join(f.root, "none"), "--routes", "standard"), ""); code == 0 || !strings.Contains(errOut, "no standard route list has been written") {
 		t.Fatalf("no list: %d %s", code, errOut)
+	}
+}
+
+func TestRoutesFollowAndFallbacksAddHandoffShareTheOwnListRule(t *testing.T) {
+	r := newRoutesFixture(t)
+	write(t, r.list, routesStandardList, 0o600)
+	before, _ := os.ReadFile(r.own.cfg)
+	// An agent, on a loop with no recorded owner, is refused everywhere.
+	t.Setenv("BB_THREAD_ID", "thr_fictional_agent")
+	if code, v, _ := r.change("follow-standard", "--loop", "example-loop", "--yes"); code == 0 || v.Refusal == nil || v.Refusal.Code != "agent_identity" {
+		t.Fatalf("follow-standard: %d %+v", code, v)
+	}
+	for _, args := range [][]string{
+		{"fallbacks", "handoff", "off", "--yes"},
+		{"fallbacks", "add", "--non-interactive", "--agent", "bb", "--thread", "thr_example_other", "--provider", "codex"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), append(args, "-c", r.own.cfg), &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "no recorded owner") {
+			t.Fatalf("%v: %d %s", args, code, &errb)
+		}
+	}
+	if after, _ := os.ReadFile(r.own.cfg); string(after) != string(before) {
+		t.Fatal("written after a refusal")
+	}
+	// A person: a reviewed no-op is review_again, and each change is in the timeline.
+	t.Setenv("BB_THREAD_ID", "")
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"fallbacks", "handoff", "off", "--yes", "-c", r.own.cfg}, &out, &errb); code != 0 {
+		t.Fatalf("handoff off: %s", &errb)
+	}
+	if code, v, _ := r.change("own", "--loop", "example-loop", "--yes", "--expect", "stale"); code != exitSkipped || v.Outcome != "review_again" {
+		t.Fatalf("reviewed no-op: %d %+v", code, v)
+	}
+	if code, v, _ := r.change("follow-standard", "--loop", "example-loop", "--yes"); code != 0 || v.Outcome != "changed" {
+		t.Fatalf("follow: %d %+v", code, v)
+	}
+	if got := strings.Join(timelineOps(t, r.own.cfg), ","); got != "handoff_off/terminal,follow_standard/terminal" {
+		t.Fatalf("timeline: %s", got)
 	}
 }
