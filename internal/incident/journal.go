@@ -118,7 +118,7 @@ func Reserved(tier string) int {
 // Corrupt, oversized, aliased or future-schema history is never silently reset.
 func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Journal{SchemaVersion: SchemaVersion, NextSequence: 1, Records: []Record{}}, nil
 	}

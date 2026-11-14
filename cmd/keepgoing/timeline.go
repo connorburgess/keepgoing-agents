@@ -654,7 +654,7 @@ func timelineGate(c *incident.Controls) string {
 func readTimelineControl(dir string) timelineControl {
 	unavailable := timelineControl{Availability: "unavailable", State: "unavailable"}
 	p := filepath.Join(dir, control.FileName)
-	info, err := os.Lstat(p)
+	info, err := snapshot.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return timelineControl{Availability: "not_recorded", State: "disabled", Flags: &incident.Controls{}}
 	}

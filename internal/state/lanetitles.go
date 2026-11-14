@@ -102,7 +102,7 @@ func SaveLaneTitles(dir string, checkedAt time.Time, titles map[string]string) e
 // an uncleaned title is ErrLaneTitles.
 func LoadLaneTitles(dir string) (*LaneTitles, error) {
 	path := filepath.Join(dir, LaneTitlesName)
-	if info, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	if info, err := snapshot.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil || !info.Mode().IsRegular() || info.Size() > maxLaneBytes {
 		return nil, ErrLaneTitles
