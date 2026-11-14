@@ -10,36 +10,39 @@ Releases through v0.1.5 are Apache-2.0 and their archives hold the executable, `
 - **Third-party notices.** `THIRD_PARTY_NOTICES` reproduces the terms of the Go runtime and standard library and of every module linked into the executable. `scripts/build-release.sh` runs `scripts/third-party-notices.sh --check` first and stops when the file does not match the modules of the six release targets, so a module added without its notice cannot be released. Pull-request CI runs the same check. After adding or updating a module, run `scripts/third-party-notices.sh`, read the result and commit it.
 - **Homebrew formula.** The tap is a separate repository. Its formula installs v0.1.5 today, which stays Apache-2.0, so its license field is correct until then. The formula update for the first release under the new license must change that field with the URLs and checksums, and its install check should confirm the new files are present. Do not change the field before that release.
 
-## v0.2.0 candidate preparation
+## v0.2.0 release preparation
 
-Proposed version **v0.2.0**, the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, and collect the upgrade and rollback notes. Nothing has been tagged or published. The Homebrew formula is unchanged and still installs v0.1.5.
+**v0.2.0** is the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, collect the upgrade and going-back notes, and cover BB plugin v0.3.0. **Not yet tagged or published**; tagging is the owner's decision after reading the notes. The Homebrew formula is unchanged and still installs v0.1.5.
 
-Candidate evidence:
-- **Build.** A clean export (`git archive`) of main `eb224083eda0d17d725e4f2ed82f693088b03012` built all six `v0.2.0-rc.1` archives with `scripts/build-release.sh v0.2.0-rc.1` on macOS arm64. The script's `scripts/third-party-notices.sh --check` passed first.
-- **Checksums.** Every archive matched `checksums.txt`.
+**Scope.** Main `f0bfbc87` is the last in-scope merge (#218); nothing out of scope (timing U4 and U5, the BB New-thread control #181) is in it. Since the first candidate it adds #217, #220, #221, #216, #223, #224 and #218, and the roadmap repair #219.
+
+Final candidate evidence, from a clean export (`git archive`) of release-notes commit `04bb1df`. Its code is main `f0bfbc87`; it differs only in documentation and the plugin's version (0.3.0), and the plugin is not in the archives.
+- **Build.** `scripts/build-release.sh v0.2.0` on macOS arm64 built all six archives; its `scripts/third-party-notices.sh --check` passed first.
+- **Checksums.** All six matched `checksums.txt`.
 - **Archive inventory.** Each archive holds exactly the executable, `README.md`, `LICENSE`, `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`, with no AppleDouble or other files, as required [above](#archive-contents-and-packaging-from-the-next-release). Both Windows ZIPs passed integrity checks.
-- **The macOS executable.** The unpacked macOS arm64 executable reported `v0.2.0-rc.1`, with SHA-256 `06aa60abfdf1af591e212087fd6dbae5bc92a7b5ecf4c5db5176a8a059218c92`.
-- **`scripts/smoke-release.py` against it.** All six setup variants passed (BB, Claude Code and Codex, each prompt-only and goal), covering setup, offline diagnostics, holds, completion and ownership, with zero provider commands.
-- **`scripts/smoke-recovery.py` against it.** All four journeys passed (BB, process, Claude Code, Codex), covering failure, alert rejection, held-daemon SIGKILL and restart, explicit recovery, completion, and preserved allowance and owner. With `--include-cursor`, the Cursor journey passed as well.
-- **The BB plugin.** The same export installed the plugin with `npm ci --omit=dev --omit=optional --ignore-scripts` and built its server, app and host bundles with `bb plugin build` (BB 0.48.1, SDK 0.6.104). Every bundle's metadata reports plugin `0.2.0`, the version at that commit; this release sets it to `0.3.0`, and the final candidate's build must report that.
+- **The macOS executable.** The unpacked macOS arm64 executable reported `v0.2.0`, with SHA-256 `25282202092e4d02c264f21a7e5f3363f6d6f86e165c3f30224b9918018cfc22`.
+- **`scripts/smoke-release.py`.** It now runs in a home of its own (#223). Against that executable, all six setup variants passed (BB, Claude Code and Codex, each prompt-only and goal) with zero provider commands. The caller's `HOME` and `XDG_*` were pointed at an empty directory, which was still empty afterwards.
+- **`scripts/smoke-recovery.py --include-cursor`.** All five journeys passed (BB, process, Claude Code, Codex, Cursor), covering failure, alert rejection, held-daemon SIGKILL and restart, explicit recovery, completion, and preserved allowance and owner.
+- **The BB plugin.** `npm ci --omit=dev --omit=optional --ignore-scripts`, then `bb plugin build` (BB 0.48.1, SDK 0.6.104), built the server, app and host bundles. All three report plugin **0.3.0**.
 
-**Found while running the checks.** `scripts/smoke-release.py` inherited the caller's `HOME`, and its checks left six session claims in the user's state directory (`~/Library/Application Support/keepgoing/sessions` on macOS), although it reported its loops removed. `scripts/smoke-recovery.py` already set its own home. These runs set `HOME` and the `XDG_*` directories to a throwaway directory, so no real user state was touched. [#223](https://github.com/connorburgess/keepgoing-agents/pull/223) makes the release smoke use a home of its own; the final candidate is checked with it.
+**Earlier candidate.** `v0.2.0-rc.1`, from main `eb224083`, passed the same checks (macOS arm64 executable SHA-256 `06aa60abfdf1af591e212087fd6dbae5bc92a7b5ecf4c5db5176a8a059218c92`). That run found the release smoke leaving session claims in the caller's state directory, fixed in #223.
 
 **Not run:**
-- the Go test suite on the export (CI runs it on every pull request, and the release workflow runs it before building);
+- the Go test suite on the export (CI runs it on every pull request, and the release workflow before building);
 - native execution of the Linux, Windows and Intel macOS archives;
 - downloaded-asset verification;
-- the Homebrew formula update and fresh-install check;
+- the Homebrew formula update (with its licence field) and fresh-install check;
 - actual Git installation of the plugin;
 - any live provider or first-loop walkthrough.
 
-**Before tagging:**
-1. Rebuild the six archives from the final checked commit, with the final version label. It includes the work merged after this candidate that this release announces (#216, #217, #218, #220, #221) and the smoke fix (#223).
-2. Repeat the checks above against that build, including the plugin build reporting `0.3.0`.
-3. Set the release date in the changelog.
-4. Point the BB plugin README's install line at the new tag.
+These are local artifacts; the release workflow builds the published ones from the tag.
 
-Publication, downloaded-asset checks, the Homebrew formula (with its licence field) and the plugin's install remain separate gates.
+**After the owner's go-ahead:**
+1. Tag the merge of this preparation (its tree is these archives' source, with this record added).
+2. Let the release workflow publish.
+3. Download and verify the published assets.
+4. Update the Homebrew formula, licence field included, and check a fresh install.
+5. Check the plugin's Git installation from the tag.
 
 ## v0.1.5 release and package evidence
 
