@@ -33,18 +33,25 @@ func FromRecords(cfg *config.Config, st state.File, reg *health.Registry, now ti
 			in.MovedByFailover = !st.LastHandoffAt.IsZero()
 		}
 	}
-	if tr := st.Timing; tr != nil {
-		if tr.LastMove != nil {
-			m := tr.LastMove
-			in.LastMove = &Move{At: m.At, From: m.From, To: m.To, Action: m.Action, Window: m.Window, ResetsAt: m.ResetsAt}
+	move := func(m *state.TimingMove) *Move {
+		if m == nil {
+			return nil
 		}
+		return &Move{At: m.At, From: m.From, To: m.To, Action: m.Action, Window: m.Window, ResetsAt: m.ResetsAt}
+	}
+	if tr := st.Timing; tr != nil {
+		in.LastMove, in.LastStepUp = move(tr.LastMove), move(tr.LastUp)
 		if r := tr.Retarget; r != nil {
 			in.Retarget = &Retarget{At: r.At, ResetsAt: r.ResetsAt}
 		}
+		if tr.Capped {
+			in.GaveUp = &Move{To: tr.FailedTo, Action: tr.FailedAction, Window: tr.FailedWindow, ResetsAt: tr.FailedResetsAt}
+		}
 	}
 	if in.Retarget == nil && in.Current != First && st.TargetSetBy == state.SetByRetarget {
-		// A retarget made while timing was off: wait for the next reset.
-		in.Retarget = &Retarget{}
+		// A retarget with no record of its own: timing waits as for one made
+		// now, and a check saves it so the wait is not moved again.
+		in.Retarget = &Retarget{At: now}
 	}
 	if reg != nil {
 		first := l.PrimaryCandidate()
@@ -74,4 +81,12 @@ func RetargetReset(in Input) *time.Time {
 		}
 	}
 	return nil
+}
+
+// LeftConfiguration: the loop is on a step timing chose that is no longer a
+// step, because timing was turned off or the step was dropped from steps. The
+// next turn boundary returns it to the first route.
+func LeftConfiguration(l config.Loop, st state.File) bool {
+	target := st.Target()
+	return st.TargetSetBy == state.SetByTiming && target != First && (!l.TimingOn() || l.Timing.StepIndex(target) < 0)
 }

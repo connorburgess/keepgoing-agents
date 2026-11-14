@@ -49,7 +49,7 @@ const (
 	InError              = "in_error"
 	OtherMove            = "other_move"
 	TurnNotEnded         = "turn_not_ended"
-	RefusalOrUnknown     = "refusal_or_unknown"
+	UnknownState         = "unknown_state"
 	OnFallbackByFailover = "on_fallback_by_failover"
 	Retargeted           = "retargeted"
 	NotOnStep            = "not_on_step"
@@ -65,6 +65,7 @@ const (
 	AtCeiling        = "at_ceiling"
 	AlreadySteppedUp = "already_stepped_up"
 	OtherWindowHigh  = "other_window_high"
+	GaveUp           = "gave_up" // timing stopped trying this step up for the window instance
 	// Several rules.
 	TooSoon = "too_soon" // less than min_on_step since the last timing move
 	// RuleNothingDue.
@@ -75,7 +76,7 @@ const (
 	NoNamedWindow  = "no_named_window"
 )
 
-// Move is the last move timing made, as U5 will record it.
+// Move is a move timing made, as state records it.
 type Move struct {
 	At       time.Time
 	From, To string
@@ -105,16 +106,24 @@ type Input struct {
 	MovedByFailover bool
 	Retarget        *Retarget
 	LastMove        *Move
+	// LastStepUp is the last step up timing made, kept apart from LastMove
+	// so a step back in between does not allow a second step up for the same
+	// window instance.
+	LastStepUp *Move
+	// GaveUp is a step up timing stopped trying after repeated failures, for
+	// its window instance.
+	GaveUp *Move
 	// Usage and History are the latest reading and the recorded readings of
 	// the first route's account, nil when none is recorded for it.
 	Usage   *probe.Usage
 	History *allowance.History
 	// The check's outcome.
-	Held             bool
-	InError          bool
-	OtherMove        bool
-	TurnEnded        bool
-	RefusalOrUnknown bool
+	Held      bool
+	InError   bool
+	OtherMove bool
+	TurnEnded bool
+	// Unknown: the session's last observed state is unknown.
+	Unknown bool
 }
 
 // Decision is what timing would do, and why.
@@ -150,8 +159,8 @@ func Decide(in Input) Decision {
 		return gate(InError)
 	case in.OtherMove:
 		return gate(OtherMove)
-	case in.RefusalOrUnknown:
-		return gate(RefusalOrUnknown)
+	case in.Unknown:
+		return gate(UnknownState)
 	case !in.TurnEnded:
 		return gate(TurnNotEnded)
 	case in.MovedByFailover:
@@ -231,8 +240,10 @@ func Decide(in Input) Decision {
 		d.Rule, d.Window, d.ResetsAt, d.ResetsIn, d.Unused, d.ReadingAge = RuleStepUp, key, &at, at.Sub(in.Now), 1-w.Used, age
 		ceiling := t.StepIndex(t.Ceiling)
 		switch {
-		case in.LastMove != nil && in.LastMove.Action == Up && in.LastMove.Window == key && sameReset(in.LastMove.ResetsAt, at):
+		case steppedUpFor(in.LastStepUp, key, at) || steppedUpFor(in.LastMove, key, at):
 			d.Reason = AlreadySteppedUp
+		case in.GaveUp != nil && in.GaveUp.To == t.Ceiling && in.GaveUp.Window == key && sameReset(in.GaveUp.ResetsAt, at):
+			d.Reason = GaveUp
 		case cur >= ceiling:
 			d.Reason = AtCeiling
 		case in.otherWindowHigh(key):
@@ -344,6 +355,11 @@ func (in Input) otherWindowHigh(key string) bool {
 	return false
 }
 
+// steppedUpFor reports whether m is a step up for the window instance.
+func steppedUpFor(m *Move, key string, at time.Time) bool {
+	return m != nil && m.Action == Up && m.Window == key && sameReset(m.ResetsAt, at)
+}
+
 func sameReset(a, b time.Time) bool {
 	d := a.Sub(b)
 	return d <= allowance.SameReset && d >= -allowance.SameReset
@@ -369,8 +385,8 @@ func (d Decision) Text(duration func(time.Duration) string) string {
 		return "stay: the session is in error; the error rules decide"
 	case OtherMove:
 		return "stay: another move was decided in this check"
-	case RefusalOrUnknown:
-		return "stay: the last turn ended in a refusal or an unknown state"
+	case UnknownState:
+		return "stay: the session's last observed state is unknown"
 	case TurnNotEnded:
 		return "stay: a turn is running; timing acts only at a turn boundary"
 	case OnFallbackByFailover:
@@ -385,6 +401,8 @@ func (d Decision) Text(duration func(time.Duration) string) string {
 		return fmt.Sprintf("stay at %s, the ceiling, although the %s allowance resets in %s with %d%% unused", d.Current, d.Window, duration(d.ResetsIn), pct(d.Unused))
 	case AlreadySteppedUp:
 		return fmt.Sprintf("stay: timing already stepped up for this %s window", d.Window)
+	case GaveUp:
+		return fmt.Sprintf("stay: timing stopped trying to step up for this %s window after repeated failures", d.Window)
 	case OtherWindowHigh:
 		return fmt.Sprintf("stay: the %s allowance resets in %s with %d%% unused, but another named window is at or projected near its limit", d.Window, duration(d.ResetsIn), pct(d.Unused))
 	case TooSoon:

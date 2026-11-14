@@ -111,6 +111,10 @@ type File struct {
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
 
 	ActiveTarget string `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
+	// ReapplyRoute: the loop was moved to ActiveTarget without its model and
+	// effort being set on the thread (its route left the configuration). The
+	// next check that acts sets them.
+	ReapplyRoute bool `json:"reapplyRoute,omitempty"`
 	// TargetSetBy says what put the loop on ActiveTarget: handoff,
 	// new_thread, switch_back, retarget, timing or configuration. Empty in
 	// state written before it existed. Usage-aware timing never moves a loop
@@ -638,17 +642,26 @@ type TimingRecord struct {
 	// LastMove is the last step timing made. It is kept after a handoff, so
 	// timing does not step up twice for one window instance.
 	LastMove *TimingMove `json:"lastMove,omitempty"`
+	// LastUp is the last step up, kept apart from LastMove so a step back in
+	// between does not allow a second step up for one window instance.
+	LastUp *TimingMove `json:"lastUp,omitempty"`
 	// Pending is a step recorded before the thread was changed and not yet
 	// settled. The next check makes the thread match ActiveTarget again.
 	Pending *TimingMove `json:"pending,omitempty"`
 	// Retarget is a person's retarget timing waits on, until ResetsAt.
 	Retarget *TimingRetarget `json:"retarget,omitempty"`
-	// Failures counts failed activations of FailedTo for the window instance
-	// resetting at FailedResetsAt; Capped is set once they reach the cap.
+	// Failures counts failed activations of FailedTo (FailedAction up, down
+	// or back) for the window instance resetting at FailedResetsAt. Only a
+	// step up is capped: Capped is set once its failures reach the cap. A
+	// return or a step down is tried at every turn boundary; FailReported is
+	// set once its first failure was reported.
 	Failures       int       `json:"failures,omitempty"`
 	FailedTo       string    `json:"failedTo,omitempty"`
+	FailedAction   string    `json:"failedAction,omitempty"`
+	FailedWindow   string    `json:"failedWindow,omitempty"`
 	FailedResetsAt time.Time `json:"failedResetsAt,omitempty"`
 	Capped         bool      `json:"capped,omitempty"`
+	FailReported   bool      `json:"failReported,omitempty"`
 }
 
 // TimingMove is one step: from and to route IDs, up, down or back, the
