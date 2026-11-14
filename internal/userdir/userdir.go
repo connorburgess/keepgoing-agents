@@ -83,6 +83,11 @@ var Entries = []string{"registry", "routes.yaml", "loops", "sessions", "panel"}
 // place that cannot be inspected counts as holding the earlier name: the
 // choice that leaves an existing setup where it is.
 //
+// Two exceptions, both for keepgoing migrate. In a place where the earlier
+// name is only a link to the directory of the current name beside it, as a
+// move leaves it, that place counts as holding the current name. And while
+// a move is between its steps in any place, the current name is in use.
+//
 // The decision is made afresh by every command and never remembered. Two
 // commands can still decide differently: around the moment an entry of the
 // earlier name first appears (a build from before the rename ran), and when
@@ -91,12 +96,65 @@ var Entries = []string{"registry", "routes.yaml", "loops", "sessions", "panel"}
 // through that by the claim itself, which looks under both names; see
 // session.Take.
 func NameIn(bases ...string) string {
+	// A move that is between its steps in one place (see Place.Move) has
+	// the files there under the current name only. The current name is in
+	// use until it is finished, whatever the other place holds: what is
+	// there is session claims and the panel's files, which are found under
+	// either name.
 	for _, base := range bases {
+		if betweenMoveSteps(base) {
+			return Name
+		}
+	}
+	for _, base := range bases {
+		// A link of the earlier name to the directory of the current name
+		// beside it is what keepgoing migrate leaves: the files are under
+		// the current name, and the link is for builds from before the
+		// rename and for paths recorded with the earlier name.
+		if linksToCurrent(base) {
+			continue
+		}
 		if found, unknown := earlierEntry(base); found != "" || unknown {
 			return LegacyName
 		}
 	}
 	return Name
+}
+
+// betweenMoveSteps reports whether a move in either direction stopped in
+// base between its steps: its marker is there, the directory of the current
+// name is there, and nothing of the earlier name is.
+func betweenMoveSteps(base string) bool {
+	if base == "" {
+		return false
+	}
+	if info, err := os.Lstat(filepath.Join(base, markerName)); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(base, LegacyName)); !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(base, Name))
+	return err == nil && info.IsDir()
+}
+
+// linksToCurrent reports whether base holds the earlier name as a symbolic
+// link to the directory of the current name beside it, written either as
+// that name or as its full path.
+func linksToCurrent(base string) bool {
+	if base == "" {
+		return false
+	}
+	link := filepath.Join(base, LegacyName)
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		return false
+	}
+	return target == Name || filepath.Clean(target) == filepath.Join(base, Name)
 }
 
 // earlierEntry returns one of the tool's own entries under the earlier name

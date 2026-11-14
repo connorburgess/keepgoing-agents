@@ -62,7 +62,7 @@ type Record struct {
 
 const (
 	livenessLock = "lock"
-	turnLock     = "turn"
+	turnLock     = "turn" // listed in migrateLockNames (cmd/keepgoing/migrate.go); so must any new lock file
 )
 
 // wrapperStartTimeout bounds two waits: Start's wait for the turn lock, and
