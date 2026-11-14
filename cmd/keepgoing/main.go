@@ -45,7 +45,7 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   validate                 Check the configuration file and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
-  adapter check            Check that the loop's agent keeps the adapter contract; runs the status command once and changes nothing
+  adapter check            Check one process status observation; no resume/stop or loop-state writes by this command
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
 
 Transfer planning:

@@ -129,7 +129,7 @@ func TestAdapterCheckOnAProcessAdapterOnlyRunsTheStatusCommand(t *testing.T) {
 	// The text form says the same and names what was not run.
 	var text, errs bytes.Buffer
 	if code := run(context.Background(), []string{"adapter", "check", "-c", cfg}, &text, &errs); code != exitOK ||
-		!strings.Contains(text.String(), "Nothing was sent, stopped or written") || !strings.Contains(text.String(), "pass     one-state") {
+		!strings.Contains(text.String(), "does not itself write loop state") || !strings.Contains(text.String(), "pass     one-state") {
 		t.Fatalf("%d %s", code, text.String())
 	}
 }
@@ -166,7 +166,7 @@ func TestAdapterCheckRefusesAdaptersWhoseStatusReadHasSideEffects(t *testing.T) 
 			before := snapshotTree(t, dir)
 			var out, errs bytes.Buffer
 			code := run(context.Background(), []string{"adapter", "check", "-c", cfg}, &out, &errs)
-			if code != exitUsage || out.Len() != 0 || !strings.Contains(errs.String(), tt.says) || !strings.Contains(errs.String(), "Nothing was read, started or written") {
+			if code != exitUsage || out.Len() != 0 || !strings.Contains(errs.String(), tt.says) || !strings.Contains(errs.String(), "No adapter was constructed or invoked") {
 				t.Fatalf("%d %s %s", code, out.String(), errs.String())
 			}
 			if after := snapshotTree(t, dir); after != before {
@@ -198,6 +198,9 @@ func TestAdapterCheckReportsWhatAWrapperGetsWrong(t *testing.T) {
 		"waiting on a person":   {`{"state":"idle","awaitingInput":true}`, nil, "30s", conformance.Pass, "read as idle, awaiting input"},
 		"pending":               {`{"state":"pending"}`, nil, "30s", conformance.Pass, "read as pending"},
 		"stopping":              {`{"state":"stopping"}`, nil, "30s", conformance.Pass, "read as stopping"},
+		"refused":               {`{"state":"error","errorClass":"refused"}`, nil, "30s", conformance.Pass, "read as error, class refused"},
+		"restricted":            {`{"state":"error","errorClass":"restricted"}`, nil, "30s", conformance.Pass, "read as error, class restricted"},
+		"policy prose":          {`{"state":"error","errorClass":"request refused by policy"}`, nil, "30s", conformance.Pass, "read as error, class unknown"},
 		"a coded failure":       {`{"state":"error","errorClass":"rate_limit"}`, nil, "30s", conformance.Pass, "read as error, class rate_limit"},
 		"prose for a class":     {`{"state":"error","errorClass":"usage limit reached"}`, nil, "30s", conformance.Pass, "read as error, class unknown"},
 		"a failed exit":         {`{"state":"idle"}`, map[string]string{envCheckExit: "3"}, "30s", conformance.Pass, "read as error, class unknown"},
@@ -279,5 +282,26 @@ func TestAdapterCheckUsesCurrentConfigNameRules(t *testing.T) {
 				t.Fatalf("ambiguous or empty path started a status command: %v", err)
 			}
 		})
+	}
+}
+
+func TestAdapterCheckTextQualifiesExecutionAndCoverage(t *testing.T) {
+	for _, listing := range []bool{false, true} {
+		var out bytes.Buffer
+		r := adapterCheckReport{Adapter: "process", Target: "primary", Results: []conformance.Result{{ID: "one-state", Outcome: conformance.Fail, Detail: "could not build the adapter"}}}
+		printAdapterCheck(env{stdout: &out}, r, false, listing)
+		text := out.String()
+		for _, falseClaim := range []string{"Every adapter, built in or your own, is run", "was run once", "Nothing was sent, stopped or written"} {
+			if strings.Contains(text, falseClaim) {
+				t.Errorf("false claim %q: %s", falseClaim, text)
+			}
+		}
+		if listing {
+			if !strings.Contains(text, "process, Claude Code and Codex") {
+				t.Error(text)
+			}
+		} else if !strings.Contains(text, "not sandboxed") || !strings.Contains(text, "does not itself write loop state") {
+			t.Error(text)
+		}
 	}
 }

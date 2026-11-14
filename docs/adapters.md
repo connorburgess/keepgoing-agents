@@ -370,7 +370,7 @@ The matrix says what each adapter supports. The contract says what every adapter
 
 | Case | Contract |
 | --- | --- |
-| `one-state` | A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries `rate_limit`, `auth`, `overloaded` or `network` only when something structured says so. |
+| `one-state` | A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries `rate_limit`, `auth`, `restricted`, `refused`, `overloaded` or `network` only when something structured says so. |
 | `known-situations` | An idle agent reads as idle and a working agent as active. |
 | `never-guess` | Output that is not the agent's status format reads as unknown, never as idle, active or a specific error class. |
 | `waiting-on-person` | An agent blocked on a person is reported as awaiting input, so the supervisor holds and does not send to it. |
@@ -416,13 +416,13 @@ keepgoing adapter check -c /private/example-loop/looptender.yaml
 
 Use the generated configuration path with `-c`. Without `-c`, the command uses the [usual configuration name rules](configuration.md); an explicitly empty path or two distinct default files is refused. Loaded configuration sources are checked again before the status command starts; this takes no lock and cannot fence external edits.
 
-For a loop on the process adapter this runs the loop's status command once, the way a check does, and reports the state it read, so a wrapper that always answers unknown is visible. It fails when the read takes longer than `--limit` (default 30s) or returns something that is not one valid state. It runs no resume or stop command, takes no lock and writes no file. `--target ID` checks a fallback candidate. `--json` prints a versioned report (`schemaVersion` 1). The exit code is 1 when a case fails. The report never prints the task prompt, a command, a path or the wrapper's output.
+For a loop on the process adapter this attempts one invocation of the configured status command and reports its observation, so a wrapper that always answers unknown is visible. Construction or launch failure can prevent execution. It fails when the read takes longer than `--limit` (default 30s) or returns something that is not one valid state. It invokes no resume or stop command, takes no lock and does not itself write loop state. The configured status program is not sandboxed: its writes and other external behavior belong to that program. `--target ID` checks a fallback candidate. `--json` prints a versioned report (`schemaVersion` 1). The exit code is 1 when a case fails. The report never prints the task prompt, a command, a path or the wrapper's output.
 
 The cases that need the agent put into a situation are listed as skipped: they cannot be staged against a real agent, and the kit is not yet something a wrapper's author can run against their own stand-in.
 
-It is refused for every other adapter, before anything is built or started, because their status reads are not free of side effects: a BB read advances the loop's saved position in the thread's log and takes notices a check is waiting for, a Codex read of a failed turn starts the Codex app-server, and a Claude Code, Codex or Cursor read saves the session a finished turn reported. Those adapters' contracts are checked in the test suite.
+It is refused for every other adapter, before anything is built or started, because their status reads are not free of side effects: a BB read advances the loop's saved position in the thread's log and takes notices a check is waiting for, a Codex read of a failed turn starts the Codex app-server, and a Claude Code, Codex or Cursor read saves the session a finished turn reported. The conformance suite covers Claude Code and Codex; BB and Cursor rely on their separate adapter fixtures and are not run by this suite.
 
-The command cannot send a prompt. A way to send one test prompt to a real agent would have to pass the same ownership, pause and stop rules as a check, count against the send limit and appear in the timeline; that is a [roadmap](roadmap.md) item, not part of this command.
+The command never invokes the configured resume or stop program. Recognizing `restricted` or `refused` does not authorize failover; the existing decision rules keep both on the current route. Prose alone remains unknown. A way to send one test prompt to a real agent would have to pass the same ownership, pause and stop rules as a check, count against the send limit and appear in the timeline; that is a [roadmap](roadmap.md) item, not part of this command.
 
 ## Chats already open in an IDE
 

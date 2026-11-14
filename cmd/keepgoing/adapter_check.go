@@ -16,10 +16,10 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
-// adapter check runs the part of the adapter contract that only reads against
-// a loop's real agent: one status read. It never sends a prompt, stops
-// anything or writes a file. An adapter whose status read is not free of side
-// effects is refused with the reason, before anything is built or run.
+// adapter check attempts one configured process status invocation. It never
+// invokes resume or stop and does not itself write loop state. The status
+// program is not sandboxed; its external behavior belongs to that program.
+// Other adapter kinds are refused before construction.
 
 type adapterCheckReport struct {
 	SchemaVersion int                  `json:"schemaVersion"`
@@ -77,7 +77,7 @@ func adapterCommand(e env, args []string) int {
 		agent = candidate.Agent
 	}
 	if reason := notReadOnly(agent.Adapter); reason != "" {
-		e.errf("adapter check: not run for the %s adapter: %s Nothing was read, started or written. Its contract is checked in the test suite; see adapter check --list.", agent.Adapter, reason)
+		e.errf("adapter check: not run for the %s adapter: %s No adapter was constructed or invoked. See adapter check --list for contract cases and test coverage.", agent.Adapter, reason)
 		return exitUsage
 	}
 	if err := cfg.CheckSources(); err != nil {
@@ -92,10 +92,9 @@ func adapterCommand(e env, args []string) int {
 	return printAdapterCheck(e, r, *asJSON, false)
 }
 
-// notReadOnly says why an adapter's status read is not free of side effects,
-// or "" when it is. Only the process adapter's is: it runs the loop's own
-// status command and keeps nothing. An adapter that is not listed is refused,
-// so a new one is not read until someone has shown that reading it is safe.
+// notReadOnly refuses adapters whose observation manages runtime state or
+// starts helpers. The process adapter keeps no observation state itself, but
+// its configured status program is not sandboxed. Unlisted kinds are refused.
 func notReadOnly(kind string) string {
 	switch kind {
 	case "process":
@@ -141,10 +140,10 @@ func printAdapterCheck(e env, r adapterCheckReport, asJSON, listing bool) int {
 		}
 	} else {
 		if listing {
-			fmt.Fprintln(e.stdout, "The adapter contract. Every adapter, built in or your own, is run against these:")
+			fmt.Fprintln(e.stdout, "The adapter contract. Offline stand-ins cover process, Claude Code and Codex; other adapters and integrator staging are not covered.")
 		} else {
 			fmt.Fprintf(e.stdout, "Adapter contract check: %s adapter, target %s.\n", r.Adapter, r.Target)
-			fmt.Fprintln(e.stdout, "The status command was run once. Nothing was sent, stopped or written. Cases that need a stand-in agent run in the test suite, not here.")
+			fmt.Fprintln(e.stdout, "This check attempts only the configured status command; construction or launch failure can prevent execution. It never invokes resume or stop and does not itself write loop state. The status program is not sandboxed and may have its own side effects. Cases needing stand-ins run only in the test suite.")
 			fmt.Fprintf(e.stdout, "declares: exact resume %t, can be stopped %t, structured errors %t, structured waiting %t\n",
 				r.Declared.ExactResume, r.Declared.Stoppable, r.Declared.StructuredErrors, r.Declared.StructuredWaiting)
 		}

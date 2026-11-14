@@ -347,3 +347,30 @@ func TestWritesOutsideTheStateDirectoryAreCaught(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// Exercise the public no-rig path as well as the observation validator.
+type fixedObservation struct {
+	adapter.Adapter
+	obs decide.Observation
+}
+
+func (f fixedObservation) Observe(context.Context) (decide.Observation, error) { return f.obs, nil }
+func TestCurrentStructuredClasses(t *testing.T) {
+	for _, class := range []decide.ErrorClass{decide.ErrRateLimit, decide.ErrAuth, decide.ErrRestricted, decide.ErrRefused, decide.ErrOverloaded, decide.ErrNetwork, decide.ErrUnknown} {
+		t.Run(string(class), func(t *testing.T) {
+			for _, state := range []decide.State{decide.Error, decide.Active} {
+				obs := decide.Observation{State: state, ErrorClass: class}
+				if err := valid(obs); err != nil {
+					t.Errorf("%+v: %v", obs, err)
+				}
+				subject := Subject{Name: "fictional", New: func() (adapter.Adapter, error) { return fixedObservation{obs: obs}, nil }}
+				if r := outcomes(Run(context.Background(), subject, Options{}))["one-state"]; r.Outcome != Pass {
+					t.Errorf("%+v: %+v", obs, r)
+				}
+			}
+			if class != decide.ErrUnknown && unknownOnly(decide.Observation{State: decide.Error, ErrorClass: class}, "unstructured output") == nil {
+				t.Fatal("specific class accepted without structured evidence")
+			}
+		})
+	}
+}

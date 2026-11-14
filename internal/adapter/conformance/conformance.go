@@ -1,7 +1,7 @@
 // Package conformance is the contract every adapter must keep, written as
-// cases that can be run against any of them: a built-in adapter with a
-// stand-in for its agent, or an integrator's own wrapper for the process
-// adapter. Each case states its contract in plain words and fails with a
+// cases exercised against process, Claude Code and Codex with stand-ins.
+// An integrator's process wrapper can run the status-only case; external
+// staged suites and other adapter kinds are not covered. Each case states its contract in plain words and fails with a
 // message that says what to change.
 //
 // A Subject without a Rig is a real agent. Only the case that reads status
@@ -169,7 +169,7 @@ type note string
 func (n note) Error() string { return string(n) }
 
 var cases = []caseDef{
-	{id: "one-state", contract: "A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries rate_limit, auth, overloaded or network only when something structured says so, and unknown otherwise.",
+	{id: "one-state", contract: "A status read returns exactly one of idle, active, pending, stopping, error or unknown, inside the call limit. An error carries rate_limit, auth, restricted, refused, overloaded or network only when something structured says so, and unknown otherwise.",
 		run: caseOneState},
 	{id: "known-situations", contract: "An idle agent reads as idle and a working agent as active.", needsRig: true, needs: []Situation{Idle, Active}, run: caseKnown},
 	{id: "never-guess", contract: "Output that is not the agent's status format reads as unknown, or as an error of class unknown. It is never read as idle, active or a specific error class.", needsRig: true, needs: []Situation{Garbage}, run: caseGarbage},
@@ -342,7 +342,7 @@ func (r *run) observe() (decide.Observation, error, error) {
 
 func knownClass(c decide.ErrorClass) bool {
 	switch c {
-	case decide.ErrRateLimit, decide.ErrAuth, decide.ErrOverloaded, decide.ErrNetwork, decide.ErrUnknown:
+	case decide.ErrRateLimit, decide.ErrAuth, decide.ErrRestricted, decide.ErrRefused, decide.ErrOverloaded, decide.ErrNetwork, decide.ErrUnknown:
 		return true
 	}
 	return false
@@ -353,13 +353,13 @@ func valid(obs decide.Observation) error {
 	switch obs.State {
 	case decide.Idle, decide.Pending, decide.Stopping:
 		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone {
-			return fmt.Errorf("state %q carries error class %q. Report an error class only with state error.", obs.State, obs.ErrorClass)
+			return fmt.Errorf("state %q carries error class %q. Report an error class only with state error or active.", obs.State, obs.ErrorClass)
 		}
 	case decide.Active:
 		// A session that is working through its own retry of a failed request
 		// is active and names what it is retrying.
 		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone && !knownClass(obs.ErrorClass) {
-			return fmt.Errorf("state active carries class %q. Use rate_limit, auth, overloaded, network or unknown.", obs.ErrorClass)
+			return fmt.Errorf("state active carries class %q. Use rate_limit, auth, restricted, refused, overloaded, network or unknown.", obs.ErrorClass)
 		}
 	case decide.Unknown:
 		if obs.ErrorClass != "" && obs.ErrorClass != decide.ErrNone && obs.ErrorClass != decide.ErrUnknown {
@@ -367,7 +367,7 @@ func valid(obs decide.Observation) error {
 		}
 	case decide.Error:
 		if !knownClass(obs.ErrorClass) {
-			return fmt.Errorf("state error carries class %q. Use rate_limit, auth, overloaded, network or unknown.", obs.ErrorClass)
+			return fmt.Errorf("state error carries class %q. Use rate_limit, auth, restricted, refused, overloaded, network or unknown.", obs.ErrorClass)
 		}
 	default:
 		return fmt.Errorf("state %q is not one of idle, active, pending, stopping, error, unknown.", obs.State)
