@@ -110,6 +110,9 @@ jobs:
       - name: Verify local loop registry on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test ./internal/registry ./cmd/keepgoing -run '^TestRegistry' -count=1
+      - name: Verify the per-user directories and their name on Windows
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -v ./internal/userdir ./internal/session ./internal/config ./internal/lock ./cmd/keepgoing -run '^(TestNameIn|TestThisPlatform|TestDirKeepsTheEarlierDirectory|TestClaimsAndRecordsAreHonouredUnderBothNames|TestAClaimIsTakenWhenTheTwoNamesAreOneDirectory|TestLookWhenTheTwoNamesAreOneDirectory|TestHeld|TestStandardRoutesPath|TestInitDefaultDirectory|TestDoctorUserDirectory|TestRegistriesUnderBothNames)' -count=1
       - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
         if: steps.scope.outputs.scope != 'docs'
       - name: Verify allowance persistence and replacement on Windows

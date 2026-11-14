@@ -56,3 +56,31 @@ func (l *Lock) Release() error {
 	}
 	return cerr
 }
+
+// Held reports whether a process holds the named lock in dir right now. It
+// creates nothing: a directory or lock file that does not exist is not
+// held. It takes the lock for an instant to find out, so a check that
+// starts at that instant may skip; use it only where that is acceptable.
+// An error means it could not tell.
+func Held(dir, name string) (bool, error) {
+	return HeldFile(filepath.Join(dir, name+".lock"))
+}
+
+// HeldFile is Held for a lock file given by its path.
+func HeldFile(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if err := lockFile(f); err != nil {
+		if errors.Is(err, ErrHeld) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, unlockFile(f)
+}

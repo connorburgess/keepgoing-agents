@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // RoutesStandard is the only value of loop.routes: the loop follows the
@@ -119,7 +120,9 @@ func (l Loop) AllowsNewConversation() bool { return contains(l.RoutesAllow, Ente
 
 // StandardRoutesPath is where the standard list lives: the path in
 // LOOPTENDER_ROUTES_FILE (or its earlier name, KEEPGOING_ROUTES_FILE) when
-// set, otherwise keepgoing/routes.yaml in the user configuration directory.
+// set, otherwise routes.yaml in the tool's directory under the user
+// configuration directory (looptender/, or keepgoing/ on a computer that
+// already has one; see userdir).
 // The two names set to different files are refused: loops that each honoured
 // one would follow different lists.
 func StandardRoutesPath() (string, error) {
@@ -137,11 +140,11 @@ func StandardRoutesPath() (string, error) {
 		}
 		return p, nil
 	}
-	base, err := os.UserConfigDir()
-	if err != nil || !filepath.IsAbs(base) {
+	p, err = userdir.Config(RoutesFileName)
+	if err != nil {
 		return "", errors.New("user configuration directory is unavailable")
 	}
-	return filepath.Join(base, "keepgoing", RoutesFileName), nil
+	return p, nil
 }
 
 // insideCheckout reports whether path or one of its parents holds a .git
