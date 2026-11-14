@@ -20,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // Tier says why a probe ran.
@@ -89,7 +90,9 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var argv []string
-	env := []string{"KEEPGOING_PROBE_TIER=" + string(tier), "KEEPGOING_PROBE_MODEL=" + model, "KEEPGOING_CANDIDATE=" + c.ID}
+	// Each is set under both of its names, so a probe command written for
+	// either reads it.
+	env := append(append(envvar.ProbeTier.Pairs(string(tier)), envvar.ProbeModel.Pairs(model)...), envvar.Candidate.Pairs(c.ID)...)
 	for k, v := range c.ProbeEnv() {
 		env = append(env, k+"="+v)
 	}

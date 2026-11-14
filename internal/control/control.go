@@ -55,7 +55,10 @@ type File struct {
 	// task was declared complete, with its note. Completion ends the hold,
 	// but what a person was being asked is kept until a resume.
 	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
+	// Question is the one open question the loop holds for until a person
+	// answers it. See question.go.
+	Question  *Question `json:"question,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Brief is a brief to another conversation: Action is handoff or
@@ -178,7 +181,7 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	info, err := snapshot.Lstat(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

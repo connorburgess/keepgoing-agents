@@ -130,7 +130,13 @@ func TestInspectLaneEstablishesEachFact(t *testing.T) {
 		"unknown failure": {func(w *laneWorld) {
 			w.log = `[` + at(turnStarted, start) + `,` + at(providerError("unknown", nil, "unknown", false), start.Add(time.Minute)) + `]`
 		}, decide.LaneRetry},
-		"no error event at all":                {func(w *laneWorld) { w.log = `[` + at(turnStarted, start) + `]` }, decide.LaneRetry},
+		"no error event at all": {func(w *laneWorld) { w.log = `[` + at(turnStarted, start) + `]` }, decide.LaneRetry},
+		"refused by the provider's policy": {func(w *laneWorld) {
+			w.log = `[` + at(turnStarted, start) + `,` + at(providerError("policy", nil, "cyberPolicy", false), start.Add(time.Minute)) + `]`
+		}, decide.LaneRetry},
+		"forbidden": {func(w *laneWorld) {
+			w.log = `[` + at(turnStarted, start) + `,` + at(providerError("unauthorized", 403, "unknown", false), start.Add(time.Minute)) + `]`
+		}, decide.LaneDeclined},
 		"the provider still announces a retry": {func(w *laneWorld) { w.log = notice }, decide.LaneRetrying},
 		"a retry notice BB declined": {func(w *laneWorld) {
 			w.log = notice
@@ -161,6 +167,44 @@ func TestInspectLaneEstablishesEachFact(t *testing.T) {
 		if _, err := a.RetryLane(context.Background(), id); err == nil || len(w.calls) != 0 {
 			t.Errorf("%q was retried: %v %v", id, err, w.calls)
 		}
+	}
+}
+
+// A lane summary saved by a build before refusals had their own class (the
+// one at a5d0dd2 wrote retrySchema 1) holds the error class that build read.
+// The new build reads that lane's log again, so a refused lane caught in the
+// middle of recovery is not retried after the upgrade.
+func TestLaneSummaryFromAnEarlierBuildIsReadAgain(t *testing.T) {
+	a, w := newLane(t)
+	start := now.Add(-10 * time.Minute)
+	w.log = `[` + at(turnStarted, start) + `,` + at(providerError("unauthorized", 403, "unknown", false), start.Add(time.Minute)) + `,` + at(turnFailed, start.Add(2*time.Minute)) + `]`
+	// What the earlier build saved after reading that log to its end: the
+	// 403 read as auth, which lane recovery retries.
+	lanes := a.loadLanes()
+	lanes[a.laneHash(laneID)] = laneSummary{Cursor: Cursor{HashRefs: true, RetrySchema: 1, LastSeq: 3, Error: &errorSignal{Class: decide.ErrAuth, Seq: 2, At: start.Add(time.Minute)}}, Complete: true}
+	if !a.saveLanes(lanes) {
+		t.Fatal("could not save the earlier summary")
+	}
+	b, err := os.ReadFile(filepath.Join(a.stateDir, "bb-lanes.json"))
+	if err != nil || !strings.Contains(string(b), `"retrySchema":1`) {
+		t.Fatalf("the fixture is not an earlier summary: %s %v", b, err)
+	}
+	reread := New(config.BB{Thread: laneParent})
+	reread.now, reread.run = a.now, a.run
+	reread.WithStateDir(a.stateDir)
+	w.calls = nil
+	f := reread.InspectLane(context.Background(), laneID)
+	if f.Class != decide.ErrRestricted || decide.LaneVerdictFor(f) != decide.LaneDeclined {
+		t.Fatalf("after the upgrade: %+v", f)
+	}
+	if !strings.Contains(strings.Join(w.calls, "\n"), "--after-seq 0 ") {
+		t.Fatalf("the log was not read from the start: %v", w.calls)
+	}
+	// Saved in the new form, it is not read again from the start.
+	w.calls = nil
+	reread.InspectLane(context.Background(), laneID)
+	if strings.Contains(strings.Join(w.calls, "\n"), "--after-seq 0 ") {
+		t.Fatalf("read from the start twice: %v", w.calls)
 	}
 }
 
@@ -236,19 +280,28 @@ func TestLaneMessageTextIsNeverDecodedOrStored(t *testing.T) {
 // Every field the log reader, the lane inspection and the retry plugin decode
 // from BB is listed here. A new field fails this test, so decoding anything
 // that could hold what was said in a conversation cannot happen unnoticed.
+// A field that can hold text is added only with a named, display-only use
+// recorded here, and its one decoding site is pinned below.
 func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
+	// One use, display only: "title" is a direct child's thread title, read
+	// from the bb thread show reply in children.go and kept in the loop's
+	// private lane-titles.json for the panel's identifier view. No decision,
+	// record, report or other file carries it.
+	displayOnly := map[string]string{"title": "children.go"}
 	allowed := strings.Fields(`
 		archivedAt attempt category code complete count createdAt cursor data decision deletedAt delivery
 		diagnostic error errorInfo hashRefs httpStatusCode id initiator interaction item itemId kind lastEventAt lastSeq
 		observedAt ok outcomes parentThreadId pending providerCode providerThread providerThreadId queuedMessageCount
 		rateLimits resetsAt resetsAtMs retries retryOfRequestId retrySchema scannedAt seq status systemMessageKind
 		systemMessageSubject thread threadId turnSeq turnStartedMs type willRetry windows childOutcomeSeq blocked key lanes answeringRequest
-		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain`)
+		evidence at class retryKnown activeBackgroundAgentCount turnStartSeq openTools toolsUncertain fallbackSeq
+		title`)
 	want := map[string]bool{}
 	for _, tag := range allowed {
 		want[tag] = true
 	}
 	got := map[string]bool{}
+	sites := map[string][]string{} // display-only tag -> files that decode it
 	fset := token.NewFileSet()
 	for _, file := range []string{"cursor.go", "lanes.go", "retry_plugin.go", "children.go", "wake.go", "bb.go"} {
 		f, err := parser.ParseFile(fset, file, nil, 0)
@@ -261,8 +314,16 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 				return true
 			}
 			tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`")).Get("json")
+			// BB's model fallback reason is a closed enum, decoded into a type
+			// that keeps only whether it is "refusal", never its text.
+			if id, ok := field.Type.(*ast.Ident); ok && id.Name == "fallbackReason" && tag == "reason" {
+				return true
+			}
 			if name := strings.Split(tag, ",")[0]; name != "" && name != "-" {
 				got[name] = true
+				if _, ok := displayOnly[name]; ok {
+					sites[name] = append(sites[name], file)
+				}
 			}
 			return true
 		})
@@ -281,11 +342,22 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 	sort.Strings(unexpected)
 	sort.Strings(unused)
 	if len(unexpected) > 0 || len(unused) > 0 {
-		t.Fatalf("the BB adapter decodes fields %v that are not in the allowlist, and the allowlist names %v that it does not decode. A field that can hold message text, a title or tool output must never be added.", unexpected, unused)
+		t.Fatalf("the BB adapter decodes fields %v that are not in the allowlist, and the allowlist names %v that it does not decode. A field that can hold message text, a title or tool output is added only with a named, display-only use recorded here.", unexpected, unused)
 	}
-	for _, text := range []string{"text", "message", "content", "delta", "input", "output", "title", "detail", "prompt", "body", "summary", "reason", "command", "response"} {
+	// The one exemption above holds only while fallbackReason is a single
+	// bool: swapping in a type that can carry the field's text fails here.
+	if k := reflect.TypeFor[fallbackReason]().Kind(); k != reflect.Bool {
+		t.Fatalf("fallbackReason is a %s; it must stay a bool", k)
+	}
+	// "title" is not denied: it has the one display-only use recorded above.
+	for _, text := range []string{"text", "message", "content", "delta", "input", "output", "detail", "prompt", "body", "summary", "reason", "command", "response"} {
 		if got[text] {
 			t.Errorf("the BB adapter decodes %q", text)
+		}
+	}
+	for tag, file := range displayOnly {
+		if len(sites[tag]) != 1 || sites[tag][0] != file {
+			t.Errorf("%q is decoded in %v; its one display-only use is in %s", tag, sites[tag], file)
 		}
 	}
 }

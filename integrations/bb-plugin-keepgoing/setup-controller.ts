@@ -129,7 +129,7 @@ export function createSetupController(d: SetupDependencies) {
       catch (error) {
         // Dependency/SDK errors can contain paths, command arguments, or task
         // input. Only our fixed policy messages are returned by safe wrappers.
-        return { ok: false, message: error instanceof SetupPolicyError ? error.message : "Setup could not complete. Refresh diagnostics or preview again; check the host and keepgoing version." + (input.withGoal ? " Goal creation needs init --with-goal support (after v0.1.4); update it or turn off that choice and preview again." : "") + " No automatic retry or transfer was performed." };
+        return { ok: false, message: error instanceof SetupPolicyError ? error.message : "Setup could not complete. Refresh diagnostics or preview again; check the host and looptender version." + (input.withGoal ? " Goal creation needs init --with-goal support (after v0.1.4); update it or turn off that choice and preview again." : "") + " No automatic retry or transfer was performed." };
       }
     }),
     dispose: () => previews.clear(),

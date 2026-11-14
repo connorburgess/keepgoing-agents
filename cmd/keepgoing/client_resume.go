@@ -109,6 +109,7 @@ func clearForResume(f *control.File) resumeEffect {
 	f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
 	f.StopLanesAt, f.StopLanesDropQueued = nil, false
 	f.Note, f.EpisodeHold, f.OpenQuestion, f.BriefHold = "", false, nil, nil
+	f.Question = nil // a resume ends the open question; the check that follows honours it
 	return e
 }
 
@@ -286,7 +287,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		if readTransferRecord(entry.StateDir, control.FileName, &initial) != nil {
 			return fail("resume_evidence_unavailable")
 		}
-		newEpisode := false
+		newEpisode, endedQuestion := false, ""
 		f, err := updateControlFromAnnotated(entry.StateDir, "resume", origin, func(f *control.File) error {
 			newEpisode = false
 			current, checked, err := binding()
@@ -330,6 +331,9 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 			if resumeEpisode(entry.StateDir, f.EpisodeHold, at, cfg.Loop.Errors.MaxReprompts, f.BriefHold...) != nil {
 				return fail("new_episode_unconfirmed")
 			}
+			if f.Question != nil {
+				endedQuestion = f.Question.ID
+			}
 			newEpisode = clearForResume(f).NewEpisode
 			r.ControlSave = "unconfirmed"
 			return nil
@@ -338,6 +342,7 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 		})
 		if err == nil || errors.Is(err, errControlHistory) {
 			recordRegistration(entry.StateDir, entry.ID)
+			recordQuestionEnded(entry.StateDir, endedQuestion)
 		}
 		if err != nil && !errors.Is(err, errControlHistory) {
 			return err

@@ -368,11 +368,14 @@
   }
 
   // ---- Overview: what needs you, then what else is not routine ----
-  // Pause all: offered while any loop can be paused; the server reviews
-  // every loop and words the review and the outcome.
+  // Pause all and stop all: each offered while any loop can have it; the
+  // server reviews every loop and words the review, its options and the
+  // outcome.
   function groupBox(d) {
-    var any = list(d.loops).some(function (l) { return list(l.can).indexOf("pause") >= 0; });
-    return changeBox({ key: "all", can: any ? ["pause"] : [] }, true);
+    var can = ["pause", "stop"].filter(function (a) {
+      return list(d.loops).some(function (l) { return list(l.can).indexOf(a) >= 0; });
+    });
+    return changeBox({ key: "all", can: can }, true);
   }
   function renderHome(d, pane) {
     pane.appendChild(paneHead("Needs you"));
@@ -465,6 +468,8 @@
       li.appendChild(el("span", "lane-state", x.phrase));
       var what = el("span", "lane-what");
       what.appendChild(el("span", "lane-title", x.title || "Lane " + x.number));
+      // A recorded title is the person's own text: shown with identifiers only.
+      if (!x.title && x.titleEvidence === "withheld") what.appendChild(el("span", "sub", " · title withheld"));
       if (x.loop) {
         what.appendChild(document.createTextNode(" · also a registered loop: "));
         what.appendChild(link("#/loop/" + x.loopKey, x.loop));
@@ -568,6 +573,12 @@
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
       list(np.lines).forEach(function (s) { pf.appendChild(el("div", "sub", s)); });
       dl.appendChild(fact("Progress", pf));
+    }
+    if (l.refusals && (l.refusals.text || l.refusals.question)) {
+      var rf = frag();
+      if (l.refusals.text) rf.appendChild(el("span", null, l.refusals.text));
+      if (l.refusals.question) rf.appendChild(el("div", "sub", "Question: " + l.refusals.question));
+      dl.appendChild(fact("Refusals", rf));
     }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
     checks.appendChild(dl);

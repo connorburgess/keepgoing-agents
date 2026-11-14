@@ -72,7 +72,10 @@ type dockLane struct {
 	Number int    `json:"number"`
 	State  string `json:"state"` // working, waiting or failed
 	Phrase string `json:"phrase"`
-	// Title is always empty in this schema; TitleEvidence says why.
+	// Title is the title BB reported for the lane at the check that listed
+	// it, included only with identifiers, as hold notes are, since it is the
+	// person's own text. TitleEvidence is recorded (Title is set), withheld (a
+	// title is recorded; the view has no identifiers) or not_recorded.
 	Title         string `json:"title,omitempty"`
 	TitleEvidence string `json:"titleEvidence"`
 	// Loop names the registered loop this lane is, when it is one; LoopKey
@@ -124,33 +127,39 @@ type dockEvents struct {
 // dockReasons words each fixed cause. A cause outside this table reads as not
 // in the fixed vocabulary; it is never guessed from text.
 var dockReasons = map[string]string{
-	"disabled":                "the loop is off",
-	"paused":                  "the loop is paused",
-	"awaiting_user":           "the loop is held for a person",
-	"completed":               "the loop is finished",
-	"stop":                    "a stop is requested",
-	"idle":                    "the session was idle",
-	"active":                  "the session was working",
-	"retrying":                "the provider was retrying the turn",
-	"retry_unverified":        "the provider's retry state was unverified",
-	"retry_silent":            "the provider's retry went silent",
-	"handoff_deferred":        "a move to another route was put off for lack of time",
-	"deadline":                "its deadline was reached",
-	"send_limit":              "its limit on messages sent was reached",
-	"git_limit":               "no Git progress within its time limit",
-	"stall_limit":             "no progress after repeated nudges",
-	"stall_limit_held":        "no progress after nudges held back because the turn looked hung",
-	"nudge_held":              "a nudge held back because the turn looked hung",
-	"hung_wait":               "the turn looked hung; nudges are held back",
-	"stall":                   "no progress for a while",
-	"child_input":             "a lane is waiting for an answer",
-	"child_busy":              "lanes are working",
-	"child_error":             "lanes failed",
-	"child_unverified":        "the state of its lanes could not be verified",
-	"input":                   "the agent is waiting on a person",
-	"limit_wait":              "a usage limit, waiting for its reset",
-	"limit_no_fallback":       "a usage limit with no other route able to take over",
-	"limit_failover_disabled": "a usage limit, with automatic moves off",
+	"disabled":                  "the loop is off",
+	"paused":                    "the loop is paused",
+	"awaiting_user":             "the loop is held for a person",
+	"completed":                 "the loop is finished",
+	"stop":                      "a stop is requested",
+	"idle":                      "the session was idle",
+	"active":                    "the session was working",
+	"retrying":                  "the provider was retrying the turn",
+	"retry_unverified":          "the provider's retry state was unverified",
+	"retry_silent":              "the provider's retry went silent",
+	"handoff_deferred":          "a move to another route was put off for lack of time",
+	"deadline":                  "its deadline was reached",
+	"send_limit":                "its limit on messages sent was reached",
+	"git_limit":                 "no Git progress within its time limit",
+	"stall_limit":               "no progress after repeated nudges",
+	"stall_limit_held":          "no progress after nudges held back because the turn looked hung",
+	"nudge_held":                "a nudge held back because the turn looked hung",
+	"hung_wait":                 "the turn looked hung; nudges are held back",
+	"restricted":                "the provider denied permission for this request or account",
+	"refused_continue":          "the model or provider declined the turn; a continue was sent in the same session",
+	"refused_wait":              "the model or provider declined the turn; waiting before a continue",
+	"refusal_ask":               "the model or provider declined turn after turn; a person is asked how to proceed",
+	"decline_acknowledged":      "resumed by a person after a restriction; one re-prompt",
+	"stall":                     "no progress for a while",
+	"child_input":               "a lane is waiting for an answer",
+	"child_busy":                "lanes are working",
+	"child_error":               "lanes failed",
+	"child_unverified":          "the state of its lanes could not be verified",
+	"input":                     "the agent is waiting on a person",
+	"limit_wait":                "a usage limit, waiting for its reset",
+	"limit_no_fallback":         "a usage limit with no other route able to take over",
+	"limit_failover_disabled":   "a usage limit, with automatic moves off",
+	"limit_refusal_unrecovered": "a usage limit, with no move while a refusal is unrecovered",
 }
 
 func dockReason(cause string) string {
@@ -210,7 +219,12 @@ func dockLastDecision(st *statusOut, tl *timelineReport, now time.Time) dockDeci
 	return d
 }
 
+// sameResult reports two checks that are one line on the panel. A return to
+// the primary is a move and always its own line.
 func sameResult(a, b incident.Record) bool {
+	if a.Returned != nil || b.Returned != nil {
+		return false
+	}
 	return a.Action == b.Action && a.Cause == b.Cause && a.Outcome == b.Outcome && a.DryRun == b.DryRun && a.TargetKey == b.TargetKey
 }
 
@@ -329,11 +343,20 @@ func dockDeviceOf(st *statusOut, hostname string, identifiers bool, now time.Tim
 
 // dockLaneList lists each lane of the last verified listing, most in need of
 // a person first. keys maps a registration ID to that loop's key in the report.
-func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now time.Time) dockLanes {
+// titles is the loop's private lane-titles file, nil when it is missing or
+// unusable; its titles are used only when it was written by the check that
+// made the listing shown.
+func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles *state.LaneTitles, now time.Time) dockLanes {
 	c := dockChildWork(r, known)
 	out := dockLanes{Availability: c.Availability, Lanes: []dockLane{}, Heading: "This loop's lanes"}
 	if out.Availability != "current" && out.Availability != "held" {
 		return out
+	}
+	byKey := map[string]string{}
+	if titles != nil && c.CheckedAt != nil && titles.CheckedAt.Equal(*c.CheckedAt) {
+		for _, t := range titles.Titles {
+			byKey[t.Key] = t.Title
+		}
 	}
 	rank := map[string]int{"awaiting_input": 0, "error": 1, "active": 2}
 	children := append([]runsChild{}, r.Blocker.Children...)
@@ -362,8 +385,15 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now ti
 		if s := child.Supervised; s.Availability == recordRecorded && s.RegistrationID != "" {
 			l.Loop, l.LoopKey = clip(s.Loop, dockMaxText), dockKey(s.RegistrationID)
 		}
+		key := strings.TrimPrefix(child.Ref, "child:")
 		if identifiers {
-			l.Key = strings.TrimPrefix(child.Ref, "child:")
+			l.Key = key
+		}
+		if title, ok := byKey[key]; ok {
+			l.TitleEvidence = "withheld"
+			if identifiers {
+				l.Title, l.TitleEvidence = clip(title, dockMaxText), "recorded"
+			}
 		}
 		out.Lanes = append(out.Lanes, l)
 	}
@@ -390,7 +420,10 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now ti
 		when += "at an unknown time"
 	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
-	out.Footer = "keepgoing records each lane's state, not its title or which route it is on"
+	out.Footer = "keepgoing records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
+	if identifiers {
+		out.Footer = "keepgoing records each lane's state and, when BB reports one, its title; not which route it is on"
+	}
 	if current {
 		out.Footer += "; they are listed under the loop's current route"
 	}
@@ -525,6 +558,24 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		case r.Action == "wake" || r.Action == "nudge" || r.Action == "reprompt":
 			ev.Detail = "Delivery is not confirmed."
 		}
+		if timelineReturned(r) {
+			// Said before anything else the check did, which ran on the primary.
+			why := timelineReturnReasons[r.Returned.Reason]
+			if why == "" {
+				why = "could not be used"
+			}
+			text := "Returned to " + names.of(r.TargetKey) + ", because the route it was on " + why + "."
+			switch {
+			case strings.HasPrefix(ev.Detail, "to "): // a handoff from the primary
+				text += " Then " + ev.Detail + "."
+			case ev.Detail != "":
+				text += " " + ev.Detail
+			}
+			if ev.Tone != "hold" {
+				ev.Tone = "key"
+			}
+			ev.Detail = text
+		}
 		if c := r.Collapsed; c != nil && c.Count > 0 {
 			first := c.FirstAt
 			ev.Folded, ev.FoldedSince = c.Count, &first
@@ -540,6 +591,18 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		}
 	case "retarget":
 		ev.Tone, ev.Phrase, ev.Detail = "key", "Pointed at another route by a command", "to "+names.of(r.TargetKeyAfter)
+	case "probe":
+		failed := 0
+		for _, p := range r.Probes.Results {
+			if !p.OK {
+				failed++
+			}
+		}
+		ev.Phrase = "Fallbacks checked by hand"
+		ev.Detail = fmt.Sprintf("%d passed, %d failed.", len(r.Probes.Results)-failed, failed)
+		if failed > 0 {
+			ev.Tone = "problem"
+		}
 	default:
 		ev.Phrase = "A history entry of a kind this page does not know"
 	}

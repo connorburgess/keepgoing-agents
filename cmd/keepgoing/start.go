@@ -187,7 +187,7 @@ func startPreflight(ctx context.Context, cfg *config.Config) error {
 		return errors.New("recorded tick state cannot be read")
 	}
 	if st.Target() != state.Primary {
-		c, ok := cfg.FallbackSet.Find(st.Target())
+		c, ok := effectiveRoutes(cfg, st).Find(st.Target())
 		if !ok || c.Disabled {
 			return errors.New("recorded target is missing or disabled; retarget explicitly")
 		}
@@ -228,8 +228,8 @@ func startPreflight(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 	check("primary", cfg.Loop.Agent)
-	if cfg.FallbackSet != nil {
-		for _, c := range cfg.FallbackSet.Candidates {
+	if fb := currentRoutes(cfg); fb != nil {
+		for _, c := range fb.Candidates {
 			if !c.Disabled {
 				check(c.ID, c.Agent)
 			}
