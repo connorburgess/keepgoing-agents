@@ -101,6 +101,10 @@ type RouteStatus struct {
 	Skipped []RouteSkip
 	// Warnings are conditions that do not stop supervision.
 	Warnings []string
+	// Digest identifies the contents of a standard list that was read, so a
+	// loop can note in its timeline that the list changed. It is empty when
+	// the list was not read, and is never shown.
+	Digest string
 }
 
 // StandardRoutesUnreadable is the fixed text for a following loop whose list
@@ -146,6 +150,10 @@ func StandardRoutesPath() (string, error) {
 	}
 	return p, nil
 }
+
+// InsideCheckout reports whether path is inside a Git checkout, by the rule
+// KEEPGOING_ROUTES_FILE is held to.
+func InsideCheckout(path string) bool { return insideCheckout(path) }
 
 // insideCheckout reports whether path or one of its parents holds a .git
 // entry. A parent that cannot be inspected counts as a checkout.
@@ -231,7 +239,7 @@ func readPrivateFile(path string) ([]byte, error) {
 	if err := checkRoutesFile(target); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openRoutesFile(path)
 	if err != nil {
 		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be opened")
 	}
@@ -266,6 +274,17 @@ func checkRoutesFile(info os.FileInfo) error {
 	}
 	return nil
 }
+
+// PrivateFile reports whether info is a regular file this user owns that no
+// one else may read or write: the rule for the standard list and the files
+// kept beside it.
+func PrivateFile(info os.FileInfo) bool {
+	return info.Mode().IsRegular() && ownedByUser(info) && privateMode(info)
+}
+
+// ReadRoutesFile reads a standard list's bytes with the same checks as
+// LoadRoutes, for an editor that must change exactly what was read.
+func ReadRoutesFile(path string) ([]byte, error) { return readPrivateFile(path) }
 
 // ParseRoutes decodes and validates standard route list YAML.
 func ParseRoutes(raw []byte) (*Routes, error) {
@@ -621,6 +640,7 @@ func (c *Config) loadStandardRoutes() {
 		return
 	}
 	c.routesSource = r.source
+	c.RouteList.Digest = fmt.Sprintf("%x", r.source.sum)
 	fb, skipped := r.Resolve(c.Loop)
 	c.RouteList.Skipped = skipped
 	if fb == nil {

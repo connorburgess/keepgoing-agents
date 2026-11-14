@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 )
@@ -23,7 +24,8 @@ func TestMain(m *testing.M) {
 	// No test may open a real browser: unless a test names its own stand-in,
 	// the panel's launcher is a program that does nothing.
 	os.Setenv(panelOpenerEnv, "/usr/bin/true")
-	// No test reads or writes the person's own registry or session claims.
+	// No test reads or writes the person's own registry, session claims or
+	// standard route list.
 	// The variables are inherited by every binary a test runs.
 	private, err := os.MkdirTemp("", "keepgoing-test-user")
 	if err != nil {
@@ -31,6 +33,9 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv(registryDirEnv, filepath.Join(private, "registry"))
 	os.Setenv(session.DirEnv, filepath.Join(private, "sessions"))
+	// Nor the person's standard route list: a test that needs one writes it
+	// here or names its own.
+	os.Setenv(config.RoutesFileEnv, filepath.Join(private, config.RoutesFileName))
 	// The earlier names of these variables are still read. One set in the
 	// shell that runs the tests must not reach them.
 	for _, v := range envvar.Set {
