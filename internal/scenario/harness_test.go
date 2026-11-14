@@ -33,6 +33,14 @@ import (
 var keepgoingBin, standinDir string
 
 func TestMain(m *testing.M) {
+	// The suite builds the command and its stand-in, so it cannot run from
+	// the test bundle for machines without Go. Say so instead of failing.
+	if _, err := exec.LookPath("go"); err != nil {
+		if _, err := os.Stat(filepath.Join(runtime.GOROOT(), "bin", "go"+exe)); err != nil {
+			fmt.Fprintln(os.Stderr, "scenario suite NOT RUN: it builds the keepgoing command and a stand-in, and the Go toolchain is not available")
+			os.Exit(0)
+		}
+	}
 	dir, err := os.MkdirTemp("", "keepgoing-scenario-build-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -170,6 +170,44 @@ Four causes were found behind intermittent failures, each reproduced before it w
 
 Reproduce before changing anything: repeat the one test with `-count`, then add the pressure that matches the suspected cause (CPU, filesystem writes, or many first executions of new files). Record the failure rate before and after, and name what was not reproduced. Raising a timeout is a fix only when the deadline is shown to be the sole defect.
 
+## Slow test packages
+
+`internal/supervise` and `cmd/keepgoing` run thousands of checks in the test process, and each check saves several records. Every save flushed its file to the device before renaming it. On macOS that flush waits for the device: about 4 ms for a 2 KB record against 0.1 ms for the write and rename alone, measured on the development machine, and flushes from every process on the machine queue behind one another. So these packages spent most of their wall time waiting, not computing, and several copies running at once slowed each other almost linearly until Go's ten-minute package limit was reached. One test, `TestCheckEndsWithinItsHardLimitInEveryCombination`, used 99 seconds of wall time for 2.7 seconds of user CPU.
+
+The flushes now go through `snapshot.Sync`. A test binary may call `snapshot.SkipSyncInTests` from an `init` function in a `_test.go` file to make it a no-op; the call panics anywhere else, so no command, flag, setting or environment variable can turn the flush off. `internal/supervise` and `cmd/keepgoing` do this. No assertion changed: a test cannot observe a flush, because nothing cuts the power (that gap is listed under run discovery below and is unchanged). The scenario suite runs the built binary and keeps the flush.
+
+Measured on macOS (Apple silicon) with `-race`, on a machine other lanes were also using:
+
+| What | Before | After |
+| --- | --- | --- |
+| `TestCheckEndsWithinItsHardLimitInEveryCombination` (`internal/supervise`), alone | 88.6 s | 9.9 s |
+| The same test, four copies at once | 360 s each | 19.4 s each |
+| `TestCursorCommandActiveHoldsAndResume` (`cmd/keepgoing`), alone | 17.9 s | 10.7 s |
+| `TestEndToEndRateLimitHandoff` (`cmd/keepgoing`), alone | 4.5 s | 2.6 s |
+
+Whole-package times are in the pull request that made the change, from CI. The whole packages were not timed locally, alone or four at once, because running them on the shared machine is what was causing the timeouts.
+
+What was looked for and not found, or not done:
+
+- **Real sleeps.** `internal/supervise` has none. `cmd/keepgoing` has only 10 to 25 ms polling intervals inside wait-for-a-condition loops; there is no fixed long sleep to replace with a clock.
+- **First execution of stand-in scripts.** Every executable script in both packages is already installed through `internal/testexec`.
+- **`t.Parallel`.** Not added. Most `cmd/keepgoing` tests set environment variables with `t.Setenv`, which Go refuses to combine with parallel tests, and the packages' fake clocks and stand-ins were not audited for shared state.
+- **`internal/incident`** also takes over a minute under `-race`, but skipping the flush there changed nothing, so its time goes elsewhere. Not investigated.
+
+**Which packages skip the flush, and which must not.** Exactly two: `internal/supervise` and `cmd/keepgoing`, each from its `sync_test.go`. They run the check in the test process and assert on decisions, sends and saved records, none of which a flush changes. That includes their tests that kill a process and check what it left behind (`transfer_process_test.go`, `run_graph_test.go`): data a process has written survives that process being killed whether or not it was flushed, so those tests still prove what they claim. It also means the helpers those two packages re-execute from the test binary to act as the real command run unflushed. A package must not skip the flush if it tests what survives power loss or an operating-system crash, or if it runs the built binary: the scenario suite does not skip it, so every scenario exercises the command as it ships. Adding a package means adding it to the list in `internal/snapshot/sync_guard_test.go` and to this paragraph.
+
+**What the helper covers, and what is not flushed.** `snapshot.Sync` is used for the records a check saves: `state.json`, the send ledger, `control.json`, the incident journal and the delivery journal. Other writers call `File.Sync` directly and are unchanged: the BB transfer record, the Antigravity runner's records, the service plan and the guided fallback edits. Some records were never flushed and still are not: `health.json`, the registry, the BB log cursor, `runs.jsonl`, the daemon endpoint, the client resume record and the headless turn directories. That is a known gap in what survives power loss, not changed here.
+
+**Why the switch cannot be off in a shipped binary.** Three tests hold it:
+
+- `TestOnlyNamedTestFilesSkipTheFlush` scans the source: only the listed `_test.go` files may mention `SkipSyncInTests`, so no file compiled into a command can call it. It also fails if any file other than the helper's own names the flag, which is how a `go:linkname` directive would reach it. A copy of the source with its own `go.mod`, such as a test bundle unpacked inside the checkout, is not scanned.
+- `TestFlushCannotBeSkippedOutsideATestBinary` builds an ordinary program (`internal/snapshot/testdata/flushprobe`), the way the command is built, and shows that the call panics there and that the flush is attempted before and after it, including when the program is given test flags and test-like environment variables. The guard is Go's `testing.Testing()`, which is set by the linker when `go test` builds a test binary and by nothing at run time.
+- `TestBuiltBinaryCannotSkipTheFlush`, in the scenario suite, inspects the symbols of the `keepgoing` binary the scenarios run: the flag `Sync` reads is present, and the only function that sets it is absent, as is the variable `testing.Testing()` reads. It fails on a stripped binary supplied through `KEEPGOING_TEST_BINARY`, because that cannot be checked.
+
+The second and third need the Go toolchain and say they were not run when it is absent, as in the test bundle for machines without Go; the scenario suite as a whole says the same there.
+
+Each was run against a broken build: a command that calls the switch behind an environment variable fails the first and third; a switch without its guard fails the second. What they do not cover: someone deliberately building the command with a linker flag that sets `testing.testBinary` and adding a call to the switch, which is a source change the first test catches; and whether a flush that is requested reaches the device, which depends on the operating system and disk.
+
 ## Live check: a long time offline
 
 `TestOfflineForAnyLengthThenRecoversOnce` covers this with a fake clock, a stand-in `bb` and a stand-in connectivity target. Nothing below has been run on a real machine; this is the procedure for doing so. It changes no scheduler or service: use whatever already runs your loop, and do not reconfigure it for the test.
