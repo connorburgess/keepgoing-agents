@@ -118,8 +118,15 @@ func TestFallbacksAddCreatesFileAndKeepsHandoffOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only the lock, and the timeline record of the change with its lock.
+	// Only the lock, the timeline record with its lock, and its Windows marker.
 	for _, e := range entries {
+		if runtime.GOOS == "windows" && e.Name() == "incidents.json.present" {
+			info, err := e.Info() // does not follow a symlink
+			if err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+				t.Fatalf("invalid incident marker: %v, %v", info, err)
+			}
+			continue
+		}
 		if e.Name() != "tick.lock" && e.Name() != "incidents.json" && e.Name() != "incident.lock" {
 			t.Errorf("unexpected runtime state %s", e.Name())
 		}
