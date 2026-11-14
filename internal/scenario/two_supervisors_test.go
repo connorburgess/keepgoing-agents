@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/lock"
 )
 
 const (
@@ -210,8 +212,10 @@ func TestScenarioTwoSupervisorsOnOneLoop(t *testing.T) {
 		nothingSent(step), noCalls(step)))
 
 	// Operator B takes the loop over. The daemon operator A started notices
-	// at its next control check and stops by itself.
-	r = w.RunAs(operatorB, "enable", "-c", w.Config, "--take-over")
+	// at its next control check and stops by itself. The takeover needs the
+	// tick lock, which that daemon takes for each control poll; one that
+	// lands during a poll is skipped (exit 75) and is tried again.
+	r = w.untilLockFree(nil, operatorB, "enable", "-c", w.Config, "--take-over")
 	step = w.record("take over", r, nil)
 	w.Check(step, "takeover", all(exit(step, 0), holds(step, "paused"), nothingSent(step)))
 	code, ended := dA.exited(20 * time.Second)
@@ -365,4 +369,54 @@ func TestScenarioTwoLoopsOnOneSession(t *testing.T) {
 		check(ra.Code == 75 && strings.Contains(ra.Stderr, "being checked by loop example-loop-b "), "the first loop exited %d: %s", ra.Code, ra.Stderr),
 		check(len(step.Sent) == 1, "the session received %s", describeSends(step.Sent)),
 	))
+}
+
+// untilLockFree runs keepgoing as thread until the command is not skipped
+// for a held tick lock. A running daemon takes that lock for each control
+// poll, and a command that needs it is skipped with exit 75 instead of
+// waiting, which a person would simply try again. It follows the lock, not
+// the clock: each poll ends on its own, and the test's timeout bounds a lock
+// that is never released. onSkip, when set, is called after each skip.
+func (w *World) untilLockFree(onSkip func(Result), thread string, args ...string) Result {
+	w.t.Helper()
+	for skips := 0; ; skips++ {
+		r := w.RunAs(thread, args...)
+		if r.Code != 75 || !strings.Contains(r.Stderr, "lock held by another process") {
+			if skips > 0 {
+				w.t.Logf("%s was skipped %d times for a held tick lock before it ran", args[0], skips)
+			}
+			return r
+		}
+		if onSkip != nil {
+			onSkip(r)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A takeover that finds the tick lock held is skipped, and untilLockFree
+// runs it again once the lock is free: the takeover then happens.
+func TestUntilLockFreeRunsASkippedTakeoverAgain(t *testing.T) {
+	t.Parallel()
+	w := NewWorld(t, scenarioStart)
+	w.Init()
+	if r := w.RunAs(operatorA, "enable", "-c", w.Config); r.Code != 0 {
+		t.Fatalf("enable as operator A: %d %s", r.Code, r.Stderr)
+	}
+	held, err := lock.Acquire(w.runtimeDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skips := 0
+	r := w.untilLockFree(func(Result) {
+		if skips++; skips == 1 {
+			held.Release()
+		}
+	}, operatorB, "enable", "-c", w.Config, "--take-over")
+	if r.Code != 0 || skips != 1 {
+		t.Fatalf("exit %d after %d skips: %s", r.Code, skips, r.Stderr)
+	}
+	if st := w.Run("status", "--json", "-c", w.Config); !strings.Contains(st.Stdout, operatorB) {
+		t.Fatalf("operator B does not own the loop:\n%s", st.Stdout)
+	}
 }
