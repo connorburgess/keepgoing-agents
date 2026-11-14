@@ -97,7 +97,7 @@ func cleanDecisions(h Decisions) Decisions {
 		e.Action = cleanAction(e.Action)
 		e.Cause = cleanCause(e.Cause)
 		e.Input.State = oneOf(e.Input.State, "unavailable", "active", "idle", "error", "stopping", "pending", "unknown")
-		e.Input.ErrorClass = oneOf(e.Input.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
+		e.Input.ErrorClass = oneOf(e.Input.ErrorClass, "unavailable", "none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown")
 	}
 	return h
 }

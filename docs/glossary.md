@@ -43,7 +43,7 @@ Under preferred routes, work moves to wherever it can continue. That is delibera
 - keepgoing never installs or starts itself on another machine. A loop moves between devices only by an explicit transfer, and has exactly one owner at a time.
 - Creating a conversation is opt-in per route, capped per loop and spaced in time, and an attempt with an unknown outcome holds for a person instead of trying again.
 - Every move is recorded with its reason, and stop and pause apply before any move.
-- A refusal, a policy block or an account restriction is not a limit. It never causes a move to another route; the loop holds for a person. Spreading work across allowances means using accounts the person already holds and may use, never creating or rotating identities to get around a provider's limits.
+- A refusal, a policy block or an account restriction is not a limit. It never causes a move to another route. A restriction holds for a person; a refused turn is continued in the same session, because refusals are often false flags, until a long streak asks a person. Spreading work across allowances means using accounts the person already holds and may use, never creating or rotating identities to get around a provider's limits.
 
 ## Naming the device
 

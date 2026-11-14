@@ -122,6 +122,9 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		return obs, nil // Child input already requires a hold; no parent log needed.
 	}
 	sig := a.signals(ctx)
+	if sig.ok {
+		obs.ModelFallback = sig.fallbackSeq
+	}
 	if sig.ok && sig.hasError {
 		obs.Evidence = sig.evidence
 	} else if !sig.ok {
@@ -164,6 +167,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Error {
 		obs.ErrorClass = sig.class
+		if sig.ok && sig.turnStartSeq > 0 {
+			// The log sequence number is per thread: the thread is part of it.
+			obs.ErrorTurn = fmt.Sprintf("%s/bb-turn-%d", a.cfg.Thread, sig.turnStartSeq)
+		}
 	}
 	// A blocked subscription window on an idle thread means the next turn
 	// would fail; treat it as a rate-limit error so it is handled the same way.
@@ -243,6 +250,7 @@ type signals struct {
 	turnStartedMs int64
 	turnStartSeq  int64
 	toolsRunning  bool
+	fallbackSeq   int64
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -251,7 +259,7 @@ type signals struct {
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
 	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
-		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0}
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0, fallbackSeq: c.FallbackSeq}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
@@ -296,15 +304,9 @@ func httpCode(p *int) string {
 	return fmt.Sprint(*p)
 }
 
-// firstKnown classifies the first code that maps to a known class.
-func firstKnown(codes ...string) decide.ErrorClass {
-	for _, c := range codes {
-		if cl := adapter.ClassifyCode(c); cl != decide.ErrUnknown {
-			return cl
-		}
-	}
-	return decide.ErrUnknown
-}
+// firstKnown classifies an error from its structured fields: a refusal or
+// restriction in any of them wins, otherwise the first known class.
+func firstKnown(codes ...string) decide.ErrorClass { return adapter.Classify(codes...) }
 
 // pendingInteraction reports whether the thread has an unresolved
 // interaction. It reads `bb thread interactions list --json`; if that fails
