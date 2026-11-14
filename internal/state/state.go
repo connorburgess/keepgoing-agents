@@ -66,14 +66,21 @@ type File struct {
 	ExactCut             map[string]int `json:"exactCut,omitempty"`
 	Fingerprint          string         `json:"fingerprint,omitempty"`
 	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
-	LastWakeAt           time.Time      `json:"lastWakeAt,omitempty"`
-	CheckedAt            time.Time      `json:"checkedAt,omitempty"`
-	LastState            string         `json:"lastState,omitempty"`
-	LastCheck            *Check         `json:"lastCheck,omitempty"`
-	Reprompts            int            `json:"reprompts,omitempty"`
-	Nudges               int            `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt       time.Time      `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent    bool           `json:"stopSent,omitempty"`
+	// ProgressChangedAt is when a check last saw the repositories' fingerprint
+	// change, or, with ProgressBaseline, when one first recorded it (no change
+	// is known before then). Unlike LastProgressAt it is never moved forward
+	// by the no-progress timeout's credits for sleep or an outage. The panel's
+	// no-progress flag counts from it.
+	ProgressChangedAt time.Time `json:"progressChangedAt,omitzero"`
+	ProgressBaseline  bool      `json:"progressBaseline,omitempty"`
+	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time `json:"checkedAt,omitempty"`
+	LastState         string    `json:"lastState,omitempty"`
+	LastCheck         *Check    `json:"lastCheck,omitempty"`
+	Reprompts         int       `json:"reprompts,omitempty"`
+	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool      `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -427,7 +434,7 @@ func Save(stateDir string, f File) error {
 	}
 	// This record is what stops a stop or prompt being repeated. Sync it
 	// before publishing, as the send ledger does. Not a power-loss guarantee.
-	if err := tmp.Sync(); err != nil {
+	if err := snapshot.Sync(tmp); err != nil {
 		tmp.Close()
 		return err
 	}

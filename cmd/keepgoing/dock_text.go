@@ -55,14 +55,22 @@ func tm(t time.Time, f string) dockPart {
 }
 
 // render writes the sentence with times in UTC, as the tests read it.
-func (d dockText) render(readAt time.Time) string {
+func (d dockText) render(readAt time.Time) string { return d.renderIn(readAt, time.UTC, false) }
+
+// renderLocal writes the sentence with times in loc, each followed by its
+// offset ("06:45 +07"), for a program that shows it as text: client review.
+func (d dockText) renderLocal(readAt time.Time, loc *time.Location) string {
+	return d.renderIn(readAt, loc, true)
+}
+
+func (d dockText) renderIn(readAt time.Time, loc *time.Location, zone bool) string {
 	var b strings.Builder
 	for _, p := range d {
 		if p.At == nil {
 			b.WriteString(p.T)
 			continue
 		}
-		t := p.At.UTC()
+		t := p.At.In(loc)
 		far := t.Sub(readAt) > 365*24*time.Hour || readAt.Sub(t) > 365*24*time.Hour
 		date := "Mon 2 Jan"
 		if far {
@@ -80,8 +88,23 @@ func (d dockText) render(readAt time.Time) string {
 		default:
 			b.WriteString(t.Format(date + ", 15:04"))
 		}
+		if zone {
+			b.WriteString(" " + dockOffset(t))
+		}
 	}
 	return b.String()
+}
+
+// dockOffset is a time's offset from UTC: "+07", "-03:30", or "UTC".
+func dockOffset(t time.Time) string {
+	_, off := t.Zone()
+	if off == 0 {
+		return "UTC"
+	}
+	if off%3600 == 0 {
+		return t.Format("-07")
+	}
+	return t.Format("-07:00")
 }
 
 func absDuration(d time.Duration) time.Duration {

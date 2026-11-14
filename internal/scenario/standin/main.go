@@ -23,18 +23,21 @@
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
 //	bb.down                if present, every bb command fails with no output
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
+//	fail.<command>         if present, holds a number N: the next N calls of
+//	                       `thread <command>` fail with no output, as a bb read
+//	                       that the host cut short would
+//	show.gate              if present, holds a number N: each `thread show`
+//	                       records its arrival in show.arrived and waits until N
+//	                       have arrived or show.open exists, then answers
 //	standin.started,       one byte per stand-in process started and per one
 //	standin.ended          that ended on its own; they differ when one was killed
 //	standin.held,          one byte per stand-in held at the show gate and per
 //	standin.released       one let through it, so the harness can tell one
 //	                       still waiting there from one that was killed
-//	kill.<command>         if present, after `thread <command>` has answered, the
-//	                       stand-in kills the keepgoing process that ran it
-//	killbefore.<command>   if present, the stand-in kills the keepgoing process
-//	                       that runs `thread <command>` before doing anything
-//	show.gate              if present, holds a number N: each `thread show`
-//	                       records its arrival in show.arrived and waits until N
-//	                       have arrived or show.open exists, then answers
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -172,6 +175,10 @@ func run(world string, args []string) int {
 	if len(args) < 2 || args[0] != "thread" {
 		fmt.Println(`{"ok":true}`)
 		return 0
+	}
+	if failOnce(world, args[1]) {
+		fmt.Fprintln(os.Stderr, "fictional: bb could not answer")
+		return 1
 	}
 	switch args[1] {
 	case "show":
@@ -518,4 +525,19 @@ func gate(world string) bool {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return false
+}
+
+// failOnce uses up one of the failures fail.<command> holds, if any.
+func failOnce(world, command string) bool {
+	path := filepath.Join(world, "fail."+command)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if n <= 0 {
+		return false
+	}
+	os.WriteFile(path, []byte(strconv.Itoa(n-1)), 0o600)
+	return true
 }

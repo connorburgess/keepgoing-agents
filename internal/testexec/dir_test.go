@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // probeSource is a program for these tests. It appends the name it was run
@@ -148,6 +149,20 @@ func TestRunOnceDoesNotCallAMissingProgramARefusal(t *testing.T) {
 	err := RunOnce(filepath.Join(t.TempDir(), "absent"), nil)
 	var refused *RefusedError
 	if err == nil || errors.As(err, &refused) || strings.Contains(err.Error(), EnvironmentFailure) {
+		t.Fatalf("%v", err)
+	}
+}
+
+// A build that does not finish within buildTimeout fails, saying so.
+func TestBuildHasATimeLimit(t *testing.T) {
+	old := buildTimeout
+	buildTimeout = time.Nanosecond
+	defer func() { buildTimeout = old }()
+	d, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Build("example", "../../cmd/keepgoing", nil); err == nil || !strings.Contains(err.Error(), "no result after 1ns") {
 		t.Fatalf("%v", err)
 	}
 }

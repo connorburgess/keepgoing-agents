@@ -83,8 +83,11 @@ func clientCommand(e env, args []string) int {
 	if len(args) > 0 && (args[0] == "pause" || args[0] == "stop") {
 		return clientHoldCommand(e, args)
 	}
+	if len(args) > 0 && (args[0] == "review" || args[0] == "apply") {
+		return clientReviewCommand(e, args)
+	}
 	if len(args) == 0 || args[0] != "status" {
-		e.errf("usage: keepgoing client status|pause|stop|prepare-resume|resume --id ID [--directory private-registry] [--json]; see each command --help")
+		e.errf("usage: keepgoing client status|pause|stop|prepare-resume|resume --id ID, or client review|apply pause|stop|resume --loop KEY [--directory private-registry] [--json]; see each command --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("client status", flag.ContinueOnError)

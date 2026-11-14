@@ -435,6 +435,8 @@
     else if (h.state === "none") card("Hold", "None");
     else card("Hold", h.phrase, h.sub);
     if (l.away) card("Route", say(l.away.short), say(l.away.why));
+    // The no-progress flag informs; it is never a need.
+    if (l.noProgress && l.noProgress.availability === "flagged") card("Progress", "No progress", l.noProgress.text.replace(/^No progress: /, ""));
     return dl;
   }
 
@@ -552,6 +554,13 @@
     dl.appendChild(fact("Last check", lastCheck(l.lastCheck)));
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
+    if (l.build && l.build.text) dl.appendChild(fact("Build", l.build.availability === "unknown" || l.build.availability === "not_recorded" ? unknown(l.build.text) : el("span", null, l.build.text)));
+    if (l.noProgress) {
+      var np = l.noProgress, pf = frag();
+      pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
+      list(np.lines).forEach(function (s) { pf.appendChild(el("div", "sub", s)); });
+      dl.appendChild(fact("Progress", pf));
+    }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
     checks.appendChild(dl);
     if (list(l.issues).length) {
@@ -890,6 +899,8 @@
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
+    var vt = $("version");
+    if (vt && state.server && state.server.versionText) vt.textContent = state.server.versionText;
     var p = $("served");
     if (!p) return;
     p.textContent = "";

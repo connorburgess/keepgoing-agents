@@ -473,7 +473,7 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 			reply.Error = "the request could not be read"
 		} else if age := time.Since(req.At); req.At.IsZero() || age > panelRequestMaxAge || age < -panelRequestMaxAge {
 			// It waited too long to be what its sender still wants.
-			reply.Error = "the request reached the server too late"
+			reply.Error = "the request reached the panel too late"
 			req.Op = ""
 		} else {
 			switch req.Op {
@@ -639,7 +639,8 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		}
 	}
 	page := newDockServer(port, state, reader)
-	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second))}
+	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second)),
+		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version)}
 	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
 	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
 		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes}

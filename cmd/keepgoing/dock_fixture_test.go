@@ -17,6 +17,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -180,6 +181,13 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 			// it left on is not a limit on the routes other loops are using.
 			cfgYAML = strings.Replace(cfgYAML, "  provider: claude-code\n", "  provider: claude-code\n  group: payments-account\n  switch_back: {enabled: true}\n", 1)
 		}
+		if name == "nightly-dependency-bumps" || name == "docs-site-refresh" {
+			// Progress repositories, so the no-progress flag has a source.
+			cfgYAML = strings.Replace(cfgYAML, "  prompt: ", "  progress:\n    repositories: [repo]\n  prompt: ", 1)
+			if err := os.MkdirAll(filepath.Join(dir, "repo"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
 		dockWrite(t, filepath.Join(dir, "keepgoing.yaml"), cfgYAML)
 		if withFallbacks {
 			dockWrite(t, filepath.Join(dir, "fallbacks.yaml"), fbYAML)
@@ -205,6 +213,10 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		switch name {
 		case "docs-site-refresh":
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "child work running")
+			// The build that ran its last check, for the panel's build line.
+			st.LastCheck.Version = "v0.1.5-dev.26f91db"
+			// Its repositories changed 57 minutes ago: the no-progress flag is clear.
+			st.Fingerprint, st.LastProgressAt, st.ProgressChangedAt = "fixture-fingerprint", now.Add(-57*time.Minute), now.Add(-57*time.Minute)
 			// One lane is itself a registered loop: mobile-onboarding's thread.
 			children = []rungraph.Child{{Key: childKeyOf("thr_child0001"), Status: rungraph.ChildActive}, {Key: childKeyOf(dockLoopThread("mobile-onboarding")), Status: rungraph.ChildActive},
 				{Key: childKeyOf("thr_child0003"), Status: rungraph.ChildActive}, {Key: childKeyOf("thr_child0004"), Status: rungraph.ChildErrored}}
@@ -264,6 +276,17 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		case "nightly-dependency-bumps":
 			at := now.Add(-5*time.Hour - 12*time.Minute)
 			st.CheckedAt, st.LastCheck = at, dockFixtureCheck(at, "idle", "wake", "idle")
+			// No change to its repositories in 30 hours, and a wake every three
+			// hours since: eight sends, enough to raise the no-progress flag.
+			st.Fingerprint, st.LastProgressAt, st.ProgressChangedAt = "fixture-fingerprint", now.Add(-30*time.Hour), now.Add(-30*time.Hour)
+			on := &incident.Controls{Enabled: true}
+			for k := 7; k >= 0; k-- {
+				when := at.Add(-time.Duration(k) * 3 * time.Hour)
+				if err := incident.Append(sd, incident.Record{Kind: "tick", CheckStartedAt: when, Action: "wake", Outcome: "succeeded", Cause: "idle",
+					TargetKey: incident.TargetKey(state.Primary), TargetKeyAfter: incident.TargetKey(state.Primary), ControlBefore: on, ControlAfter: on}); err != nil {
+					t.Fatal(err)
+				}
+			}
 		case "data-export-cleanup":
 			ctl.Enabled = false
 		case "payments-reconciler", "inventory-sync", "report-builder":
@@ -306,6 +329,28 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 				return g.Wait(state.Primary, rungraph.ListingComplete, children, checkAt)
 			}); err != nil {
 				t.Fatal("wait: ", err)
+			}
+		}
+		if name == "nightly-dependency-bumps" {
+			// The same eight wakes as sends in its run graph, each returned by
+			// the adapter, which is what the no-progress flag counts.
+			at := now.Add(-5*time.Hour - 12*time.Minute)
+			if err := rungraph.Update(sd, at.Add(-24*time.Hour), func(g *rungraph.Graph) (bool, error) {
+				return g.Sync(rungraph.Boundary{Gate: rungraph.Gate{Enabled: true}, Operation: "start", At: at.Add(-24 * time.Hour), NewRunID: fmt.Sprintf("run_%032x", 9)})
+			}); err != nil {
+				t.Fatal("sync: ", err)
+			}
+			for k := 7; k >= 0; k-- {
+				when := at.Add(-time.Duration(k) * 3 * time.Hour)
+				id := fmt.Sprintf("attempt_%032x", k+1)
+				if err := rungraph.Update(sd, when, func(g *rungraph.Graph) (bool, error) {
+					if err := g.Begin(rungraph.Attempt{ID: id, Target: state.Primary, Action: "wake", Mode: "auto", RecordedAt: when}); err != nil {
+						return false, err
+					}
+					return g.Finish(id, rd.AdapterReturned, when)
+				}); err != nil {
+					t.Fatal("attempt: ", err)
+				}
 			}
 		}
 		if withFallbacks {
