@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/netretry"
+	"github.com/looptender/looptender/internal/netretry"
 )
 
 // GH runs gh with args and returns stdout.

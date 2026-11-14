@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
-	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/probe"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/rungraph"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // fakeThreads stands in for BB's thread creation and listing. Every call is

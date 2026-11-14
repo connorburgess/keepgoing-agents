@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func TestOwnershipClaimTransferAndHolds(t *testing.T) {

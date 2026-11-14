@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // retryPluginTimeout bounds each of the two calls to BB's retry plugin. They

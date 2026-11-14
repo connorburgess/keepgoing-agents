@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 // Every turn runs through a detached copy of the executable. The live wrapper

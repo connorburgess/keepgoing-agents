@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // unsaved records an intended send the way a check does before making it,
@@ -274,7 +274,7 @@ func TestASendRecordedWithoutAnOutcomeAtEachKillPoint(t *testing.T) {
 		w, _, fallbacks := rejectingWorld(t, false)
 		unsaved(t, w, t0, "handoff", "claude-other")
 		runTick(t, w, t0.Add(time.Minute)) // holds
-		// What resume does (cmd/keepgoing resumeEpisode): the brief counted
+		// What resume does (cmd/looptender resumeEpisode): the brief counted
 		// as delivered and not taken, one handoff skipped, the hold cleared.
 		st, _ := state.Load(w.dir)
 		st.HandoffBriefs = map[string]state.BriefRecord{"claude-other": {Failed: 1, LastAt: t0.Add(2 * time.Minute)}}

@@ -278,7 +278,7 @@ Offline fixtures cover the tier and repeatability of each record shape; a 720-ch
 
 ### Combined incident acceptance
 
-R2 acceptance is verified by `cmd/keepgoing/incident_journey_test.go` with offline fixtures. Each command invocation reloads config and persisted state through the CLI harness. Checks use an explicit fictional timestamp to avoid waiting through backoff; local headless subprocesses actually run, emit structured output and terminate. This is not a live provider walkthrough or a separate supervisor-process restart test.
+R2 acceptance is verified by `cmd/looptender/incident_journey_test.go` with offline fixtures. Each command invocation reloads config and persisted state through the CLI harness. Checks use an explicit fictional timestamp to avoid waiting through backoff; local headless subprocesses actually run, emit structured output and terminate. This is not a live provider walkthrough or a separate supervisor-process restart test.
 
 | Fixture | Sequence verified from common history |
 | --- | --- |

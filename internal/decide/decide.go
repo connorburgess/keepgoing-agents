@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // State is the supervised session's coarse status.

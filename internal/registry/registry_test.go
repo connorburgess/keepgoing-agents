@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func privateDir(t *testing.T) string {

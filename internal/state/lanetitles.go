@@ -14,7 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // LaneTitlesName is the private file of lane titles: the title BB reported

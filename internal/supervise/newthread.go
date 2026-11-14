@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // Creating a BB thread is the single exception to "keepgoing never creates a

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/bb"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/process"
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter/bb"
+	"github.com/looptender/looptender/internal/adapter/process"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
 )
 
 // New returns the adapter for agent a. Headless runners keep their turn

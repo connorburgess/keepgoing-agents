@@ -1,4 +1,4 @@
-module github.com/connorburgess/keepgoing-agents
+module github.com/looptender/looptender
 
 go 1.24
 

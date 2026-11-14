@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
-	"github.com/connorburgess/keepgoing-agents/internal/session"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/session"
 )
 
 // No test takes a claim in the person's own session directory.

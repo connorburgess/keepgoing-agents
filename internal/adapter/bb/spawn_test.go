@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/config"
 )
 
 func TestSpawnRunsOneCommandWithThePromptOnStdin(t *testing.T) {

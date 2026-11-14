@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // Event is one report.

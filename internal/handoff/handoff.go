@@ -9,8 +9,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/prompt"
 )
 
 // Facts describe the handoff.

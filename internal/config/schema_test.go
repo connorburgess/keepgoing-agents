@@ -119,7 +119,7 @@ func TestTheEarlierSchemaNameIsAnAlias(t *testing.T) {
 	}
 	for _, name := range []string{"looptender", "fallbacks", "routes"} {
 		s := load(t, "../../schema/"+name+".schema.json")
-		if want := "https://github.com/connorburgess/keepgoing-agents/schema/" + name + ".schema.json"; s["$id"] != want {
+		if want := "https://github.com/looptender/looptender/schema/" + name + ".schema.json"; s["$id"] != want {
 			t.Errorf("%s: $id %v, want %s", name, s["$id"], want)
 		}
 	}

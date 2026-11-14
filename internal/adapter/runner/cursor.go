@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // Cursor runs one print-mode turn per send. Only provider lifecycle fields and

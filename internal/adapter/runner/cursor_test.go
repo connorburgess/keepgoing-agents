@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 const cursorSession = "00000000-0000-4000-8000-0000000000c1"

@@ -3,9 +3,9 @@ package supervise
 import (
 	"fmt"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // childErrorEvent is the report event for child threads in error.

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
 )
 
 func retryFake(out string, err error) (*Adapter, *[]call) {

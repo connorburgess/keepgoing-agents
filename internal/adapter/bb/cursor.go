@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // bb returns log events oldest first and pages forward with --after-seq, so

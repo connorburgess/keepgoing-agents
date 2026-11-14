@@ -11,10 +11,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/allowance"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/allowance"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // FileName of the registry inside the state directory.

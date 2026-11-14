@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/state"
 )
 
 func TestActiveRetryPreservesNudgesAndRecoveryGrace(t *testing.T) {

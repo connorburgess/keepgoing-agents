@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 func TestDeadlinePersistsBeforeProviderWork(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	// Windows has no system zoneinfo; embed it so configured windows load everywhere.
 	_ "time/tzdata"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/config"
 )
 
 // Inside reports whether now falls in the configured window. A nil window
