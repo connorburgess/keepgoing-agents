@@ -14,10 +14,41 @@ import (
 var errControlHistory = errors.New("control saved; incident history write failed; diagnostic evidence is incomplete")
 
 func updateControlWithHistory(dir, operation string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFromAnnotated(dir, operation, "", fn, nil, routine...)
+}
+
+// updateControlAnnotated is updateControlWithHistory for a command that
+// records who ran it and what else the save did. annotate runs after fn has
+// succeeded, inside the control update.
+func updateControlAnnotated(dir, operation string, fn func(*control.File) error, annotate func(control.File, *incident.ControlChange), routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFromAnnotated(dir, operation, "", fn, annotate, routine...)
+}
+
+// controlOrigins are where a control change can come from besides a command:
+// "panel" is the keepgoing panel's own pause, stop and resume. The history
+// records it in the operation's value ("panel_pause"), never as a field of
+// its own, because the journal is decoded strictly and a binary from before
+// that field would refuse the whole journal. Older binaries read an
+// operation value they do not know as "unavailable" instead.
+var controlOrigins = map[string]bool{"panel": true}
+
+// updateControlFrom is updateControlWithHistory for a change from origin
+// ("" for a command).
+func updateControlFrom(dir, operation, origin string, fn func(*control.File) error, routine ...rd.RoutineRef) (control.File, error) {
+	return updateControlFromAnnotated(dir, operation, origin, fn, nil, routine...)
+}
+
+// updateControlFromAnnotated is the one implementation: the history records
+// the operation with its origin, the run graph is given the plain operation.
+func updateControlFromAnnotated(dir, operation, origin string, fn func(*control.File) error, annotate func(control.File, *incident.ControlChange), routine ...rd.RoutineRef) (control.File, error) {
+	recorded := operation
+	if controlOrigins[origin] {
+		recorded = origin + "_" + operation
+	}
 	var r incident.Record
 	f, err := control.UpdateChecked(dir, func(f *control.File) error {
 		r = incident.Record{Kind: "control", CheckStartedAt: time.Now().UTC(), Build: version,
-			ControlBefore: incident.Gate(f.Gate()), ControlChange: &incident.ControlChange{Operation: operation}}
+			ControlBefore: incident.Gate(f.Gate()), ControlChange: &incident.ControlChange{Operation: recorded}}
 		owner, generation := ownerIdentity(*f)
 		r.ControlChange.OwnerPresentBefore = f.Ownership != nil
 		if err := fn(f); err != nil {
@@ -27,6 +58,9 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 		r.ControlAfter = incident.Gate(f.Gate())
 		r.ControlChange.OwnerPresentAfter = f.Ownership != nil
 		r.ControlChange.OwnershipChanged = owner != nextOwner || generation != nextGeneration
+		if annotate != nil {
+			annotate(*f, r.ControlChange)
+		}
 		return nil
 	})
 	if err != nil {
@@ -40,6 +74,21 @@ func updateControlWithHistory(dir, operation string, fn func(*control.File) erro
 		return f, errControlHistory
 	}
 	return f, nil
+}
+
+// recordQuestionEnded adds the history record for an open question that a
+// resume ended, with the question's ID only. A resume is a person's answer
+// to go on; how the loop goes on is decided by the check that follows.
+func recordQuestionEnded(dir, id string) {
+	if id == "" {
+		return
+	}
+	now := time.Now().UTC()
+	r := incident.Record{Kind: "control", CheckStartedAt: now, Build: version, ControlChange: &incident.ControlChange{Operation: "question_withdrawn", QuestionID: id, SaveObservedAt: now, Caller: "unavailable"}}
+	if c, err := control.Load(dir); err == nil {
+		r.ControlBefore, r.ControlAfter = incident.Gate(c.Gate()), incident.Gate(c.Gate())
+	}
+	_ = incident.Append(dir, r) // diagnostic only; the resume is already saved
 }
 
 func ownerIdentity(f control.File) (string, uint64) {

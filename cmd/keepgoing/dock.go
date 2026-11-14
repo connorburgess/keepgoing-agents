@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // keepgoing dock serves one read-only page about every registered loop on the
@@ -42,14 +44,19 @@ const (
 	dockMinRefresh     = 5 * time.Second
 	dockMaxRefresh     = 10 * time.Minute
 	// dockMaxResponse bounds the JSON a read may produce. The projection
-	// caps every list and string; the largest registry (128 loops) with long
-	// fallback lists measured just under 2 MiB, so the bound leaves room.
+	// caps every list and string, and states what it leaves out. The largest
+	// registry (128 loops) with every list at its cap and every name at its
+	// longest measured about 5.4 MB with identifiers, and 6.1 MB with names
+	// of four-byte characters; tests keep both under three quarters of this
+	// bound (6 MiB).
 	dockMaxResponse = 8 << 20
 	// dockReadTimeout bounds one whole read of the registry.
 	dockReadTimeout = 20 * time.Second
 	// dockReadParallel bounds how many loops are read at once.
 	dockReadParallel = 4
 	dockAPIPath      = "api/v1/dock"
+	// dockMaxDeliveries is the report delivery history's own record bound.
+	dockMaxDeliveries = 64
 	// dockServerPath says which command serves the page, so the page can
 	// name it and say when it stops.
 	dockServerPath = "api/v1/server"
@@ -187,10 +194,24 @@ type dockServed struct {
 	// IdleSeconds is how long the panel server runs with no page reading
 	// from it. Zero for dock, which has no such limit.
 	IdleSeconds int `json:"idleSeconds,omitempty"`
+	// Version is this binary's build label; VersionText says it in the
+	// footer's words.
+	Version     string `json:"version"`
+	VersionText string `json:"versionText"`
+	// Changes is set by the panel server only: "on" when it was started with
+	// --allow-changes, otherwise "off". keepgoing dock never allows them.
+	// ChangesText says so in the footer's words. Form is the session's
+	// anti-forgery value for preparing a change, only when changes are on.
+	Changes      string     `json:"changes,omitempty"`
+	ChangesSince *time.Time `json:"changesSince,omitempty"`
+	ChangesText  dockText   `json:"changesText,omitempty"`
+	Form         string     `json:"form,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
-	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock"}}
+	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
+		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version),
+		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -219,7 +240,7 @@ func dockServeHandler(ctx context.Context, ln net.Listener, h http.Handler, stde
 		if errors.Is(err, http.ErrServerClosed) {
 			return exitOK
 		}
-		fmt.Fprintln(stderr, "dock: the server stopped unexpectedly")
+		fmt.Fprintln(stderr, "dock: the page stopped being served unexpectedly")
 		return exitFailed
 	}
 }
@@ -292,6 +313,9 @@ type dockReader struct {
 	now        func() time.Time
 	timeout    time.Duration // zero means dockReadTimeout
 
+	hostOnce sync.Once
+	host     string
+
 	mu    sync.Mutex
 	cache map[bool]dockCached
 }
@@ -299,6 +323,13 @@ type dockReader struct {
 type dockCached struct {
 	at   time.Time
 	body []byte
+}
+
+// hostname is this computer's name, read once. It is an identifier and
+// leaves the reader only in the view with identifiers.
+func (d *dockReader) hostname() string {
+	d.hostOnce.Do(func() { d.host, _ = os.Hostname() })
+	return d.host
 }
 
 func (d *dockReader) clock() time.Time {
@@ -401,7 +432,7 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 }
 
 func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
-	in := dockInput{Entry: entry}
+	in := dockInput{Entry: entry, Hostname: d.hostname()}
 	if ctx.Err() != nil {
 		in.Client = clientStatusReport{SchemaVersion: 1, RegistrationID: entry.ID, ReadAt: now, Outcome: "unavailable", Issues: []string{"cancelled"}}
 		return in
@@ -417,14 +448,21 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return in
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
-		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn}
-		if fb := cfg.FallbackSet; fb != nil {
+		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled}
+		if fb := currentRoutes(cfg); fb != nil {
 			in.Chain.Candidates = fb.Candidates
+			if !fb.Probe.Disabled {
+				in.Chain.ProbeEvery = fb.Probe.Every.Duration
+			}
 			// The same read as fallbacks list.
 			if reg, err := health.Load(cfg.Loop.StateDir); err == nil {
 				out := summarize(cfg, reg, now)
 				in.Chain.Summary = &out
-				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now)
+				in.Chain.Due = map[string]string{}
+				for _, c := range fb.Candidates {
+					_, in.Chain.Due[c.ID] = reg.Due(c, fb.Probe, now)
+				}
+				use := usageOf(reg, cfg.Loop.PrimaryCandidate(), now, projectionRules(fb))
 				in.Chain.PrimaryUse = &use
 			}
 		}
@@ -433,11 +471,15 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 			in.Status = &out
 		}
 	}
+	// The retained history, read as timeline reads it: recent entries, when
+	// and why a hold began, and how long the last result has repeated.
+	tl := readTimeline(entry.StateDir, now, d.staleAfter, incident.MaxRecords+dockMaxDeliveries, timelineFilter{})
+	in.Timeline = &tl
 	if c := in.Client.Snapshot.Controls; c != nil && c.AwaitingUser {
-		// The retained history timeline reads, for when and why the hold began.
-		if j, err := incident.Load(entry.StateDir); err == nil {
-			in.Hold = dockHoldFrom(j)
-		}
+		in.Hold = dockHoldFromTimeline(in.Timeline)
+	}
+	if titles, err := state.LoadLaneTitles(entry.StateDir); err == nil {
+		in.LaneTitles = titles
 	}
 	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable

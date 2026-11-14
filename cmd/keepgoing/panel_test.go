@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"io"
 	"net"
 	"net/http"
@@ -47,6 +48,12 @@ func panelShortDir(t *testing.T) string {
 // itself and the fixture tree's root.
 func panelServeInProcess(t *testing.T, idle time.Duration) (string, panelRecord, string) {
 	t.Helper()
+	return panelServeInProcessWith(t, idle, false)
+}
+
+// panelServeInProcessWith starts the server with or without --allow-changes.
+func panelServeInProcessWith(t *testing.T, idle time.Duration, changes bool) (string, panelRecord, string) {
+	t.Helper()
 	root := t.TempDir()
 	registryDir := dockScratch(t, root, dockNow)
 	runsClock(t, dockNow)
@@ -57,7 +64,7 @@ func panelServeInProcess(t *testing.T, idle time.Duration) (string, panelRecord,
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: idle, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+		done <- runPanelServer(ctx, panelServerConfig{dir: dir, registry: registryDir, idle: idle, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, changes: changes, now: time.Now})
 	}()
 	stopped := false
 	t.Cleanup(func() {
@@ -1222,66 +1229,60 @@ func TestPanelConcurrentCommandsEndWithOneServer(t *testing.T) {
 	}
 }
 
+// The real background process exits by itself when nothing uses it, with a
+// clean exit, its record and socket removed and no loop file changed. Which
+// requests count as use, and the 30-minute rule itself, are tested on the
+// server's own clock in TestPanelIdleRuleOnAFakeClock: a real process has
+// only wall time, so this test makes no request at all once the server is
+// up, and nothing in it races the idle limit.
 func TestPanelServerExitsWhenIdleAndLeavesLoopsAlone(t *testing.T) {
 	w := newPanelProcessWorld(t)
 	before := treeDigest(t, w.root)
-	cmd, _, _ := w.command("__panel-server", "--panel-directory", w.dir, "--directory", w.registry, "--idle", "1500ms", "--offline")
+	cmd, _, _ := w.command("__panel-server", "--panel-directory", w.dir, "--directory", w.registry, "--idle", "3s", "--offline")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	var rec panelRecord
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var ok bool
-		if rec, ok = panelLive(context.Background(), w.dir); ok {
+	// Ready by its own signal: it holds its lock and answers on its socket.
+	// Under heavy load it may even go idle and exit before that is seen;
+	// then the exit is checked the same way.
+	var exitErr error
+	ended := false
+	for deadline := time.Now().Add(30 * time.Second); !ended; time.Sleep(20 * time.Millisecond) {
+		select {
+		case exitErr = <-exited:
+			ended = true
+			continue
+		default:
+		}
+		if _, ok := panelLive(context.Background(), w.dir); ok {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the server did not start")
+			t.Fatal("the server neither answered nor exited")
 		}
 	}
-	// Page requests keep it alive past its idle limit.
-	page, c := panelSession(t, w.dir, rec)
-	for end := time.Now().Add(2500 * time.Millisecond); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-		if resp, _ := dockRequest(t, http.MethodGet, page+dockAPIPath, withCookie(c)); resp.StatusCode != http.StatusOK {
-			t.Fatalf("in use: %d", resp.StatusCode)
-		}
-	}
-	select {
-	case err := <-exited:
-		t.Fatalf("exited while in use: %v", err)
-	default:
-	}
-	idleFrom := time.Now()
-	for {
+	if !ended {
 		select {
-		case err := <-exited:
-			if err != nil {
-				t.Fatalf("idle exit was not clean: %v", err)
-			}
-			if waited := time.Since(idleFrom); waited < time.Second {
-				t.Fatalf("exited %s after its last request", waited)
-			}
-			for _, name := range []string{panelRecordName, panelSocketName} {
-				if _, err := os.Lstat(filepath.Join(w.dir, name)); !os.IsNotExist(err) {
-					t.Fatalf("%s was left behind: %v", name, err)
-				}
-			}
-			if treeDigest(t, w.root) != before {
-				t.Fatal("a file in the registry or a loop's directory changed across start, use and idle exit")
-			}
-			return
-		case <-time.After(150 * time.Millisecond):
-			// Asking for status, loading a static file and being refused
-			// are not use.
-			_, _ = panelControl(context.Background(), w.dir, panelRequest{Op: "status"})
-			dockRequest(t, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/panel.css", rec.Port), nil)
-			dockRequest(t, http.MethodGet, page, nil)
-			if time.Since(idleFrom) > 8*time.Second {
-				t.Fatal("still running 8 seconds after its last request")
-			}
+		case exitErr = <-exited:
+		case <-time.After(60 * time.Second):
+			t.Fatal("still running a minute after it was last used")
 		}
+	}
+	if exitErr != nil {
+		t.Fatalf("idle exit was not clean: %v", exitErr)
+	}
+	for _, name := range []string{panelRecordName, panelSocketName} {
+		if _, err := os.Lstat(filepath.Join(w.dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was left behind: %v", name, err)
+		}
+	}
+	if panelServerHeld(w.dir) {
+		t.Fatal("the lock is still held after the idle exit")
+	}
+	if treeDigest(t, w.root) != before {
+		t.Fatal("a file in the registry or a loop's directory changed across start and idle exit")
 	}
 }
 
@@ -1320,22 +1321,40 @@ func TestPanelIdleRuleOnAFakeClock(t *testing.T) {
 	if rec.IdleSeconds != 1800 || !rec.StartedAt.Equal(now) {
 		t.Fatalf("record: %+v", rec)
 	}
-	// tick asks the idle question once and reports whether the server exited.
+	// tick asks the idle question once. The check runs only when told, so
+	// each answer is about the fake clock alone: after a tick that must not
+	// end the server, it is asked a second time, which it can take only once
+	// it has finished the first.
 	tick := func() bool {
+		t.Helper()
+		for i := 0; i < 2; i++ {
+			select {
+			case ticks <- clock():
+			case code := <-done:
+				done <- code
+				return true
+			case <-time.After(30 * time.Second):
+				t.Fatal("the idle check is not running")
+			}
+		}
+		return false
+	}
+	// exits waits for the exit a tick has caused.
+	exits := func() bool {
 		t.Helper()
 		select {
 		case ticks <- clock():
 		case code := <-done:
 			done <- code
 			return true
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("the idle check is not running")
 		}
 		select {
 		case code := <-done:
 			done <- code
 			return true
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(30 * time.Second):
 			return false
 		}
 	}
@@ -1386,7 +1405,7 @@ func TestPanelIdleRuleOnAFakeClock(t *testing.T) {
 		t.Fatal("exited before 30 minutes after an opening address was made")
 	}
 	advance(time.Second)
-	if !tick() {
+	if !exits() {
 		t.Fatal("still running 30 minutes after the last use")
 	}
 	if code := <-done; code != exitOK {
@@ -1410,14 +1429,19 @@ func TestPanelAndDockSayWhichCommandServesThePage(t *testing.T) {
 	dir, rec, _ := panelServeInProcess(t, 45*time.Minute)
 	page, c := panelSession(t, dir, rec)
 	resp, body := dockRequest(t, http.MethodGet, page+dockServerPath, withCookie(c))
-	if resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"panel","idleSeconds":2700}` {
+	var got dockServed
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.SchemaVersion != 1 || got.ServedBy != "panel" || got.IdleSeconds != 2700 ||
+		got.Changes != "off" || got.Form != "" || got.ChangesSince != nil || !strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only: started without --allow-changes.") {
 		t.Fatalf("panel: %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := dockRequest(t, http.MethodGet, page+dockServerPath, nil); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("without a session: %d", resp.StatusCode)
 	}
 	base, _, _ := dockServe(t)
-	if resp, body := dockRequest(t, http.MethodGet, base+dockServerPath, nil); resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"schemaVersion":1,"servedBy":"dock"}` {
+	resp, body = dockRequest(t, http.MethodGet, base+dockServerPath, nil)
+	got = dockServed{}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.ServedBy != "dock" || got.Changes != "" || got.Form != "" ||
+		!strings.HasPrefix(got.ChangesText.render(time.Now()), "Read-only. keepgoing dock never pauses") {
 		t.Fatalf("dock: %d %s", resp.StatusCode, body)
 	}
 	// The expired page shows no button until its script runs, and that
@@ -1562,4 +1586,155 @@ func TestPanelServerRemovesOnlyItsOwnSocketAndExitsWithoutItsLock(t *testing.T) 
 	if rec, ok := readPanelRecord(dir); !ok || rec != other {
 		t.Fatalf("it removed a record it did not write: %+v %v", rec, ok)
 	}
+}
+
+// The bases stubbed apart, as on Linux, where the configuration directory
+// (the old location) and the state directory (the new one) differ.
+func panelTwoLocations(t *testing.T) (registryDir, legacy, current string) {
+	t.Helper()
+	root := t.TempDir()
+	registryDir = dockScratch(t, root, dockNow)
+	runsClock(t, dockNow)
+	oldBase, newBase := panelShortDir(t), panelShortDir(t)
+	prevState, prevLegacy := panelStateBase, panelLegacyBase
+	panelStateBase = func() (string, error) { return newBase, nil }
+	panelLegacyBase = func() (string, error) { return oldBase, nil }
+	t.Cleanup(func() { panelStateBase, panelLegacyBase = prevState, prevLegacy })
+	legacy = filepath.Join(oldBase, "keepgoing", "panel")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return registryDir, legacy, filepath.Join(newBase, "keepgoing", "panel")
+}
+
+// panelServeAt runs a panel server in dir, as a build would have, and waits
+// for it to answer. The channel gets its exit code.
+func panelServeAt(t *testing.T, dir, registryDir string) chan int {
+	t.Helper()
+	done := make(chan int, 1)
+	go func() {
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := panelLive(context.Background(), dir); ok {
+			return done
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server did not start")
+		}
+	}
+}
+
+func panelStoppedWithin(t *testing.T, done chan int, what string) {
+	t.Helper()
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Fatalf("%s exited %d", what, code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s was not stopped", what)
+	}
+}
+
+// A read-only command never stops a process: panel status and panel list
+// report a server an earlier build started at the old location, and leave it
+// running. keepgoing panel stop then stops it, removes the old directory, and
+// it is never looked at again.
+func TestPanelStatusAndListReportTheOldLocationAndStopRetiresIt(t *testing.T) {
+	registryDir, legacy, _ := panelTwoLocations(t)
+	done := panelServeAt(t, legacy, registryDir)
+	notice := "A panel started by an earlier build is running at " + legacy + "; keepgoing panel stop ends it."
+	var out, errs bytes.Buffer
+	run := func(args ...string) (int, string) {
+		t.Helper()
+		out.Reset()
+		errs.Reset()
+		code := panelCommand(env{context.Background(), &out, &errs}, args)
+		return code, out.String()
+	}
+	if code, text := run("status"); code != exitOK || !strings.Contains(text, "not running") || !strings.Contains(text, notice) {
+		t.Fatalf("status: %d %s %s", code, text, errs.String())
+	}
+	if code, text := run("status", "--json"); code != exitOK || !strings.Contains(text, `"earlierBuildPanel":"`+legacy+`"`) {
+		t.Fatalf("status --json: %d %s", code, text)
+	}
+	if code, text := run("list", "--offline", "--directory", registryDir); code != exitOK || !strings.Contains(text, notice) {
+		t.Fatalf("list: %d %s %s", code, text, errs.String())
+	}
+	if code, text := run("list", "--json", "--offline", "--directory", registryDir); code != exitOK || !strings.Contains(text, `"earlierBuildPanel":"`+legacy+`"`) {
+		t.Fatalf("list --json: %d %s", code, text)
+	}
+	// None of them acted on it.
+	select {
+	case code := <-done:
+		t.Fatalf("a read-only command stopped the old server (exit %d)", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, ok := panelLive(context.Background(), legacy); !ok {
+		t.Fatal("the old server no longer answers")
+	}
+	// Stop ends it and retires the old location.
+	if code, text := run("stop"); code != exitOK || !strings.Contains(text, "Stopped a panel an earlier build started at "+legacy+".") {
+		t.Fatalf("stop: %d %s %s", code, text, errs.String())
+	}
+	panelStoppedWithin(t, done, "the old server")
+	if _, err := os.Lstat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the old directory is still there: %v", err)
+	}
+	// Nothing is reported, and nothing at the old place is created again.
+	if code, text := run("status"); code != exitOK || strings.Contains(text, "earlier build") {
+		t.Fatalf("%d %s", code, text)
+	}
+	if _, err := os.Lstat(legacy); !os.IsNotExist(err) {
+		t.Fatal("the old directory came back")
+	}
+	// A read-only command creates nothing at an old place with no server.
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run("status")
+	run("list", "--offline", "--directory", registryDir)
+	if entries, _ := os.ReadDir(legacy); len(entries) != 0 {
+		t.Fatalf("a read-only command wrote to the old location: %v", entries)
+	}
+	// A directory that is not private is not touched, even by stop.
+	if err := os.Chmod(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, panelRecordName), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("stop")
+	if _, err := os.Lstat(filepath.Join(legacy, panelRecordName)); err != nil {
+		t.Fatal("a directory that is not private was cleared")
+	}
+}
+
+// Opening the panel (keepgoing panel) retires the old location too: a server
+// an earlier build started there is stopped, and the panel at the new
+// location is opened.
+func TestPanelOpeningRetiresTheOldLocation(t *testing.T) {
+	registryDir, legacy, current := panelTwoLocations(t)
+	old := panelServeAt(t, legacy, registryDir)
+	dir, err := panelDirectory("")
+	if err != nil || session.CleanPath(dir) != session.CleanPath(current) {
+		t.Fatalf("%s %v", dir, err)
+	}
+	now := panelServeAt(t, dir, registryDir)
+	var out, errs bytes.Buffer
+	if code := panelCommand(env{context.Background(), &out, &errs}, []string{"--no-open", "--directory", registryDir}); code != exitOK ||
+		!strings.Contains(out.String(), "Stopped a panel an earlier build started at "+legacy+".") || !strings.Contains(out.String(), "http://127.0.0.1:") {
+		t.Fatalf("%d %s %s", code, out.String(), errs.String())
+	}
+	panelStoppedWithin(t, old, "the old server")
+	if _, err := os.Lstat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("the old directory is still there: %v", err)
+	}
+	if _, ok := panelLive(context.Background(), dir); !ok {
+		t.Fatal("the panel at the new location was not kept")
+	}
+	out.Reset()
+	panelCommand(env{context.Background(), &out, &errs}, []string{"stop"})
+	panelStoppedWithin(t, now, "the new server")
 }

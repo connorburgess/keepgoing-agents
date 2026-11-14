@@ -133,6 +133,8 @@
                       "none",
                       "rate_limit",
                       "auth",
+                      "restricted",
+                      "refused",
                       "overloaded",
                       "network",
                       "unknown"
@@ -223,6 +225,29 @@
         "retry_signal_ttl": {
           "$ref": "#/$defs/duration",
           "description": "how long a provider retry notice on an errored thread suppresses error recovery; default 15m, minimum 1m"
+        },
+        "children": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "what keepgoing may do about the thread's lanes (its direct child threads); absent means observe and announce only",
+          "properties": {
+            "retry_errored": {
+              "type": "boolean",
+              "description": "opt in to asking BB to retry a lane's failed turn by reference; default false"
+            },
+            "max_per_check": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "lanes one check may work on; 0 or absent means 5"
+            },
+            "max_per_episode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "lane retries per episode; 0 or absent means 20"
+            }
+          }
         }
       }
     },
@@ -251,6 +276,8 @@
                 "none",
                 "rate_limit",
                 "auth",
+                "restricted",
+                "refused",
                 "overloaded",
                 "network",
                 "unknown"
@@ -598,6 +625,8 @@
                     "enum": [
                       "rate_limit",
                       "auth",
+                      "restricted",
+                      "refused",
                       "overloaded",
                       "network",
                       "unknown"
@@ -617,6 +646,8 @@
                       "enum": [
                         "rate_limit",
                         "auth",
+                        "restricted",
+                        "refused",
                         "overloaded",
                         "network",
                         "unknown"

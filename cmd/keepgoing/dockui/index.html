@@ -15,14 +15,16 @@
 <header class="bar">
   <div class="bar-in">
     <a class="brand" href="#/"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>keepgoing</span></a>
-    <p class="readline" id="readline" role="status" aria-live="polite">Reading…</p>
+    <p class="readline" id="readline">Reading…</p>
     <div class="tools">
-      <button type="button" class="btn" id="refresh"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>Read now</span></button>
+      <button type="button" class="btn" id="refresh" title="Read now"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>Read now</span></button>
+      <button type="button" class="btn" id="pause" aria-pressed="false" title="Pause updates"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5.5v9"/><path d="M12.5 5.5v9"/></svg><span>Pause updates</span></button>
       <button type="button" class="btn" id="identifiers" aria-pressed="false" title="Show identifiers and notes"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z"/><circle cx="10" cy="10" r="2.2"/></svg><span>Show identifiers and notes</span></button>
     </div>
   </div>
 </header>
-<p class="banner" id="banner" hidden></p>
+<p class="sr-only" id="live" role="status" aria-live="polite"></p>
+<p class="banner" id="banner" role="alert" hidden></p>
 <div class="layout" id="layout" data-view="home">
   <nav class="picker" id="picker" aria-label="Loops and views">
     <p class="placeholder">Reading…</p>
@@ -30,8 +32,22 @@
   <main class="pane" id="pane" tabindex="-1"></main>
 </div>
 <footer class="foot">
-  <p>Read-only. This page cannot pause, resume, stop or start anything, and closing it, or stopping the command that serves it, leaves supervision running. Times are shown in this browser's time zone.</p>
+  <p id="changes">Read-only. This page cannot pause, resume, stop or start anything.</p>
+  <p>Closing this page, or stopping the command that serves it, leaves supervision running. Times are shown in this browser's time zone.</p>
   <p id="served"></p>
+  <p id="version"></p>
+  <details class="words">
+    <summary>What these words mean</summary>
+    <dl>
+      <div><dt>Loop: </dt><dd>one goal being worked on by an agent session that keepgoing watches, wakes and holds when a person is needed.</dd></div>
+      <div><dt>Lane: </dt><dd>a child conversation a loop's agent started to work on part of the goal.</dd></div>
+      <div><dt>Route: </dt><dd>somewhere a turn can run: a model on an account at an effort level. A loop has routes in order of preference and moves down the list when one cannot continue.</dd></div>
+      <div><dt>Account group: </dt><dd>the configuration's name for routes it says share a usage allowance. The panel treats two routes as one account only when their tests read the same account.</dd></div>
+      <div><dt>Check: </dt><dd>one pass of keepgoing over a loop: look, decide, act, record.</dd></div>
+      <div><dt>Test: </dt><dd>one small real request keepgoing sends to confirm a route works before relying on it.</dd></div>
+      <div><dt>Hold: </dt><dd>a state in which keepgoing sends nothing until a person acts: paused, stopped, held for a person, or finished.</dd></div>
+    </dl>
+  </details>
 </footer>
 </body>
 </html>

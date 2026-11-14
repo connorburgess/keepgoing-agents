@@ -103,4 +103,6 @@ func TestSchemasMatchConfigTypes(t *testing.T) {
 	compare(t, "keepgoing", reflect.TypeOf(Config{}), kg, kg)
 	fb := load(t, "../../schema/fallbacks.schema.json")
 	compare(t, "fallbacks", reflect.TypeOf(Fallbacks{}), fb, fb)
+	rt := load(t, "../../schema/routes.schema.json")
+	compare(t, "routes", reflect.TypeOf(Routes{}), rt, rt)
 }

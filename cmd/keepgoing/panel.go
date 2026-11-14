@@ -14,13 +14,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // keepgoing panel opens the page that keepgoing dock serves, without an
@@ -58,7 +62,7 @@ const (
 	// panelOpenerEnv names a program to run instead of the platform's browser
 	// the default web browser. It receives the path of the launch page as its
 	// only argument.
-	panelOpenerEnv = "KEEPGOING_PANEL_OPENER"
+	panelOpenerEnv = envvar.Prefix + string(envvar.PanelOpener)
 )
 
 // panelRecord is the runtime record. It carries no token, code or cookie.
@@ -74,6 +78,9 @@ type panelRecord struct {
 	// Registry is the registry directory the server reads.
 	Registry string `json:"registry"`
 	Version  string `json:"version"`
+	// Changes: started with --allow-changes. Since StartedAt, as the mode
+	// never changes while the server runs.
+	Changes bool `json:"changes,omitempty"`
 }
 
 var (
@@ -100,18 +107,177 @@ func panelSocketLimit() int {
 	}
 }
 
+// The panel's runtime files live under the user's state directory, beside
+// the session claims. Builds before this kept them under the configuration
+// directory, which is a different place on Linux; see panelRetireLegacy.
+var (
+	panelStateBase  = userdir.StateHome
+	panelLegacyBase = userdir.ConfigHome
+)
+
+// panelDirName is the name of the tool's directory under those two places:
+// looptender, or keepgoing on a computer that already has one; see userdir.
+func panelDirName() string {
+	state, _ := panelStateBase()
+	config, _ := panelLegacyBase()
+	return userdir.NameIn(config, state)
+}
+
 // panelDirectory resolves the private directory for the record, the locks and
-// the socket: the same parent the registry uses, never a loop's directory and
-// never inside a Git checkout. It creates the directory when missing.
+// the socket: never a loop's directory and never inside a Git checkout. It
+// creates the directory when missing.
 func panelDirectory(path string) (string, error) {
 	bad := errors.New("the panel directory must be a private path outside Git checkouts")
 	if path == "" {
-		base, err := os.UserConfigDir()
+		base, err := panelStateBase()
 		if err != nil {
 			return "", bad
 		}
-		path = filepath.Join(base, "keepgoing", "panel")
+		path = filepath.Join(base, panelDirName(), "panel")
+		// A panel server keeps the directory it was started in. If the name
+		// in use has changed since (see userdir), a server may be running
+		// under the other name: every panel command then uses that server's
+		// directory, and none starts a second one beside it.
+		if other := panelRunningUnderOtherName(base); other != "" {
+			path = other
+		}
 	}
+	return panelPrivateDirectory(path, bad)
+}
+
+// panelRunningUnderOtherName returns the panel directory under the tool's
+// other directory name when a panel server is running there and none is
+// running under the name in use. It creates nothing.
+func panelRunningUnderOtherName(base string) string {
+	name, other := panelDirName(), userdir.LegacyName
+	if name == userdir.LegacyName {
+		other = userdir.Name
+	}
+	running := func(dir string) bool {
+		held, err := lock.Held(dir, panelServerLock)
+		return err == nil && held
+	}
+	candidate := filepath.Join(base, other, "panel")
+	if running(candidate) && !running(filepath.Join(base, name, "panel")) {
+		return candidate
+	}
+	return ""
+}
+
+// panelServerUnderOtherName returns the default panel directory under the
+// name that dir is not under, when a panel server is running there and it is
+// a different directory from dir. It creates nothing.
+func panelServerUnderOtherName(dir string) string {
+	base, err := panelStateBase()
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		candidate := filepath.Join(base, name, "panel")
+		if session.CleanPath(candidate) == session.CleanPath(dir) {
+			continue
+		}
+		if held, err := lock.Held(candidate, panelServerLock); err == nil && held {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// panelSameDefaultRegistry reports whether a and b are both the default
+// registry, under the tool's two directory names.
+func panelSameDefaultRegistry(a, b string) bool {
+	base, err := panelLegacyBase() // the user configuration directory
+	if err != nil {
+		return false
+	}
+	defaults := map[string]bool{}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		if p, err := canonicalFuturePath(filepath.Join(base, name, "registry")); err == nil {
+			defaults[p] = true
+		}
+	}
+	return defaults[a] && defaults[b]
+}
+
+// panelLegacyNotice is what a read-only command says when it finds a server
+// an earlier build started at the old location. It does not act on it.
+const panelLegacyNotice = "A panel started by an earlier build is running at %s; keepgoing panel stop ends it."
+
+// panelLegacy returns the directory an earlier build used, when it is a
+// different place from the default one now and is a private directory of
+// this user's. It creates and changes nothing.
+func panelLegacy() (string, bool) {
+	base, err := panelLegacyBase()
+	if err != nil {
+		return "", false
+	}
+	now, err := panelStateBase()
+	if err != nil {
+		return "", false
+	}
+	// An earlier build only ever used the earlier name. Where that directory
+	// exists, the earlier name is the one in use now as well.
+	legacy := filepath.Join(base, userdir.LegacyName, "panel")
+	if session.CleanPath(legacy) == session.CleanPath(filepath.Join(now, panelDirName(), "panel")) {
+		return "", false // the same place on this platform
+	}
+	if info, err := os.Lstat(legacy); err != nil || !info.IsDir() || registry.CheckDirectory(legacy) != nil {
+		return "", false // nothing there, or nothing of ours to touch
+	}
+	return legacy, true
+}
+
+// panelLegacyRunning says whether a server an earlier build started is
+// running at the old location. Read-only: with no lock file there, nothing
+// can hold it, and none is created.
+func panelLegacyRunning() (string, bool) {
+	legacy, ok := panelLegacy()
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Lstat(filepath.Join(legacy, panelServerLock+".lock")); err != nil {
+		return "", false
+	}
+	return legacy, panelServerHeld(legacy)
+}
+
+// panelRetireLegacy deals once with the directory an earlier build used. A
+// panel server that build started is found there and stopped, so it is not
+// left running unseen; then its runtime files and the directory are
+// removed, and it is never looked at again. A server that does not stop is
+// left, and the next command tries again. Only keepgoing panel (opening) and
+// keepgoing panel stop call it; status and list only report what they find.
+// It returns the old directory when it stopped a server there.
+func panelRetireLegacy() (string, bool) {
+	legacy, ok := panelLegacy()
+	if !ok {
+		return "", false
+	}
+	stopped := false
+	if panelServerHeld(legacy) {
+		if _, err := panelControl(context.Background(), legacy, panelRequest{Op: "stop"}); err != nil {
+			return "", false
+		}
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if !panelServerHeld(legacy) {
+				stopped = true
+				break
+			}
+		}
+		if !stopped {
+			return "", false
+		}
+	}
+	panelRemoveLeftovers(legacy)
+	for _, name := range []string{panelOpenLock + ".lock", panelServerLock + ".lock"} {
+		_ = os.Remove(filepath.Join(legacy, name))
+	}
+	_ = os.Remove(legacy) // only if it is now empty
+	return legacy, stopped
+}
+
+func panelPrivateDirectory(path string, bad error) (string, error) {
 	dir, err := canonicalFuturePath(path)
 	if err != nil {
 		return "", bad
@@ -230,21 +396,21 @@ func panelControl(ctx context.Context, dir string, req panelRequest) (panelReply
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(dir, panelSocketName))
 	if err != nil {
-		return reply, errors.New("the panel server did not answer on its private socket")
+		return reply, errors.New("the panel did not answer on its private socket")
 	}
 	defer c.Close()
 	deadline, _ := ctx.Deadline()
 	_ = c.SetDeadline(deadline)
 	req.At = time.Now()
 	if err := json.NewEncoder(c).Encode(req); err != nil {
-		return reply, errors.New("the panel server did not accept the request")
+		return reply, errors.New("the panel did not accept the request")
 	}
 	if json.NewDecoder(io.LimitReader(c, 4096)).Decode(&reply) != nil {
-		return panelReply{}, errors.New("the panel server's answer could not be read")
+		return panelReply{}, errors.New("the panel's answer could not be read")
 	}
 	if !reply.OK {
 		if reply.Error == "" {
-			reply.Error = "the panel server refused the request"
+			reply.Error = "the panel refused the request"
 		}
 		return reply, errors.New(reply.Error)
 	}
@@ -332,6 +498,7 @@ type panelOptions struct {
 	refresh    time.Duration
 	staleAfter time.Duration
 	offline    bool
+	changes    bool
 }
 
 // panelServerEnvironment is everything the background server is given: where
@@ -347,7 +514,7 @@ func panelServerEnvironment() []string {
 	return env
 }
 
-const panelNotAnsweringText = "a panel server is running but not answering. Try again in a moment; keepgoing panel status says whether it has recovered"
+const panelNotAnsweringText = "the panel is running but not answering. Try again in a moment; keepgoing panel status says whether it has recovered"
 
 // panelEnsure returns a running server, starting one when none is running.
 // The caller holds the panel-open lock.
@@ -373,7 +540,7 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	panelRemoveLeftovers(o.dir)
 	exe, err := os.Executable()
 	if err != nil {
-		return panelRecord{}, false, errors.New("cannot find this executable to start the panel server")
+		return panelRecord{}, false, errors.New("cannot find this executable to start the panel")
 	}
 	// The registry directory is passed resolved, so the server does not
 	// depend on the caller's environment or working directory to find it.
@@ -384,6 +551,9 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	args := []string{"__panel-server", "--panel-directory", o.dir, "--directory", registryDir, "--idle", o.idle.String(), "--refresh", o.refresh.String(), "--stale-after", o.staleAfter.String()}
 	if o.offline {
 		args = append(args, "--offline")
+	}
+	if o.changes {
+		args = append(args, "--allow-changes")
 	}
 	cmd := exec.Command(exe, args...)
 	if err := detachDaemon(cmd); err != nil {
@@ -396,7 +566,7 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 	cmd.Dir = o.dir
 	panelCloseInheritedOnExec()
 	if err := cmd.Start(); err != nil {
-		return panelRecord{}, false, errors.New("cannot start the panel server")
+		return panelRecord{}, false, errors.New("cannot start the panel")
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
@@ -412,12 +582,12 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 			if rec, ok := panelLive(ctx, o.dir); ok {
 				return rec, false, nil
 			}
-			return panelRecord{}, false, errors.New("the panel server exited while starting")
+			return panelRecord{}, false, errors.New("the panel exited while starting")
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 	_ = cmd.Process.Kill()
-	return panelRecord{}, false, errors.New("the panel server did not answer within 10 seconds")
+	return panelRecord{}, false, errors.New("the panel did not answer within 10 seconds")
 }
 
 // panelRemoveLeftovers deletes the runtime files of a server that is gone.
@@ -443,7 +613,7 @@ func panelRequestOpening(ctx context.Context, dir string, rec panelRecord, key s
 	if err != nil {
 		return "", err
 	}
-	bad := errors.New("the panel server's answer was not an opening for this panel")
+	bad := errors.New("the panel's answer was not an opening for this page")
 	if !asFile {
 		code, ok := strings.CutPrefix(reply.Address, "http://127.0.0.1:"+strconv.Itoa(rec.Port)+"/open/")
 		if !ok || !panelCodePattern.MatchString(code) || reply.File != "" {
@@ -494,15 +664,17 @@ func panelLoopKey(registryDir, value string) (string, error) {
 	return "", errors.New("more than one registered loop has that name; pass its registration ID from keepgoing registry list")
 }
 
-const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m] [--directory private-registry]
+const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m] [--allow-changes] [--directory private-registry]
        keepgoing panel status [--json]
        keepgoing panel stop
        keepgoing panel list [--json] [--directory private-registry]
 
-Open the keepgoing panel, the read-only page about every registered loop, in
-your browser. A background server for this computer only is started when none
-is running and stops by itself when unused. Supervision is not affected by
-starting, stopping or closing it.`
+Open the keepgoing panel, the page about every registered loop, in your
+browser. The panel's background process, for this computer only, is started when
+none is running and stops by itself when unused. It is read-only unless it was started
+with --allow-changes, which lets the page pause, stop and resume loops, each
+after a review and a confirmation. Supervision is not affected by starting,
+stopping or closing it.`
 
 func panelCommand(e env, args []string) int {
 	if len(args) > 0 {
@@ -523,12 +695,13 @@ func panelCommand(e env, args []string) int {
 	fs.SetOutput(io.Discard)
 	loop := fs.String("loop", "", "open this loop's page: its name, registration ID or key")
 	noOpen := fs.Bool("no-open", false, "print the opening address and do not start a browser")
-	idle := fs.Duration("idle", panelDefaultIdle, "stop the background server after this long without a request (1m to 24h)")
+	idle := fs.Duration("idle", panelDefaultIdle, "stop the panel's background process after this long without a request (1m to 24h)")
 	directory := fs.String("directory", "", "private registry directory")
 	panelDir := fs.String("panel-directory", "", "private directory for the panel's runtime record and socket")
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "how often the page reads again (5s to 10m)")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "age at which a check or child listing is shown as stale")
 	offline := fs.Bool("offline", false, "do not ask each loop's local daemon for its next check")
+	changes := fs.Bool("allow-changes", false, "let the page pause, stop and resume loops (a panel this command starts; a running one keeps its own mode)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(e.stdout, panelUsage)
@@ -552,6 +725,11 @@ func panelCommand(e env, args []string) int {
 		e.errf("panel: %v", err)
 		return exitUsage
 	}
+	if *panelDir == "" {
+		if legacy, stopped := panelRetireLegacy(); stopped {
+			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
+		}
+	}
 	key := ""
 	if *loop != "" {
 		if key, err = panelLoopKey(*directory, *loop); err != nil {
@@ -564,15 +742,27 @@ func panelCommand(e env, args []string) int {
 		e.errf("panel: %v", err)
 		return exitFailed
 	}
-	rec, started, err := panelEnsure(e.ctx, panelOptions{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline})
+	rec, started, err := panelEnsure(e.ctx, panelOptions{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, changes: *changes})
 	_ = lk.Release()
 	if err != nil {
 		e.errf("panel: %v", err)
 		return exitFailed
 	}
 	if !started {
-		if want, _ := registryDirectory(*directory); rec.Registry != want {
+		// A server started before the name in use changed (see userdir)
+		// serves the default registry under the other name: it is the
+		// running panel all the same, not one for another registry.
+		if want, _ := registryDirectory(*directory); rec.Registry != want && !panelSameDefaultRegistry(rec.Registry, want) {
 			e.errf("panel: a panel for another registry is already running; run keepgoing panel stop first")
+			return exitFailed
+		}
+		// A running server never changes mode, in either direction.
+		switch {
+		case *changes && !rec.Changes:
+			e.errf("panel: a read-only panel is already running; run keepgoing panel stop, then keepgoing panel --allow-changes")
+			return exitFailed
+		case !*changes && rec.Changes:
+			e.errf("panel: the running panel allows changes (it was started with --allow-changes); run keepgoing panel stop first to open it read-only, or keepgoing panel --allow-changes to open it as it is")
 			return exitFailed
 		}
 	}
@@ -590,8 +780,12 @@ func panelCommand(e env, args []string) int {
 		e.errf("panel: %v", err)
 		return exitFailed
 	}
+	mode := ""
+	if rec.Changes {
+		mode = " Changes are allowed from the page: pause, stop and resume, each after a review. " + panelExposure + " keepgoing panel stop turns them off."
+	}
 	if browser == nil {
-		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the background server; supervision is not affected.\n", opening)
+		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the panel's background process; supervision is not affected.%s\n", opening, mode)
 		return exitOK
 	}
 	// The browser is given the path of a private page that goes to the
@@ -610,7 +804,7 @@ func panelCommand(e env, args []string) int {
 	if started {
 		what = "Started the keepgoing panel and opened it in your browser."
 	}
-	fmt.Fprintf(e.stdout, "%s It stops by itself %s after the last page stops reading from it; supervision is not affected.\n", what, time.Duration(rec.IdleSeconds)*time.Second)
+	fmt.Fprintf(e.stdout, "%s It stops by itself %s after the last page stops reading from it; supervision is not affected.%s\n", what, time.Duration(rec.IdleSeconds)*time.Second, mode)
 	return exitOK
 }
 
@@ -626,6 +820,16 @@ type panelStatus struct {
 	// InUse: a page read from it within the last minute. A page left open
 	// and visible keeps reading, so the server does not go idle under it.
 	InUse bool `json:"inUse"`
+	// ChangesAllowed: it was started with --allow-changes, and has allowed
+	// them for ChangesAllowedSeconds (since it started).
+	ChangesAllowed        bool `json:"changesAllowed"`
+	ChangesAllowedSeconds *int `json:"changesAllowedSeconds,omitempty"`
+	// EarlierBuildPanel is the old location when a server an earlier build
+	// started is running there. Reported only; keepgoing panel stop ends it.
+	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
+	// Exposure is what the page's footer says about allowing changes, for a
+	// program that offers to start the panel with them.
+	Exposure string `json:"exposure"`
 }
 
 func panelStatusCommand(e env, args []string) int {
@@ -646,18 +850,30 @@ func panelStatusCommand(e env, args []string) int {
 		e.errf("panel status: %v", err)
 		return exitUsage
 	}
-	st := panelStatus{SchemaVersion: 1}
+	st := panelStatus{SchemaVersion: 1, Exposure: panelExposure}
+	if *panelDir == "" {
+		if legacy, running := panelLegacyRunning(); running {
+			st.EarlierBuildPanel = legacy
+		}
+	}
 	if panelServerHeld(dir) {
 		st.Running = true
 		if reply, err := panelControl(e.ctx, dir, panelRequest{Op: "status"}); err == nil && reply.Record != nil && validPanelRecord(*reply.Record) {
 			started, remaining := reply.Record.StartedAt.UTC(), reply.IdleRemainingSeconds
 			st.Answering, st.StartedAt, st.Port, st.IdleSeconds, st.IdleRemainingSeconds = true, &started, reply.Record.Port, reply.Record.IdleSeconds, &remaining
 			st.InUse = reply.SinceUseSeconds < 60
+			if reply.Record.Changes {
+				allowed := max(0, int(time.Since(started)/time.Second))
+				st.ChangesAllowed, st.ChangesAllowedSeconds = true, &allowed
+			}
 		}
 	}
 	if *asJSON {
 		_ = json.NewEncoder(e.stdout).Encode(st)
 		return exitOK
+	}
+	if st.EarlierBuildPanel != "" {
+		fmt.Fprintf(e.stdout, panelLegacyNotice+"\n", st.EarlierBuildPanel)
 	}
 	switch {
 	case !st.Running:
@@ -671,6 +887,11 @@ func panelStatusCommand(e env, args []string) int {
 			fmt.Fprintf(e.stdout, "In use: a page read from it in the last minute. It stops by itself %s after the last page stops reading; a page left open and visible keeps it running.\n", idle)
 		} else {
 			fmt.Fprintf(e.stdout, "It stops by itself after %s without a page reading from it: in about %s if nothing does.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
+		}
+		if st.ChangesAllowed {
+			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
+		} else {
+			fmt.Fprintln(e.stdout, "Read-only: started without --allow-changes.")
 		}
 		fmt.Fprintln(e.stdout, "keepgoing panel opens it; keepgoing panel stop ends it. Supervision is not affected either way.")
 	}
@@ -694,33 +915,67 @@ func panelStopCommand(e env, args []string) int {
 		e.errf("panel stop: %v", err)
 		return exitUsage
 	}
-	lk, err := acquirePanelOpenLock(e.ctx, dir)
+	if *panelDir == "" {
+		if legacy, stopped := panelRetireLegacy(); stopped {
+			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
+		}
+	}
+	// A second server can be running under the tool's other directory name:
+	// one started before the name in use changed, or by a build from before
+	// the rename. Stop means no panel is left running, so it is stopped too.
+	other := ""
+	if *panelDir == "" {
+		other = panelServerUnderOtherName(dir)
+	}
+	wasRunning, err := panelStopAt(e, dir)
 	if err != nil {
 		e.errf("panel stop: %v", err)
 		return exitFailed
+	}
+	if other != "" {
+		also, err := panelStopAt(e, other)
+		if err != nil {
+			e.errf("panel stop: the panel running at %s: %v", other, err)
+			return exitFailed
+		}
+		if also {
+			fmt.Fprintf(e.stdout, "Stopped a second panel, running at %s.\n", other)
+		}
+		wasRunning = wasRunning || also
+	}
+	if !wasRunning {
+		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
+		return exitOK
+	}
+	fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
+	return exitOK
+}
+
+// panelStopAt stops the panel server in dir and waits for it to finish. It
+// reports whether one was running.
+func panelStopAt(e env, dir string) (bool, error) {
+	lk, err := acquirePanelOpenLock(e.ctx, dir)
+	if err != nil {
+		return false, err
 	}
 	defer lk.Release()
 	presence, _ := panelFind(e.ctx, dir)
 	if presence == panelAbsent {
 		// Nothing is running; files a crash left behind are cleared.
 		panelRemoveLeftovers(dir)
-		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
-		return exitOK
+		return false, nil
 	}
 	if _, err := panelControl(e.ctx, dir, panelRequest{Op: "stop"}); err != nil {
-		e.errf("panel stop: %s", panelNotAnsweringText)
-		return exitFailed
+		return true, errors.New(panelNotAnsweringText)
 	}
 	// The server holds its lock until its record and socket are gone, so the
 	// lock being free proves it has finished, not only stopped answering.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if !panelServerHeld(dir) {
-			fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
-			return exitOK
+			return true, nil
 		}
 	}
-	e.errf("panel stop: the panel server was asked to stop and has not finished")
-	return exitFailed
+	return true, errors.New("the panel was asked to stop and has not finished")
 }
 
 // panelList is the picker without a server: each loop's name and its state in
@@ -736,6 +991,11 @@ type panelList struct {
 	Unread        int             `json:"unread"`
 	Omitted       int             `json:"omitted"`
 	Loops         []panelListLoop `json:"loops"`
+	// CanAll is which changes can be made to every loop at once
+	// (client review|apply --all): pause and stop, while any loop can be.
+	CanAll []string `json:"canAll"`
+	// EarlierBuildPanel: as in panel status.
+	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
 }
 
 type panelListLoop struct {
@@ -745,17 +1005,42 @@ type panelListLoop struct {
 	State    string `json:"state"`
 	Phrase   string `json:"phrase"`
 	NeedsYou bool   `json:"needsYou"`
+	// NoProgress is the no-progress flag's sentence when it is raised, in
+	// the page's words; empty otherwise. It is never a need.
+	NoProgress string `json:"noProgress,omitempty"`
+	// Can is which changes fit the loop's control flags as read, as the
+	// page offers them: pause, stop and resume. Empty when the flags could
+	// not be read. client review and client apply take them.
+	Can []string `json:"can"`
+	// OverdueSince is set when the loop needs a person because its checks
+	// have stopped: the time of its last check. A new value is a new gap, so
+	// a client can tell people once per gap.
+	OverdueSince *time.Time `json:"overdueSince,omitempty"`
 }
 
 func buildPanelList(r dockReport) panelList {
 	out := panelList{SchemaVersion: 1, ReadAt: r.ReadAt, Registry: r.Registry.Availability, Complete: r.Complete, AllClear: r.AllClear,
 		NeedsYou: len(r.NeedsYou), Unread: r.Unread, Omitted: r.Registry.Omitted, Loops: []panelListLoop{}}
 	needs := map[string]bool{}
+	overdue := map[string]*time.Time{}
 	for _, n := range r.NeedsYou {
 		needs[n.Key] = true
+		if n.Kind == "overdue" && n.Since != nil {
+			overdue[n.Key] = n.Since
+		}
 	}
+	out.CanAll = []string{}
 	for _, l := range r.Loops {
-		out.Loops = append(out.Loops, panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key]})
+		for _, a := range []string{"pause", "stop"} {
+			if slices.Contains(l.Can, a) && !slices.Contains(out.CanAll, a) {
+				out.CanAll = append(out.CanAll, a)
+			}
+		}
+		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can, OverdueSince: overdue[l.Key]}
+		if np := l.NoProgress; np != nil && np.Availability == "flagged" {
+			row.NoProgress = np.Text
+		}
+		out.Loops = append(out.Loops, row)
 	}
 	return out
 }
@@ -784,6 +1069,9 @@ func panelListCommand(e env, args []string) int {
 	ctx, cancel := context.WithTimeout(e.ctx, dockReadTimeout)
 	defer cancel()
 	list := buildPanelList(reader.read(ctx, false))
+	if legacy, running := panelLegacyRunning(); running {
+		list.EarlierBuildPanel = legacy
+	}
 	if e.ctx.Err() != nil {
 		e.errf("panel list: cancelled")
 		return exitFailed
@@ -812,6 +1100,9 @@ func panelListCommand(e env, args []string) int {
 			fmt.Fprintln(w, "Nothing needs you.")
 		case list.Registry == "available":
 			fmt.Fprintln(w, "Not every loop was read, so this cannot say that nothing needs you.")
+		}
+		if list.EarlierBuildPanel != "" {
+			fmt.Fprintf(w, panelLegacyNotice+"\n", list.EarlierBuildPanel)
 		}
 		_ = w.Flush()
 	}

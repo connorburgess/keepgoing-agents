@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
@@ -76,6 +77,77 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// LaneRecoverer is implemented by adapters that can recover a failed lane: a
+// direct child conversation of the supervised session. The supervisor uses
+// it only when the loop has opted in. It is the only way the supervisor acts
+// on a lane, and neither method sends text, stops, creates or re-parents
+// anything.
+type LaneRecoverer interface {
+	// InspectLane re-reads one lane and reports what is established about
+	// it. It reads the lane's status, its pending interactions and the typed
+	// fields of its error events. It never decodes or stores message text.
+	InspectLane(ctx context.Context, id string) decide.LaneFacts
+	// RetryLane asks the provider to retry the lane's failed turn by
+	// reference. Errors mean what they mean for TurnRetrier.RetryFailedTurn.
+	RetryLane(ctx context.Context, id string) (TurnRetry, error)
+	// ForgetLanes removes everything the adapter keeps about lanes. It is
+	// called when lane recovery is switched off.
+	ForgetLanes()
+}
+
+// CLIPather is implemented by adapters that run a provider executable: the
+// absolute path the system resolved for it on the last command started, or
+// "" before one was. A check records it, so a caller with a shorter PATH (the
+// panel, the menu) can find the same executable for a stop.
+type CLIPather interface {
+	CLIPath() string
+}
+
+// LaneStopper is implemented by adapters whose conversations have lanes:
+// child conversations the supervised one started, and their own children.
+// It is used only for a stop a person asked to cover the lanes
+// (keepgoing stop --lanes), and it can do nothing to a lane but read its
+// status and stop it.
+type LaneStopper interface {
+	// LaneRoot is the supervised conversation the lanes hang from.
+	LaneRoot() string
+	// LaneChildren lists the direct children of parent and re-reads each on
+	// its own, at most max of them. notChecked counts those listed but not
+	// read because of max. An error means the listing itself failed.
+	LaneChildren(ctx context.Context, parent string, max int) (kids []LaneInfo, notChecked int, err error)
+	// StopLane stops one lane's work. It sends nothing else.
+	StopLane(ctx context.Context, id string) error
+	// CancelLaneRetry cancels a provider retry waiting in the lane's queue.
+	// cancelled is false when there was none to cancel. ErrUnsupported means
+	// the provider has no structured way to do it.
+	CancelLaneRetry(ctx context.Context, id string) (cancelled bool, err error)
+	// DeleteLaneQueue deletes the messages queued in a lane that has not
+	// started, or is idle, so that it does not start. deleted counts them.
+	// It reads no message: only each queued row's ID and thread.
+	DeleteLaneQueue(ctx context.Context, id string) (deleted int, err error)
+}
+
+// LaneInfo is one listed child, as re-read on its own.
+type LaneInfo struct {
+	ID string
+	// Verified: the thread names itself and the expected parent and is
+	// neither archived nor deleted.
+	Verified bool
+	Status   string
+	Queued   int
+}
+
+// LaneStopError is a lane stop the provider refused or that did not finish,
+// with a short class from a structured source: an error code, "timeout" for
+// a command stopped at its time limit, or "failed".
+type LaneStopError struct {
+	Class string
+	Err   error
+}
+
+func (e *LaneStopError) Error() string { return "lane stop " + e.Class + ": " + e.Err.Error() }
+func (e *LaneStopError) Unwrap() error { return e.Err }
+
 // TurnRetryOutcome is what the provider reported for a retry request.
 type TurnRetryOutcome string
 
@@ -99,6 +171,15 @@ type ErrUnsupported struct{ Op string }
 
 func (e ErrUnsupported) Error() string { return e.Op + " is not supported by this adapter" }
 
+// ErrNotStarted marks a send the adapter refused before anything could reach
+// the agent: nothing was sent and nothing was started, for a reason outside
+// the agent and the provider that a person has to put right. Reason is a
+// fixed text with no path, command or agent output in it. A check does not
+// count such a send against any limit.
+type ErrNotStarted struct{ Reason string }
+
+func (e ErrNotStarted) Error() string { return "nothing was sent: " + e.Reason }
+
 // ClassifyCode maps a structured error code (a string token or an HTTP or
 // exit status) to an error class. It is deliberately strict: only well-known
 // codes classify, anything else is unknown. Callers must pass codes, not
@@ -108,11 +189,15 @@ func ClassifyCode(code string) decide.ErrorClass {
 	if c == "" {
 		return decide.ErrUnknown
 	}
+	// One list, shared with the validation of agent definitions.
+	if declined := config.DeclinedCode(c); declined != "" {
+		return decide.ErrorClass(declined)
+	}
 	if n, err := strconv.Atoi(c); err == nil {
 		switch n {
 		case 429:
 			return decide.ErrRateLimit
-		case 401, 403:
+		case 401:
 			return decide.ErrAuth
 		case 503, 529:
 			return decide.ErrOverloaded
@@ -122,7 +207,7 @@ func ClassifyCode(code string) decide.ErrorClass {
 	switch c {
 	case "rate_limit", "rate-limit", "rate_limited", "ratelimit", "rate_limit_event", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked":
 		return decide.ErrRateLimit
-	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired":
+	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
@@ -130,6 +215,42 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrNetwork
 	}
 	return decide.ErrUnknown
+}
+
+// Classify classifies an error that carries several structured fields. A
+// refusal or a restriction in any field wins over every other class: a
+// provider that reports "unauthorized" together with HTTP 403, or a policy
+// block together with a rate-limit code, has declined the request, and that
+// must never read as a login or a limit a loop may fail over on. Otherwise
+// the first field that maps to a known class decides.
+func Classify(codes ...string) decide.ErrorClass {
+	classes := make([]decide.ErrorClass, len(codes))
+	for i, c := range codes {
+		classes[i] = ClassifyCode(c)
+	}
+	return Prefer(classes...)
+}
+
+// Prefer chooses among the classes several fields of one error gave, by the
+// same rule: a restriction wins, then a refusal, then the first known class.
+// A restriction is an account-level denial and holds at once; a refusal is
+// continued, so a denial that also carries a policy signal must not be.
+func Prefer(classes ...decide.ErrorClass) decide.ErrorClass {
+	first, refused := decide.ErrUnknown, false
+	for _, cl := range classes {
+		switch {
+		case cl == decide.ErrRestricted:
+			return cl
+		case cl == decide.ErrRefused:
+			refused = true
+		case first == decide.ErrUnknown && cl != "" && cl != decide.ErrNone:
+			first = cl
+		}
+	}
+	if refused {
+		return decide.ErrRefused
+	}
+	return first
 }
 
 // ParseState maps a provider's status string onto the engine's states.

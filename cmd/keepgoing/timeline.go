@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -137,6 +137,7 @@ type timelineSummary struct {
 	LastLimitWait        *timelineRef `json:"lastLimitWait,omitempty"`
 	LastLimitWaitReport  *timelineRef `json:"lastLimitWaitReport,omitempty"`
 	LastTurnRetry        *timelineRef `json:"lastTurnRetry,omitempty"`
+	LastChildRetry       *timelineRef `json:"lastChildRetry,omitempty"`
 	LimitWaitChecks      int          `json:"limitWaitChecks"`
 	RetainedChecks       int          `json:"retainedChecks"`
 	HeldChecks           int          `json:"heldChecks"`
@@ -321,7 +322,7 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 }
 
 func timelineLimitWait(cause string) bool {
-	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled" || cause == "limit_refusal_unrecovered"
 }
 
 // timelineKinds labels a record from its typed fields. A dry run decided an
@@ -362,6 +363,15 @@ func timelineKinds(r incident.Record) []string {
 		if r.TurnRetry != "none" {
 			kinds = append(kinds, "turn_retry")
 		}
+		if r.Lanes != (incident.LaneWork{}) {
+			kinds = append(kinds, "child_retry")
+		}
+		if r.RouteListChanged {
+			kinds = append(kinds, "route_list")
+		}
+		if r.Refusal != "" || r.ModelFallback {
+			kinds = append(kinds, "refusal")
+		}
 	case "control":
 		kinds = append(kinds, "control")
 		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
@@ -369,6 +379,8 @@ func timelineKinds(r incident.Record) []string {
 		}
 	case "retarget":
 		kinds = append(kinds, "retarget")
+	case "route_change":
+		kinds = append(kinds, "route_change")
 	}
 	if entered {
 		kinds = append(kinds, "hold")
@@ -396,7 +408,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 5, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 8, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -427,6 +439,8 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 				r.Summary.LastLimitWaitReport = timelineReference(entry)
 			case "turn_retry":
 				r.Summary.LastTurnRetry = timelineReference(entry)
+			case "child_retry":
+				r.Summary.LastChildRetry = timelineReference(entry)
 			case "limit_wait":
 				r.Summary.LastLimitWait = timelineReference(entry)
 				r.Summary.LimitWaitChecks++
@@ -613,7 +627,7 @@ func timelineGate(c *incident.Controls) string {
 func readTimelineControl(dir string) timelineControl {
 	unavailable := timelineControl{Availability: "unavailable", State: "unavailable"}
 	p := filepath.Join(dir, control.FileName)
-	info, err := os.Lstat(p)
+	info, err := snapshot.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return timelineControl{Availability: "not_recorded", State: "disabled", Flags: &incident.Controls{}}
 	}
@@ -649,10 +663,27 @@ func describeIncident(r incident.Record) string {
 		if r.ControlChange.OwnershipChanged {
 			text += "; loop owner changed (identity withheld)"
 		}
+		if caller := r.ControlChange.Caller; caller != "" && caller != "unavailable" {
+			text += "; run by " + map[string]string{"owner_thread": "the owning BB thread", "other_thread": "another BB thread", "terminal": "a terminal with no BB thread identity", "client": "a registered local client"}[caller]
+		}
+		if r.ControlChange.NewEpisode {
+			text += "; a hold for a spent per-episode allowance was cleared, so a new error episode started: the re-prompt and nudge counts started over"
+		}
+		if r.ControlChange.Operation == "complete" && r.ControlBefore != nil && r.ControlAfter != nil && r.ControlBefore.AwaitingUser && !r.ControlAfter.AwaitingUser {
+			text += "; an awaiting-user hold was outstanding and ended with the completion (status keeps its note until a resume)"
+		}
 		return text
 	}
 	if r.Kind == "retarget" {
 		return fmt.Sprintf("manual retarget saved: target %s -> %s; recorded build %s; no probe, send or provider check is implied", timelineTarget(r.TargetKey), timelineTarget(r.TargetKeyAfter), r.Build)
+	}
+	if r.Kind == "route_change" && r.RouteChange != nil {
+		c := r.RouteChange
+		by := map[string]string{"owner_thread": "the owning BB thread", "terminal": "a person (no BB thread identity)"}[c.Caller]
+		if by == "" {
+			by = "an unrecorded caller"
+		}
+		return fmt.Sprintf("route list change saved: %s route %s in the loop's own list, by %s; recorded build %s; the loop uses it after its next configuration reload", c.Operation, timelineTarget(c.TargetKey), by, r.Build)
 	}
 	if r.Kind != "tick" {
 		return "incident kind unavailable; no check or control save inferred"
@@ -677,7 +708,7 @@ func describeIncident(r incident.Record) string {
 		if o.ChildrenUnverified {
 			count = "at least " + count + " (child discovery was incomplete)"
 		}
-		text += fmt.Sprintf("; %s direct child thread(s) in error (keepgoing does not retry, message or stop children)", count)
+		text += fmt.Sprintf("; %s direct child thread(s) in error (keepgoing does not message children; it retries one only under bb.children.retry_errored, and stops one only for stop --lanes)", count)
 	}
 	text += fmt.Sprintf("; action %s; outcome %s; cause %s; controls %s -> %s", r.Action, r.Outcome, r.Cause, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter))
 	if r.TargetKeyAfter != "unavailable" {
@@ -698,6 +729,9 @@ func describeIncident(r incident.Record) string {
 		}
 		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
 	}
+	if r.RouteListChanged {
+		text += "; ROUTE LIST: the standard route list changed since this loop's previous check, and this check used the new list (keepgoing routes list shows it)"
+	}
 	if r.NewThread {
 		text += "; NEW THREAD: keepgoing created a BB thread for this handoff and left the earlier conversation as it was (`keepgoing runs` shows both references)"
 	}
@@ -709,6 +743,15 @@ func describeIncident(r incident.Record) string {
 	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
 		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; no prompt is sent while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+	}
+	switch r.Refusal {
+	case "refused":
+		text += "; REFUSAL: the model or provider declined the turn (counted once; a plain continue follows in the same session, never another route)"
+	case "recovered":
+		text += "; REFUSAL RECOVERED: a turn ended without a refusal after a continue"
+	}
+	if r.ModelFallback {
+		text += "; MODEL FALLBACK: the provider fell back to another model after a refusal (a note only; keepgoing took no action)"
 	}
 	switch r.TurnRetry {
 	case "retried":
@@ -727,6 +770,9 @@ func describeIncident(r incident.Record) string {
 		text += "; TURN RETRY: a retry of the failed turn was already waiting, so nothing was sent and no attempt was counted"
 	case "refused":
 		text += "; TURN RETRY: the provider refused the retry or its result could not be read, so nothing was sent"
+	}
+	if l := r.Lanes; l != (incident.LaneWork{}) {
+		text += fmt.Sprintf("; LANES: asked BB to retry the failed turn of %d lane(s) by reference, gave up on %d, put off %d for lack of time; lane recovery messaged, stopped and created no lane", l.Retried, l.GivenUp, l.Deferred)
 	}
 	switch r.LimitWaitReport {
 	case "requested":
@@ -776,7 +822,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}, {"last recorded lane work (failed child turns re-run by reference; not proof they succeeded)", r.Summary.LastChildRetry}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue

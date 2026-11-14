@@ -27,10 +27,51 @@ type File struct {
 	Enabled         bool               `json:"enabled"`
 	Paused          bool               `json:"paused"`
 	Stop            bool               `json:"stop"`
-	AwaitingUser    bool               `json:"awaitingUser"`
-	Completed       bool               `json:"completed,omitempty"`
-	Note            string             `json:"note,omitempty"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
+	// StopLanesAt is when a person asked for the stop to cover the lanes as
+	// well (keepgoing stop --lanes): the conversations the supervised one
+	// started, and theirs. Each such request is carried out once; asking
+	// again makes a new one. A resume clears it with the stop.
+	StopLanesAt *time.Time `json:"stopLanesAt,omitempty"`
+	// StopLanesDropQueued: that request also asked for the messages queued
+	// in lanes that have not started, or are idle, to be deleted
+	// (--drop-queued). Their text is not kept. A new request sets it again
+	// or clears it; the supervised thread's own queue is never touched.
+	StopLanesDropQueued bool   `json:"stopLanesDropQueued,omitempty"`
+	AwaitingUser        bool   `json:"awaitingUser"`
+	Completed           bool   `json:"completed,omitempty"`
+	Note                string `json:"note,omitempty"`
+	// EpisodeHold says a check raised the awaiting-user hold because a
+	// per-episode allowance was spent (re-prompts, nudges, the patience for a
+	// silent provider retry). Only a resume of such a hold starts a new
+	// episode. No command sets it, so holding and resuming by hand refunds
+	// nothing. A resume clears it.
+	EpisodeHold bool `json:"episodeHold,omitempty"`
+	// BriefHold lists the briefs, to another conversation, that a check
+	// found recorded and not confirmed when it raised the awaiting-user
+	// hold. A resume settles them: the loop stays on its current target and
+	// no route is briefed on the next check.
+	BriefHold []Brief `json:"briefHold,omitempty"`
+	// OpenQuestion is the awaiting-user hold that was outstanding when the
+	// task was declared complete, with its note. Completion ends the hold,
+	// but what a person was being asked is kept until a resume.
+	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
+	// Question is the one open question the loop holds for until a person
+	// answers it. See question.go.
+	Question  *Question `json:"question,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Brief is a brief to another conversation: Action is handoff or
+// switch_back, Target the route it went to.
+type Brief struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
+}
+
+// OpenQuestion records an awaiting-user hold ended by a completion.
+type OpenQuestion struct {
+	Note string    `json:"note,omitempty"`
+	At   time.Time `json:"at"`
 }
 
 // Load reads the control file. A missing file yields a disabled record and
@@ -140,7 +181,7 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	info, err := snapshot.Lstat(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -177,7 +218,7 @@ func writeAtomicSync(path string, data []byte, mode os.FileMode, sync bool) erro
 		return err
 	}
 	if sync {
-		if err := tmp.Sync(); err != nil {
+		if err := snapshot.Sync(tmp); err != nil {
 			tmp.Close()
 			return err
 		}

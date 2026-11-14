@@ -2,6 +2,76 @@
 
 Release preparation and live compatibility are separate evidence. A successful fixture run does not certify a provider login, paid turn, installed service, or a five-minute onboarding experience.
 
+## Archive contents and packaging from the next release
+
+Releases through v0.1.5 are Apache-2.0 and their archives hold the executable, `README.md` and `LICENSE`; the records below describe them as published. The first release cut after the [license change](../LICENSING.md) differs in three ways, and its verification must check each:
+
+- **Archive inventory.** Every archive holds exactly: the executable, `README.md`, `LICENSE` (Sustainable Use License 1.0), `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`. Nothing else.
+- **Third-party notices.** `THIRD_PARTY_NOTICES` reproduces the terms of the Go runtime and standard library and of every module linked into the executable. `scripts/build-release.sh` runs `scripts/third-party-notices.sh --check` first and stops when the file does not match the modules of the six release targets, so a module added without its notice cannot be released. Pull-request CI runs the same check. After adding or updating a module, run `scripts/third-party-notices.sh`, read the result and commit it.
+- **Homebrew formula.** The tap is a separate repository. Up to v0.1.5 its license field was Apache-2.0. The v0.2.0 update changed that field with the URLs and checksums, and its install check confirms the new files are present ([v0.2.0 evidence](#v020-release-and-package-evidence)).
+
+## v0.2.0 release and package evidence
+
+[v0.2.0](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) tags `d6bcd054de3cfcbe461c0a1542f88339922bf163`, the merge of #226 (the README version guide). It was published on 2026-11-14. Its code is the final candidate's below; since that candidate, only the README and this record have changed. The [six-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43562312454) passed on #226's head `a3017970577b2b506d523185115e80ed185371d6`: build and tests on Ubuntu and macOS, both Windows access diagnostics jobs, and the BB plugin typecheck. The [contribution metadata check](https://github.com/connorburgess/keepgoing-agents/actions/runs/43562312437) passed too. The tag's [Build and publish job](https://github.com/connorburgess/keepgoing-agents/actions/runs/43563608418) passed: the release-notes check, `go test ./...`, the six archive builds, archive verification with the native Linux amd64 package smoke check, and publication.
+
+**Downloaded assets:**
+- All six published archives matched the published `checksums.txt`.
+- Each held exactly the six files [required above](#archive-contents-and-packaging-from-the-next-release), and both Windows ZIPs passed integrity checks.
+- The downloaded macOS arm64 executable reported `v0.2.0`, with SHA-256 `39a0a039695fbeda0c3d5ce8d5c6accaaa18e6c87449a36995c25548d24cc1d7`. This VCS-stamped executable is the installation reference; the local candidate's digest below differs.
+- Its `README.md` carries the v0.2.0 version guide.
+
+Against that executable, run from the tag with the caller's `HOME` and `XDG_*` pointed at an empty directory, which was still empty afterwards:
+- `scripts/smoke-release.py` passed all six setup variants;
+- `scripts/smoke-recovery.py --include-cursor` passed all five journeys.
+
+No real provider was called.
+
+**Homebrew.** [Homebrew PR #5](https://github.com/connorburgess/homebrew-tap/pull/5) merged as `62f30b9589e18820a99fee0a43960d0108e32470`. It updates the formula to the v0.2.0 URLs and checksums, and changes its licence field to `:cannot_represent`, because Homebrew's SPDX list has no identifier for the Sustainable Use License. It also installs `LICENSING.md`, `THIRD_PARTY_NOTICES` and `LICENSES/`, and its test checks the four licence files and `panel --help`. The four checksums match the published `checksums.txt`. `brew audit --strict --online` passed locally (Homebrew 7.0.12, macOS arm64). Its [Fresh macOS install job](https://github.com/connorburgess/homebrew-tap/actions/runs/43564260085) passed on head `24cc2efb5e1cd1c2603eafb39fb8376d46437620` against base `83afbe550fae1466fe74eff4f4cb39acbe404ba6`. On the macOS arm64 runner it installed the checked-out formula, verified the published checksum, ran `brew test`, and reported `v0.2.0`.
+
+**The BB plugin.** The tag also contains plugin v0.3.0 and its collection; the [pinned Git command](../integrations/bb-plugin-keepgoing/README.md#install) selects it separately. Its bundle checks are the candidate's below.
+
+**Not run:**
+- Linux and Intel macOS Homebrew installs;
+- native execution of the Windows, Linux arm64 and Intel macOS archives;
+- actual Git installation and activation of the plugin;
+- any live provider or first-loop walkthrough, including the [live outage check](testing.md#live-check-a-long-time-offline).
+
+Publication did not change any existing supervisor binary, installed plugin, runtime state, scheduler, target or login.
+
+## v0.2.0 release preparation
+
+**v0.2.0** is the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, collect the upgrade and going-back notes, and cover BB plugin v0.3.0. This is the pre-release record; the published release is recorded [above](#v020-release-and-package-evidence).
+
+**Scope.** Main `f0bfbc87` is the last in-scope merge (#218); nothing out of scope (timing U4 and U5, the BB New-thread control #181) is in it. Since the first candidate it adds #217, #220, #221, #216, #223, #224 and #218, and the roadmap repair #219.
+
+Final candidate evidence, from a clean export (`git archive`) of release-notes commit `04bb1df`. Its code is main `f0bfbc87`; it differs only in documentation and the plugin's version (0.3.0), and the plugin is not in the archives.
+- **Build.** `scripts/build-release.sh v0.2.0` on macOS arm64 built all six archives; its `scripts/third-party-notices.sh --check` passed first.
+- **Checksums.** All six matched `checksums.txt`.
+- **Archive inventory.** Each archive holds exactly the executable, `README.md`, `LICENSE`, `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`, with no AppleDouble or other files, as required [above](#archive-contents-and-packaging-from-the-next-release). Both Windows ZIPs passed integrity checks.
+- **The macOS executable.** The unpacked macOS arm64 executable reported `v0.2.0`, with SHA-256 `25282202092e4d02c264f21a7e5f3363f6d6f86e165c3f30224b9918018cfc22`.
+- **`scripts/smoke-release.py`.** It now runs in a home of its own (#223). Against that executable, all six setup variants passed (BB, Claude Code and Codex, each prompt-only and goal) with zero provider commands. The caller's `HOME` and `XDG_*` were pointed at an empty directory, which was still empty afterwards.
+- **`scripts/smoke-recovery.py --include-cursor`.** All five journeys passed (BB, process, Claude Code, Codex, Cursor), covering failure, alert rejection, held-daemon SIGKILL and restart, explicit recovery, completion, and preserved allowance and owner.
+- **The BB plugin.** `npm ci --omit=dev --omit=optional --ignore-scripts`, then `bb plugin build` (BB 0.48.1, SDK 0.6.104), built the server, app and host bundles. All three report plugin **0.3.0**.
+
+**Earlier candidate.** `v0.2.0-rc.1`, from main `eb224083`, passed the same checks (macOS arm64 executable SHA-256 `06aa60abfdf1af591e212087fd6dbae5bc92a7b5ecf4c5db5176a8a059218c92`). That run found the release smoke leaving session claims in the caller's state directory, fixed in #223.
+
+**Not run:**
+- the Go test suite on the export (CI runs it on every pull request, and the release workflow before building);
+- native execution of the Linux, Windows and Intel macOS archives;
+- downloaded-asset verification;
+- the Homebrew formula update (with its licence field) and fresh-install check;
+- actual Git installation of the plugin;
+- any live provider or first-loop walkthrough.
+
+These are local artifacts; the release workflow builds the published ones from the tag.
+
+**After the owner's go-ahead:**
+1. Tag the merge of this preparation (its tree is these archives' source, with this record added).
+2. Let the release workflow publish.
+3. Download and verify the published assets.
+4. Update the Homebrew formula, licence field included, and check a fresh install.
+5. Check the plugin's Git installation from the tag.
+
 ## v0.1.5 release and package evidence
 
 [v0.1.5](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) tags checked head `1f2b0cd87ff12b79f9b58627e27ca9da966b299b`, whose tree matches merge `1ff9ab25edd74a8c42e183835fa4e7e70c396dd1`. The [five-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43131838775) passed on that head against base `bfb9006988792eb81cfbaaad10b6dad289aa63e0`: Ubuntu/macOS build and tests, Windows diagnostics, BB plugin checks and contribution metadata. The [Build and publish job](https://github.com/connorburgess/keepgoing-agents/actions/runs/43132257828) passed on the tagged head, including Go tests, six archive builds/checksums and the unpacked Linux amd64 setup/recovery checks.
@@ -122,13 +192,13 @@ On macOS/Linux with Python 3, pass a native binary from the same revision as thi
 
 ```sh
 python3 -u scripts/smoke-recovery.py /path/to/keepgoing
-# For a source build containing the unreleased Cursor adapter:
-python3 -u scripts/smoke-recovery.py /path/to/keepgoing-dev --include-cursor
+# v0.2.0 or newer, which has the Cursor adapter:
+python3 -u scripts/smoke-recovery.py /path/to/keepgoing --include-cursor
 ```
 
 This companion to the setup smoke check requires v0.1.3 or newer; v0.1.2 is expected to fail it. It prints the executable SHA-256, version and platform. CI runs it on native macOS/Linux builds; release publication also gates on the unpacked Linux archive passing. Record the revision alongside that output. A local source build is not evidence that an installed supervisor was upgraded.
 
-Four private temporary loops use synthetic BB events, a local process adapter, and real local Claude/Codex stand-in processes. The check covers active BB retry suppression beyond the nudge allowance, classified connection failure, bounded recovery attempts, a persistent awaiting-user hold, and a loopback webhook rejecting the alert. It restarts actual daemon processes while held, checks that the offline timeline retains the failure and alert warning without side effects, repairs only the stand-in, and requires explicit resume. Headless fixtures explicitly increase their synthetic retry allowance before resume, then reuse their saved fictional session across successful turns; resume itself does not refund spent attempts. Completion is sent once despite rejection and remains held across two daemon restarts. Send allowance and owner identity must survive; a conflicting owner is rejected. The BB held case also spans two ordinary check intervals. With `--include-cursor`, a fifth loop uses a local `agent` stand-in: initialization followed by a nonzero exit stays `unknown` despite quota/auth/network words on stderr, recovery never probes or fails over, and every subsequent turn must use the exact saved UUID. Awaiting-user holds span ordinary checks in both crashed and restarted Cursor daemons; completion is then checked across separate crash/restart cycles with unchanged controls, ownership, send allowance and notification counts. Source macOS/Linux CI enables this option; omit it for published v0.1.5 binaries, which do not contain Cursor. The archive release workflow still runs the default four-adapter recovery smoke; verifying a future packaged Cursor adapter requires an explicit `--include-cursor` run against that unpacked artifact as well.
+Four private temporary loops use synthetic BB events, a local process adapter, and real local Claude/Codex stand-in processes. The check covers active BB retry suppression beyond the nudge allowance, classified connection failure, bounded recovery attempts, a persistent awaiting-user hold, and a loopback webhook rejecting the alert. It restarts actual daemon processes while held, checks that the offline timeline retains the failure and alert warning without side effects, repairs only the stand-in, and requires explicit resume. Headless fixtures explicitly increase their synthetic retry allowance before resume, then reuse their saved fictional session across successful turns; in the releases this record covers, resume itself did not refund spent attempts (in unreleased source a resume of a held loop [starts a new error episode](operations.md#what-resume-starts-over)). Completion is sent once despite rejection and remains held across two daemon restarts. Send allowance and owner identity must survive; a conflicting owner is rejected. The BB held case also spans two ordinary check intervals. With `--include-cursor`, a fifth loop uses a local `agent` stand-in: initialization followed by a nonzero exit stays `unknown` despite quota/auth/network words on stderr, recovery never probes or fails over, and every subsequent turn must use the exact saved UUID. Awaiting-user holds span ordinary checks in both crashed and restarted Cursor daemons; completion is then checked across separate crash/restart cycles with unchanged controls, ownership, send allowance and notification counts. Source macOS/Linux CI enables this option; omit it for published v0.1.5 binaries, which do not contain Cursor. The archive release workflow still runs the default four-adapter recovery smoke; verifying a future packaged Cursor adapter requires an explicit `--include-cursor` run against that unpacked artifact as well.
 
 The script supplies a minimal environment and explicit stand-in commands, without inheriting credentials or provider configuration. It creates no service or scheduler and removes its temporary state after stopping its supervisors. Allow about a minute for the default journeys, and additional ordinary check intervals with Cursor enabled. Tick timestamps are synthetic; daemon intervals use wall time. The post-v0.1.3 script also terminates each held daemon with SIGKILL after a recorded held check, confirms its endpoint record remains, then restarts against the same files. Both awaiting-user and completed holds preserve controls/owner, send accounting and notification deduplication; restart replaces the stale endpoint and orderly shutdown removes its replacement. This is crash recovery at that boundary, not a crash during a send, state write or notification, nor a real network outage, provider cancellation, installed-service lifecycle or live session compatibility check. Windows remains outside this script's coverage. Existing Go fixtures separately cover stop/pause precedence and failure cases.
 

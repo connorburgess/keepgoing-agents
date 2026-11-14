@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // Duration is a time.Duration that unmarshals from strings such as "30m".
@@ -42,7 +44,10 @@ type Config struct {
 
 	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
 	FallbackSet *Fallbacks `yaml:"-"`
-	source      sourceSnapshot
+	// RouteList says where the loop's other routes came from. Load derives it.
+	RouteList    RouteStatus `yaml:"-"`
+	routesSource sourceSnapshot
+	source       sourceSnapshot
 }
 
 // Loop describes one supervised agent loop.
@@ -56,14 +61,23 @@ type Loop struct {
 	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
 	HandoffFile string `yaml:"handoff_file,omitempty"`
 
-	Progress  Progress   `yaml:"progress"`
-	Window    *Window    `yaml:"window,omitempty"`
-	Errors    ErrorRules `yaml:"errors"`
-	Fallbacks string     `yaml:"fallbacks,omitempty"`
-	Report    *Report    `yaml:"report,omitempty"`
-	Yield     *Yield     `yaml:"yield,omitempty"`
-	Daemon    Daemon     `yaml:"daemon"`
-	Network   Network    `yaml:"network,omitempty"`
+	Progress Progress   `yaml:"progress"`
+	Window   *Window    `yaml:"window,omitempty"`
+	Errors   ErrorRules `yaml:"errors"`
+	// Refusal sets when a streak of refused turns asks a person instead of
+	// continuing.
+	Refusal   RefusalRules `yaml:"refusal,omitempty"`
+	Fallbacks string       `yaml:"fallbacks,omitempty"`
+	// Routes is "standard" for a loop that follows the person's standard
+	// route list. It excludes Fallbacks, which is a list of the loop's own.
+	Routes string `yaml:"routes,omitempty"`
+	// RoutesAllow opts the loop in to kinds of standard route that are off by
+	// default. The only value is new_conversation.
+	RoutesAllow []string `yaml:"routes_allow,omitempty"`
+	Report      *Report  `yaml:"report,omitempty"`
+	Yield       *Yield   `yaml:"yield,omitempty"`
+	Daemon      Daemon   `yaml:"daemon"`
+	Network     Network  `yaml:"network,omitempty"`
 	// TickTimeout bounds the optional work of one check (fallback probes), so
 	// a check records its result and exits well inside an external
 	// scheduler's own timeout.
@@ -77,7 +91,29 @@ type Loop struct {
 	SwitchBack SwitchBack `yaml:"switch_back"`
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
+	// Timing is usage-aware timing for the loop's first route. Off by
+	// default. Until the step decision exists (roadmap U4) it only collects
+	// usage readings of the first route's allowance; it never changes routes.
+	Timing *Timing `yaml:"timing,omitempty"`
 }
+
+// Timing collects usage readings of the first route's allowance by probing
+// it on a schedule, including while the loop runs on it. Each probe is a small
+// paid request; Enabled is the owner's choice and is off by default.
+type Timing struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Windows names the provider's usage windows timing acts on, by their
+	// opaque keys (for example seven_day).
+	Windows []string `yaml:"windows,omitempty"`
+	// NearReset is how close to a named window's reported reset counts as
+	// near; one probe is made when that period begins.
+	NearReset Duration `yaml:"near_reset,omitempty"`
+	// ProbeEvery is the interval between timing probes of the first route.
+	ProbeEvery Duration `yaml:"probe_every,omitempty"`
+}
+
+// TimingOn reports whether usage-aware timing is turned on for the loop.
+func (l Loop) TimingOn() bool { return l.Timing != nil && l.Timing.Enabled }
 
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
@@ -138,6 +174,52 @@ type Progress struct {
 	// MaxNudges is how many nudges a stalled session gets before the loop
 	// asks a person. Progress or ending the turn resets the count.
 	MaxNudges int `yaml:"max_nudges,omitempty"`
+	// FlagAfterSends and FlagAfterErrors raise the panel's no-progress flag:
+	// at that many sends, or that many checks that found an error or retried
+	// the turn, with no recorded change to the repositories. Unset means the
+	// default; 0 turns that fact's flag off. The flag only informs a person.
+	FlagAfterSends  *FlagCount `yaml:"flag_after_sends,omitempty"`
+	FlagAfterErrors *FlagCount `yaml:"flag_after_errors,omitempty"`
+}
+
+// FlagCount is a whole number of events. YAML would otherwise read 2.5 as 2
+// without saying so; anything but an integer is refused.
+type FlagCount int
+
+func (c *FlagCount) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("line %d: %q is not a whole number", n.Line, n.Value)
+	}
+	var v int
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*c = FlagCount(v)
+	return nil
+}
+
+// Defaults of the no-progress flag's thresholds.
+const (
+	DefaultFlagAfterSends  = 6
+	DefaultFlagAfterErrors = 4
+	maxFlagAfter           = 1000
+)
+
+// SendsFlag is the send count that raises the no-progress flag; 0 is off.
+func (p Progress) SendsFlag() int {
+	if p.FlagAfterSends == nil {
+		return DefaultFlagAfterSends
+	}
+	return int(*p.FlagAfterSends)
+}
+
+// ErrorsFlag is the error-or-retry count that raises the no-progress flag;
+// 0 is off.
+func (p Progress) ErrorsFlag() int {
+	if p.FlagAfterErrors == nil {
+		return DefaultFlagAfterErrors
+	}
+	return int(*p.FlagAfterErrors)
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -270,20 +352,24 @@ const (
 	DefaultYieldTimeout      = 10 * time.Second
 	DefaultSwitchBackAfter   = time.Hour
 	DefaultSwitchBackRetry   = 30 * time.Minute
+	DefaultTimingNearReset   = 6 * time.Hour
+	DefaultTimingProbeEvery  = 12 * time.Hour
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "refusal_streak", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "refusal_streak", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	timeRE = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
-	days   = map[string]bool{"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true}
+	// windowKeyRE is a provider's usage window key as readings store it.
+	windowKeyRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	days        = map[string]bool{"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true}
 )
 
 // Load reads, defaults, and validates a config file and its fallbacks file.
@@ -331,9 +417,12 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 		cfg.FallbackSet = fb
+		cfg.RouteList = RouteStatus{Source: "own"}
 		if err := cfg.Loop.fitTickTimeout(fb.Probe.Timeout.Duration); err != nil {
 			return nil, err
 		}
+	} else if l.FollowsStandard() {
+		cfg.loadStandardRoutes()
 	}
 	return cfg, nil
 }
@@ -427,6 +516,10 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.SwitchBack.MinAfter, DefaultSwitchBackAfter)
 	setDur(&l.SwitchBack.RetryEvery, DefaultSwitchBackRetry)
+	if l.Timing != nil {
+		setDur(&l.Timing.NearReset, DefaultTimingNearReset)
+		setDur(&l.Timing.ProbeEvery, DefaultTimingProbeEvery)
+	}
 	if l.Probe.Kind == "" {
 		switch l.Provider {
 		case "claude-code":
@@ -441,10 +534,10 @@ func (c *Config) applyDefaults() {
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
 		if r.URLEnv == "" {
-			r.URLEnv = "KEEPGOING_WEBHOOK_URL"
+			r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
 		}
 		if r.SecretEnv == "" {
-			r.SecretEnv = "KEEPGOING_WEBHOOK_SECRET"
+			r.SecretEnv = envvar.WebhookSecret.Name()
 		}
 		if r.Source == "" {
 			r.Source = l.Name
@@ -528,6 +621,17 @@ func (c *Config) Validate() error {
 	if l.Progress.MaxNudges < 1 {
 		add("loop.progress.max_nudges must be at least 1")
 	}
+	for _, f := range []struct {
+		name string
+		v    *FlagCount
+	}{{"flag_after_sends", l.Progress.FlagAfterSends}, {"flag_after_errors", l.Progress.FlagAfterErrors}} {
+		if f.v != nil && (*f.v < 0 || *f.v > maxFlagAfter) {
+			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
+		}
+	}
+	if a := l.Refusal.AskAfter; a != nil && (*a < 0 || *a > 1000) {
+		add("loop.refusal.ask_after must be 0 (never ask) to 1000")
+	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
 	}
@@ -535,7 +639,9 @@ func (c *Config) Validate() error {
 		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
-		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
+		if DeclinedClass(class) {
+			add("loop.errors.failover_on: %q is not allowed: a provider refusal or restriction is not a limit and never causes a handoff", class)
+		} else if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
@@ -579,7 +685,27 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if l.Adapter == "cursor" && (l.Fallbacks != "" || l.SwitchBack.Enabled) {
+	switch l.Routes {
+	case "":
+	case RoutesStandard:
+		if l.Fallbacks != "" {
+			add("loop.routes: a loop follows the standard list or has its own loop.fallbacks, not both")
+		}
+		if l.Adapter != "bb" && l.Adapter != "claude" && l.Adapter != "codex" {
+			add("loop.routes: the standard list covers bb, claude and codex loops; give a %s loop its own list", l.Adapter)
+		}
+	default:
+		add("loop.routes must be %q or absent", RoutesStandard)
+	}
+	for _, kind := range l.RoutesAllow {
+		if kind != EnterNewConversation {
+			add("loop.routes_allow: the only value is %s", EnterNewConversation)
+		}
+	}
+	if len(l.RoutesAllow) > 0 && !l.FollowsStandard() {
+		add("loop.routes_allow applies only with loop.routes: %s", RoutesStandard)
+	}
+	if l.Adapter == "cursor" && (l.HasRouteList() || l.SwitchBack.Enabled) {
 		add("Cursor currently supports standalone primary loops only; fallbacks and switch-back are unverified")
 	}
 	if l.SwitchBack.Enabled {
@@ -594,8 +720,46 @@ func (c *Config) Validate() error {
 		default:
 			add("loop.probe.kind must be claude, codex, or command")
 		}
-		if l.Fallbacks == "" {
+		if !l.HasRouteList() {
 			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
+		}
+	}
+	if l.TimingOn() {
+		tm := l.Timing
+		if l.Adapter == "cursor" {
+			add("loop.timing is not supported for Cursor loops")
+		}
+		switch l.Probe.Kind {
+		case "claude", "codex":
+		case "command":
+			if len(l.Probe.Command) == 0 {
+				add("loop.probe.command is required for a command probe")
+			}
+		case "":
+			add("loop.timing needs a way to probe the first route: set loop.provider to claude-code or codex, or set loop.probe")
+		default:
+			add("loop.probe.kind must be claude, codex, or command")
+		}
+		if !l.HasRouteList() {
+			add("loop.timing needs loop.fallbacks or loop.routes: standard: that list's probe policy (daily_cap, timeout) applies to the first route's timing probes")
+		}
+		if len(tm.Windows) == 0 {
+			add("loop.timing.windows must name at least one usage window, for example seven_day")
+		}
+		seen := map[string]bool{}
+		for _, k := range tm.Windows {
+			if !windowKeyRE.MatchString(k) {
+				add("loop.timing.windows: %q is not a window key (letters, digits, '_', '-' and '.', at most 64)", k)
+			} else if seen[k] {
+				add("loop.timing.windows: %q is listed twice", k)
+			}
+			seen[k] = true
+		}
+		if d := tm.NearReset.Duration; d < time.Minute || d > 7*24*time.Hour {
+			add("loop.timing.near_reset must be between 1m and 168h")
+		}
+		if d := tm.ProbeEvery.Duration; d < time.Hour {
+			add("loop.timing.probe_every must be at least 1h")
 		}
 	}
 	switch l.Network.Check {
@@ -627,7 +791,31 @@ func (c *Config) Validate() error {
 }
 
 // ErrorClasses lists the structured error classes an adapter may report.
-var ErrorClasses = []string{"none", "rate_limit", "auth", "overloaded", "network", "unknown"}
+var ErrorClasses = []string{"none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown"}
+
+// DeclinedCode says which structured codes keepgoing itself reads as a
+// provider denying permission ("restricted") or a model or provider declining
+// the turn ("refused"), and "" for every other code. It is the one list both
+// the classifier and the validation of agent definitions use, so a
+// definition cannot relabel such a code as a limit.
+//
+// "policy" is BB's typed category for a provider's policy block, and the two
+// Codex identifiers are what BB's Codex provider maps to it.
+// "oauth_org_not_allowed" is Claude Code's code for an organisation that may
+// not use the login.
+func DeclinedCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "403", "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
+		return "restricted"
+	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
+		return "refused"
+	}
+	return ""
+}
+
+// DeclinedClass reports whether a class is a restriction or a refusal: a
+// decision against the request, which never causes a handoff.
+func DeclinedClass(class string) bool { return class == "restricted" || class == "refused" }
 
 // ValidErrorClass reports whether s is a known error class.
 func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }
@@ -709,4 +897,24 @@ func resolve(base, p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(base, p)
+}
+
+// DefaultRefusalAskAfter is how many consecutive refused turns, with no turn
+// recovered by a continue in between, make a loop ask a person how to go on.
+const DefaultRefusalAskAfter = 10
+
+// RefusalRules configures the answer to refused turns. A refused turn gets a
+// plain continue in the same session, spaced by the streak; after AskAfter
+// refusals in a row the loop stops continuing and asks a person.
+type RefusalRules struct {
+	// AskAfter: nil means DefaultRefusalAskAfter, 0 means never ask.
+	AskAfter *int `yaml:"ask_after,omitempty"`
+}
+
+// AskAfterCount is the threshold in force: 0 means never ask.
+func (r RefusalRules) AskAfterCount() int {
+	if r.AskAfter == nil {
+		return DefaultRefusalAskAfter
+	}
+	return *r.AskAfter
 }

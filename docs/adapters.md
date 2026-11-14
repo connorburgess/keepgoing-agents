@@ -1,6 +1,6 @@
 # Adapter capabilities
 
-keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It is unreleased documentation of source on `main`; see [integrations](integrations.md) for what is in a published release.
+keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It documents the source on `main`; see [integrations](integrations.md) for what is in a published release.
 
 An adapter is how the supervisor talks to one kind of agent. The decision engine is the same for all of them, but it can only act on what an adapter reports and can only do what an adapter can carry out.
 
@@ -48,6 +48,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [Observe state](#observe-state) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
 | [Structured error classes](#structured-error-classes) | yes · live | yes · fixture | yes · live | missing · live | missing · none | yes · fixture | partial · fixture |
+| [Refusals continue, restrictions hold](#refusals-continue-restrictions-hold) | partial · fixture | yes · fixture | partial · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Stale retry-notice expiry](#stale-retry-notice-expiry) | yes · live | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Recover a failed turn: re-prompt](#recover-a-failed-turn-re-prompt) | yes · fixture | yes · fixture | yes · fixture | yes · live | missing · none | yes · fixture | yes · fixture |
 | [Recover a failed turn: exact session resume](#recover-a-failed-turn-exact-session-resume) | n/a | yes · fixture | yes · fixture | yes · live | missing · none | n/a | partial · fixture |
@@ -55,6 +56,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
+| [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -63,6 +65,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
+| [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
 
 ### Observe state
@@ -79,7 +82,7 @@ Report idle, active, error or unknown from structured status, never from transcr
 
 ### Structured error classes
 
-Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
+Classify a failure as rate_limit, auth, restricted, refused, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.
 
 - **BB thread:** yes, evidence live. From real provider error and rate-limit events. [integrations.md#agent-providers](integrations.md#agent-providers) [`TestObserveStructuredRateLimit`](../internal/adapter/bb/bb_test.go)
 - **Claude Code headless:** yes, evidence fixture. From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go)
@@ -88,6 +91,18 @@ Classify a failure as rate_limit, auth, overloaded or network from structured fi
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** yes, evidence fixture. From errorClass in the status JSON or the exit_codes map. [`TestObserveExitCodeMap`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With structured_errors: the codes, HTTP status field and exit codes the definition maps. Everything else, and every failure without that declaration, is unknown. [`TestDefinedAgentErrorClassification`](../internal/adapter/runner/definition_unix_test.go) [`TestDefinitionReadings`](../internal/adapter/runner/definition_test.go)
+
+### Refusals continue, restrictions hold
+
+Recognise, from a structured field, a provider denying permission (restricted) or a model or provider declining the turn (refused). A restriction holds for a person at once and a person's resume asks for exactly one more try. A refusal is continued in the same session with spacing that grows to 10 minutes, and after refusal.ask_after refusals in a row asks a person; until a turn finishes without a refusal, no error on that route moves the work. A restriction outranks a refusal. Neither ever causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.
+
+- **BB thread:** partial, evidence fixture. Restricted: a provider error with HTTP 403, a permission code or oauth_org_not_allowed, in any field, including BB's category "unauthorized" with status 403. Refused: BB's category "policy". Shapes read from BB 0.48.1's bundled providers, not captured live. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. When the provider answers with another model after a refusal (provider/modelFallback with reason refusal), that is a timeline note only: no hold and no continue. An errored turn is named by its thread and the log position of its start, so a refused turn is counted once. [`TestObserveForbiddenIsRestricted`](../internal/adapter/bb/bb_test.go) [`TestObserveNamesTheErroredTurn`](../internal/adapter/bb/bb_test.go) [`TestObserveModelFallbackAfterARefusal`](../internal/adapter/bb/bb_test.go) [`TestObservePolicyBlockIsRefused`](../internal/adapter/bb/bb_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Claude Code headless:** yes, evidence fixture. Restricted: HTTP 403 in api_error_status, or a permission code in any result field. Refused: stop_reason "refusal", which Claude Code documents for a declined turn, whether or not the result is marked as an error. Neither has been captured from the real CLI. [`TestClaudeErrorClassification`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Codex headless:** partial, evidence fixture. Restricted: an event carrying HTTP 403 or a permission code. Refused: the codes cyberPolicy and misalignmentPolicyViolation, or the type policy. Whether codex exec prints those codes was not captured; a failure carried only as a message is unknown or looks like a finished turn. [`TestParseCodexEventsRestricted`](../internal/adapter/runner/runner_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Cursor headless:** missing, evidence none. Every failure is unknown.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** yes, evidence fixture. When the status command reports errorClass restricted or refused, or an exit code is mapped to either. [`TestObserveRestricted`](../internal/adapter/process/process_test.go) [`TestRestrictedHoldsAndNeverMoves`](../internal/decide/restricted_test.go) [`TestRefusedContinuesWithSpacingAndNeverMoves`](../internal/decide/restricted_test.go)
+- **Agent defined in configuration:** partial, evidence fixture. A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code keepgoing itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn. [`TestDefinitionDeclaredRefusalsAndRestrictions`](../internal/adapter/runner/definition_test.go) [`TestDeclinedTurnIsNotFinished`](../internal/adapter/runner/definition_test.go) [`TestCustomDefinitionCannotRelabelARefusalAsALimit`](../internal/config/custom_test.go)
 
 ### Stale retry-notice expiry
 
@@ -141,7 +156,7 @@ Ask the provider to retry the failed turn itself, instead of sending a new promp
 
 Tell an outage from a provider failure, wait it out without spending re-prompts or probes, and act on the first check after it returns.
 
-- **BB thread:** yes, evidence fixture. The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. [`TestOfflineForAnyLengthThenRecoversOnce`](../internal/supervise/offline_scenario_unix_test.go) [operations.md#network-outages](operations.md#network-outages)
+- **BB thread:** yes, evidence fixture. The supervisor checks connectivity before a re-prompt, handoff, hold for an errored thread or probe, and waits while it fails. Run for outages of 20 minutes to 3 weeks with a stand-in bb. A turn whose log (Turn) shows it silent since before an outage or a sleep has the nudges due to it held back, not sent; a log that cannot be read (TurnUnknown) changes nothing. [`TestOfflineForAnyLengthThenRecoversOnce`](../internal/supervise/offline_scenario_unix_test.go) [`TestHungTurnActsAsTheStallRuleExceptForTheNudges`](../internal/supervise/hungturn_vs_main_test.go) [operations.md#network-outages](operations.md#network-outages) [operations.md#a-turn-that-hung-through-an-outage](operations.md#a-turn-that-hung-through-an-outage)
 - **Claude Code headless:** yes, evidence fixture. As for BB. The wake that ran into the outage is spent; nothing else is, and no hold is raised. Run end to end with a stand-in CLI. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Codex headless:** yes, evidence fixture. As for Claude Code. [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go) [operations.md#network-outages](operations.md#network-outages)
 - **Cursor headless:** yes, evidence fixture. The decision is the same for every adapter and is tested with a fake adapter, not with this one. [`TestOutageDoesNotSpendRepromptsOrProbes`](../internal/supervise/network_test.go) [operations.md#network-outages](operations.md#network-outages)
@@ -172,6 +187,18 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** n/a. No child identities are reported.
 - **Agent defined in configuration:** n/a. No child conversations.
+
+### Lane recovery: retry a failed child's turn
+
+Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
+
+- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/keepgoing/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
+- **Claude Code headless:** missing, evidence none. No child conversations to recover.
+- **Codex headless:** missing, evidence none. No child conversations to recover.
+- **Cursor headless:** missing, evidence none. No child conversations to recover.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. No child identities are reported.
+- **Agent defined in configuration:** missing, evidence none. A defined agent reports no child conversations to recover.
 
 ### Handoff away from it
 
@@ -269,6 +296,18 @@ Stop a running turn on request, signalling only a process keepgoing itself start
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
 
+### Stop the lanes too
+
+On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.
+
+- **BB thread:** yes, evidence fixture. Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only. [`TestStopWithLanesStopsTheRunningLanesOnce`](../internal/supervise/lanestop_test.go) [`TestLaneStopRecoversAfterACheckKilledMidStop`](../internal/supervise/lanestop_test.go) [`TestScenarioStopLanesNow`](../internal/scenario/stop_lanes_test.go) [operations.md#stopping-the-lanes-too](operations.md#stopping-the-lanes-too)
+- **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Codex headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Cursor headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.
+- **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.
+
 ### Permission prompts
 
 Notice that the agent is waiting for a person to approve something, hold, and report it once.
@@ -286,7 +325,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 
 The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
 
-What happens, with default settings and the connectivity check on (unreleased source). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
+What happens, with default settings and the connectivity check on (v0.2.0). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
 
 | Moment | What keepgoing does |
 | --- | --- |
@@ -305,7 +344,9 @@ The four questions:
 - **Can a re-prompt duplicate work?** Yes, in two ways. Every re-prompt carries the whole task prompt again, into the same conversation, so the agent is asked to do the task again and it is the agent that must notice what is done. And if the very first turn fails before the CLI reports a session ID, nothing is saved, so each re-prompt starts a new conversation with the whole task: up to four conversations for one task ([`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go)). Files the earlier turns changed are still on disk either way.
 - **What does a weeks-old session do on resume?** keepgoing always resumes the saved ID and never falls back to a new session. If the provider no longer has that session, the resume fails like any other error, three re-prompts are spent, and the loop holds. Whether the real CLIs keep a session for weeks was not tested.
 
-Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test. A reboot is different: see the stale turn record below.
+Not exercised: the host sleeping. A sleeping host suspends the turn's process with everything else, so a check after wake-up sees the turn still running until the CLI exits; this is reasoning from the code, not a test.
+
+A reboot, or anything else that ends the turn's wrapper before it records an exit code, is read as a crashed turn, which a check treats as an unknown error and re-prompts. A turn is "running" only while its wrapper holds the turn lock, which the operating system releases when the wrapper ends. The saved PID is not consulted, so an unrelated process that later gets that PID cannot make a dead turn look alive ([`TestKilledWrapperIsCrashedEvenWhenItsPIDIsReused`](../internal/adapter/runner/liveness_unix_test.go)). The one exception is a turn started by a build from before this change, which holds no lock and is still judged by its PID until it ends, unless the machine has restarted since it began ([upgrading](operations.md#owned-headless-cancellation)).
 
 ## Gaps this exposed
 
@@ -313,9 +354,8 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 
 | Gap | Affects | Evidence |
 | --- | --- | --- |
-| **Closed in unreleased source: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
-| **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. An outage no longer leads here, but a provider failure still can. | Headless Claude Code, Codex, Cursor | Observed with the scenario before the connectivity check existed; no fixture exercises it now |
-| **A stale turn record with a reused PID reads as a running turn.** After a reboot, a turn that never wrote its exit code is judged by whether its saved PID exists. If an unrelated process has that PID, the loop sees an active session and sends nothing for as long as that process lives. | Headless Claude Code, Codex, Cursor | [`TestTurnRecordAfterTheWrapperIsGone`](../internal/adapter/runner/reboot_gap_test.go) |
+| **Closed in v0.2.0: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
+| **Closed in v0.2.0: `resume` did not recover an error hold on a headless loop.** The spent re-prompts were kept, so the loop held again at once and the way out was `retarget primary`, then `resume`. An explicit `resume` now starts a new error episode. | Headless Claude Code, Codex, Cursor | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go); [what `resume` starts over](operations.md#what-resume-starts-over) |
 | **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |

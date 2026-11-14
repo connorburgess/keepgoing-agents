@@ -59,6 +59,24 @@ func TestObserveExitCodeMap(t *testing.T) {
 	}
 }
 
+func TestObserveRestricted(t *testing.T) {
+	a := New(config.Process{StatusCommand: []string{script(t, `exit 78`, "exit /b 78")}, ExitCodes: map[int]string{78: "restricted"}})
+	obs, err := a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
+		t.Errorf("%+v %v", obs, err)
+	}
+	a = New(config.Process{StatusCommand: []string{script(t, `echo '{"state":"error","errorClass":"restricted"}'`, `echo {"state":"error","errorClass":"restricted"}`)}})
+	obs, err = a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRestricted {
+		t.Errorf("%+v %v", obs, err)
+	}
+	a = New(config.Process{StatusCommand: []string{script(t, `exit 79`, "exit /b 79")}, ExitCodes: map[int]string{79: "refused"}})
+	obs, err = a.Observe(context.Background())
+	if err != nil || obs.State != decide.Error || obs.ErrorClass != decide.ErrRefused {
+		t.Errorf("%+v %v", obs, err)
+	}
+}
+
 func TestObserveBadJSONIsUnknown(t *testing.T) {
 	a := New(config.Process{StatusCommand: []string{script(t, `echo "all good, rate limit fine"`, "echo all good, rate limit fine")}})
 	obs, err := a.Observe(context.Background())
@@ -69,13 +87,14 @@ func TestObserveBadJSONIsUnknown(t *testing.T) {
 
 func TestSendPassesPromptAndMode(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "got.txt")
-	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`, "findstr \"^\" > \"%OUT%\"\r\necho %KEEPGOING_MODE%>> \"%OUT%\"")}, Env: map[string]string{"OUT": out}})
+	a := New(config.Process{ResumeCommand: []string{script(t, `cat > "$OUT"; echo "$LOOPTENDER_MODE" >> "$OUT"; echo "$KEEPGOING_MODE" >> "$OUT"`, "findstr \"^\" > \"%OUT%\"\r\necho %LOOPTENDER_MODE%>> \"%OUT%\"\r\necho %KEEPGOING_MODE%>> \"%OUT%\"")}, Env: map[string]string{"OUT": out}})
 	if err := a.Send(context.Background(), "keep going", adapter.ModeQueue); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)
 	got := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r", ""), "\n", "")
-	if got != "keep goingqueue" {
+	// The mode arrives under the current name and the earlier one.
+	if got != "keep goingqueuequeue" {
 		t.Errorf("got %q", b)
 	}
 }

@@ -33,7 +33,12 @@ func transferApplyFixture(t *testing.T) (string, string) {
 	if _, err := control.WriteGoal(dir, "fixture", "thr_source", control.GoalSpec{Title: "PRIVATE-GOAL", ObjectiveRefs: []string{"x"}, AcceptanceRefs: []string{"y"}}, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"sends.json", "progress.json", "deliveries.json"} {
+	// A real send ledger: a check reads it before any send, limit or not.
+	// The other two are placeholders the transfer must leave alone.
+	if err := os.WriteFile(filepath.Join(dir, "sends.json"), []byte(`{"version":1,"used":7}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"progress.json", "deliveries.json"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("PRIVATE-UNCHANGED"), 0600); err != nil {
 			t.Fatal(err)
 		}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // Snapshots bind exactly the bytes parsed by Load, not a later read. They are
@@ -15,6 +17,22 @@ type sourceSnapshot struct {
 	path string
 	size int64
 	sum  [sha256.Size]byte
+	// absent records that the file could not be read when it was looked at.
+	// Such a snapshot matches for as long as that stays true.
+	absent bool
+}
+
+// snapshotFile captures a file that may be missing or unreadable.
+func snapshotFile(path string) sourceSnapshot {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return sourceSnapshot{path: path, absent: true}
+	}
+	raw, err := snapfile.ReadFile(path)
+	if err != nil {
+		return sourceSnapshot{path: path, absent: true}
+	}
+	return snapshot(path, raw)
 }
 
 func snapshot(path string, raw []byte) sourceSnapshot {
@@ -25,11 +43,14 @@ func (s sourceSnapshot) matches() bool {
 	if s.path == "" {
 		return true // Parse/in-memory configurations have no filesystem source.
 	}
+	if s.absent {
+		return snapshotFile(s.path).absent
+	}
 	info, err := os.Stat(s.path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() != s.size {
 		return false
 	}
-	f, err := os.Open(s.path)
+	f, err := snapfile.Open(s.path)
 	if err != nil {
 		return false
 	}
@@ -58,6 +79,9 @@ func (c *Config) CheckSources() error {
 	if c.FallbackSet != nil && !c.FallbackSet.source.matches() {
 		return errors.New("fallback configuration changed or is unreadable")
 	}
+	if !c.routesSource.matches() {
+		return errors.New("standard route list changed")
+	}
 	return nil
 }
 
@@ -73,8 +97,8 @@ func (c *Config) SourcesDigest() string {
 		return ""
 	}
 	h := sha256.New()
-	for _, s := range []sourceSnapshot{c.source, fallbackSource(c)} {
-		fmt.Fprintf(h, "%q:%d:%x;", s.path, s.size, s.sum)
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		fmt.Fprintf(h, "%q:%d:%x:%t;", s.path, s.size, s.sum, s.absent)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }

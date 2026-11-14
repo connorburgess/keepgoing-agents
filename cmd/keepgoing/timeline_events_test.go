@@ -66,7 +66,7 @@ func TestTimelineFiltersByKindTargetAndTime(t *testing.T) {
 	dir, fallback := eventLogFixture(t)
 	before := timelineFiles(t, dir)
 	all := timelineJSON(t, dir)
-	if all.SchemaVersion != 5 || all.Filter.ReachesPrunedHistory || len(all.Events) != 6 || all.Filter.Matched != 6 || all.Filter.Excluded != 0 || len(all.Filter.Kinds) != 0 || all.Filter.TargetKey != "" {
+	if all.SchemaVersion != 8 || all.Filter.ReachesPrunedHistory || len(all.Events) != 6 || all.Filter.Matched != 6 || all.Filter.Excluded != 0 || len(all.Filter.Kinds) != 0 || all.Filter.TargetKey != "" {
 		t.Fatalf("%+v", all.Filter)
 	}
 	wantKinds := [][]string{{"check", "limit_wait"}, {"check", "limit_wait"}, {"control", "ownership"}, {"retarget"}, {"check", "wake", "probe"}, {"check", "switch_back", "probe"}}

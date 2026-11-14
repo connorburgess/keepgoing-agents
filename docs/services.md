@@ -2,6 +2,22 @@
 
 `keepgoing service install|status|remove` manages one macOS GUI LaunchAgent or Linux systemd user unit per canonical loop state directory. Both backends are implemented on `main`, after v0.1.1. Windows scheduling is not implemented by this command yet; use `start --background` or an external scheduler there. Existing scheduling options remain available. The [Windows investigation](windows-services.md) describes the proposed Task Scheduler backend and the gates that must pass before Windows service commands can ship.
 
+## The recommended way to keep checks running
+
+On macOS and Linux, `keepgoing service install` is the recommended way to keep a loop's checks running: the operating system restarts the service, and it does not depend on another scheduler's failure counting. `init` prints the command. A `start --background` daemon and an external scheduler, including a BB automation, stay supported; an external scheduler can disable itself, and the [overdue rule](operations.md#external-schedulers-can-stop-on-their-own) says so when it does.
+
+**Moving a loop from a BB automation to the service.** Nothing does this for you. For a loop whose checks a BB script automation runs:
+
+1. Preview: `keepgoing service install -c /private/example-loop/keepgoing.yaml --dry-run`.
+2. Disable the BB automation in BB's Automations. Keep it, rather than deleting it, so you can go back.
+3. Install: `keepgoing service install -c /private/example-loop/keepgoing.yaml`.
+4. Check: `keepgoing service status -c /private/example-loop/keepgoing.yaml` reports the service healthy, and within one interval `keepgoing status` shows a new check.
+5. To go back: `keepgoing service remove -c /private/example-loop/keepgoing.yaml`, then enable the automation again.
+
+Run one scheduler per loop. A short overlap during the move is safe: the tick lock makes a second check at the same moment exit 75 without acting.
+
+If you keep the automation, have it identify itself, `keepgoing tick -c <config> --routine bb-automation/<automation id>`, so a stopped automation is named in `status`, the panel and the `check_gap` report.
+
 ## Health findings in service status
 
 `service status` now adds a read-only assessment in both text and JSON. The JSON `health` object contains `status` and a `findings` array; each finding has a stable `code`, a `status` (`warning` or `unavailable`), a message, and a suggested next step. Install/remove previews do not claim a health assessment.
@@ -136,7 +152,7 @@ The generated definition captures only the installing shell's `PATH` and explici
 
 The LaunchAgent runs at load and requests restart after an unsuccessful daemon exit, with a 30-second launch throttle. A clean daemon exit does not request immediate restart. Loop completion holds future work while leaving the daemon alive. As described in [Apple's launchd guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html), per-user LaunchAgents are loaded for the user's login session and receive termination on logout. Login after reboot can load an installed agent; there is no promise of execution before login, during sleep, or while the host is off. A GUI domain must already be accessible; this command does not create a login session or install a privileged daemon.
 
-Raw daemon stdout/stderr goes to `/dev/null`. Structured decisions and outcomes stay in the loop's private runtime history. Use `status`, `doctor`, and `service status`; run in foreground for raw daemon errors. The service does not queue missed ticks for replay after sleep. Network failures retain the ordinary structured-error policy; in unreleased source, recovery [waits while the connectivity check fails](operations.md#network-outages). Live login/logout/reboot recovery and prolonged service operation remain unverified.
+Raw daemon stdout/stderr goes to `/dev/null`. Structured decisions and outcomes stay in the loop's private runtime history. Use `status`, `doctor`, and `service status`; run in foreground for raw daemon errors. The service does not queue missed ticks for replay after sleep. Network failures retain the ordinary structured-error policy; in v0.2.0, recovery [waits while the connectivity check fails](operations.md#network-outages). Live login/logout/reboot recovery and prolonged service operation remain unverified.
 
 ## Status and removal
 

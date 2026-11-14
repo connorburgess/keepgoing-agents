@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // Event is one report.
@@ -68,11 +69,25 @@ func New(cfg config.Report) (*Webhook, error) {
 		}
 		vals = v
 	}
+	// The default names are also read under their earlier, KEEPGOING_ names:
+	// the new name first within the environment, then within the file. A
+	// name the configuration chose itself is read as written.
 	get := func(name string) string {
-		if v := os.Getenv(name); v != "" {
-			return v
+		names := []string{name}
+		if old, ok := envvar.LegacyOf(name); ok {
+			names = append(names, old)
 		}
-		return vals[name]
+		for _, n := range names {
+			if v := os.Getenv(n); v != "" {
+				return v
+			}
+		}
+		for _, n := range names {
+			if v := vals[n]; v != "" {
+				return v
+			}
+		}
+		return ""
 	}
 	w := &Webhook{cfg: cfg, url: get(cfg.URLEnv), secret: get(cfg.SecretEnv), client: &http.Client{Timeout: cfg.Timeout.Duration}, now: time.Now}
 	if w.url == "" || w.secret == "" {
@@ -187,10 +202,10 @@ func (w *Webhook) report(ctx context.Context, e Event, observe func(Delivery)) e
 	}
 	attempts := 2
 	client := w.client
-	// A limit_wait or child_error report is requested once and, like a
+	// A limit_wait, child_error or check_gap report is requested once and, like a
 	// completion, makes one attempt: an uncertain delivery must not page a
 	// person twice.
-	if e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "network_wait" {
+	if e.Type == "complete" || e.Type == "limit_wait" || e.Type == "child_error" || e.Type == "child_recovery" || e.Type == "network_wait" || e.Type == "check_gap" || e.Type == "hung_turn" || e.Type == "refusal_streak" {
 		attempts = 1
 		copy := *w.client
 		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
