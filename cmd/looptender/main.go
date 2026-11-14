@@ -45,6 +45,7 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   validate                 Check the configuration file and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
+  adapter check            Check one process status observation; no resume/stop or loop-state writes by this command
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
 
 Transfer planning:
@@ -165,6 +166,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return timelineCommand(e, rest)
 	case "runs":
 		return runsCommand(e, rest)
+	case "adapter":
+		return adapterCommand(e, rest)
 	case "dock":
 		return dockCommand(e, rest)
 	case "panel":

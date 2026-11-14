@@ -4,6 +4,9 @@
 
 - Rebranded native macOS menu labels, accessibility text, local error/notification wording and bundle display name to looptender, preserving its command protocol and application identity. Source build only; replacing a running menu remains a separate action.
 
+- Fix headless completion/rollover races: exit publication and finishing cleanup remain under the existing turn lock, after the wrapper's stop watcher is cancelled/joined and its prompt/output handles close. Completed status sampling shares that lock with other readers, rereads its generation, and excludes setup/publication; an exit file alone no longer completes a lock-backed turn while its publisher still owns the lock. This prevents stale exit/marker writes across rollover and mixed-generation observations. Legacy PID interpretation, owned stop order and bounded crash recovery remain. The wrapper handshake advances from protocol 2 to 3 for this changed completion contract; no persisted-record layout changes. Stop supervision and finish old detached turns (or use owned stop and confirm actual exit) before replacing/restarting: the handshake cannot retrofit running wrappers. Fixture evidence only; no installer or live provider acceptance. See [completion publication](docs/testing.md#completion-publication-and-rollover).
+
+- Add `keepgoing adapter check`, which checks a process-adapter loop's wrapper against the [adapter contract](docs/adapters.md#the-adapter-contract): it attempts one configured status invocation and reports the observation, never invokes resume or stop, and does not itself write loop state. The status program is not sandboxed and may have its own side effects; construction or launch failure can prevent execution. It is refused for BB, Claude Code, Codex and Cursor loops, whose status reads have side effects a check relies on. `--list` prints the contract. The same cases run in the test suite against the process, Claude Code and Codex adapters with stand-in agents, where they found that status and turn output is read without a size bound; that is recorded as a known gap and not fixed here. Stand-ins only; not run against a real agent.
 - Move the source module to `github.com/looptender/looptender` and its main package to `cmd/looptender`. This source change follows the GitHub repository transfer. Existing released versions retain their original module and command paths; new-path `@latest` needs a release that declares that path. Archive filenames and installed compatibility names are handled separately.
 - The panel and dock display looptender in their header, browser titles, opening and expired-link pages, and status explanations. Command names remain `keepgoing panel` and `keepgoing dock`.
 
@@ -60,7 +63,7 @@
 
 ## 0.2.0 (2026-11-14)
 
-**The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
+**The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/looptender/looptender/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
 - the licence changes;
 - several behaviours change on upgrade;
 - v0.1.5 cannot read the records this version writes without the steps below.
