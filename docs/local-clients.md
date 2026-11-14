@@ -140,12 +140,13 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
 - The history records these as ordinary `pause`, `stop` and `resume`, as `client pause|stop` and `client resume` do, not as from the panel.
 - `client review --help` and `client apply --help` print the usage and exit 0.
 
-`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). Today a stop stops the conversation only, at the loop's next check, and the review says so.
+`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). A stop review offers the stop's options, below.
 
-**Stop options (planned, for `stop --lanes` and `--immediately`).** When the CLI can stop a loop's lanes and stop at once, `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
+**Stop options.** Unreleased; offline fixtures and a stand-in bb only. `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
 
 ```json
 "stop": {
+  "lanes": 3,
   "immediately": true,
   "options": [
     {"label": "Stop the Conversation", "lanes": false},
@@ -154,4 +155,8 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
 }
 ```
 
-`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object (today's) offers the one stop, which waits for the next check. The macOS menu already reads this shape and offers it only when it is there.
+`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object offers the one stop, which waits for the next check. The macOS menu reads this shape and offers it only when it is there.
+
+`lanes` is how many of the loop's lanes the stop would stop now, counted from a fresh read with the stop's own bounds and rules ([stopping the lanes too](operations.md#stopping-the-lanes-too)): those running, or in error with a retry queued, and not another loop's. The count runs `bb thread list` and `bb thread show` with the `bb` the loop's own configuration names, stops nothing and records nothing. `lanesAtLeast: true` means it is a lower bound (a listing could not be read, or something lay past the bounds), and the label says "or More"; `lanes` is absent when nothing could be counted, and the label is "Stop It and Its Lanes". With none running, or for an agent without child conversations, there is one option. The review's lines say the same in sentences.
+
+`client apply stop --lanes --immediately` (or `--immediately` alone) carries the chosen option out in the command, as `client stop` does, within the 20 seconds a change is given: the stop check takes that as its hard limit, and what it cannot reach in it the next check finishes. The reply's `text` says what was done: "Stopped now, as a check would stop it. Lanes: …", or that it was left to a running check or to another loop's check on the session. Options are taken only by `client apply stop`; `client review` and the other actions refuse them as usage errors.

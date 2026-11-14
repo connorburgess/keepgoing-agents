@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -257,5 +258,124 @@ func TestImmediatelyIsAnOrdinaryFlag(t *testing.T) {
 	}
 	if code, _, _ := g.run("pause", "--immediately"); code != exitUsage {
 		t.Fatal(code)
+	}
+}
+
+// laneRegistry registers the lane fixture's loop, as the menu and the page
+// find loops.
+func laneRegistry(t *testing.T, f *fixture) (string, string) {
+	t.Helper()
+	reg := filepath.Join(t.TempDir(), "registry")
+	if code, out, errs := registryRun(t, reg, "add", "-c", f.cfg); code != exitOK {
+		t.Fatal(out, errs)
+	}
+	r, err := registry.Load(reg)
+	if err != nil || len(r.Entries) != 1 {
+		t.Fatal(err)
+	}
+	return reg, dockKey(r.Entries[0].ID)
+}
+
+// The menu's review of a stop offers the stop's options in the CLI's words,
+// with the lanes counted from a fresh read, and client apply carries out
+// the one chosen. Run with the panel server's PATH: the loop's own
+// configuration names bb, so it is found the way the loop's checks find it.
+func TestClientReviewAndApplyStopWithLanes(t *testing.T) {
+	f := laneFixture(t)
+	reg, key := laneRegistry(t, f)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+	code, reply, errs := runClientReview(t, "review", "stop", "--loop", key, "--directory", reg, "--json")
+	p := reply.Preview
+	if code != exitOK || p == nil || p.Stop == nil {
+		t.Fatalf("%d %+v %s", code, reply, errs)
+	}
+	got, _ := json.Marshal(p.Stop)
+	if string(got) != `{"lanes":2,"immediately":true,"options":[{"label":"Stop the Conversation","lanes":false},{"label":"Stop It and Its 2 Lanes","lanes":true}]}` {
+		t.Fatalf("%s", got)
+	}
+	for _, l := range p.Lines {
+		if len(l) > clientReviewMenuCap {
+			t.Fatalf("a line the menu would cut: %q", l)
+		}
+	}
+	if strings.Contains(f.read("calls"), "thread stop") {
+		t.Fatal("the review stopped something")
+	}
+	code, reply, errs = runClientReview(t, "apply", "stop", "--loop", key, "--expect", p.Expect, "--lanes", "--immediately", "--directory", reg, "--json")
+	if code != exitOK || reply.Result == nil || reply.Result.Outcome != "done" || !strings.HasPrefix(reply.Result.Text, "Stopped now, as a check would stop it. Lanes: 2 stopped") {
+		t.Fatalf("%d %+v %s", code, reply.Result, errs)
+	}
+	if got := strings.Join(stopCalls(f), ","); got != "thr_primary,thr_child_a,thr_child_b1" {
+		t.Fatalf("stopped %s", got)
+	}
+	// Options belong to stop only.
+	if code, _, _ := runClientReview(t, "apply", "pause", "--loop", key, "--expect", p.Expect, "--lanes", "--directory", reg, "--json"); code != exitUsage {
+		t.Fatal(code)
+	}
+	if code, _, _ := runClientReview(t, "review", "stop", "--loop", key, "--immediately", "--directory", reg, "--json"); code != exitUsage {
+		t.Fatal(code)
+	}
+}
+
+// The page's stop review offers the same options, and its confirmation
+// carries out only an option the review offered.
+func TestPanelStopReviewOffersTheStopsOptions(t *testing.T) {
+	f := laneFixture(t)
+	reg, key := laneRegistry(t, f)
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+	reader := &dockReader{ctx: context.Background(), directory: reg, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, query: inspectDaemon}
+	c, err := newPanelChanges(context.Background(), reg, reader, time.Now(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.prepare("session-a", key, "stop")
+	if p.Preview == nil || p.Preview.Stop == nil || len(p.Preview.Stop.Options) != 2 || p.Preview.Stop.Options[1].Label != "Stop It and Its 2 Lanes" {
+		t.Fatalf("%+v", p)
+	}
+	r := c.confirm("session-a", key, "stop", p.Preview.Form, holdOptions{Lanes: true, Now: true})
+	if r.Result == nil || r.Result.Outcome != "done" || !strings.Contains(r.Result.Text, "Lanes: 2 stopped") {
+		t.Fatalf("%+v", r.Result)
+	}
+	if got := strings.Join(stopCalls(f), ","); got != "thr_primary,thr_child_a,thr_child_b1" {
+		t.Fatalf("stopped %s", got)
+	}
+	// With no lanes running the review offers no lane option, and a
+	// confirmation that asks for one is refused before anything is done.
+	g := laneFixture(t)
+	write(t, filepath.Join(g.bbDir, "thr_child_a.show"), `{"thread":{"id":"thr_child_a","parentThreadId":"thr_primary","status":"idle"}}`, 0o600)
+	write(t, filepath.Join(g.bbDir, "thr_child_b1.show"), `{"thread":{"id":"thr_child_b1","parentThreadId":"thr_child_b","status":"idle"}}`, 0o600)
+	reg, key = laneRegistry(t, g)
+	reader = &dockReader{ctx: context.Background(), directory: reg, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, query: inspectDaemon}
+	c, _ = newPanelChanges(context.Background(), reg, reader, time.Now(), time.Now)
+	p = c.prepare("session-a", key, "stop")
+	if p.Preview == nil || p.Preview.Stop == nil || len(p.Preview.Stop.Options) != 1 || *p.Preview.Stop.Lanes != 0 {
+		t.Fatalf("%+v", p.Preview)
+	}
+	if r := c.confirm("session-a", key, "stop", p.Preview.Form, holdOptions{Lanes: true, Now: true}); r.Result == nil || r.Result.Outcome != "review_again" {
+		t.Fatalf("%+v", r.Result)
+	}
+	if ctl, _ := control.Load(filepath.Join(g.dir, "state")); ctl.Stop {
+		t.Fatal("a refused confirmation saved the stop")
+	}
+}
+
+// The page's change request is one object with these keys at most, each
+// once, spelled exactly; the stop's options only with a stop.
+func TestPanelChangeRequestTakesTheStopsOptionsOnly(t *testing.T) {
+	for body, ok := range map[string]bool{
+		`{"action":"stop"}`: true,
+		`{"action":"stop","lanes":true,"immediately":true}`: true,
+		`{"immediately":true,"action":"stop"}`:              true,
+		`{"action":"pause","lanes":true}`:                   false,
+		`{"action":"stop","lanes":"yes"}`:                   false,
+		`{"action":"stop","Lanes":true}`:                    false,
+		`{"action":"stop","lanes":true,"lanes":false}`:      false,
+		`{"lanes":true}`:                                    false,
+		`{"action":"stop","other":1}`:                       false,
+		`{"action":"stop"}{}`:                               false,
+	} {
+		if _, got := panelReadAction(strings.NewReader(body)); got != ok {
+			t.Errorf("%s: %v", body, got)
+		}
 	}
 }

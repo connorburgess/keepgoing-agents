@@ -40,6 +40,10 @@ type Options struct {
 	// StopOnly: the check is run by a command that carries out a stop at once
 	// (keepgoing stop --now). It does nothing unless a stop is requested.
 	StopOnly bool
+	// Deadline, when set and sooner than the check's own hard limit, is the
+	// check's hard limit instead: a stop carried out for a caller that has
+	// less time than a check (the page and the menu).
+	Deadline time.Time
 	// CallerThread is the BB thread the command runs in, for a stop carried
 	// out at once: if the stop covers it, it is stopped after every other
 	// target. Empty for a check, and for the panel and the menu.
@@ -332,6 +336,9 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
 	t.deadline = opts.Clock().Add(tickBudget(cfg.Loop) + checkTail)
+	if !opts.Deadline.IsZero() && opts.Deadline.Before(t.deadline) {
+		t.deadline = opts.Deadline
+	}
 	t.reserve = reserveFingerprint + reserveSend + reserveReports
 	if opts.Online != nil {
 		// The connectivity check is mandatory when it is needed, so its
@@ -1067,6 +1074,9 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
+	// A stop takes no fingerprint and sends no prompt: of the time kept back
+	// for the mandatory steps, only one report's remains.
+	t.reserve = min(t.reserve, minReportTime)
 	// Stop wins over every other rule. It waits only while another loop's
 	// live check holds the session, which the claim proves; if the claim
 	// cannot be taken for any other reason, the stop goes ahead without it.

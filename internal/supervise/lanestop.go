@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -25,7 +27,7 @@ const (
 	laneStopReport = "stop_lanes"
 	// laneStopMargin: no further thread is looked at with less than this left
 	// of the check's time. The next check goes on from where this one ended.
-	laneStopMargin = 10 * time.Second
+	laneStopMargin = 3 * time.Second
 	// laneStopCall bounds one bb command of the walk.
 	laneStopCall = 20 * time.Second
 )
@@ -438,4 +440,89 @@ func (t *tick) reportLaneStop(rec *state.LaneStop) {
 		"retriesCancelled": rec.RetriesCancelled, "queuedNotCancelled": rec.QueuedNotCancelled}
 	lanes["listingsUnread"] = rec.ListingsUnread
 	t.report("stop", text, map[string]any{"target": t.res.Target, "parent": rec.Parent, "lanes": lanes})
+}
+
+// LaneCount is a read-only look at a loop's lanes: how many a stop that
+// covers the lanes would stop now. It is what a review offers.
+type LaneCount struct {
+	// Applicable: the loop's active target has lanes at all (a BB thread).
+	Applicable bool
+	// Running counts the lanes, within the stop's bounds, that are running or
+	// in error with a retry queued and are not another loop's.
+	Running int
+	// Complete: every listing inside the bounds was read and nothing was
+	// left out by them, so Running is the whole count and not a lower bound.
+	Complete bool
+}
+
+// CountLanes walks the loop's lanes as a stop with --lanes would, with the
+// same bounds and rules, and stops nothing, records nothing and sends
+// nothing. It reads state.json and the session records, and runs bb's thread
+// list and thread show. opts supplies NewAdapter and SessionDir; their zero
+// values are the real ones.
+func CountLanes(ctx context.Context, cfg *config.Config, opts Options) LaneCount {
+	if opts.NewAdapter == nil {
+		opts.NewAdapter = factory.New
+	}
+	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: time.Now().UTC(), res: &Result{}}
+	if opts.SessionDir == "" {
+		// Read-only: the claim directory is used as it is, not repaired.
+		if dir, _, err := session.Dir(); err == nil {
+			t.sessionDir = dir
+		}
+	}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return LaneCount{}
+	}
+	t.st = st
+	target, agent := t.resolve(st.Target())
+	a, err := opts.NewAdapter(agent, cfg.Loop.StateDir, target)
+	if err != nil {
+		return LaneCount{}
+	}
+	ls, ok := a.(adapter.LaneStopper)
+	if !ok {
+		return LaneCount{}
+	}
+	out := LaneCount{Applicable: true, Complete: true}
+	root := ls.LaneRoot()
+	level, seen, budget := []string{root}, map[string]bool{root: true}, decide.LaneStopMaxThreads
+	for depth := 1; len(level) > 0; depth++ {
+		if depth > decide.LaneStopMaxDepth || budget <= 0 {
+			out.Complete = false // something may be below the bounds
+			break
+		}
+		var next []string
+		for _, p := range level {
+			if ctx.Err() != nil {
+				out.Complete = false
+				return out
+			}
+			kids, notChecked, err := ls.LaneChildren(ctx, p, budget)
+			if err != nil || notChecked > 0 {
+				out.Complete = false
+			}
+			for _, k := range kids {
+				if seen[k.ID] {
+					continue
+				}
+				seen[k.ID] = true
+				budget--
+				n := decide.LaneNode{Verified: k.Verified, Status: k.Status, Queued: k.Queued}
+				if k.Verified {
+					n.OtherLoop, n.OwnershipUnknown = t.otherLoopLane(k.ID)
+				}
+				action := decide.LaneStopFor(n)
+				if action == decide.LaneStopRunning || action == decide.LaneStopQueued {
+					out.Running++
+				}
+				if decide.LaneStopDescend(action) {
+					next = append(next, k.ID)
+				}
+			}
+		}
+		level = next
+	}
+	return out
 }

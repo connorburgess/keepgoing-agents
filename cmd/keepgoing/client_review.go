@@ -91,10 +91,12 @@ type clientReviewPreview struct {
 	Lost    string `json:"lost"`
 	Refused string `json:"refused"`
 	Expired string `json:"expired"`
+	// Stop is a stop's options; see stopChoices.
+	Stop *stopChoices `json:"stop,omitempty"`
 }
 
 const (
-	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--directory private-registry] [--json]"
+	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes] [--immediately] [--directory private-registry] [--json]"
 	clientReviewExpired = "This review expired. Nothing was changed. Review it again."
 	clientReviewOther   = "This review is for another loop or another change. Nothing was changed. Review it again."
 	clientReviewOwned   = "This loop is supervised for another conversation, so it can be resumed only from that conversation or from outside BB. Nothing was changed."
@@ -108,6 +110,8 @@ func clientReviewCommand(e env, args []string) int {
 	directory := fs.String("directory", "", "private registry directory")
 	expect := fs.String("expect", "", "apply: the expect value of the review confirmed")
 	asJSON := fs.Bool("json", false, "print JSON")
+	lanes := fs.Bool("lanes", false, "apply stop: also stop the lanes")
+	immediately := fs.Bool("immediately", false, "apply stop: carry the stop out in this command")
 	help := func() int {
 		fmt.Fprintln(e.stdout, clientReviewUsage)
 		fs.SetOutput(e.stdout)
@@ -129,7 +133,8 @@ func clientReviewCommand(e env, args []string) int {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || (command == "review" && *expect != "") || (command == "apply" && !clientExpectPattern.MatchString(*expect)) {
+	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || (command == "review" && *expect != "") || (command == "apply" && !clientExpectPattern.MatchString(*expect)) ||
+		((*lanes || *immediately) && (command != "apply" || action != "stop")) {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
@@ -143,7 +148,7 @@ func clientReviewCommand(e env, args []string) int {
 	if command == "review" {
 		reply, code = clientReview(e.ctx, *directory, *key, action, now, time.Local)
 	} else {
-		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now)
+		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now, holdOptions{Lanes: *lanes, Now: *immediately})
 	}
 	reply.SchemaVersion = 1
 	if *asJSON {
@@ -161,7 +166,17 @@ func clientReviewCommand(e env, args []string) int {
 		if *directory != "" {
 			dir = " --directory " + shellQuote(*directory)
 		}
-		fmt.Fprintf(e.stdout, "To confirm before it expires: keepgoing client apply %s --loop %s --expect %s%s\n", p.Action, p.Key, p.Expect, dir)
+		if p.Stop != nil {
+			for _, o := range p.Stop.Options {
+				flags := " --immediately"
+				if o.Lanes {
+					flags = " --lanes --immediately"
+				}
+				fmt.Fprintf(e.stdout, "%s: keepgoing client apply %s --loop %s --expect %s%s%s\n", o.Label, p.Action, p.Key, p.Expect, flags, dir)
+			}
+		} else {
+			fmt.Fprintf(e.stdout, "To confirm before it expires: keepgoing client apply %s --loop %s --expect %s%s\n", p.Action, p.Key, p.Expect, dir)
+		}
 	} else if reply.Result != nil {
 		fmt.Fprintln(e.stdout, reply.Result.Text)
 	}
@@ -187,14 +202,14 @@ func clientReview(ctx context.Context, directory, key, action string, now time.T
 	}
 	p := r.preview
 	out := &clientReviewPreview{Action: p.Action, Key: p.Key, Title: p.Title, Lines: []string{}, Confirm: p.Confirm,
-		Expect: clientExpect(key, action, p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired}
+		Expect: clientExpect(key, action, p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Stop: p.Stop}
 	for _, l := range p.Lines {
 		out.Lines = append(out.Lines, l.renderLocal(now, loc))
 	}
 	return clientReviewReply{Preview: out}, exitOK
 }
 
-func clientApply(ctx context.Context, directory, key, action, expect, caller string, now time.Time) (clientReviewReply, int) {
+func clientApply(ctx context.Context, directory, key, action, expect, caller string, now time.Time, opts holdOptions) (clientReviewReply, int) {
 	refuse := func(text string) (clientReviewReply, int) {
 		return clientReviewReply{Result: &panelResult{Outcome: "review_again", Text: text, Retry: true}}, exitFailed
 	}
@@ -218,7 +233,7 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 	}
 	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
 	defer cancel()
-	res := panelOutcome(action, panelApply(ctx, directory, entry.ID, action, "", caller, digest))
+	res := panelOutcome(action, panelApply(ctx, directory, entry.ID, action, "", caller, digest, opts))
 	switch {
 	case res.Outcome == "done":
 		return clientReviewReply{Result: &res}, exitOK

@@ -106,7 +106,15 @@ func stopNow(ctx context.Context, cfg *config.Config, wait time.Duration, caller
 		}
 		rep = w
 	}
-	res, err := supervise.Tick(ctx, cfg, supervise.Options{Version: version, Reporter: rep, StopOnly: true, CallerThread: caller})
+	opts := supervise.Options{Version: version, Reporter: rep, StopOnly: true, CallerThread: caller}
+	if deadline, ok := ctx.Deadline(); ok {
+		// A caller with less time than a check (the page and the menu give a
+		// change 20 seconds) makes that the check's hard limit, so the check
+		// ends on its own terms, records itself, and leaves what it could not
+		// reach to the next check.
+		opts.Deadline = deadline.Add(-2 * time.Second)
+	}
+	res, err := supervise.Tick(ctx, cfg, opts)
 	r.Warnings = append(r.Warnings, res.Warnings...)
 	var claimed *session.ClaimedError
 	if errors.As(err, &claimed) {
