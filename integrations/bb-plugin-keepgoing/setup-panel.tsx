@@ -10,12 +10,15 @@ type Call = (input: z.infer<typeof setupInput>) => Promise<SetupResult>;
 export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { threadId: string; call: Call; onChanged(): void; hideStart?: boolean }) {
   const [name, setName] = useState(`bb-${threadId.replace(/[^a-z0-9-]/g, "-").slice(0, 50)}`);
   const [withGoal, setWithGoal] = useState(true);
+  // Off unless chosen: following the list also turns on handoff.
+  const [followStandard, setFollowStandard] = useState(false);
+  const [standardRoutes, setStandardRoutes] = useState(false);
   const [task, setTask] = useState("");
   const [result, setResult] = useState<SetupResult>();
   const [busy, setBusy] = useState(true);
   useEffect(() => {
     let mounted = true;
-    call({ action: "inspect", threadId }).then(r => { if (mounted) setResult(r); })
+    call({ action: "inspect", threadId }).then(r => { if (mounted) { setResult(r); setStandardRoutes(r.standardRoutes === true); } })
       .catch(() => { if (mounted) setResult({ ok: false, message: "Setup status is unavailable. Check the host connection and retry." }); })
       .finally(() => { if (mounted) setBusy(false); });
     return () => { mounted = false; };
@@ -23,7 +26,8 @@ export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { t
   async function act(action: "preview" | "create" | "inspect" | "start") {
     setBusy(true);
     try {
-      const r = await call({ action, threadId, ...(action === "preview" || action === "create" ? { name, task, withGoal, ticket: result?.ticket } : {}) });
+      const follow = followStandard && standardRoutes;
+      const r = await call({ action, threadId, ...(action === "preview" || action === "create" ? { name, task, withGoal, ticket: result?.ticket, ...(follow ? { followStandard: true } : {}) } : {}) });
       setResult({
         ...r,
         ...(!r.ok && action === "create" && !r.record ? { plan: result?.plan } : {}),
@@ -42,7 +46,10 @@ export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { t
       <label>Task and completion criteria<textarea aria-label="Task and completion criteria" value={task} disabled={busy} maxLength={262144} rows={5} onChange={e => { setTask(e.target.value); edit(); }} style={{ display: "block", width: "100%" }} /></label>
       <label><input type="checkbox" aria-label="Record a goal for this task" checked={withGoal} disabled={busy} onChange={e => { setWithGoal(e.target.checked); edit(); }} /> Record a goal for this task</label>
       <span>{withGoal ? "Use the loop name as the initial goal title. Save the task once in a private file and share current goal references in future prompts. Requires an updated looptender CLI; v0.1.4 does not support this setup option." : "Copy the task into wake instructions without creating a goal record."}</span>
-      <span>One existing thread, with its current model and login. No fallbacks. Creating the setup leaves supervision disabled.</span>
+      {standardRoutes && <label><input type="checkbox" aria-label="Follow my standard route list for handoffs" checked={followStandard} disabled={busy} onChange={e => { setFollowStandard(e.target.checked); edit(); }} /> Follow my standard route list for handoffs</label>}
+      <span>{followStandard && standardRoutes
+        ? "One existing thread, with its current model and login, that hands off to the routes of your standard route list that apply to it on a rate limit. The preview names them. Creating the setup leaves supervision disabled."
+        : "One existing thread, with its current model and login. No fallbacks. Creating the setup leaves supervision disabled."}</span>
       <button type="button" disabled={busy || !task.trim() || !name} onClick={() => void act("preview")}>Preview setup</button>
     </>}
     {result?.plan && <div aria-label="Setup preview" style={{ display: "grid", gap: 4 }}>
@@ -51,11 +58,16 @@ export function SetupPanel({ threadId, call, onChanged, hideStart = false }: { t
       <span>{result.plan.withGoal ? "Goal: record revision 1 referencing a private task snapshot. Creation stays disabled." : "Task: copied into wake instructions; no goal record."}</span>
       <span>Check every {result.plan.limits.interval}. Idle threads can wake on a check; stall nudges are spaced at least {result.plan.limits.wakeEvery} apart.</span>
       <span>Stall after {result.plan.limits.stallAfter}; {result.plan.limits.maxNudges} nudges; {result.plan.limits.maxReprompts} error re-prompts with {result.plan.limits.backoff} backoff.</span>
+      {result.plan.routes ? <div aria-label="Routes" style={{ display: "grid", gap: 2 }}>
+        <span>Routes: follows your standard route list. Handoff on a rate limit is turned on. On a rate limit the loop hands off to, in order:</span>
+        <ul style={{ margin: 0 }}>{result.plan.routes.apply.map(r => <li key={r.id}>{r.id}: {r.model || "model unchanged"}, usage limit {r.group}</li>)}</ul>
+      </div> : <span>No fallbacks; automatic handoff is off.</span>}
       {result.ticket && <button type="button" disabled={busy} onClick={() => void act("create")}>Create disabled setup</button>}
     </div>}
     {result?.record && <>
       <span>{goalLabel(result.goal, result.goalState)}</span>
       <span>Configuration: {result.record.configPath}</span>
+      {result.record.followsStandard && <span>Routes: follows your standard route list; hands off to it on a rate limit.</span>}
       <button type="button" disabled={busy} onClick={() => void act("inspect")}>Refresh diagnostics</button>
       {result.canStart && !hideStart && <>
         <span>Starting enables the loop and launches a background supervisor on this thread’s host. It may prompt the agent when eligible. Other timers are not detected or changed.</span>

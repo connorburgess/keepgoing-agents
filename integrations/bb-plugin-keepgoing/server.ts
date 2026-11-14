@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract } from "./host-contract.ts";
-import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { targetOf, statusFollowsStandard, recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
 import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
@@ -229,10 +229,11 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         if (action === "resume") {
           const current = await resolveTarget(record.threadId);
-          const { id, configPath: ignored, loop, startJson: _json, startJsonBin: _jsonBin, ...saved } = record;
           const status = await hostCommand(bin, record, "status");
           const parsed = statusSchema.safeParse(status.data);
-          if (JSON.stringify(current) !== JSON.stringify(saved) || status.code !== 0 || !parsed.success || parsed.data.target !== "primary" || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
+          // A loop that follows the standard route list may be on one of its
+          // routes: this thread on another model. Its agents still match.
+          if (JSON.stringify(current) !== JSON.stringify(targetOf(record)) || status.code !== 0 || !parsed.success || (parsed.data.target !== "primary" && !statusFollowsStandard(status.data)) || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
         }
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
@@ -256,7 +257,8 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun, withGoal, bounds) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal, bounds, followStandard) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}), ...(followStandard ? { followStandard: true as const } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    standardRoutes: async (bin, target) => (await host.call("standardRoutes", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).available,
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });

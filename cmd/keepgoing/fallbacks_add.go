@@ -260,6 +260,9 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	w := &fallbackAddWizard{e: e, cfg: cfg, o: &o, lookPath: lookPath, bb: bb}
 	if !o.nonInteractive {
 		w.r = bufio.NewReader(input)
+		if done, code := w.offerStandardList(); done {
+			return code
+		}
 		if err := w.collect(); err != nil {
 			e.errf("\nfallbacks add: stopped, nothing written.\n  %v", err)
 			return exitUsage
