@@ -36,11 +36,23 @@ type File struct {
 	// episode. No command sets it, so holding and resuming by hand refunds
 	// nothing. A resume clears it.
 	EpisodeHold bool `json:"episodeHold,omitempty"`
+	// BriefHold lists the briefs, to another conversation, that a check
+	// found recorded and not confirmed when it raised the awaiting-user
+	// hold. A resume settles them: the loop stays on its current target and
+	// no route is briefed on the next check.
+	BriefHold []Brief `json:"briefHold,omitempty"`
 	// OpenQuestion is the awaiting-user hold that was outstanding when the
 	// task was declared complete, with its note. Completion ends the hold,
 	// but what a person was being asked is kept until a resume.
 	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
 	UpdatedAt    time.Time     `json:"updatedAt"`
+}
+
+// Brief is a brief to another conversation: Action is handoff or
+// switch_back, Target the route it went to.
+type Brief struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
 }
 
 // OpenQuestion records an awaiting-user hold ended by a completion.

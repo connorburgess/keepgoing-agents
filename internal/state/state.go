@@ -66,14 +66,21 @@ type File struct {
 	ExactCut             map[string]int `json:"exactCut,omitempty"`
 	Fingerprint          string         `json:"fingerprint,omitempty"`
 	LastProgressAt       time.Time      `json:"lastProgressAt,omitempty"`
-	LastWakeAt           time.Time      `json:"lastWakeAt,omitempty"`
-	CheckedAt            time.Time      `json:"checkedAt,omitempty"`
-	LastState            string         `json:"lastState,omitempty"`
-	LastCheck            *Check         `json:"lastCheck,omitempty"`
-	Reprompts            int            `json:"reprompts,omitempty"`
-	Nudges               int            `json:"nudges,omitempty"` // since progress or the most recent turn end
-	LastRepromptAt       time.Time      `json:"lastRepromptAt,omitempty"`
-	StopRequestedSent    bool           `json:"stopSent,omitempty"`
+	// ProgressChangedAt is when a check last saw the repositories' fingerprint
+	// change, or, with ProgressBaseline, when one first recorded it (no change
+	// is known before then). Unlike LastProgressAt it is never moved forward
+	// by the no-progress timeout's credits for sleep or an outage. The panel's
+	// no-progress flag counts from it.
+	ProgressChangedAt time.Time `json:"progressChangedAt,omitzero"`
+	ProgressBaseline  bool      `json:"progressBaseline,omitempty"`
+	LastWakeAt        time.Time `json:"lastWakeAt,omitempty"`
+	CheckedAt         time.Time `json:"checkedAt,omitempty"`
+	LastState         string    `json:"lastState,omitempty"`
+	LastCheck         *Check    `json:"lastCheck,omitempty"`
+	Reprompts         int       `json:"reprompts,omitempty"`
+	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
+	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
+	StopRequestedSent bool      `json:"stopSent,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -117,6 +124,23 @@ type File struct {
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
+	// SendsRecorded is the sequence of the last intended send (sends.json)
+	// whose outcome this file records. An intent after it was made by a
+	// check that could not save what happened.
+	SendsRecorded int64 `json:"sendsRecorded,omitempty"`
+	// SendRecordUnreadable says sends.json could not be read at the last
+	// check, so its error is reported once. UnconfirmedReprompts counts the
+	// re-prompts of this episode that were recorded and then could not be
+	// confirmed as sent.
+	SendRecordUnreadable bool `json:"sendRecordUnreadable,omitempty"`
+	// SkipHandoffOnce: a person resumed a hold for a brief that may have
+	// been delivered, to keep the loop where it is. The next check that
+	// would hand off or switch back does not, once.
+	SkipHandoffOnce bool `json:"skipHandoffOnce,omitempty"`
+	// ResumedBriefs are the briefs a person settled with resume. A record
+	// for one of them that no check settled yet is taken as settled.
+	ResumedBriefs        []Brief `json:"resumedBriefs,omitempty"`
+	UnconfirmedReprompts int     `json:"unconfirmedReprompts,omitempty"`
 	// ResumeEpisodes counts the error episodes started by an explicit resume
 	// of a held loop, and LastResumeEpisodeAt is when the latest one was.
 	// Each is a fresh allowance of re-prompts and nudges granted by a person
@@ -454,4 +478,11 @@ func Append(stateDir string, e Event) error {
 	defer f.Close()
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// Brief names a brief to another conversation: Action is handoff or
+// switch_back, Target the route it went to.
+type Brief struct {
+	Action string `json:"action"`
+	Target string `json:"target"`
 }

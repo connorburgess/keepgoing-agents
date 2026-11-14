@@ -45,7 +45,7 @@ const (
 	// dockMaxResponse bounds the JSON a read may produce. The projection
 	// caps every list and string, and states what it leaves out. The largest
 	// registry (128 loops) with every list at its cap and every name at its
-	// longest measured about 4.4 MB with identifiers, and 5.1 MB with names
+	// longest measured about 5.4 MB with identifiers, and 6.1 MB with names
 	// of four-byte characters; tests keep both under three quarters of this
 	// bound (6 MiB).
 	dockMaxResponse = 8 << 20
@@ -193,10 +193,19 @@ type dockServed struct {
 	// IdleSeconds is how long the panel server runs with no page reading
 	// from it. Zero for dock, which has no such limit.
 	IdleSeconds int `json:"idleSeconds,omitempty"`
+	// Changes is set by the panel server only: "on" when it was started with
+	// --allow-changes, otherwise "off". keepgoing dock never allows them.
+	// ChangesText says so in the footer's words. Form is the session's
+	// anti-forgery value for preparing a change, only when changes are on.
+	Changes      string     `json:"changes,omitempty"`
+	ChangesSince *time.Time `json:"changesSince,omitempty"`
+	ChangesText  dockText   `json:"changesText,omitempty"`
+	Form         string     `json:"form,omitempty"`
 }
 
 func newDockServer(port int, auth dockAuth, reader *dockReader) *dockServer {
-	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock"}}
+	return &dockServer{port: port, guard: newDockGuard(port), auth: auth, reader: reader, served: dockServed{SchemaVersion: 1, ServedBy: "dock",
+		ChangesText: txt("Read-only. keepgoing dock never pauses, resumes, stops or starts anything; keepgoing panel --allow-changes can.")}}
 }
 
 func (s *dockServer) url(token string) string {
@@ -225,7 +234,7 @@ func dockServeHandler(ctx context.Context, ln net.Listener, h http.Handler, stde
 		if errors.Is(err, http.ErrServerClosed) {
 			return exitOK
 		}
-		fmt.Fprintln(stderr, "dock: the server stopped unexpectedly")
+		fmt.Fprintln(stderr, "dock: the page stopped being served unexpectedly")
 		return exitFailed
 	}
 }

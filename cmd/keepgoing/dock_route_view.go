@@ -567,7 +567,11 @@ func dockControlPhrase(r incident.Record) string {
 		return "A control change was saved; no hold changed"
 	}
 	s := strings.Join(parts, ", ")
-	return strings.ToUpper(s[:1]) + s[1:] + " by a command"
+	by := " by a command"
+	if c := r.ControlChange; c != nil && strings.HasPrefix(c.Operation, "panel_") {
+		by = " from the panel"
+	}
+	return strings.ToUpper(s[:1]) + s[1:] + by
 }
 
 func dockWordDelivery(ev *dockEvent, d report.Delivery) {

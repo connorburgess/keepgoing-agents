@@ -28,7 +28,7 @@ func TestStateLedgerSnapshotSavesWhileReadersPoll(t *testing.T) {
 			return errors.Join(errors.New("progress"), err)
 		}
 		previous = &p
-		return ReserveSend(dir, 1000)
+		return reserve(dir, 1000)
 	})
 	if used, err := LoadSends(dir); err != nil || used != 300 {
 		t.Fatalf("reserved %d %v", used, err)

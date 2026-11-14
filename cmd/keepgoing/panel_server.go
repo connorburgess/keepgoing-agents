@@ -312,12 +312,25 @@ func (s *panelState) authorize(r *http.Request) (string, bool) {
 	return rest, true
 }
 
+// sessionOf is the request's one session cookie; call it after authorize.
+func (s *panelState) sessionOf(r *http.Request) string {
+	for _, c := range r.Cookies() {
+		if c.Name == panelCookieName {
+			return c.Value
+		}
+	}
+	return ""
+}
+
 // panelHandler puts the opening endpoint in front of the page.
 // Every request passes the same network guard first.
 type panelHandler struct {
 	state *panelState
 	guard dockGuard
 	page  *dockServer
+	// changes is set only on a server started with --allow-changes. Without
+	// it no write request is routed at all.
+	changes *panelChanges
 }
 
 // allowOpening is the guard for an opening address. It is the page guard
@@ -340,6 +353,22 @@ func (h *panelHandler) allowOpening(r *http.Request) bool {
 
 func (h *panelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dockSecurityHeaders(w.Header())
+	if r.Method == http.MethodPost {
+		// A change: its own stricter guard, then the session, then the
+		// anti-forgery value the change handler checks.
+		if h.changes == nil || !panelAllowPost(r, h.state.port) {
+			http.Error(w, "refused", http.StatusForbidden)
+			return
+		}
+		rest, ok := h.state.authorize(r)
+		if !ok {
+			http.Error(w, "refused", http.StatusForbidden)
+			return
+		}
+		h.state.touch()
+		h.changes.serve(w, r, rest, h.state.sessionOf(r))
+		return
+	}
 	opening := strings.HasPrefix(r.URL.Path, "/open/")
 	if (opening && !h.allowOpening(r)) || (!opening && !h.guard.allow(r)) {
 		http.Error(w, "refused", http.StatusForbidden)
@@ -358,14 +387,39 @@ func (h *panelHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case opening:
 		h.open(w, r)
 	case strings.HasPrefix(r.URL.Path, "/s/"):
-		if _, ok := h.state.authorize(r); !ok {
+		rest, ok := h.state.authorize(r)
+		if !ok {
 			h.expired(w, http.StatusForbidden)
 			return
 		}
 		h.state.touch()
+		if rest == dockServerPath {
+			h.served(w)(h.state.sessionOf(r))
+			return
+		}
 		h.page.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// served answers api/v1/server for a session: which command serves the page,
+// whether it allows changes and since when, and, when it does, the session's
+// anti-forgery value for preparing one.
+func (h *panelHandler) served(w http.ResponseWriter) func(session string) {
+	return func(session string) {
+		out := h.page.served
+		now := h.state.now().UTC()
+		if h.changes == nil {
+			out.Changes = "off"
+			out.ChangesText = txt("Read-only: started without --allow-changes. To pause, stop or resume from here, run keepgoing panel stop, then keepgoing panel --allow-changes.")
+		} else {
+			since := h.changes.since
+			out.Changes, out.ChangesSince, out.Form = "on", &since, h.changes.prepareValue(session)
+			out.ChangesText = txt("Changes allowed for "+dockSpan(now.Sub(since))+": started with keepgoing panel --allow-changes at ", tm(since, "clock"), ". "+panelExposure+" keepgoing panel stop turns them off.")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }
 
@@ -419,7 +473,7 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 			reply.Error = "the request could not be read"
 		} else if age := time.Since(req.At); req.At.IsZero() || age > panelRequestMaxAge || age < -panelRequestMaxAge {
 			// It waited too long to be what its sender still wants.
-			reply.Error = "the request reached the server too late"
+			reply.Error = "the request reached the panel too late"
 			req.Op = ""
 		} else {
 			switch req.Op {
@@ -487,8 +541,11 @@ type panelServerConfig struct {
 	refresh    time.Duration
 	staleAfter time.Duration
 	offline    bool
-	now        func() time.Time
-	ticks      <-chan time.Time
+	// changes: started with --allow-changes, so the page may pause, stop and
+	// resume loops. It never changes while the server runs.
+	changes bool
+	now     func() time.Time
+	ticks   <-chan time.Time
 }
 
 // panelServerCommand is the background server, run by keepgoing panel as
@@ -502,6 +559,7 @@ func panelServerCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "")
 	offline := fs.Bool("offline", false, "")
+	changes := fs.Bool("allow-changes", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *panelDir == "" || *idle <= 0 || *idle > panelMaxIdle || *refresh < dockMinRefresh || *refresh > dockMaxRefresh || *staleAfter <= 0 || !panelSupported() {
 		return exitUsage
 	}
@@ -509,7 +567,7 @@ func panelServerCommand(e env, args []string) int {
 	if err != nil {
 		return exitUsage
 	}
-	return runPanelServer(e.ctx, panelServerConfig{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, now: time.Now})
+	return runPanelServer(e.ctx, panelServerConfig{dir: dir, registry: *directory, idle: *idle, refresh: *refresh, staleAfter: *staleAfter, offline: *offline, changes: *changes, now: time.Now})
 }
 
 func runPanelServer(parent context.Context, c panelServerConfig) int {
@@ -584,7 +642,12 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second))}
 	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
 	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
-		Instance: state.instance, Registry: registryDir, Version: version}
+		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes}
+	if c.changes {
+		if handler.changes, err = newPanelChanges(ctx, c.registry, reader, rec.StartedAt, c.now); err != nil {
+			return exitFailed
+		}
+	}
 	if rec.IdleSeconds < 1 {
 		rec.IdleSeconds = 1
 	}

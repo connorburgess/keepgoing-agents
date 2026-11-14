@@ -203,6 +203,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .meter.full > i { background: var(--limit); }
 .meter.is-stale { background: repeating-linear-gradient(135deg, var(--sunk) 0 4px, var(--line-2) 4px 5px); }
 .meter-reset { grid-column: 2 / 4; color: var(--ink-2); margin-top: -0.15rem; }
+.meter-projection { grid-column: 2 / 4; color: var(--ink-2); margin-top: -0.15rem; }
 
 /* The route component: a loop's preferred routes, and the view across loops */
 .chain-ready { font-size: 0.8125rem; font-weight: 600; color: var(--good); }
@@ -235,7 +236,7 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .route-status.tone-unknown .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
 .route-meta { font-size: 0.8125rem; margin-top: 0.25rem; overflow-wrap: anywhere; }
 .route-usage { margin-top: 0.45rem; max-width: 36rem; }
-.usage-read, .usage-none { font-size: 0.8125rem; }
+.usage-read, .usage-none, .usage-note { font-size: 0.8125rem; }
 .lanes { margin-top: 0.6rem; padding: 0.55rem 0.75rem; background: var(--sunk); border-radius: 9px; font-size: 0.875rem; max-width: 36rem; min-width: 0; }
 .lanes + .lanes { margin-top: 0.4rem; }
 .lanes.is-wide { max-width: none; }
@@ -344,4 +345,23 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .command { -webkit-user-select: all; user-select: all; padding: 0.1rem 0.4rem; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; white-space: nowrap; }
 @media (max-width: 52rem) {
   .notice { padding: 1.5rem 1rem 2rem; }
+}
+
+/* Changes, on a panel started with --allow-changes: one loop at a time,
+   reviewed before it is confirmed. */
+.change { display: grid; gap: 0.55rem; }
+.change.is-review { border-color: var(--attn-line); box-shadow: inset 3px 0 0 var(--attn); }
+.change h2 { margin: 0; }
+.change-line { margin: 0; max-width: 70ch; color: var(--ink); }
+.change-buttons { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.btn.is-primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btn.is-primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
+.btn:disabled { opacity: 1; cursor: progress; color: var(--ink-2); }
+.change-result { margin: 0; padding: 0.5rem 0.75rem; border-radius: 8px; max-width: 70ch; }
+.change-result.is-done { background: var(--good-soft); }
+.change-result.is-refused, .change-result.is-review_again { background: var(--sunk); }
+.change-result.is-uncertain { background: var(--warn-soft); }
+@media (forced-colors: active) {
+  .change.is-review, .change-result { border: 1px solid CanvasText; }
+  .btn.is-primary { forced-color-adjust: none; background: ButtonText; color: ButtonFace; }
 }

@@ -177,6 +177,14 @@ type dockLoop struct {
 	LimitWait   *dockLimitWait   `json:"limitWait,omitempty"`
 	Issues      []string         `json:"issues"`
 	Identifiers *dockIdentifiers `json:"identifiers,omitempty"`
+	// NoProgress is the no-progress flag, the same value status shows; nil
+	// when the loop's status could not be read. It is never a need.
+	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// Can is which changes fit the loop's control flags as read: pause when
+	// not paused, stop when no stop is requested, resume when any hold is
+	// set. Empty when the flags could not be read. A page offers them only
+	// when the server that serves it allows changes.
+	Can []string `json:"can"`
 }
 
 type dockTarget struct {
@@ -247,6 +255,9 @@ type dockUsageTarget struct {
 	// first window that is used up.
 	ReadLine string   `json:"readLine"`
 	UsedUp   dockText `json:"usedUp,omitempty"`
+	// ReadingsNote is said once for the route when one of its windows could
+	// not be projected for want of readings: where its readings come from.
+	ReadingsNote string `json:"readingsNote,omitempty"`
 }
 
 type dockUsageWindow struct {
@@ -255,6 +266,10 @@ type dockUsageWindow struct {
 	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
 	Stale       bool       `json:"stale"`
 	Reset       dockText   `json:"reset,omitempty"`
+	// Projection is what the recorded readings say about the window at its
+	// reset, or why they cannot, in the words status uses. A window that
+	// has reset has none: Reset already says it ended.
+	Projection dockText `json:"projection,omitempty"`
 }
 
 type dockLimit struct {
@@ -733,6 +748,9 @@ func dockAllowances(routes []dockRoute) ([]dockAllowance, int) {
 		if u := r.Usage; u.AgeSeconds != nil && (a.Usage.AgeSeconds == nil || *u.AgeSeconds < *a.Usage.AgeSeconds) {
 			a.Usage = u
 			a.Usage.ReadLine = strings.Replace(u.ReadLine, "Usage read", "Read", 1)
+			if u.ReadingsNote != "" {
+				a.Usage.ReadingsNote = accountReadingsNote
+			}
 		}
 		for _, d := range r.LeftBy {
 			if !d.atLimit() {
@@ -947,7 +965,8 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.RoutesSummary = dockRoutesSummary(r)
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
-		if quiet[l.State] && l.Away == nil {
+		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
+		if quiet[l.State] && l.Away == nil && !flagged {
 			continue
 		}
 		t := txt()
@@ -959,6 +978,12 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 				t = txt(t, " ")
 			}
 			t = txt(t, l.Away.Short, ": ", strings.ToLower(l.Away.Why[0].T[:1]), l.Away.Why[0].T[1:], dockText(l.Away.Why[1:]), ".")
+		}
+		if flagged {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, l.NoProgress.Text)
 		}
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
@@ -1089,7 +1114,19 @@ func dockTestingOf(state string, st *statusOut, chain *dockChainInput) dockTesti
 
 func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, identifiers bool) (dockLoop, *dockNeed) {
 	l := dockLoop{Key: dockKey(in.Entry.ID), Name: clip(in.Entry.Loop, dockMaxText), Evidence: in.Client.Outcome,
-		Limits: []dockLimit{}, Issues: []string{}}
+		Limits: []dockLimit{}, Issues: []string{}, Can: []string{}}
+	if snap := in.Client.Snapshot; snap != nil && snap.Controls != nil {
+		c := snap.Controls
+		if !c.Paused {
+			l.Can = append(l.Can, "pause")
+		}
+		if !c.Stop {
+			l.Can = append(l.Can, "stop")
+		}
+		if c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+			l.Can = append(l.Can, "resume")
+		}
+	}
 	if identifiers {
 		l.Identifiers = &dockIdentifiers{RegistrationID: in.Entry.ID}
 	}
@@ -1231,6 +1268,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	l.Chain = dockHandoffChain(in.Chain, use, dockTestingOf(l.State, st, in.Chain), l.Fallbacks, now, identifiers)
 	l.Away = dockAwayOf(st, in.Chain, l.Chain.Entries, in.Timeline, now)
 	l.PickerState = l.Phrase
+	if st != nil {
+		np := st.NoProgress
+		l.NoProgress = &np
+		if np.Availability == "flagged" {
+			l.PickerState += " \u00B7 no progress"
+		}
+	}
 	if l.Away != nil {
 		l.PickerState += " · " + l.Away.Picker
 		for _, d := range l.Away.Departures {
@@ -1661,6 +1705,12 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 	}
 	for _, w := range v.Windows {
 		win := dockUsageWindow{Name: dockWindowName(w.Key), UsedPercent: min(100, max(0, usagePercent(w.Used))), Stale: w.Stale}
+		if !w.Stale {
+			win.Projection = dockProjection(w.Projection, w.ResetsAt)
+			if w.Projection.needsReadings() && v.ProbesOnly {
+				t.ReadingsNote = readingsNote
+			}
+		}
 		far := w.ResetsAt != nil && !w.ResetsAt.IsZero() && !dockSaneReset(now, w.ResetsAt)
 		if dockSaneReset(now, w.ResetsAt) {
 			win.ResetsAt = w.ResetsAt
@@ -1693,6 +1743,24 @@ func dockUsageOf(v usageView, now time.Time) dockUsageTarget {
 		t.Windows = append(t.Windows, win)
 	}
 	return t
+}
+
+// accountReadingsNote is readingsNote for a line of the allowances strip,
+// which is an account, not a route.
+const accountReadingsNote = "Readings for this account come only from its routes' probes."
+
+// dockProjection words a window's projection as status does, with each
+// time as a part the page shows in its own time zone and each length of time
+// in the page's own style ("2 days 9 h", "25 h").
+func dockProjection(p projectionView, resetsAt *time.Time) dockText {
+	if p.State == "" {
+		return nil
+	}
+	parts := p.words(resetsAt, func(t time.Time) any { return tm(t, "datetime") }, dockSpan)
+	if first, ok := parts[0].(string); ok {
+		parts[0] = dockCapital(first)
+	}
+	return txt(parts...)
 }
 
 func dockHandoffChain(in *dockChainInput, use dockRouteUse, test dockTesting, f dockFallbacks, now time.Time, identifiers bool) dockChain {
