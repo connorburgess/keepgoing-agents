@@ -107,9 +107,11 @@ func timingRecordLines(st state.File, now time.Time) []string {
 		}
 		out = append(out, line)
 	}
+	if g := tr.GaveUp; g != nil && g.ResetsAt.After(now) {
+		out = append(out, fmt.Sprintf("timing: gave up stepping up to %s for this %s window after repeated failures; it tries again once the window resets, %s", g.To, g.Window, g.ResetsAt.UTC().Format("2006-01-02 15:04Z")))
+	}
 	switch {
 	case tr.Capped:
-		out = append(out, fmt.Sprintf("timing: could not step up to %s %d times for this %s window; it stops trying until the window resets", tr.FailedTo, tr.Failures, tr.FailedWindow))
 	case tr.Failures > 0:
 		out = append(out, fmt.Sprintf("timing: could not move to %s %d times; it tries again at each turn boundary", tr.FailedTo, tr.Failures))
 	}
