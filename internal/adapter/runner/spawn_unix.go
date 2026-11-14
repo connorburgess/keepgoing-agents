@@ -18,6 +18,7 @@ func spawn(argv []string, workdir, dir string, env []string, acp string) (int, e
 		return 0, err
 	}
 	pid := cmd.Process.Pid
+	observeSpawnForTest(cmd.Process, workdir)
 	// The turn outlives this tick. Waiting in the background reaps the child
 	// if it ends while this process is still alive (the daemon case); a
 	// short-lived tick exits first and init adopts the detached session.

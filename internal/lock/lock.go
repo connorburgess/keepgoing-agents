@@ -34,6 +34,17 @@ func Acquire(stateDir string) (*Lock, error) { return AcquireNamed(stateDir, Tic
 
 // AcquireNamed takes the named lock without waiting.
 func AcquireNamed(stateDir, name string) (*Lock, error) {
+	return acquireNamed(stateDir, name, lockFile)
+}
+
+// AcquireNamedShared takes a shared observation lock without waiting. Other
+// shared readers may overlap; existing exclusive holders and contenders keep
+// their exclusion semantics. It must never be used to authorize mutation.
+func AcquireNamedShared(stateDir, name string) (*Lock, error) {
+	return acquireNamed(stateDir, name, lockFileShared)
+}
+
+func acquireNamed(stateDir, name string, try func(*os.File) error) (*Lock, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -41,7 +52,7 @@ func AcquireNamed(stateDir, name string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := lockFile(f); err != nil {
+	if err := try(f); err != nil {
 		f.Close()
 		return nil, err
 	}
