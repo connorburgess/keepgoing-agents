@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -117,10 +118,14 @@ func TestFallbacksAddCreatesFileAndKeepsHandoffOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only the lock, and the timeline record of the change with its lock.
 	for _, e := range entries {
-		if e.Name() != "tick.lock" {
+		if e.Name() != "tick.lock" && e.Name() != "incidents.json" && e.Name() != "incident.lock" {
 			t.Errorf("unexpected runtime state %s", e.Name())
 		}
+	}
+	if !slices.Contains(timelineOps(t, f.cfg), "add/terminal") {
+		t.Errorf("the add is not in the timeline: %v", timelineOps(t, f.cfg))
 	}
 }
 

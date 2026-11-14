@@ -162,7 +162,7 @@ How the time is spent:
 
 ## Understanding recorded status
 
-`keepgoing status` is read-only and makes no provider calls. It shows the task source (inline or a file, without task text), configured target/thread and quota group, current control holds, and the latest recorded decision. `status --json` keeps its existing fields and adds `taskSource`, optional `taskFile`, `targetConfigured`, and `runtime`; agent identities now include `group`. A missing or disabled fallback no longer appears to be the primary: `targetConfigured` is false and `targetAgent` is empty. Use `doctor` to check live BB target identity separately.
+`keepgoing status` is read-only and makes no provider calls. The one exception is `--client NAME@VERSION`, which a local program such as the BB plugin passes to say which version of itself is asking. It records that program's version in the panel's private `clients.json`, for the panel's [Versions view](dock.md#what-the-page-shows), and only when the panel's directory already exists. It never changes the output. It shows the task source (inline or a file, without task text), configured target/thread and quota group, current control holds, and the latest recorded decision. `status --json` keeps its existing fields and adds `taskSource`, optional `taskFile`, `targetConfigured`, and `runtime`; agent identities now include `group`. A missing or disabled fallback no longer appears to be the primary: `targetConfigured` is false and `targetAgent` is empty. Use `doctor` to check live BB target identity separately.
 
 New ticks persist `state.lastCheck` with:
 

@@ -120,6 +120,7 @@
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
+    if (h === "versions") return { view: "versions" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
     if (m) return { view: "loop", key: m[1] };
     return { view: "home" };
@@ -319,6 +320,8 @@
     fixed.appendChild(top);
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
+    var vs = d.versions || {};
+    fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     nav.appendChild(fixed);
 
     var label = el("p", "pick-label", "Loops");
@@ -764,6 +767,55 @@
     return p;
   }
 
+  // ---- Versions: where each build runs ----
+  var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
+  function renderVersions(d, pane) {
+    var v = d.versions || {};
+    pane.appendChild(back());
+    pane.appendChild(paneHead("Versions"));
+    pane.appendChild(el("p", "lede", v.lede || ""));
+    var rows = list(v.rows);
+    if (!rows.length) {
+      pane.appendChild(emptyBox("Nothing to show.", ""));
+      return;
+    }
+    if (v.summary) pane.appendChild(el("p", "route-summary", v.summary));
+    var wrap = panel("Where each build runs", v.clients === "unavailable" ? [el("span", "sub", "the clients' reports could not be read")] : []);
+    var ul = el("ul", "allow-list");
+    rows.forEach(function (x) {
+      var li = el("li", "allow");
+      var head = el("div", "allow-head");
+      var name = el("h3", "allow-name");
+      if (x.key) name.appendChild(link("#/loop/" + x.key, x.title));
+      else name.textContent = x.title;
+      head.appendChild(name);
+      if (x.label) head.appendChild(el("code", "sub", x.label));
+      li.appendChild(head);
+      var body = el("div", "allow-body");
+      var line = el("p", "route-status");
+      line.appendChild(el("span", "dot " + (versionDots[x.availability] || "dot-unknown")));
+      line.appendChild(el("span", null, x.text));
+      body.appendChild(line);
+      if (x.update) body.appendChild(el("p", "allow-next", x.update));
+      if (x.seen) body.appendChild(el("p", "allow-next sub", x.seen));
+      if (x.seenAt) body.appendChild(el("p", "allow-next sub", "Last reported " + fmt(dateYearFmt, x.seenAt) + "."));
+      li.appendChild(body);
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+    var none = list(v.unrecorded);
+    if (none.length) {
+      var p = el("p", "more", "Which build ran the last check is not recorded for " + (none.length === 1 ? "this loop" : "these " + none.length + " loops") + ": ");
+      none.forEach(function (x, i) {
+        if (i) p.appendChild(document.createTextNode(", "));
+        p.appendChild(link("#/loop/" + x.key, x.name));
+      });
+      p.appendChild(document.createTextNode("."));
+      wrap.appendChild(p);
+    }
+    pane.appendChild(wrap);
+  }
+
   function renderRoutes(d, pane) {
     pane.appendChild(back());
     pane.appendChild(paneHead("Routes"));
@@ -886,6 +938,7 @@
       pane.setAttribute("aria-labelledby", "pane-title");
       if (r.view === "loop") renderLoop(d, pane, r.key);
       else if (r.view === "routes") renderRoutes(d, pane);
+      else if (r.view === "versions") renderVersions(d, pane);
       else renderHome(d, pane);
     } catch (err) {
       pane.replaceChildren(emptyBox("This page could not show the reply it was sent.", "Reload the page, or restart keepgoing " + served() + "."));
@@ -941,7 +994,10 @@
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
     var vt = $("version");
-    if (vt && state.server && state.server.versionText) vt.textContent = state.server.versionText;
+    if (vt && state.server && state.server.versionText) {
+      vt.textContent = "";
+      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
+    }
     var p = $("served");
     if (!p) return;
     p.textContent = "";

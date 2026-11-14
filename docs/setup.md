@@ -152,6 +152,8 @@ keepgoing init --non-interactive \
   --project /projects/example-app --task-file /private/example-task.md
 ```
 
+**Following your standard route list instead.** If you keep a [standard route list](routes.md), the wizard asks `Follow your standard route list for handoffs? N of its M routes apply to this loop. (yes/no) [yes]` for a `bb`, `claude` or `codex` loop, before the fallback questions, and only when at least one route applies; yes skips them, and the loop gets `routes: standard` with handoff on for rate limits. A script follows the list only with `--routes standard`, never because a list exists; `--routes standard` and `--fallback` exclude each other, and `--routes standard` is refused while no usable list is written or the list has no routes (`routes: []`). The JSON `limits.failoverOn` is what is written: `[rate_limit]` for a following loop, even while no route applies yet. The JSON result says `routes: "standard"` and lists the routes that apply to the loop now as its `fallbacks`. Probes follow the list's policy, not `--probe-daily-cap`.
+
 To add a fallback to a loop that already exists, v0.2.0 provides the guided [`keepgoing fallbacks add`](fallbacks.md#add-a-fallback-with-guided-setup).
 
 Generated fallbacks use redundancy `min_healthy: 1`, `span: group`. After you enable and run supervision, scheduled probes run at most every 12 hours per candidate, with a 24-hour health TTL and a default cap of two scheduled calls per candidate per UTC day. Active-group candidates are skipped. Exact handoff probes and manually requested probes are additional calls outside that cap. No calls occur during setup. Handoffs are allowed only for structured `rate_limit` errors and require an exact target probe. Switch-back stays off.

@@ -2,18 +2,23 @@ import { execFile } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
+import { withClientFlag } from "./client-flag.ts";
 import { goalSummarySchema } from "./status-details.ts";
 import { planSchema, refusedReportSchema, type Refusal, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
 import { durationMs, type Bounds } from "./new-thread-contract.ts";
 
-export type Execute = (bin: string, args: string[], input: string, threadId: string, signal?: AbortSignal) => Promise<{ code: number; data: unknown }>;
+// code is the real exit code (1 when there is none); emptyStdout and
+// timedOut are set by execute, so a refusal of --client can be told apart.
+export type Execute = (bin: string, args: string[], input: string, threadId: string, signal?: AbortSignal) => Promise<{ code: number; data: unknown; emptyStdout?: boolean; timedOut?: boolean }>;
 // Bounded output and duration; task text travels only through stdin. Neither
 // command output nor child-process errors are logged or included in errors.
 export const execute: Execute = (bin, args, input, threadId, signal) => new Promise((resolve) => {
   const child = execFile(bin, args, { timeout: 20_000, maxBuffer: 1 << 20, signal, env: { ...process.env, BB_THREAD_ID: threadId } }, (error, stdout) => {
     let data: unknown = null;
     try { data = JSON.parse(String(stdout)); } catch { /* text commands need no output */ }
-    resolve({ code: error ? 1 : 0, data });
+    const e = error as { code?: unknown; killed?: boolean } | null;
+    const code = e ? (typeof e.code === "number" && e.code !== 0 ? e.code : 1) : 0;
+    resolve({ code, data, emptyStdout: String(stdout) === "", timedOut: !!e && e.killed === true });
   });
   child.stdin?.on("error", () => { /* early exit/EPIPE is reported by callback */ });
   child.stdin?.end(input);
@@ -61,6 +66,9 @@ export function commandOnHost(input: { bin: string; record: SetupRecord; operati
   if (operation === "start") args.push("--background");
   // Passed only when the CLI advertised it in the setup preview; never guessed.
   if (operation === "start" && input.json === true) args.push("--json");
+  if (operation === "status") {
+    return withClientFlag(bin, (extra) => run(bin, [...args, ...extra, "-c", record.configPath], "", record.threadId, signal), (r) => ({ code: r.code, emptyStdout: r.emptyStdout ?? false, timedOut: r.timedOut ?? false }));
+  }
   args.push("-c", record.configPath);
   return run(bin, args, "", record.threadId, signal);
 }
