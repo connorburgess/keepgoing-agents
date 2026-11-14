@@ -60,8 +60,10 @@ type routeChangeOut struct {
 	Warnings []string          `json:"warnings"`
 	Reason   string            `json:"reason,omitempty"` // why nothing changed
 	Refusal  *routeRefusal     `json:"refusal,omitempty"`
-	// FailoverOn is set when the change also sets errors.failover_on.
-	FailoverOn *failoverChange `json:"failoverOn,omitempty"`
+	// FailoverOn is set when the change also sets errors.failover_on. Only
+	// guided fallbacks add asks for that, and it has no JSON form, so the
+	// field is for the text preview only.
+	FailoverOn *failoverChange `json:"-"`
 }
 
 type routeChangeLoop struct {

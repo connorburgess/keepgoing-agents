@@ -257,7 +257,8 @@ test("following the standard list is offered only when available, bound to the p
   assert.equal(created.ok, true, created.message); assert.equal(f.records()[0].followsStandard, true);
   assert.ok(seen.every(x => x === true), JSON.stringify(seen));
   // A following loop reports its routes' redundancy; that is not a mismatch for it.
-  (f.state as Record<string, unknown>).redundancy = { healthy: [], min: 1 };
+  // Its status says it follows the list, which is what decides.
+  Object.assign(f.state, { redundancy: { healthy: [], eligible: [], distinct: 0, min: 1, span: "provider", meets: false }, routes: { source: "standard" }, target: "codex-large" });
   assert.equal((await f.controller.call({ action: "inspect", threadId: "thr_example" })).ok, true);
 });
 

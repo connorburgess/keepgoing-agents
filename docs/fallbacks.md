@@ -6,13 +6,13 @@
 
 Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
 
-**Following your standard route list instead** (unreleased). When the wizard starts on a `bb`, `claude` or `codex` loop with no other routes, on its first route, and your [standard route list](routes.md) has routes that apply to it, it first shows what following the list would change and asks `Follow your standard route list and hand off to it on a rate limit, instead of adding a fallback? N of its M routes apply to this loop. (yes/no) [yes]`. Yes makes the change as `routes follow-standard` does, with the same checks and timeline record, and also sets `errors.failover_on` to `[rate_limit]` when it is empty (an existing setting is kept, and the question then says how the loop already hands off); the preview shows that change on its own line. No changes nothing and the wizard goes on. It is never asked with `--non-interactive`; a script uses `keepgoing routes follow-standard`.
-
 ```sh
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 ```
 
-The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end.
+The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end, and every question that writes has `no` as its default.
+
+**Following your standard route list instead** (unreleased). When the wizard starts on a `bb`, `claude` or `codex` loop with no other routes, on its first route, and your [standard route list](routes.md) has routes that apply to it, it first shows what following the list would change and asks `Follow your standard route list and hand off to it on a rate limit, instead of adding a fallback? N of its M switched-on routes apply to this loop. Type yes to follow it (yes/no) [no]`. Only a typed `yes` (or `y`) makes the change: as `routes follow-standard` does, with the same checks and timeline record, and setting `errors.failover_on` to `[rate_limit]` when it is empty (an existing setting is kept, and the question then says how the loop already hands off); the preview shows that change on its own line. A blank line, the end of input or any other answer is no: nothing is written and the four steps below follow. Under `--dry-run` the preview is shown with what yes would do, and nothing is asked or written. The question is not asked when the command line already describes a fallback (any flag but `-c`, `--dry-run` and `--show-ids`), nor with `--non-interactive`; a script uses `keepgoing routes follow-standard`. When the only thing in the way is that `errors.failover_on` is not written as an inline list, the wizard says so in one line and goes on.
 
 1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback: headless `claude` and `codex`, or `bb` for an existing BB thread (see [BB threads](#bb-threads)).
 2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`; a leading `~/` is expanded), or blank for the CLI's current login, and the quota group. The suggested group is the directory's name, otherwise the provider, with a numeric suffix when that label is taken.

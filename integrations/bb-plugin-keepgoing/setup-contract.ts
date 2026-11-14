@@ -12,6 +12,17 @@ export type SetupTarget = z.infer<typeof targetSchema>;
 // standard route list. Absent on older records and on single-agent setups.
 export const recordSchema = targetSchema.extend({ id: text, configPath: text, loop: text, startJson: z.literal(true).optional(), startJsonBin: text.optional(), followsStandard: z.literal(true).optional() });
 export type SetupRecord = z.infer<typeof recordSchema>;
+/** The target a record was saved for: its target fields and no others, so a
+ * field added to records later can never make the comparison fail. */
+export function targetOf(r: SetupRecord): SetupTarget {
+  // In the record's own key order: callers compare serialized targets.
+  return Object.fromEntries(Object.entries(r).filter(([k]) => k in targetSchema.shape)) as SetupTarget;
+}
+/** Whether a loop's `status --json` says it follows the standard route list. */
+export function statusFollowsStandard(status: unknown): boolean {
+  const parsed = z.object({ routes: z.object({ source: z.literal("standard") }).passthrough() }).safeParse(status);
+  return parsed.success;
+}
 export const planSchema = z.object({
   withGoal: z.literal(true).optional(),
   loop: text, project: text, configPath: text, stateDir: text,

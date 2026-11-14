@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { setupOnHost, commandOnHost, standardRoutesOnHost, execute, type Execute } from "./setup-host.ts";
 
 // The plan from a setup that keepgoing did not refuse.
-function planned<T>(r: { plan: T } | { refused: unknown }): { plan: T } {
+function planned<T>(r: { plan: T } | { refused: unknown } | { noRoutes: true }): { plan: T } {
   assert.ok("plan" in r, `refused: ${JSON.stringify(r)}`);
   return r;
 }
@@ -208,24 +208,28 @@ test("built CLI creates the goal through the host contract without running BB", 
 
 const routesTarget = { threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex" };
 
-test("the standard list is offered only from the CLI's own structured answer", async () => {
+test("the standard list is offered only from the CLI's own structured answer, and only when a route could apply", async () => {
   const answer = (code: number, data: unknown): Execute => async (_bin, args, stdin, thread) => {
     assert.deepEqual(args, ["routes", "list", "--json"]); assert.equal(stdin, ""); assert.equal(thread, routesTarget.threadId);
     return { code, data };
   };
+  const row = (r: Record<string, unknown> = {}) => ({ id: "fictional", provider: "codex", model: "example-large", group: "codex-large", enter: "same_conversation", disabled: false, ...r });
   const lists = (standard: unknown) => ({ schemaVersion: 1, kind: "route_lists", standard, loops: [] });
   const ask = (run: Execute) => standardRoutesOnHost({ bin: "keepgoing", target: routesTarget }, undefined, run);
-  assert.deepEqual(await ask(answer(0, lists({ state: "ok", routes: [{ id: "fictional" }], can: [] }))), { available: true });
-  for (const [code, data] of [
-    // v0.2.0 lists routes without `can`, and its init cannot follow the list.
-    [0, lists({ state: "ok", routes: [{ id: "fictional" }] })],
-    [0, lists({ state: "ok", routes: [], can: ["add"] })],
-    [0, lists({ state: "missing", routes: [], can: ["add"] })],
-    [0, lists({ state: "unreadable", routes: [], can: [] })],
-    [2, null], // an older CLI: no routes command
-    [0, { schemaVersion: 2, kind: "route_lists", standard: { state: "ok", routes: [{}] } }],
-    [1, lists({ state: "ok", routes: [{ id: "fictional" }], can: [] })],
-  ] as const) assert.deepEqual(await ask(answer(code, data)), { available: false }, JSON.stringify(data));
+  assert.deepEqual(await ask(answer(0, lists({ state: "ok", routes: [row()], can: [] }))), { available: true });
+  for (const [why, code, data] of [
+    ["v0.2.0 lists routes without can, and its init cannot follow the list", 0, lists({ state: "ok", routes: [row()] })],
+    ["no routes", 0, lists({ state: "ok", routes: [], can: ["add"] })],
+    ["only headless and new-conversation routes", 0, lists({ state: "ok", routes: [row({ enter: "headless" }), row({ enter: "new_conversation" })], can: [] })],
+    ["another provider", 0, lists({ state: "ok", routes: [row({ provider: "claude-code" })], can: [] })],
+    ["the loop's own usage limit", 0, lists({ state: "ok", routes: [row({ group: "codex" })], can: [] })],
+    ["switched off", 0, lists({ state: "ok", routes: [row({ disabled: true })], can: [] })],
+    ["missing", 0, lists({ state: "missing", routes: [], can: ["add"] })],
+    ["unreadable", 0, lists({ state: "unreadable", routes: [], can: [] })],
+    ["an older CLI with no routes command", 2, null],
+    ["another schema", 0, { schemaVersion: 2, kind: "route_lists", standard: { state: "ok", routes: [row()], can: [] } }],
+    ["a failed command", 1, lists({ state: "ok", routes: [row()], can: [] })],
+  ] as const) assert.deepEqual(await ask(answer(code, data)), { available: false }, why);
   assert.deepEqual(await ask(async () => { throw new Error("no host"); }), { available: false });
 });
 
@@ -244,9 +248,13 @@ test("following the standard list passes --routes standard and keeps only id, mo
     assert.ok(!JSON.stringify(r.plan).includes("/private/fictional/workdir"), "no path crosses back");
     assert.ok(!JSON.stringify(r.plan).includes("explicit_directory"));
     // What was asked for must come back: routes, at least one, and handoff on.
-    await assert.rejects(setupOnHost(input, undefined, async () => ({ code: 0, data: { ...reply, fallbacks: [] } })));
     await assert.rejects(setupOnHost(input, undefined, async () => ({ code: 0, data: { ...reply, routes: "none" } })));
     await assert.rejects(setupOnHost(input, undefined, async () => ({ code: 0, data: { ...reply, limits: { ...(reply.limits as object), failoverOn: [] } } })));
+    // None applies after all: said plainly, not as a failure.
+    assert.deepEqual(await setupOnHost(input, undefined, async () => ({ code: 0, data: { ...reply, fallbacks: [] } })), { noRoutes: true });
+    // A build that lists routes with `can` but has no init --routes refuses
+    // the flag: the checked preview fails closed.
+    await assert.rejects(setupOnHost(input, undefined, async () => ({ code: 2, data: null })));
     // And a setup that does not follow the list may not come back following it.
     const { followStandard: _f, ...plain } = input;
     await assert.rejects(setupOnHost(plain, undefined, run));

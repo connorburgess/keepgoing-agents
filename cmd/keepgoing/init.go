@@ -322,7 +322,7 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			if applies == 1 {
 				verb = "applies"
 			}
-			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d routes %s to this loop. (yes/no)", applies, total, verb), "yes")
+			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d switched-on routes %s to this loop. (yes/no)", applies, total, verb), "yes")
 			if err != nil {
 				return err
 			}
@@ -663,7 +663,7 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 func initCanFollow(agent string) bool { return agent == "bb" || agent == "claude" || agent == "codex" }
 
 // initStandardOffer is how many of the standard list's routes would apply
-// to the loop being set up, and how many it has. Nothing is offered when
+// to the loop being set up, and how many of its routes are switched on. Nothing is offered when
 // none would apply, or when the loop cannot be described yet.
 func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (int, int) {
 	path, err := config.StandardRoutesPath()
@@ -671,12 +671,12 @@ func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (i
 		return 0, 0
 	}
 	r, err := config.LoadRoutes(path)
-	if err != nil || len(r.Routes) == 0 {
+	if err != nil || switchedOn(r) == 0 {
 		return 0, 0
 	}
 	a, err := initAgent(o.agent, o.account, o.group, o.model, o.project, lookPath)
 	if err != nil {
-		return 0, len(r.Routes)
+		return 0, switchedOn(r)
 	}
 	if a.BB != nil {
 		a.BB.Thread, a.Provider = strings.TrimSpace(o.thread), strings.TrimSpace(o.provider)
@@ -685,7 +685,7 @@ func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (i
 		}
 	}
 	fb, _ := r.Resolve(config.Loop{Name: o.name, Agent: a})
-	return len(candidateIDs(fb)), len(r.Routes)
+	return len(candidateIDs(fb)), switchedOn(r)
 }
 
 // standardRoutesWritten is the number of routes in the standard list, when

@@ -40,14 +40,30 @@ const followingPlan = cliPlan.extend({
   fallbacks: z.array(z.object({ id: z.string().min(1).max(64), target: z.object({ agent: z.object({ model: z.string().max(256).optional(), group: z.string().max(256).optional() }) }) })).min(1).max(64),
   limits: planSchema.shape.limits.extend({ failoverOn: z.tuple([z.literal("rate_limit")]) }),
 });
-// What `routes list --json` says about the standard list. Only its state and
-// how many routes it has are read. `can` is required because v0.2.0 lists
-// routes without it, and its init cannot follow the list; every build that
-// reports `can` also has init --routes standard.
+// What `routes list --json` says about the standard list: its state and,
+// for each route, only what decides whether it applies to a new loop on
+// this thread. `can` is required because v0.2.0 lists routes without it,
+// and its init cannot follow the list. A build from between the commands
+// that change the list and init --routes standard reports `can` too; its
+// init refuses the flag, and the checked preview then fails closed.
 const routeLists = z.object({
   schemaVersion: z.literal(1), kind: z.literal("route_lists"),
-  standard: z.object({ state: z.enum(["ok", "missing", "unreadable"]), routes: z.array(z.unknown()), can: z.array(z.string()) }),
+  standard: z.object({
+    state: z.enum(["ok", "missing", "unreadable"]), can: z.array(z.string()),
+    routes: z.array(z.object({ provider: z.string(), enter: z.string(), group: z.string(), disabled: z.boolean() }).passthrough()),
+  }),
 });
+/**
+ * Whether a standard route could apply to a loop set up here: this thread
+ * on another model, which is a switched-on same-conversation route on the
+ * thread's provider that draws on another usage limit than the loop's own
+ * (setup labels it with the provider). The preview, which resolves the
+ * loop for real, still decides; this only keeps the choice from being
+ * offered when nothing could apply.
+ */
+function couldApply(r: { provider: string; enter: string; group: string; disabled: boolean }, target: SetupTarget) {
+  return !r.disabled && r.enter === "same_conversation" && r.provider === target.provider && r.group !== target.provider;
+}
 /**
  * Whether the host's looptender has a usable standard route list with
  * routes. An older CLI has no `routes list`, and v0.2.0 cannot follow the
@@ -57,12 +73,12 @@ export async function standardRoutesOnHost(input: { bin: string; target: SetupTa
   try {
     const result = await run(input.bin, ["routes", "list", "--json"], "", input.target.threadId, signal);
     const parsed = routeLists.safeParse(result.data);
-    return { available: result.code === 0 && parsed.success && parsed.data.standard.state === "ok" && parsed.data.standard.routes.length > 0 };
+    return { available: result.code === 0 && parsed.success && parsed.data.standard.state === "ok" && parsed.data.standard.routes.some(r => couldApply(r, input.target)) };
   } catch {
     return { available: false };
   }
 }
-export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds; followStandard?: true }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema> } | { refused: Refusal }> {
+export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds; followStandard?: true }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema> } | { refused: Refusal } | { noRoutes: true }> {
   const { bin, target, name, task, dryRun, withGoal = false, bounds, followStandard } = input;
   const project = await realpath(target.project);
   const args = ["init", "--non-interactive", "--json", "--name", name, "--agent", "bb", "--thread", target.threadId, "--provider", target.provider, "--project", project, "--task-file", "-"];
@@ -76,6 +92,9 @@ export async function setupOnHost(input: { bin: string; target: SetupTarget; nam
   // the code and the other loop's name cross back; never its stderr.
   const refused = result.code !== 0 ? refusedReportSchema.safeParse(result.data) : undefined;
   if (refused?.success) return { refused: refused.data.refusal };
+  // Following the list, but none of its routes applies to this thread: said
+  // plainly, not as a setup failure.
+  if (followStandard && result.code === 0 && followingPlan.extend({ fallbacks: z.array(z.unknown()).length(0) }).safeParse(result.data).success) return { noRoutes: true };
   const following = followStandard ? followingPlan.safeParse(result.data) : undefined;
   const parsed = following ?? cliPlan.safeParse(result.data);
   if (result.code !== 0 || !parsed.success) throw new Error("Setup failed or returned an unsupported result. " + (withGoal ? "Goal setup needs a CLI with init --with-goal (after v0.1.4); update the CLI or explicitly turn off goal creation and preview again. " : "") + "Check the setup destination; existing files are never overwritten.");
