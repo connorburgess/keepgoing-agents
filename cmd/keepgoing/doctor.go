@@ -252,6 +252,9 @@ func doctor(e env, args []string, run doctorRun) int {
 	} else {
 		r.add("supervisor.send_record", "ok", "The send record sends.json is readable.", "")
 	}
+	if stateErr == nil && st.StartRefused != nil {
+		r.add("runner.wrapper", "error", fmt.Sprintf("No turn can be started, since %s: %s.", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason), "Stop the daemon, make sure the keepgoing binary at its path is the one you mean to run, and start the daemon again. Nothing is sent or counted until then.")
+	}
 	doctorTickBudget(&r, cfg.Loop)
 	doctorNetworkCheck(e.ctx, &r, cfg.Loop, st, *offline)
 	r.add("probes", "unavailable", "No model requests or paid probes were made. Login status does not establish credential validity, model access, or quota health.", "Preview with fallbacks check --dry-run. Run fallbacks check without --dry-run only when you intend paid probes; manual probes are outside the scheduled daily cap.")

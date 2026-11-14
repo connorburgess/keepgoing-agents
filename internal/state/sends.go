@@ -232,8 +232,9 @@ func trimPending(p []SendIntent, limit int) []SendIntent {
 }
 
 // RefundSend gives back the reservation seq. It is only for an attempt the
-// provider answered, in a structured result, that it did not act on at all:
-// nothing was sent and nothing was started. The intent is dropped, and with
+// provider answered, in a structured result, that it did not act on at all,
+// or that the adapter refused on this machine before anything could reach
+// the agent: nothing was sent and nothing was started. The intent is dropped, and with
 // max_sends set the attempt is no longer counted. A failed or uncertain send
 // is never refunded.
 func RefundSend(dir string, max, seq int64) error {
