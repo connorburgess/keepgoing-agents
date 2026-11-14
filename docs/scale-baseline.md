@@ -52,7 +52,7 @@ go test ./internal/registry ./cmd/looptender -run '^$' \
 
 Results below are local microbenchmarks, not service-level latency percentiles, concurrency tests or supported fleet sizes. No 1,000/10,000-loop workload was run. Future fleet targets require a separate design and evidence; none is an acceptance claim here.
 
-Measured on 2026-11-14 at 22:24 UTC (2026-11-15 locally), against the base above plus the two benchmark files in this change. Go `go1.27.3`, `darwin/arm64`, `GOARM64=v8.0`, `CGO_ENABLED=1`; macOS 26.4 build 25E246; Apple M5 Pro, 18 logical CPUs, 48 GiB memory; APFS on solid-state storage. `-cpu=1` sets benchmark GOMAXPROCS to one. GOFLAGS, GOGC, GOMEMLIMIT and GOMAXPROCS were unset in the invoking environment. Other work on the shared machine was not controlled; no CPU affinity, cold-cache treatment or thermal/power isolation was applied. Raw results are in [scale-baseline-results.txt](scale-baseline-results.txt).
+Measured on 2026-11-14 at 22:24 UTC (2026-11-15 locally), at source commit `32e906a5b26a791477bbaf824c27411a4322f0e0` (the base above plus the benchmark files). Go `go1.27.3`, `darwin/arm64`, `GOARM64=v8.0`, `CGO_ENABLED=1`; macOS 26.4 build 25E246; Apple M5 Pro, 18 logical CPUs, 48 GiB memory; APFS on solid-state storage. `-cpu=1` sets benchmark GOMAXPROCS to one. GOFLAGS, GOGC, GOMEMLIMIT and GOMAXPROCS were unset in the invoking environment. Other work on the shared machine was not controlled; no CPU affinity, cold-cache treatment or thermal/power isolation was applied. Raw results are in [scale-baseline-results.txt](scale-baseline-results.txt).
 
 Benchmark source SHA-256 at measurement:
 

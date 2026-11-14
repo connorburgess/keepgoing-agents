@@ -51,11 +51,12 @@ func TestRunningMeansTheTurnLockIsHeldNotThatAPIDExists(t *testing.T) {
 	if got := phase(live); got != Running {
 		t.Fatalf("a turn whose wrapper holds the lock reads as %s", got)
 	}
-	// A recorded exit code wins, even while the wrapper is still exiting.
+	// A lock-backed publisher is still running until it releases its own lock,
+	// even after writing exit. This prevents rollover before cleanup ends.
 	if err := os.WriteFile(filepath.Join(string(live), "exit"), []byte("0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := phase(live); got != Finished {
+	if got := phase(live); got != Running {
 		t.Fatal(got)
 	}
 	if err := os.Remove(filepath.Join(string(live), "exit")); err != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -101,10 +102,25 @@ func (d Dir) requestStop(key string) error {
 	}
 }
 
+// startStopWatcher returns an idempotent cancellation-and-join operation.
+// The watcher never acquires turn.lock or waits for exit publication. Joining
+// it under that lock therefore cannot create a lock/publication dependency.
+func startStopWatcher(d Dir, key string, terminate func() error) func() {
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() { defer close(exited); watchStop(d, key, terminate, done) }()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }); <-exited }
+}
+
 func watchStop(d Dir, key string, terminate func() error, done <-chan struct{}) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
 		if m, err := readStopMessage(d.path("stop-request.json")); err == nil && m.Key == key {
 			// Acknowledgement means accepted by the owned wrapper, not proof of exit.
 			// Persist it before the wrapper terminates its own group/job.
