@@ -13,6 +13,11 @@
 # built binary or a large capture committed by mistake is expensive to remove
 # from history once merged.
 #
+# It also refuses a text file the change adds or changes that has a line
+# beginning "<<<<<<< " or ">>>>>>> ", or a line that is exactly "=======":
+# git's conflict markers, left by a merge that was committed unresolved.
+# Paths listed in scripts/conflict-marker-allowlist.txt are let through.
+#
 #   check-contributions.sh BASE HEAD          the commits and files of BASE..HEAD
 #   check-contributions.sh --scan-tree REF    every file in REF, for auditing
 set -euo pipefail
@@ -20,8 +25,26 @@ set -euo pipefail
 max_bytes=1048576
 allowlist="$(dirname "$0")/contribution-file-allowlist.txt"
 
-allowed() {
-  [ -f "$allowlist" ] && grep -qxF -- "$1" <(grep -vE '^[[:space:]]*(#|$)' "$allowlist")
+marker_allowlist="$(dirname "$0")/conflict-marker-allowlist.txt"
+markers='^(<<<<<<< |>>>>>>> |=======$)'
+
+listed() { # listed FILE PATH: PATH is a line of FILE, comments aside
+  [ -f "$1" ] && grep -qxF -- "$2" <(grep -vE '^[[:space:]]*(#|$)' "$1")
+}
+
+allowed() { listed "$allowlist" "$1"; }
+
+# check_markers REF PATH: prints the line numbers and returns 1 when the text
+# file at REF has a conflict marker line and is not allowlisted. git grep -I
+# skips binary files.
+check_markers() {
+  local ref=$1 file=$2 lines
+  lines=$(git grep -I -h -n -E "$markers" "$ref" -- "$file" 2>/dev/null | cut -d: -f1 | paste -sd, -) || true
+  if [ -z "$lines" ] || listed "$marker_allowlist" "$file"; then
+    return 0
+  fi
+  echo "$file has git conflict markers at line $lines; resolve the merge, or list the path in scripts/conflict-marker-allowlist.txt"
+  return 1
 }
 
 # check_file REF PATH: prints a line and returns 1 when the file at REF is
@@ -59,6 +82,7 @@ if [ "${1:-}" = "--scan-tree" ]; then
   found=0
   while IFS= read -r -d '' file; do
     check_file "$ref" "$file" || found=1
+    check_markers "$ref" "$file" || found=1
   done < <(git ls-tree -r -z --name-only "$ref")
   exit $found
 fi
@@ -81,6 +105,7 @@ done
 # are not charged to this change.
 while IFS= read -r -d '' file; do
   check_file "$head" "$file" || fail=1
+  check_markers "$head" "$file" || fail=1
 done < <(git diff --name-only --no-renames --diff-filter=AM -z "$base...$head")
 if [ -n "${PR_TEXT:-}" ] && grep -qiE "$credit" <<<"$PR_TEXT"; then
   echo "the pull request text contains a tool attribution credit"; fail=1
