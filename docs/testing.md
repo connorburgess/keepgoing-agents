@@ -344,7 +344,7 @@ Unpack the archive in a scratch directory on the target. Then run `src/run-tests
 powershell -ExecutionPolicy Bypass -File src\run-tests.ps1
 ```
 
-Each package's test binary runs from its own directory, so fixtures resolve as they do under `go test`. The bundle also holds a `keepgoing` binary for smoke checks such as `keepgoing validate -c examples/keepgoing.bb.yaml`.
+Each package's test binary runs from its own directory, so fixtures resolve as they do under `go test`. The bundle also holds a `keepgoing` binary for smoke checks such as `keepgoing validate -c examples/looptender.bb.yaml`.
 
 ## Platform results
 

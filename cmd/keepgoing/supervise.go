@@ -229,7 +229,7 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 	// saw carried out, so the fast retry below is for a stop still to do.
 	stopDone := ""
 	for {
-		// Reload so edits to keepgoing.yaml or fallbacks.yaml apply without
+		// Reload so edits to the configuration or fallbacks file apply without
 		// a restart. A broken edit retains the timing/diagnostic context,
 		// but the source guard suppresses provider work until it is repaired.
 		if fresh, err := config.Load(cfgPath); err != nil {

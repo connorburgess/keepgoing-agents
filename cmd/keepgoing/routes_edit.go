@@ -111,7 +111,7 @@ type routeChangeRequest struct {
 const routesEditUsage = `Show, change or check route lists without editing YAML.
 
 Usage:
-  keepgoing routes list [--json] [--loop NAME | -c keepgoing.yaml]
+  keepgoing routes list [--json] [--loop NAME | -c looptender.yaml]
   keepgoing routes add --id ID --provider P --model M --group G --enter E [options] [--at N]
   keepgoing routes add --like LOOP:ID [--id ID] [options] [--at N]
   keepgoing routes move ID --to N [--loop NAME]
@@ -185,7 +185,7 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 		e.errf("%s", usage)
 		return exitUsage
 	case op == "add" && *loopName != "":
-		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add -c keepgoing.yaml")
+		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add -c looptender.yaml")
 		return exitUsage
 	case op != "move" && set["to"]:
 		e.errf("routes %s: --to applies only to routes move", op)
