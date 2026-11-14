@@ -4,7 +4,8 @@ import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import { withClientFlag } from "./client-flag.ts";
 import { goalSummarySchema } from "./status-details.ts";
-import { planSchema, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
+import { planSchema, refusedReportSchema, type Refusal, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
+import { durationMs, type Bounds } from "./new-thread-contract.ts";
 
 // code is the real exit code (1 when there is none); emptyStdout and
 // timedOut are set by execute, so a refusal of --client can be told apart.
@@ -25,34 +26,46 @@ export const execute: Execute = (bin, args, input, threadId, signal) => new Prom
 const cliPlan = z.object({
   schemaVersion: z.literal(1), outcome: z.enum(["preview", "created"]),
   goal: z.unknown().optional(), taskPath: z.string().optional(),
+  // Only the literal true is believed; anything else means today's start.
+  startJson: z.unknown().optional(),
   loop: z.string(), project: z.string(), configPath: z.string(), stateDir: z.string(),
   primary: z.object({ agent: z.object({ adapter: z.literal("bb"), bbThread: z.string(), provider: z.string() }) }),
   fallbacks: z.array(z.unknown()).length(0),
   limits: planSchema.shape.limits.extend({ failoverOn: z.array(z.unknown()).length(0) }),
 });
-export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean }, signal?: AbortSignal, run: Execute = execute) {
-  const { bin, target, name, task, dryRun, withGoal = false } = input;
+export async function setupOnHost(input: { bin: string; target: SetupTarget; name: string; task: string; dryRun: boolean; withGoal?: boolean; bounds?: Bounds }, signal?: AbortSignal, run: Execute = execute): Promise<{ plan: z.infer<typeof planSchema> } | { refused: Refusal }> {
+  const { bin, target, name, task, dryRun, withGoal = false, bounds } = input;
   const project = await realpath(target.project);
   const args = ["init", "--non-interactive", "--json", "--name", name, "--agent", "bb", "--thread", target.threadId, "--provider", target.provider, "--project", project, "--task-file", "-"];
   if (withGoal) args.push("--with-goal");
+  // Loop-wide bounds are fixed values from a closed list, never free text.
+  if (bounds) args.push("--max-sends", String(bounds.maxSends), "--no-progress-timeout", bounds.noProgressTimeout);
   if (dryRun) args.push("--dry-run");
   const result = await run(bin, args, task, target.threadId, signal);
+  // keepgoing's own refusal, when it reports one in a structured form. Only
+  // the code and the other loop's name cross back; never its stderr.
+  const refused = result.code !== 0 ? refusedReportSchema.safeParse(result.data) : undefined;
+  if (refused?.success) return { refused: refused.data.refusal };
   const parsed = cliPlan.safeParse(result.data);
   if (result.code !== 0 || !parsed.success) throw new Error("Setup failed or returned an unsupported result. " + (withGoal ? "Goal setup needs a CLI with init --with-goal (after v0.1.4); update the CLI or explicitly turn off goal creation and preview again. " : "") + "Check the setup destination; existing files are never overwritten.");
   const p = parsed.data;
   if (!isAbsolute(p.configPath) || basename(p.configPath) !== "keepgoing.yaml" || p.stateDir !== join(dirname(p.configPath), "state")) throw new Error("Setup paths could not be verified.");
   if (p.outcome !== (dryRun ? "preview" : "created") || p.loop !== name || p.project !== project || p.primary.agent.bbThread !== target.threadId || p.primary.agent.provider !== target.provider) throw new Error("Setup returned a different target. No supervisor was started.");
+  if (bounds && (p.limits.maxSends !== bounds.maxSends || durationMs(p.limits.noProgressTimeout ?? "") !== durationMs(bounds.noProgressTimeout))) throw new Error("Setup did not report the requested loop-wide limits. No supervisor was started.");
   if (withGoal) {
     const goal = z.object({ promptContext: z.literal(true), titleSource: z.literal("loop_name"), specificationSource: z.literal("task_snapshot"), record: goalSummarySchema.optional() }).safeParse(p.goal);
     if (!goal.success || p.taskPath !== join(dirname(p.configPath), "task.md") || (dryRun ? goal.data.record !== undefined : goal.data.record?.revision !== 1)) throw new Error("Goal setup could not be verified. A disabled setup may exist; inspect the destination before retrying.");
   } else if (p.goal !== undefined) throw new Error("Setup unexpectedly included a goal. No supervisor was started.");
-  return { plan: planSchema.parse({ ...p, ...(withGoal ? { withGoal: true } : {}), threadId: target.threadId, provider: target.provider }) };
+  const { startJson, ...plan } = p;
+  return { plan: planSchema.parse({ ...plan, ...(startJson === true ? { startJson: true } : {}), ...(withGoal ? { withGoal: true } : {}), threadId: target.threadId, provider: target.provider }) };
 }
-export function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop" }, signal?: AbortSignal, run: Execute = execute) {
+export function commandOnHost(input: { bin: string; record: SetupRecord; operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop"; json?: true }, signal?: AbortSignal, run: Execute = execute) {
   const { bin, record, operation } = input;
   const args: string[] = [operation];
   if (operation === "status" || operation === "doctor") args.push("--json");
   if (operation === "start") args.push("--background");
+  // Passed only when the CLI advertised it in the setup preview; never guessed.
+  if (operation === "start" && input.json === true) args.push("--json");
   if (operation === "status") {
     return withClientFlag(bin, (extra) => run(bin, [...args, ...extra, "-c", record.configPath], "", record.threadId, signal), (r) => ({ code: r.code, emptyStdout: r.emptyStdout ?? false, timedOut: r.timedOut ?? false }));
   }
