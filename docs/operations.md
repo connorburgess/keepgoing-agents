@@ -131,7 +131,7 @@ Each step is either mandatory, with a fixed maximum that is reserved for it unti
 | Yield command | mandatory | `yield.timeout` (10s) | runs first |
 | [Connectivity check](#network-outages) | mandatory when needed | `network.timeout` (8s) | reserved until it has run; made at most once |
 | Observing the target (for BB: status, children, log, interactions) | mandatory | 90s for the whole observation, 30s per `bb` command | at the limit the check records `could not verify state; no action taken` |
-| Setting the thread to the route on record (after a step that was not settled, or a route that left the configuration) | optional | 30s (one `bb` command) | after the holds and the session claim; started only when 30s are free, otherwise the next check does it |
+| Setting the thread to the route on record (after a step that was not settled, or a route that left the configuration) | optional | 30s (one `bb` command) | after the holds, the session claim and the observation, between turns only; started only when 30s are free, otherwise a later check does it |
 | Scheduled fallback probes | optional | `probe.timeout` each (90s) | started only when the whole timeout fits; never shortened |
 | Git progress fingerprint | mandatory | 60s for the whole fingerprint, 30s per `git` command | reserved until it has been taken |
 | Exact probes before a handoff | optional | `probe.timeout` each | may be shortened to the time that is free |
