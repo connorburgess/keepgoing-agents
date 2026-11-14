@@ -33,6 +33,14 @@ import (
 var keepgoingBin, standinDir string
 
 func TestMain(m *testing.M) {
+	// The suite builds the command and its stand-in, so it cannot run from
+	// the test bundle for machines without Go. Say so instead of failing.
+	if _, err := exec.LookPath("go"); err != nil {
+		if _, err := os.Stat(filepath.Join(runtime.GOROOT(), "bin", "go"+exe)); err != nil {
+			fmt.Fprintln(os.Stderr, "scenario suite NOT RUN: it builds the keepgoing command and a stand-in, and the Go toolchain is not available")
+			os.Exit(0)
+		}
+	}
 	dir, err := os.MkdirTemp("", "keepgoing-scenario-build-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -743,8 +751,9 @@ func (w *World) Check(s *Step, name string, err error) {
 type Waiting string
 
 const (
-	// WaitChildRecovery is the lane recovering a direct child's failed turn.
-	WaitChildRecovery Waiting = "child recovery, in progress"
+	// WaitChildRecovery is lane recovery, which retries a direct child's
+	// failed turn. It is opt-in, so a loop without it keeps these failures.
+	WaitChildRecovery Waiting = "lane recovery is opt-in and off here (bb.children.retry_errored)"
 )
 
 // Known records an assertion that fails today because of open work. It never

@@ -160,3 +160,21 @@ func TestChildErrorSingleAttemptForFailureAndRedirect(t *testing.T) {
 		t.Fatalf("err=%v attempts=%d", err, tr.calls.Load())
 	}
 }
+
+// check_gap is sent once per gap, so it makes one attempt: an uncertain
+// delivery must not tell a person twice.
+func TestCheckGapSingleAttempt(t *testing.T) {
+	t.Setenv("KG_TEST_URL", "https://example.com/hook")
+	t.Setenv("KG_TEST_SECRET", secret)
+	c := cfg("")
+	c.Events = []string{"check_gap"}
+	w, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &failedTransport{}
+	w.client = &http.Client{Transport: tr}
+	if err := w.Report(context.Background(), Event{Type: "check_gap"}); err == nil || tr.calls.Load() != 1 {
+		t.Fatalf("err=%v attempts=%d", err, tr.calls.Load())
+	}
+}

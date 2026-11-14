@@ -180,6 +180,9 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// Build is the build that ran the loop's last check, against this
+	// panel's own; listed under "Worth knowing" when they differ.
+	Build dockBuild `json:"build"`
 	// Can is which changes fit the loop's control flags as read: pause when
 	// not paused, stop when no stop is requested, resume when any hold is
 	// set. Empty when the flags could not be read. A page offers them only
@@ -966,7 +969,8 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
 		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
-		if quiet[l.State] && l.Away == nil && !flagged {
+		otherBuild := l.Build.Availability == "different"
+		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild {
 			continue
 		}
 		t := txt()
@@ -984,6 +988,12 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 				t = txt(t, " ")
 			}
 			t = txt(t, l.NoProgress.Text)
+		}
+		if otherBuild {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, l.Build.Text)
 		}
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
@@ -1250,6 +1260,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		need = &dockNeed{Kind: "held", Reason: "A new conversation it tried to create for a move to another route could not be confirmed.",
 			Action: "Find that conversation in BB, then settle it with keepgoing retarget."}
 	}
+	// No check has run for longer than the overdue rule allows, on a loop
+	// that is neither disabled nor held: the computer may have slept or the
+	// loop's scheduler stopped, and nothing else would say so.
+	if snap != nil && snap.Runtime != nil && snap.Runtime.Overdue && need == nil {
+		need = &dockNeed{Kind: "overdue", Reason: "Its checks have stopped: " + snap.Runtime.OverdueMessage + ".",
+			Action: "Find out why no check has run, and start its scheduler again if it stopped; the next check ends this.", Since: snap.Runtime.CheckedAt, SinceEvidence: "last_check"}
+	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
 		if need.Since != nil {
@@ -1267,6 +1284,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers, use.Target != "", now)
 	l.Chain = dockHandoffChain(in.Chain, use, dockTestingOf(l.State, st, in.Chain), l.Fallbacks, now, identifiers)
 	l.Away = dockAwayOf(st, in.Chain, l.Chain.Entries, in.Timeline, now)
+	l.Build = dockBuildOf(dockLastBuild(st, in.Timeline), version)
 	l.PickerState = l.Phrase
 	if st != nil {
 		np := st.NoProgress

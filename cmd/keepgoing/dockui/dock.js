@@ -368,8 +368,16 @@
   }
 
   // ---- Overview: what needs you, then what else is not routine ----
+  // Pause all: offered while any loop can be paused; the server reviews
+  // every loop and words the review and the outcome.
+  function groupBox(d) {
+    var any = list(d.loops).some(function (l) { return list(l.can).indexOf("pause") >= 0; });
+    return changeBox({ key: "all", can: any ? ["pause"] : [] }, true);
+  }
   function renderHome(d, pane) {
     pane.appendChild(paneHead("Needs you"));
+    var group = groupBox(d);
+    if (group) pane.appendChild(group);
     if (d.registry.availability !== "available") {
       pane.appendChild(el("p", "lede", "Unknown."));
       pane.appendChild(emptyBox("The registry could not be read.", "Nothing is shown rather than guessing. Check it with keepgoing registry list."));
@@ -554,6 +562,7 @@
     dl.appendChild(fact("Last check", lastCheck(l.lastCheck)));
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
+    if (l.build && l.build.text) dl.appendChild(fact("Build", l.build.availability === "unknown" || l.build.availability === "not_recorded" ? unknown(l.build.text) : el("span", null, l.build.text)));
     if (l.noProgress) {
       var np = l.noProgress, pf = frag();
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
@@ -616,12 +625,20 @@
         else { focusOn("change-result"); announce(state.change.result.text); }
       });
   }
-  function confirmChange() {
+  // A stop's review may offer options (stop the lanes too, carry it out at
+  // once). Each is one button, in the server's words; the body says which.
+  function confirmChange(option) {
     var c = state.change, p = c && c.preview;
     if (!p || c.busy) return;
     state.change = { key: c.key, action: c.action, preview: p, busy: true };
     render(false, true);
-    post("api/v1/loops/" + c.key + "/confirm", p.form, { action: p.action })
+    var body = { action: p.action };
+    if (option && p.stop) {
+      if (option.lanes) body.lanes = true;
+      if (option.lanes && option.dropQueued) body.dropQueued = true;
+      if (p.stop.immediately) body.immediately = true;
+    }
+    post("api/v1/loops/" + c.key + "/confirm", p.form, body)
       .then(function (d) { state.change = { key: c.key, action: c.action, result: d.result }; })
       // A refusal (4xx) comes before anything is done. Anything else, or no
       // reply: whether it was saved is not known, and it is not sent again.
@@ -651,7 +668,8 @@
     b.addEventListener("click", onClick);
     return b;
   }
-  function changeBox(l) {
+  // all: the change to every loop at once (key "all"), on the overview.
+  function changeBox(l, all) {
     var c = state.change && state.change.key === l.key ? state.change : null;
     if (!changesOn() && !c) return null;
     var box = el("section", "panel change");
@@ -665,7 +683,14 @@
       list(p.lines).forEach(function (line) { box.appendChild(el("p", "change-line", say(line))); });
       var row = el("div", "change-buttons");
       row.appendChild(button("Cancel", "change-cancel", "", cancelChange, c.busy));
-      row.appendChild(button(c.busy ? "Saving…" : p.confirm, "change-confirm", "is-primary", confirmChange, c.busy));
+      var options = p.stop ? list(p.stop.options) : [];
+      if (options.length) {
+        options.forEach(function (o, i) {
+          row.appendChild(button(c.busy ? "Saving…" : o.label, i ? "change-confirm-" + i : "change-confirm", i === options.length - 1 ? "is-primary" : "", function () { confirmChange(o); }, c.busy));
+        });
+      } else {
+        row.appendChild(button(c.busy ? "Saving…" : p.confirm, "change-confirm", "is-primary", function () { confirmChange(null); }, c.busy));
+      }
       box.appendChild(row);
       return box;
     }
@@ -674,6 +699,12 @@
       r.tabIndex = -1;
       r.setAttribute("data-focus", "change-result");
       box.appendChild(r);
+      // A change to every loop: each loop's outcome, those not changed first.
+      if (list(c.result.lines).length) {
+        var ul = el("ul", "change-lines");
+        list(c.result.lines).forEach(function (line) { ul.appendChild(el("li", "change-line", line)); });
+        box.appendChild(ul);
+      }
       var again = el("div", "change-buttons");
       if (c.result.retry && changesOn()) again.appendChild(button("Review again", "change-retry", "", function () { prepareChange(l.key, c.action); }));
       again.appendChild(button("Close", "change-close", "", function () { state.change = null; render(false, true); focusOn("act-" + c.action); }));
@@ -688,9 +719,9 @@
     if (!can.length) return c ? box : null;
     var actions = el("div", "change-buttons");
     actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", "Change this loop");
+    actions.setAttribute("aria-label", all ? "Change every loop" : "Change this loop");
     can.forEach(function (a) {
-      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + "…", "act-" + a, "", function () { prepareChange(l.key, a); }));
+      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + (all ? " all…" : "…"), "act-" + a, "", function () { prepareChange(l.key, a); }));
     });
     box.appendChild(actions);
     return box;
@@ -898,6 +929,8 @@
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
+    var vt = $("version");
+    if (vt && state.server && state.server.versionText) vt.textContent = state.server.versionText;
     var p = $("served");
     if (!p) return;
     p.textContent = "";

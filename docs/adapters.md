@@ -55,6 +55,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Connection loss and the network check](#connection-loss-and-the-network-check) | yes · fixture | yes · fixture | yes · fixture | yes · fixture | missing · none | yes · fixture | yes · fixture |
 | [Child-work awareness](#child-work-awareness) | yes · live | n/a | n/a | n/a | missing · none | partial · fixture | n/a |
 | [Child failure notice and report](#child-failure-notice-and-report) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
+| [Lane recovery: retry a failed child's turn](#lane-recovery-retry-a-failed-childs-turn) | yes · fixture | missing · none | missing · none | missing · none | missing · none | missing · none | missing · none |
 | [Handoff away from it](#handoff-away-from-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
 | [Handoff to it](#handoff-to-it) | yes · live | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | partial · fixture |
 | [Switch-back](#switch-back) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | yes · fixture | yes · fixture |
@@ -63,6 +64,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
+| [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
 
 ### Observe state
@@ -173,6 +175,18 @@ Tell the parent conversation, and optionally the owner, when a child fails.
 - **Generic process:** n/a. No child identities are reported.
 - **Agent defined in configuration:** n/a. No child conversations.
 
+### Lane recovery: retry a failed child's turn
+
+Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.
+
+- **BB thread:** yes, evidence fixture. Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing. [`TestInspectLaneEstablishesEachFact`](../internal/adapter/bb/lanes_test.go) [`TestLaneMessageTextIsNeverDecodedOrStored`](../internal/adapter/bb/lanes_test.go) [`TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce`](../internal/supervise/lanes_test.go) [`TestLanesWaitOutAnOutageOfAnyLength`](../internal/supervise/lanes_test.go) [`TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn`](../cmd/keepgoing/lane_recovery_test.go) [`TestScenarioOutage`](../internal/scenario/outage_test.go) [operations.md#lane-recovery](operations.md#lane-recovery)
+- **Claude Code headless:** missing, evidence none. No child conversations to recover.
+- **Codex headless:** missing, evidence none. No child conversations to recover.
+- **Cursor headless:** missing, evidence none. No child conversations to recover.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** missing, evidence none. No child identities are reported.
+- **Agent defined in configuration:** missing, evidence none. A defined agent reports no child conversations to recover.
+
 ### Handoff away from it
 
 When it is the active target and hits a configured error class, move the loop to a confirmed fallback.
@@ -268,6 +282,18 @@ Stop a running turn on request, signalling only a process keepgoing itself start
 - **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
+
+### Stop the lanes too
+
+On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.
+
+- **BB thread:** yes, evidence fixture. Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only. [`TestStopWithLanesStopsTheRunningLanesOnce`](../internal/supervise/lanestop_test.go) [`TestLaneStopRecoversAfterACheckKilledMidStop`](../internal/supervise/lanestop_test.go) [`TestScenarioStopLanesNow`](../internal/scenario/stop_lanes_test.go) [operations.md#stopping-the-lanes-too](operations.md#stopping-the-lanes-too)
+- **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Codex headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Cursor headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.
+- **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.
 
 ### Permission prompts
 

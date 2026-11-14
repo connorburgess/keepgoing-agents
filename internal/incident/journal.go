@@ -21,7 +21,8 @@ const FileName = "incidents.json"
 // long limit-wait report marker. Version 8 adds the turn-retry marker.
 // Version 9 adds, on control records, who saved the control and whether a
 // resume started a new error episode.
-const SchemaVersion = 9
+// Version 10 adds the lane-work counts on tick records.
+const SchemaVersion = 10
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -181,6 +182,9 @@ func Load(dir string) (Journal, error) {
 			c.Caller, c.NewEpisode = "", false
 			r.ControlChange = &c
 		}
+		if j.SchemaVersion < 10 {
+			r.Lanes = LaneWork{}
+		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
 		}
@@ -237,7 +241,7 @@ func Append(dir string, r Record) error {
 		f.Close()
 		return ErrUnavailable
 	}
-	if err = f.Sync(); err != nil {
+	if err = snapshot.Sync(f); err != nil {
 		f.Close()
 		return ErrUnavailable
 	}

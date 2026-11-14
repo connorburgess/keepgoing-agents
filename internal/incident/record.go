@@ -22,8 +22,10 @@ type Record struct {
 	LimitWaitReport string `json:"limitWaitReport"`
 	// NewThread says this check recorded a BB thread keepgoing created for a
 	// handoff. The thread ID is in the run graph, not here.
-	NewThread            bool           `json:"newThread,omitempty"`
-	TurnRetry            string         `json:"turnRetry"`
+	NewThread bool   `json:"newThread,omitempty"`
+	TurnRetry string `json:"turnRetry"`
+	// Lanes counts the lane work of a check that recovers lanes. Counts only.
+	Lanes                LaneWork       `json:"lanes"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -81,6 +83,13 @@ const (
 	TierActivity  = "activity"
 	TierRoutine   = "routine"
 )
+
+// LaneWork is what one check did about the supervised session's lanes.
+type LaneWork struct {
+	Retried  int `json:"retried"`
+	GivenUp  int `json:"givenUp"`
+	Deferred int `json:"deferred"`
+}
 
 // Collapsed summarizes checks folded into the record that carries it: Count
 // checks identical to it, apart from their times, decision inputs and
@@ -160,7 +169,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && !r.NewThread
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread
 }
 
 func limitWaitCause(cause string) bool {
@@ -200,7 +209,7 @@ func tierOf(r Record) string {
 		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
 			return TierKey
 		}
-		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" {
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" || r.Lanes != (LaneWork{}) {
 			return TierCondition
 		}
 		if repeatable(r) && r.Outcome != "failed" {
@@ -480,8 +489,9 @@ func clean(r Record) Record {
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
 	// What a re-prompt that retried the failed turn by reference was told.
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
+	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	if r.Kind != "tick" {
-		r.LimitWaitReport, r.TurnRetry = "none", "none"
+		r.LimitWaitReport, r.TurnRetry, r.Lanes = "none", "none", LaneWork{}
 	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")
