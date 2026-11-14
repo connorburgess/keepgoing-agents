@@ -63,6 +63,7 @@ To change the matrix, edit the table and run `KEEPGOING_UPDATE_ADAPTERS_DOC=1 go
 | [Handoff into a new conversation](#handoff-into-a-new-conversation) | yes · fixture | yes · fixture | yes · fixture | missing · none | missing · none | n/a | yes · fixture |
 | [Run graph and keepgoing runs](#run-graph-and-keepgoing-runs) | yes · live | yes · fixture | yes · fixture | yes · fixture | missing · none | partial · fixture | partial · fixture |
 | [Stop and owned cancellation](#stop-and-owned-cancellation) | yes · live | yes · fixture | yes · fixture | yes · live | missing · none | partial · fixture | partial · fixture |
+| [Stop the lanes too](#stop-the-lanes-too) | yes · fixture | n/a | n/a | n/a | missing · none | n/a | n/a |
 | [Permission prompts](#permission-prompts) | yes · live | missing · none | missing · none | missing · none | missing · fixture | yes · fixture | partial · fixture |
 
 ### Observe state
@@ -269,6 +270,18 @@ Stop a running turn on request, signalling only a process keepgoing itself start
 - **Generic process:** partial, evidence fixture. Only if a stop command is configured; keepgoing owns no process to cancel. [`TestStopUnsupported`](../internal/adapter/process/process_test.go)
 - **Agent defined in configuration:** partial, evidence fixture. With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled. [`TestDefinedAgentStop`](../internal/adapter/runner/definition_unix_test.go)
 
+### Stop the lanes too
+
+On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.
+
+- **BB thread:** yes, evidence fixture. Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only. [`TestStopWithLanesStopsTheRunningLanesOnce`](../internal/supervise/lanestop_test.go) [`TestLaneStopRecoversAfterACheckKilledMidStop`](../internal/supervise/lanestop_test.go) [`TestScenarioStopLanesNow`](../internal/scenario/stop_lanes_test.go) [operations.md#stopping-the-lanes-too](operations.md#stopping-the-lanes-too)
+- **Claude Code headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Codex headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Cursor headless:** n/a. Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.
+- **Antigravity:** missing, evidence none. No adapter is registered, so a loop cannot use it. [antigravity.md](antigravity.md)
+- **Generic process:** n/a. Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.
+- **Agent defined in configuration:** n/a. Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.
+
 ### Permission prompts
 
 Notice that the agent is waiting for a person to approve something, hold, and report it once.
@@ -316,7 +329,7 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 | Gap | Affects | Evidence |
 | --- | --- | --- |
 | **Closed in unreleased source: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
-| **`resume` does not recover an error hold on a headless loop.** The spent re-prompts are kept and the session cannot change state by itself, so the loop holds again at once. The way out today is `retarget primary`, then `resume`. An outage no longer leads here, but a provider failure still can. | Headless Claude Code, Codex, Cursor | Observed with the scenario before the connectivity check existed; no fixture exercises it now |
+| **Closed in unreleased source: `resume` did not recover an error hold on a headless loop.** The spent re-prompts were kept, so the loop held again at once and the way out was `retarget primary`, then `resume`. An explicit `resume` now starts a new error episode. | Headless Claude Code, Codex, Cursor | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go); [what `resume` starts over](operations.md#what-resume-starts-over) |
 | **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |

@@ -84,9 +84,17 @@ public enum Contract {
         return result
     }
 
-    // Metadata is always inert text. Keep control characters out of native menus.
+    // Metadata is always inert text. Keep control characters and line breaks,
+    // including the Unicode line and paragraph separators, out of native
+    // menus. The two zero-width joiners stay: emoji sequences and several
+    // scripts need them.
     public static func text(_ value: String) -> String {
-        String(String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).prefix(180).description
+        let joiners: Set<UInt32> = [0x200C, 0x200D]
+        let kept = value.unicodeScalars.filter { joiners.contains($0.value) || !(CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0)) }
+        // At most 180 characters; a longer text ends in an ellipsis, so a cut
+        // is never taken for the whole.
+        let all = String(String.UnicodeScalarView(kept))
+        return all.count <= 180 ? all : all.prefix(179) + "…"
     }
 
     static func date(_ value: String?) -> Date? {

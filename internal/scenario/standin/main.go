@@ -22,6 +22,21 @@
 //	spawn.modes            one outcome per line for successive `thread spawn`
 //	                       calls, consumed in order (default ok); see spawn
 //	probe-limited.<model>  if present, a claude probe of that model is rate limited
+//	kill.<command>         if present, after `thread <command>` has answered, the
+//	                       stand-in kills the keepgoing process that ran it
+//	killbefore.<command>   if present, the stand-in kills the keepgoing process
+//	                       that runs `thread <command>` before doing anything
+//	fail.<command>         if present, holds a number N: the next N calls of
+//	                       `thread <command>` fail with no output, as a bb read
+//	                       that the host cut short would
+//	show.gate              if present, holds a number N: each `thread show`
+//	                       records its arrival in show.arrived and waits until N
+//	                       have arrived or show.open exists, then answers
+//	standin.started,       one byte per stand-in process started and per one
+//	standin.ended          that ended on its own; they differ when one was killed
+//	standin.held,          one byte per stand-in held at the show gate and per
+//	standin.released       one let through it, so the harness can tell one
+//	                       still waiting there from one that was killed
 //	calls.jsonl            every bb invocation, one JSON array of arguments per line
 //	probes.jsonl           every probe
 //	net.mode               online, offline or portal (default online)
@@ -61,34 +76,81 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
+	// A scenario may run keepgoing with no room to write (a zero file-size
+	// limit, which is how a full disk looks to a program). The stand-in
+	// is not the program under test: it lifts its own limit, so it can
+	// still record what it was sent.
+	liftFileSizeLimit()
 	world := os.Getenv("SCENARIO_WORLD")
 	if world == "" {
 		fmt.Fprintln(os.Stderr, "standin: SCENARIO_WORLD is not set")
 		os.Exit(97)
 	}
-	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+	// One byte when a stand-in starts and one when it ends on its own, so the
+	// harness can tell when the operating system, or anything else, ended one
+	// early. A stand-in never ends itself any other way.
+	mark(world, "standin.started")
+	code := play(world, strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe"), os.Args[1:])
+	mark(world, "standin.ended")
+	os.Exit(code)
+}
+
+func mark(world, name string) {
+	f, err := os.OpenFile(filepath.Join(world, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	f.Write([]byte{'.'})
+	f.Close()
+}
+
+// play is the part the stand-in was run as.
+func play(world, name string, args []string) int {
 	switch name {
 	case "claude":
-		if isClaudeTurn(os.Args[1:]) {
-			os.Exit(turn(world, name, os.Args[1:]))
+		if isClaudeTurn(args) {
+			return turn(world, name, args)
 		}
-		os.Exit(claude(world, os.Args[1:]))
+		return claude(world, args)
 	case "codex":
-		if len(os.Args) > 1 && os.Args[1] == "app-server" {
-			os.Exit(1) // no structured limit snapshot
+		if len(args) > 0 && args[0] == "app-server" {
+			return 1 // no structured limit snapshot
 		}
-		if isCodexProbe(os.Args[1:]) {
-			os.Exit(codexProbe(world, os.Args[1:]))
+		if isCodexProbe(args) {
+			return codexProbe(world, args)
 		}
-		os.Exit(turn(world, name, os.Args[1:]))
+		return turn(world, name, args)
 	}
 	if name == "example-agent" {
-		os.Exit(exampleAgent(world, os.Args[1:]))
+		return exampleAgent(world, args)
 	}
-	os.Exit(run(world, os.Args[1:]))
+	// killbefore.<command>: the stand-in kills the keepgoing process that
+	// runs `thread <command>` before doing anything, as a crash just before
+	// the call would. The command is not recorded or done. The file is used up.
+	// In both, the stand-in counts itself ended before the kill: the harness
+	// looks as soon as keepgoing has died, and this one ends on its own.
+	if len(args) > 1 && args[0] == "thread" && os.Remove(filepath.Join(world, "killbefore."+args[1])) == nil {
+		mark(world, "standin.ended")
+		killParent()
+		os.Exit(1)
+	}
+	code := run(world, args)
+	// kill.<command>: once the command has done its work and answered, the
+	// stand-in kills the keepgoing process that ran it, as a crash or a
+	// power cut would at that moment. The file is used up.
+	if len(args) > 1 && args[0] == "thread" {
+		if os.Remove(filepath.Join(world, "kill."+args[1])) == nil {
+			os.Stdout.Sync()
+			mark(world, "standin.ended")
+			killParent()
+			os.Exit(code)
+		}
+	}
+	return code
 }
 
 func run(world string, args []string) int {
@@ -102,14 +164,32 @@ func run(world string, args []string) int {
 			return emit(world, args[2]+".retry-decision", string(b))
 		case "status":
 			return emit(world, args[2]+".retries", `{"retries":[]}`)
+		case "cancel":
+			// As BB's plugin: no pending retry unless <thread>.retry-pending exists.
+			if _, err := os.Stat(filepath.Join(world, args[2]+".retry-pending")); err != nil {
+				fmt.Println(`{"ok":false,"error":{"code":"no_pending_retry","message":"fictional"}}`)
+				return 1
+			}
+			os.Remove(filepath.Join(world, args[2]+".retry-pending"))
+			b, _ := json.Marshal(map[string]any{"ok": true, "threadId": args[2], "queuedMessageId": "qm_example1"})
+			fmt.Println(string(b))
+			return 0
 		}
 	}
 	if len(args) < 2 || args[0] != "thread" {
 		fmt.Println(`{"ok":true}`)
 		return 0
 	}
+	if failOnce(world, args[1]) {
+		fmt.Fprintln(os.Stderr, "fictional: bb could not answer")
+		return 1
+	}
 	switch args[1] {
 	case "show":
+		if !gate(world) {
+			fmt.Fprintln(os.Stderr, "standin: the show gate was never opened")
+			return 1
+		}
 		return emit(world, arg(args, 2)+".show", `{"thread":{"status":"idle"}}`)
 	case "list":
 		if p := flagValue(args, "--parent-thread"); p != "" {
@@ -417,4 +497,51 @@ func readMode(path, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// gate holds `thread show` while show.gate exists, until as many calls as
+// it names have arrived or show.open is created. It lets a test put two
+// checks in the same moment, or keep one check in the middle of its work
+// while another starts. It gives up after 30 seconds.
+func gate(world string) bool {
+	b, err := os.ReadFile(filepath.Join(world, "show.gate"))
+	if err != nil {
+		return true
+	}
+	want, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	// A stand-in held here is still running on purpose; the harness counts
+	// it apart from one that was killed.
+	mark(world, "standin.held")
+	defer mark(world, "standin.released")
+	f, err := os.OpenFile(filepath.Join(world, "show.arrived"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err == nil {
+		f.Write([]byte{'.'})
+		f.Close()
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(world, "show.open")); err == nil {
+			return true
+		}
+		if info, err := os.Stat(filepath.Join(world, "show.arrived")); err == nil && want > 0 && info.Size() >= int64(want) {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// failOnce uses up one of the failures fail.<command> holds, if any.
+func failOnce(world, command string) bool {
+	path := filepath.Join(world, "fail."+command)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if n <= 0 {
+		return false
+	}
+	os.WriteFile(path, []byte(strconv.Itoa(n-1)), 0o600)
+	return true
 }

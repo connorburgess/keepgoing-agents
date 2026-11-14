@@ -3,9 +3,11 @@
 package testexec
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -107,5 +109,31 @@ func TestScriptRequiresShellInterpreterLine(t *testing.T) {
 	}()
 	if r.failed == "" {
 		t.Fatal("script without an interpreter line accepted")
+	}
+}
+
+// fakeTB records a failure instead of ending the test.
+type fakeTB struct{ failed string }
+
+func (f *fakeTB) Helper() {}
+func (f *fakeTB) Fatalf(format string, args ...any) {
+	f.failed = fmt.Sprintf(format, args...)
+}
+
+// A script whose first run ends on its own with a failure is broken, and
+// installing it says so; only a launch ended by a signal is retried.
+func TestAWarmRunThatFailsIsCaughtAtInstallation(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("scripts are run at installation on macOS only")
+	}
+	path := filepath.Join(t.TempDir(), "broken")
+	// Written directly, without the guard, so the first run fails.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var tb fakeTB
+	warm(&tb, path)
+	if !strings.Contains(tb.failed, "exited 3 on its first run") {
+		t.Fatalf("failure: %q", tb.failed)
 	}
 }

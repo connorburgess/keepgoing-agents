@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,7 +30,14 @@ type Adapter struct {
 	// activeChildIDs is the verified active children of the last childWork
 	// call, kept beside its count for the run graph.
 	activeChildIDs []string
+	// cliPath is the absolute path of the bb executable this adapter last
+	// started: where the system found the configured command.
+	cliPath string
 }
+
+// CLIPath implements adapter.CLIPather: the absolute path of the bb
+// executable this adapter last started, or "" before it started one.
+func (a *Adapter) CLIPath() string { return a.cliPath }
 
 // New returns an adapter for the thread.
 func New(cfg config.BB) *Adapter {
@@ -458,6 +466,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
+	if cmd.Process != nil {
+		// It started: cmd.Path is the executable the system resolved. A
+		// structural fact about this machine, nothing read from its output.
+		if p, perr := filepath.Abs(cmd.Path); perr == nil {
+			a.cliPath = p
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.

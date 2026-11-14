@@ -9,7 +9,7 @@ version: 1
 loop:
   name: example-loop
   state_dir: ~/.local/state/keepgoing/example-loop
-  adapter: bb                     # bb | process | claude | codex | cursor (unreleased)
+  adapter: bb                     # bb | process | claude | codex | cursor, custom (unreleased)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
   bb: {thread: thr_example123}
@@ -30,13 +30,14 @@ loop:
 | --- | --- | --- |
 | `name` | yes | Lowercase letters, digits, and hyphens. It appears in every event and report. |
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
-| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor`, with the matching block below. |
+| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
-| `probe` | for switch-back | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
+| `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
+| `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
 
 ## bb
 
@@ -205,8 +206,12 @@ A saved session identity is checked again each time it is read. A value that is 
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
 | `max_nudges` | `3` | Nudge attempts a stalled session gets, delivered or not, before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
+| `flag_after_sends` | `6` | Messages sent with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag): wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back, each by the send's own result, and turn retries the provider accepted. `0` turns this fact off. A whole number from 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. A binary from before this key refuses a configuration that sets it. |
+| `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. A whole number from 0 to 1000. A binary from before this key refuses a configuration that sets it. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
+
+Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
 Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
 
@@ -234,11 +239,55 @@ loop:
     max_sends: 20
 ```
 
-At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns and downtime. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran (beyond one usual interval) or in which the connectivity check found the network down. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
 
 ## window
 
-This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start (or the same) runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+
+Times are read on the local clock in `tz`, including on the days it changes for daylight saving: a `22:00` start opens at 22:00 local time whatever the offset. Each time means the first moment on its day at which the local clock shows that time or later:
+
+- A time the clock skips when it is set forward (for example `02:30` in New York on Sun 10 Mar 2030, when 01:59 is followed by 03:00) opens or closes the window at that jump. A span that lies wholly inside the skipped time is empty that day.
+- A time the clock shows twice when it is set back (for example `01:30` in New York on Sun 3 Nov 2030) means its first occurrence. A span ending at `01:30` is closed through the repeated hour; a span starting at `01:30` stays open through it.
+
+Unreleased source; before, a span's times on a day the clock changed were counted in hours from midnight, so every edge after the change was off by the size of the change.
+
+## timing
+
+Unreleased source, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+
+```yaml
+loop:
+  provider: claude-code          # or set loop.probe
+  fallbacks: fallbacks.yaml
+  probe: {model: example-small}  # optional; the probe's model, see below
+  timing:
+    enabled: true
+    windows: [seven_day]         # the provider's window keys timing acts on
+    near_reset: 6h               # default
+    probe_every: 12h             # default
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turns timing on. Each probe is a small paid request. |
+| `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
+| `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
+| `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
+
+Timing needs `loop.fallbacks` (its `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
+
+When timing probes run:
+
+- Every `probe_every`, counted from the last scheduled probe of the first route or its last passing probe of any tier.
+- Once more for each window instance when a named window's reset, from the latest reading, comes within `near_reset`, unless that reading was already taken that close to the reset. The reset time is known from an earlier reading, so this needs no extra probing to time.
+- Only where scheduled probes run: inside the loop's `window`, never on a dry run, and not when the network is down or the check has no time left. They count against the first route's own `probe.daily_cap`, and none runs when the fallbacks file sets `probe.scheduled_disabled` (`validate` warns).
+
+**What it costs.** `validate`, `status`, `doctor` and `fallbacks check --dry-run` state it, for example: `about 14 small paid probes a week for this allowance at a 12h cadence, plus one as each named window (seven_day) nears its reset, never above probe.daily_cap (6 a day); on example-small, the probe model`. The probes use `loop.probe.model` when set, otherwise the route's own model.
+
+**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is a decision for the step design (U4), with its cost stated.
+
+**Where the readings come from.** A probe runs the CLI on this computer with its sign-in, or `loop.probe.env`. For a loop on a BB thread that may not be the account BB uses for the thread; `validate` and `doctor` warn whenever timing is on for a BB loop.
 
 ## errors
 
@@ -262,7 +311,7 @@ The re-prompt budget resets when the session is seen idle, or when it is active 
 
 ## network
 
-The connectivity check made before an error re-prompt, a handoff and fallback probes. See [network outages](operations.md#network-outages).
+The connectivity check made before an error re-prompt, a handoff, a stall nudge and fallback probes, among the situations listed under network outages. See [network outages](operations.md#network-outages).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -283,7 +332,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait` and `child_error` are unreleased source) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source; `check_gap`, also unreleased, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
@@ -297,4 +346,4 @@ Each tick prints one JSON line:
 {"at":"2026-11-09T12:00:00Z","loop":"example-loop","target":"primary","control":"enabled","state":"error","errorClass":"rate_limit","action":"handoff","reason":"error: rate_limit","window":"no window configured","handoff":{"from":"primary","to":"codex-thread","reason":"rate_limit","tried":["codex-thread"]}}
 ```
 
-`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, or `handoff`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.

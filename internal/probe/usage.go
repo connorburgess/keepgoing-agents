@@ -201,3 +201,7 @@ func CodexUsage(l runner.CodexLimits) []UsageWindow {
 	}
 	return boundWindows(windows)
 }
+
+// UsageToken reports whether s is a short identifier as stored readings
+// require, so that other records of readings apply the same rule.
+func UsageToken(s string) (string, bool) { return usageToken(s) }

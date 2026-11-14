@@ -111,6 +111,20 @@
               "minimum": 1,
               "default": 3,
               "description": "nudges a stalled session gets before the loop asks a person"
+            },
+            "flag_after_sends": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 6,
+              "description": "sends with no recorded change to the repositories that raise the panel's no-progress flag; 0 is off"
+            },
+            "flag_after_errors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 4,
+              "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
             }
           }
         },
@@ -225,6 +239,7 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "check_gap",
                   "network_wait",
                   "child_error",
                   "test"
@@ -309,6 +324,35 @@
           },
           "description": "return to the primary after a handoff once its limit resets and an exact probe passes"
         },
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "probe the first route on a schedule to collect usage readings of its allowance; each probe is a small paid request"
+            },
+            "windows": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+              },
+              "description": "the provider's usage window keys timing acts on, for example seven_day"
+            },
+            "near_reset": {
+              "$ref": "#/$defs/duration",
+              "description": "how close to a named window's reset counts as near; default 6h"
+            },
+            "probe_every": {
+              "$ref": "#/$defs/duration",
+              "description": "interval between timing probes of the first route; default 12h"
+            }
+          },
+          "description": "usage-aware timing, off by default; until the step decision exists it only collects readings and never changes routes"
+        },
         "probe": {
           "type": "object",
           "additionalProperties": false,
@@ -383,6 +427,13 @@
                 "const": ""
               },
               "switch_back": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              },
+              "timing": {
                 "properties": {
                   "enabled": {
                     "const": false
