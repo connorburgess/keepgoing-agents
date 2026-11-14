@@ -314,7 +314,7 @@ func panelPrivateDirectory(path string, bad error) (string, error) {
 func readPanelRecord(dir string) (panelRecord, bool) {
 	var rec panelRecord
 	path := filepath.Join(dir, panelRecordName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		return rec, false
 	}

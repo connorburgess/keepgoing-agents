@@ -70,7 +70,7 @@ func saveCurrentRoute(stateDir string, rt config.Route) error {
 		return errors.New("current route record could not be written")
 	}
 	path := filepath.Join(stateDir, CurrentRouteName)
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, raw) {
+	if old, err := snapshot.ReadFile(path); err == nil && bytes.Equal(old, raw) {
 		return nil
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
