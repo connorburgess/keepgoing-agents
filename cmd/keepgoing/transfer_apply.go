@@ -15,6 +15,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -24,7 +25,7 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 	if err := cfg.CheckSources(); err != nil {
 		return err
 	}
-	if info, err := os.Lstat(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := snapshot.LstatRecord(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("control.json must not be a symlink; use the original state directory")
 	}
 	var ctl control.File
@@ -328,14 +329,14 @@ func resetTransferState(dir string) error {
 		}
 	}
 	path := filepath.Join(target, "bb-cursor.json")
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil || !info.Mode().IsRegular() {
 		return errors.New("primary cursor unavailable")
 	}
-	if os.Remove(path) != nil {
+	if snapshot.Remove(path) != nil {
 		return errors.New("could not clear primary cursor")
 	}
 	return nil

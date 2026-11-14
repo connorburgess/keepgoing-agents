@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // The background panel server. It serves the same page and data endpoint as
@@ -666,7 +667,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	defer func() {
 		// Leave a record another server has since written.
 		if cur, ok := readPanelRecord(dir); ok && cur.Instance == state.instance {
-			_ = os.Remove(filepath.Join(dir, panelRecordName))
+			_ = snapshot.Remove(filepath.Join(dir, panelRecordName))
 		}
 	}()
 	go func() {

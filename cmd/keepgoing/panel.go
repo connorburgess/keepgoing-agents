@@ -595,7 +595,7 @@ func panelEnsure(ctx context.Context, o panelOptions) (panelRecord, bool, error)
 // panelRemoveLeftovers deletes the runtime files of a server that is gone.
 // Called only when nothing holds the server's lock.
 func panelRemoveLeftovers(dir string) {
-	_ = os.Remove(filepath.Join(dir, panelRecordName))
+	_ = snapshot.Remove(filepath.Join(dir, panelRecordName))
 	_ = os.Remove(filepath.Join(dir, panelSocketName))
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {

@@ -134,7 +134,7 @@ func (a *Adapter) saveLanes(lanes map[string]laneSummary) bool {
 func (a *Adapter) ForgetLanes() {
 	a.lanes, a.laneKey = nil, nil
 	if p := a.lanesPath(); p != "" {
-		os.Remove(p)
+		snapshot.Remove(p)
 		os.Remove(p + ".tmp")
 	}
 }

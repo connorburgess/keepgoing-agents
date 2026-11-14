@@ -29,10 +29,11 @@ type snapshotRenameInfo struct {
 // ReplaceStrict moves a closed staging file over target. On Windows, MoveFileEx
 // cannot replace an open destination, even with DELETE sharing, so this uses a
 // POSIX-semantics rename: Windows 10 1709+ and a filesystem supporting it are
-// required. Unsupported operations fail; no remove-first, legacy rename or
-// retry fallback is safe to advertise as retaining snapshots with the same
-// semantics. A reader that opened target without DELETE sharing, which Open
-// never does, still blocks replacement.
+// required, and unsupported operations fail; no remove-first or legacy rename
+// fallback is safe to advertise as retaining snapshots with the same
+// semantics. A rename refused because another program holds one of the files
+// for a moment is retried for up to retryBudget (see replaceSnapshotWith).
+// Before the first rename of target it creates target's marker (OpenRecord).
 func ReplaceStrict(source, target string) error {
 	return replaceSnapshotWith(source, target, setSnapshotRename, time.Sleep)
 }
@@ -41,18 +42,24 @@ func ReplaceStrict(source, target string) error {
 // reports that it does not support the POSIX-semantics rename, it uses the
 // ordinary rename that these records used before. That keeps a volume such as
 // exFAT or some network shares working, at the old cost: there, a reader
-// holding target open blocks the replacement. A sharing violation or access
-// denial is never retried this way.
+// holding target open can stop the replacement, and that rename is retried
+// the same bounded way. A sharing violation or access denial never falls
+// back.
 func Replace(source, target string) error {
 	return replaceWithFallback(source, target, setSnapshotRename, time.Sleep)
 }
 
 func replaceWithFallback(source, target string, set func(syscall.Handle, *snapshotRenameInfo, uint32) error, sleep func(time.Duration)) error {
-	err := replaceSnapshotWith(source, target, set, sleep)
+	marker, err := holdMarker(target)
+	if err != nil {
+		return err
+	}
+	defer marker.Close()
+	err = renameSnapshotWith(source, target, set, sleep)
 	if err == nil || !renameUnsupported(err) {
 		return err
 	}
-	return os.Rename(source, target)
+	return retryReplacing(func() error { return os.Rename(source, target) }, heldByAnother, sleep)
 }
 
 // renameUnsupported classifies by Windows error code, never by message text.
@@ -76,6 +83,15 @@ func renameUnsupported(err error) bool {
 // rename either happens whole or not at all, and one still refused after
 // the bound fails, closed, with that error, leaving both files as they were.
 func replaceSnapshotWith(source, target string, set func(syscall.Handle, *snapshotRenameInfo, uint32) error, sleep func(time.Duration)) error {
+	marker, err := holdMarker(target)
+	if err != nil {
+		return err
+	}
+	defer marker.Close()
+	return renameSnapshotWith(source, target, set, sleep)
+}
+
+func renameSnapshotWith(source, target string, set func(syscall.Handle, *snapshotRenameInfo, uint32) error, sleep func(time.Duration)) error {
 	wrap := func(err error) error { return &os.LinkError{Op: "rename", Old: source, New: target, Err: err} }
 	from, err := snapshotWindowsPath(source)
 	if err != nil {

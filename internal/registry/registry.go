@@ -79,7 +79,11 @@ func Load(dir string) (File, error) {
 		return File{}, ErrInvalid
 	}
 	path := filepath.Join(dir, FileName)
-	if privateFile(path) != nil {
+	info, err := snapshot.LstatRecord(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return File{}, ErrInvalid
 	}
 	f, err := snapshot.OpenRecord(path)
@@ -263,8 +267,10 @@ func WithEntry(dir, id string, fn func(Entry) error) error {
 // safe to repeat: a second run finds nothing left to rewrite. A registry that
 // does not exist is left absent. With dryRun it only counts.
 func Rebase(dir string, rewrite func(string) string, dryRun bool) (int, error) {
-	if _, err := os.Lstat(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
+	if _, err := snapshot.LstatRecord(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
 		return 0, nil
+	} else if err != nil {
+		return 0, ErrInvalid
 	}
 	plan := func(f *File) (int, error) {
 		changed := 0

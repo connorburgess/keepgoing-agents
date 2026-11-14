@@ -26,6 +26,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -403,7 +404,7 @@ func controlSignature(stateDir string) string {
 
 func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, error)) string {
 	path := filepath.Join(stateDir, control.FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if err != nil {
 		return "missing"
 	}

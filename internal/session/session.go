@@ -320,7 +320,7 @@ func (c *Claim) Release() {
 	if c == nil || c.lk == nil {
 		return
 	}
-	_ = os.Remove(c.holder)
+	_ = snapshot.Remove(c.holder)
 	_ = c.lk.Release()
 	c.lk = nil
 }
@@ -484,6 +484,8 @@ func recorded(dir string, id Identity) ([]Supervisor, error) {
 	path := filepath.Join(dir, id.Key()+".json")
 	if _, err := snapshot.LstatRecord(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("the session record of %s cannot be read", id.Describe())
 	}
 	var r record
 	if err := readJSON(path, maxRecordBytes, &r); err != nil {

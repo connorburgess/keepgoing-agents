@@ -150,7 +150,12 @@ jobs:
         run: go test -v ./cmd/keepgoing -run '^TestDaemonWait' -count=1
       - name: Verify control snapshots permit atomic replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -race -v ./internal/control ./internal/snapshot ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
+        run: go test -race -v ./internal/control ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
+      - name: Verify the snapshot package on Windows
+        # The whole package: every reader and writer rule of record files is
+        # here, and a test that a name filter misses would never run.
+        if: steps.scope.outputs.scope != 'docs'
+        run: go test -race -v ./internal/snapshot -count=1
       - name: Verify the run reference graph store and replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/rungraph -count=1

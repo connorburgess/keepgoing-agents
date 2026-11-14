@@ -22,3 +22,6 @@ func Lstat(path string) (os.FileInfo, error) { return os.Lstat(path) }
 
 // LstatRecord is os.Lstat. Only on Windows does it also wait out "not found".
 func LstatRecord(path string) (os.FileInfo, error) { return os.Lstat(path) }
+
+// Remove deletes a record. On Windows it also deletes the record's marker.
+func Remove(path string) error { return os.Remove(path) }

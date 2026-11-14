@@ -165,10 +165,14 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 		return File{}, err
 	}
 	defer l.Release()
-	if err := CheckControlPath(stateDir); err != nil {
+	missing, err := checkControlPath(stateDir)
+	if err != nil {
 		return File{}, err
 	}
-	f, err := Load(stateDir)
+	var f File
+	if !missing {
+		f, err = Load(stateDir)
+	}
 	if err != nil {
 		return f, err
 	}
@@ -181,17 +185,22 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
+	_, err := checkControlPath(stateDir)
+	return err
+}
+
+func checkControlPath(stateDir string) (bool, error) {
 	info, err := snapshot.LstatRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("control.json must not be a symlink; use the original state directory")
+		return false, errors.New("control.json must not be a symlink; use the original state directory")
 	}
-	return nil
+	return false, nil
 }
 
 // writeAtomic syncs before publishing, as the send ledger does: a hold must not

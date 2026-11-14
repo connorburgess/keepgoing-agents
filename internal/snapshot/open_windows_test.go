@@ -4,10 +4,45 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// replacementInProgress is the rule of a record whose marker exists: a
+// refusal or "not found" is retried.
+func replacementInProgress(err error) bool {
+	var code syscall.Errno
+	return heldByAnother(err) || (errors.As(err, &code) && code == syscall.ERROR_FILE_NOT_FOUND)
+}
+
+// delaysUntilBudget are the waits retryReplacing makes before giving up:
+// doubling from 2 ms, capped at maxRetryDelay, until retryBudget is slept.
+func delaysUntilBudget() []time.Duration {
+	var out []time.Duration
+	d, slept := 2*time.Millisecond, time.Duration(0)
+	for slept < retryBudget {
+		out = append(out, d)
+		slept += d
+		d = min(d*2, maxRetryDelay)
+	}
+	return out
+}
+
+// The waits double from 2 ms and are capped at 25 ms, and stop once 250 ms
+// has been slept: 13 waits, 14 tries.
+func TestWindowsRetryWaitsAreCappedAndBounded(t *testing.T) {
+	want := []time.Duration{2, 4, 8, 16, 25, 25, 25, 25, 25, 25, 25, 25, 25}
+	for i := range want {
+		want[i] *= time.Millisecond
+	}
+	var got []time.Duration
+	err := retryReplacing(func() error { return syscall.ERROR_ACCESS_DENIED }, heldByAnother, func(d time.Duration) { got = append(got, d) })
+	if !errors.Is(err, syscall.ERROR_ACCESS_DENIED) || !slices.Equal(got, want) || !slices.Equal(delaysUntilBudget(), want) {
+		t.Fatalf("waits %v, want %v (%v)", got, want, err)
+	}
+}
 
 // A reader that arrives while the file is being replaced is refused briefly,
 // or told the file is not there. Only those answers are retried, and only
@@ -84,8 +119,8 @@ func TestWindowsLstatDescribesWhatIsThere(t *testing.T) {
 	if _, err := LstatRecord(filepath.Join(dir, "missing.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing: %v", err)
 	}
-	if took := time.Since(start); took < retryBudget {
-		t.Fatalf("a missing record was believed after %s, before the %s budget", took, retryBudget)
+	if took := time.Since(start); took >= quick {
+		t.Fatalf("a never-written record waited %s", took)
 	}
 	start = time.Now()
 	if _, err := Lstat(filepath.Join(dir, "missing.json")); !errors.Is(err, os.ErrNotExist) {

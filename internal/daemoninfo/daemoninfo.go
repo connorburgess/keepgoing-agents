@@ -178,7 +178,7 @@ func (s *Server) Close() {
 	<-s.done
 	// Preserve a record replaced by another writer instead of deleting it.
 	if ep, err := readEndpoint(s.path); err == nil && ep == s.endpoint {
-		_ = os.Remove(s.path)
+		_ = snapshot.Remove(s.path)
 	}
 }
 
@@ -251,7 +251,7 @@ func sign(key, nonce string, b []byte) string {
 
 func readEndpoint(path string) (endpoint, error) {
 	var ep endpoint
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if err != nil {
 		return ep, err
 	}

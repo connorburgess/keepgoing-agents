@@ -42,7 +42,11 @@ func TestWindowsControlSnapshotRenameFailurePreservesFiles(t *testing.T) {
 			// A rename refused while another program holds a file is tried
 			// again until the bound; anything else is not retried.
 			held := code == syscall.ERROR_ACCESS_DENIED || code == 32
-			if !errors.Is(err, code) || (held && (calls < 2 || slept < retryBudget || slept >= retryBudget+maxRetryDelay)) || (!held && calls != 1) {
+			want := 1
+			if held {
+				want = len(delaysUntilBudget()) + 1
+			}
+			if !errors.Is(err, code) || calls != want || (held && (slept < retryBudget || slept >= retryBudget+maxRetryDelay)) {
 				t.Fatalf("rename error/calls/slept: %v / %d / %s", err, calls, slept)
 			}
 			for path, want := range map[string]string{source: "new", target: "old"} {
@@ -102,7 +106,11 @@ func TestWindowsControlSnapshotReplaceFallsBackOnlyWhenUnsupported(t *testing.T)
 				return tc.code
 			}, func(time.Duration) {})
 			held := tc.code == syscall.ERROR_ACCESS_DENIED || tc.code == 32
-			if (held && calls < 2) || (!held && calls != 1) {
+			want := 1
+			if held {
+				want = len(delaysUntilBudget()) + 1
+			}
+			if calls != want {
 				t.Fatalf("rename attempts: %d", calls)
 			}
 			got, readErr := os.ReadFile(target)
@@ -152,8 +160,12 @@ func TestWindowsReplaceWaitsOutAFileHeldForAMoment(t *testing.T) {
 			t.Run(name+"/"+code.Error(), func(t *testing.T) {
 				dir := t.TempDir()
 				source, target := filepath.Join(dir, "staging"), filepath.Join(dir, "control.json")
-				os.WriteFile(source, []byte("new"), 0o600)
-				os.WriteFile(target, []byte("old"), 0o600)
+				if err := os.WriteFile(source, []byte("new"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 				calls := 0
 				err := replace(source, target, func(h syscall.Handle, info *snapshotRenameInfo, size uint32) error {
 					if calls++; calls <= 2 {

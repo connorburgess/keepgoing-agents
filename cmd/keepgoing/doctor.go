@@ -433,7 +433,18 @@ func doctorHeartbeat(r *doctorReport, st state.File, ctl control.File, controlKn
 }
 
 func doctorFile(r *doctorReport, id, path string, directory bool) {
-	info, err := os.Stat(path)
+	var info os.FileInfo
+	var err error
+	if directory {
+		info, err = os.Stat(path)
+	} else {
+		info, err = snapshot.Lstat(path)
+		// Configuration and task paths may be links. Only their referent needs
+		// following; runtime records use the shared lookup above.
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			info, err = os.Stat(path)
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) && directory {
 		r.add(id, "unavailable", "Runtime directory does not exist yet.", "It is created by control commands or ticks; doctor leaves it untouched.")
 		return
