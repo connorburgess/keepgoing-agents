@@ -54,9 +54,42 @@ func openWithRetry(open func() (syscall.Handle, error), sleep func(time.Duration
 }
 
 // replacementInProgress classifies by Windows error code, never by text.
+// replacementInProgress reports the answers Windows can give a reader that
+// arrives while another process replaces the file: access denied, a sharing
+// violation, or the file not found at all. A record a reader finds missing
+// is otherwise believed absent and read as new, so "not found" is retried
+// the same bounded way before it is believed (CI saw an existing state.json
+// reported missing during its replacement). A missing directory is not: no
+// replacement makes the directory vanish.
 func replacementInProgress(err error) bool {
 	var code syscall.Errno
-	return errors.As(err, &code) && (code == syscall.ERROR_ACCESS_DENIED || code == 32 /* ERROR_SHARING_VIOLATION */)
+	return errors.As(err, &code) && (code == syscall.ERROR_ACCESS_DENIED || code == 32 /* ERROR_SHARING_VIOLATION */ || code == syscall.ERROR_FILE_NOT_FOUND)
+}
+
+// Lstat is os.Lstat for a record that is replaced by rename. A "not found"
+// answer is asked again, with openWithRetry's backoff (about 30 ms in all),
+// before it is returned, so an existing record is not taken for a missing
+// one while it is being replaced.
+func Lstat(path string) (os.FileInfo, error) {
+	return lstatWithRetry(func() (os.FileInfo, error) { return os.Lstat(path) }, time.Sleep)
+}
+
+func lstatWithRetry(lstat func() (os.FileInfo, error), sleep func(time.Duration)) (os.FileInfo, error) {
+	delay := 2 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		info, err := lstat()
+		if err == nil || attempt == openAttempts || !missingFile(err) {
+			return info, err
+		}
+		sleep(delay)
+		delay *= 2
+	}
+}
+
+// missingFile is a "not found" for the file itself, not for its directory.
+func missingFile(err error) bool {
+	var code syscall.Errno
+	return errors.As(err, &code) && code == syscall.ERROR_FILE_NOT_FOUND
 }
 
 func snapshotWindowsPath(path string) ([]uint16, error) {
