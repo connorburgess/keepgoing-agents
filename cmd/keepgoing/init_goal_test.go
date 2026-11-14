@@ -140,7 +140,7 @@ func TestInitGoalWizardAndExplicitOptOut(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("wizard: %d %s", code, stderr)
 			}
-			cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+			cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 			if err != nil || cfg.Loop.PromptGoal != (answer == "") {
 				t.Fatal("wizard goal choice", err)
 			}

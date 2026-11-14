@@ -147,7 +147,7 @@ type timelineSummary struct {
 func timelineCommand(e env, args []string) int {
 	fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Never echo parser/config values in this redacted view.
-	path := fs.String("c", "keepgoing.yaml", "configuration used only to locate state_dir")
+	path := fs.String("c", "", configFlagHelp("configuration used only to locate state_dir"))
 	dir := fs.String("state-dir", "", "read this directory without loading configuration")
 	asJSON := fs.Bool("json", false, "print the versioned diagnostic report")
 	limit := fs.Int("limit", 40, "newest events to display (1-320); summaries use all retained evidence")
@@ -179,6 +179,9 @@ func timelineCommand(e env, args []string) int {
 		return exitUsage
 	}
 	if *dir == "" {
+		if !configDefault(e, "timeline", fs, path) {
+			return exitUsage
+		}
 		cfg, err := config.Load(*path)
 		if err != nil {
 			e.errf("timeline: configuration unavailable; repair it or select --state-dir to inspect private records directly")

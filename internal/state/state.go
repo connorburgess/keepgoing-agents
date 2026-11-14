@@ -508,6 +508,16 @@ type Check struct {
 	Reason                  string `json:"reason"`
 	Outcome                 string `json:"outcome"` // succeeded, failed, or dry_run
 	DryRun                  bool   `json:"dryRun,omitempty"`
+	// ConfigUnavailable is set on a stop carried out from the last
+	// configuration a daemon read, because a file it was read from could no
+	// longer be read.
+	ConfigUnavailable *ConfigUnavailable `json:"configUnavailable,omitempty"`
+}
+
+// ConfigUnavailable says a check ran from the last configuration read, at
+// LastReadAt, because a file it was read from could no longer be read.
+type ConfigUnavailable struct {
+	LastReadAt time.Time `json:"lastReadAt"`
 }
 
 // Target returns the active target id, defaulting to primary.

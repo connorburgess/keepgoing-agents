@@ -144,7 +144,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		}
 		return printInitJSON(e, o, cfg, goal)
 	}
-	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, "keepgoing.yaml"), cfg.Loop.StateDir)
+	fmt.Fprintf(e.stdout, "Loop: %s\nTarget: %s\nProvider: %s; quota group: %s\nProject: %s\nConfiguration: %s\nState: %s\n", o.name, cfg.Loop.Agent.Describe(), cfg.Loop.Provider, cfg.Loop.Group, o.project, filepath.Join(o.directory, config.FileName), cfg.Loop.StateDir)
 	fmt.Fprintln(e.stdout, initBindingNotice(o))
 	if o.agent == "cursor" {
 		fmt.Fprintln(e.stdout, initCursorNotice)
@@ -189,7 +189,7 @@ func setupLoop(e env, args []string, input io.Reader, lookPath func(string) (str
 		e.errf("init: %v", err)
 		return exitFailed
 	}
-	cfgPath := filepath.Join(o.directory, "keepgoing.yaml")
+	cfgPath := filepath.Join(o.directory, config.FileName)
 	if goal != nil {
 		printGoal(e, goal.Summary(), false)
 	}
@@ -323,7 +323,7 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 			if applies == 1 {
 				verb = "applies"
 			}
-			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d routes %s to this loop. (yes/no)", applies, total, verb), "yes")
+			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d switched-on routes %s to this loop. (yes/no)", applies, total, verb), "yes")
 			if err != nil {
 				return err
 			}
@@ -593,11 +593,11 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		cfg.FallbackSet, cfg.RouteList.Skipped = standard.Resolve(cfg.Loop)
 		cfg.RouteList.Source = config.RoutesStandard
 	}
-	files["keepgoing.yaml"] = b
-	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, "keepgoing.yaml")))
+	files[config.FileName] = b
+	files["prompt.md"] = []byte(initPrompt(o.task, filepath.Join(o.directory, config.FileName)))
 	if o.withGoal {
 		files["task.md"] = []byte(o.task + "\n")
-		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, "keepgoing.yaml")))
+		files["prompt.md"] = []byte(initGoalPrompt(filepath.Join(o.directory, config.FileName)))
 	}
 	return files, cfg, nil
 }
@@ -664,7 +664,7 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 func initCanFollow(agent string) bool { return agent == "bb" || agent == "claude" || agent == "codex" }
 
 // initStandardOffer is how many of the standard list's routes would apply
-// to the loop being set up, and how many it has. Nothing is offered when
+// to the loop being set up, and how many of its routes are switched on. Nothing is offered when
 // none would apply, or when the loop cannot be described yet.
 func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (int, int) {
 	path, err := config.StandardRoutesPath()
@@ -672,12 +672,12 @@ func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (i
 		return 0, 0
 	}
 	r, err := config.LoadRoutes(path)
-	if err != nil || len(r.Routes) == 0 {
+	if err != nil || switchedOn(r) == 0 {
 		return 0, 0
 	}
 	a, err := initAgent(o.agent, o.account, o.group, o.model, o.project, lookPath)
 	if err != nil {
-		return 0, len(r.Routes)
+		return 0, switchedOn(r)
 	}
 	if a.BB != nil {
 		a.BB.Thread, a.Provider = strings.TrimSpace(o.thread), strings.TrimSpace(o.provider)
@@ -686,7 +686,7 @@ func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (i
 		}
 	}
 	fb, _ := r.Resolve(config.Loop{Name: o.name, Agent: a})
-	return len(candidateIDs(fb)), len(r.Routes)
+	return len(candidateIDs(fb)), switchedOn(r)
 }
 
 // standardRoutesWritten is the number of routes in the standard list, when
@@ -805,7 +805,7 @@ func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*co
 			return nil, err
 		}
 		defer l.Release()
-		cfg, err := config.Load(filepath.Join(dir, "keepgoing.yaml"))
+		cfg, err := config.Load(filepath.Join(dir, config.FileName))
 		if err != nil || cfg.Loop.StateDir != stateDir || !cfg.Loop.PromptGoal {
 			return nil, errors.New("goal setup configuration changed or unavailable")
 		}

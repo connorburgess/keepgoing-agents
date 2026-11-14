@@ -272,7 +272,7 @@ var Matrix = []Behaviour{
 		Cells: merge(map[string]Cell{
 			"bb":      {Partial, Live, "Readings come from the candidate's provider probe. BB's own rate-limit events supply reset times only.", []Ref{d("docs/fallbacks.md"), d(providers)}},
 			"claude":  {Yes, Live, "One real manual probe recorded a reading.", []Ref{d(providers), t("internal/probe/probe_test.go", "TestClaudeProbeJudgesStreamAndPlainOutputAlike")}},
-			"codex":   {Partial, Live, "A reading only when the existing limit read runs; none on a healthy probe.", []Ref{t("internal/probe/probe_test.go", "TestCodexProbeRecordsUsageOnlyFromTheExistingLimitRead")}},
+			"codex":   {Partial, Live, "Structured usage is collected after successful probes and unknown failures, without another model call. Successful-probe collection is unreleased and fixture-tested; the failed-probe limit lookup has live evidence.", []Ref{t("internal/probe/probe_test.go", "TestCodexProbeRecordsUsageFromSuccessfulAndUnknownProbes")}},
 			"cursor":  {Missing, None, "No probe contract.", nil},
 			"process": {Missing, None, "A command probe reports health only.", nil},
 		})},

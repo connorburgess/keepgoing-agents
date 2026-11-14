@@ -77,20 +77,22 @@ keepgoing init
 3. Run the exact `doctor` command printed by setup. Review its warnings and unavailable checks; credential presence does not establish usable quota.
 4. Run the printed `start --foreground` command to enable and supervise the loop. Use `--background` to detach instead. Background mode installs no service and does not restart after a crash or reboot.
 
-Use the generated config path for subsequent commands. For example, replacing this fictional path with yours:
+Use the generated config path for subsequent commands. A build from `main` names it `looptender.yaml`; a released CLI (v0.2.0 and earlier, which Homebrew and `go install` give today) writes `keepgoing.yaml`, which every build reads the same way. For example, replacing this fictional path with yours:
 
 ```sh
-keepgoing status -c /private/example-loop/keepgoing.yaml
-keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
-keepgoing resume -c /private/example-loop/keepgoing.yaml
-keepgoing stop -c /private/example-loop/keepgoing.yaml
-keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
-keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
+keepgoing status -c /private/example-loop/looptender.yaml
+keepgoing pause -c /private/example-loop/looptender.yaml --note "reviewing by hand"
+keepgoing resume -c /private/example-loop/looptender.yaml
+keepgoing stop -c /private/example-loop/looptender.yaml
+keepgoing stop --lanes --immediately -c /private/example-loop/looptender.yaml
+keepgoing complete -c /private/example-loop/looptender.yaml --note "Task verified"
 ```
 
 A plain `stop` is carried out by the next check and stops the supervised conversation only; `--lanes` also stops the conversations it started, and theirs, and `--immediately` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
 
 In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
+
+In unreleased source, a running daemon can carry out a saved stop from its last loaded configuration when a source file becomes unavailable, with the same ownership, transfer and session checks. Nothing that continues work uses that configuration. Stop supervision before renaming or moving its configuration file; service restarts and external ticks have no retained configuration. See [configuration file recovery](docs/operations.md#when-the-configuration-file-is-unavailable).
 
 keepgoing also checks control-file contents between daemon passes, so equal file size and modification time cannot hide a pause or stop. On Windows 10 version 1709 or newer, its control readers and writer, and those of `state.json` and the other records a tick replaces, support replacement while a snapshot is open. If a `state.json` save still fails, the tick has already acted and the next one can repeat a stop or prompt; the same applies on other systems. Control/goal writes require a filesystem supporting POSIX-style rename and fail if unsupported; the other records fall back to an ordinary rename there. v0.1.5 detects those changes through file metadata alone and lacks this reader-sharing fix. Unreleased source adds private `.present` marker files on Windows so an existing record cannot be mistaken for a new one during replacement, while never-written records return immediately. Concurrent older writers are not covered; deliberate record deletion must remove its marker too. Scheduler-driven ticks already reload controls on every invocation; see [control detection](docs/operations.md#control-change-detection).
 
@@ -119,10 +121,10 @@ A loop can name other agents to move to when its current one reports a usage lim
 Set fallbacks up at creation with `keepgoing init` (wizard, or repeated `--fallback`). To add one to an existing loop, there is a guided command:
 
 ```sh
-keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
+keepgoing fallbacks add -c /private/example-loop/looptender.yaml
 ```
 
-It looks up installed agent CLIs without running them, asks for the provider, account directory or BB thread, quota group and model, previews the candidate and the resulting handoff order, and writes only after confirmation. It leaves handoff off unless you turn it on, and refuses a candidate on the same login and model as an existing target. Flags with `--non-interactive`, `--dry-run` and `--json` script the same path. `fallbacks handoff on|off`, `fallbacks move` and `fallbacks remove` change an existing setup the same way: preview, then confirm.
+It looks up installed agent CLIs without running them, asks for the provider, account directory or BB thread, quota group and model, previews the candidate and the resulting handoff order, and writes only after confirmation. It leaves handoff off unless you turn it on, and refuses a candidate on the same login and model as an existing target. For a loop with no other routes it first offers to follow your [standard route list](docs/routes.md) instead, which turns handoff on for rate limits; only a typed yes takes it (unreleased). Flags with `--non-interactive`, `--dry-run` and `--json` script the same path. `fallbacks handoff on|off`, `fallbacks move` and `fallbacks remove` change an existing setup the same way: preview, then confirm.
 
 What is established: fallback files, probes, redundancy, handoff and `init --fallback` for headless Claude Code and Codex are covered by offline tests with fake CLIs. `fallbacks add`, new in v0.2.0, is likewise tested only with fakes. A handoff between real, separately billed accounts has not been run end to end. The command also adds an existing BB thread, including the loop's own conversation on a second model; it cannot see which account BB uses for a thread, and says so in the preview. Cursor cannot be a fallback; process candidates need a hand-written entry. See [fallbacks](docs/fallbacks.md) and [account setup](docs/setup.md#existing-accounts-and-ordered-fallbacks).
 
@@ -138,7 +140,7 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 
 ### The keepgoing panel: one page for every loop
 
-`keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its last decision, any hold, its preferred routes in order with the one its records name as current, each route's readiness and usage reading, a usage limit it moved off with the reported reset, its lanes, recent history and limits. A Routes view shows each account's recorded allowance. The Versions view lists where each keepgoing build runs on this computer (the panel, each loop's checks, daemon and service, and the BB plugin and macOS menu), against the newest release seen here, without running any of them. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. In v0.2.0 and tested with fixtures only; it never changes anything; pausing, stopping and resuming from the page needs `keepgoing panel --allow-changes`, and configuration from the page is planned. See [the panel](docs/dock.md).
+`keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its last decision, any hold, its preferred routes in order with the one its records name as current, each route's readiness and usage reading, a usage limit it moved off with the reported reset, its lanes, recent history and limits. A Routes view shows each account's recorded allowance. The Versions view lists where each keepgoing build runs on this computer (the panel, each loop's checks, daemon and service, and the BB plugin and macOS menu), against the newest release seen here, without running any of them. Missing or old evidence is shown as unknown or stale. In unreleased source, successful Codex probes also collect structured account usage without another model call; a failed usage lookup leaves probe health unchanged. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. In v0.2.0 and tested with fixtures only; it never changes anything; pausing, stopping and resuming from the page needs `keepgoing panel --allow-changes`, and configuration from the page is planned. See [the panel](docs/dock.md).
 
 `keepgoing panel` opens that page in your browser with one command and nothing to copy: it starts the panel's background process, for this computer only, when none is running, opens the page through a single-use address that becomes a session cookie, and the panel stops by itself when unused ([details](docs/dock.md#opening-it-with-one-command-keepgoing-panel)). Started with `--allow-changes`, it also lets a loop's page pause, stop and resume it, each after a review and a confirmation ([details](docs/dock.md#changes-from-the-page-keepgoing-panel---allow-changes)). `keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its preferred routes in order (`primary`, then each fallback), the one its records name as current, each route's readiness and usage reading, its lanes, last check and limits. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. In v0.2.0 and tested with fixtures only; configuration from the page is planned. See [the panel](docs/dock.md).
 
@@ -183,7 +185,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
-- [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Reading it is in v0.2.0. Unreleased: changing it with `keepgoing routes add`, `move`, `remove`, `off` and `on`, with a preview of every loop it affects; making a loop follow it or keep its own copy with `routes follow-standard` and `routes own`; and the offer to follow it in `init`.
+- [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Reading it is in v0.2.0. Unreleased: changing it with `keepgoing routes add`, `move`, `remove`, `off` and `on`, with a preview of every loop it affects; making a loop follow it or keep its own copy with `routes follow-standard` and `routes own`; and the offer to follow it in `init`, in guided `fallbacks add` and in the BB plugin's setup panel.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing

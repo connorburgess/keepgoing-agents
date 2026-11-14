@@ -274,6 +274,21 @@ func (w *World) Must(args ...string) Result {
 	return r
 }
 
+// initConfig is the configuration file init wrote in dir: looptender.yaml,
+// or keepgoing.yaml from a build before the rename (KEEPGOING_TEST_BINARY can
+// name one).
+func initConfig(dir string) string {
+	if p := filepath.Join(dir, "looptender.yaml"); fileExists(p) {
+		return p
+	}
+	return filepath.Join(dir, "keepgoing.yaml")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 // Init creates a BB loop with `keepgoing init`, exactly as a user would, then
 // subscribes the fake receiver to the given report events.
 func (w *World) Init(events ...string) {
@@ -281,7 +296,7 @@ func (w *World) Init(events ...string) {
 	dir := filepath.Join(w.Root, "setup")
 	w.Must("init", "--non-interactive", "--name", "example-loop", "--agent", "bb", "--thread", primaryThread,
 		"--provider", "claude-code", "--project", w.Project, "--directory", dir, "--task", scenarioTask)
-	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	w.Config = initConfig(dir)
 	w.Thread(primaryThread)
 	if len(events) > 0 {
 		w.EditConfig(func(loop map[string]any) {
@@ -424,7 +439,7 @@ func (w *World) InitHeadless(cli string, events ...string) {
 	dir := filepath.Join(w.Root, "setup")
 	w.Must("init", "--non-interactive", "--name", "example-loop", "--agent", cli,
 		"--project", w.Project, "--directory", dir, "--task", scenarioTask)
-	w.Config = filepath.Join(dir, "keepgoing.yaml")
+	w.Config = initConfig(dir)
 	w.Headless = cli
 	if len(events) > 0 {
 		w.EditConfig(func(loop map[string]any) {

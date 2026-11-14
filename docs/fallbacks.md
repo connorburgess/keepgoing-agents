@@ -10,7 +10,9 @@ Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
 ```
 
-The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end.
+The guide runs four steps, then a preview and a confirmation. An answer that cannot be used is explained and asked again; nothing is written until the end, and every question that writes has `no` as its default.
+
+**Following your standard route list instead** (unreleased). When the wizard starts on a `bb`, `claude` or `codex` loop with no other routes, on its first route, and your [standard route list](routes.md) has routes that apply to it, it first shows what following the list would change and asks `Follow your standard route list and hand off to it on a rate limit, instead of adding a fallback? N of its M switched-on routes apply to this loop. Type yes to follow it (yes/no) [no]`. Only a typed `yes` (or `y`) makes the change: as `routes follow-standard` does, with the same checks and timeline record, and setting `errors.failover_on` to `[rate_limit]` when it is empty (an existing setting is kept, and the question then says how the loop already hands off); the preview shows that change on its own line. A blank line, the end of input or any other answer is no: nothing is written and the four steps below follow. Under `--dry-run` the preview is shown with what yes would do, and nothing is asked or written. The question is not asked when the command line already describes a fallback (any flag but `-c`, `--dry-run` and `--show-ids`), nor with `--non-interactive`; a script uses `keepgoing routes follow-standard`. When the only thing in the way is that `errors.failover_on` is not written as an inline list, the wizard says so in one line and goes on.
 
 1. **Provider.** It lists the agent CLIs found on `PATH` (looked up, never run) and which can be a fallback: headless `claude` and `codex`, or `bb` for an existing BB thread (see [BB threads](#bb-threads)).
 2. **Account.** An account directory you have already signed in to (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`; a leading `~/` is expanded), or blank for the CLI's current login, and the quota group. The suggested group is the directory's name, otherwise the provider, with a numeric suffix when that label is taken.
@@ -208,10 +210,10 @@ v0.2.0 records how much of an account's quota a provider says is used, when a pr
 | Probe kind | Source | When a reading is recorded |
 | --- | --- | --- |
 | `claude` | `rate_limit_event` messages in the probe's own `stream-json` output | Whenever the probe's output contains the event with usable windows |
-| `codex` | The app-server's `account/rateLimits/read` reply | Only when that read already happens: after a probe fails without a recognized code. A healthy Codex probe carries no reading. |
+| `codex` | The app-server's `account/rateLimits/read` reply | After a successful probe, and after a probe fails without a recognized code. Successful-probe collection is unreleased. The read makes no model call. |
 | `command`, and every other provider including Cursor | none | Never; shown as unavailable |
 
-No provider call is added for this. keepgoing does not read stored credentials or call a provider usage endpoint. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
+No extra model call is added for usage collection. Codex adds a structured status read through its app-server after a successful probe; that read may communicate with the provider. keepgoing does not directly read stored credentials or directly call a provider usage endpoint: the Codex CLI handles its own authentication and status request. Claude takes usage from the existing probe output, with no extra status read. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
 
 The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
 
@@ -220,6 +222,8 @@ The Claude event is not a documented contract. Its shape was observed by the pro
 - Window names are opaque keys. keepgoing does not assume which windows exist or what they mean.
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
+
+The Codex lookup shares the probe timeout and is capped at 20 seconds. A failed or timed-out usage lookup does not change a successful probe's health or error classification. It records no new reading: usage stays unavailable if none was recorded, or keeps the earlier reading and its original age and reset-based stale state. A blocked snapshot after a successful probe is display-only; only an unknown failed probe can be classified from it.
 
 The latest reading per candidate is stored in `health.json` under `usage`, and earlier ones in its [history](#reading-history-and-projection): the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
 
@@ -349,7 +353,7 @@ A candidate is healthy while its last probe passed within `probe.ttl`. That hold
 
 For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; keepgoing selects an existing login and never creates accounts or copies credentials.
 
-Copy [keepgoing.multi-account.yaml](../examples/keepgoing.multi-account.yaml) and [fallbacks.multi-account.yaml](../examples/fallbacks.multi-account.yaml), replacing the fictional absolute paths. The primary uses account A:
+Copy [looptender.multi-account.yaml](../examples/looptender.multi-account.yaml) and [fallbacks.multi-account.yaml](../examples/fallbacks.multi-account.yaml), replacing the fictional absolute paths. The primary uses account A:
 
 ```yaml
 loop:
