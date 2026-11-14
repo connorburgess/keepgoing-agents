@@ -56,6 +56,15 @@ type ControlChange struct {
 	OwnerPresentBefore bool      `json:"ownerPresentBefore"`
 	OwnerPresentAfter  bool      `json:"ownerPresentAfter"`
 	OwnershipChanged   bool      `json:"ownershipChanged"`
+	// Caller is who saved the control, as a role and never an identity:
+	// owner_thread (the BB thread that owns the loop), other_thread, terminal
+	// (no BB thread identity), client (a registered local client), or
+	// unavailable for a save that does not record it.
+	Caller string `json:"caller"`
+	// NewEpisode: this resume cleared a hold that a check had raised for a
+	// spent per-episode allowance, and so started a new error episode: the
+	// re-prompt and nudge counts started over.
+	NewEpisode bool `json:"newEpisode"`
 }
 
 // Retention tiers. Each has reserved room that the others cannot take, so
@@ -441,7 +450,11 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish")
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish",
+				// The same three changes made from the keepgoing panel.
+				"panel_pause", "panel_stop", "panel_resume")
+			c.Caller = oneOf(c.Caller, "unavailable", "owner_thread", "other_thread", "terminal", "client")
+			c.NewEpisode = c.NewEpisode && (c.Operation == "resume" || c.Operation == "panel_resume")
 			r.ControlChange = &c
 		}
 	} else {
@@ -451,7 +464,7 @@ func clean(r Record) Record {
 	if !buildPattern.MatchString(r.Build) {
 		r.Build = "unavailable"
 	}
-	r.Adapter = oneOf(r.Adapter, "unavailable", "bb", "process", "claude", "codex", "cursor")
+	r.Adapter = oneOf(r.Adapter, "unavailable", "bb", "process", "claude", "codex", "cursor", "custom")
 	if !keyPattern.MatchString(r.TargetKey) {
 		r.TargetKey = "unavailable"
 	}

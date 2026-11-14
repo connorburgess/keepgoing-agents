@@ -153,6 +153,13 @@ func (t *tick) noteRouteList() {
 	if list.Unreadable == t.st.RoutesUnreadable || t.opts.DryRun {
 		return
 	}
+	key := "routes-readable"
+	if list.Unreadable {
+		key = "routes-unreadable"
+	}
+	if !t.reserveReport(key) {
+		return // tried again at the next check
+	}
 	t.st.RoutesUnreadable = list.Unreadable
 	data := map[string]any{"reason": "standard_route_list_unreadable", "target": t.res.Target}
 	if list.Unreadable {

@@ -9,7 +9,7 @@ version: 1
 loop:
   name: example-loop
   state_dir: ~/.local/state/keepgoing/example-loop
-  adapter: bb                     # bb | process | claude | codex | cursor (unreleased)
+  adapter: bb                     # bb | process | claude | codex | cursor, custom (unreleased)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
   bb: {thread: thr_example123}
@@ -30,7 +30,7 @@ loop:
 | --- | --- | --- |
 | `name` | yes | Lowercase letters, digits, and hyphens. It appears in every event and report. |
 | `state_dir` | yes | Where control, state, health, log, lock, and turn files live. Keep it outside any repository. |
-| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor`, with the matching block below. |
+| `adapter` | yes | `bb`, `process`, `claude`, `codex`, or unreleased `cursor` or `custom` ([an agent defined in configuration](#an-agent-defined-in-configuration)), with the matching block below. |
 | `provider`, `group` | no | `group` defaults to `provider`, then to `primary`. Set `group` so a limit on this account skips fallbacks that share it. |
 | `prompt_goal` | `false` | Explicitly append the latest private goal specification and revision to automatic messages, including handoffs. A valid goal for this loop is required before sending. See [current goal context](goals.md#current-goal-context-in-wake-messages). |
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
@@ -38,7 +38,8 @@ loop:
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
 | `routes` | no | `standard`: follow the person's [standard route list](routes.md) instead of a `fallbacks` file. Unreleased source. Excludes `fallbacks`; for `bb`, `claude` and `codex` loops. |
 | `routes_allow` | no | With `routes: standard`: `[new_conversation]` lets a standard route that starts a new conversation apply to this loop. Off by default. |
-| `probe` | for switch-back | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
+| `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
+| `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
 
 ## bb
 
@@ -108,6 +109,97 @@ The Cursor CLI adapter is available in source only, not v0.1.5. It accepts `cli`
 
 Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back`, or Cursor fallback candidates. Failures remain unknown because the reviewed print schema lacks structured error classes/reset times. See [Cursor supervision](cursor.md) for stdin transport, exact identity, output bounds, permission behavior and unverified live acceptance.
 
+## An agent defined in configuration
+
+Unreleased source (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+
+Three rules hold for every definition:
+
+- **No shell.** Every command is an argv list. A setting's value is always exactly one argument.
+- **The prompt is never an argument.** It is passed on standard input, or in a private file the command is pointed at.
+- **No text is matched.** A JSON field is compared for equality with codes you declare. A value that is not shaped like a code (letters, digits, `_ . : -`, at most 64) is treated as absent. Anything you do not declare is `unknown` to keepgoing.
+
+```yaml
+loop:
+  adapter: custom
+  custom:
+    name: example-agent              # label; the provider when none is set
+    workdir: /example/project
+    env: {EXAMPLE_HOME: /example/account-a}
+    values: {model: example-model}   # this loop's values for the settings
+    definition:
+      settings: [model]              # names the commands may use as {name}
+      start: [example-agent, run, --json, [--model, "{model}"]]
+      resume: [example-agent, run, --json, [--model, "{model}"], --session, "{session}"]
+      prompt: stdin                  # or file, with {prompt_file} in the commands
+      output:
+        format: jsonl                # or json: one object
+        max_bytes: 1048576
+        select: {field: type, equals: result}
+      session: {field: session}      # or {file: .example/session}
+      finished: {exit_codes: [0], field: status, equals: [ok]}
+      waiting: {exit_codes: [2], field: status, equals: [needs_input]}
+      errors:
+        field: error.code
+        classes: {quota_exceeded: rate_limit, unauthorized: auth}
+        http_status_field: error.status
+        exit_codes: {75: network}
+      probe:
+        argv: [example-agent, check, --json, [--model, "{model}"]]
+      limits:
+        argv: [example-agent, limits, --json]
+        blocked: {field: blocked, equals: ["true"]}
+        resets_at_field: resets_at
+      capabilities: {exact_resume: true, can_be_stopped: true, structured_errors: true, structured_waiting: true}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `name`, `workdir`, `env` | A label (lower-case letters, digits, hyphens), where turns run, and extra environment for turns, the probe and the limit lookup. |
+| `values` | Values for the definition's `settings`. One line each. |
+| `settings` | The names the commands may refer to as `{name}`. `model` is also what `status` and probes call the model. |
+| `start`, `resume` | Argv. The first argument is the executable, written out: a bare name such as `example-agent` is looked up on `PATH`, and a path such as `./bin/example-agent` resolves against the directory of the configuration file, like every other command in a configuration (not against `workdir`). A shell given a command string (`sh -c …`, `cmd /c …`, `powershell -Command …`) is refused. That is a guard against an obvious mistake, not a security boundary: a wrapper script, `env sh -c` or another interpreter is not detected, and what a command does is yours to know. An item is one argument, or a list of arguments left out together when a setting they refer to has no value. `resume` is used when a session is saved and may refer to `{session}`. |
+| `prompt` | `stdin` (default) or `file`. With `file` the commands must refer to `{prompt_file}`, the private file holding the prompt, and standard input is empty. |
+| `output` | `format` is `json` (one object) or `jsonl` (one object per line; lines that are not objects are skipped). `max_bytes` (default 1 MiB, 1 KiB to 16 MiB) bounds what is read. A turn that printed more is not read at all, whatever the part that fits says: it is a failed turn of `unknown` class, no session is taken from it, and the ordinary re-prompts follow (up to `errors.max_reprompts`, then a hold). Nothing needs removing by hand; the next turn replaces the output. `select` picks the object every rule reads: the last one whose field has that value, or the last object without it. |
+| `session` | Where the session identity comes from: a `field` of the output (with its own optional `select`), or a `file` under the working directory (one token, at most 256 bytes, a regular file). An identity must be a token that does not begin with a hyphen; anything else is not saved. |
+| `finished` | The turn ended healthy: the exit code is one of `exit_codes` **and** `field` has one of `equals`, when a field is given. `exit_codes` defaults to `[0]`, also when a field is given: a field alone never makes a killed turn (exit 137) or one with an unreadable exit record healthy. |
+| `waiting` | The turn ended waiting on a person, with the same form and the same `exit_codes` default. It is read before `finished`, so a turn both rules match is a wait; a waiting rule that would leave `finished` nothing to match is refused. It raises one awaiting-user hold and one report; nothing is approved or answered. See [after a wait](#after-a-turn-that-waited-on-a-person). |
+| `errors` | Classifies a failed turn. `classes` maps the agent's codes in `field` to `rate_limit`, `auth`, `overloaded`, `network` or `unknown`; `http_status_field` is read as an HTTP status; `exit_codes` maps failing exit codes. Anything unmatched is `unknown`. |
+| `probe` | A real request that lets the agent be a [fallback](fallbacks.md): it receives the fixed probe prompt the way turns receive theirs, uses the probe's model for `{model}`, and is judged by `finished` and `errors`. Its output is bounded as it is read. **keepgoing cannot tell what your probe command does.** If it is the agent's ordinary turn command, every probe is a full paid turn with the agent's tools and side effects. A hand-written fallbacks file, the only kind a defined agent gets, probes each fallback every 4 hours by default, up to 6 times a day (`probe.every`, `probe.daily_cap`), and once more before each handoff: **up to six full paid turns a day per fallback, plus one per handoff, while the loop runs**. Use the agent's cheapest documented check, or raise `probe.every` and lower `probe.daily_cap`. `fallbacks check --dry-run` and `doctor` say this too. Without a probe a candidate needs a `command` probe. |
+| `limits` | One command printing one JSON object, run only when a failed turn or probe is unclassified, in the same environment. `blocked` (a field and its values) says the account is blocked by a usage limit; `resets_at_field` is an RFC 3339 time or Unix seconds. |
+| `capabilities` | `exact_resume`, `can_be_stopped`, `structured_errors`, `structured_waiting`. |
+
+**Capabilities must be observable.** Validation refuses a capability with no rule behind it, and a rule without its capability, so a definition cannot claim more than keepgoing can check or carry rules that are silently ignored:
+
+- `exact_resume` needs `session` and a `resume` command that refers to `{session}`. Without it every turn starts a new session.
+- `structured_errors` needs `errors`. Without it every failure is `unknown`.
+- `structured_waiting` needs `waiting`.
+- `can_be_stopped` needs nothing: the turn runs under keepgoing's own wrapper. Without it `stop` holds the loop but does not signal a running turn.
+- `retries_itself`, `fails_over_itself`, `schedules_itself` and `child_work` are refused for now: a definition has no way to let keepgoing observe them.
+
+### What moves work to a fallback
+
+Your mapping decides it. A code, HTTP status or exit code that you map to a class in the loop's `errors.failover_on` (by default `rate_limit`) **moves work to a fallback**, and so does a `limits` lookup that reports the account blocked.
+
+**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit and must be left unmapped. Unmapped, it is `unknown`, which never moves work: the loop re-prompts within its bounds and then holds for a person. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
+
+```text
+failover (primary, defined agent example-agent): exit code 75 is treated as a network failure and will move work to a fallback
+failover (primary, defined agent example-agent): a result whose error.code is "quota_exceeded" is treated as a rate limit and will move work to a fallback
+```
+
+`keepgoing validate` prints one such line per mapping, for the primary and for each defined fallback, and `doctor` reports them as `agent.<target>.failover` with a warning. Read them when you write a definition. Note that `http_status_field` uses keepgoing's own table: 429 is a rate limit, 401 and 403 an authentication failure, 503 and 529 an overloaded provider. If the agent returns 403 for a policy block, do not add `auth` to `failover_on`.
+
+### After a turn that waited on a person
+
+The hold's note is the fixed text keepgoing uses for any interaction it cannot answer. Deal with what the agent asked for in the agent itself, then run `keepgoing resume`. What happens next is not a continuation of the answer you gave: the waiting turn's output is still the latest turn, and a turn that matched `waiting` is never read as finished, even if it also matches `finished`. With the wait set aside it is a failed turn of `unknown` class, so the next check **sends the loop's task prompt again into the same session** as a re-prompt, which counts toward `errors.max_reprompts`. A later turn that ends waiting raises a new hold.
+
+### Saved session
+
+A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise keepgoing cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person with the reason `target gone (archived, deleted, or not found)`. Restore the identifier in `targets/<target>/session` under the state directory, or remove that file to start a new conversation on purpose, then `resume`.
+
+`keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+
 ## progress
 
 | Field | Default | Meaning |
@@ -116,8 +208,12 @@ Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back
 | `stall_after` | `30m` | How long the fingerprint may stay unchanged while the session is active before a nudge. |
 | `max_nudges` | `3` | Nudge attempts a stalled session gets, delivered or not, before the loop is marked awaiting user and reports `await_user`. Visible progress or a finished turn resets the count. |
 | `min_wake_interval` | `60m` | Minimum gap between a nudge and anything sent before it: a wake, nudge, re-prompt, or handoff. |
+| `flag_after_sends` | `6` | Messages sent with no recorded change to the repositories that raise the [no-progress flag](dock.md#the-no-progress-flag): wakes, nudges, re-prompts, notices about failed lanes, and briefs sent on a move to another route or back, each by the send's own result, and turn retries the provider accepted. `0` turns this fact off. A whole number from 0 to 1000. The flag only informs: it never holds, pauses, moves or stops anything. A binary from before this key refuses a configuration that sets it. |
+| `flag_after_errors` | `4` | Checks that found an error or retried the turn, with no recorded change to the repositories, that raise the same flag; `0` turns this fact off. A whole number from 0 to 1000. A binary from before this key refuses a configuration that sets it. |
 
 The fingerprint covers every worktree of each repository. It includes `HEAD`, `git status --porcelain` for tracked files, and the size and modification time of tracked files that differ from `HEAD`. Untracked files, file contents, and transcripts are never read.
+
+Without `repositories` the no-progress flag is not available: it reads "not available: no progress source is configured", never "no progress".
 
 Idle wakes follow the supervisor's check cadence, subject to other gates. `min_wake_interval` spaces stall nudges; it does not throttle idle wakes. `max_nudges` resets when a turn ends and is not a loop-wide work budget.
 
@@ -145,11 +241,55 @@ loop:
     max_sends: 20
 ```
 
-At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns and downtime. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
+At or after this time, the next ordinary check persists an awaiting-user hold before automatic provider observation, yield commands, fingerprints or probes. Stop and existing control holds retain precedence. Omission or an empty string leaves existing behavior unchanged. Past timestamps are allowed and hold on the next check. See [operations](operations.md#loop-deadline) for restart, resume, manual-command and clock semantics. This field is available in v0.1.3 or newer. Optional `max_sends` is a nonnegative integer (zero/omitted disables accounting). It caps total automatic send attempts made while enabled, including failed sends, recovery and handoffs; the count survives restart and resume. See [send allowance behavior](operations.md#total-send-allowance). Optional `no_progress_timeout` is zero/off or a duration of at least `1m`, and requires `progress.repositories`. It holds after elapsed time without verified Git metadata changes, including idle turns. Downtime counts through v0.1.5; unreleased source does not count time in which no check ran (beyond one usual interval) or in which the connectivity check found the network down. See [no-progress semantics](operations.md#no-progress-timeout). These limits require v0.1.3 or newer; monetary enforcement is not implemented.
 
 ## window
 
-This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+This is optional. `tz` is an IANA zone name. `days` maps `Mon` through `Sun` to a `["HH:MM", "HH:MM"]` span, and the end is exclusive. A span whose end is earlier than its start (or the same) runs past midnight. Its key is the day it starts. Days that are not listed are closed. Scheduled probes also run only inside the window.
+
+Times are read on the local clock in `tz`, including on the days it changes for daylight saving: a `22:00` start opens at 22:00 local time whatever the offset. Each time means the first moment on its day at which the local clock shows that time or later:
+
+- A time the clock skips when it is set forward (for example `02:30` in New York on Sun 10 Mar 2030, when 01:59 is followed by 03:00) opens or closes the window at that jump. A span that lies wholly inside the skipped time is empty that day.
+- A time the clock shows twice when it is set back (for example `01:30` in New York on Sun 3 Nov 2030) means its first occurrence. A span ending at `01:30` is closed through the repeated hour; a span starting at `01:30` stays open through it.
+
+Unreleased source; before, a span's times on a day the clock changed were counted in hours from midnight, so every edge after the change was off by the size of the change.
+
+## timing
+
+Unreleased source, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+
+```yaml
+loop:
+  provider: claude-code          # or set loop.probe
+  fallbacks: fallbacks.yaml
+  probe: {model: example-small}  # optional; the probe's model, see below
+  timing:
+    enabled: true
+    windows: [seven_day]         # the provider's window keys timing acts on
+    near_reset: 6h               # default
+    probe_every: 12h             # default
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turns timing on. Each probe is a small paid request. |
+| `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
+| `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
+| `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
+
+Timing needs `loop.fallbacks` (its `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
+
+When timing probes run:
+
+- Every `probe_every`, counted from the last scheduled probe of the first route or its last passing probe of any tier.
+- Once more for each window instance when a named window's reset, from the latest reading, comes within `near_reset`, unless that reading was already taken that close to the reset. The reset time is known from an earlier reading, so this needs no extra probing to time.
+- Only where scheduled probes run: inside the loop's `window`, never on a dry run, and not when the network is down or the check has no time left. They count against the first route's own `probe.daily_cap`, and none runs when the fallbacks file sets `probe.scheduled_disabled` (`validate` warns).
+
+**What it costs.** `validate`, `status`, `doctor` and `fallbacks check --dry-run` state it, for example: `about 14 small paid probes a week for this allowance at a 12h cadence, plus one as each named window (seven_day) nears its reset, never above probe.daily_cap (6 a day); on example-small, the probe model`. The probes use `loop.probe.model` when set, otherwise the route's own model.
+
+**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is a decision for the step design (U4), with its cost stated.
+
+**Where the readings come from.** A probe runs the CLI on this computer with its sign-in, or `loop.probe.env`. For a loop on a BB thread that may not be the account BB uses for the thread; `validate` and `doctor` warn whenever timing is on for a BB loop.
 
 ## errors
 
@@ -173,7 +313,7 @@ The re-prompt budget resets when the session is seen idle, or when it is active 
 
 ## network
 
-The connectivity check made before an error re-prompt, a handoff and fallback probes. See [network outages](operations.md#network-outages).
+The connectivity check made before an error re-prompt, a handoff, a stall nudge and fallback probes, among the situations listed under network outages. See [network outages](operations.md#network-outages).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -194,7 +334,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait` and `child_error` are unreleased source) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source; `check_gap`, also unreleased, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
@@ -208,4 +348,4 @@ Each tick prints one JSON line:
 {"at":"2026-11-09T12:00:00Z","loop":"example-loop","target":"primary","control":"enabled","state":"error","errorClass":"rate_limit","action":"handoff","reason":"error: rate_limit","window":"no window configured","handoff":{"from":"primary","to":"codex-thread","reason":"rate_limit","tried":["codex-thread"]}}
 ```
 
-`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, or `handoff`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.
+`action` is one of `none`, `wake`, `nudge`, `reprompt`, `await_user`, `stop`, `handoff`, or `switch_back`. Optional fields include `resetsAt`, `redundancy`, `probes`, `yielded`, `dryRun`, `warnings`, `outcome` (`succeeded`, `failed` or `dry_run`; absent when the check could not be recorded) and `missingWorktrees`. A probe entry with `skipped` produced no result. With `--dry-run`, the tick decides and records but sends nothing and runs no probes.

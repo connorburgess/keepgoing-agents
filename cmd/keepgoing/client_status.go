@@ -61,6 +61,10 @@ type clientRuntime struct {
 	StaleAfter       string     `json:"staleAfter"`
 	BinaryComparison string     `json:"binaryComparison"`
 	CheckedAt        *time.Time `json:"checkedAt,omitempty"`
+	// Overdue is the overdue rule's verdict (see state.ScheduleOf), with
+	// what to say about it.
+	Overdue        bool   `json:"overdue"`
+	OverdueMessage string `json:"overdueMessage,omitempty"`
 }
 type clientCheck struct {
 	At      *time.Time `json:"at,omitempty"`
@@ -83,8 +87,11 @@ func clientCommand(e env, args []string) int {
 	if len(args) > 0 && (args[0] == "pause" || args[0] == "stop") {
 		return clientHoldCommand(e, args)
 	}
+	if len(args) > 0 && (args[0] == "review" || args[0] == "apply") {
+		return clientReviewCommand(e, args)
+	}
 	if len(args) == 0 || args[0] != "status" {
-		e.errf("usage: keepgoing client status|pause|stop|prepare-resume|resume --id ID [--directory private-registry] [--json]; see each command --help")
+		e.errf("usage: keepgoing client status|pause|stop|prepare-resume|resume --id ID, or client review|apply pause|stop|resume --loop KEY [--directory private-registry] [--json]; see each command --help")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("client status", flag.ContinueOnError)
@@ -203,6 +210,7 @@ func clientAlias(cfg *config.Config, alias string) string {
 }
 func readClientStatus(ctx context.Context, directory, id string, private, offline bool, staleAfter time.Duration, now time.Time, query clientDaemonQuery) clientStatusReport {
 	r := clientStatusReport{SchemaVersion: 1, RegistrationID: id, ReadAt: now, Outcome: "unavailable", Issues: []string{}}
+	var scheduleOf func(*daemonStatus) scheduleStatus // set once the loop's records are read
 	unavailable := func(issue string) clientStatusReport {
 		r.Outcome = "unavailable"
 		r.Snapshot = nil
@@ -253,7 +261,7 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 		if st.Target() == state.Primary {
 			agent = cfg.Loop.Agent
 			configured = true
-		} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+		} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 			agent, configured = st.CandidateAgent(c)
 		}
 		if configured {
@@ -278,7 +286,8 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 				issue("window_unavailable")
 			} else {
 				rt := describeRuntime(ctl, st, in, configured, now, staleAfter, version)
-				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt)}
+				s.Runtime = &clientRuntime{rt.State, rt.Source, rt.Freshness, rt.StaleAfter, rt.BinaryComparison, clientTime(st.CheckedAt), false, ""}
+				scheduleOf = func(d *daemonStatus) scheduleStatus { return describeSchedule(&cfg.Loop, st, ctl, d, now) }
 			}
 		}
 		if c := st.LastCheck; c != nil {
@@ -304,6 +313,12 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 	// scheduler queries, task files, output logs or provider session files.
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	s.Daemon = query(queryCtx, entry.StateDir, version, offline)
+	// After the daemon is asked: one that ran the last check and is still
+	// running means the computer slept.
+	if scheduleOf != nil && s.Runtime != nil {
+		sch := scheduleOf(&s.Daemon)
+		s.Runtime.Overdue, s.Runtime.OverdueMessage = sch.Overdue, sch.Message
+	}
 	cancel()
 	if ctx.Err() != nil {
 		return unavailable("cancelled")

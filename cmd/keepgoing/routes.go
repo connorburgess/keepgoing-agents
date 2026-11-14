@@ -281,7 +281,7 @@ func loopRoutes(path string, now time.Time) loopRoutesView {
 			if en, ok := reg.Candidates[c.ID]; ok && en.Last != nil {
 				row.LastCheck = &routeCheck{At: en.Last.At, OK: en.Last.OK, ErrorClass: en.Last.ErrorClass}
 			}
-			u := usageOf(reg, c, now)
+			u := usageOf(reg, c, now, projectionRules(fb))
 			u.ID = ""
 			row.Usage = &u
 		}
@@ -358,4 +358,12 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// effectiveRoutes is the list a loop's current target is looked up in: for a
+// loop that follows the standard list and is on a route no longer in it, that
+// route from its saved record as well.
+func effectiveRoutes(cfg *config.Config, st state.File) *config.Fallbacks {
+	fb, _ := supervise.EffectiveRoutes(cfg, st)
+	return fb
 }

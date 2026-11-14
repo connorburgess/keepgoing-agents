@@ -55,6 +55,8 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
+  dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
+  panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
 Goal metadata:
   goal create|revise|show   Record private, revisioned goal metadata
@@ -151,6 +153,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return timelineCommand(e, rest)
 	case "runs":
 		return runsCommand(e, rest)
+	case "dock":
+		return dockCommand(e, rest)
+	case "panel":
+		return panelCommand(e, rest)
+	case "__panel-server":
+		return panelServerCommand(e, rest)
 	case "doctor":
 		return doctor(e, rest, doctorExec)
 	case "init":
@@ -181,17 +189,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath:    fs.String("c", "keepgoing.yaml", "path to the config file"),
-		asJSON:     fs.Bool("json", false, "print machine-readable JSON"),
-		dryRun:     fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
-		now:        fs.String("now", "", "RFC 3339 time to use instead of the clock"),
-		note:       fs.String("note", "", "a short note stored in control.json"),
-		id:         fs.String("id", "", "fallbacks check: only this candidate"),
-		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
-		discard:    fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
-		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
-		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
-		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		cfgPath:     fs.String("c", "keepgoing.yaml", "path to the config file"),
+		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
+		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
+		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
+		note:        fs.String("note", "", "a short note stored in control.json"),
+		id:          fs.String("id", "", "fallbacks check: only this candidate"),
+		exact:       fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
+		discard:     fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
+		takeOver:    fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
+		keepStop:    fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
+		routine:     fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
+		staleAfter:  fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
+		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
+		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
+		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -199,6 +212,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	positional = append(positional, fs.Args()...)
 	if *f.takeOver && cmd != "enable" && cmd != "daemon" && cmd != "validate" {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
+		return exitUsage
+	}
+	if (*f.lanes || *f.immediately || *f.dropQueued) && cmd != "stop" {
+		e.errf("--lanes, --immediately and --drop-queued are only supported by stop")
+		return exitUsage
+	}
+	if *f.dropQueued && !*f.lanes {
+		e.errf("--drop-queued is only supported with --lanes")
+		return exitUsage
+	}
+	if *f.keepStop && cmd != "resume" {
+		e.errf("--keep-stop is only supported by resume")
+		return exitUsage
+	}
+	if *f.allowShare && cmd != "enable" {
+		e.errf("--allow-second-loop is only supported by enable, start and init")
 		return exitUsage
 	}
 	if *f.discard && cmd != "retarget" {
@@ -255,8 +284,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
-	case "enable", "disable", "pause", "resume", "stop", "await-user", "complete":
-		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
+	case "enable":
+		// A second loop on a session another enabled loop supervises would
+		// prompt it too: refused unless asked for.
+		if !checkSecondLoop(e, cfg, "enable", *f.allowShare) {
+			return exitFailed
+		}
+		code := controlCmd(e, cfg, cmd, *f.note, *f.takeOver)
+		if code == exitOK {
+			noteSupervisor(cfg)
+		}
+		return code
+	case "stop":
+		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
+	case "disable", "pause", "resume", "await-user", "complete":
+		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")
@@ -282,7 +324,8 @@ type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
-	discard                         *bool
+	discard, allowShare, keepStop   *bool
+	lanes, immediately, dropQueued  *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in

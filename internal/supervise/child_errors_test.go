@@ -336,7 +336,7 @@ func TestChildErrorWakeRespectsHoldsLimitsAndFailedSends(t *testing.T) {
 				control.Update(w.dir, func(f *control.File) { f.Completed = true })
 			case "send limit":
 				w.cfg.Loop.Limits.MaxSends = 1
-				if err := state.ReserveSend(w.dir, 1); err != nil {
+				if err := spendSends(w.dir, 1); err != nil {
 					t.Fatal(err)
 				}
 			case "outside window":

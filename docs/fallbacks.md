@@ -62,7 +62,7 @@ What the preview states, because keepgoing cannot verify it:
 - **The same conversation.** Adding a thread the loop already uses means a handoff switches that thread's model (and reasoning level, if set) with `bb thread update` and continues in the same conversation, with the same history. It is very likely the same account, so it helps only if the other model has its own limit, which only the check before a handoff tests. The provider must be the one the loop already records for that thread. If the primary's `bb.model` is unset, returning to the primary leaves the thread on the fallback's model; the preview says so.
 - **The model.** Marked as from BB's list or not checked. With no model set, the check before a handoff uses the local CLI's default model, which may differ from the thread's.
 
-Refused without writing: a missing or malformed thread ID; a provider other than `claude-code` or `codex` (no built-in probe); an unknown reasoning level; a thread the loop already uses with no model, the same model or a different provider; in the guide, a `--provider` that contradicts what BB lists for the picked thread; `--account-dir` or `--workdir`; a missing probe account directory; and a missing local `claude` or `codex` CLI, since the fallback could then never be confirmed. `--thread`, `--provider`, `--reasoning`, `--probe-account-dir` and `--show-ids` are refused for headless agents. In JSON, `candidate.thread` is `same_as_primary`, `same_as_fallback` or `other`, `candidate.modelSource` is `bb_list` or `unchecked`, and `candidate.threadId` appears only with `--show-ids`.
+Refused without writing: a missing or malformed thread ID; a provider other than `claude-code` or `codex` (no built-in probe); an unknown reasoning level; a thread the loop already uses with no model, the same model or a different provider; in the guide, a `--provider` that contradicts what BB lists for the picked thread; `--account-dir` or `--workdir`; a missing probe account directory; and a missing local `claude` or `codex` CLI, since the fallback could then never be confirmed. `--thread`, `--new-thread`, `--permission-mode`, `--provider`, `--reasoning`, `--probe-account-dir` and `--show-ids` are refused for headless agents. In JSON, `candidate.thread` is `same_as_primary`, `same_as_fallback` or `other`, `candidate.modelSource` is `bb_list` or `unchecked`, and `candidate.threadId` appears only with `--show-ids`.
 
 ### Handoff stays a choice
 
@@ -162,6 +162,8 @@ A BB candidate may name the same thread as the primary with a different `model`.
 
 In unreleased source a BB candidate may instead set `bb: {new_thread: true, ...}` and name no thread. See [hand off to a new conversation](#hand-off-to-a-new-conversation).
 
+Also in unreleased source, a candidate may be an [agent defined in configuration](configuration.md#an-agent-defined-in-configuration) (`adapter: custom`). It needs a `probe` in its definition, or a `command` probe, and is written by hand: guided setup does not create it.
+
 ## Probes
 
 A probe is one tiny real request: "Reply with exactly: OK", with no tools, one turn, and a hard timeout. It proves the CLI is installed, logged in, and online, that the model is available, and that the account is not rate limited.
@@ -217,7 +219,7 @@ The Claude event is not a documented contract. Its shape was observed by the pro
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
 
-One reading per candidate is stored in `health.json` under `usage`: the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
+The latest reading per candidate is stored in `health.json` under `usage`, and earlier ones in its [history](#reading-history-and-projection): the observation time, the source, an account identity, and for each window its key, used fraction, optional reset time and optional status. No raw output is stored there. A later probe without a reading leaves the earlier one in place, so a reading can be older than the last probe; its own time is always shown. Health files written before this field existed, and stored values that are not a valid reading, load as unavailable.
 
 A reading belongs to the account it was read from. The identity is a hash of the candidate's provider, quota group, probe kind, probe executable and probe environment; no path or value is stored. When a candidate ID is pointed at another account, the stored reading stops being shown at once and is dropped by the next probe. Renaming a candidate, or changing its model or target thread, keeps it.
 
@@ -234,6 +236,64 @@ What a reading does not tell you:
 - Headless Claude turns still use `json` output and record no reading.
 
 Verification uses fictional fixtures only: malformed, partial, multi-event and absent events, out-of-range values, older health files, repointed candidates, passed reset times, and CLI output. Live evidence is one live manual probe by the project coordinator, with a binary built from this source, of one headless Claude candidate on Claude Code 2.1.318 and macOS arm64: `fallbacks check --id` exited 0, the candidate was recorded healthy with its credential expiry, one `seven_day` window was recorded and shown by `fallbacks list` and `status`, and no failure capture was written. Scheduled and exact tiers, a failing probe, Codex readings, other CLI versions and Windows have not been exercised live.
+
+### Reading history and projection
+
+Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
+
+**History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept.
+
+- **Bounds.** The newest 24 readings per window are kept (four days at a probe every four hours, twelve at one every twelve), across at most eight windows. That is at most about 26 KB of `health.json` per candidate, measured with long window keys at both bounds. A seven-day window probed every 12 hours stays under 2 KB.
+- **Resets and accounts.** A window is dropped once its reset time has passed. The whole history is dropped when the candidate is probed as another account, as the latest reading is.
+- **The clock.** The same reading recorded twice adds nothing. Readings stamped later than a new reading are dropped when it is added: only a clock that was ahead and has been set back leaves them, and the current clock wins, so new readings are never refused because of them. A reading that reports a window whose reset is at or before the reading's own time suggests this machine's clock is ahead. That window is not recorded, and nothing is dropped for that reading, so a clock far ahead cannot wipe the history.
+- **Stored records.** A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
+
+**Projection.** For each window of the latest reading, keepgoing fits a rate through the recorded readings of the same instance and extends it from the newest reading to the reset. The rate is the least squares slope through every reading used, not just the first and last, so an early jump or a single rounding step does not decide it alone. The rate covers all use of the account over the readings' span, by any loop or by the person. The result says one of:
+
+- **Used up since a time:** the newest reading is at 100%, dated at the first of the latest run of readings at 100%, or at the latest reading when no history of the window is recorded. No rate is needed for this.
+- **A share at reset,** for example `seven_day 60% at reset (3 readings over 12h 0m)`. Shares are rounded down and shown up to 100%.
+- **Runs out before the reset,** for example `seven_day runs out about 24h 0m before it resets, at 2030-01-10 12:00Z (3 readings over 12h 0m)`, or `projected to have run out at …` when that time has already passed. This is said only when it holds for every rate the readings allow if each was off by one percentage point, since some providers report whole percents.
+- **May run out, within rounding:** the fitted rate reaches 100% before the reset, but a rate within the readings' rounding does not.
+
+A projection is made only when the readings allow it. Otherwise the line says why:
+
+| Reason code | Words shown |
+| --- | --- |
+| `no_reset_time` | no reset time was reported |
+| `no_history` | no earlier reading of this window is recorded |
+| `window_reset` | the window has reset |
+| `too_few_readings` | N of the 3 readings needed in this window |
+| `newest_too_old` | the newest reading is older than the fallbacks' `probe.ttl` |
+| `span_too_short` | the readings cover less than 6 hours |
+| `too_early` | too early to project: the readings' span, for a window that resets in more than four times that span |
+| `used_went_down` | a reading is lower than an earlier one |
+
+Readings stamped after the current time are ignored and counted in the line, not treated as a reason.
+
+**Where readings come from.** Today readings come only from probes on every route. BB does not pass the provider's rate-limit events through, and headless turns do not record them yet ([Q3](roadmap.md#quota-monitoring-planned)). A route's line therefore ends `Readings for this route come only from its probes.` whenever one of its windows cannot be projected. When Q3 adds readings from turns, this narrows per adapter; for loops on BB threads it stays so.
+
+Where it is shown: after each `usage` line that has windows, `fallbacks list` prints `projected <id>:` and `status` prints `projected:`. In JSON each window carries `projection` with:
+- `state` (`projected` or `unavailable`) and `reason`;
+- `usedAtReset`, a fraction that may exceed 1;
+- `usedUpSince`, `runsOutAt` and `withinRounding`;
+- `readings`, `ignoredLaterReadings`, `spanSeconds` and `resetsInSeconds`;
+- the rules used: `minReadings`, `minSpanSeconds`, `maxAgeSeconds`, `maxAheadSpans` and `rounding`.
+
+Each `usage` object has `readingsFromProbesOnly`, true on every route today. The note about probes is not added for a window that has reset, which needs no readings. The [panel](dock.md#what-the-page-shows) shows the same words under each window of a route card and in the allowances strip.
+
+How much a projection can say depends on how often the account is probed:
+- It needs three readings over at least six hours in one window instance, and readings covering at least a quarter of the time left to the reset.
+- A seven-day window probed every 12 hours gets about 14 readings a week. A projection from the start of the week needs over a day of them.
+- A five-hour window cannot be projected from probes four or more hours apart.
+- A loop's own first route is probed only for switch-back, and routes in the active route's group are not probed on schedule, so the allowance a loop is on has no projection unless [`loop.timing`](configuration.md#timing) is on: it probes the first route every 12 hours by default, which gives a seven-day window about 14 readings a week.
+
+Verification uses fictional fixtures only:
+- table tests of adding readings, instances, resets, bounds, identity changes, a clock set back or far ahead, and stored records that are not valid;
+- table tests of every projection outcome, including one pair 75% to 77% six hours apart, a jump in the first hour followed by 23 flat hours, use already at 100%, and a run-out time already past;
+- health records saved and loaded;
+- the real `fallbacks check`, `fallbacks list` and `status` commands against fake probes and recorded histories.
+
+Nothing here has been checked against a live provider.
 
 ## Preview manual probes
 
@@ -263,7 +323,7 @@ Remove `--dry-run` to execute. The command prints the plan to stderr before prob
 | `probe.daily_cap` | 6 |
 | `probe.timeout` | `90s` |
 
-Scheduled probes run one after another inside the tick, so a long list of slow probes makes that tick long. The daemon still notices a stop or pause written during the tick and acts on it right after.
+Scheduled probes run one after another inside the tick. Through v0.1.5 a long list of slow probes makes that tick long; in unreleased source each starts only when its whole timeout fits the [check time budget](operations.md#check-time-budget), and one that does not fit is skipped and stays due. The daemon still notices a stop or pause written during the tick and acts on it right after.
 
 ## Redundancy
 
@@ -356,7 +416,7 @@ The new thread then becomes the active target and is supervised like any other. 
 - BB may itself retry that conversation later, for example when its provider limit resets. keepgoing does not prevent this and no longer observes that thread, so two conversations can then be active on the task.
 - The new thread works in the **same environment and checkout** as the one it continues. Nothing isolates the two.
 
-**Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it and shows it in the preview.
+**Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it (`--permission-mode`, accepted only with `--new-thread`) and shows it in the preview.
 
 **Exactly one thread per handoff, and every attempt counts.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token, and counts the attempt against the cap in the same write. Then:
 

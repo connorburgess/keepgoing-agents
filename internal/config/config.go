@@ -86,7 +86,29 @@ type Loop struct {
 	SwitchBack SwitchBack `yaml:"switch_back"`
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
+	// Timing is usage-aware timing for the loop's first route. Off by
+	// default. Until the step decision exists (roadmap U4) it only collects
+	// usage readings of the first route's allowance; it never changes routes.
+	Timing *Timing `yaml:"timing,omitempty"`
 }
+
+// Timing collects usage readings of the first route's allowance by probing
+// it on a schedule, including while the loop runs on it. Each probe is a small
+// paid request; Enabled is the owner's choice and is off by default.
+type Timing struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Windows names the provider's usage windows timing acts on, by their
+	// opaque keys (for example seven_day).
+	Windows []string `yaml:"windows,omitempty"`
+	// NearReset is how close to a named window's reported reset counts as
+	// near; one probe is made when that period begins.
+	NearReset Duration `yaml:"near_reset,omitempty"`
+	// ProbeEvery is the interval between timing probes of the first route.
+	ProbeEvery Duration `yaml:"probe_every,omitempty"`
+}
+
+// TimingOn reports whether usage-aware timing is turned on for the loop.
+func (l Loop) TimingOn() bool { return l.Timing != nil && l.Timing.Enabled }
 
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
@@ -147,6 +169,52 @@ type Progress struct {
 	// MaxNudges is how many nudges a stalled session gets before the loop
 	// asks a person. Progress or ending the turn resets the count.
 	MaxNudges int `yaml:"max_nudges,omitempty"`
+	// FlagAfterSends and FlagAfterErrors raise the panel's no-progress flag:
+	// at that many sends, or that many checks that found an error or retried
+	// the turn, with no recorded change to the repositories. Unset means the
+	// default; 0 turns that fact's flag off. The flag only informs a person.
+	FlagAfterSends  *FlagCount `yaml:"flag_after_sends,omitempty"`
+	FlagAfterErrors *FlagCount `yaml:"flag_after_errors,omitempty"`
+}
+
+// FlagCount is a whole number of events. YAML would otherwise read 2.5 as 2
+// without saying so; anything but an integer is refused.
+type FlagCount int
+
+func (c *FlagCount) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("line %d: %q is not a whole number", n.Line, n.Value)
+	}
+	var v int
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*c = FlagCount(v)
+	return nil
+}
+
+// Defaults of the no-progress flag's thresholds.
+const (
+	DefaultFlagAfterSends  = 6
+	DefaultFlagAfterErrors = 4
+	maxFlagAfter           = 1000
+)
+
+// SendsFlag is the send count that raises the no-progress flag; 0 is off.
+func (p Progress) SendsFlag() int {
+	if p.FlagAfterSends == nil {
+		return DefaultFlagAfterSends
+	}
+	return int(*p.FlagAfterSends)
+}
+
+// ErrorsFlag is the error-or-retry count that raises the no-progress flag;
+// 0 is off.
+func (p Progress) ErrorsFlag() int {
+	if p.FlagAfterErrors == nil {
+		return DefaultFlagAfterErrors
+	}
+	return int(*p.FlagAfterErrors)
 }
 
 // Window restricts when the supervisor may act. Days map a weekday
@@ -279,10 +347,12 @@ const (
 	DefaultYieldTimeout      = 10 * time.Second
 	DefaultSwitchBackAfter   = time.Hour
 	DefaultSwitchBackRetry   = 30 * time.Minute
+	DefaultTimingNearReset   = 6 * time.Hour
+	DefaultTimingProbeEvery  = 12 * time.Hour
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "check_gap", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
@@ -292,7 +362,9 @@ var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recove
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	timeRE = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
-	days   = map[string]bool{"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true}
+	// windowKeyRE is a provider's usage window key as readings store it.
+	windowKeyRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	days        = map[string]bool{"Mon": true, "Tue": true, "Wed": true, "Thu": true, "Fri": true, "Sat": true, "Sun": true}
 )
 
 // Load reads, defaults, and validates a config file and its fallbacks file.
@@ -439,6 +511,10 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.SwitchBack.MinAfter, DefaultSwitchBackAfter)
 	setDur(&l.SwitchBack.RetryEvery, DefaultSwitchBackRetry)
+	if l.Timing != nil {
+		setDur(&l.Timing.NearReset, DefaultTimingNearReset)
+		setDur(&l.Timing.ProbeEvery, DefaultTimingProbeEvery)
+	}
 	if l.Probe.Kind == "" {
 		switch l.Provider {
 		case "claude-code":
@@ -540,6 +616,14 @@ func (c *Config) Validate() error {
 	if l.Progress.MaxNudges < 1 {
 		add("loop.progress.max_nudges must be at least 1")
 	}
+	for _, f := range []struct {
+		name string
+		v    *FlagCount
+	}{{"flag_after_sends", l.Progress.FlagAfterSends}, {"flag_after_errors", l.Progress.FlagAfterErrors}} {
+		if f.v != nil && (*f.v < 0 || *f.v > maxFlagAfter) {
+			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
+		}
+	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
 	}
@@ -628,6 +712,44 @@ func (c *Config) Validate() error {
 		}
 		if !l.HasRouteList() {
 			add("loop.switch_back needs loop.fallbacks; without fallbacks the loop never leaves the primary")
+		}
+	}
+	if l.TimingOn() {
+		tm := l.Timing
+		if l.Adapter == "cursor" {
+			add("loop.timing is not supported for Cursor loops")
+		}
+		switch l.Probe.Kind {
+		case "claude", "codex":
+		case "command":
+			if len(l.Probe.Command) == 0 {
+				add("loop.probe.command is required for a command probe")
+			}
+		case "":
+			add("loop.timing needs a way to probe the first route: set loop.provider to claude-code or codex, or set loop.probe")
+		default:
+			add("loop.probe.kind must be claude, codex, or command")
+		}
+		if l.Fallbacks == "" {
+			add("loop.timing needs loop.fallbacks: its probe policy (daily_cap, timeout) applies to the first route's timing probes")
+		}
+		if len(tm.Windows) == 0 {
+			add("loop.timing.windows must name at least one usage window, for example seven_day")
+		}
+		seen := map[string]bool{}
+		for _, k := range tm.Windows {
+			if !windowKeyRE.MatchString(k) {
+				add("loop.timing.windows: %q is not a window key (letters, digits, '_', '-' and '.', at most 64)", k)
+			} else if seen[k] {
+				add("loop.timing.windows: %q is listed twice", k)
+			}
+			seen[k] = true
+		}
+		if d := tm.NearReset.Duration; d < time.Minute || d > 7*24*time.Hour {
+			add("loop.timing.near_reset must be between 1m and 168h")
+		}
+		if d := tm.ProbeEvery.Duration; d < time.Hour {
+			add("loop.timing.probe_every must be at least 1h")
 		}
 	}
 	switch l.Network.Check {
