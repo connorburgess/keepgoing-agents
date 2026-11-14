@@ -18,8 +18,8 @@ The BB plugin is released from the same tag as **0.3.0**. Its loop card says whe
 - **Stopped schedulers and children:** a stopped scheduler is noticed; failed child threads are reported; failed lanes are recovered (opt-in); `stop --lanes`.
 - **Daemon timing:** the daemon checks again within a minute of the network returning, and at a limit's reported reset.
 - **Bounds:** one loop per session; every automatic send recorded before it is made; a hard time limit per check; the no-progress flag.
-- **The panel** (`keepgoing panel`, `dock`, with controls behind `--allow-changes`) and a rebuilt macOS menu preview.
-- **New commands:** `keepgoing runs`; a navigable `timeline`; usage readings.
+- **The panel** (`keepgoing panel`, `dock`, with controls behind `--allow-changes`) and a rebuilt macOS menu preview, both with pause all and stop all.
+- **New commands:** `keepgoing runs`; a navigable `timeline`; usage readings; a standard route list kept once per user (`routes: standard`, `keepgoing routes list`; read-only in this release).
 - **Agents and fallbacks:** agents defined in configuration (`adapter: custom`); a primary-only Cursor adapter; handoff into a new BB conversation; `fallbacks` editing commands.
 
 **Behaviour changes.**
@@ -39,7 +39,7 @@ The BB plugin is released from the same tag as **0.3.0**. Its loop card says whe
 2. Replace the executable.
 3. Restart each daemon or service.
 
-No configuration change is needed. External schedulers such as BB automations keep working; the daemon's faster re-checks apply only under `start` or a service.
+No configuration change is needed. A `client prepare-resume` ticket made before the upgrade is refused after it; prepare it again. External schedulers such as BB automations keep working; the daemon's faster re-checks apply only under `start` or a service.
 
 **Going back to v0.1.5.** A loop that ran on 0.2.0 needs these steps first, each detailed in the [release notes](docs/releases/v0.2.0.md#going-back-to-v015):
 - restore or remove `incidents.json` (schema 9);
