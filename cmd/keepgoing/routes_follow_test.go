@@ -282,8 +282,13 @@ func TestRoutesOwnRefusesACopyTheLoopCouldNotLoad(t *testing.T) {
 	if cfg := loadFixture(t, r.follower); !cfg.Loop.FollowsStandard() {
 		t.Fatal("the following loop should load, with a warning")
 	}
+	// A check directory left by a killed own, holding a copy of the
+	// configuration, is removed by the next own.
+	leftover := filepath.Join(filepath.Dir(r.follower), ".routes-own-12345")
+	os.Mkdir(leftover, 0o700)
+	write(t, filepath.Join(leftover, "keepgoing.yaml"), withTimeout, 0o600)
 	code, v, _ := r.change("own", "--loop", "follower-loop", "--yes")
-	if code == 0 || v.Refusal == nil || v.Refusal.Code != "not_possible" || !strings.Contains(v.Refusal.Text, "tick_timeout") || strings.Contains(v.Refusal.Text, r.own.dir) {
+	if code == 0 || v.Refusal == nil || v.Refusal.Code != "not_possible" || !strings.Contains(v.Refusal.Text, "would not load") || !strings.Contains(v.Refusal.Text, "tick_timeout") || strings.Contains(v.Refusal.Text, r.own.dir) {
 		t.Fatalf("own: %d %+v", code, v)
 	}
 	dir := filepath.Dir(r.follower)
@@ -295,5 +300,12 @@ func TestRoutesOwnRefusesACopyTheLoopCouldNotLoad(t *testing.T) {
 		if e.Name() != "keepgoing.yaml" && e.Name() != "state" {
 			t.Fatalf("left behind: %s", e.Name())
 		}
+	}
+	// When the check cannot run, the refusal says so, and names no path.
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	code, v, _ = r.change("own", "--loop", "follower-loop", "--dry-run")
+	if code == 0 || v.Refusal == nil || !strings.Contains(v.Refusal.Text, "could not run") || strings.Contains(v.Refusal.Text, "would not load") || strings.Contains(v.Refusal.Text, dir) {
+		t.Fatalf("check could not run: %d %+v", code, v)
 	}
 }

@@ -355,7 +355,10 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		// The files as they would be must load as the loop will load them:
 		// config.Load also checks what a parse does not, such as a tick
 		// timeout too short for the copied probe timeout.
-		if msg := loadsAsWritten(cfg.Path(), edited, file, p.fallbacksYAML); msg != "" {
+		switch msg, ran := loadsAsWritten(cfg.Path(), edited, file, p.fallbacksYAML); {
+		case !ran:
+			return nil, refuseRoute("not_possible", "The check that the loop would load with its own copy of the routes could not run, so nothing is written: %s.", msg)
+		case msg != "":
 			return nil, refuseRoute("not_possible", "The loop would not load with its own copy of the routes, so nothing is written: %s", msg)
 		}
 		o.Warnings = append(o.Warnings, "changes to the standard list no longer reach this loop; its routes are copied as they resolve now",
@@ -578,22 +581,40 @@ func printRouteSource(e env, o routeChangeOut) {
 	}
 }
 
+// ownCheckPrefix names the private directories own checks its copy in.
+const ownCheckPrefix = ".routes-own-"
+
+// removeOwnCheckLeftovers removes check directories an earlier own left
+// beside keepgoing.yaml when it was killed. They may hold copies of the
+// configuration, environment values included. Only directories this user
+// owns are removed; a link or file with the name is left alone.
+func removeOwnCheckLeftovers(cfgPath string) {
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(cfgPath), ownCheckPrefix+"*"))
+	for _, m := range matches {
+		if info, err := os.Lstat(m); err == nil && info.IsDir() && config.OwnedByUser(info) {
+			_ = os.RemoveAll(m)
+		}
+	}
+}
+
 // loadsAsWritten loads the configuration and its new fallbacks file as they
 // would be written, from a private directory beside keepgoing.yaml under
-// the same names, and returns why it fails, naming no path.
-func loadsAsWritten(cfgPath string, configYAML []byte, file string, fallbacksYAML []byte) string {
-	dir, err := os.MkdirTemp(filepath.Dir(cfgPath), ".routes-own-*")
+// the same names. It returns why the load fails, naming no path, or, with
+// ran false, why the check could not run.
+func loadsAsWritten(cfgPath string, configYAML []byte, file string, fallbacksYAML []byte) (string, bool) {
+	removeOwnCheckLeftovers(cfgPath)
+	dir, err := os.MkdirTemp(filepath.Dir(cfgPath), ownCheckPrefix+"*")
 	if err != nil {
-		return "a private directory to check it in could not be created"
+		return "a private directory to check it in cannot be created beside keepgoing.yaml (is its directory writable?)", false
 	}
 	defer os.RemoveAll(dir)
 	cfgCopy := filepath.Join(dir, filepath.Base(cfgPath))
 	if os.WriteFile(cfgCopy, configYAML, 0o600) != nil || os.WriteFile(filepath.Join(dir, file), fallbacksYAML, 0o600) != nil {
-		return "the files could not be written to check them"
+		return "the files to check could not be written beside keepgoing.yaml", false
 	}
 	if _, err := config.Load(cfgCopy); err != nil {
 		msg := strings.ReplaceAll(err.Error(), dir+string(os.PathSeparator), "")
-		return strings.ReplaceAll(msg, dir, "")
+		return strings.ReplaceAll(msg, dir, ""), true
 	}
-	return ""
+	return "", true
 }
