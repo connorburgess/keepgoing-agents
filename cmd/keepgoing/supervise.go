@@ -87,11 +87,40 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	return exitOK
 }
 
+// daemonKey carries what is known of the daemon running a pass.
+type daemonKey struct{}
+
+// daemonPassContext hands a pass what its daemon knows of itself: when it
+// started and when its last completed pass began and ended.
+func daemonPassContext(ctx context.Context, monitor *daemoninfo.Server) context.Context {
+	started := monitor.StartedAt()
+	if started.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, daemonKey{}, supervise.DaemonInfo{StartedAt: started, LastPassAt: monitor.LastPassAt(), LastPassStartedAt: monitor.LastPassStartedAt()})
+}
+
+// daemonOf is what a pass's context says of its daemon; zero outside one.
+func daemonOf(ctx context.Context) supervise.DaemonInfo {
+	d, _ := ctx.Value(daemonKey{}).(supervise.DaemonInfo)
+	return d
+}
+
+// tickOptions are a check's options from the command's context: the
+// scheduler identity, and the daemon running it, when one is.
+func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
+	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx)}
+}
+
 // tickOnce runs one pass under the tick lock.
 func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
 	if errors.Is(err, lock.ErrHeld) {
 		e.errf("another tick holds the lock; skipping")
+		// Best effort, so the overdue rule can tell a hung check from a
+		// stopped scheduler: this check was started and turned away.
+		_ = state.NoteTurnedAway(cfg.Loop.StateDir, time.Now())
 		return exitSkipped
 	}
 	if err != nil {
@@ -106,7 +135,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		e.errf("%v; no tick performed; reload and retry", err)
 		return exitSkipped
 	}
-	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx), RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil}
+	opts := tickOptions(e, cfg, dryRun)
 	if fixedNow {
 		opts.Now = now
 	}
@@ -191,7 +220,9 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		// written while the pass runs starts the next pass immediately.
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
-		code := tickOnce(e, cfg, time.Time{}, dryRun, false, lease)
+		pass := e
+		pass.ctx = daemonPassContext(e.ctx, monitor)
+		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
@@ -366,6 +397,7 @@ type statusOut struct {
 	TaskSource       string         `json:"taskSource"`
 	TaskFile         string         `json:"taskFile,omitempty"`
 	Runtime          runtimeStatus  `json:"runtime"`
+	Schedule         scheduleStatus `json:"schedule"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
 }
@@ -643,6 +675,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
 	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+	if out.Schedule.Overdue {
+		fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
+	}
 	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
 	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
 	if st.Reprompts > 0 {
@@ -798,6 +833,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
+	out.Schedule = describeSchedule(&l, st, ctl, &out.Daemon, now)
 	if out.Daemon.State == "responsive" {
 		out.Runtime.NextCheck = out.Daemon.NextCheck
 	}

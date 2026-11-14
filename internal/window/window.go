@@ -4,6 +4,7 @@ package window
 
 import (
 	"fmt"
+	"slices"
 	"time"
 	// Windows has no system zoneinfo; embed it so configured windows load everywhere.
 	_ "time/tzdata"
@@ -118,4 +119,95 @@ func edge(y int, mo time.Month, d, h, m int, loc *time.Location) time.Time {
 // wall is t's local clock reading as if it were UTC, for comparing readings.
 func wall(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+}
+
+// Overlap is how much of [from, to) falls in the configured window. A nil
+// window means always, so it is the whole of it. At most maxOverlapDays days
+// are looked at; a longer stretch counts only its first maxOverlapDays.
+func Overlap(w *config.Window, from, to time.Time) (time.Duration, error) {
+	if !to.After(from) {
+		return 0, nil
+	}
+	if w == nil {
+		return to.Sub(from), nil
+	}
+	loc, err := time.LoadLocation(w.TZ)
+	if err != nil {
+		return 0, err
+	}
+	from, to = from.In(loc), to.In(loc)
+	if limit := from.AddDate(0, 0, maxOverlapDays); to.After(limit) {
+		to = limit
+	}
+	// The spans, which may overlap (one past midnight and the next day's),
+	// are merged first so no time is counted twice.
+	type span struct{ start, end time.Time }
+	var spans []span
+	// Yesterday's span may run past midnight into the first day. Noon names
+	// each day, and edge gives each span's start and end on the local
+	// clock, as Inside does, so days the clocks change are counted alike.
+	fy, fmo, fd := from.Date()
+	for k := -1; ; k++ {
+		day := time.Date(fy, fmo, fd+k, 12, 0, 0, 0, loc)
+		if !day.AddDate(0, 0, -1).Before(to) {
+			break
+		}
+		hours, ok := w.Days[day.Format("Mon")]
+		if !ok || len(hours) != 2 {
+			continue
+		}
+		sh, sm, err := clock(hours[0])
+		if err != nil {
+			return 0, err
+		}
+		eh, em, err := clock(hours[1])
+		if err != nil {
+			return 0, err
+		}
+		dy, dmo, dd := day.Date()
+		endDay := dd
+		if eh*60+em <= sh*60+sm {
+			endDay++
+		}
+		spans = append(spans, span{edge(dy, dmo, dd, sh, sm, loc), edge(dy, dmo, endDay, eh, em, loc)})
+	}
+	slices.SortFunc(spans, func(a, b span) int { return a.start.Compare(b.start) })
+	var total time.Duration
+	var cur *span
+	add := func(sp span) {
+		if s, e := maxTime(sp.start, from), minTime(sp.end, to); e.After(s) {
+			total += e.Sub(s)
+		}
+	}
+	for i := range spans {
+		switch {
+		case cur == nil:
+			cur = &spans[i]
+		case !spans[i].start.After(cur.end):
+			cur.end = maxTime(cur.end, spans[i].end)
+		default:
+			add(*cur)
+			cur = &spans[i]
+		}
+	}
+	if cur != nil {
+		add(*cur)
+	}
+	return total, nil
+}
+
+const maxOverlapDays = 400
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }

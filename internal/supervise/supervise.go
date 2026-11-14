@@ -3,6 +3,8 @@ package supervise
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,6 +61,11 @@ type Options struct {
 	// RoutineIgnored says the caller supplied an identity that could not be
 	// recorded. The check runs as usual and says so once.
 	RoutineIgnored bool
+	// Daemon is the daemon running this check, when one is: when it started
+	// and when its previous pass ended. A daemon that ran the last check
+	// too, with no pass since, was running through any gap: the computer
+	// slept.
+	Daemon DaemonInfo
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
@@ -218,11 +225,15 @@ type tick struct {
 	briefHold           []control.Brief // briefs named by a hold already raised for them
 	stopRequested       bool            // a stop is requested in control.json
 	stopsMade           []string        // targets this check sent a stop to
-	stBeforeRecords     state.File      // state before the records were handled, to undo them
-	quietFailure        bool            // a failure already reported by an earlier check
-	failure             *failureReport  // wording for the one error report of a failed check
-	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
-	lateReports         int             // reports started after the budget was spent
+	enabled             bool            // the loop is enabled in control.json
+	schedule            state.ScheduleInput
+	startClock          time.Time      // the check's own clock when it began
+	gap                 *state.Gap     // a gap this check is the first after, to report once recorded
+	stBeforeRecords     state.File     // state before the records were handled, to undo them
+	quietFailure        bool           // a failure already reported by an earlier check
+	failure             *failureReport // wording for the one error report of a failed check
+	observeSpent        time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports         int            // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -305,7 +316,8 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
-	t.deadline = opts.Clock().Add(tickBudget(cfg.Loop) + checkTail)
+	t.startClock = opts.Clock()
+	t.deadline = t.startClock.Add(tickBudget(cfg.Loop) + checkTail)
 	t.reserve = reserveFingerprint + reserveSend + reserveReports
 	if opts.Online != nil {
 		// The connectivity check is mandatory when it is needed, so its
@@ -522,12 +534,18 @@ func (t *tick) run() error {
 	}
 	res.Control = ctl.Summary()
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
+	t.enabled = ctl.Enabled
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
 	t.incidentStateLoaded = true
 	t.savedSends = t.st.SendsRecorded
+	// Whether a check was overdue is judged from the records as they were
+	// before this check, and nothing is sent or reserved for it here: the
+	// report goes out after this check is saved (see record).
+	t.schedule = t.scheduleInput(ctl)
+	t.gap = t.gapToReport()
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -1648,6 +1666,8 @@ type failureReport struct {
 
 func (t *tick) record(actErr error) error {
 	t.noteCheckGap()
+	state.NoteScheduleGap(&t.st, t.schedule, t.now)
+	reportGap := t.markCheckGap()
 	t.st.CheckedAt = t.now
 	// The count is of consecutive checks. Any check that did not end in that
 	// answer breaks the run, including one that was held or sent nothing.
@@ -1676,9 +1696,17 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	// A dry run leaves the identity of the last real check: it is the one
+	// a later gap is about.
+	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
+		t.st.StartedBy = &state.Routine{Source: r.Source, Routine: r.Routine}
+	} else if !t.opts.DryRun {
+		t.st.StartedBy = nil // started without a scheduler identity
+	}
 	if t.st.UnconfirmedReprompts > t.st.Reprompts {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
+	t.st.CheckFinishedAt = t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
@@ -1708,6 +1736,11 @@ func (t *tick) record(actErr error) error {
 		} else if !t.quietFailure {
 			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
 		}
+	}
+	// After the error report, so it cannot take one of the late-report
+	// slots the error report needs.
+	if reportGap {
+		t.reportCheckGap()
 	}
 	if t.res.DryRun {
 		extra["dryRun"] = true
@@ -1849,6 +1882,125 @@ func copyState(f state.File) state.File {
 	}
 	return c
 }
+
+// scheduleInput is what the overdue rule needs besides state.json.
+func (t *tick) scheduleInput(ctl control.File) state.ScheduleInput {
+	return ScheduleInput(&t.loop, ctl, t.opts.Daemon)
+}
+
+// windowID names an operating window by its contents, so a changed window
+// is told from the old one.
+func windowID(w *config.Window) string {
+	days := make([]string, 0, len(w.Days))
+	for d, span := range w.Days {
+		days = append(days, d+"="+strings.Join(span, "-"))
+	}
+	slices.Sort(days)
+	sum := sha256.Sum256([]byte(w.TZ + "|" + strings.Join(days, ",")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// DaemonInfo is what is known of a daemon verified to be running a loop:
+// when it started, when its last pass ended and the next check it set.
+// Zero values are unknown.
+type DaemonInfo struct {
+	StartedAt, LastPassAt, LastPassStartedAt, NextCheckAt time.Time
+}
+
+// ScheduleInput is what the overdue rule needs besides state.json, for the
+// supervisor and for everything that reads a loop's status, so they judge
+// alike.
+func ScheduleInput(loop *config.Loop, ctl control.File, d DaemonInfo) state.ScheduleInput {
+	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
+		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, StopRequested: ctl.Stop, ControlChangedAt: ctl.UpdatedAt,
+		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonLastPassStartedAt: d.LastPassStartedAt, DaemonNextCheckAt: d.NextCheckAt,
+		TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}
+	if w := loop.Window; w != nil {
+		in.WindowID = windowID(w)
+		in.InWindow = func(from, to time.Time) time.Duration {
+			if d, err := window.Overlap(w, from, to); err == nil {
+				return d
+			}
+			return to.Sub(from)
+		}
+	}
+	return in
+}
+
+// gapToReport is the gap this check is the first after, if it has not been
+// reported: one a dry run saw, or the one the overdue rule finds before
+// this check.
+func (t *tick) gapToReport() *state.Gap {
+	if g := t.st.CheckGapPending; g != nil {
+		c := *g
+		return &c
+	}
+	sch := state.ScheduleOf(t.st, t.schedule, t.now)
+	if !sch.Overdue {
+		return nil
+	}
+	return &state.Gap{From: sch.LastCheckAt, To: t.now, For: sch.For, Usual: sch.Usual, Threshold: sch.Threshold, Windowed: t.schedule.InWindow != nil,
+		StartedBy: sch.StartedBy, Blocked: sch.Blocked, NotRecorded: sch.NotRecorded}
+}
+
+// markCheckGap settles the gap in the state about to be saved: that save
+// also records this check's time, which ends the gap, so no later check
+// reports it. A dry run reports nothing and leaves it for the next real
+// check. It says whether to report it after the save.
+func (t *tick) markCheckGap() bool {
+	g := t.gap
+	if g == nil || !t.loop.Report.ReportsEvent(checkGapEvent) {
+		if !t.opts.DryRun {
+			t.st.CheckGapPending = nil
+		}
+		return false
+	}
+	if t.opts.DryRun {
+		t.st.CheckGapPending = g
+		return false
+	}
+	t.st.CheckGapPending = nil
+	return true
+}
+
+// reportCheckGap sends the check_gap report for a gap already saved as
+// reported. Killed before the save, nothing was sent and the next check
+// reports it; killed after, it is marked, and never sent twice.
+func (t *tick) reportCheckGap() {
+	g := t.gap
+	length := state.ShortDuration(g.For)
+	if g.Windowed {
+		length += " of its working hours"
+	}
+	text := fmt.Sprintf("%s: no check was recorded from %s to %s (%s%s)", t.loop.Name, g.From.UTC().Format(time.RFC3339), g.To.UTC().Format(time.RFC3339), length, usualClause(g))
+	switch r := g.StartedBy; {
+	case g.NotRecorded:
+		text += ": the daemon was running checks, but they were not being recorded; its error output says why."
+	case g.Blocked:
+		text += ": checks were started, but each found an earlier check still running, which may have hung."
+	case r != nil && r.Source == state.RoutineBBAutomation:
+		text += ": the computer may have slept, or the BB automation that runs this loop (" + r.Routine + ") may have disabled itself and been turned back on; check it in BB's Automations."
+	default:
+		text += ": the computer may have slept, or the scheduler that runs keepgoing tick had stopped."
+	}
+	text += " Checks are running again."
+	data := map[string]any{"lastCheckAt": g.From, "gap": state.ShortDuration(g.For)}
+	if g.Usual > 0 {
+		data["usual"] = state.ShortDuration(g.Usual)
+	}
+	t.report(checkGapEvent, text, data)
+}
+
+// usualClause says what the gap is measured against.
+func usualClause(g *state.Gap) string {
+	if g.Usual <= 0 {
+		return fmt.Sprintf(", longer than the %s a loop may go without a check before its usual interval is known", state.ShortDuration(g.Threshold))
+	}
+	return ", where checks normally run every " + state.ShortDuration(g.Usual)
+}
+
+// checkGapEvent is the report event for a gap in which no check ran.
+const checkGapEvent = "check_gap"
 
 // reserveReport records a report that is sent once, whose record of having
 // been sent is otherwise only saved at the end of the check, before it is
@@ -2291,7 +2443,7 @@ func (t *tick) verifyOutage() {
 // the scheduled interval look like an outage.
 const (
 	cadenceWindow   = 5
-	cadenceMinGaps  = 3
+	cadenceMinGaps  = state.CadenceMinGaps
 	missedGapFactor = 3
 )
 
@@ -2395,7 +2547,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true, checkGapEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
