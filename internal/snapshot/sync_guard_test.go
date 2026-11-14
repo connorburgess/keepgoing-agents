@@ -5,10 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/testexec"
 )
 
 // The packages whose tests skip the flush, each with the file that says so.
@@ -104,16 +105,18 @@ func TestOnlyNamedTestFilesSkipTheFlush(t *testing.T) {
 // the call panics, and the flush is attempted before and after it. The
 // environment and arguments a test binary would see make no difference.
 func TestFlushCannotBeSkippedOutsideATestBinary(t *testing.T) {
-	exe := ""
-	if runtime.GOOS == "windows" {
-		exe = ".exe"
-	}
-	bin := filepath.Join(t.TempDir(), "flushprobe"+exe)
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("not run: building an ordinary program needs the Go toolchain, which is not on PATH (as in the test bundle for machines without Go)")
 	}
-	if out, err := exec.Command("go", "build", "-o", bin, "./testdata/flushprobe").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	// Built and run once through testexec, so the host's first-run check of
+	// a new file is passed before the cases below depend on it.
+	d, err := testexec.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, err := d.Build("flushprobe", "./testdata/flushprobe", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 	want := "open file flushed: true\nflush attempted before skip: true\nskip refused: true\nflush attempted after skip: true\n"
 	for _, tc := range []struct {
