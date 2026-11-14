@@ -146,9 +146,12 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
   "immediately": true,
   "options": [
     {"label": "Stop the Conversation", "lanes": false},
-    {"label": "Stop It and Its 3 Lanes", "lanes": true}
+    {"label": "Stop It and Its 3 Lanes", "lanes": true},
+    {"label": "Stop It, Its Lanes and Their 4 Queued Messages", "lanes": true, "dropQueued": true}
   ]
 }
 ```
 
-`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object (today's) offers the one stop, which waits for the next check. The macOS menu already reads this shape and offers it only when it is there.
+`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`, and the one with `dropQueued: true`, offered only when messages are queued in lanes that have not started, also passes `--drop-queued`, which deletes those messages and their text. `--drop-queued` is never passed for any other option, and never without `--lanes`. The object may also carry counts (`lanes`, `queued`) for the labels; a program does not need them. A review with no `stop` object (one for a loop whose agent has no lanes, or from an earlier build) offers the one stop, which waits for the next check.
+
+**Reading it so the next addition cannot break Stop.** The macOS menu shows the review whatever the options say, and offers only the options it fully understands, up to four: an option with a field it does not know, or a known field of the wrong type, or `dropQueued` without `lanes`, or with no label, or alike in what it does to an earlier one, is not offered. An option is never offered without a field the menu does not know, because its button would then do less than its words say. With no option understood, or `immediately` unreadable, it offers the one plain stop.
