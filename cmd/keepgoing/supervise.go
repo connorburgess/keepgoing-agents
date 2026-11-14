@@ -1604,7 +1604,7 @@ func classifyRecord(dir, file string, err error) unreadableRecord {
 		// Only an error from the filesystem means the file was not read;
 		// what is at the path says which.
 		r.Problem = "cannot_open"
-		if info, lerr := os.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
+		if info, lerr := snapshot.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
 			r.Problem = "not_a_file"
 		}
 	case errors.As(err, &syntax):

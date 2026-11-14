@@ -721,7 +721,7 @@ const LaneKeyName = "lanes.key"
 // different name in every loop. It is written before it is first used.
 func LaneKey(dir string) ([]byte, error) {
 	path := filepath.Join(dir, LaneKeyName)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := snapshot.ReadRecord(path); err == nil {
 		if key, err := hex.DecodeString(strings.TrimSpace(string(b))); err == nil && len(key) == 32 {
 			return key, nil
 		}
