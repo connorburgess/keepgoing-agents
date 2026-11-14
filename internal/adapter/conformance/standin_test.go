@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,9 @@ func standIn(part, dir string, args []string) int {
 		if part == "codex" && len(args) > 0 && args[0] == "app-server" {
 			return codexAppServer(situation)
 		}
+		if err := os.WriteFile(filepath.Join(dir, "agent-process"), []byte(fmt.Sprintf("%d %d", os.Getpid(), os.Getppid())), 0600); err != nil {
+			return 95
+		}
 		mark(dir, "begin")
 		play := standInClaude
 		if part == "codex" {
@@ -105,6 +109,15 @@ func standIn(part, dir string, args []string) int {
 		}
 		code := play(dir, situation, args)
 		mark(dir, "finish")
+		if situation == Crashed {
+			if b, err := os.ReadFile(filepath.Join(dir, "exit-delay")); err == nil {
+				ms, _ := strconv.Atoi(string(b))
+				if ms < 0 || ms > 3000 {
+					return 94
+				}
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+			}
+		}
 		return code
 	}
 	return 97

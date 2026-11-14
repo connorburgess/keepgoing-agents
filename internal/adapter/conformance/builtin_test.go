@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,10 +23,11 @@ import (
 
 // rig is the stand-in side of a built-in adapter under test.
 type rig struct {
-	dir      string // the stand-in's own records
-	stateDir string
-	turns    bool // the agent runs one turn per process
-	supports map[Situation]bool
+	dir         string // the stand-in's own records
+	stateDir    string
+	turns       bool // the agent runs one turn per process
+	supports    map[Situation]bool
+	retainAgent func(int) error
 }
 
 func (r *rig) Supports(s Situation) bool     { return r.supports[s] }
@@ -90,11 +92,37 @@ func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
 		if err != nil || st.Phase != runner.Running {
 			return fmt.Errorf("the staging turn reads as %s: %v", st.Phase, err)
 		}
+		// The stand-in is blocked on quit, and this live wrapper still owns
+		// its original child process reference. Capture before killing it.
+		b, err := os.ReadFile(filepath.Join(r.dir, "agent-process"))
+		if err != nil {
+			return err
+		}
+		fields := strings.Fields(string(b))
+		if len(fields) != 2 {
+			return errors.New("invalid fixture agent identity")
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return err
+		}
+		parent, err := strconv.Atoi(fields[1])
+		if err != nil || parent != st.Record.PID {
+			return errors.New("fixture agent does not belong to the owned wrapper")
+		}
+		if err := r.retainAgent(pid); err != nil {
+			return err
+		}
+		current, err := runner.Dir(filepath.Join(r.stateDir, "targets", "primary")).Status()
+		if err != nil || current.Phase != runner.Running || current.Record.StopKey != st.Record.StopKey {
+			return errors.New("fixture wrapper ownership changed during agent capture")
+		}
 		wrapper, err := os.FindProcess(st.Record.PID)
 		if err != nil {
 			return err
 		}
-		if err := wrapper.Kill(); err != nil {
+		killErr := wrapper.Kill()
+		if err := errors.Join(killErr, wrapper.Release()); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(r.dir, "quit"), nil, 0o600); err != nil {
@@ -180,7 +208,7 @@ func subject(t *testing.T, kind string) Subject {
 	root := t.TempDir()
 	r := &rig{dir: filepath.Join(root, "stand-in"), stateDir: filepath.Join(root, "state")}
 	project, home, temp := filepath.Join(root, "project"), filepath.Join(root, "home"), filepath.Join(root, "tmp")
-	trackFixtureWrappers(t, project)
+	r.retainAgent = trackFixtureWrappers(t, project)
 	for _, dir := range []string{r.dir, r.stateDir, project, home, temp} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
