@@ -147,8 +147,8 @@ var fallbackAddLimitations = []string{
 const fallbackAddUsage = `Add a fallback to an existing loop: another provider, account or model.
 
 Usage:
-  keepgoing fallbacks add -c keepgoing.yaml                 guided questions, preview, then confirm
-  keepgoing fallbacks add -c keepgoing.yaml --non-interactive --agent codex [flags]
+  keepgoing fallbacks add -c looptender.yaml                 guided questions, preview, then confirm
+  keepgoing fallbacks add -c looptender.yaml --non-interactive --agent codex [flags]
 
 The command looks up installed agent CLIs without running them, previews the
 fallback and the handoff order, and writes only after confirmation (or with
@@ -179,7 +179,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 		fmt.Fprint(e.stderr, fallbackAddUsage)
 		fs.PrintDefaults()
 	}
-	fs.StringVar(&o.cfgPath, "c", "keepgoing.yaml", "path to the loop's config file")
+	fs.StringVar(&o.cfgPath, "c", "", configFlagHelp("path to the loop's config file"))
 	fs.StringVar(&o.agent, "agent", "", "claude or codex (headless), or bb (an existing BB thread)")
 	fs.StringVar(&o.thread, "thread", "", "bb: existing thread ID; may be the primary's thread with another model")
 	fs.BoolVar(&o.newThread, "new-thread", false, "bb: instead of --thread, let a handoff start a new BB thread on this provider and model")
@@ -226,8 +226,11 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
 	// Relative paths in a config resolve against the directory it was opened
 	// from, so a symlinked path would describe a different loop than its target.
+	if !configDefault(e, "fallbacks add", fs, &o.cfgPath) {
+		return exitUsage
+	}
 	if info, err := os.Lstat(o.cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return refuse(errors.New("The config path is a symbolic link. Pass the real keepgoing.yaml instead."))
+		return refuse(errors.New("The config path is a symbolic link. Pass the real configuration file instead."))
 	}
 	cfg, err := config.Load(o.cfgPath)
 	if err != nil {
@@ -835,7 +838,7 @@ func planFallbackAdd(cfg *config.Config, o fallbackAddOptions, lookPath func(str
 			return nil, fmt.Errorf("The resulting configuration would be invalid: %w", err)
 		}
 		if p.createFile && next.Loop.Fallbacks != "fallbacks.yaml" || strings.Join(next.Loop.Errors.FailoverOn, ",") != strings.Join(p.failoverOn, ",") {
-			return nil, errors.New("Could not update keepgoing.yaml safely; edit it by hand.")
+			return nil, errors.New("Could not update the configuration file safely; edit it by hand.")
 		}
 	}
 	return p, nil
@@ -1036,7 +1039,7 @@ func writeFallbackAdd(p *fallbackAddPlan) (int, error) {
 		}
 		if err != nil {
 			_ = os.Remove(p.fallbacksPath) // created above, by this command
-			return exitFailed, errors.New("could not update keepgoing.yaml; nothing written")
+			return exitFailed, errors.New("could not update the configuration file; nothing written")
 		}
 		p.written = true
 		return exitOK, nil
@@ -1047,7 +1050,7 @@ func writeFallbackAdd(p *fallbackAddPlan) (int, error) {
 	p.written = true
 	if p.configYAML != nil {
 		if err := fallbackAddReplace(p.cfgPath, p.configYAML); err != nil {
-			return exitFailed, errors.New("the fallback was added, but errors.failover_on could not be updated in keepgoing.yaml; automatic handoff is unchanged")
+			return exitFailed, errors.New("the fallback was added, but errors.failover_on could not be updated in the configuration file; automatic handoff is unchanged")
 		}
 	}
 	return exitOK, nil

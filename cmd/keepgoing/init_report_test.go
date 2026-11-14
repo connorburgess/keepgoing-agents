@@ -63,7 +63,7 @@ func TestInitJSONPreviewAndCreateFromStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ConfigPath != filepath.Join(f.destination, "keepgoing.yaml") || created.StateDir != cfg.Loop.StateDir || created.PromptPath != cfg.Loop.PromptFile || created.Primary.Agent != refOf(cfg.Loop.Agent) || created.Limits.Interval != cfg.Loop.Daemon.Interval.String() || created.Limits.MaxNudges != cfg.Loop.Progress.MaxNudges {
+	if created.ConfigPath != filepath.Join(f.destination, config.FileName) || created.StateDir != cfg.Loop.StateDir || created.PromptPath != cfg.Loop.PromptFile || created.Primary.Agent != refOf(cfg.Loop.Agent) || created.Limits.Interval != cfg.Loop.Daemon.Interval.String() || created.Limits.MaxNudges != cfg.Loop.Progress.MaxNudges {
 		t.Fatal("result disagrees with generated configuration")
 	}
 	prompt, err := os.ReadFile(created.PromptPath)
@@ -223,7 +223,7 @@ func TestInitJSONOutputFailureRetainsCreatedSetup(t *testing.T) {
 	if code != exitFailed || strings.Contains(errs.String(), "fictional-secret") {
 		t.Fatal("failed output not reported safely")
 	}
-	if _, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml")); err != nil {
+	if _, err := config.Load(filepath.Join(f.destination, config.FileName)); err != nil {
 		t.Fatal("created setup not retained", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestInitTaskFileSnapshotBinding(t *testing.T) {
 					t.Fatal("missing snapshot explanation")
 				}
 			}
-			cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+			cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 			if err != nil {
 				t.Fatal(err)
 			}

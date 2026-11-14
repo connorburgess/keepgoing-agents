@@ -30,18 +30,18 @@ import (
 // route of the loop's own can count for a standard route that shares its id.
 //
 // own copies the routes the standard list resolves to for this loop into a
-// new fallbacks file beside keepgoing.yaml, exactly as resolved, and points
+// new fallbacks file beside the configuration file, exactly as resolved, and points
 // loop.fallbacks at it. The loop's recorded check results stay: they are for
 // the same routes.
 //
-// Either way only keepgoing.yaml's routes lines change, and the loop must be
+// Either way only the configuration file's routes lines change, and the loop must be
 // on its first route, or for own on a route the list still holds.
 
 const routesFollowUsage = `Switch a loop between the standard route list and a list of its own.
 
 Usage:
-  keepgoing routes follow-standard (--loop NAME | -c keepgoing.yaml)
-  keepgoing routes own (--loop NAME | -c keepgoing.yaml) [--file fallbacks.yaml]
+  keepgoing routes follow-standard (--loop NAME | -c looptender.yaml)
+  keepgoing routes own (--loop NAME | -c looptender.yaml) [--file fallbacks.yaml]
 
 Each command previews the change and writes only after you answer yes, or
 with --yes. --dry-run previews only; --expect binds --yes to a preview.
@@ -67,7 +67,7 @@ func routesFollow(e env, op string, args []string, input io.Reader) int {
 	dryRun := fs.Bool("dry-run", false, "preview only; write nothing")
 	asJSON := fs.Bool("json", false, "print the versioned route_change object; requires --yes or --dry-run")
 	expect := fs.String("expect", "", "with --yes: write only if nothing changed since the preview that gave this value")
-	file := fs.String("file", "fallbacks.yaml", "own: the new fallbacks file, beside keepgoing.yaml")
+	file := fs.String("file", "fallbacks.yaml", "own: the new fallbacks file, beside the configuration file")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -78,7 +78,7 @@ func routesFollow(e env, op string, args []string, input io.Reader) int {
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	switch {
 	case fs.NArg() != 0 || (*cfgPath == "") == (*loopName == ""):
-		e.errf("usage: keepgoing routes %s (--loop NAME | -c keepgoing.yaml)", op)
+		e.errf("usage: keepgoing routes %s (--loop NAME | -c looptender.yaml)", op)
 		return exitUsage
 	case op != "own" && set["file"]:
 		e.errf("routes %s: --file applies only to routes own", op)
@@ -94,7 +94,7 @@ func routesFollow(e env, op string, args []string, input io.Reader) int {
 	path := *cfgPath
 	if path != "" {
 		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			e.errf("routes %s: refused, nothing written.\n  The config path is a symbolic link. Pass the real keepgoing.yaml instead.", op)
+			e.errf("routes %s: refused, nothing written.\n  The config path is a symbolic link. Pass the real configuration file instead.", op)
 			return exitUsage
 		}
 	}
@@ -172,7 +172,7 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 		req.loop = cfg.Loop.Name
 	}
 	if info, err := os.Lstat(cfg.Path()); err != nil || !info.Mode().IsRegular() {
-		return routeChangeRefused(req, refuseRoute("edit_by_hand", "keepgoing.yaml is a symbolic link or not a regular file.")), exitUsage
+		return routeChangeRefused(req, refuseRoute("edit_by_hand", "The configuration file is a symbolic link or not a regular file.")), exitUsage
 	}
 	if ref := ownListAuthority(cfg.Loop.StateDir, req.caller); ref != nil {
 		return routeChangeRefused(req, ref), exitUsage
@@ -250,7 +250,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 	current := st.Target()
 	raw, err := os.ReadFile(cfg.Path())
 	if err != nil {
-		return nil, refuseRoute("configuration_unavailable", "keepgoing.yaml cannot be read.")
+		return nil, refuseRoute("configuration_unavailable", "The configuration file cannot be read.")
 	}
 	o.Before = candidateIDs(cfg.FallbackSet)
 	var after *config.Fallbacks
@@ -301,7 +301,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		}
 		edited, ok := setLoopRoutes(raw, true, "")
 		if !ok {
-			return nil, refuseRoute("edit_by_hand", "keepgoing.yaml's loop section cannot be changed line by line; set loop.routes: standard by hand.")
+			return nil, refuseRoute("edit_by_hand", "The configuration file's loop section cannot be changed line by line; set loop.routes: standard by hand.")
 		}
 		// Guided setup also turns handoff on for rate limits, as init does,
 		// but only when it is off: a setting of the loop's own is kept.
@@ -311,7 +311,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 			// form is left to a person rather than re-emitting the file.
 			next, ok := setInlineFailoverOn(edited, []string{"rate_limit"})
 			if !ok {
-				return nil, refuseRoute("edit_by_hand", "keepgoing.yaml's errors.failover_on is not written as an inline list, so it cannot be changed line by line; set it to [rate_limit] by hand.")
+				return nil, refuseRoute("edit_by_hand", "The configuration file's errors.failover_on is not written as an inline list, so it cannot be changed line by line; set it to [rate_limit] by hand.")
 			}
 			edited = next
 			o.FailoverOn = &failoverChange{Before: []string{}, After: []string{"rate_limit"}}
@@ -322,7 +322,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 				x.Errors.FailoverOn = []string{"rate_limit"}
 			}
 		}) {
-			return nil, refuseRoute("edit_by_hand", "keepgoing.yaml's loop section cannot be changed line by line; set loop.routes: standard by hand.")
+			return nil, refuseRoute("edit_by_hand", "The configuration file's loop section cannot be changed line by line; set loop.routes: standard by hand.")
 		}
 		p.configYAML = edited
 		if l.Fallbacks != "" {
@@ -353,11 +353,11 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 			}
 		}
 		if file == "" || file != filepath.Base(file) || strings.HasPrefix(file, ".") {
-			return nil, refuseRoute("usage", "--file is a file name beside keepgoing.yaml, such as fallbacks.yaml")
+			return nil, refuseRoute("usage", "--file is a file name beside the configuration file, such as fallbacks.yaml")
 		}
 		p.fallbacksPath = filepath.Join(filepath.Dir(cfg.Path()), file)
 		if _, err := os.Lstat(p.fallbacksPath); !errors.Is(err, os.ErrNotExist) {
-			return nil, refuseRoute("file_exists", "%s already exists beside keepgoing.yaml; pass --file with a new name.", file)
+			return nil, refuseRoute("file_exists", "%s already exists beside the configuration file; pass --file with a new name.", file)
 		}
 		after = cfg.FallbackSet
 		body, err := yaml.Marshal(config.Fallbacks{Version: 1, Redundancy: after.Redundancy, Probe: after.Probe, Candidates: after.Candidates})
@@ -371,7 +371,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		}
 		edited, ok := setLoopRoutes(raw, false, file)
 		if !ok || !sameLoopAfterEdit(raw, edited, func(x *config.Loop) { x.Fallbacks, x.Routes, x.RoutesAllow = file, "", nil }) {
-			return nil, refuseRoute("edit_by_hand", "keepgoing.yaml's loop section cannot be changed line by line; set loop.fallbacks by hand.")
+			return nil, refuseRoute("edit_by_hand", "The configuration file's loop section cannot be changed line by line; set loop.fallbacks by hand.")
 		}
 		p.configYAML = edited
 		// The files as they would be must load as the loop will load them:
@@ -384,7 +384,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 			return nil, refuseRoute("not_possible", "The loop would not load with its own copy of the routes, so nothing is written: %s", msg)
 		}
 		o.Warnings = append(o.Warnings, "changes to the standard list no longer reach this loop; its routes are copied as they resolve now",
-			"the copy includes, for each route, what the loop resolves into it from keepgoing.yaml: environment values, executable, extra arguments and working directory, and the loop's own conversation for a same-conversation route; later changes to those in keepgoing.yaml no longer reach these routes")
+			"the copy includes, for each route, what the loop resolves into it from its configuration file: environment values, executable, extra arguments and working directory, and the loop's own conversation for a same-conversation route; later changes to those in the configuration file no longer reach these routes")
 	default:
 		return nil, refuseRoute("usage", "unknown change %q", req.op)
 	}
@@ -557,7 +557,7 @@ func writeRouteSource(p *sourcePlan) error {
 		if p.fallbacksYAML != nil {
 			os.Remove(p.fallbacksPath)
 		}
-		return errors.New("keepgoing.yaml could not be updated; nothing written")
+		return errors.New("the configuration file could not be updated; nothing written")
 	}
 	return nil
 }
@@ -636,12 +636,12 @@ func loadsAsWritten(cfgPath string, configYAML []byte, file string, fallbacksYAM
 	removeOwnCheckLeftovers(cfgPath)
 	dir, err := os.MkdirTemp(filepath.Dir(cfgPath), ownCheckPrefix+"*")
 	if err != nil {
-		return "a private directory to check it in cannot be created beside keepgoing.yaml (is its directory writable?)", false
+		return "a private directory to check it in cannot be created beside the configuration file (is its directory writable?)", false
 	}
 	defer os.RemoveAll(dir)
 	cfgCopy := filepath.Join(dir, filepath.Base(cfgPath))
 	if os.WriteFile(cfgCopy, configYAML, 0o600) != nil || os.WriteFile(filepath.Join(dir, file), fallbacksYAML, 0o600) != nil {
-		return "the files to check could not be written beside keepgoing.yaml", false
+		return "the files to check could not be written beside the configuration file", false
 	}
 	if _, err := config.Load(cfgCopy); err != nil {
 		msg := strings.ReplaceAll(err.Error(), dir+string(os.PathSeparator), "")

@@ -99,7 +99,7 @@ export async function setupOnHost(input: { bin: string; target: SetupTarget; nam
   const parsed = following ?? cliPlan.safeParse(result.data);
   if (result.code !== 0 || !parsed.success) throw new Error("Setup failed or returned an unsupported result. " + (withGoal ? "Goal setup needs a CLI with init --with-goal (after v0.1.4); update the CLI or explicitly turn off goal creation and preview again. " : "") + "Check the setup destination; existing files are never overwritten.");
   const p = parsed.data;
-  if (!isAbsolute(p.configPath) || basename(p.configPath) !== "keepgoing.yaml" || p.stateDir !== join(dirname(p.configPath), "state")) throw new Error("Setup paths could not be verified.");
+  if (!isAbsolute(p.configPath) || !["looptender.yaml", "keepgoing.yaml"].includes(basename(p.configPath)) || p.stateDir !== join(dirname(p.configPath), "state")) throw new Error("Setup paths could not be verified.");
   if (p.outcome !== (dryRun ? "preview" : "created") || p.loop !== name || p.project !== project || p.primary.agent.bbThread !== target.threadId || p.primary.agent.provider !== target.provider) throw new Error("Setup returned a different target. No supervisor was started.");
   if (bounds && (p.limits.maxSends !== bounds.maxSends || durationMs(p.limits.noProgressTimeout ?? "") !== durationMs(bounds.noProgressTimeout))) throw new Error("Setup did not report the requested loop-wide limits. No supervisor was started.");
   if (withGoal) {

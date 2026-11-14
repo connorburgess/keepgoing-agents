@@ -30,6 +30,16 @@ test("host setup uses stdin, fixed flags and verified CLI output", async () => {
     await assert.rejects(setupOnHost(input, undefined, run));
     reply.primary.agent.bbThread = target.threadId; reply.schemaVersion = 99;
     await assert.rejects(setupOnHost(input, undefined, run));
+    // A CLI that writes the configuration under its current name, and one
+    // from before the rename, are both accepted; no other name is.
+    reply.schemaVersion = 1;
+    for (const name of ["looptender.yaml", "keepgoing.yaml"]) {
+      reply.configPath = join(root, "outside", name);
+      const r = await setupOnHost(input, undefined, run);
+      assert.ok("plan" in r); assert.equal(r.plan.configPath, reply.configPath);
+    }
+    reply.configPath = join(root, "outside", "other.yaml");
+    await assert.rejects(setupOnHost(input, undefined, run));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -194,7 +204,10 @@ test("built CLI creates the goal through the host contract without running BB", 
     assert.equal(preview.plan.startJson, true); assert.equal(created.plan.startJson, true);
     // The real CLI accepts the bounds flags, reports them, and writes them.
     assert.equal(created.plan.limits.maxSends, 40); assert.equal(created.plan.limits.noProgressTimeout, "24h0m0s");
-    const config = await readFile(join(destination, "keepgoing.yaml"), "utf8");
+    // The file the CLI reports it wrote: looptender.yaml from a build after
+    // v0.2.0, keepgoing.yaml from one before.
+    assert.equal(created.plan.configPath, join(destination, "looptender.yaml"));
+    const config = await readFile(created.plan.configPath, "utf8");
     assert.match(config, /max_sends: 40/); assert.match(config, /no_progress_timeout: 24h/);
     const goal = JSON.parse(await readFile(join(destination, "state", "goal.json"), "utf8"));
     assert.equal(goal.revisions[0].spec.title, "goal-contract");
@@ -245,6 +258,16 @@ test("following the standard list passes --routes standard and keeps only id, mo
     const r = planned(await setupOnHost(input, undefined, run));
     assert.deepEqual(sent.slice(-5), ["--task-file", "-", "--routes", "standard", "--dry-run"]);
     assert.deepEqual(r.plan.routes, { list: "standard", handoffOn: "rate_limit", apply: [{ id: "codex-large", model: "example-large", group: "codex-large" }] });
+    // A following setup accepts the current CLI name and the legacy name.
+    for (const filename of ["looptender.yaml", "keepgoing.yaml"]) {
+      reply.configPath = join(root, "outside", filename);
+      const accepted = planned(await setupOnHost(input, undefined, run));
+      assert.equal(accepted.plan.configPath, reply.configPath);
+      assert.deepEqual(accepted.plan.routes, r.plan.routes);
+    }
+    reply.configPath = join(root, "outside", "other.yaml");
+    await assert.rejects(setupOnHost(input, undefined, run), /Setup paths could not be verified/);
+    reply.configPath = join(root, "outside", "looptender.yaml");
     assert.ok(!JSON.stringify(r.plan).includes("/private/fictional/workdir"), "no path crosses back");
     assert.ok(!JSON.stringify(r.plan).includes("explicit_directory"));
     // What was asked for must come back: routes, at least one, and handoff on.
@@ -291,7 +314,8 @@ test("built CLI follows the standard route list through the host contract", { sk
     assert.deepEqual(preview.plan.routes?.apply, [{ id: "codex-large", model: "example-large", group: "codex-large" }]);
     const created = planned(await setupOnHost({ ...input, dryRun: false }, undefined, run));
     assert.deepEqual(created.plan, preview.plan);
-    const config = await readFile(join(destination, "keepgoing.yaml"), "utf8");
+    assert.equal(created.plan.configPath, join(destination, "looptender.yaml"));
+    const config = await readFile(created.plan.configPath, "utf8");
     assert.match(config, /routes: standard/); assert.match(config, /failover_on:\s*\n?\s*- rate_limit|failover_on: \[rate_limit\]/);
     await assert.rejects(access(join(destination, "fallbacks.yaml")));
     await assert.rejects(access(trap));

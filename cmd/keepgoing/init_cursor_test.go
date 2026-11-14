@@ -152,7 +152,7 @@ func TestInitCursorWizardDiscoveryAndExistingDefaults(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("wizard: %d %s", code, &errOut)
 			}
-			cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+			cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 			if err != nil || cfg.Loop.Adapter != tt.want {
 				t.Fatalf("default: %+v %v", cfg, err)
 			}
