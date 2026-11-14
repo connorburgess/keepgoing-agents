@@ -554,6 +554,7 @@
     dl.appendChild(fact("Last check", lastCheck(l.lastCheck)));
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
+    if (l.build && l.build.text) dl.appendChild(fact("Build", l.build.availability === "unknown" || l.build.availability === "not_recorded" ? unknown(l.build.text) : el("span", null, l.build.text)));
     if (l.noProgress) {
       var np = l.noProgress, pf = frag();
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
@@ -898,6 +899,8 @@
   function renderServed() {
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
+    var vt = $("version");
+    if (vt && state.server && state.server.versionText) vt.textContent = state.server.versionText;
     var p = $("served");
     if (!p) return;
     p.textContent = "";
