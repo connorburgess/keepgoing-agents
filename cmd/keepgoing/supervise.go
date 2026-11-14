@@ -56,6 +56,13 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	if w := l.TickTimeoutWarning(); w != "" {
 		e.errf("warning: %s", w)
 	}
+	if ts := cfg.TimingSummary(); ts != nil {
+		fmt.Fprintln(e.stdout, ts.Collecting)
+		fmt.Fprintln(e.stdout, ts.Cost)
+		for _, w := range ts.Warnings {
+			e.errf("warning: %s", w)
+		}
+	}
 	if w := l.NetworkCheckWarning(); w != "" {
 		e.errf("warning: %s", w)
 	}
@@ -388,8 +395,10 @@ type statusOut struct {
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
-	StateDir       string               `json:"stateDir"`
-	Version        string               `json:"version"`
+	// Timing is what usage-aware timing does for this loop; absent when off.
+	Timing   *config.TimingSummary `json:"timing,omitempty"`
+	StateDir string                `json:"stateDir"`
+	Version  string                `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -713,6 +722,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "switch-back: stopped after the primary rejected %d briefs; resume, retarget or the next handoff restarts it\n", b.SwitchBackRejected)
 	}
 	printUsage(w, "usage:     ", "projected: ", out.Usage)
+	if ts := out.Timing; ts != nil {
+		fmt.Fprintln(w, ts.Collecting)
+		fmt.Fprintln(w, ts.Cost)
+		for _, x := range ts.Warnings {
+			fmt.Fprintln(w, "warning: "+x)
+		}
+	}
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }
@@ -863,6 +879,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		out.TargetSession = savedSession(l.StateDir, st.Target(), out.TargetAgent.Adapter)
 	}
 	out.Usage = []usageView{}
+	out.Timing = cfg.TimingSummary()
 	if fb := cfg.FallbackSet; fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when

@@ -1333,7 +1333,48 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
 		}
 	}
+	if t.timingProbe() {
+		ran++
+	}
 	return ran
+}
+
+// timingProbe runs the first route's usage-aware timing probe when it is due.
+// It is the one scheduled probe of a route in use: the owner turned timing on
+// to read that allowance. It runs under the same conditions as the other
+// scheduled probes, counts against the route's own daily cap, and only
+// collects a reading; nothing decides from it.
+func (t *tick) timingProbe() bool {
+	if !t.loop.TimingOn() || t.fb == nil || t.reg == nil {
+		return false
+	}
+	c := t.loop.PrimaryCandidate()
+	due, _, near := t.reg.TimingProbe(c, *t.loop.Timing, t.fb.Probe, probe.UsageIdentity(c), t.now)
+	if !due {
+		return false
+	}
+	if t.networkDown() {
+		t.skipProbe(c.ID, probe.Scheduled, "network_down")
+		return false
+	}
+	if t.left() < t.fb.Probe.Timeout.Duration {
+		t.skipProbe(c.ID, probe.Scheduled, "tick_timeout")
+		return false
+	}
+	r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
+	r.At, r.Tier = t.now, probe.Scheduled
+	t.reg.Record(c.ID, r)
+	t.probeSucceeded = t.probeSucceeded || r.OK
+	if near != nil {
+		t.reg.MarkNearReset(c.ID, *near, t.now)
+	}
+	t.keepFailure(c.ID, r)
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	t.incidentProbes.Add(c.ID, string(r.Tier), r.OK, r.ErrorClass)
+	if !r.OK {
+		t.report("probe_failed", fmt.Sprintf("%s: timing probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
+	}
+	return true
 }
 
 // handoff tries healthy candidates in order. Each must pass an exact-target

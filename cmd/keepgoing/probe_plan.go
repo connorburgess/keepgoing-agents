@@ -22,6 +22,9 @@ type probePlan struct {
 	CostStatus          string               `json:"costStatus"`
 	CostNote            string               `json:"costNote"`
 	Candidates          []probePlanCandidate `json:"candidates"`
+	// Timing is the scheduled timing probes of the first route, which this
+	// plan does not run; absent when timing is off.
+	Timing *config.TimingSummary `json:"timing,omitempty"`
 }
 
 type probePlanCandidate struct {
@@ -91,6 +94,9 @@ func printProbePlan(w io.Writer, p probePlan, asJSON bool) error {
 			model = "provider default (unresolved)"
 		}
 		fmt.Fprintf(&b, "  %s: %s; provider %s; quota group %s; model %s; timeout %s; disabled %t\n    %s\n", c.ID, c.Kind, c.Provider, c.Group, model, c.Timeout, c.Disabled, c.CostNote)
+	}
+	if t := p.Timing; t != nil {
+		fmt.Fprintf(&b, "Not in this plan, scheduled by checks: %s\n", strings.TrimPrefix(t.Cost, "timing: "))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
