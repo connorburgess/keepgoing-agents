@@ -205,7 +205,7 @@ A failed probe also saves its raw output to `probe-failures/<candidate>/` in the
 
 ## Usage readings
 
-v0.2.0 records how much of an account's quota a provider says is used, when a probe that already runs happens to carry that information. It is a display value only. No decision reads it: health, redundancy, handoff and switch-back behave exactly as before, and a candidate shown at 100% that passes its probe is still healthy. Switching at a threshold is [planned](roadmap.md#quota-monitoring-planned), not implemented.
+v0.2.0 records how much of an account's quota a provider says is used, when a probe that already runs happens to carry that information. It is a display value only. No supervision action is decided from it: health, redundancy, handoff and switch-back behave exactly as before, and a candidate shown at 100% that passes its probe is still healthy. In unreleased U4 source, the pure [timing preview](configuration.md#timing) reads these values for status only, labelled `(not acted on yet)`; it changes no route. Switching at a threshold is [planned](roadmap.md#quota-monitoring-planned), not implemented.
 
 | Probe kind | Source | When a reading is recorded |
 | --- | --- | --- |
@@ -245,7 +245,7 @@ Verification uses fictional fixtures only: malformed, partial, multi-event and a
 
 ### Reading history and projection
 
-v0.2.0 also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
+v0.2.0 also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No supervision action is decided from it, and storing the history adds no probe or provider call. The unreleased U4 timing preview reads it for status only; nothing applies that decision. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
 
 **History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept.
 

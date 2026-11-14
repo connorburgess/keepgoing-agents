@@ -31,11 +31,13 @@ type Entry struct {
 	History     []probe.Result `json:"history,omitempty"`
 	// Usage is the latest usage reading any probe of this candidate carried,
 	// with its own observation time. A later probe without a reading leaves
-	// it in place, so it can be older than Last. No decision reads it.
+	// it in place, so it can be older than Last. The timing preview reads it;
+	// no supervision action is decided from it.
 	Usage *probe.Usage `json:"usage,omitempty"`
 	// UsageHistory is every recorded reading of this candidate's account per
 	// window instance, bounded, for projecting use at a window's reset. Like
-	// Usage it belongs to one account identity, and no decision reads it.
+	// Usage it belongs to one account identity. Only the timing preview reads
+	// it for a decision; no supervision action is decided from it.
 	UsageHistory *allowance.History `json:"usageHistory,omitempty"`
 	// NearReset records the window instances a timing probe was made for as
 	// their reset came near, so each gets one. No decision reads it but
