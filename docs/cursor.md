@@ -1,12 +1,12 @@
 # Cursor CLI supervision
 
-The Cursor adapter is **unreleased source**, with offline fixture coverage. Published v0.1.5 does not contain it. Guided `init` selection and capability-aware `doctor` checks are implemented in source. One CLI version has been inspected on one platform; live provider acceptance, fallback probes, automatic limit/reset recovery and existing Cursor IDE chat attachment remain unfinished. One authorized [live walkthrough](#live-walkthrough-c4) covered first turn, exact resume and stop on that version; permission rejection was not observable.
+The Cursor adapter is **v0.2.0**, with offline fixture coverage. Published v0.1.5 does not contain it. Guided `init` selection and capability-aware `doctor` checks are in v0.2.0 too. One CLI version has been inspected on one platform; live provider acceptance, fallback probes, automatic limit/reset recovery and existing Cursor IDE chat attachment remain unfinished. One authorized [live walkthrough](#live-walkthrough-c4) covered first turn, exact resume and stop on that version; permission rejection was not observable.
 
 This adapter starts a separate Cursor CLI conversation in a chosen project and resumes that exact conversation on later turns. Open the project in any editor; this does not attach to an existing editor chat. keepgoing supplies the repeated task and common controls; no separate loop skill is required.
 
 ## Configure a primary loop
 
-With a build containing this adapter, use [guided setup](setup.md#cursor-setup-unreleased-source) with `init --agent cursor`, or place the configuration and runtime directory outside the checkout:
+With a build containing this adapter, use [guided setup](setup.md#cursor-setup) with `init --agent cursor`, or place the configuration and runtime directory outside the checkout:
 
 ```yaml
 version: 1
