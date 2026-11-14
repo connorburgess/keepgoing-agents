@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,8 +30,8 @@ import (
 // them. Every change is two requests, prepare then confirm, and runs the same
 // in-process functions as client pause|stop and client prepare-resume and
 // resume, so it takes the same locks, makes the same checks and returns the
-// same issue codes. The page acts as the person at this computer with no BB
-// thread identity, as a terminal outside BB does. Nothing is retried by
+// same issue codes. The page retains the BB caller that started the panel;
+// outside BB it acts as a terminal with no thread identity. Nothing is retried by
 // itself: a new attempt is a new prepare and a new review.
 
 const (
@@ -51,6 +52,7 @@ const (
 type panelChanges struct {
 	ctx      context.Context // the server's lifetime; changes never run on a request's
 	registry string          // the --directory value, as given
+	caller   string          // immutable startup BB caller; never supplied by the page or a later opening
 	reader   *dockReader
 	since    time.Time
 	now      func() time.Time
@@ -80,7 +82,7 @@ func newPanelChanges(ctx context.Context, registryDir string, reader *dockReader
 	if err != nil {
 		return nil, err
 	}
-	return &panelChanges{ctx: ctx, registry: registryDir, reader: reader, since: since, now: now, secret: []byte(secret), forms: map[string]panelForm{}}, nil
+	return &panelChanges{ctx: ctx, registry: registryDir, caller: os.Getenv("BB_THREAD_ID"), reader: reader, since: since, now: now, secret: []byte(secret), forms: map[string]panelForm{}}, nil
 }
 
 // prepareValue is the anti-forgery value a session sends with a prepare
@@ -286,7 +288,7 @@ func (c *panelChanges) prepare(session, key string, action string) panelChangeRe
 	if panelBuildActions[action] != "" {
 		return c.prepareBuild(ctx, session, key, action)
 	}
-	r, refused := panelReview(ctx, c.registry, c.reader, key, action, c.now().UTC())
+	r, refused := panelReviewForCaller(ctx, c.registry, c.reader, key, action, c.caller, c.now().UTC())
 	if refused != nil {
 		return panelChangeReply{Result: refused}
 	}
@@ -378,6 +380,13 @@ type panelReviewed struct {
 // never say different things. refused is set, in the page's words, when no
 // review can be given now.
 func panelReview(ctx context.Context, registryDir string, reader *dockReader, key, action string, now time.Time) (panelReviewed, *panelResult) {
+	return panelReviewForCaller(ctx, registryDir, reader, key, action, "", now)
+}
+
+// panelReviewForCaller also checks the retained panel caller before offering a
+// resume. Confirmation rechecks ownership under the resume locks and binds its
+// private ticket to this same caller. Client apply retains its own caller check.
+func panelReviewForCaller(ctx context.Context, registryDir string, reader *dockReader, key, action, caller string, now time.Time) (panelReviewed, *panelResult) {
 	entry, all, dir, ok := panelEntry(registryDir, key)
 	if !ok {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This loop is no longer registered. Nothing was changed."}
@@ -388,6 +397,9 @@ func panelReview(ctx context.Context, registryDir string, reader *dockReader, ke
 	ctl, why := panelReadControl(entry.StateDir)
 	if why != "" {
 		return panelReviewed{}, &panelResult{Outcome: "refused", Text: why, Retry: true}
+	}
+	if action == "resume" && control.CheckOwner(ctl, caller, false) != nil {
+		return panelReviewed{}, &panelResult{Outcome: "refused", Text: "This panel cannot resume the loop with its startup caller. Nothing was changed."}
 	}
 	// The rest of the loop as it is now, read the way the page reads it.
 	loop := panelLoopNow(ctx, reader, dir, entry, all, now)
@@ -462,12 +474,12 @@ func (c *panelChanges) confirm(session, key, action, value string, opts holdOpti
 	ctx, cancel := context.WithTimeout(c.ctx, panelChangeTimeout)
 	defer cancel()
 	if key == panelGroupKey {
-		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, "", f.group, f.names, opts.Lanes)
+		g := panelGroupApply(ctx, c.registry, action, panelChangeOrigin, c.caller, f.group, f.names, opts.Lanes)
 		c.reader.forget()
 		return panelChangeReply{Result: &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}}
 	}
-	// The page acts as no BB thread, as a terminal outside BB does.
-	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, "", f.digest, opts)
+	// Later openings cannot replace the startup caller.
+	r := panelApply(ctx, c.registry, f.id, action, panelChangeOrigin, c.caller, f.digest, opts)
 	// The next read shows the change, not a cached picture from before it.
 	c.reader.forget()
 	res := panelOutcome(action, r)
@@ -491,8 +503,8 @@ func panelApply(ctx context.Context, registryDir, id, action, origin, caller, ex
 		return done.clientHoldReport
 	}
 	if opts.Now {
-		// The thread a stop at once runs from: the BB thread of client apply,
-		// none for the page.
+		// Both the page and client apply retain their actual caller for
+		// caller-last ordering in a stop carried out now.
 		opts.CallerThread = caller
 	}
 	r, _ := applyClientHoldWith(ctx, registryDir, id, action, origin, expect, opts)
