@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -32,7 +33,8 @@ type clientHoldReport struct {
 	CarriedOut string       `json:"carriedOut,omitempty"`
 	// LeftBecause says why a stop asked to run now was left to a check.
 	LeftBecause string `json:"leftBecause,omitempty"`
-	// Warnings are the stop check's, for a stop carried out now.
+	// Warnings are the stop check's warnings, for a stop carried out now, as
+	// fixed codes: never a path or an error's own text.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -77,6 +79,10 @@ func clientHoldCommand(e env, args []string) int {
 	}
 	if opts.Now {
 		opts.CallerThread = os.Getenv("BB_THREAD_ID")
+		if opts.CallerThread != "" && !*asJSON {
+			// As keepgoing stop says it: before anything is stopped.
+			fmt.Fprintf(e.stdout, "this command runs in BB thread %s; if the stop covers it, it is stopped last, and if that ends this command the next check finishes the rest\n", opts.CallerThread)
+		}
 	}
 	r, code := applyClientHoldWith(e.ctx, *directory, *id, args[0], "", "", opts)
 	if *asJSON {
@@ -100,7 +106,7 @@ func clientHoldCommand(e env, args []string) int {
 			fmt.Fprintln(e.stdout, "Hold saved; provider action is not confirmed. Inspect status before another action.")
 		}
 		for _, w := range r.Warnings {
-			fmt.Fprintf(e.stdout, "warning: %s\n", w)
+			fmt.Fprintf(e.stdout, "warning: %s\n", stopWarningWords(w))
 		}
 	}
 	return code
@@ -223,7 +229,12 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 		// Outside the registry entry's lock: the stop check takes the loop's
 		// own check lock, and may wait a few seconds for it.
 		now, err := stopNow(ctx, stopCfg, stopNowWait, opts.CallerThread)
-		r.CarriedOut, r.LeftBecause, r.Warnings = now.CarriedOut, now.Why, now.Warnings
+		r.CarriedOut, r.LeftBecause = now.CarriedOut, now.Why
+		for _, w := range now.Warnings {
+			if c := stopWarningCode(w); !slices.Contains(r.Warnings, c) {
+				r.Warnings = append(r.Warnings, c)
+			}
+		}
 		if r.Lanes != nil {
 			r.Lanes.Result = now.Lanes
 		}

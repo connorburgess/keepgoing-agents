@@ -76,6 +76,14 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// CLIPather is implemented by adapters that run a provider executable: the
+// absolute path the system resolved for it on the last command started, or
+// "" before one was. A check records it, so a caller with a shorter PATH (the
+// panel, the menu) can find the same executable for a stop.
+type CLIPather interface {
+	CLIPath() string
+}
+
 // LaneStopper is implemented by adapters whose conversations have lanes:
 // child conversations the supervised one started, and their own children.
 // It is used only for a stop a person asked to cover the lanes
@@ -94,6 +102,10 @@ type LaneStopper interface {
 	// cancelled is false when there was none to cancel. ErrUnsupported means
 	// the provider has no structured way to do it.
 	CancelLaneRetry(ctx context.Context, id string) (cancelled bool, err error)
+	// DeleteLaneQueue deletes the messages queued in a lane that has not
+	// started, or is idle, so that it does not start. deleted counts them.
+	// It reads no message: only each queued row's ID and thread.
+	DeleteLaneQueue(ctx context.Context, id string) (deleted int, err error)
 }
 
 // LaneInfo is one listed child, as re-read on its own.

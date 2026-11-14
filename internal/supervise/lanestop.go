@@ -46,19 +46,22 @@ const (
 
 // stopLanes carries out a stop that covers the lanes (keepgoing stop
 // --lanes). It walks the supervised conversation's verified descendants, at
-// most decide.LaneStopMaxDepth deep and decide.LaneStopMaxThreads in all, and
-// stops those that are running or in error with a retry waiting. It sends a
-// lane nothing but a stop, after cancelling a provider retry waiting in it. A
-// lane another loop supervises is left to that loop, and so is everything
-// below it; so is one whose ownership cannot be established.
+// most decide.LaneStopMaxDepth deep and decide.LaneStopMaxThreads in all. It
+// stops those that are running or in error with a retry waiting, after
+// cancelling a provider retry waiting in one, and deletes the messages
+// queued in those that have not started (pending) or are idle with a message
+// queued, so they do not start. That is all it does to a lane. A lane another
+// loop supervises is left to that loop, and so is everything below it; so is
+// one whose ownership cannot be established.
 //
-// Every stop is recorded in sends.json before it is made, under the lane's
-// keyed hash and this request. A check killed in the middle is followed by
-// one that reads those records: a recorded lane no longer running was
-// stopped and is not stopped again; one still running is stopped. A pass that
-// runs out of time is continued by the next check, which counts the lanes the
-// earlier pass stopped (state.LaneStop.StoppedLanes) and never retries a lane
-// whose stop failed.
+// Every stop and deletion is recorded in sends.json before it is made, under
+// the lane's keyed hash and this request. A check killed in the middle is
+// followed by one that reads those records: a recorded lane no longer
+// running was stopped and is not stopped again; one still running is
+// stopped. A pass that is continued by a later check (it ran out of time, or
+// a listing could not be read) counts the lanes the earlier pass stopped or
+// emptied as it found them, whatever they are doing now, and never retries a
+// lane whose stop failed.
 //
 // A check that has not read the send records (one that could not observe its
 // target) settles nothing: the records it adds here stay unsettled beside
@@ -66,8 +69,9 @@ const (
 //
 // It runs on the stop path, so it does not depend on the loop being enabled,
 // unpaused or free of holds: stop wins. It is a no-op once this request is
-// done, and in a dry run.
-func (t *tick) stopLanes(a adapter.Adapter, parent string) {
+// done, and in a dry run. The report is sent by finishLaneStop, once the
+// supervised conversation's own stop is known.
+func (t *tick) stopLanes(a adapter.Adapter) {
 	if t.stopLanesFor.IsZero() {
 		return
 	}
@@ -81,56 +85,22 @@ func (t *tick) stopLanes(a adapter.Adapter, parent string) {
 		}
 		return
 	}
-	if !t.sendsRead {
-		settled := t.st.SendsRecorded
-		defer func() { t.st.SendsRecorded = settled }()
-	}
 	t.laneStopRecords()
-	rec := &state.LaneStop{For: t.stopLanesFor, At: t.now, Outcome: "done", Parent: parent, Failed: map[string]int{}}
-	failedBefore := map[string]string{}
+	rec := &state.LaneStop{For: t.stopLanesFor, At: t.now, Outcome: "done", Failed: map[string]int{}}
+	doneBefore, dequeuedBefore, failedBefore := map[string]bool{}, map[string]bool{}, map[string]string{}
 	if prev != nil {
-		// A pass that goes on: the lanes the earlier pass stopped count as
-		// stopped when they are no longer running, and a lane whose stop
-		// failed is not tried again.
-		rec.Reported, rec.ListingTries = prev.Reported, prev.ListingTries
-		if parent == parentNotRunning || parent == parentNotObserved || parent == parentStoppedEarlier {
-			if prev.Parent == parentStopped || prev.Parent == parentStopFailed {
-				rec.Parent = prev.Parent
-			}
-		}
+		rec.Reported, rec.ListingTries, rec.Parent = prev.Reported, prev.ListingTries, prev.Parent
 		for _, h := range prev.StoppedLanes {
-			if t.laneStopsRecorded == nil {
-				t.laneStopsRecorded = map[string]bool{}
-			}
-			t.laneStopsRecorded[h] = true
+			doneBefore[h] = true
+		}
+		for _, h := range prev.DequeuedLanes {
+			dequeuedBefore[h] = true
 		}
 		for h, c := range prev.FailedLanes {
 			failedBefore[h] = c
 		}
 	}
-	t.st.LaneStop, t.res.LaneStop = rec, rec
-	listingFailed := false
-	defer func() {
-		if listingFailed && rec.Outcome != "incomplete" {
-			rec.ListingTries++
-			if rec.ListingTries < state.LaneStopListingTries {
-				// Nothing below a listing that could not be read was looked
-				// at: the next check tries again.
-				rec.Outcome = "incomplete"
-				t.warn("a lane listing could not be read; the next check tries the stop of the lanes again (%d of %d)", rec.ListingTries, state.LaneStopListingTries)
-			}
-		}
-		if rec.Outcome == "done" && listingFailed {
-			rec.NotCheckedAtLeast = true
-		}
-		if len(rec.Failed) == 0 {
-			rec.Failed = nil
-		}
-		if len(rec.FailedLanes) == 0 {
-			rec.FailedLanes = nil
-		}
-		t.reportLaneStop(rec)
-	}()
+	t.st.LaneStop, t.laneStop = rec, rec
 	ls, ok := a.(adapter.LaneStopper)
 	if !ok {
 		rec.Outcome = "not_applicable"
@@ -149,10 +119,9 @@ func (t *tick) stopLanes(a adapter.Adapter, parent string) {
 		}
 		return state.LaneHash(key, id)
 	}
-	stopped := func(h string) {
-		rec.Stopped++
-		if h != "" && !slices.Contains(rec.StoppedLanes, h) {
-			rec.StoppedLanes = append(rec.StoppedLanes, h)
+	add := func(list *[]string, h string) {
+		if h != "" && !slices.Contains(*list, h) {
+			*list = append(*list, h)
 		}
 	}
 	failed := func(h, class string) {
@@ -164,23 +133,37 @@ func (t *tick) stopLanes(a adapter.Adapter, parent string) {
 			rec.FailedLanes[h] = class
 		}
 	}
-	// The caller's own thread, when the command runs inside one the stop
-	// covers, is stopped last: its stop may end the command.
-	var own *adapter.LaneInfo
-	budget := decide.LaneStopMaxThreads
-	root := ls.LaneRoot()
-	level := []string{root}
-	seen := map[string]bool{root: true}
-	warnedCancel := false
-	outOfTime := func() bool {
-		if t.left() >= laneStopMargin {
-			return false
+	record := func(h string) {
+		if h == "" {
+			return
 		}
-		rec.Outcome, rec.NotCheckedAtLeast = "incomplete", true
-		t.warn("the stop of the lanes was not finished in this check's time; the next check goes on with it")
-		return true
+		if _, err := t.reserveSend(laneStopAction, h, t.stopLanesFor.Format(time.RFC3339Nano)); err != nil {
+			t.warn("a lane stop could not be recorded before it was made, so a later check may make it again: %v", err)
+		}
 	}
-	stopOne := func(k adapter.LaneInfo, h string, action decide.LaneStopAction) {
+	warnedCancel := false
+	act := func(k adapter.LaneInfo, h string, action decide.LaneStopAction) {
+		if action == decide.LaneStopDequeue {
+			record(h)
+			if laneStopHook != nil {
+				laneStopHook(k.ID)
+			}
+			n, err := t.deleteLaneQueue(ls, k.ID)
+			switch {
+			case err != nil:
+				failed(h, laneErrorClass(err))
+			case n > 0:
+				rec.Dequeued++
+				add(&rec.DequeuedLanes, h)
+			case k.Status == "pending":
+				// Nothing queued to delete, and no session to stop: BB may
+				// still run its first message.
+				rec.NotStarted++
+			default:
+				rec.AlreadyIdle++
+			}
+			return
+		}
 		if action == decide.LaneStopQueued {
 			cancelled, err := t.cancelLaneRetry(ls, k.ID)
 			switch {
@@ -198,28 +181,34 @@ func (t *tick) stopLanes(a adapter.Adapter, parent string) {
 				rec.QueuedNotCancelled++
 			}
 		}
-		if h != "" {
-			if _, err := t.reserveSend(laneStopAction, h, t.stopLanesFor.Format(time.RFC3339Nano)); err != nil {
-				t.warn("a lane stop could not be recorded before it was made, so a later check may make it again: %v", err)
-			}
-		}
+		record(h)
 		if laneStopHook != nil {
 			laneStopHook(k.ID)
 		}
 		if err := t.stopLane(ls, k.ID); err != nil {
 			failed(h, laneErrorClass(err))
 		} else {
-			stopped(h)
+			rec.Stopped++
+			add(&rec.StoppedLanes, h)
 		}
 	}
-	defer func() {
-		// Last of all, and only if the walk got that far in this check.
-		if own != nil && rec.Outcome != "incomplete" {
-			t.warn("this command runs in a lane the stop covers; it is stopped last")
-			h := name(own.ID)
-			stopOne(*own, h, decide.LaneStopFor(decide.LaneNode{Verified: true, Status: own.Status, Queued: own.Queued}))
+	// The caller's own thread, when the command runs inside one the stop
+	// covers, is acted on last: its stop may end the command.
+	var own *adapter.LaneInfo
+	var ownAction decide.LaneStopAction
+	listingFailed := false
+	budget := decide.LaneStopMaxThreads
+	root := ls.LaneRoot()
+	level := []string{root}
+	seen := map[string]bool{root: true}
+	outOfTime := func() bool {
+		if t.left() >= laneStopMargin {
+			return false
 		}
-	}()
+		rec.Outcome, rec.IncompleteBecause, rec.NotCheckedAtLeast = "incomplete", "time", true
+		t.warn("the stop of the lanes was not finished in this check's time; the next check goes on with it")
+		return true
+	}
 walk:
 	for depth := 1; len(level) > 0; depth++ {
 		var next []string
@@ -240,7 +229,7 @@ walk:
 			kids, notChecked, err := t.laneChildren(ls, p, budget)
 			if err != nil {
 				// Nothing below it could be looked at. The request is not
-				// used up by it: see the deferred rule above.
+				// used up by it: see below.
 				listingFailed = true
 				if rec.ListingTries+1 >= state.LaneStopListingTries {
 					rec.ListingsUnread++
@@ -263,12 +252,22 @@ walk:
 					n.OtherLoop, n.OwnershipUnknown = t.otherLoopLane(k.ID)
 				}
 				action := decide.LaneStopFor(n)
-				if c, ok := failedBefore[h]; ok && h != "" && (action == decide.LaneStopRunning || action == decide.LaneStopQueued) {
-					// Its stop failed in an earlier pass of this request: not
-					// tried again.
-					failed(h, c)
-					action = decide.LaneStopIdle // descend as for any lane of this loop's
-				} else {
+				switch {
+				case h != "" && doneBefore[h] && decide.LaneStopDescend(action):
+					// Stopped by an earlier pass of this request: counted so,
+					// whatever it is doing now. A person may have restarted it.
+					rec.Stopped++
+					add(&rec.StoppedLanes, h)
+					action = decide.LaneStopIdle
+				case h != "" && dequeuedBefore[h] && decide.LaneStopDescend(action):
+					rec.Dequeued++
+					add(&rec.DequeuedLanes, h)
+					action = decide.LaneStopIdle
+				case h != "" && failedBefore[h] != "" && (action == decide.LaneStopRunning || action == decide.LaneStopQueued || action == decide.LaneStopDequeue):
+					// Its stop failed in an earlier pass: not tried again.
+					failed(h, failedBefore[h])
+					action = decide.LaneStopIdle
+				default:
 					switch action {
 					case decide.LaneStopUnverified, decide.LaneStopUnknown, decide.LaneStopOwnershipUnknown:
 						rec.Failed[string(action)]++
@@ -277,16 +276,17 @@ walk:
 					case decide.LaneStopIdle:
 						rec.AlreadyIdle++
 					case decide.LaneStopStoppedEarlier:
-						stopped(h)
-					case decide.LaneStopRunning, decide.LaneStopQueued:
+						rec.Stopped++
+						add(&rec.StoppedLanes, h)
+					case decide.LaneStopRunning, decide.LaneStopQueued, decide.LaneStopDequeue:
 						if t.opts.CallerThread != "" && k.ID == t.opts.CallerThread {
 							kk := k
-							own = &kk
+							own, ownAction = &kk, action
 						} else {
 							if outOfTime() {
 								break walk
 							}
-							stopOne(k, h, action)
+							act(k, h, action)
 						}
 					}
 				}
@@ -300,6 +300,47 @@ walk:
 		}
 		level = next
 	}
+	if listingFailed && rec.Outcome != "incomplete" {
+		rec.ListingTries++
+		if rec.ListingTries < state.LaneStopListingTries {
+			// Nothing below a listing that could not be read was looked at:
+			// the next check tries again.
+			rec.Outcome, rec.IncompleteBecause = "incomplete", "listing"
+			t.warn("a lane listing could not be read; the next check tries the stop of the lanes again (%d of %d)", rec.ListingTries, state.LaneStopListingTries)
+		} else {
+			rec.NotCheckedAtLeast = true
+		}
+	}
+	// Last of all, and only once the walk has finished or been given up.
+	if own != nil && rec.Outcome != "incomplete" {
+		t.warn("this command runs in a lane the stop covers; it is stopped last")
+		act(*own, name(own.ID), ownAction)
+	}
+}
+
+// finishLaneStop records what is known of the supervised conversation's
+// own stop and sends the one report, once the walk is finished. It is called
+// after that stop has been made or not.
+func (t *tick) finishLaneStop(parent string) {
+	rec := t.laneStop
+	if rec == nil {
+		return
+	}
+	if rec.Parent == "" || parent == parentStopped || parent == parentStopFailed {
+		rec.Parent = parent
+	} else if parent == parentStoppedEarlier && rec.Parent != parentStopped && rec.Parent != parentStopFailed {
+		rec.Parent = parent
+	}
+	if len(rec.Failed) == 0 {
+		rec.Failed = nil
+	}
+	if len(rec.FailedLanes) == 0 {
+		rec.FailedLanes = nil
+	}
+	view := rec.Counts()
+	t.res.LaneStop = &view
+	t.reportLaneStop(rec)
+	t.res.LaneStop.Reported = rec.Reported
 }
 
 // laneStopRecords reads the lane stops, and the report, that an earlier check
@@ -344,6 +385,12 @@ func (t *tick) stopLane(ls adapter.LaneStopper, id string) error {
 	ctx, cancel := t.laneCtx()
 	defer cancel()
 	return ls.StopLane(ctx, id)
+}
+
+func (t *tick) deleteLaneQueue(ls adapter.LaneStopper, id string) (int, error) {
+	ctx, cancel := t.laneCtx()
+	defer cancel()
+	return ls.DeleteLaneQueue(ctx, id)
 }
 
 func (t *tick) cancelLaneRetry(ls adapter.LaneStopper, id string) (bool, error) {
@@ -425,6 +472,12 @@ func (t *tick) reportLaneStop(rec *state.LaneStop) {
 		}
 		text = fmt.Sprintf("%s: %s; lanes: %d stopped, %d already idle, %d left to another loop, %d failed, %s not checked (past %d levels or %d threads)",
 			t.loop.Name, parent, rec.Stopped, rec.AlreadyIdle, rec.OtherLoop, failed, notChecked, decide.LaneStopMaxDepth, decide.LaneStopMaxThreads)
+		if rec.Dequeued > 0 {
+			text += fmt.Sprintf("; %d not started had their queued messages deleted", rec.Dequeued)
+		}
+		if rec.NotStarted > 0 {
+			text += fmt.Sprintf("; %d not started, with nothing queued to delete: BB may still run its first message, so stop them in BB", rec.NotStarted)
+		}
 		if len(classes) > 0 {
 			text += " [" + strings.Join(classes, ", ") + "]"
 		}
@@ -437,7 +490,7 @@ func (t *tick) reportLaneStop(rec *state.LaneStop) {
 	}
 	lanes := map[string]any{"outcome": rec.Outcome, "stopped": rec.Stopped, "alreadyIdle": rec.AlreadyIdle, "otherLoop": rec.OtherLoop,
 		"failed": rec.Failed, "notChecked": rec.NotChecked, "notCheckedAtLeast": rec.NotCheckedAtLeast,
-		"retriesCancelled": rec.RetriesCancelled, "queuedNotCancelled": rec.QueuedNotCancelled}
+		"retriesCancelled": rec.RetriesCancelled, "queuedNotCancelled": rec.QueuedNotCancelled, "dequeued": rec.Dequeued, "notStarted": rec.NotStarted}
 	lanes["listingsUnread"] = rec.ListingsUnread
 	t.report("stop", text, map[string]any{"target": t.res.Target, "parent": rec.Parent, "lanes": lanes})
 }
@@ -453,6 +506,9 @@ type LaneCount struct {
 	// Complete: every listing inside the bounds was read and nothing was
 	// left out by them, so Running is the whole count and not a lower bound.
 	Complete bool
+	// Unreachable: bb could not be found from this process, configured or as
+	// the latest check recorded it. Nothing was counted.
+	Unreachable bool
 }
 
 // CountLanes walks the loop's lanes as a stop with --lanes would, with the
@@ -477,6 +533,10 @@ func CountLanes(ctx context.Context, cfg *config.Config, opts Options) LaneCount
 	}
 	t.st = st
 	target, agent := t.resolve(st.Target())
+	agent, reachable := stopAgent(agent, st)
+	if !reachable {
+		return LaneCount{Applicable: true, Unreachable: true}
+	}
 	a, err := opts.NewAdapter(agent, cfg.Loop.StateDir, target)
 	if err != nil {
 		return LaneCount{}

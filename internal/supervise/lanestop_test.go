@@ -36,12 +36,14 @@ type laneTree struct {
 	order     []string       // the supervised thread's stop ("parent") and each lane's, in order
 	stopFails error          // the supervised thread's own stop fails with this
 	listFails map[string]int // a listing of this parent fails this many more times
+	queued    map[string]int // messages queued in a lane that has not started
+	dequeued  []string
 	cancels   []string
 	onCall    func()
 }
 
 func newLaneTree(f *fakeAdapter) *laneTree {
-	return &laneTree{fakeAdapter: f, kids: map[string][]adapter.LaneInfo{}, stopErr: map[string]error{}, pending: map[string]bool{}, listFails: map[string]int{}}
+	return &laneTree{fakeAdapter: f, kids: map[string][]adapter.LaneInfo{}, stopErr: map[string]error{}, pending: map[string]bool{}, listFails: map[string]int{}, queued: map[string]int{}}
 }
 
 func (l *laneTree) add(parent, id, status string, queued int) {
@@ -92,6 +94,21 @@ func (l *laneTree) StopLane(_ context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+func (l *laneTree) DeleteLaneQueue(_ context.Context, id string) (int, error) {
+	l.dequeued = append(l.dequeued, id)
+	l.order = append(l.order, "dequeue:"+id)
+	n := l.queued[id]
+	delete(l.queued, id)
+	for p, kids := range l.kids {
+		for i := range kids {
+			if kids[i].ID == id && n > 0 {
+				l.kids[p][i].Status, l.kids[p][i].Queued = "idle", 0
+			}
+		}
+	}
+	return n, nil
 }
 
 func (l *laneTree) CancelLaneRetry(_ context.Context, id string) (bool, error) {
@@ -251,10 +268,10 @@ func TestStopWithLanesStopsTheRunningLanesOnce(t *testing.T) {
 		}
 	}
 	l := *res.LaneStop
-	if len(l.StoppedLanes) != 3 {
+	// The check's output has counts only; the lanes are kept in state.
+	if st, _ := state.Load(w.dir); len(l.StoppedLanes) != 0 || len(st.LaneStop.StoppedLanes) != 3 {
 		t.Fatalf("%+v", l)
 	}
-	l.StoppedLanes = nil
 	want := state.LaneStop{For: t0, At: t0.Add(time.Minute), Outcome: "done", Parent: "stopped", Stopped: 3, AlreadyIdle: 2, OtherLoop: 1,
 		Failed: map[string]int{"unverified": 1, "unknown_status": 1}, RetriesCancelled: 1, Reported: true}
 	if fmt.Sprintf("%+v", l) != fmt.Sprintf("%+v", want) {

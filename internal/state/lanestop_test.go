@@ -40,3 +40,39 @@ func TestLaneKeyIsMadeOnceAndReadBack(t *testing.T) {
 		t.Fatal("the lane hash does not depend on the key")
 	}
 }
+
+// A brief record is never dropped when the pending records are trimmed, and
+// lane stops go first.
+func TestTrimmingPendingRecordsKeepsBriefs(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	reserve := func(a string) {
+		t.Helper()
+		if _, err := Reserve(dir, 0, 0, SendIntent{At: at, Action: a, Target: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reserve("handoff")
+	reserve("wake")
+	for i := 0; i < 2*maxPending; i++ {
+		reserve("stop:lane")
+	}
+	reserve("switch_back")
+	l, err := LoadLedger(dir)
+	if err != nil || len(l.Pending) != maxPending {
+		t.Fatalf("%d %v", len(l.Pending), err)
+	}
+	if l.Pending[0].Action != "handoff" || l.Pending[1].Action != "wake" || l.Pending[len(l.Pending)-1].Action != "switch_back" {
+		t.Fatalf("%v %v %v", l.Pending[0].Action, l.Pending[1].Action, l.Pending[len(l.Pending)-1].Action)
+	}
+	// With nothing but other sends, the oldest of those go, and briefs stay.
+	dir = t.TempDir()
+	reserve("handoff")
+	for i := 0; i < 2*maxPending; i++ {
+		reserve("wake")
+	}
+	l, _ = LoadLedger(dir)
+	if len(l.Pending) != maxPending || l.Pending[0].Action != "handoff" {
+		t.Fatalf("%d %v", len(l.Pending), l.Pending[0].Action)
+	}
+}

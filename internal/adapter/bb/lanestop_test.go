@@ -175,3 +175,40 @@ func TestGoneLanesUseNoneOfTheBound(t *testing.T) {
 		t.Fatalf("%v %d %+v", err, notChecked, kids)
 	}
 }
+
+// A lane's queued messages are listed, and deleted one by one, reading only
+// each row's id and thread: never what it says.
+func TestDeleteLaneQueueReadsOnlyIDs(t *testing.T) {
+	a, calls := fakeLanes(t, map[string]string{
+		"thread queue list thr_lane_p --json":               `[{"id":"qm_example1","threadId":"thr_lane_p","text":"PRIVATE"},{"id":"qm_example2","threadId":"thr_lane_p","input":[{"text":"PRIVATE"}]}]`,
+		"thread queue delete thr_lane_p qm_example1 --json": `{"ok":true}`,
+		"thread queue delete thr_lane_p qm_example2 --json": `{"ok":false,"error":{"code":"queued_message_not_found"}}`,
+		"thread queue list thr_lane_q --json":               `[]`,
+		"thread queue list thr_lane_x --json":               `[{"id":"qm_example3","threadId":"thr_other"}]`,
+		"thread queue list thr_lane_y --json":               `[{"id":"qm_example4","threadId":"thr_lane_y"}]`,
+		"thread queue delete thr_lane_y qm_example4 --json": `{"ok":false,"error":{"code":"thread_host_offline","message":"PRIVATE"}}`,
+	})
+	ctx := context.Background()
+	if n, err := a.DeleteLaneQueue(ctx, "thr_lane_p"); n != 1 || err != nil {
+		t.Fatalf("%d %v", n, err)
+	}
+	if n, err := a.DeleteLaneQueue(ctx, "thr_lane_q"); n != 0 || err != nil {
+		t.Fatalf("%d %v", n, err)
+	}
+	var le *adapter.LaneStopError
+	if _, err := a.DeleteLaneQueue(ctx, "thr_lane_x"); !errors.As(err, &le) || le.Class != "queue_unreadable" {
+		t.Fatalf("another thread's row: %v", err)
+	}
+	if _, err := a.DeleteLaneQueue(ctx, "thr_lane_y"); !errors.As(err, &le) || le.Class != "thread_host_offline" || strings.Contains(err.Error(), "PRIVATE") {
+		t.Fatalf("%v", err)
+	}
+	for _, c := range *calls {
+		if strings.Contains(c, "qm_example3") && strings.HasPrefix(c, "thread queue delete") {
+			t.Fatal("deleted another thread's row")
+		}
+	}
+	before := len(*calls)
+	if _, err := a.DeleteLaneQueue(ctx, "thr_example123"); err == nil || len(*calls) != before {
+		t.Fatal("the supervised thread's queue was touched")
+	}
+}

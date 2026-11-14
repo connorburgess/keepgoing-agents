@@ -542,6 +542,7 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		text := "Stop requested: " + map[string]string{
 			"check_running":   "a check of this loop was running, so that check or the next one carries it out.",
 			"session_claimed": "another loop's check is acting on this session, so the next check carries it out.",
+			"bb_not_found":    "bb could not be found from here, so the next check carries it out.",
 		}[r.LeftBecause]
 		if strings.HasSuffix(text, ": ") {
 			text = "Stop requested, but it could not be carried out now: the next check carries it out."

@@ -704,6 +704,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		ctl.PendingTransfer = &p
 	}
 	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	if out.State.LaneStop != nil {
+		// Counts only: the lane hashes and listing tries are bookkeeping.
+		c := out.State.LaneStop.Counts()
+		out.State.LaneStop = &c
+	}
 	// The flag's three reads are not one snapshot. The send attempts and the
 	// history are read before the state that sets the window, so a check
 	// that runs during the read can only leave its own records out, for one

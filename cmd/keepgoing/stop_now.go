@@ -52,7 +52,7 @@ func (r stopNowResult) failed(err error) bool {
 	switch {
 	case r.CarriedOut == "now":
 		return err != nil && !r.Recorded
-	case r.Why == "check_running", r.Why == "session_claimed":
+	case r.Why == "check_running", r.Why == "session_claimed", r.Why == "bb_not_found":
 		return false
 	}
 	return true
@@ -97,6 +97,12 @@ func stopNow(ctx context.Context, cfg *config.Config, wait time.Duration, caller
 	if err := checkTransferSources(cfg, true); err != nil {
 		r.Why = "sources_changed"
 		return r, err
+	}
+	if !supervise.StopReachable(cfg) {
+		// Said plainly, instead of a check that cannot list or stop anything
+		// and a listing tried again for three checks.
+		r.Why = "bb_not_found"
+		return r, nil
 	}
 	var rep report.Reporter = report.Nop{}
 	if cfg.Loop.Report != nil {
@@ -179,6 +185,8 @@ func leftBecause(cfg *config.Config, why string) string {
 		return "the loaded configuration or fallbacks changed on disk; the next check, with the current files, carries it out"
 	case "lock_unavailable":
 		return "the check lock could not be taken"
+	case "bb_not_found":
+		return "bb could not be found from here; the next check carries out the stop, and stops the lanes if they were asked for"
 	}
 	return "the next check carries it out"
 }
@@ -214,8 +222,54 @@ func describeLaneStop(l state.LaneStop) string {
 	if l.ListingsUnread > 0 {
 		s += fmt.Sprintf("; %d listing(s) could not be read, so nothing below them was checked", l.ListingsUnread)
 	}
-	if l.Outcome == "incomplete" {
+	if l.Dequeued > 0 {
+		s += fmt.Sprintf("; %d not started had their queued messages deleted", l.Dequeued)
+	}
+	if l.NotStarted > 0 {
+		s += fmt.Sprintf("; %d not started with nothing queued: BB may still run their first message, so stop them in BB", l.NotStarted)
+	}
+	switch {
+	case l.Outcome != "incomplete":
+	case l.IncompleteBecause == "listing":
+		s += "; a lane listing could not be read, so the next check tries again"
+	default:
 		s += "; not finished in this check's time, the next check goes on"
 	}
 	return s
+}
+
+// stopWarningCodes are the fixed codes a client is given for the stop
+// check's warnings, each with its plain words. A warning's own text can name
+// paths and errors, so a client never gets it.
+var stopWarningCodes = []struct{ match, code, words string }{
+	{"lane stops cannot be recorded", "lane_stops_unrecorded", "lane stops could not be recorded before they were made; they were made anyway"},
+	{"a lane stop could not be recorded", "lane_stop_unrecorded", "a lane stop could not be recorded before it was made; a later check may make it again"},
+	{"cannot cancel a queued provider retry", "provider_retry_cancel_unsupported", "this BB cannot cancel a queued provider retry"},
+	{"not finished in this check's time", "lanes_out_of_time", "the lanes were not all reached in the time given; the next check goes on"},
+	{"a lane listing could not be read", "lane_listing_unreadable", "a lane listing could not be read; the next check tries again"},
+	{"it is stopped last", "caller_stopped_last", "this command's own thread is stopped last"},
+	{"reports disabled", "reports_disabled", "reports could not be set up, so none was sent"},
+	{"the stop could not be recorded", "stop_unrecorded", "the stop could not be recorded before it was made"},
+	{"session claim", "session_claim_unavailable", "the session claim could not be taken; the stop went ahead without it"},
+}
+
+// stopWarningCode is a warning's fixed code; any other warning is
+// check_warning, which status shows in full.
+func stopWarningCode(w string) string {
+	for _, c := range stopWarningCodes {
+		if strings.Contains(w, c.match) {
+			return c.code
+		}
+	}
+	return "check_warning"
+}
+
+// stopWarningWords are a code's plain words.
+func stopWarningWords(code string) string {
+	for _, c := range stopWarningCodes {
+		if c.code == code {
+			return c.words
+		}
+	}
+	return "the stop check recorded a warning; keepgoing status shows it"
 }

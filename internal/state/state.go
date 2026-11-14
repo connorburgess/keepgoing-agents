@@ -86,6 +86,11 @@ type File struct {
 	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
+	// BBPath is the absolute path of the bb executable the latest check
+	// started, as the system resolved the configured command. A stop or a
+	// lane count run with a shorter PATH (the panel, the menu) uses it when
+	// the configured command is a bare name it cannot find.
+	BBPath string `json:"bbPath,omitempty"`
 	// LaneStop is the latest stop that covered the lanes: what it found and
 	// did, by count. It is about the request in control.json's stopLanesAt.
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
@@ -525,15 +530,32 @@ type LaneStop struct {
 	QueuedNotCancelled int `json:"queuedNotCancelled,omitempty"`
 	// ListingsUnread counts listings that could not be read in any of
 	// LaneStopListingTries checks; what is below them was not checked.
-	ListingsUnread int  `json:"listingsUnread,omitempty"`
-	Reported       bool `json:"reported,omitempty"`
+	ListingsUnread int `json:"listingsUnread,omitempty"`
+	// Dequeued counts lanes that had not started (pending) or were idle,
+	// whose queued messages were deleted so that they do not start.
+	// NotStarted counts pending lanes with nothing queued to delete: BB may
+	// still run their first message, and they are to be stopped in BB.
+	Dequeued   int `json:"dequeued,omitempty"`
+	NotStarted int `json:"notStarted,omitempty"`
+	// IncompleteBecause, with Outcome incomplete: "time" (the check's time
+	// ran out) or "listing" (a listing could not be read).
+	IncompleteBecause string `json:"incompleteBecause,omitempty"`
+	Reported          bool   `json:"reported,omitempty"`
 	// Carried between the checks of one request, under the loop's keyed
 	// lane hashes: the lanes stopped and those whose stop failed (by class),
 	// so a pass that goes on counts them once and never retries a failed
 	// stop; and how many checks found a listing they could not read.
-	StoppedLanes []string          `json:"stoppedLanes,omitempty"`
-	FailedLanes  map[string]string `json:"failedLanes,omitempty"`
-	ListingTries int               `json:"listingTries,omitempty"`
+	StoppedLanes  []string          `json:"stoppedLanes,omitempty"`
+	DequeuedLanes []string          `json:"dequeuedLanes,omitempty"`
+	FailedLanes   map[string]string `json:"failedLanes,omitempty"`
+	ListingTries  int               `json:"listingTries,omitempty"`
+}
+
+// Counts is l without its bookkeeping (the lane hashes and the listing
+// tries), for what a person or a client is shown.
+func (l LaneStop) Counts() LaneStop {
+	l.StoppedLanes, l.DequeuedLanes, l.FailedLanes, l.ListingTries = nil, nil, nil, 0
+	return l
 }
 
 // LaneStopListingTries is how many checks try a listing that cannot be read

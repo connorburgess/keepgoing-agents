@@ -41,6 +41,14 @@ func stopChoicesFor(ctx context.Context, cfg *config.Config, lines []dockText) (
 	defer cancel()
 	n := supervise.CountLanes(ctx, cfg, supervise.Options{})
 	c := &stopChoices{Immediately: true, Options: []stopOption{{Label: "Stop the Conversation", Lanes: false}}}
+	if n.Unreachable {
+		// Nothing can be carried out from here: the stop is saved, and the
+		// next check, which finds bb, carries it out.
+		c.Immediately = false
+		c.Options = append(c.Options, stopOption{Label: "Stop It and Its Lanes", Lanes: true})
+		return c, append(lines, txt("bb could not be found from here; the next check will stop the lanes."),
+			txt("Either choice is saved now and carried out by the loop's next check, which finds bb as the loop's checks do."))
+	}
 	lines = append(lines, txt("The stop is carried out when you confirm, as a check does it. If a check of this loop is running then, that check or the next one does it."))
 	switch {
 	case !n.Applicable:

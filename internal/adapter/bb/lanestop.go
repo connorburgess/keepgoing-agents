@@ -151,6 +151,50 @@ func (a *Adapter) CancelLaneRetry(ctx context.Context, id string) (bool, error) 
 	return true, nil
 }
 
+// laneQueueMax bounds the queued messages one lane's deletion handles.
+const laneQueueMax = 50
+
+var queuedIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// DeleteLaneQueue implements adapter.LaneStopper with `bb thread queue list`
+// and `bb thread queue delete`. Of each queued row only its id and threadId
+// are decoded: never its text, attachments or model. A row of another
+// thread, or an ID that is not one, is not touched and makes it an error.
+func (a *Adapter) DeleteLaneQueue(ctx context.Context, id string) (int, error) {
+	if !childIDPattern.MatchString(id) || id == a.cfg.Thread {
+		return 0, &adapter.LaneStopError{Class: "not_a_lane", Err: errors.New("bb: refused a thread that is not a lane")}
+	}
+	out, err := a.run(ctx, "", "thread", "queue", "list", id, "--json")
+	if err != nil || ctx.Err() != nil {
+		return 0, laneError(out, err, ctx)
+	}
+	var rows []struct {
+		ID     string `json:"id"`
+		Thread string `json:"threadId"`
+	}
+	if json.Unmarshal(out, &rows) != nil || rows == nil || len(rows) > laneQueueMax {
+		return 0, &adapter.LaneStopError{Class: "queue_unreadable", Err: errors.New("bb thread queue list: not a bounded array")}
+	}
+	deleted := 0
+	for _, r := range rows {
+		if (r.Thread != "" && r.Thread != id) || !queuedIDPattern.MatchString(r.ID) {
+			return deleted, &adapter.LaneStopError{Class: "queue_unreadable", Err: errors.New("bb thread queue list: a row that is not this lane's")}
+		}
+		out, err := a.run(ctx, "", "thread", "queue", "delete", id, r.ID, "--json")
+		if code, ok := envelopeError(out); ok {
+			if code == "queued_message_not_found" || code == "not_found" {
+				continue // already sent or deleted
+			}
+			return deleted, &adapter.LaneStopError{Class: safeCode(code), Err: errors.New("bb thread queue delete: " + safeCode(code))}
+		}
+		if err != nil || ctx.Err() != nil {
+			return deleted, laneError(out, err, ctx)
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
 // laneError gives a failed bb command its class.
 func laneError(out []byte, err error, ctx context.Context) error {
 	if code, ok := envelopeError(out); ok {

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -156,13 +158,13 @@ func TestClientStopLanesNowJSON(t *testing.T) {
 	if ctl, _ := control.Load(entry.StateDir); ctl.StopLanesAt != nil {
 		t.Fatal("plain client stop asked for the lanes")
 	}
-	// The registered loop's agent does not exist, so the check cannot reach
-	// it; the stop is still carried out in the command and recorded.
+	// The registered loop names a bb that cannot be found from here, and no
+	// check has recorded one: said plainly, and left to the next check.
 	out.Reset()
 	errs.Reset()
 	code := run(context.Background(), []string{"client", "stop", "--lanes", "--immediately", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
 	r = clientHoldReport{}
-	if code != exitOK || json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "now" || r.Lanes == nil || !r.Lanes.Requested || r.Lanes.Result == nil || len(r.Issues) != 0 {
+	if code != exitOK || json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "left_to_check" || r.LeftBecause != "bb_not_found" || r.Lanes == nil || !r.Lanes.Requested || r.Lanes.Result != nil || len(r.Issues) != 0 {
 		t.Fatal(out.String(), errs.String())
 	}
 	if ctl, _ := control.Load(entry.StateDir); ctl.StopLanesAt == nil || !ctl.Stop {
@@ -376,6 +378,117 @@ func TestPanelChangeRequestTakesTheStopsOptionsOnly(t *testing.T) {
 	} {
 		if _, got := panelReadAction(strings.NewReader(body)); got != ok {
 			t.Errorf("%s: %v", body, got)
+		}
+	}
+}
+
+// A loop whose configuration names a bare bb runs its checks with a PATH that
+// finds it; the menu and the page run with the system's PATH, which does not.
+// Each check records where bb was found, and the review and the stop use that
+// path. With none recorded, or one that is not safe to run, they say so
+// plainly and leave the stop to the next check.
+func TestBareBBIsFoundFromTheMenuByTheRecordedPath(t *testing.T) {
+	setup := func(t *testing.T) (*fixture, string, string) {
+		f := laneFixture(t)
+		b, err := os.ReadFile(f.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bin := filepath.Join(f.dir, "bin")
+		cfg := strings.Replace(string(b), "cli: "+bin+"/bb}", "cli: bb}", 1)
+		if cfg == string(b) {
+			t.Fatal("the fixture's bb path was not found in the config")
+		}
+		write(t, f.cfg, cfg, 0o600)
+		reg, key := laneRegistry(t, f)
+		return f, reg, key
+	}
+	menuPath := "/usr/bin:/bin:/usr/sbin:/sbin"
+
+	// A check, with the loop's own PATH, records where bb was.
+	f, reg, key := setup(t)
+	bin := filepath.Join(f.dir, "bin")
+	t.Setenv("PATH", bin+":"+menuPath)
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"idle"}}`, 0o600)
+	f.tick()
+	st, _ := state.Load(filepath.Join(f.dir, "state"))
+	if st.BBPath != filepath.Join(bin, "bb") {
+		t.Fatalf("recorded %q", st.BBPath)
+	}
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+	// From the menu, with the system's PATH.
+	t.Setenv("PATH", menuPath)
+	code, reply, errs := runClientReview(t, "review", "stop", "--loop", key, "--directory", reg, "--json")
+	if code != exitOK || reply.Preview == nil || reply.Preview.Stop == nil || !reply.Preview.Stop.Immediately || len(reply.Preview.Stop.Options) != 2 || reply.Preview.Stop.Options[1].Label != "Stop It and Its 2 Lanes" {
+		t.Fatalf("%d %+v %s", code, reply.Preview, errs)
+	}
+	code, reply, _ = runClientReview(t, "apply", "stop", "--loop", key, "--expect", reply.Preview.Expect, "--lanes", "--immediately", "--directory", reg, "--json")
+	if code != exitOK || reply.Result == nil || !strings.HasPrefix(reply.Result.Text, "Stopped now") || strings.Join(stopCalls(f), ",") != "thr_primary,thr_child_a,thr_child_b1" {
+		t.Fatalf("%d %+v %v", code, reply.Result, stopCalls(f))
+	}
+
+	// Nothing recorded, or a recorded path that is not safe to run: said
+	// plainly, nothing is run, and the next check carries the stop out.
+	for name, plant := range map[string]func(f *fixture){
+		"nothing recorded": func(*fixture) {},
+		"a path everyone can write": func(f *fixture) {
+			p := filepath.Join(t.TempDir(), "bb")
+			write(t, p, "#!/bin/sh\nexit 0\n", 0o700)
+			os.Chmod(p, 0o777)
+			st, _ := state.Load(filepath.Join(f.dir, "state"))
+			st.BBPath = p
+			state.Save(filepath.Join(f.dir, "state"), st)
+		},
+		"a relative path": func(f *fixture) {
+			st, _ := state.Load(filepath.Join(f.dir, "state"))
+			st.BBPath = "bin/bb"
+			state.Save(filepath.Join(f.dir, "state"), st)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, reg, key := setup(t)
+			plant(f)
+			t.Setenv("PATH", menuPath)
+			code, reply, _ := runClientReview(t, "review", "stop", "--loop", key, "--directory", reg, "--json")
+			p := reply.Preview
+			if code != exitOK || p == nil || p.Stop == nil || p.Stop.Immediately || p.Stop.Lanes != nil || len(p.Stop.Options) != 2 || !strings.Contains(strings.Join(p.Lines, "\n"), "bb could not be found from here; the next check will stop the lanes.") {
+				t.Fatalf("%d %+v", code, p)
+			}
+			var out, errs bytes.Buffer
+			code = run(context.Background(), []string{"stop", "--lanes", "--immediately", "-c", f.cfg}, &out, &errs)
+			if code != exitOK || !strings.Contains(out.String(), "bb could not be found from here") || f.read("calls") != "" {
+				t.Fatalf("%d\n%s%s\ncalls %q", code, out.String(), errs.String(), f.read("calls"))
+			}
+		})
+	}
+}
+
+// client stop --json gives the stop check's warnings as fixed codes, never a
+// path or an error's own text, and its lane counts without bookkeeping.
+func TestClientStopWarningsAreCodes(t *testing.T) {
+	f := laneFixture(t)
+	reg, _ := laneRegistry(t, f)
+	r0, _ := registry.Load(reg)
+	notADir := filepath.Join(t.TempDir(), "private-sessions-file")
+	write(t, notADir, "", 0o600)
+	t.Setenv(session.DirEnv, notADir)
+	var out, errs bytes.Buffer
+	run(context.Background(), []string{"client", "stop", "--lanes", "--immediately", "--id", r0.Entries[0].ID, "--directory", reg, "--json"}, &out, &errs)
+	var r clientHoldReport
+	if json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "now" {
+		t.Fatal(out.String())
+	}
+	if !slices.Contains(r.Warnings, "session_claim_unavailable") || strings.Contains(out.String(), notADir) || strings.Contains(out.String(), "private-sessions-file") {
+		t.Fatalf("%s", out.String())
+	}
+	for _, w := range r.Warnings {
+		if !regexp.MustCompile(`^[a-z_]+$`).MatchString(w) {
+			t.Fatalf("not a code: %q", w)
+		}
+	}
+	for _, k := range []string{"stoppedLanes", "failedLanes", "dequeuedLanes", "listingTries"} {
+		if strings.Contains(out.String(), k) {
+			t.Fatalf("bookkeeping %s in %s", k, out.String())
 		}
 	}
 }

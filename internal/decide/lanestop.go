@@ -22,9 +22,11 @@ type LaneNode struct {
 	Verified bool
 	// Status is BB's thread status: active, starting, pending, idle, error,
 	// stopping, or anything else this build does not know. active and
-	// starting are running and are stopped. pending is not: child discovery
-	// treats it as a known state in which a thread is not working, which may
-	// be waiting on a person, and a stop uses the same meaning.
+	// starting have a session running or starting, and are stopped. pending
+	// has no session yet: no message has cleared dispatch, and `bb thread
+	// stop` has no transition from it, so its queued messages are deleted
+	// instead. (Child discovery counts neither starting nor pending as active
+	// work; the supervised thread's own stop does stop a pending one.)
 	Status string
 	// Queued counts messages waiting to run in the thread. For a thread in
 	// error that is a retry waiting its turn: BB's provider retry, or one
@@ -51,6 +53,10 @@ const (
 	// LaneStopQueued: it is in error with a retry waiting. Cancel the
 	// provider's retry where the provider can, then stop it.
 	LaneStopQueued LaneStopAction = "stop_queued"
+	// LaneStopDequeue: it has not started (pending), or it is idle with a
+	// message queued. Nothing runs to stop; delete what is queued, so it
+	// does not start.
+	LaneStopDequeue LaneStopAction = "dequeue"
 	// LaneStopIdle: nothing is running; nothing is done to it.
 	LaneStopIdle LaneStopAction = "already_idle"
 	// LaneStopStoppedEarlier: an earlier check recorded its stop and it is no
@@ -80,15 +86,24 @@ func LaneStopFor(n LaneNode) LaneStopAction {
 	case n.OtherLoop:
 		return LaneStopOtherLoop
 	}
-	running := false
+	running, queued := false, false
 	switch n.Status {
 	case "active", "starting":
 		running = true
 	case "error":
 		running = n.Queued > 0
-	case "idle", "pending", "stopping":
+	case "pending":
+		queued = true
+	case "idle":
+		queued = n.Queued > 0
+	case "stopping":
 	default:
 		return LaneStopUnknown
+	}
+	if queued {
+		// A killed check's record does not change this: what is still
+		// queued is deleted.
+		return LaneStopDequeue
 	}
 	switch {
 	case !running && n.StopRecorded:
