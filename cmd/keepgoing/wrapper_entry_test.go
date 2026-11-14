@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
@@ -53,4 +56,26 @@ func TestMain(m *testing.M) {
 	panelTestCleanup() // the binary and launcher the panel tests share
 	os.RemoveAll(private)
 	os.Exit(code)
+}
+
+// TestMain clears the BB thread identity of the shell that runs the tests,
+// but a copy of the test binary a test starts as a helper, with an
+// identity in its environment, must keep it.
+func TestHelperProcessKeepsTheIdentityItIsGiven(t *testing.T) {
+	if os.Getenv("BB_THREAD_ID") != "" {
+		t.Fatalf("the test process inherited a BB thread identity")
+	}
+	c := exec.Command(os.Args[0], "-test.run=^TestIdentityHelper$")
+	c.Env = append(os.Environ(), "KEEPGOING_IDENTITY_HELPER=1", "BB_THREAD_ID=thr_example_helper")
+	out, err := c.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "identity=thr_example_helper\n") {
+		t.Fatalf("helper: %v\n%s", err, out)
+	}
+}
+
+func TestIdentityHelper(t *testing.T) {
+	if os.Getenv("KEEPGOING_IDENTITY_HELPER") != "1" {
+		t.Skip("subprocess helper")
+	}
+	fmt.Printf("identity=%s\n", os.Getenv("BB_THREAD_ID"))
 }
