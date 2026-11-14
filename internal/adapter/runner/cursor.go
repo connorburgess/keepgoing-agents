@@ -319,6 +319,13 @@ var errCursorNoSession = errors.New("cursor: previous turn has no verified sessi
 // unverified or was not recorded keeps the refusal, and the loop ends in its
 // ordinary hold for a person.
 func (c *Cursor) freshStartAllowed(st Status) error {
+	// An abandoned turn is one no process ever ran: its wrapper was shut out
+	// under the turn lock before it began, and the binary on disk was asked
+	// first whether it keeps that contract. Like a turn that was never
+	// started, it left no conversation that a new one could duplicate.
+	if st.Record.Abandoned {
+		return nil
+	}
 	if st.Phase != Finished || !st.ExitCodeKnown || st.ExitCode != 1 || len(st.Stdout) != 0 {
 		return errCursorNoSession
 	}
