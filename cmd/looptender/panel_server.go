@@ -50,7 +50,7 @@ const panelExpiredPage = `<!doctype html>
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
-<title>keepgoing: this link has expired</title>
+<title>looptender: this link has expired</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/panel.css">
 <script src="/expired.js" defer></script>
@@ -58,11 +58,11 @@ const panelExpiredPage = `<!doctype html>
 <body>
 <header class="bar">
   <div class="bar-in">
-    <p class="brand"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>keepgoing</span></p>
+    <p class="brand"><svg viewBox="0 0 20 20" aria-hidden="true" class="mark"><path d="M15.5 6.2A6.5 6.5 0 1 0 16.5 10"/><path d="M16.8 3.4v3.4h-3.4"/></svg><span>looptender</span></p>
   </div>
 </header>
 <main class="notice">
-  <h1>This link to the keepgoing panel has expired</h1>
+  <h1>This link to the looptender panel has expired</h1>
   <p class="lede">Run <code class="command" id="command">keepgoing panel</code> in a terminal to open the panel again.</p>
   <p class="copy" id="copy-row" hidden><button type="button" class="btn" id="copy">Copy the command</button> <span id="copied" role="status" aria-live="polite"></span></p>
   <p>Each link opens the panel once, within 30 seconds. An open panel stops working when the browser session ends or the panel server stops.</p>
@@ -88,10 +88,10 @@ const panelLaunchPage = `<!doctype html>
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="refresh" content="0; url=%[1]s">
-<title>Opening the keepgoing panel</title>
+<title>Opening the looptender panel</title>
 </head>
 <body>
-<p>Opening the keepgoing panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
+<p>Opening the looptender panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
 </body>
 </html>
 `
@@ -111,13 +111,13 @@ const panelOpenedPage = `<!doctype html>
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
 <meta http-equiv="refresh" content="0; url=%[1]s">
-<title>keepgoing</title>
+<title>looptender</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/panel.css">
 </head>
 <body>
 <main class="notice">
-  <p>Opening the keepgoing panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
+  <p>Opening the looptender panel. <a href="%[1]s">Continue</a> if nothing happens.</p>
 </main>
 </body>
 </html>

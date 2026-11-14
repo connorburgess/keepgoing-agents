@@ -123,7 +123,7 @@ func TestDockReportCoversEveryStateFromFixtures(t *testing.T) {
 	if docs.CurrentRoute != (dockTarget{Availability: "known", Role: "main", Tool: "BB thread", Provider: "claude-code", Model: "claude-opus-5-5"}) {
 		t.Errorf("%+v", docs.CurrentRoute)
 	}
-	if docs.NextCheck.Availability != "unknown" || !strings.Contains(docs.NextCheck.Detail, "no keepgoing scheduler is on record") {
+	if docs.NextCheck.Availability != "unknown" || !strings.Contains(docs.NextCheck.Detail, "no looptender scheduler is on record") {
 		t.Errorf("next check must be unknown without a daemon: %+v", docs.NextCheck)
 	}
 	if f := docs.Fallbacks; f.Availability != "known" || f.Ready != 1 || f.Eligible != 2 || !f.Enough {
@@ -301,13 +301,13 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		need, use             string
 	}{
 		{"no snapshot from registered status", dockEvidence{noSnap: true, noStatus: true, issues: []string{"registration_unavailable"}},
-			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"unknown", "Can't be read", "looptender could not read this loop, so nothing about it is shown.",
 			"This registration is no longer in the registry. Whether it needs you is unknown.", ""},
 		{"a pending transfer returns no snapshot", dockEvidence{noSnap: true, noStatus: true, issues: []string{"transfer_pending"}},
-			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"unknown", "Can't be read", "looptender could not read this loop, so nothing about it is shown.",
 			"A move to another conversation is in progress, which holds it.", ""},
 		{"a read cut off returns no snapshot", dockEvidence{noSnap: true, noStatus: true, issues: []string{"cancelled"}},
-			"unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown.",
+			"unknown", "Can't be read", "looptender could not read this loop, so nothing about it is shown.",
 			"The read was cut off before this loop was read. Whether it needs you is unknown.", ""},
 		{"control.json unreadable", dockEvidence{},
 			"unknown", "Unknown", "Its control record could not be read, so whether it is on, held or stopped is unknown.",
@@ -436,9 +436,9 @@ func TestDockPhrasesFollowEvidence(t *testing.T) {
 		daemon               daemonStatus
 		availability, detail string
 	}{
-		{daemonStatus{State: "not_recorded"}, "unknown", "no keepgoing scheduler is on record for this loop, and one outside keepgoing is not visible"},
-		{daemonStatus{State: "unavailable"}, "unknown", "a keepgoing scheduler is on record for this loop but did not answer"},
-		{daemonStatus{State: "skipped"}, "unknown", "the loop's keepgoing scheduler was not asked"},
+		{daemonStatus{State: "not_recorded"}, "unknown", "no looptender scheduler is on record for this loop, and one outside looptender is not visible"},
+		{daemonStatus{State: "unavailable"}, "unknown", "a looptender scheduler is on record for this loop but did not answer"},
+		{daemonStatus{State: "skipped"}, "unknown", "the loop's looptender scheduler was not asked"},
 		{daemonStatus{State: "responsive", Phase: "waiting", NextCheckAt: &next}, "known", ""},
 		{daemonStatus{State: "responsive", Phase: "checking"}, "in_progress", ""},
 	} {
@@ -830,7 +830,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 		t.Fatalf("%+v", pay)
 	}
 	if d := pay.Departures[0]; d.ResetsAt == nil || !d.ResetsAt.Equal(dockNow.Add(5*24*time.Hour)) || d.ResetPassed || !d.atLimit() ||
-		say(d.Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported a reset for Sat 9 Mar, 12:00 (in 5 days). keepgoing returns after that, once a test passes." {
+		say(d.Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported a reset for Sat 9 Mar, 12:00 (in 5 days). looptender returns after that, once a test passes." {
 		t.Errorf("%+v %q", d, say(d.Text))
 	}
 	if say(pay.Short) != "On its second choice since Sun 3 Mar" || say(pay.Why) != "First choice at a usage limit until Sat 9 Mar" || payLoop.PickerState != "Supervising · on its second choice" {
@@ -851,7 +851,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 	// No reset time reported, and returning switched off.
 	rep := dockLoopNamed(t, r, "report-builder").Away
 	if rep == nil || rep.Departures[0].ResetsAt != nil || !rep.Departures[0].atLimit() ||
-		say(rep.Departures[0].Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported no reset time. keepgoing will not return by itself: returning is switched off for this loop." {
+		say(rep.Departures[0].Text) != "Hit a usage limit here on Sun 3 Mar, and the loop moved on. The provider reported no reset time. looptender will not return by itself: returning is switched off for this loop." {
 		t.Errorf("%+v %q", rep, say(rep.Departures[0].Text))
 	}
 	if dockLoopNamed(t, r, "docs-site-refresh").Away != nil {
@@ -869,7 +869,7 @@ func TestDockLeftRouteLimitAndAllowances(t *testing.T) {
 	// The route two loops left carries both records, each in its own words,
 	// the one still at a limit first.
 	if len(thread.LeftBy) != 2 || thread.Attention != "limit" || len(thread.Notes) != 2 ||
-		say(thread.Notes[0].Text) != "report-builder hit a usage limit here on Sun 3 Mar, and moved on. The provider reported no reset time. keepgoing will not return by itself: returning is switched off for report-builder." ||
+		say(thread.Notes[0].Text) != "report-builder hit a usage limit here on Sun 3 Mar, and moved on. The provider reported no reset time. looptender will not return by itself: returning is switched off for report-builder." ||
 		thread.Notes[0].Tone != "limit" || thread.Notes[1].Tone != "plain" {
 		t.Errorf("%+v", thread.Notes)
 	}
@@ -997,16 +997,16 @@ func TestDockAwayAttributesEachRouteToItsOwnRecord(t *testing.T) {
 	st.TakeoverBriefs.SwitchBackStopped = true
 	tl := &timelineReport{Events: []timelineEntry{move(t1, "tick", state.Primary, first, "rate_limit")}}
 	if a := dockAwayOf(st, &back, nil, tl, dockNow); a.Return != dockReturnStopped || a.Departures[0].ResetsAt != nil || !a.Departures[0].ResetFar ||
-		say(a.Departures[0].Text, dockNow) != "Hit a usage limit here on Mon 4 Mar, and the loop moved on. The provider reported a reset more than a year away; it is not shown. keepgoing has stopped trying to return, after its attempts were refused." ||
+		say(a.Departures[0].Text, dockNow) != "Hit a usage limit here on Mon 4 Mar, and the loop moved on. The provider reported a reset more than a year away; it is not shown. looptender has stopped trying to return, after its attempts were refused." ||
 		say(a.Why, dockNow) != "First choice hit a usage limit; the reported reset is more than a year away" {
 		t.Errorf("%+v %q", a, say(a.Departures[0].Text, dockNow))
 	}
 	// Returning is on, but after a retarget alone state records no handoff,
-	// and keepgoing returns only from a handoff.
+	// and looptender returns only from a handoff.
 	st = &statusOut{Target: first, TargetConfigured: true}
 	tl = &timelineReport{Events: []timelineEntry{move(t1, "retarget", state.Primary, first, "")}}
 	if a := dockAwayOf(st, &back, nil, tl, dockNow); a.Return != dockReturnNoHandoff ||
-		say(a.Departures[0].Text, dockNow) != "The loop was pointed at another route by a command on Mon 4 Mar. keepgoing will not return by itself: the loop was moved by a command." {
+		say(a.Departures[0].Text, dockNow) != "The loop was pointed at another route by a command on Mon 4 Mar. looptender will not return by itself: the loop was moved by a command." {
 		t.Errorf("%+v %q", a, say(a.Departures[0].Text, dockNow))
 	}
 	// With a handoff recorded, the same loop does return, and says so.

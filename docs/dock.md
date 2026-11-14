@@ -1,5 +1,7 @@
 # The keepgoing panel: one page for every loop
 
+**Display name (unreleased).** Builds from `main` label the panel and dock as looptender, including browser titles and expired-link pages. Commands remain `keepgoing panel` and `keepgoing dock`. To see the new page, use an updated executable; an older running panel continues serving its own page until restarted. Restarting the panel leaves supervision running.
+
 `keepgoing dock` serves one read-only page, the keepgoing panel, to this computer only. It shows every [registered](local-clients.md) loop: which ones need you, and for each loop its state, the routes it prefers and the one its records name as current, its lanes, its last check and its limits. It is v0.2.0, tested with fixtures only. "Dock" is the working name of the command and of the page plus a later menu-bar or tray item; the name is not settled. Words such as loop, lane and route are defined in the [glossary](glossary.md); where a configuration key is named (`primary`, a fallback's `id`), the configuration word is kept.
 
 ```sh
@@ -8,7 +10,7 @@ keepgoing dock
 ```
 
 ```text
-The keepgoing panel is being served, read-only, for this computer only:
+The looptender panel is being served, read-only, for this computer only:
 
   http://127.0.0.1:49152/<token>/
 

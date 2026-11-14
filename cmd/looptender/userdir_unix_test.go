@@ -181,7 +181,7 @@ func TestPanelOpensTheRunningPanelAfterTheNameChanges(t *testing.T) {
 	if code, _, errs := panelRunHere("--no-open", "--directory", chosen); code != exitFailed || !strings.Contains(errs, "another registry") {
 		t.Fatalf("a chosen registry: %d %s", code, errs)
 	}
-	if code, out, errs := panelRunHere("stop"); code != exitOK || !strings.Contains(out, "Stopped the keepgoing panel") {
+	if code, out, errs := panelRunHere("stop"); code != exitOK || !strings.Contains(out, "Stopped the looptender panel") {
 		t.Fatalf("stop: %d %s %s", code, out, errs)
 	}
 	panelStoppedWithin(t, done, "the server")
@@ -204,7 +204,7 @@ func TestPanelStopStopsServersUnderBothNames(t *testing.T) {
 		servers = append(servers, panelServeAt(t, dir, filepath.Join(config, "looptender", "registry")))
 	}
 	code, out, errs := panelRunHere("stop")
-	if code != exitOK || !strings.Contains(out, "Stopped the keepgoing panel") || !strings.Contains(out, "Stopped a second panel, running at "+filepath.Join(state, "looptender", "panel")) {
+	if code != exitOK || !strings.Contains(out, "Stopped the looptender panel") || !strings.Contains(out, "Stopped a second panel, running at "+filepath.Join(state, "looptender", "panel")) {
 		t.Fatalf("stop: %d %s %s", code, out, errs)
 	}
 	for i, done := range servers {

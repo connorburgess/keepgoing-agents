@@ -823,7 +823,7 @@
   function renderRoutes(d, pane) {
     pane.appendChild(back());
     pane.appendChild(paneHead("Routes"));
-    pane.appendChild(el("p", "lede", "Each model on an account that a loop runs on or keeps on standby, as configured. keepgoing does not verify which account a thread is using."));
+    pane.appendChild(el("p", "lede", "Each model on an account that a loop runs on or keeps on standby, as configured. looptender does not verify which account a thread is using."));
     var routes = list(d.routes), rs = d.routesSummary || {};
     if (!routes.length) {
       pane.appendChild(emptyBox(d.registry.availability === "available" ? "No routes to show." : "Unknown: the registry could not be read.", ""));
@@ -950,7 +950,7 @@
     }
     renderReadline();
     var needs = list(d.needsYou).length;
-    document.title = (needs ? "(" + needs + ") " : "") + "keepgoing";
+    document.title = (needs ? "(" + needs + ") " : "") + "looptender";
     // The needs-you line is announced when it changes, not on every read, so
     // a read does not talk over the outcome of a change.
     var needsSaid = (d.needsLine || "Needs you: unknown") + ".";

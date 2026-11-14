@@ -35,16 +35,16 @@ func TestBundledComponentVersions(t *testing.T) {
 func TestVersionWordsCompareWholeLabels(t *testing.T) {
 	for _, c := range []struct{ label, ref, kind, want, text string }{
 		{"", "v0.2.1", "newest_release", "not_recorded", "Not recorded."},
-		{"v0.2.1", "v0.2.1", "newest_release", "current", "keepgoing v0.2.1, the newest release here."},
-		{"v0.2.0", "v0.2.1", "newest_release", "older", "keepgoing v0.2.0, older than the newest release here (v0.2.1)."},
-		{"v0.1.9", "v0.1.10", "newest_release", "older", "keepgoing v0.1.9, older than the newest release here (v0.1.10)."},
-		{"v0.2.1-dev.26f91db", "v0.2.1", "newest_release", "different", "keepgoing v0.2.1-dev.26f91db, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
-		{"v0.2.1-dev.abc1234", "v0.2.0", "newest_release", "different", "keepgoing v0.2.1-dev.abc1234, a different build from the newest release here (v0.2.0); which of them is newer is not known."},
-		{"dev", "v0.2.1", "newest_release", "unknown", "A keepgoing build with no version recorded (dev), so whether it is the newest release here (v0.2.1) is unknown."},
-		{"26f91db-dirty", "26f91db-dirty", "this_panel", "unknown", "keepgoing 26f91db-dirty, built with uncommitted changes, so whether it is the same build as this panel's build (26f91db-dirty) is unknown."},
-		{"v0.2.1-dev.ab565b1", "v0.2.1-dev.ab565b1", "this_panel", "current", "keepgoing v0.2.1-dev.ab565b1, the same build as this panel."},
-		{"v0.2.1", "dev", "this_panel", "unknown", "keepgoing v0.2.1; this panel has no version recorded (dev), so there is nothing to compare it with."},
-		{"v0.2.1\nInjected", "v0.2.1", "newest_release", "different", "keepgoing unreadable, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
+		{"v0.2.1", "v0.2.1", "newest_release", "current", "looptender v0.2.1, the newest release here."},
+		{"v0.2.0", "v0.2.1", "newest_release", "older", "looptender v0.2.0, older than the newest release here (v0.2.1)."},
+		{"v0.1.9", "v0.1.10", "newest_release", "older", "looptender v0.1.9, older than the newest release here (v0.1.10)."},
+		{"v0.2.1-dev.26f91db", "v0.2.1", "newest_release", "different", "looptender v0.2.1-dev.26f91db, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
+		{"v0.2.1-dev.abc1234", "v0.2.0", "newest_release", "different", "looptender v0.2.1-dev.abc1234, a different build from the newest release here (v0.2.0); which of them is newer is not known."},
+		{"dev", "v0.2.1", "newest_release", "unknown", "A looptender build with no version recorded (dev), so whether it is the newest release here (v0.2.1) is unknown."},
+		{"26f91db-dirty", "26f91db-dirty", "this_panel", "unknown", "looptender 26f91db-dirty, built with uncommitted changes, so whether it is the same build as this panel's build (26f91db-dirty) is unknown."},
+		{"v0.2.1-dev.ab565b1", "v0.2.1-dev.ab565b1", "this_panel", "current", "looptender v0.2.1-dev.ab565b1, the same build as this panel."},
+		{"v0.2.1", "dev", "this_panel", "unknown", "looptender v0.2.1; this panel has no version recorded (dev), so there is nothing to compare it with."},
+		{"v0.2.1\nInjected", "v0.2.1", "newest_release", "different", "looptender unreadable, a different build from the newest release here (v0.2.1); which of them is newer is not known."},
 	} {
 		a, text := dockVersionAgainst(c.label, c.ref, c.kind)
 		if a != c.want || text != c.text {
@@ -173,7 +173,7 @@ func TestVersionsViewAgainstTheNewestBuild(t *testing.T) {
 	want := map[string]string{
 		"This panel": "older", "example-docs: last check": "older", "example-docs: daemon": "older", "example-docs: service": "same_file",
 		"example-api: last check": "older", "example-api: daemon": "older", "example-api: service": "different_file",
-		"BB plugin": "older", "BB plugin: the keepgoing it runs": "current",
+		"BB plugin": "older", "BB plugin: the looptender it runs": "current",
 	}
 	for k, w := range want {
 		if got[k] != w {
@@ -227,7 +227,7 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 			t.Errorf("advice with no newer build known: %+v", r)
 		}
 		switch r.Title {
-		case "This panel", "example-docs: last check", "example-docs: daemon", "macOS menu: the keepgoing it runs":
+		case "This panel", "example-docs: last check", "example-docs: daemon", "macOS menu: the looptender it runs":
 			if r.Availability != "current" {
 				t.Errorf("%+v", r)
 			}
@@ -259,7 +259,7 @@ func TestVersionsWithDevBuildsAndOldReports(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 	for _, r := range v.Rows {
-		if r.Title == "example-docs: last check" && r.Text != "keepgoing "+version+", a different build from the newest release here (v0.2.0); which of them is newer is not known." {
+		if r.Title == "example-docs: last check" && r.Text != "looptender "+version+", a different build from the newest release here (v0.2.0); which of them is newer is not known." {
 			t.Errorf("%q", r.Text)
 		}
 	}
@@ -280,9 +280,9 @@ func TestVersionsPanelRowIsThisPanel(t *testing.T) {
 	t.Cleanup(func() { version = previous })
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
 	for label, want := range map[string]string{
-		"26f91db-dirty":      "keepgoing 26f91db-dirty, this panel's own build.",
-		"v0.2.1-dev.abc1234": "keepgoing v0.2.1-dev.abc1234, this panel's own build.",
-		"dev":                "A keepgoing build with no version recorded (dev).",
+		"26f91db-dirty":      "looptender 26f91db-dirty, this panel's own build.",
+		"v0.2.1-dev.abc1234": "looptender v0.2.1-dev.abc1234, this panel's own build.",
+		"dev":                "A looptender build with no version recorded (dev).",
 	} {
 		version = label
 		if r := dockVersionsOf(nil, nil, nil, now).Rows[0]; r.Kind != "panel" || r.Text != want {
@@ -306,7 +306,7 @@ func TestVersionsInWorthKnowingNeverANeed(t *testing.T) {
 		t.Fatalf("allClear %t needs %d worth %+v", r.AllClear, len(r.NeedsYou), r.Worth)
 	}
 	text := r.Worth[0].Text.render(dockNow)
-	if !strings.Contains(text, "Its daemon runs keepgoing v0.2.0; this panel is keepgoing v0.2.1.") || !strings.Contains(text, "Its service runs a different file from this panel's binary.") {
+	if !strings.Contains(text, "Its daemon runs looptender v0.2.0; this panel is looptender v0.2.1.") || !strings.Contains(text, "Its service runs a different file from this panel's binary.") {
 		t.Errorf("%q", text)
 	}
 	// The view is not built unless asked for.

@@ -221,12 +221,12 @@ func TestPanelPauseAndResumeThroughThePage(t *testing.T) {
 	for _, l := range p.Preview.Lines {
 		lines = append(lines, l.render(time.Now()))
 	}
-	if !strings.HasPrefix(lines[0], "Now: Supervising. Last check: ") || lines[1] != "keepgoing sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change." ||
+	if !strings.HasPrefix(lines[0], "Now: Supervising. Last check: ") || lines[1] != "looptender sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change." ||
 		!strings.HasPrefix(lines[len(lines)-1], "This review expires in 2 min") {
 		t.Errorf("%q", lines)
 	}
 	_, done := w.post(t, key, "confirm", p.Preview.Form, `{"action":"pause"}`, nil)
-	if done.Result == nil || done.Result.Outcome != "done" || done.Result.Text != "Paused: keepgoing will send nothing; a check already running finishes." {
+	if done.Result == nil || done.Result.Outcome != "done" || done.Result.Text != "Paused: looptender will send nothing; a check already running finishes." {
 		t.Fatalf("%+v", done)
 	}
 	if !controlOf(t, e).Paused || lastOperation(t, e) != "panel_pause" {
@@ -276,7 +276,7 @@ func TestPanelReviewsSayWhenAConversationOwnsTheLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	for action, want := range map[string]string{
-		"resume": "This loop is supervised for a conversation. Resuming here clears the holds that conversation or keepgoing set; it does not answer any question the conversation asked.",
+		"resume": "This loop is supervised for a conversation. Resuming here clears the holds that conversation or looptender set; it does not answer any question the conversation asked.",
 		"stop":   "This loop is supervised for a conversation. Stopping here holds it for that conversation too; it does not tell the conversation why.",
 	} {
 		_, p := w.post(t, dockKey(e.ID), "prepare", w.form, `{"action":"`+action+`"}`, nil)
@@ -344,7 +344,7 @@ func TestPanelChangesRetainCallerAndRetryNothing(t *testing.T) {
 	}
 	r := c.confirm("session-a", key, "pause", p.Preview.Form, holdOptions{})
 	_ = lk.Release()
-	if r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "keepgoing is in the middle of a check on this loop. Nothing was changed." || controlOf(t, held).Paused {
+	if r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "looptender is in the middle of a check on this loop. Nothing was changed." || controlOf(t, held).Paused {
 		t.Fatalf("%+v", r.Result)
 	}
 	// The value is spent by that attempt: a second confirmation is refused.
@@ -363,9 +363,9 @@ func TestPanelChangesRetainCallerAndRetryNothing(t *testing.T) {
 		outcome string
 		text    string
 	}{
-		{clientHoldReport{ControlSave: "confirmed", Issues: []string{"incident_history_unavailable"}}, "done", "Paused: keepgoing will send nothing; a check already running finishes. Its history could not record this change."},
-		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
-		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "keepgoing could not confirm whether this loop was paused. Check its state before doing anything else."},
+		{clientHoldReport{ControlSave: "confirmed", Issues: []string{"incident_history_unavailable"}}, "done", "Paused: looptender will send nothing; a check already running finishes. Its history could not record this change."},
+		{clientHoldReport{ControlSave: "unconfirmed"}, "uncertain", "looptender could not confirm whether this loop was paused. Check its state before doing anything else."},
+		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"ticket_consumption_unconfirmed"}}, "uncertain", "looptender could not confirm whether this loop was paused. Check its state before doing anything else."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"observation_changed"}}, "review_again", "The loop changed since you reviewed it, or the review expired. Nothing was changed. Review it again."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"binding_changed"}}, "refused", "Its configuration changed while it was being read. Nothing was changed."},
 		{clientHoldReport{ControlSave: "not_attempted", Issues: []string{"cancelled"}}, "refused", "The request was cut off before anything was saved. Nothing was changed."},
@@ -631,7 +631,7 @@ func TestPanelReviewReadsTheRecordUnderItsLock(t *testing.T) {
 	}
 	r := c.prepare("session-a", dockKey(e.ID), "pause")
 	_ = lk.Release()
-	if r.Preview != nil || r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "keepgoing is in the middle of a check on this loop. Nothing was changed." || len(c.forms) != 0 {
+	if r.Preview != nil || r.Result == nil || r.Result.Outcome != "refused" || !r.Result.Retry || r.Result.Text != "looptender is in the middle of a check on this loop. Nothing was changed." || len(c.forms) != 0 {
 		t.Fatalf("%+v %+v", r.Preview, r.Result)
 	}
 	if r := c.prepare("session-a", dockKey(e.ID), "pause"); r.Preview == nil {

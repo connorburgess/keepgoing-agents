@@ -677,7 +677,7 @@ const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m
        keepgoing panel stop
        keepgoing panel list [--json] [--directory private-registry]
 
-Open the keepgoing panel, the page about every registered loop, in your
+Open the looptender panel, the page about every registered loop, in your
 browser. The panel's background process, for this computer only, is started when
 none is running and stops by itself when unused. It is read-only unless it was started
 with --allow-changes, which lets the page pause, stop and resume loops and replace a loop’s own build, each
@@ -819,9 +819,9 @@ func panelCommand(e env, args []string) int {
 		return exitFailed
 	}
 	go func() { _ = cmd.Wait() }()
-	what := "Opened the keepgoing panel in your browser."
+	what := "Opened the looptender panel in your browser."
 	if started {
-		what = "Started the keepgoing panel and opened it in your browser."
+		what = "Started the looptender panel and opened it in your browser."
 	}
 	fmt.Fprintf(e.stdout, "%s It stops by itself %s after the last page stops reading from it; supervision is not affected.%s\n", what, time.Duration(rec.IdleSeconds)*time.Second, mode)
 	return exitOK
@@ -896,11 +896,11 @@ func panelStatusCommand(e env, args []string) int {
 	}
 	switch {
 	case !st.Running:
-		fmt.Fprintln(e.stdout, "The keepgoing panel is not running. Run keepgoing panel to start and open it.")
+		fmt.Fprintln(e.stdout, "The looptender panel is not running. Run keepgoing panel to start and open it.")
 	case !st.Answering:
-		fmt.Fprintln(e.stdout, "The keepgoing panel is running but not answering. It may be starting or stopping; if this does not change, it is stuck, and ending its process is the way out. Supervision is not affected.")
+		fmt.Fprintln(e.stdout, "The looptender panel is running but not answering. It may be starting or stopping; if this does not change, it is stuck, and ending its process is the way out. Supervision is not affected.")
 	default:
-		fmt.Fprintf(e.stdout, "The keepgoing panel is running on this computer only, port %d, since %s.\n", st.Port, st.StartedAt.Local().Format("2006-01-02 15:04 MST"))
+		fmt.Fprintf(e.stdout, "The looptender panel is running on this computer only, port %d, since %s.\n", st.Port, st.StartedAt.Local().Format("2006-01-02 15:04 MST"))
 		idle := time.Duration(st.IdleSeconds) * time.Second
 		if st.InUse {
 			fmt.Fprintf(e.stdout, "In use: a page read from it in the last minute. It stops by itself %s after the last page stops reading; a page left open and visible keeps it running.\n", idle)
@@ -963,10 +963,10 @@ func panelStopCommand(e env, args []string) int {
 		wasRunning = wasRunning || also
 	}
 	if !wasRunning {
-		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
+		fmt.Fprintln(e.stdout, "The looptender panel is not running.")
 		return exitOK
 	}
-	fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
+	fmt.Fprintln(e.stdout, "Stopped the looptender panel. Supervision is not affected.")
 	return exitOK
 }
 

@@ -386,7 +386,7 @@ type dockChainEntry struct {
 // dockRoute is one route across every loop that names it. keepgoing knows it
 // from configuration only: it does not verify which account or model a BB
 // thread is actually using. Lanes are not attributed to a route, because
-// keepgoing records a loop's lanes only as counts.
+// looptender records a loop's lanes only as counts.
 type dockRoute struct {
 	Key          string   `json:"key"`
 	Provider     string   `json:"provider,omitempty"`
@@ -1058,7 +1058,7 @@ func dockLede(r dockReport) string {
 	if r.Unread > 0 {
 		s += fmt.Sprintf(", %d could not be read", r.Unread)
 	}
-	return s + ". Read from keepgoing's own records; nothing here is a live view of a conversation."
+	return s + ". Read from looptender's own records; nothing here is a live view of a conversation."
 }
 
 // dockNeedsLine is the picker's first line.
@@ -1246,7 +1246,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	switch {
 	case snap == nil:
 		// Registered status returned no snapshot.
-		l.State, l.Phrase, l.Detail = "unknown", "Can't be read", "keepgoing could not read this loop, so nothing about it is shown."
+		l.State, l.Phrase, l.Detail = "unknown", "Can't be read", "looptender could not read this loop, so nothing about it is shown."
 		need = dockUnreadable(in.Client.Issues)
 	case snap.Controls == nil:
 		// control.json could not be read.
@@ -1676,13 +1676,13 @@ func dockNextCheck(snap *clientSnapshot, now time.Time) dockNext {
 	d := snap.Daemon
 	switch {
 	case d.State == "skipped":
-		n.Detail = "the loop's keepgoing scheduler was not asked"
+		n.Detail = "the loop's looptender scheduler was not asked"
 	case d.State == "not_recorded":
 		// The only evidence is the absence of an endpoint record. Whether a
 		// scheduler outside keepgoing runs the loop is not inspected.
-		n.Detail = "no keepgoing scheduler is on record for this loop, and one outside keepgoing is not visible"
+		n.Detail = "no looptender scheduler is on record for this loop, and one outside looptender is not visible"
 	case d.State != "responsive":
-		n.Detail = "a keepgoing scheduler is on record for this loop but did not answer"
+		n.Detail = "a looptender scheduler is on record for this loop but did not answer"
 	case d.Phase == "waiting" && d.NextCheckAt != nil:
 		n.Availability, n.At, n.Phrase = "known", d.NextCheckAt, "Due"
 		u := dockUntil(now, *d.NextCheckAt)

@@ -20,24 +20,24 @@ func TestDockBuildComparesWholeLabels(t *testing.T) {
 		availability, order string
 		text                string
 	}{
-		{"", "v0.1.5", "not_recorded", "", "Which keepgoing build ran its last check is not recorded."},
-		{"dev", "dev", "unknown", "", "Its last check and this panel both ran a keepgoing build with no version recorded (dev), so whether they are the same build is unknown."},
-		{"dev", "v0.1.5", "unknown", "", "Its last check ran a keepgoing build with no version recorded (dev); this panel is keepgoing v0.1.5. Whether they are the same build is unknown."},
-		{"v0.1.5", "dev", "unknown", "", "Its last check ran keepgoing v0.1.5; this panel is a build with no version recorded (dev). Whether they are the same build is unknown."},
-		{"v0.1.5", "v0.1.5", "same", "", "Its last check ran this panel's build, keepgoing v0.1.5."},
-		{"26f91db-dirty", "26f91db-dirty", "unknown", "", "Its last check and this panel both ran keepgoing 26f91db-dirty, built with uncommitted changes, so whether they are the same build is unknown."},
-		{"v0.1.5-dev.26f91db", "v0.1.5-dev.26f91db", "same", "", "Its last check ran this panel's build, keepgoing v0.1.5-dev.26f91db."},
+		{"", "v0.1.5", "not_recorded", "", "Which looptender build ran its last check is not recorded."},
+		{"dev", "dev", "unknown", "", "Its last check and this panel both ran a looptender build with no version recorded (dev), so whether they are the same build is unknown."},
+		{"dev", "v0.1.5", "unknown", "", "Its last check ran a looptender build with no version recorded (dev); this panel is looptender v0.1.5. Whether they are the same build is unknown."},
+		{"v0.1.5", "dev", "unknown", "", "Its last check ran looptender v0.1.5; this panel is a build with no version recorded (dev). Whether they are the same build is unknown."},
+		{"v0.1.5", "v0.1.5", "same", "", "Its last check ran this panel's build, looptender v0.1.5."},
+		{"26f91db-dirty", "26f91db-dirty", "unknown", "", "Its last check and this panel both ran looptender 26f91db-dirty, built with uncommitted changes, so whether they are the same build is unknown."},
+		{"v0.1.5-dev.26f91db", "v0.1.5-dev.26f91db", "same", "", "Its last check ran this panel's build, looptender v0.1.5-dev.26f91db."},
 		// Two dev builds of one release are different builds, with no order.
-		{"v0.1.5-dev.26f91db", "v0.1.5-dev.ab565b1", "different", "", "Its last check ran keepgoing v0.1.5-dev.26f91db; this panel is keepgoing v0.1.5-dev.ab565b1. They are different builds."},
-		{"v0.1.4", "v0.1.5", "different", "older", "Its last check ran keepgoing v0.1.4, an older release than this panel's v0.1.5."},
-		{"v0.1.10", "v0.1.9", "different", "newer", "Its last check ran keepgoing v0.1.10, a newer release than this panel's v0.1.9."},
-		{"v1.0.0", "v0.9.9", "different", "newer", "Its last check ran keepgoing v1.0.0, a newer release than this panel's v0.9.9."},
+		{"v0.1.5-dev.26f91db", "v0.1.5-dev.ab565b1", "different", "", "Its last check ran looptender v0.1.5-dev.26f91db; this panel is looptender v0.1.5-dev.ab565b1. They are different builds."},
+		{"v0.1.4", "v0.1.5", "different", "older", "Its last check ran looptender v0.1.4, an older release than this panel's v0.1.5."},
+		{"v0.1.10", "v0.1.9", "different", "newer", "Its last check ran looptender v0.1.10, a newer release than this panel's v0.1.9."},
+		{"v1.0.0", "v0.9.9", "different", "newer", "Its last check ran looptender v1.0.0, a newer release than this panel's v0.9.9."},
 		// A release and a dev build of it: different, and no claim of order.
-		{"v0.1.5", "v0.1.5-dev.26f91db", "different", "", "Its last check ran keepgoing v0.1.5; this panel is keepgoing v0.1.5-dev.26f91db. They are different builds."},
+		{"v0.1.5", "v0.1.5-dev.26f91db", "different", "", "Its last check ran looptender v0.1.5; this panel is looptender v0.1.5-dev.26f91db. They are different builds."},
 		// A dev build of an earlier release is still not "older".
-		{"v0.1.4-dev.26f91db", "v0.1.5", "different", "", "Its last check ran keepgoing v0.1.4-dev.26f91db; this panel is keepgoing v0.1.5. They are different builds."},
-		{"dev-26f91db", "26f91db", "different", "", "Its last check ran keepgoing dev-26f91db; this panel is keepgoing 26f91db. They are different builds."},
-		{"v0.1.5\nInjected", "v0.1.5", "different", "", "Its last check ran keepgoing unreadable; this panel is keepgoing v0.1.5. They are different builds."},
+		{"v0.1.4-dev.26f91db", "v0.1.5", "different", "", "Its last check ran looptender v0.1.4-dev.26f91db; this panel is looptender v0.1.5. They are different builds."},
+		{"dev-26f91db", "26f91db", "different", "", "Its last check ran looptender dev-26f91db; this panel is looptender 26f91db. They are different builds."},
+		{"v0.1.5\nInjected", "v0.1.5", "different", "", "Its last check ran looptender unreadable; this panel is looptender v0.1.5. They are different builds."},
 	} {
 		b := dockBuildOf(c.recorded, c.panel)
 		if b.Availability != c.availability || b.Order != c.order || b.Text != c.text {
@@ -47,7 +47,7 @@ func TestDockBuildComparesWholeLabels(t *testing.T) {
 	if b := dockBuildOf(strings.Repeat("v", 200), "v0.1.5"); len([]rune(b.Recorded)) != dockMaxBuild {
 		t.Errorf("a long label is %d runes", len([]rune(b.Recorded)))
 	}
-	for label, want := range map[string]string{"v0.1.5": "This page is served by keepgoing v0.1.5.", "dev": "This page is served by a keepgoing build with no version recorded (dev)."} {
+	for label, want := range map[string]string{"v0.1.5": "This page is served by looptender v0.1.5.", "dev": "This page is served by a looptender build with no version recorded (dev)."} {
 		if got := dockPanelVersionText(label); got != want {
 			t.Errorf("%q: %q", label, got)
 		}
@@ -98,7 +98,7 @@ func TestDockBuildInTheReportAndTheServerInfo(t *testing.T) {
 	same.Entry.ID, same.Entry.Loop = "loop_00000000000000000000000000000002", "example-same"
 	r := buildDockReport([]dockInput{other, same}, dockNow, time.Minute, defaultStaleAfter, false, true, 0, true)
 	if !r.AllClear || len(r.NeedsYou) != 0 || len(r.Worth) != 1 || r.Worth[0].Loop != "example-other" ||
-		r.Worth[0].Text.render(dockNow) != "Its last check ran keepgoing v0.1.4, an older release than this panel's v0.1.5." {
+		r.Worth[0].Text.render(dockNow) != "Its last check ran looptender v0.1.4, an older release than this panel's v0.1.5." {
 		t.Fatalf("allClear %t needs %d worth %+v", r.AllClear, len(r.NeedsYou), r.Worth)
 	}
 	if b := dockLoopNamed(t, r, "example-same").Build; b.Availability != "same" {
@@ -107,7 +107,7 @@ func TestDockBuildInTheReportAndTheServerInfo(t *testing.T) {
 	base, _, _ := dockServe(t)
 	resp, body := dockRequest(t, http.MethodGet, base+dockServerPath, nil)
 	var served dockServed
-	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &served) != nil || served.Version != "v0.1.5" || served.VersionText != "This page is served by keepgoing v0.1.5." {
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &served) != nil || served.Version != "v0.1.5" || served.VersionText != "This page is served by looptender v0.1.5." {
 		t.Errorf("%d %s", resp.StatusCode, body)
 	}
 }
