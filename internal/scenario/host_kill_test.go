@@ -13,8 +13,9 @@ import (
 // out-of-memory machine does this) is not a failure of the session: the
 // check treats what it could not read as unverified, sends nothing, raises
 // no hold, says the host killed a command, and the next check carries on.
-// The harness recognises that warning, so a kill it did not ask for fails a
-// scenario as "HOST KILLED A STAND-IN" and not as a product assertion.
+// This scenario kills the stand-in on purpose, so it opts out of the
+// harness's own check, which fails any other step whose stand-in did not end
+// on its own as an environment failure.
 func TestScenarioHostKilledCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a process cannot be ended by a signal on Windows")
