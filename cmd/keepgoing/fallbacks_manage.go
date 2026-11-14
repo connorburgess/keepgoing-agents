@@ -43,9 +43,12 @@ type fallbackEdit struct {
 	wasLive        bool
 	unchanged      string // set when there is nothing to do, with the reason
 	subject        string // candidate id for remove and move
-	from, to       int    // 1-based positions; to is 0 for remove
-	confirm        string // the yes/no question
-	done           string // printed after a successful write
+	// recheck runs under the tick lock before anything is written; an error
+	// refuses the write.
+	recheck  func() error
+	from, to int    // 1-based positions; to is 0 for remove
+	confirm  string // the yes/no question
+	done     string // printed after a successful write
 }
 
 // Success-only integration contract shared by the three commands.
@@ -438,50 +441,14 @@ func yamlBlank(line string) bool   { return strings.TrimSpace(line) == "" }
 // reports, so the edit can cut and paste whole lines and leave every other
 // byte of the file as it was.
 func candidateSpans(raw []byte) ([]string, []candidateSpan, error) {
-	byHand := errors.New("The fallbacks file's candidates list cannot be edited line by line;\n  edit it by hand.")
-	var doc yaml.Node
-	if yaml.Unmarshal(raw, &doc) != nil {
-		return nil, nil, errors.New("The fallbacks file is not valid YAML.")
+	l, err := listSpans(raw, "candidates", "The fallbacks file's candidates list cannot be edited line by line;\n  edit it by hand.", "The fallbacks file is not valid YAML.")
+	if err != nil {
+		return nil, nil, err
 	}
-	root := yamlRoot(&doc)
-	list := yamlMapValue(root, "candidates")
-	if list == nil || list.Kind != yaml.SequenceNode || list.Style&yaml.FlowStyle != 0 || len(list.Content) == 0 {
-		return nil, nil, byHand
+	if len(l.spans) == 0 {
+		return nil, nil, errors.New("The fallbacks file's candidates list cannot be edited line by line;\n  edit it by hand.")
 	}
-	lines := strings.SplitAfter(string(raw), "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	// The list ends where the next top-level key begins, or at the end of the file.
-	limit := len(lines)
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if l := root.Content[i].Line - 1; l > list.Line-1 && l < limit {
-			limit = l
-		}
-	}
-	spans := make([]candidateSpan, len(list.Content))
-	for i, item := range list.Content {
-		start := item.Line - 1
-		if start < 0 || start >= limit || !strings.HasPrefix(strings.TrimSpace(lines[start]), "-") || (i > 0 && start <= spans[i-1].start+spans[i-1].comments) {
-			return nil, nil, byHand
-		}
-		first := start
-		for first > 0 && yamlComment(lines[first-1]) {
-			first--
-		}
-		spans[i] = candidateSpan{start: first, comments: start - first}
-	}
-	for i := range spans {
-		end := limit
-		if i+1 < len(spans) {
-			end = spans[i+1].start
-		}
-		for end > spans[i].start+spans[i].comments+1 && (yamlBlank(lines[end-1]) || yamlComment(lines[end-1])) {
-			end--
-		}
-		spans[i].end = end
-	}
-	return lines, spans, nil
+	return l.lines, l.spans, nil
 }
 
 // rewriteCandidates removes the entry at index at, or moves it to the 1-based
@@ -499,37 +466,9 @@ func (p *fallbackEdit) rewriteCandidates(at, to int) error {
 	if len(spans) != len(p.cfg.FallbackSet.Candidates) {
 		return errors.New("The fallbacks file changed while it was being read; run the command again.")
 	}
-	cut := spans[at]
-	block := append([]string{}, lines[cut.start:cut.end]...)
-	for _, l := range block[:cut.comments] {
+	out, comments := cutPasteEntry(lines, spans, at, to)
+	for _, l := range comments {
 		p.comments = append(p.comments, bbLabel(l, 70))
-	}
-	eol := "\n"
-	if strings.HasSuffix(lines[0], "\r\n") {
-		eol = "\r\n"
-	}
-	terminate := func(ls []string) {
-		if n := len(ls); n > 0 && !strings.HasSuffix(ls[n-1], "\n") {
-			ls[n-1] += eol
-		}
-	}
-	out := append(append([]string{}, lines[:cut.start]...), lines[cut.end:]...)
-	if to > 0 {
-		rest := append(append([]candidateSpan{}, spans[:at]...), spans[at+1:]...)
-		shift := func(i int) int { // a line index after the cut
-			if i >= cut.end {
-				return i - (cut.end - cut.start)
-			}
-			return i
-		}
-		insert := shift(rest[len(rest)-1].end)
-		if to-1 < len(rest) {
-			insert = shift(rest[to-1].start)
-		}
-		terminate(block)
-		head := append([]string{}, out[:insert]...)
-		terminate(head)
-		out = append(append(head, block...), out[insert:]...)
 	}
 	p.fallbacksYAML = []byte(strings.Join(out, ""))
 	parsed, err := config.ParseFallbacks(p.fallbacksYAML)
@@ -567,6 +506,11 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 	defer l.Release()
 	if code, err := fallbackAddAllowed(p.cfg); err != nil {
 		return code, fmt.Errorf("%w; nothing written", err)
+	}
+	if p.recheck != nil {
+		if err := p.recheck(); err != nil {
+			return exitSkipped, err
+		}
 	}
 	if p.kind == "fallback_remove" {
 		st, err := state.Load(p.cfg.Loop.StateDir)

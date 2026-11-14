@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Change the standard route list with commands.** `keepgoing routes add`, `move`, `remove`, `off` and `on` change `routes.yaml` line by line, keeping its comments and layout, after a preview of the effect on every loop that follows it; `routes check` validates it, and `routes check --loop NAME` probes one loop's routes. Only a person can change the standard list; with `--loop`, `move`, `remove`, `off` and `on` change a loop's own list, for its owner or a person. A route's id never changes and is never reused: changes are recorded in `routes-history.jsonl` beside the list. `--json` prints a `route_change` object, and `--yes --expect` writes only what a preview showed (`review_again` otherwise). `routes list --json` says what the caller may change (`can`). A following loop notes a change to the list once in its timeline. Fixtures through the real commands; no live provider.
 - **The BB plugin says looptender.** keepgoing is being renamed to looptender, and the plugin (v0.3.1) is the first part to show it: BB lists it as looptender, and its labels and messages read `looptender: enabled`, `looptender: watching …`, `looptender: checks have stopped` and so on. Nothing you type changes: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting, the `keepgoing` executable and `keepgoing.yaml` keep their names, so updating keeps the plugin's settings, secrets and schedules. It still runs whichever executable the setting names. Plugin unit tests only; not yet reinstalled into a running BB.
 
 ## 0.2.0 (2026-11-14)

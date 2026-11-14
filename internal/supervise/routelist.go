@@ -26,6 +26,9 @@ type RouteNote struct {
 	// CurrentNotInList: the loop is on a route that is no longer in its list.
 	// It stays there until the ordinary rules move it.
 	CurrentNotInList bool `json:"currentNotInList,omitempty"`
+	// ListChanged: the standard list changed since this loop's last check.
+	// It is a timeline record only; nothing is reported.
+	ListChanged bool `json:"listChanged,omitempty"`
 }
 
 // CurrentRouteName is the saved record of the route a following loop is on.
@@ -168,16 +171,22 @@ func (t *tick) noteRouteList() {
 	list := t.cfg.RouteList
 	if list.Source != config.RoutesStandard {
 		// A loop that no longer follows the list has nothing to report.
-		if t.st.RoutesUnreadable && !t.opts.DryRun {
-			t.st.RoutesUnreadable = false
+		if !t.opts.DryRun {
+			t.st.RoutesUnreadable, t.st.RoutesDigest = false, ""
 		}
 		return
 	}
 	for _, w := range list.Warnings {
 		t.warn("%s", w)
 	}
-	if list.Unreadable || t.routeOutsideList {
-		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList}
+	// A change to a readable list is noted once, against the list this loop
+	// last read; the first read, and an unreadable list, note nothing.
+	changed := list.Digest != "" && t.st.RoutesDigest != "" && list.Digest != t.st.RoutesDigest
+	if list.Digest != "" && !t.opts.DryRun {
+		t.st.RoutesDigest = list.Digest
+	}
+	if list.Unreadable || t.routeOutsideList || changed {
+		t.res.Routes = &RouteNote{Source: list.Source, Unreadable: list.Unreadable, CurrentNotInList: t.routeOutsideList, ListChanged: changed}
 	}
 	if list.Unreadable {
 		t.warn("%s", config.StandardRoutesUnreadable)
