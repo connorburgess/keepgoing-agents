@@ -137,7 +137,7 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
 - The history records these as ordinary `pause`, `stop` and `resume`, as `client pause|stop` and `client resume` do, not as from the panel.
 - `client review --help` and `client apply --help` print the usage and exit 0.
 
-`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). Today a stop stops the conversation only, at the loop's next check, and the review says so.
+`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set), and which can be made to every loop at once (`canAll`: `pause` while any loop can be paused). Today a stop stops the conversation only, at the loop's next check, and the review says so.
 
 **Stop options (planned, for `stop --lanes` and `--immediately`).** When the CLI can stop a loop's lanes and stop at once, `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
 
@@ -152,3 +152,14 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
 ```
 
 `immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object (today's) offers the one stop, which waits for the next check. The macOS menu already reads this shape and offers it only when it is there.
+
+### Pause all (`--all`)
+
+```sh
+keepgoing client review pause --all --json
+keepgoing client apply pause --all --expect l0123456789ab=<that loop's expect value> --expect … --json
+```
+
+`client review pause --all` reviews every registered loop at once and changes nothing. It prints `group`: `title`, `lines` (a line per loop, up to eight, then "And N more."; the total, such as "Pauses 3 of 4 loops; 1 is already paused."; what pausing does; when the review expires), `confirm`, `expiresAt`, `lost`, `refused`, `expired`, and `loops`, each with `key`, `name` and, for each loop it pauses, that loop's own `expect` value. With nothing to pause it gives `result` instead and exit 1. It is the page's Pause all review, built by the same code.
+
+`client apply pause --all` takes one `--expect KEY=VALUE` per loop to change (at most 128) and changes each on its own, as `client apply pause` would: a value for another loop or change, or past its time, or a loop whose record has changed, refuses that loop alone, and the rest are paused. `result` has `outcome` (`done` only when every loop was paused; `partial` when some were; otherwise `review_again`, `refused` or `uncertain`), `text` (the total: "Paused 3 loops." or "Paused 2 of 3; 1 needs a new review."), `lines` (each loop's outcome, those not changed first, up to eight, then "And N more."), and `retry`. Exit 0 only when every loop was paused. Only pause is offered for every loop at once today; stop follows once a stop can be carried out at once.

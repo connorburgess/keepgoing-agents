@@ -94,7 +94,7 @@ type clientReviewPreview struct {
 }
 
 const (
-	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--directory private-registry] [--json]"
+	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--directory private-registry] [--json]; keepgoing client review pause --all [--json]; keepgoing client apply pause --all --expect KEY=VALUE... [--json]"
 	clientReviewExpired = "This review expired. Nothing was changed. Review it again."
 	clientReviewOther   = "This review is for another loop or another change. Nothing was changed. Review it again."
 	clientReviewOwned   = "This loop is supervised for another conversation, so it can be resumed only from that conversation or from outside BB. Nothing was changed."
@@ -106,7 +106,12 @@ func clientReviewCommand(e env, args []string) int {
 	fs.SetOutput(io.Discard)
 	key := fs.String("loop", "", "the loop's key, as panel list --json gives it")
 	directory := fs.String("directory", "", "private registry directory")
-	expect := fs.String("expect", "", "apply: the expect value of the review confirmed")
+	var expects []string
+	fs.Func("expect", "apply: the expect value of the review confirmed; with --all, KEY=VALUE for each loop, repeated", func(v string) error {
+		expects = append(expects, v)
+		return nil
+	})
+	all := fs.Bool("all", false, "every loop at once (pause only)")
 	asJSON := fs.Bool("json", false, "print JSON")
 	help := func() int {
 		fmt.Fprintln(e.stdout, clientReviewUsage)
@@ -129,7 +134,14 @@ func clientReviewCommand(e env, args []string) int {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || (command == "review" && *expect != "") || (command == "apply" && !clientExpectPattern.MatchString(*expect)) {
+	if *all {
+		return clientGroupCommand(e, command, action, *directory, expects, *asJSON, *key != "")
+	}
+	expect := ""
+	if len(expects) == 1 {
+		expect = expects[0]
+	}
+	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || len(expects) > 1 || (command == "review" && expect != "") || (command == "apply" && !clientExpectPattern.MatchString(expect)) {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
@@ -143,7 +155,7 @@ func clientReviewCommand(e env, args []string) int {
 	if command == "review" {
 		reply, code = clientReview(e.ctx, *directory, *key, action, now, time.Local)
 	} else {
-		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now)
+		reply, code = clientApply(e.ctx, *directory, *key, action, expect, os.Getenv("BB_THREAD_ID"), now)
 	}
 	reply.SchemaVersion = 1
 	if *asJSON {
@@ -226,4 +238,143 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 		return clientReviewReply{Result: &res}, exitSkipped
 	}
 	return clientReviewReply{Result: &res}, exitFailed
+}
+
+// clientGroupPreview is the review of one change to every loop: a line per
+// loop (up to eight), the total and what the change does, and each loop's
+// own expect value for the loops it changes.
+type clientGroupPreview struct {
+	Action    string            `json:"action"`
+	Title     string            `json:"title"`
+	Lines     []string          `json:"lines"`
+	Confirm   string            `json:"confirm"`
+	ExpiresAt time.Time         `json:"expiresAt"`
+	Lost      string            `json:"lost"`
+	Refused   string            `json:"refused"`
+	Expired   string            `json:"expired"`
+	Loops     []clientGroupLoop `json:"loops"`
+}
+
+type clientGroupLoop struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	// Expect is set for each loop the change is made to: client apply
+	// --all --expect KEY=VALUE takes it back.
+	Expect string `json:"expect,omitempty"`
+}
+
+type clientGroupReply struct {
+	SchemaVersion int                 `json:"schemaVersion"`
+	Group         *clientGroupPreview `json:"group,omitempty"`
+	Result        *panelResult        `json:"result,omitempty"`
+}
+
+func clientGroupCommand(e env, command, action, directory string, expects []string, asJSON, withLoop bool) int {
+	if !panelGroupActions[action] || withLoop || (command == "review" && len(expects) > 0) || (command == "apply" && (len(expects) == 0 || len(expects) > 128)) {
+		e.errf("client: %s", clientReviewUsage)
+		return exitUsage
+	}
+	targets := map[string]string{}
+	for _, x := range expects {
+		key, value, ok := strings.Cut(x, "=")
+		if _, dup := targets[key]; !ok || dup || !panelKeyPattern.MatchString(key) || !clientExpectPattern.MatchString(value) {
+			e.errf("client: %s", clientReviewUsage)
+			return exitUsage
+		}
+		targets[key] = value
+	}
+	if _, err := registryDirectory(directory); err != nil {
+		e.errf("client %s: registry directory unavailable", command)
+		return exitUsage
+	}
+	var reply clientGroupReply
+	code := exitOK
+	if command == "review" {
+		reply, code = clientGroupReview(e.ctx, directory, action, time.Now(), time.Local)
+	} else {
+		reply, code = clientGroupApply(e.ctx, directory, action, expects, os.Getenv("BB_THREAD_ID"), time.Now())
+	}
+	reply.SchemaVersion = 1
+	if asJSON {
+		if json.NewEncoder(e.stdout).Encode(reply) != nil {
+			return exitFailed
+		}
+		return code
+	}
+	if g := reply.Group; g != nil {
+		fmt.Fprintln(e.stdout, g.Title)
+		for _, l := range g.Lines {
+			fmt.Fprintln(e.stdout, l)
+		}
+	} else if r := reply.Result; r != nil {
+		fmt.Fprintln(e.stdout, r.Text)
+		for _, l := range r.Lines {
+			fmt.Fprintln(e.stdout, l)
+		}
+	}
+	return code
+}
+
+func clientGroupReview(ctx context.Context, directory, action string, now time.Time, loc *time.Location) (clientGroupReply, int) {
+	reader := &dockReader{ctx: ctx, directory: directory, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, query: inspectDaemon}
+	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
+	defer cancel()
+	now = now.UTC()
+	g, refused := panelGroupReview(ctx, directory, reader, action, now)
+	if refused != nil {
+		return clientGroupReply{Result: refused}, exitFailed
+	}
+	p := g.preview
+	out := &clientGroupPreview{Action: action, Title: p.Title, Lines: []string{}, Confirm: p.Confirm, ExpiresAt: p.ExpiresAt,
+		Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Loops: []clientGroupLoop{}}
+	for _, l := range p.Lines {
+		out.Lines = append(out.Lines, l.renderLocal(now, loc))
+	}
+	for _, it := range g.items {
+		l := clientGroupLoop{Key: it.Key, Name: it.Name}
+		if it.Fits {
+			l.Expect = clientExpect(it.Key, action, p.ExpiresAt, it.digest)
+		}
+		out.Loops = append(out.Loops, l)
+	}
+	return clientGroupReply{Group: out}, exitOK
+}
+
+// clientGroupApply changes each loop named, with its own expect value: a
+// value for another loop or change, or past its time, refuses that loop
+// alone, and the rest go ahead.
+func clientGroupApply(ctx context.Context, directory, action string, expects []string, caller string, now time.Time) (clientGroupReply, int) {
+	var targets []panelGroupTarget
+	names := map[string]string{}
+	var refused []panelLoopTo
+	for _, x := range expects {
+		key, value, _ := strings.Cut(x, "=")
+		name := ""
+		if entry, _, _, ok := panelEntry(directory, key); ok {
+			name = clip(entry.Loop, dockMaxText)
+		} else {
+			refused = append(refused, panelLoopTo{Key: key, Name: key, Outcome: "refused", Text: key + ": not " + panelDone[action] + ". This loop is no longer registered. Nothing was changed."})
+			continue
+		}
+		digest, expires, ok := parseClientExpect(value, key, action)
+		switch {
+		case !ok:
+			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: panelGroupLoopText(name, action, panelResult{Outcome: "review_again"})})
+		case !now.Before(expires):
+			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: name + ": the review expired, so it was not " + panelDone[action] + "; review it again."})
+		default:
+			targets = append(targets, panelGroupTarget{Key: key, Digest: digest})
+			names[key] = name
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
+	defer cancel()
+	g := panelGroupApply(ctx, directory, action, "", caller, targets, names)
+	g.Loops = append(refused, g.Loops...)
+	g = panelGroupTotal(action, g)
+	res := &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}
+	if g.Outcome == "done" {
+		return clientGroupReply{Result: res}, exitOK
+	}
+	return clientGroupReply{Result: res}, exitFailed
 }
