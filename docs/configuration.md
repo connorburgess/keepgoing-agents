@@ -36,6 +36,8 @@ loop:
 | `prompt` or `prompt_file` | one of them | The text sent on wake, nudge, and re-prompt. The file is read on every send, so you can edit it while the loop runs. |
 | `handoff_file` | no | Sent to a fallback when it takes over. When the file is missing, a brief is generated. |
 | `switch_back` | no | Returns the loop to the primary once its limit resets and an exact probe passes. Off by default. See [fallbacks.md](fallbacks.md#switching-back). |
+| `routes` | no | `standard`: follow the person's [standard route list](routes.md) instead of a `fallbacks` file. Unreleased source. Excludes `fallbacks`; for `bb`, `claude` and `codex` loops. |
+| `routes_allow` | no | With `routes: standard`: `[new_conversation]` lets a standard route that starts a new conversation apply to this loop. Off by default. |
 | `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
 | `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
 

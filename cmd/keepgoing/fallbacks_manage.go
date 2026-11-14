@@ -136,6 +136,9 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		e.errf("config: %v", err)
 		return exitUsage
 	}
+	if cfg.Loop.FollowsStandard() {
+		return refuse(exitUsage, errors.New(followsStandardRefusal(sub)))
+	}
 	if cfg.FallbackSet == nil {
 		return refuse(exitUsage, errors.New("This loop has no fallbacks. Add one first with: keepgoing fallbacks add"))
 	}

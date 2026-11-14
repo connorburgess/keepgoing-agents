@@ -165,6 +165,10 @@ Mutations that fail these: a hold saved after its report instead of before, a da
 
 Not covered: cutting each external command at its time limit (the other half of T3 on the roadmap), a kill inside a write, and power loss (nothing here cuts the power, so a flush is never tested).
 
+## Standard route list
+
+Offline fixtures only; see [what is verified](routes.md#what-is-verified). Config tests resolve one fictional list for a conversation loop, a loop that allows new conversations, and headless loops, and check every reason a route is left out, file validation, and that a missing or invalid list never fails a load and is picked up when repaired. Supervisor tests cover no handoff and a single pair of reports while the list is unreadable, a dry run and a hold recording nothing, and staying on a removed or switched-off route through a stop. Command tests drive `routes list`, `validate`, `status` and real checks, and assert that the JSON carries no conversation ID or path. Not exercised: a live provider, the editing commands (not built), and two processes changing the list at once.
+
 ## Timing-sensitive tests
 
 Four causes were found behind intermittent failures, each reproduced before it was fixed. Use them when a test fails only sometimes.

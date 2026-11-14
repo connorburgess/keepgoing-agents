@@ -45,8 +45,26 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
 		e.errf("warning: %s", w)
 	}
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := cfg.FallbackSet; fb != nil && !l.FollowsStandard() {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+	}
+	if l.FollowsStandard() {
+		// Never a failure: a following loop is supervised whatever state the
+		// standard list is in.
+		switch fb := cfg.FallbackSet; {
+		case cfg.RouteList.Unreadable:
+			e.errf("warning: %s (%s: %s)", config.StandardRoutesUnreadable, cfg.RouteList.Problem, routesProblemText(cfg.RouteList.Problem))
+			if cfg.RouteList.Invalid != "" {
+				e.errf("  %s", strings.ReplaceAll(cfg.RouteList.Invalid, "\n", "\n  "))
+			}
+		case fb == nil:
+			e.errf("warning: follows the standard route list, but none of its routes applies to this loop; see keepgoing routes list")
+		default:
+			fmt.Fprintf(e.stdout, "ok: follows the standard route list (%d of its routes apply, min_healthy %d across %s)\n", len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+		}
+		for _, w := range cfg.RouteList.Warnings {
+			e.errf("warning: %s", w)
+		}
 	}
 	if limits := l.Limits.Configured(); len(limits) > 0 {
 		fmt.Fprintf(e.stdout, "bounds: %s\n", strings.Join(limits, ", "))
@@ -278,8 +296,8 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 	if controlSignature(cfg.Loop.StateDir) != sig {
 		return ctx.Err() == nil
 	}
-	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
-	monitor.Update("waiting", &deadline)
+	plan := planWait(cfg, time.Now())
+	monitor.Update("waiting", &plan.deadline)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -292,14 +310,70 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 			if ctx.Err() != nil {
 				return false
 			}
-			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
+			if now.After(plan.deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
+			}
+			if plan.online != nil && !now.Before(plan.nextNetwork) {
+				plan.nextNetwork = now.Add(plan.networkEvery)
+				if networkBack(ctx, cfg, plan.online) {
+					return ctx.Err() == nil // the network is back: check now
+				}
 			}
 			if poll(ctx) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
 	}
+}
+
+// networkRecheck is how often a waiting daemon checks whether the network is
+// back, while its last check found it down.
+var networkRecheck = time.Minute
+
+// connectivity is the loop's connectivity check; replaced in tests.
+var connectivity = supervise.Connectivity
+
+// waitPlan is when a daemon's next pass starts: at the end of its interval,
+// or at the structured reset of a provider limit the last check waited on if
+// that comes first; and, while the last check found the network down, as
+// soon as a connectivity check passes, tried every networkEvery.
+type waitPlan struct {
+	deadline, nextNetwork time.Time
+	networkEvery          time.Duration
+	online                func(context.Context) bool
+}
+
+func planWait(cfg *config.Config, now time.Time) waitPlan {
+	p := waitPlan{deadline: now.Add(cfg.Loop.Daemon.Interval.Duration)}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return p // the next pass reads the records and says what is wrong
+	}
+	if r := st.LimitResetsAt; r.After(now) && r.Before(p.deadline) {
+		p.deadline = r
+	}
+	if !st.NetworkDownSince.IsZero() {
+		if online := connectivity(cfg); online != nil {
+			p.online = online
+			p.networkEvery = max(networkRecheck, cfg.Loop.Daemon.ControlPoll.Duration)
+			p.nextNetwork = now.Add(p.networkEvery)
+		}
+	}
+	return p
+}
+
+// networkBack makes the loop's connectivity check under the tick lock, so it
+// never runs beside a check, and says whether it passed. A held lock is not
+// a pass: a check is under way.
+func networkBack(ctx context.Context, cfg *config.Config, online func(context.Context) bool) bool {
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		return false
+	}
+	defer l.Release()
+	ctx, cancel := context.WithTimeout(ctx, max(cfg.Loop.NetworkCheckTimeout(), time.Second))
+	defer cancel()
+	return online(ctx)
 }
 
 // Share the tick lock with manual ticks and retargets, and bound the whole
@@ -396,9 +470,11 @@ type statusOut struct {
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
 	// Timing is what usage-aware timing does for this loop; absent when off.
-	Timing   *config.TimingSummary `json:"timing,omitempty"`
-	StateDir string                `json:"stateDir"`
-	Version  string                `json:"version"`
+	Timing *config.TimingSummary `json:"timing,omitempty"`
+	// Routes is set for a loop that follows the standard route list.
+	Routes   *supervise.RouteNote `json:"routes,omitempty"`
+	StateDir string               `json:"stateDir"`
+	Version  string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -719,6 +795,15 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if st.ResumeEpisodes > 0 {
 		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
 	}
+	if r := out.Routes; r != nil {
+		fmt.Fprintln(w, "routes:    follows the standard route list (keepgoing routes list)")
+		if r.Unreadable {
+			fmt.Fprintf(w, "  %s\n", config.StandardRoutesUnreadable)
+		}
+		if r.CurrentNotInList {
+			fmt.Fprintln(w, "  the current route is no longer in the list; the loop stays on it until the ordinary rules move it")
+		}
+	}
 	if r := out.Redundancy; r != nil {
 		verdict := "handoffs allowed"
 		if !r.Meets {
@@ -856,7 +941,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
-	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+	} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 		// A fallback that starts a new thread at handoff is a target only
 		// once its thread exists.
 		if a, known := st.CandidateAgent(c); known {
@@ -891,7 +976,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Usage = []usageView{}
 	out.Timing = cfg.TimingSummary()
-	if fb := cfg.FallbackSet; fb != nil {
+	fb, outsideList := supervise.EffectiveRoutes(cfg, st)
+	if cfg.RouteList.Source == config.RoutesStandard {
+		out.Routes = &supervise.RouteNote{Source: cfg.RouteList.Source, Unreadable: cfg.RouteList.Unreadable, CurrentNotInList: outsideList}
+	}
+	if fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
@@ -1277,6 +1366,12 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 			}
 		}
 	}
+	// The record of a route a following loop is on is saved before the target
+	// is, so a later change to the standard list cannot strand it.
+	if err := supervise.SaveCurrentRoute(cfg, cfg.FallbackSet, id); err != nil {
+		e.errf("retarget: could not save the record of route %s, so the target is unchanged: %v", id, err)
+		return exitFailed
+	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	st.ClearBriefs()      // an operator's retarget starts a new episode
@@ -1307,7 +1402,7 @@ func activeBB(cfg *config.Config, target string) *config.BB {
 	if target == state.Primary {
 		return cfg.Loop.Agent.BB
 	}
-	if c, ok := cfg.FallbackSet.Find(target); ok {
+	if c, ok := currentRoutes(cfg).Find(target); ok {
 		return c.Agent.BB
 	}
 	return nil
