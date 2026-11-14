@@ -1590,7 +1590,9 @@ func classifyRecord(dir, file string, err error) unreadableRecord {
 
 // damaged reports whether the record's content is the problem, so that
 // restoring it from a copy is the remedy. Otherwise the file may be intact.
-func (r unreadableRecord) damaged() bool { return r.Problem == "not_json" || r.Problem == "wrong_shape" }
+func (r unreadableRecord) damaged() bool {
+	return r.Problem == "not_json" || r.Problem == "wrong_shape"
+}
 
 // describe is the reason in words, for the text output.
 func (r unreadableRecord) describe() string {
