@@ -12,7 +12,7 @@ With a build containing this adapter, use [guided setup](setup.md#cursor-setup) 
 version: 1
 loop:
   name: cursor-example
-  state_dir: ~/.local/state/keepgoing/cursor-example
+  state_dir: ~/.local/state/agent-loops/cursor-example
   adapter: cursor
   cursor:
     cli: agent

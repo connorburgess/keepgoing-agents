@@ -4,7 +4,7 @@
 version: 1
 loop:
   name: example-bb-loop
-  state_dir: ~/.local/state/keepgoing/example-bb-loop
+  state_dir: ~/.local/state/agent-loops/example-bb-loop
   adapter: bb
   provider: claude-code
   group: claude-example-account   # the quota pool; fallbacks in the same group are skipped on a limit
@@ -38,7 +38,7 @@ loop:
     report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this; needs limit_wait in report.events
   fallbacks: fallbacks.yaml
   report:
-    secret_file: ~/.config/keepgoing/example-bb-loop.env   # LOOPTENDER_WEBHOOK_URL and LOOPTENDER_WEBHOOK_SECRET
+    secret_file: ~/.config/agent-loops/example-bb-loop.env   # LOOPTENDER_WEBHOOK_URL and LOOPTENDER_WEBHOOK_SECRET
     events: [handoff, degraded, recovered, await_user, stop, error]
   yield:
     busy_command: ["./busy-check.sh"]
