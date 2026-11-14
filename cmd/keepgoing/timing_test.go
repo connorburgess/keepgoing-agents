@@ -5,8 +5,12 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/probe"
 )
 
 const timingYAML = "  timing:\n    enabled: true\n    windows: [seven_day]\n"
@@ -69,5 +73,60 @@ func TestTimingIsSaidWhereItIsTurnedOn(t *testing.T) {
 	write(t, f.cfg, strings.Replace(string(cfg), "  fallbacks: fallbacks.yaml\n", "", 1)+timingYAML, 0o600)
 	if code, _, errs := f.run("validate"); code == exitOK || !strings.Contains(errs, "loop.timing needs loop.fallbacks") {
 		t.Fatalf("without fallbacks: %d %s", code, errs)
+	}
+}
+
+// status says what timing would do at the next turn boundary, from the same
+// decision U5 will act on, and that nothing acts on it yet.
+func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
+	f := newFixture(t)
+	bin := filepath.Join(f.dir, "bin")
+	fb, _ := os.ReadFile(filepath.Join(f.dir, "fallbacks.yaml"))
+	write(t, filepath.Join(f.dir, "fallbacks.yaml"), string(fb)+`  - id: example-large
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_primary, cli: `+bin+`/bb, model: example-large}
+    probe: {model: claude-haiku-5-5, cli: `+bin+`/claude}
+`, 0o600)
+	cfgText, _ := os.ReadFile(f.cfg)
+	write(t, f.cfg, string(cfgText)+timingYAML+"    steps: [primary, example-large]\n", 0o600)
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := probe.UsageIdentity(cfg.Loop.PrimaryCandidate())
+	if err := os.MkdirAll(filepath.Join(f.dir, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Read 20 minutes before 12:00 at 60%, resetting at 14:00: 40% unused.
+	write(t, filepath.Join(f.dir, "state", "health.json"), `{"candidates":{"primary":{"usage":{"at":"2026-11-09T11:40:00Z","source":"claude_rate_limit_event","identity":"`+id+`","windows":[
+   {"key":"seven_day","used":0.6,"resetsAt":"2026-11-09T14:00:00Z"}]}}}}`, 0o600)
+	want := "timing would, at the next turn boundary: step up to example-large: the seven_day allowance resets in 2h 0m with 40% unused (reading 20m old) (not acted on yet)\n"
+	code, out, errs := f.run("status", "-now", "2026-11-09T12:00:00Z")
+	if code != exitOK || !strings.Contains(out, want) {
+		t.Fatalf("%d %s %s\nwant %s", code, out, errs, want)
+	}
+	var st statusOut
+	_, out, _ = f.run("status", "--json", "-now", "2026-11-09T12:00:00Z")
+	if err := json.Unmarshal([]byte(out), &st); err != nil || st.TimingWould == nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if w := st.TimingWould; w.Action != "up" || w.To != "example-large" || w.Rule != "step_up" || w.Reason != "near_reset_unused" || w.Window != "seven_day" || w.ActedOn {
+		t.Fatalf("%+v", w)
+	}
+	// A held loop: the gate decides, before any reading.
+	if code, _, errs := f.run("pause"); code != exitOK {
+		t.Fatalf("pause: %d %s", code, errs)
+	}
+	_, out, _ = f.run("status", "--json", "-now", "2026-11-09T12:00:00Z")
+	st = statusOut{}
+	if err := json.Unmarshal([]byte(out), &st); err != nil || st.TimingWould == nil || st.TimingWould.Action != "stay" || st.TimingWould.Rule != "gate" || st.TimingWould.Reason != "held" {
+		t.Fatalf("held: %v %+v", err, st.TimingWould)
+	}
+	// Without steps it only collects readings, and says so.
+	write(t, f.cfg, string(cfgText)+timingYAML, 0o600)
+	if _, out, _ := f.run("status", "-now", "2026-11-09T12:00:00Z"); !strings.Contains(out, "timing would, at the next turn boundary: stay: no steps are configured, so timing only collects readings (not acted on yet)\n") {
+		t.Fatalf("no steps: %s", out)
 	}
 }

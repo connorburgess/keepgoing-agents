@@ -394,10 +394,12 @@ type statusOut struct {
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
-	// Timing is what usage-aware timing does for this loop; absent when off.
-	Timing   *config.TimingSummary `json:"timing,omitempty"`
-	StateDir string                `json:"stateDir"`
-	Version  string                `json:"version"`
+	// Timing is what usage-aware timing does for this loop, and TimingWould
+	// what it would do at the next turn boundary; both absent when off.
+	Timing      *config.TimingSummary `json:"timing,omitempty"`
+	TimingWould *timingWould          `json:"timingWould,omitempty"`
+	StateDir    string                `json:"stateDir"`
+	Version     string                `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -723,6 +725,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			fmt.Fprintln(w, "warning: "+x)
 		}
 	}
+	if tw := out.TimingWould; tw != nil {
+		fmt.Fprintln(w, tw.Text)
+	}
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return exitOK
 }
@@ -885,6 +890,10 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			s := health.Evaluate(fb, reg, now, st.Target(), group)
 			out.Redundancy = &s
 		}
+		if err != nil {
+			reg = nil
+		}
+		out.TimingWould = timingWouldOf(cfg, st, ctl, reg, now)
 	}
 	return out, nil
 }
