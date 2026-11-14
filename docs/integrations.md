@@ -1,6 +1,6 @@
 # Integrations
 
-This lists everything keepgoing talks to and how far each has been checked. Each item has one status:
+This lists everything looptender talks to and how far each has been checked. Historical evidence below retains the keepgoing name and the executable, package and interface labels observed at the time; the [README](../README.md) distinguishes the current product name from released v0.2.0 commands. Each item has one status:
 
 - **Live**: exercised against the real tool or service.
 - **Fakes**: covered by tests against a stand-in that follows the real tool's documented or observed output.

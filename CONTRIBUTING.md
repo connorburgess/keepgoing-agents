@@ -1,4 +1,4 @@
-# Contributing to keepgoing-agents
+# Contributing to looptender
 
 Thanks for helping keep agent loops running. This guide is short on purpose.
 

@@ -1,12 +1,12 @@
 # Run and conversation discovery (planned)
 
-Keepgoing should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
+looptender should answer “what is running, where is its conversation, and which run is blocking it?” through durable local references. Users should be able to follow those references immediately in CLI/JSON output, without reconstructing a scheduled run from timestamps, Git history or directory searches. The optional menu and BB plugin should consume the same contract.
 
 This is a data and navigation model in progress. Three parts exist in source and are in v0.2.0: the [identity and run-boundary contract](#identity-and-run-boundary-contract-d1-internal), the [persisted reference graph](#persisted-reference-graph-d2) that records it in each loop's state directory, and the read-only [`keepgoing runs` command](#cli-navigation-d3) that shows it. It also shows [what a loop is waiting on](#what-a-loop-is-waiting-on-d4-partial): child conversations and the owning conversation. There is no provider-link resolver, lock-holder lookup or GUI navigation. The [D1–D6 roadmap criteria](roadmap.md#priority-run-and-conversation-discoverability-planned) track delivery; D1 and D3 are checked, D2 and D4 are partial, and D5–D6 are planned. D3 has one [live check](#live-check) on a BB target; the rest of its evidence is from fixtures. The plan creates no scheduler, agent orchestrator, new dashboard, graph database or server.
 
 ## Routine, run and chat are different nodes
 
-A routine is a useful top-level view when an external scheduler supplies its identity. A keepgoing loop can exist without a routine. Each execution run links to the loop and goal revision it belongs to, and to its provider chats/sessions. A run may use several conversations; successive runs may resume the same conversation. These are recorded relationships, not BB parent/child ownership and not permission to create or re-parent threads.
+A routine is a useful top-level view when an external scheduler supplies its identity. A looptender loop can exist without a routine. Each execution run links to the loop and goal revision it belongs to, and to its provider chats/sessions. A run may use several conversations; successive runs may resume the same conversation. These are recorded relationships, not BB parent/child ownership and not permission to create or re-parent threads.
 
 The hierarchy is a convenient default view of a graph: routine → runs → chats. Shared chats and blocked-by edges prevent a strict tree from expressing every valid relationship. A missing external routine or provider chat ID remains unavailable, rather than being invented from a timestamp or process ID.
 
@@ -90,7 +90,7 @@ A registry reference maps to a durable loop through its entry's runtime director
 | Send attempt, `intent` | Before every automatic adapter send | `adapter_call` |
 | Attempt outcome `adapter_returned` or `adapter_error` | After that adapter call returns | `adapter_call` |
 | Run → goal revision | A check finds a valid `goal.json` while the run is open | `goal_record` |
-| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread keepgoing created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
+| Run → chat/session | A check's target is a BB thread (its configured thread ID, or the thread looptender created for a handoff to a `bb.new_thread` candidate) or a headless Claude, Codex or Cursor runner with a saved UUID-shaped resume ID | `configured_target`, `created_thread` or `runner_session_file` |
 | Run's opening invocation | An accepted `enable` or `resume` that opens a run carries `--routine` | the run's own source |
 | Run → routine invocation (trigger) | `tick`, `enable` or `resume` carries `--routine` while a run is already open | `external` |
 | Registry reference | `registry add` finds an existing graph | `registry_add` |
@@ -102,7 +102,7 @@ Run boundaries are derived from saved control state, read inside the graph lock,
 
 ### Supplying a scheduler identity
 
-A scheduler that calls keepgoing can say which entry and which trigger it is:
+A scheduler that calls looptender can say which entry and which trigger it is:
 
 ```sh
 keepgoing tick   -c loop.yaml --routine example-scheduler/nightly/2026-11-13

@@ -1,8 +1,8 @@
 # Windows scheduling investigation
 
-Research completed on 2026-11-10 against Microsoft documentation and the current keepgoing code. **Windows managed service support is not implemented.** No Task Scheduler calls, registration, account changes, scheduler fixtures, or live lifecycle tests were performed for this investigation. Existing Windows background-start and runner tests do not establish Task Scheduler compatibility.
+Research completed on 2026-11-10 against Microsoft documentation and the current looptender code. **Windows managed service support is not implemented.** No Task Scheduler calls, registration, account changes, scheduler fixtures, or live lifecycle tests were performed for this investigation. Existing Windows background-start and runner tests do not establish Task Scheduler compatibility.
 
-The proposed first backend is a Task Scheduler 2.0 task for the current, already logged-in user. It would run the ordinary daemon, preserving keepgoing's control polling and early child-outcome checks. keepgoing would still own the loop; the scheduler would only start and restart its supervisor. Use the existing `start --background` or an independently configured scheduler until the implementation and verification gates below pass.
+The proposed first backend is a Task Scheduler 2.0 task for the current, already logged-in user. It would run the ordinary daemon, preserving looptender's control polling and early child-outcome checks. looptender would still own the loop; the scheduler would only start and restart its supervisor. Use the existing `start --background` or an independently configured scheduler until the implementation and verification gates below pass.
 
 ## Options and decision
 

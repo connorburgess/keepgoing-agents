@@ -52,14 +52,14 @@ In the guide, type `new` at the thread question. See [hand off to a new conversa
 
 In the guide, steps 2 and 3 become:
 
-2. **Thread.** If you agree (the default answer is no), keepgoing runs `bb thread list --json` and shows live, visible threads nine at a time by title, provider and status, this loop's own thread first; `more` shows the next page. Pick a number or paste a thread ID; an ID that is not in BB's list is used as typed, with a note. Thread IDs are not printed unless you type `ids` or pass `--show-ids`. If you decline, or the listing is unavailable, you enter the ID and the provider.
+2. **Thread.** If you agree (the default answer is no), looptender runs `bb thread list --json` and shows live, visible threads nine at a time by title, provider and status, this loop's own thread first; `more` shows the next page. Pick a number or paste a thread ID; an ID that is not in BB's list is used as typed, with a note. Thread IDs are not printed unless you type `ids` or pass `--show-ids`. If you decline, or the listing is unavailable, you enter the ID and the provider.
 3. **Model.** With the same agreement, `bb provider models <provider> --json` supplies a pick list and the reasoning levels each model accepts. A name you type instead is not checked. Blank keeps the thread's own model, except for a thread the loop already uses, where a model different from every recorded use is required (compared without regard to case). Then the quota group (one usage limit; the suggestion is the model's name, otherwise the provider), a cheaper model for scheduled checks, and an optional account directory for the local check.
 
 Those two listings are the only commands this path can run, only in the guided mode and only after `yes`. They are read-only: no message is sent, no thread is created, moved or changed, and no model is called. Flags never run `bb`. Only the structured output is read; an error reply or unexpected shape means "unavailable", and a listing is abandoned after 20 seconds or 8 MiB. Text taken from a listing (titles, providers, statuses, display names) is stripped of control and format characters, including escape sequences and bidirectional overrides, and shortened before it is printed; a listed model name containing such characters is not offered.
 
-What the preview states, because keepgoing cannot verify it:
+What the preview states, because looptender cannot verify it:
 
-- **The account.** BB chooses the account for a thread; keepgoing cannot see or switch it. A fallback must have a quota group of its own, so giving it one is your claim that it has a separate usage limit. keepgoing cannot check that claim. A thread that shares a limit with a target already in the loop cannot help and should not be added.
+- **The account.** BB chooses the account for a thread; looptender cannot see or switch it. A fallback must have a quota group of its own, so giving it one is your claim that it has a separate usage limit. looptender cannot check that claim. A thread that shares a limit with a target already in the loop cannot help and should not be added.
 - **The check.** A BB fallback is confirmed with the local `claude` or `codex` CLI, as [probes](#probes) describe. A pass shows that CLI's login works; it shows BB's account works only if BB uses the same login. `--probe-account-dir` points the check at another existing login.
 - **The same conversation.** Adding a thread the loop already uses means a handoff switches that thread's model (and reasoning level, if set) with `bb thread update` and continues in the same conversation, with the same history. It is very likely the same account, so it helps only if the other model has its own limit, which only the check before a handoff tests. The provider must be the one the loop already records for that thread. If the primary's `bb.model` is unset, returning to the primary leaves the thread on the fallback's model; the preview says so.
 - **The model.** Marked as from BB's list or not checked. With no model set, the check before a handoff uses the local CLI's default model, which may differ from the thread's.
@@ -189,7 +189,7 @@ Other probe settings:
 
 A `claude` or `codex` probe runs the CLI on this machine with its login. For a BB candidate, that confirms the CLI and account BB would use only when they share the login. When a candidate uses a different account, point the probe at it with `probe.env`, for example `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
-Probe cost depends on the CLI, account billing, model, context overhead, caching, and provider retries. keepgoing does not estimate a dollar amount or enforce a spending limit. A small prompt does not establish a small bill: one historical Codex probe used about 21,000 input tokens, most cached. That observation is not an estimate for future runs.
+Probe cost depends on the CLI, account billing, model, context overhead, caching, and provider retries. looptender does not estimate a dollar amount or enforce a spending limit. A small prompt does not establish a small bill: one historical Codex probe used about 21,000 input tokens, most cached. That observation is not an estimate for future runs.
 
 Set `probe.every` and `probe.daily_cap` with that in mind. The daily cap limits scheduled probe invocations per candidate, not dollars or all provider requests.
 
@@ -201,7 +201,7 @@ There are three tiers:
 
 Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there. v0.2.0 also keeps one [usage reading](#usage-readings) per candidate when a probe carries one.
 
-A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In v0.2.0 the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In v0.2.0 the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape looptender does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. looptender never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
 
 ## Usage readings
 
@@ -213,13 +213,13 @@ v0.2.0 records how much of an account's quota a provider says is used, when a pr
 | `codex` | The app-server's `account/rateLimits/read` reply | After a successful probe, and after a probe fails without a recognized code. Successful-probe collection is unreleased. The read makes no model call. |
 | `command`, and every other provider including Cursor | none | Never; shown as unavailable |
 
-No extra model call is added for usage collection. Codex adds a structured status read through its app-server after a successful probe; that read may communicate with the provider. keepgoing does not directly read stored credentials or directly call a provider usage endpoint: the Codex CLI handles its own authentication and status request. Claude takes usage from the existing probe output, with no extra status read. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
+No extra model call is added for usage collection. Codex adds a structured status read through its app-server after a successful probe; that read may communicate with the provider. looptender does not directly read stored credentials or directly call a provider usage endpoint: the Codex CLI handles its own authentication and status request. Claude takes usage from the existing probe output, with no extra status read. To get the event, the Claude probe now asks for `--output-format stream-json --verbose` instead of `json`; it is still one request, judged from the same final result object. That equivalence is checked with fixtures and one live probe on one CLI version (see the end of this section); a CLI that rejects those flags would fail its probe.
 
 The Claude event is not a documented contract. Its shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models, where each window under `rate_limit_info.unifiedWindows` carried a `utilization` between 0 and 1, a `resetsAt` time and a `status`. Parsing is deliberately narrow:
 
 - No event, another shape, or a window without a numeric `utilization` between 0 and 1 gives no reading for that window. It is never an error and never changes the probe result.
 - Only `utilization` is required. A `resetsAt` or `status` that is missing, of another type or implausible is left out and the window is kept, shown without that field.
-- Window names are opaque keys. keepgoing does not assume which windows exist or what they mean.
+- Window names are opaque keys. looptender does not assume which windows exist or what they mean.
 - When a probe emits several events, later ones override earlier ones per window.
 - Names and status values must be short identifiers (letters, digits, `_`, `-`, `.`, at most 64 characters); anything else is dropped. At most eight windows are kept.
 
@@ -254,7 +254,7 @@ v0.2.0 also keeps every reading a candidate's probes carried, so that the use of
 - **The clock.** The same reading recorded twice adds nothing. Readings stamped later than a new reading are dropped when it is added: only a clock that was ahead and has been set back leaves them, and the current clock wins, so new readings are never refused because of them. A reading that reports a window whose reset is at or before the reading's own time suggests this machine's clock is ahead. That window is not recorded, and nothing is dropped for that reading, so a clock far ahead cannot wipe the history.
 - **Stored records.** A stored history that is not a plain record of readings loads as absent and leaves health unchanged.
 
-**Projection.** For each window of the latest reading, keepgoing fits a rate through the recorded readings of the same instance and extends it from the newest reading to the reset. The rate is the least squares slope through every reading used, not just the first and last, so an early jump or a single rounding step does not decide it alone. The rate covers all use of the account over the readings' span, by any loop or by the person. The result says one of:
+**Projection.** For each window of the latest reading, looptender fits a rate through the recorded readings of the same instance and extends it from the newest reading to the reset. The rate is the least squares slope through every reading used, not just the first and last, so an early jump or a single rounding step does not decide it alone. The rate covers all use of the account over the readings' span, by any loop or by the person. The result says one of:
 
 - **Used up since a time:** the newest reading is at 100%, dated at the first of the latest run of readings at 100%, or at the latest reading when no history of the window is recorded. No rate is needed for this.
 - **A share at reset,** for example `seven_day 60% at reset (3 readings over 12h 0m)`. Shares are rounded down and shown up to 100%.
@@ -345,13 +345,13 @@ A handoff is allowed only when the healthy, eligible candidates cover at least `
 - `group`: each account or quota pool counts.
 - `none`: each candidate counts.
 
-Below the minimum, keepgoing warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
+Below the minimum, looptender warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
 
-A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, keepgoing probes the handoff's target exactly and hands off without first refreshing the others (v0.2.0; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
+A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, looptender probes the handoff's target exactly and hands off without first refreshing the others (v0.2.0; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
 
 ## Multiple subscriptions
 
-For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; keepgoing selects an existing login and never creates accounts or copies credentials.
+For three Claude subscriptions, use one headless target per account, with a distinct `group` and `claude.env.CLAUDE_CONFIG_DIR`. Claude Code documents [separate configuration directories for multiple logins](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts). Sign in to each directory yourself before enabling the loop; looptender selects an existing login and never creates accounts or copies credentials.
 
 Copy [looptender.multi-account.yaml](../examples/looptender.multi-account.yaml) and [fallbacks.multi-account.yaml](../examples/fallbacks.multi-account.yaml), replacing the fictional absolute paths. The primary uses account A:
 
@@ -370,7 +370,7 @@ loop:
 
 The fallback file lists B and C in order, each with its own group and directory. It sets `redundancy: {min_healthy: 1, span: group}`, so one healthy alternative account is enough. With `min_healthy: 2`, both other accounts must be healthy before the first handoff. Accounts sharing a quota must share a group, even if their config directories differ.
 
-When A is limited, keepgoing probes B with B's environment and target model, then starts B's turn with that same environment. C is next if B cannot take over. A later limit on B can hand off to a healthy C. With switch-back enabled, the loop can return to A after the reset and a passing probe using A's environment. Each target retains its own session; a handoff sends the brief to the target rather than copying the previous account's session.
+When A is limited, looptender probes B with B's environment and target model, then starts B's turn with that same environment. C is next if B cannot take over. A later limit on B can hand off to a healthy C. With switch-back enabled, the loop can return to A after the reset and a passing probe using A's environment. Each target retains its own session; a handoff sends the brief to the target rather than copying the previous account's session.
 
 Leave account selection in `claude.env` or `codex.env` so turns and probes agree. An explicit `probe.env` override wins for probes only; pointing it at another account would no longer verify the account that runs the work. Environment entries override matching inherited variables, but other inherited authentication settings remain in effect. Verify each CLI's active login with the intended environment before enabling the loop. Keep credentials out of committed YAML and use the CLI's login storage.
 
@@ -387,7 +387,7 @@ A handoff happens only when all of these hold:
 3. The redundancy rule is met.
 4. A candidate passes its exact probe in the same tick.
 
-The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows. In v0.2.0, when the conversation being left had child conversations still working, either brief also carries one fixed sentence with their number, saying they are not supervised or moved; see [BB child awareness](operations.md#bb-child-awareness).
+The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise looptender generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows. In v0.2.0, when the conversation being left had child conversations still working, either brief also carries one fixed sentence with their number, saying they are not supervised or moved; see [BB child awareness](operations.md#bb-child-awareness).
 
 In v0.2.0, a candidate that passes its exact probe but then rejects the takeover (its adapter cannot be built, its model cannot be applied, or the brief send fails) is skipped for `errors.backoff`, and for the rest of the error episode after `errors.max_reprompts` rejections. Other candidates keep their own counts. See [rejected takeover briefs](operations.md#rejected-takeover-briefs).
 
@@ -405,36 +405,36 @@ candidates:
     probe: {model: example-probe-model}
 ```
 
-This is the only case in which keepgoing creates a conversation. It is opt-in per candidate; a configuration without `new_thread` behaves exactly as before, and keepgoing never asks BB to create or list a thread for it.
+This is the only case in which looptender creates a conversation. It is opt-in per candidate; a configuration without `new_thread` behaves exactly as before, and looptender never asks BB to create or list a thread for it.
 
-**What happens at the handoff.** The candidate is probed like any other. After its exact probe passes, keepgoing runs one `bb thread spawn` with:
+**What happens at the handoff.** The candidate is probed like any other. After its exact probe passes, looptender runs one `bb thread spawn` with:
 
 - the project and environment of the conversation being continued, read with `bb thread show` (or `bb.project` and `bb.environment` when you set them; they are required when the loop is leaving a target that is not a BB thread);
 - the candidate's `provider`, `model` and `reasoning`;
 - an explicit `--permission-mode` (see below), so the new thread never takes a project default;
-- the title `keepgoing: <loop name> (continued, <token>)`, so you can tell keepgoing started it;
+- the title `keepgoing: <loop name> (continued, <token>)`, so you can tell looptender started it;
 - the handoff brief as the first prompt, on stdin, followed by the line `Continue from @thread:<id>.` naming the earlier conversation, and a fixed paragraph on loop ownership (see below).
 
 The new thread then becomes the active target and is supervised like any other. Each handoff to such a candidate creates a fresh thread; an earlier one is left where it is.
 
 **The conversation that was left** is not stopped, archived, re-parented or sent anything by keepgoing. It stays as it was. Two things follow from that:
 
-- BB may itself retry that conversation later, for example when its provider limit resets. keepgoing does not prevent this and no longer observes that thread, so two conversations can then be active on the task.
+- BB may itself retry that conversation later, for example when its provider limit resets. looptender does not prevent this and no longer observes that thread, so two conversations can then be active on the task.
 - The new thread works in the **same environment and checkout** as the one it continues. Nothing isolates the two.
 
 **Permission mode.** `bb.permission_mode` is `accept-edits` (the default), `auto` or `full`, and is always passed to `bb thread spawn`. With `accept-edits` the new thread asks before anything but file edits, so an unattended loop may stop on a permission question until a person answers; that is the conservative choice. `auto` lets BB decide, and `full` acts without asking. `fallbacks add` asks for it (`--permission-mode`, accepted only with `--new-thread`) and shows it in the preview.
 
-**Exactly one thread per handoff, and every attempt counts.** Before `bb thread spawn` runs, keepgoing saves its intent to `state.json`, including the title with its random token, and counts the attempt against the cap in the same write. Then:
+**Exactly one thread per handoff, and every attempt counts.** Before `bb thread spawn` runs, looptender saves its intent to `state.json`, including the title with its random token, and counts the attempt against the cap in the same write. Then:
 
 - If bb returns the new thread, it is recorded and the move completes.
 - If the `bb` CLI reports rejecting the invocation itself (its `unknown_command`, `unknown_option`, `missing_required`, `unexpected_argument`, `invalid_value` or `missing_command` codes) **and** ended on its own **and** no thread with the title is listed, nothing was created. This is the only outcome treated that way: the attempt is uncounted, it counts as a [rejected takeover brief](operations.md#rejected-takeover-briefs) for that candidate under the same per-fallback cap and spacing, and the next candidate is tried in the same check. The code alone is not trusted: the thread is looked up first, and a command that was killed or timed out is never a refusal, whatever it printed.
-- After **any** failure (bb was killed or timed out, printed nothing usable, reported an error from BB or the provider, or reported a refusal), keepgoing looks for a thread with that exact title in that project and environment straight away. Exactly one match is the thread, whatever bb went on to report, and the handoff completes.
+- After **any** failure (bb was killed or timed out, printed nothing usable, reported an error from BB or the provider, or reported a refusal), looptender looks for a thread with that exact title in that project and environment straight away. Exactly one match is the thread, whatever bb went on to report, and the handoff completes.
 - If it is not found and bb did not report such a refusal, that proves nothing: the thread may have been renamed, archived or not listed yet. The attempt **stays counted**, the loop is **held for a person** with an `await_user` report naming the title, the spawn is not retried, and the loop is handed to no other fallback, because a second conversation could be started on the same task. The same applies when BB cannot be asked or more than one thread has the title, and when the supervisor stopped between asking bb and recording the answer (the next check does the lookup).
 - If the `bb` CLI could not be started at all (missing or not executable), the hold says so and that most likely nothing was created. It is still held and counted, because nothing confirmed it.
 - `resume` looks again: found, the handoff completes; otherwise the loop is held again.
 - `retarget` settles it by hand. It looks for the thread first. Found, the thread is put on record for its candidate. In every other case (not listed, BB cannot be asked, more than one match) `retarget` refuses and changes nothing, unless you add `--discard-pending-thread`.
 
-  **Before you discard, find the thread in BB and stop or archive it.** Not being listed under its title proves nothing: it may have been renamed or archived. Once discarded, keepgoing no longer knows about it. The loop can then hand off to another fallback, and after an hour create another thread, so an orphan you left running means two live conversations on the same task. The discarded attempt stays counted against the cap.
+  **Before you discard, find the thread in BB and stop or archive it.** Not being listed under its title proves nothing: it may have been renamed or archived. Once discarded, looptender no longer knows about it. The loop can then hand off to another fallback, and after an hour create another thread, so an orphan you left running means two live conversations on the same task. The discarded attempt stays counted against the cap.
 
   ```sh
   keepgoing retarget primary --discard-pending-thread -c /private/example-loop/keepgoing.yaml
@@ -454,14 +454,14 @@ The new thread's first prompt therefore ends with fixed wording: it does not own
 
 **Where it shows.** The tick output's `handoff` has `newThread` and `continues`. `status` shows the created thread as the target's thread and a `new threads:` line with the count against the cap (`newThreads` in JSON). `keepgoing runs` shows both conversations on the run, the new one with source `created_thread`. `timeline` marks the check as `NEW THREAD` without the thread ID. The `handoff` report carries `newThread: true` and no thread ID.
 
-**What BB records about the origin.** `bb thread spawn` in BB 0.48.1 accepts a title but no origin other than `fork`, so BB does not record these threads as started by the keepgoing plugin. The plugin SDK has an origin plugin field for threads a plugin spawns, but the supervisor is a separate CLI process with no channel to the plugin host. The title and keepgoing's own records are what identify the thread.
+**What BB records about the origin.** `bb thread spawn` in BB 0.48.1 accepts a title but no origin other than `fork`, so BB does not record these threads as started by the looptender plugin. The plugin SDK has an origin plugin field for threads a plugin spawns, but the supervisor is a separate CLI process with no channel to the plugin host. The title and looptender's own records are what identify the thread.
 
 **The `@thread:<id>` reference.** BB's guide documents `Continue from @thread:<id>` in a spawned thread's prompt as the way to hand off, and describes the result as a new thread that references the source. It does not say whether the referenced thread is notified or woken, and that has not been established here: no BB documentation or read-only command settles it, and nothing was run live. Treat it as unverified until a supervised live handoff shows the earlier thread is left alone.
 
 **Limits to know about.**
 
-- A thread whose title was changed before keepgoing could find it stays unrecorded. keepgoing never creates a replacement on its own: the loop is held and the attempt stays counted.
-- keepgoing cannot see which account BB uses for the new thread. The probe tests the local CLI's login, as for every BB candidate.
+- A thread whose title was changed before looptender could find it stays unrecorded. looptender never creates a replacement on its own: the loop is held and the attempt stays counted.
+- looptender cannot see which account BB uses for the new thread. The probe tests the local CLI's login, as for every BB candidate.
 - Without `model`, BB uses the project's remembered default for that provider.
 - `retarget <id>` to a new-thread candidate works only once a thread exists for it; `retarget` never creates one.
 - Once a created thread is recorded, a build from before this change does not know the candidate's thread and refuses the run graph's new source value. Do not run an older build against the same state directory.
