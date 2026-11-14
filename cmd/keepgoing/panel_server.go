@@ -632,7 +632,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon}
+	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon, panelDir: c.dir}
 	if c.offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)

@@ -55,6 +55,8 @@ keepgoing client status --id loop_0123456789abcdef0123456789abcdef --json --offl
 keepgoing client status --id loop_0123456789abcdef0123456789abcdef --json --private
 ```
 
+A local program may add `--client macos-menu@VERSION` (or `bb-plugin@VERSION`) to say which version of itself is asking. That is the one write `client status` makes: a report in the panel's private `clients.json`, for the panel's [Versions view](dock.md#what-the-page-shows). Without the flag, the command writes nothing.
+
 Use `--directory` for a non-default registry, as with registry commands. One request inspects one registered ID. It revalidates the stored loop name and canonical runtime directory against the current regular config file, preserving config-relative path semantics. Missing IDs, invalid configs, changed runtime/name bindings, a pending transfer or a mismatched transferred BB target return unavailable status. The registry and config sources are rechecked after the daemon query; a change discards the snapshot. These checks do not establish a durable file identity or authorize later controls.
 
 Successful reads and evidence failures both produce a JSON envelope with `schemaVersion: 1`, `registrationId`, `readAt`, `outcome`, `issues` and an optional `snapshot`. Outcomes describe evidence availability, **not loop or agent health**:

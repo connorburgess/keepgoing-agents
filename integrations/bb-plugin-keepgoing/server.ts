@@ -10,6 +10,7 @@ import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-con
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
 import { createSetupController } from "./setup-controller.ts";
+import { withClientFlag } from "./client-flag.ts";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
 const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
@@ -134,7 +135,8 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const status = async (bin: string, configPath: string) => {
-    const result = await run(bin, ["status", "--json", "-c", configPath]);
+    // A usage error with nothing printed is an older CLI refusing --client.
+    const result = await withClientFlag(bin, (extra) => run(bin, ["status", "--json", ...extra, "-c", configPath]), (r) => r.code === 2 && r.stdout === "", (r) => r.code === 0);
     if (result.code !== 0) throw new Error(`${configPath}: looptender status exited ${result.code}`);
     let raw: unknown;
     try {

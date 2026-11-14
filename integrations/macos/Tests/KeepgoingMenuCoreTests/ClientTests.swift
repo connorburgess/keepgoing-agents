@@ -53,6 +53,40 @@ final class ClientTests: XCTestCase {
             XCTAssertEqual(args.contains("--private"), privateText)
         }
     }
+    /// The menu reports its version with --client, from its app bundle. An
+    /// older CLI that refuses the flag is asked again without it, and is not
+    /// given it again.
+    func testStatusReportsTheMenuVersionAndFallsBackForAnOlderCLI() throws {
+        let id = "loop_0123456789abcdef0123456789abcdef"
+        let entry = Registration(id: id, loop: "example-loop")
+        let reply = "{\"schemaVersion\":1,\"registrationId\":\"\(id)\",\"readAt\":\"2030-01-01T12:00:00Z\",\"outcome\":\"unavailable\",\"issues\":[]}"
+        // A CLI that knows the flag.
+        let (binary, base) = try fixture("printf '%s\\n' \"$@\" > \"$0.args\"\nprintf '%s' '\(reply)'\nexit 1\n")
+        let client = LocalClient(executable: base.executable, directory: base.directory, menuVersion: "0.1.0")
+        _ = try client.status(entry, privateText: false)
+        var args = try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(Array(args.prefix(7)), ["client", "status", "--id", id, "--json", "--client", "macos-menu@0.1.0"])
+        // An older CLI: a usage error with no output for the flag, then the
+        // same read without it.
+        let older = "printf '%s\\n' \"$@\" >> \"$0.calls\"\ncase \" $* \" in *\" --client \"*) exit 2;; esac\nprintf '%s' '\(reply)'\nexit 1\n"
+        let (oldBinary, oldBase) = try fixture(older)
+        let oldClient = LocalClient(executable: oldBase.executable, directory: oldBase.directory, menuVersion: "0.1.0")
+        XCTAssertEqual(try oldClient.status(entry, privateText: false).outcome, "unavailable")
+        _ = try oldClient.status(entry, privateText: false)
+        args = try String(contentsOfFile: oldBinary.path + ".calls", encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(args.filter { $0 == "--client" }.count, 1, "the flag is tried once, then never again")
+        XCTAssertEqual(args.filter { $0 == "status" }.count, 3)
+        // Without an app bundle version nothing is reported.
+        let plain = LocalClient(executable: base.executable, directory: base.directory, menuVersion: nil)
+        _ = try plain.status(entry, privateText: false)
+        args = try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertFalse(args.contains("--client"))
+    }
+    func testOnlyAPlainVersionIsReported() {
+        for good in ["0.1.0", "1.2.3-beta.1", "2026.11+local"] { XCTAssertTrue(LocalClient.validVersion(good), good) }
+        for bad in ["", "-1", "0.1.0 ; rm", "v\u{0007}", String(repeating: "1", count: 33), "0.1.0\n"] { XCTAssertFalse(LocalClient.validVersion(bad), bad) }
+        XCTAssertNil(LocalClient(executable: URL(fileURLWithPath: "/bin/sh"), menuVersion: "bad version").menuVersion)
+    }
     func testPanelCommandsPassOnlyFixedArgumentsAndAValidatedKey() throws {
         let reply = "{\"schemaVersion\":1,\"readAt\":\"2030-01-01T12:00:00Z\",\"registry\":\"available\",\"complete\":true,\"allClear\":true,\"needsYou\":0,\"unread\":0,\"omitted\":0,\"loops\":[]}"
         let (binary, base) = try fixture("printf '%s\\n' \"$@\" > \"$0.args\"\nprintf '%s' '\(reply)'\n")

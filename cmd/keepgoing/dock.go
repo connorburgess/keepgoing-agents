@@ -318,6 +318,11 @@ type dockReader struct {
 
 	mu    sync.Mutex
 	cache map[bool]dockCached
+
+	// panelDir is where the clients' reports are read from; empty means the
+	// default panel directory. services caches service file digests.
+	panelDir string
+	services dockServiceFiles
 }
 
 type dockCached struct {
@@ -428,7 +433,15 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 			inputs[i] = d.readLoop(ctx, dir, entries[i], f.Entries, validated, now)
 		}
 	})
-	return buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
+	r := buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
+	var clients *clientsFile
+	var clientsErr error
+	if dir := panelClientsDir(d.panelDir); dir != "" {
+		clients, clientsErr = loadClients(dir)
+	}
+	self, _ := os.Executable()
+	r.Versions = dockVersionsOf(r.Loops, clients, clientsErr, self, identifiers, now)
+	return r
 }
 
 func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.Entry, all []registry.Entry, validated map[string]*config.Config, now time.Time) dockInput {
@@ -444,6 +457,8 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 		return daemon
 	}
 	in.Client = readClientStatus(ctx, dir, entry.ID, false, false, d.staleAfter, now, query)
+	in.Daemon = daemon
+	in.ServiceFile, in.ServicePath = d.services.compare(ctx, entry.StateDir)
 	if in.Client.Snapshot == nil {
 		return in
 	}

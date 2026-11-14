@@ -155,6 +155,24 @@ The current route is not tested, so it gets no readiness verdict, only the age o
 
 **Which build.** The footer says which keepgoing build serves the page ("This page is served by keepgoing v0.1.5"), and `api/v1/server` carries the same label as `version`. A loop's page also says which build ran its last check. The label comes from that check's record in the loop's state, or, when the check recorded none, from the newest retained check in its history; a control command's record does not count. When that build differs from the panel's, the loop is listed under "Worth knowing", which is never a need.
 
+**Versions.** The picker's Versions view, also linked from the footer's build line, lists every place a keepgoing build runs on this computer, as the records say. Each is compared with the newest plain release seen among them, or with this panel's own build when none is a plain release. It never runs a binary to ask its version, and it fetches nothing from the network. The places are:
+
+- this panel;
+- each loop's last check, by the label the check recorded;
+- each loop's daemon, by the label it reported when the panel asked it;
+- each loop's service, as "the same file as this panel's binary" or "a different file". The file is compared by content, as `keepgoing service status` does, and is never run, so its version is not known;
+- the BB plugin and the macOS menu, once they report themselves, and the keepgoing each of them runs.
+
+Labels follow the rules under "Which build": whole labels, `dev` and a shared `-dirty` label are unknown, and "older" is said only between two plain releases. The plugin and the menu are compared with the versions this panel's build was released with, never with keepgoing's own numbers. A place that is older or different says in one sentence how to bring it up to date. File paths are shown only with "Show identifiers and notes". Loops with nothing recorded about their builds are named in one line after the list. A loop whose daemon runs a different build from the panel, or whose service runs a different file, is also listed under "Worth knowing"; never as a need. Updating from the page is planned, not built.
+
+**How a client reports itself.** The plugin and the menu pass `--client bb-plugin@VERSION` or `--client macos-menu@VERSION` when they call `keepgoing status` or `keepgoing client status`. The CLI then records, in the panel's private directory, `clients.json`:
+
+- the client's name and version;
+- the path and build label of the keepgoing executable it ran;
+- when it was seen.
+
+The file is `0600`, holds at most eight reports, and is decoded strictly. Nothing is recorded without the flag. A value the CLI cannot use is ignored, and recording never changes the command's output or exit code. A CLI from before this flag refuses it, and the plugin and the menu then ask again without it.
+
 - **Same or different:** labels are compared whole. `v0.1.5-dev.26f91db` and `v0.1.5-dev.ab565b1` are two dev builds of one release, and so different builds.
 - **"dev":** the label of a build made without a version says nothing about which build it is. When either side is `dev`, whether they are the same build reads "unknown". The same is true when both share one `-dirty` label, which names a commit plus uncommitted changes that can differ.
 - **Older or newer:** said only when both labels are plain releases (`vX.Y.Z`), compared by number, so `v0.1.10` is newer than `v0.1.9`. A dev build is never called older or newer.

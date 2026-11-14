@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
+import { withClientFlag } from "./client-flag.ts";
 import { goalSummarySchema } from "./status-details.ts";
 import { planSchema, type SetupTarget, type SetupRecord } from "./setup-contract.ts";
 
@@ -48,6 +49,12 @@ export function commandOnHost(input: { bin: string; record: SetupRecord; operati
   const args: string[] = [operation];
   if (operation === "status" || operation === "doctor") args.push("--json");
   if (operation === "start") args.push("--background");
+  if (operation === "status") {
+    // This runner reports only success or failure. A failure with no JSON may
+    // be an older CLI refusing --client: asked again without it, and the
+    // executable is remembered only when that second call succeeds.
+    return withClientFlag(bin, (extra) => run(bin, [...args, ...extra, "-c", record.configPath], "", record.threadId, signal), (r) => r.code !== 0 && r.data === null, (r) => r.code === 0);
+  }
   args.push("-c", record.configPath);
   return run(bin, args, "", record.threadId, signal);
 }

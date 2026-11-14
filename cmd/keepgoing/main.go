@@ -205,6 +205,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		keepStop:    fs.Bool("keep-stop", false, "resume: clear the other holds and settle a brief hold, but keep a requested stop"),
 		routine:     fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter:  fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
+		client:      fs.String("client", "", "status: the calling program's NAME@VERSION (bb-plugin, macos-menu), recorded for the panel's Versions view"),
 		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
 		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
@@ -224,6 +225,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *f.dropQueued && !*f.lanes {
 		e.errf("--drop-queued is only supported with --lanes")
+		return exitUsage
+	}
+	if *f.client != "" && cmd != "status" {
+		e.errf("--client is only supported by status and client status")
 		return exitUsage
 	}
 	if *f.keepStop && cmd != "resume" {
@@ -287,7 +292,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			e.errf("status: stale-after must be positive")
 			return exitUsage
 		}
-		return status(e, cfg, now, *f.asJSON, *f.staleAfter)
+		code := status(e, cfg, now, *f.asJSON, *f.staleAfter)
+		noteClient(*f.client, "")
+		return code
 	case "enable":
 		// A second loop on a session another enabled loop supervises would
 		// prompt it too: refused unless asked for.
@@ -327,6 +334,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 type cliFlags struct {
 	staleAfter                      *time.Duration
 	cfgPath, now, note, id, routine *string
+	client                          *string
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
 	lanes, immediately, dropQueued  *bool

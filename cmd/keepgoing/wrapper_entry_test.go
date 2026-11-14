@@ -36,6 +36,17 @@ func TestMain(m *testing.M) {
 	// Nor the person's standard route list: a test that needs one writes it
 	// here or names its own.
 	os.Setenv(config.RoutesFileEnv, filepath.Join(private, config.RoutesFileName))
+	// Nor the panel's directory, where --client reports are kept, in this
+	// process. A test that moves HOME to a home of its own gets the real
+	// lookup under it; a test that runs the binary passes --panel-directory.
+	home := os.Getenv("HOME")
+	realStateBase := panelStateBase
+	panelStateBase = func() (string, error) {
+		if os.Getenv("HOME") != home {
+			return realStateBase()
+		}
+		return filepath.Join(private, "state"), nil
+	}
 	// The earlier names of these variables are still read. One set in the
 	// shell that runs the tests must not reach them.
 	for _, v := range envvar.Set {

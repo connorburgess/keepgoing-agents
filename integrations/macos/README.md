@@ -67,6 +67,8 @@ integrations/macos/.build/KeepgoingMenu.app/Contents/MacOS/KeepgoingMenu --execu
 
 The script builds `integrations/macos/.build/KeepgoingMenu.app` (bundle identifier `local.keepgoing.menu-preview`, signed ad hoc for this computer) and does nothing else: it does not install, register, open or start it at login. Start it with the command above, with the same arguments as the bare executable. macOS asks once whether it may show notifications; if you decline, none are posted.
 
+The menu's version is kept in one place, [`VERSION`](VERSION). The script writes it into the app as `CFBundleShortVersionString`, and the menu reports it with `--client macos-menu@VERSION` when it reads a loop, for the panel's Versions view. A keepgoing too old to know the flag is asked again without it. Run without the app bundle (`swift run`), the menu has no version and reports none.
+
 - **One per gap.** A loop is told about once for each gap, named by the loop and the time of its last check (`overdueSince` in `panel list --json`). When checks run and then stop again, that is a new gap and a new notification. More than three new gaps in one read are one notification.
 - **What it says.** The loop's name and when it was last checked, and that the computer may have slept or its scheduler stopped. A loop that is paused, waiting for a person or complete is never overdue, so it is never notified about. No identifiers, reasons or notes: `panel list` carries none.
 - **When.** After the reads the menu already makes: when it starts, when it is opened, and once a minute. In Low Power Mode there is no timed read, so a notification waits until the menu is opened.

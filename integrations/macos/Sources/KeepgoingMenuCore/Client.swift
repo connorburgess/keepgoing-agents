@@ -26,10 +26,41 @@ public struct LocalClient {
     public let directory: String?
     /// A non-default private directory for the panel's runtime files.
     public let panelDirectory: String?
-    public init(executable: URL, directory: String? = nil, panelDirectory: String? = nil) {
+    /// The menu's own version, reported to the CLI with `--client` so the
+    /// panel's Versions view can say which build the menu runs. nil when the
+    /// menu does not run from an app bundle (`swift run`): nothing is reported.
+    public let menuVersion: String?
+    public init(executable: URL, directory: String? = nil, panelDirectory: String? = nil, menuVersion: String? = LocalClient.bundleVersion()) {
         self.executable = executable
         self.directory = directory
         self.panelDirectory = panelDirectory
+        self.menuVersion = menuVersion.flatMap { LocalClient.validVersion($0) ? $0 : nil }
+    }
+
+    /// The app's CFBundleShortVersionString, which make-app.sh sets from the
+    /// package's VERSION file.
+    public static func bundleVersion(_ bundle: Bundle = .main) -> String? {
+        bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+
+    /// A version the CLI accepts: a short label of letters, digits and . + -.
+    public static func validVersion(_ v: String) -> Bool {
+        guard let first = v.unicodeScalars.first, v.unicodeScalars.count <= 32,
+              CharacterSet.alphanumerics.contains(first) else { return false }
+        return v.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".+-".unicodeScalars.contains($0)) }
+    }
+
+    /// Executables that refused `--client` as an unknown flag (an older CLI).
+    /// They are asked again without it, and not given it again.
+    private static let noClientFlag = NSLock()
+    private static var refusedClientFlag = Set<String>()
+    private static func refusesClientFlag(_ path: String) -> Bool {
+        noClientFlag.lock(); defer { noClientFlag.unlock() }
+        return refusedClientFlag.contains(path)
+    }
+    private static func markRefusesClientFlag(_ path: String) {
+        noClientFlag.lock(); defer { noClientFlag.unlock() }
+        refusedClientFlag.insert(path)
     }
     /// Every loop and its state in the panel's words. The read is bounded by
     /// the CLI at 20 seconds, so this waits a little longer than that.
@@ -125,6 +156,13 @@ public struct LocalClient {
         guard Contract.validID(entry.id) else { throw ClientFailure.invalidResponse }
         var args = ["client", "status", "--id", entry.id, "--json"]
         if privateText { args.append("--private") }
+        if let menuVersion, !LocalClient.refusesClientFlag(executable.path) {
+            let (data, code) = try run(args + ["--client", "macos-menu@" + menuVersion])
+            // An older CLI refuses the flag as a usage error (exit 2) and
+            // prints nothing: ask again without it.
+            guard code == 2 && data.isEmpty else { return try Contract.status(data, exit: code, entry: entry) }
+            LocalClient.markRefusesClientFlag(executable.path)
+        }
         let (data, code) = try run(args)
         return try Contract.status(data, exit: code, entry: entry)
     }
