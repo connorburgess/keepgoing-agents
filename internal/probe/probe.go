@@ -163,14 +163,16 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	if spec.Probe.Usage != nil {
 		res.Usage = newUsage(res.At, spec.Probe.UsageSource, res.UsageIdentity, usageWindows(spec.Probe.Usage(stdout)))
 	}
-	// An agent that reports a usage limit only as prose is asked for its
-	// structured snapshot instead.
-	if l := spec.Limits; l != nil && !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
+	// Read display-only usage after a successful probe too. Unknown failures
+	// still use the structured snapshot for limit classification. The lookup
+	// shares the probe deadline (and Codex bounds it to 20 seconds); a failed
+	// lookup never changes the probe verdict or fabricates a fresh reading.
+	if l := spec.Limits; l != nil && ((!res.OK && res.ErrorClass == string(decide.ErrUnknown)) || (res.OK && l.UsageSource != "")) {
 		limits, err := l.Read(ctx, cli, env)
 		if err == nil && l.UsageSource != "" {
 			res.Usage = newUsage(res.At, l.UsageSource, res.UsageIdentity, CodexUsage(limits))
 		}
-		if err == nil && limits.Blocked {
+		if err == nil && !res.OK && limits.Blocked {
 			res.ErrorClass = string(decide.ErrRateLimit)
 			res.Detail = l.ProbeDetail + limits.ReachedType
 			if !limits.ResetsAt.IsZero() {
