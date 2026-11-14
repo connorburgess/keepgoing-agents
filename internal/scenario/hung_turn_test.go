@@ -66,10 +66,10 @@ func TestScenarioHungTurnAfterAShortOutageAndASleep(t *testing.T) {
 		if s.action() == "await_user" {
 			holdAt = i * 5
 			w.Check(s, "held with the hung-turn reason", all(holds(s, "awaitingUser"), reported(s, "keepgoing.await_user")))
-			if !strings.HasPrefix(s.reason(), decide.HungTurnReason) {
+			if !strings.Contains(s.reason(), decide.HungTurnHoldReason) {
 				w.Failf(s, "held with %q", s.reason())
 			}
-		} else if s.reason() != "active" && s.reason() != decide.HungTurnReason {
+		} else if s.reason() != "active" && s.reason() != decide.HungTurnReason && s.reason() != decide.HungTurnNudgeReason {
 			w.Failf(s, "after the sleep: %s (%s)", s.action(), s.reason())
 		}
 	}
@@ -156,7 +156,7 @@ func TestScenarioHungTurnAfterALidClose(t *testing.T) {
 	err = nil
 	if holdAt == 0 || holdAt > lidCloseStallRuleHold {
 		err = fmt.Errorf("held at +%s, the stall rule alone at +%s", holdAt, lidCloseStallRuleHold)
-	} else if !strings.HasPrefix(s.reason(), decide.HungTurnReason) {
+	} else if !strings.Contains(s.reason(), decide.HungTurnHoldReason) {
 		err = fmt.Errorf("held with %q", s.reason())
 	}
 	w.Check(s, "held with the hung-turn reason, no later than the stall rule", err)

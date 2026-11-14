@@ -830,7 +830,7 @@ func (t *tick) run() error {
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
-	in.HungTurn, in.HungTurnGrace = t.hungTurn(obs, progressed, in)
+	in.HungTurn = t.hungTurn(obs, progressed, in)
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -882,7 +882,7 @@ func (t *tick) run() error {
 	// switch-back does not trigger a check, but is not sent when this check
 	// has already found the network down.
 	recovering := obs.State == decide.Error || obs.State == decide.Active
-	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
+	needsNetwork := d.HeldNudge || d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
 	sendsAnyway := d.Action == decide.Wake || d.Action == decide.SwitchBack || obs.State == decide.Active
 	if (needsNetwork && t.networkDown()) || (sendsAnyway && t.networkGated) {
 		in.NetworkDown = true
@@ -1500,6 +1500,18 @@ func (t *tick) keepFailure(id string, r probe.Result) {
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
+	if d.HeldNudge {
+		// Recorded exactly as a nudge is, and not sent: the stall rule's
+		// spacing, count and hold then follow as if it had been.
+		c := decide.Attempted(decide.Nudge, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		if t.st.HungTurn != nil {
+			t.st.HungTurn.HeldNudges++
+		}
+		return nil
+	}
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
 		reserved := false

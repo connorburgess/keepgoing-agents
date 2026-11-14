@@ -399,8 +399,9 @@ func TestOfflineWithAHungTurnForAnyLength(t *testing.T) {
 			}
 			// Half an hour after the network is back, the turn has logged
 			// nothing since before the outage: it may be hung, through the real
-			// BB adapter and its log. It is waited on, not nudged.
-			if r, _ := check(back.Add(30 * time.Minute)); r.Action != "none" || r.Reason != decide.HungTurnReason || sends() != 0 {
+			// BB adapter and its log. The nudge the stall rule sends now is
+			// held back, not sent.
+			if r, _ := check(back.Add(30 * time.Minute)); r.Action != "none" || r.Reason != decide.HungTurnNudgeReason || sends() != 0 {
 				t.Fatalf("a turn silent since before the outage was not waited on: %+v sends=%d", r, sends())
 			}
 		})

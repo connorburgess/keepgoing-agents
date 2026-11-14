@@ -28,54 +28,6 @@ func holdOffset(t *testing.T, run func(time.Duration, bool, string) Result, from
 	return 0
 }
 
-// The wait asks a person when the stall rule would have held the same loop:
-// stall_after, then max_nudges nudges min_wake_interval apart. Never later,
-// whatever min_wake_interval is.
-func TestHungTurnHoldIsNoLaterThanTheStallRule(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		minWake time.Duration
-	}{{"min_wake_interval 10m", 10 * time.Minute}, {"defaults", config.DefaultMinWakeInterval}} {
-		t.Run(tc.name, func(t *testing.T) {
-			set := func(l *config.Loop) { l.Progress.MinWakeInterval = config.Duration{Duration: tc.minWake} }
-			// The stall rule, on the same silent turn with no outage: its
-			// stall clock starts at the first check.
-			_, sp, srun := hungWorld(t, set)
-			stall := holdOffset(t, srun, 0)
-			if len(sp.sent) != 3 {
-				t.Fatalf("the stall rule sent %d nudges", len(sp.sent))
-			}
-			// The wait: its stall clock starts when the network is back.
-			_, p, run, back := hungJourney(t, 4*time.Hour, set)
-			wait := holdOffset(t, run, back)
-			want := decide.SilentRetryPatience(30*time.Minute, tc.minWake, 3)
-			if wait != want || wait > stall || len(p.sent) != 0 {
-				t.Fatalf("held %s after the network came back (want %s), the stall rule %s; %d sends", wait, want, stall, len(p.sent))
-			}
-		})
-	}
-}
-
-// A turn that logs something during the wait has come back: it is not
-// nudged while it has logged within stall_after, then it is waited on
-// again, and it is held when the stall rule would have held it, not later.
-func TestHungTurnThatComesBackIsNotNudgedAndHeldOnTime(t *testing.T) {
-	_, p, run, back := hungJourney(t, 4*time.Hour)
-	waitFrom(t, run, back)
-	p.obs.Turn = &decide.TurnActivity{ID: "turn-example-1", LastActivityAt: t0.Add(back + 45*time.Minute)}
-	for _, after := range []time.Duration{50 * time.Minute, 60 * time.Minute, 70 * time.Minute} {
-		if r := run(back+after, true, "same"); r.Reason != decide.HungTurnGraceReason || len(p.sent) != 0 {
-			t.Fatalf("+%s: %s (%s)", after, r.Action, r.Reason)
-		}
-	}
-	if r := run(back+80*time.Minute, true, "same"); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
-		t.Fatalf("silent for stall_after again: %s (%s)", r.Action, r.Reason)
-	}
-	if got := holdOffset(t, run, back+90*time.Minute) + 90*time.Minute; got > 3*time.Hour+30*time.Minute || len(p.sent) != 0 {
-		t.Fatalf("held %s after the network came back, later than the stall rule's 3h30m; %d sends", got, len(p.sent))
-	}
-}
-
 // A check that cannot read the turn decides nothing and keeps the watch: the
 // next check that can read it waits on it again, without a nudge or a second
 // report.
@@ -91,7 +43,7 @@ func TestHungTurnWatchSurvivesAFailedLogRead(t *testing.T) {
 		t.Fatalf("the watch was dropped: %+v", st.HungTurn)
 	}
 	p.obs.Turn, p.obs.TurnUnknown, p.obs.RetryUnverified = turn, false, false
-	if r := run(back+60*time.Minute, true, "same"); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
+	if r := run(back+60*time.Minute, true, "same"); !watched(r) || len(p.sent) != 0 {
 		t.Fatalf("log readable again: %s (%s)", r.Action, r.Reason)
 	}
 	if n := strings.Count(w.reportTypes(), "hung_turn"); n != 1 {
@@ -120,37 +72,6 @@ func TestHungTurnNeedsGitTracking(t *testing.T) {
 		if len(p.sent) != 0 || ctl.AwaitingUser != tracked || hung != tracked || (st.HungTurn != nil) != tracked {
 			t.Fatalf("tracked %v: %s (%s), held %v, reports %s, watch %+v, %d sends", tracked, last.Action, last.Reason, ctl.AwaitingUser, w.reportTypes(), st.HungTurn, len(p.sent))
 		}
-	}
-}
-
-// A second outage during the wait is found by the connectivity check made
-// before the hold, as the stall rule finds it before a nudge: no hold while
-// it lasts, and once the network is back the stall clock and the time since
-// it came back start again, so the first check after it is not held and the
-// wait resumes after a full stall_after. One report in all.
-func TestHungTurnSecondOutageRestartsTheGrace(t *testing.T) {
-	w, p, run, back := hungJourney(t, 4*time.Hour)
-	waitFrom(t, run, back)
-	for after := 50 * time.Minute; after <= 5*time.Hour; after += 10 * time.Minute {
-		if r := run(back+after, false, "same"); r.Action != "none" || len(p.sent) != 0 {
-			t.Fatalf("+%s offline again: %s (%s)", after, r.Action, r.Reason)
-		}
-	}
-	if ctl, _ := control.Load(w.dir); ctl.AwaitingUser {
-		t.Fatal("held during the second outage")
-	}
-	again := back + 5*time.Hour + 10*time.Minute
-	if r := run(again, true, "same"); r.Action != "none" || r.Reason != "active" {
-		t.Fatalf("first check after the second outage: %s (%s)", r.Action, r.Reason)
-	}
-	if st, _ := state.Load(w.dir); st.HungTurn == nil || !st.HungTurn.Since.IsZero() {
-		t.Fatalf("the wait did not start again: %+v", st.HungTurn)
-	}
-	if r := run(again+30*time.Minute, true, "same"); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
-		t.Fatalf("stall_after after the second outage: %s (%s)", r.Action, r.Reason)
-	}
-	if n := strings.Count(w.reportTypes(), "hung_turn"); n != 1 {
-		t.Fatalf("%d hung_turn reports", n)
 	}
 }
 
@@ -205,7 +126,7 @@ func TestHungTurnReportIsRecordedBeforeItIsSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := check(back + 30*time.Minute); r.Reason != decide.HungTurnReason || !strings.Contains(w.reportTypes(), "hung_turn") {
+	if r := check(back + 30*time.Minute); !watched(r) || !strings.Contains(w.reportTypes(), "hung_turn") {
 		t.Fatalf("the wait did not begin: %s (%s) %s", r.Action, r.Reason, w.reportTypes())
 	}
 	// Killed after the report went out, before state.json was saved.
@@ -219,11 +140,37 @@ func TestHungTurnReportIsRecordedBeforeItIsSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for after := 40 * time.Minute; after <= 60*time.Minute; after += 10 * time.Minute {
-		if r := check(back + after); r.Reason != decide.HungTurnReason || len(p.sent) != 0 {
+		if r := check(back + after); !watched(r) || len(p.sent) != 0 {
 			t.Fatalf("+%s: %s (%s)", after, r.Action, r.Reason)
 		}
 	}
 	if n := strings.Count(w.reportTypes(), "hung_turn"); n != 1 {
 		t.Fatalf("%d hung_turn reports: %s", n, w.reportTypes())
+	}
+}
+
+// watched says the check left the turn to the watch: waited on it, or held
+// back a nudge.
+func watched(r Result) bool {
+	return r.Reason == decide.HungTurnReason || r.Reason == decide.HungTurnNudgeReason
+}
+
+// With a min_wake_interval so long the stall rule would not hold within a
+// year, the hung_turn report says no time is set instead of a date
+// centuries away.
+func TestHungTurnReportSetsNoFarAwayTime(t *testing.T) {
+	huge := func(l *config.Loop) { l.Progress.MinWakeInterval = config.Duration{Duration: 1000000 * time.Hour} }
+	w, _, run, back := hungJourney(t, 4*time.Hour, huge)
+	for after := time.Duration(0); after <= 40*time.Minute; after += 10 * time.Minute {
+		run(back+after, true, "same")
+	}
+	var text string
+	for _, r := range w.reports {
+		if r.Type == "hung_turn" {
+			text = r.Text
+		}
+	}
+	if !strings.Contains(text, "no time is set") || strings.Contains(text, "asks a person at") {
+		t.Fatalf("%q", text)
 	}
 }
