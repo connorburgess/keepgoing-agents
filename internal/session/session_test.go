@@ -644,3 +644,45 @@ func TestAClaimIsTakenWhenTheTwoNamesAreOneDirectory(t *testing.T) {
 		})
 	}
 }
+
+// A loop recorded before its directory was renamed, and again after, is one
+// loop: the record written before names it by the earlier spelling.
+func TestARecordFromBeforeARenameIsTheSameLoop(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "claims")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(root, "keepgoing", "loops", "example", "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := Identity{Kind: "bb", ID: "thr_example"}
+	note := func() {
+		t.Helper()
+		if err := Note(dir, id, Supervisor{Loop: "example", Config: filepath.Join(filepath.Dir(state), "keepgoing.yaml"), StateDir: state, SeenAt: time.Now()}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	note()
+	if err := os.Rename(filepath.Join(root, "keepgoing"), filepath.Join(root, "looptender")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("looptender", filepath.Join(root, "keepgoing")); err != nil {
+		t.Skip("links are not available here")
+	}
+	// Read before the loop's next check: still one loop.
+	if got := Known(dir, id); len(got) != 1 {
+		t.Fatalf("Known = %+v", got)
+	}
+	if got := All(dir, 8); len(got) != 1 {
+		t.Fatalf("All = %+v", got)
+	}
+	note()
+	if got := known(dir, id); len(got) != 1 || !strings.Contains(got[0].StateDir, "looptender") {
+		t.Fatalf("the record holds %+v", got)
+	}
+}

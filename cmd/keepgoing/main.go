@@ -55,6 +55,8 @@ Local client discovery:
   client prepare-resume    Prepare a short-lived snapshot/ticket for review
   client resume            Clear holds using an unchanged prepared ticket
   registry add|list|remove  Register private loop references; never start supervision
+  migrate                  Say what moving the per-user directories from keepgoing/ to looptender/ would do;
+                           --apply moves them and leaves a link, --undo --apply moves them back
   dock                     Serve the read-only keepgoing panel for every registered loop on 127.0.0.1
   panel                    Open the keepgoing panel in your browser, starting it when needed; also status, stop, list
 
@@ -139,6 +141,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return clientCommand(e, rest)
 	case "registry":
 		return registryCommand(e, rest)
+	case "migrate":
+		return migrateCommand(e, rest)
 	case "routes":
 		return routesCommand(e, rest)
 	case "transfer":
