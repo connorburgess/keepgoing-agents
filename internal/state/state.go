@@ -4,12 +4,17 @@
 package state
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
@@ -96,6 +101,14 @@ type File struct {
 	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
+	// BBPath is the absolute path of the bb executable the latest check
+	// started, as the system resolved the configured command. A stop or a
+	// lane count run with a shorter PATH (the panel, the menu) uses it when
+	// the configured command is a bare name it cannot find.
+	BBPath string `json:"bbPath,omitempty"`
+	// LaneStop is the latest stop that covered the lanes: what it found and
+	// did, by count. It is about the request in control.json's stopLanesAt.
+	LaneStop *LaneStop `json:"laneStop,omitempty"`
 
 	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
@@ -500,4 +513,103 @@ func Append(stateDir string, e Event) error {
 type Brief struct {
 	Action string `json:"action"`
 	Target string `json:"target"`
+}
+
+// LaneStop is what a stop covering the lanes did, by count. No thread is
+// named in it.
+type LaneStop struct {
+	// For is the request it carries out (control.json's stopLanesAt).
+	For time.Time `json:"for"`
+	At  time.Time `json:"at"`
+	// Outcome: done (every thread inside the bounds was looked at),
+	// incomplete (the check ran out of time; the next one goes on), or
+	// not_applicable (the adapter has no lanes).
+	Outcome string `json:"outcome"`
+	// Parent is what is known of the supervised conversation itself:
+	// stopped (by this request's checks), stop_failed, stopped_earlier (by
+	// an earlier check for this stop), not_running, or not_observed.
+	Parent      string `json:"parent"`
+	Stopped     int    `json:"stopped"`
+	AlreadyIdle int    `json:"alreadyIdle"`
+	// OtherLoop counts lanes another loop supervises, left to that loop.
+	OtherLoop int `json:"otherLoop"`
+	// Failed counts lanes not stopped, by error class.
+	Failed map[string]int `json:"failed,omitempty"`
+	// NotChecked counts threads past the bounds. NotCheckedAtLeast: some
+	// were never listed, so the count is a lower bound.
+	NotChecked        int  `json:"notChecked"`
+	NotCheckedAtLeast bool `json:"notCheckedAtLeast,omitempty"`
+	// RetriesCancelled counts provider retries cancelled in lanes in error;
+	// QueuedNotCancelled counts lanes whose queued retry could not be.
+	RetriesCancelled   int `json:"retriesCancelled,omitempty"`
+	QueuedNotCancelled int `json:"queuedNotCancelled,omitempty"`
+	// ListingsUnread counts listings that could not be read in any of
+	// LaneStopListingTries checks; what is below them was not checked.
+	ListingsUnread int `json:"listingsUnread,omitempty"`
+	// NotStarted counts lanes that had not started (pending) or were idle
+	// with messages queued, and were left alone: QueuedKept messages are
+	// still queued in them, and BB may run them. Dequeued counts such lanes
+	// whose messages were deleted because the request asked for it
+	// (--drop-queued); QueuedDeleted counts those messages, whose text was
+	// not kept.
+	NotStarted    int `json:"notStarted,omitempty"`
+	QueuedKept    int `json:"queuedKept,omitempty"`
+	Dequeued      int `json:"dequeued,omitempty"`
+	QueuedDeleted int `json:"queuedDeleted,omitempty"`
+	// IncompleteBecause, with Outcome incomplete: "time" (the check's time
+	// ran out) or "listing" (a listing could not be read).
+	IncompleteBecause string `json:"incompleteBecause,omitempty"`
+	Reported          bool   `json:"reported,omitempty"`
+	// Carried between the checks of one request, under the loop's keyed
+	// lane hashes: the lanes stopped and those whose stop failed (by class),
+	// so a pass that goes on counts them once and never retries a failed
+	// stop; and how many checks found a listing they could not read.
+	StoppedLanes  []string          `json:"stoppedLanes,omitempty"`
+	DequeuedLanes []string          `json:"dequeuedLanes,omitempty"`
+	FailedLanes   map[string]string `json:"failedLanes,omitempty"`
+	ListingTries  int               `json:"listingTries,omitempty"`
+}
+
+// Counts is l without its bookkeeping (the lane hashes and the listing
+// tries), for what a person or a client is shown.
+func (l LaneStop) Counts() LaneStop {
+	l.StoppedLanes, l.DequeuedLanes, l.FailedLanes, l.ListingTries = nil, nil, nil, 0
+	return l
+}
+
+// LaneStopListingTries is how many checks try a listing that cannot be read
+// before the stop reports what is below it as not checked.
+const LaneStopListingTries = 3
+
+// LaneKeyName is the private key that names lanes in sends.json.
+const LaneKeyName = "lanes.key"
+
+// LaneKey returns the loop's lane key, making it the first time. Lanes are
+// recorded under a hash keyed with it, never by ID, so the same lane has a
+// different name in every loop. It is written before it is first used.
+func LaneKey(dir string) ([]byte, error) {
+	path := filepath.Join(dir, LaneKeyName)
+	if b, err := os.ReadFile(path); err == nil {
+		if key, err := hex.DecodeString(strings.TrimSpace(string(b))); err == nil && len(key) == 32 {
+			return key, nil
+		}
+		return nil, fmt.Errorf("%s is not a lane key", LaneKeyName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if err := saveAllowance(dir, LaneKeyName, []byte(hex.EncodeToString(key))); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// LaneHash names a lane with the loop's key.
+func LaneHash(key []byte, id string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil)[:12])
 }
