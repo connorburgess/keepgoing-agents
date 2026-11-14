@@ -103,7 +103,7 @@ func (d Dir) wrapperLive(rec Record) (bool, error) {
 		}
 		return true, nil
 	}
-	held, err := lock.AcquireNamed(string(d), turnLock)
+	held, err := lock.AcquireNamedShared(string(d), turnLock)
 	if err == nil {
 		return false, held.Release()
 	}
@@ -129,7 +129,7 @@ func acquireTurnLock(dir string) (*lock.Lock, error) {
 
 // startedName is the file a wrapper writes, holding its turn key, once it
 // holds the turn lock. finishingName is the file it writes just before it
-// lets go of the lock to publish its exit code.
+// publishes its exit code and cleans up before releasing the lock.
 const (
 	startedName   = "turn.started"
 	finishingName = "turn.finishing"
@@ -256,6 +256,9 @@ func (d Dir) path(name string) string { return filepath.Join(string(d), name) }
 // Status inspects the latest turn.
 func (d Dir) Status() (Status, error) { return d.statusWithOutputLimit(0) }
 
+// Only deterministic lifecycle tests set these status sampling hooks.
+var afterStatusRecordRead, beforeStatusFinished func()
+
 // statusWithOutputLimit bounds stdout loading for adapters with a finite stream
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
@@ -271,6 +274,33 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if err := json.Unmarshal(b, &st.Record); err != nil {
 		return st, err
 	}
+	if afterStatusRecordRead != nil {
+		afterStatusRecordRead()
+	}
+	// Take the existing turn lock before relying on a completed record. A
+	// publisher or setup holding it is conservatively running. Once acquired,
+	// reread run.json: setup may have replaced the generation since our first
+	// sample, including a first start replacing a legacy record. Hold it through
+	// exit/output sampling to prevent mixed generations,
+	// and release before returning Finished to the caller.
+	completedGuard, err := lock.AcquireNamedShared(string(d), turnLock)
+	if errors.Is(err, lock.ErrHeld) {
+		st.Phase = Running
+		return st, nil
+	}
+	if err != nil {
+		return st, errors.New("runner: the turn lock could not be checked" + errnoText(err))
+	}
+	defer completedGuard.Release()
+	b, err = snapshot.ReadRecord(d.path("run.json"))
+	if err != nil {
+		return Status{}, err
+	}
+	st = Status{}
+	if err := json.Unmarshal(b, &st.Record); err != nil {
+		return st, err
+	}
+
 	finished := func() (bool, error) {
 		code, err := os.ReadFile(d.path("exit"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -280,6 +310,9 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 			// Something is there that is not a readable exit code. Say so
 			// rather than guess between finished and crashed.
 			return false, errors.New("runner: the turn's exit status could not be read" + errnoText(err))
+		}
+		if beforeStatusFinished != nil {
+			beforeStatusFinished()
 		}
 		st.Phase = Finished
 		var parseErr error
@@ -303,16 +336,20 @@ func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	if st.Record.Abandoned {
 		return crashed()
 	}
-	live, err := d.wrapperLive(st.Record)
-	if err != nil {
-		return st, err
+	live := false
+	if st.Record.Liveness != livenessLock {
+		var err error
+		live, err = d.wrapperLive(st.Record)
+		if err != nil {
+			return st, err
+		}
 	}
 	if live {
 		st.Phase = Running
 		return st, nil
 	}
-	// The wrapper lets go of the lock just before it publishes its exit code.
-	// If it was doing that, wait for the code instead of reading a crash. The
+	// A crashed publisher or an older wrapper can leave a finishing marker.
+	// Keep the bounded wait for a late exit instead of reading a false crash. The
 	// wait ends finishingWait after the marker was written, so a marker left
 	// by a wrapper that died there costs a later read nothing.
 	until := time.Now()

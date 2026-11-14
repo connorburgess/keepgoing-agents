@@ -90,3 +90,56 @@ func TestHeld(t *testing.T) {
 	}
 	l.Release()
 }
+
+func TestSharedReadersExcludeWritersAndReleaseIndependently(t *testing.T) {
+	dir := t.TempDir()
+	first, err := AcquireNamedShared(dir, "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	second, err := AcquireNamedShared(dir, "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if writer, err := AcquireNamed(dir, "turn"); !errors.Is(err, ErrHeld) {
+		if writer != nil {
+			writer.Release()
+		}
+		t.Fatalf("writer passed readers: %v", err)
+	}
+	first.Release()
+	if writer, err := AcquireNamed(dir, "turn"); !errors.Is(err, ErrHeld) {
+		if writer != nil {
+			writer.Release()
+		}
+		t.Fatalf("writer passed remaining reader: %v", err)
+	}
+	second.Release()
+	writer, err := AcquireNamed(dir, "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader, err := AcquireNamedShared(dir, "turn"); !errors.Is(err, ErrHeld) {
+		if reader != nil {
+			reader.Release()
+		}
+		t.Fatalf("reader passed writer: %v", err)
+	}
+	if err := writer.Release(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := AcquireNamedShared(dir, "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Release(); err != nil {
+		t.Fatal(err)
+	}
+	// Failed contenders must close their descriptors; Windows removal verifies
+	// this in addition to the writer's ability to acquire after reader release.
+	if err := os.Remove(filepath.Join(dir, "turn.lock")); err != nil {
+		t.Fatal(err)
+	}
+}

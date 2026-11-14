@@ -81,7 +81,7 @@ v0.2.0 (roadmap K1). A command-line agent that runs one turn per process is desc
 
 **Common to every runner** (`runner.Dir` and `runner.Headless`; nothing here names an agent):
 
-- The detached turn: a copy of the keepgoing binary runs the agent, so a check never waits for a turn. It records `run.json`, `stdout`, `stderr` and the exit code in `targets/<id>/`.
+- The detached turn: a copy of the keepgoing binary runs the agent, so a check never waits for a turn. It records `run.json`, `stdout`, `stderr` and the exit code in `targets/<id>/`. Unreleased completion drains the wrapper-owned stop watcher and closes prompt/output handles before exit publication and finishing cleanup, all under the existing exclusive turn lock. Completed Status sampling uses shared mode on that same lock, rereads the generation and samples its exit/output while setup is excluded; a held exclusive lock remains running even with exit present. After releasing its lock the completing wrapper performs no more shared turn-file IO. Legacy PID interpretation and bounded crashed-finisher recovery remain.
 - The prompt, written to a private file and given to the agent on standard input. It is never in argv.
 - Session storage: one saved identifier per target, read before a turn and saved after one.
 - The phases `never_run`, `running`, `finished` and `crashed`, and what each means: never run is idle, running is active, crashed is an unknown error.
