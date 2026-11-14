@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // fakeAgent is an in-memory agent and adapter in one. With no fault it keeps

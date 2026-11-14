@@ -3,7 +3,7 @@ package incident
 import (
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 const MaxEvaluations = 8

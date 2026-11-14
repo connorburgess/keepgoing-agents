@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // The packages whose tests skip the flush, each with the file that says so.
@@ -17,7 +17,7 @@ import (
 // the built binary, must not be here. Update "Slow test packages" in
 // docs/testing.md with it.
 var skipsTheFlush = []string{
-	"cmd/keepgoing/sync_test.go",
+	"cmd/looptender/sync_test.go",
 	"internal/supervise/sync_test.go",
 }
 

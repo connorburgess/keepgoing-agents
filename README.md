@@ -45,10 +45,12 @@ Or download a [release archive](https://github.com/connorburgess/keepgoing-agent
 With Go 1.24 or newer:
 
 ```sh
-go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
+go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@v0.2.0
 ```
 
-`go install` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
+The released v0.2.0 command above installs `keepgoing`. The source module is being moved to `github.com/looptender/looptender`, with its command at `cmd/looptender`. After that change is merged in the transferred repository, `go install github.com/looptender/looptender/cmd/looptender@main` installs the unreleased `looptender` command. The new path's `@latest` is not available until a release declares the new module path. Old-path installs remain valid when pinned to old releases; after the module change, new versions cannot be installed through the old module path. Keep any existing `keepgoing` executable or compatibility link until the installation that manages it provides the alias. A fresh install of `cmd/looptender` creates only `looptender`; run it as `looptender`. The `keepgoing` examples below, existing schedulers and an unset BB plugin `keepgoingPath` still need a `keepgoing` executable or an explicit path/command update. On macOS/Linux, if no `keepgoing` file exists in the install directory and you choose to keep those callers unchanged, a `keepgoing` symbolic link to the new executable provides that name; the Go install does not create it.
+
+`go install` with `@latest` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
 [CLI v0.2.0 and BB plugin v0.3.0](docs/releases/v0.2.0.md) are released from one tag. If your package source still provides v0.1.5, use a published v0.2.0 archive. The plugin has a separate [pinned installation path](integrations/bb-plugin-keepgoing/README.md#install); Homebrew does not install it.
 
@@ -57,12 +59,12 @@ go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 On macOS/Linux, keep a source build separate from the installed release:
 
 ```sh
-git clone https://github.com/connorburgess/keepgoing-agents.git
-cd keepgoing-agents
+git clone https://github.com/looptender/looptender.git
+cd looptender
 revision=$(git rev-parse HEAD)
 mkdir -p "$HOME/.local/bin"
 go build -trimpath -ldflags "-X main.version=dev-$revision" \
-  -o "$HOME/.local/bin/keepgoing-dev" ./cmd/keepgoing
+  -o "$HOME/.local/bin/keepgoing-dev" ./cmd/looptender
 "$HOME/.local/bin/keepgoing-dev" version
 ```
 
@@ -147,6 +149,8 @@ The [BB plugin](integrations/bb-plugin-keepgoing/README.md) offers a separate se
 ### The keepgoing panel: one page for every loop
 
 `keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its last decision, any hold, its preferred routes in order with the one its records name as current, each route's readiness and usage reading, a usage limit it moved off with the reported reset, its lanes, recent history and limits. A Routes view shows each account's recorded allowance. The Versions view lists where each keepgoing build runs on this computer (the panel, each loop's checks, daemon and service, and the BB plugin and macOS menu), against the newest release seen here, without running any of them. Missing or old evidence is shown as unknown or stale. In unreleased source, successful Codex probes also collect structured account usage without another model call; a failed usage lookup leaves probe health unchanged. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. In v0.2.0 and tested with fixtures only; it never changes anything; pausing, stopping and resuming from the page needs `keepgoing panel --allow-changes`, and configuration from the page is planned. See [the panel](docs/dock.md).
+
+The panel and dock display the looptender name in builds from `main` (unreleased); the commands remain `keepgoing panel` and `keepgoing dock`. An already running panel keeps its previous page until it is restarted with the updated executable.
 
 `keepgoing panel` opens that page in your browser with one command and nothing to copy: it starts the panel's background process, for this computer only, when none is running, opens the page through a single-use address that becomes a session cookie, and the panel stops by itself when unused ([details](docs/dock.md#opening-it-with-one-command-keepgoing-panel)). Started with `--allow-changes`, it also lets a loop's page pause, stop and resume it, and in unreleased builds replace its own binary inside its configuration directory, each after a review and a confirmation ([details](docs/dock.md#changes-from-the-page-keepgoing-panel---allow-changes)). `keepgoing dock` serves a read-only page to this computer only (`127.0.0.1`, with a per-run token in the address). It opens on a short picker of every [registered](docs/local-clients.md) loop with its state in one phrase, and lists the loops that need you or could not be read. Picking a loop shows its preferred routes in order (`primary`, then each fallback), the one its records name as current, each route's readiness and usage reading, its lanes, last check and limits. Missing or old evidence is shown as unknown or stale. It reads what existing commands read, runs no provider command, changes nothing, and stopping it leaves supervision running. In v0.2.0 and tested with fixtures only; configuration from the page is planned. See [the panel](docs/dock.md).
 

@@ -22,9 +22,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // keepgoingBin is built once for the whole suite. standinDir holds the
@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 			// under test is never on a scenario's PATH.
 			built, err := testexec.NewDir(filepath.Join(dir, "built"))
 			if err == nil {
-				keepgoingBin, err = built.Build("keepgoing", "../../cmd/keepgoing", nil, "version")
+				keepgoingBin, err = built.Build("keepgoing", "../../cmd/looptender", nil, "version")
 			}
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)

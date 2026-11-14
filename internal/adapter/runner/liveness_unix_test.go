@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 // Start returns only once the wrapper holds its lock or has finished, so the

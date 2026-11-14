@@ -230,7 +230,7 @@ func TestBuildHasATimeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Build("example", "../../cmd/keepgoing", nil); err == nil || !strings.Contains(err.Error(), "no result after 1ns") {
+	if _, err := d.Build("example", "../../cmd/looptender", nil); err == nil || !strings.Contains(err.Error(), "no result after 1ns") {
 		t.Fatalf("%v", err)
 	}
 }

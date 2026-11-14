@@ -5,7 +5,7 @@ package config
 import (
 	"os"
 
-	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	snapfile "github.com/looptender/looptender/internal/snapshot"
 )
 
 // openRoutesFile opens the list as other records are read on Windows: with

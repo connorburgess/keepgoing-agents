@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/factory"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/adapter/factory"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/state"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 // A stand-in bb executable: thread status and log come from files the test

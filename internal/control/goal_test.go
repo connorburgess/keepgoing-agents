@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func testGoalSpec() GoalSpec {

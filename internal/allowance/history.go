@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/looptender/looptender/internal/probe"
 )
 
 // Bounds on a stored history.

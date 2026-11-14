@@ -32,11 +32,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
-	"github.com/connorburgess/keepgoing-agents/internal/userdir"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
+	"github.com/looptender/looptender/internal/userdir"
 )
 
 // DirEnv names a directory to use instead of the default. Loops given

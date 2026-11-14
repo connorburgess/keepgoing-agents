@@ -15,14 +15,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const FileName = "registry.json"
 
 // LockName is the registry's lock. It is listed in migrateLockNames
-// (cmd/keepgoing/migrate.go); so must any new lock file here.
+// (cmd/looptender/migrate.go); so must any new lock file here.
 const LockName = "registry"
 const MaxEntries = 128
 const maxBytes = 1 << 20

@@ -17,7 +17,7 @@ for t in $targets; do
   mkdir -p "$work"
   ext=""; [ "$os" = windows ] && ext=".exe"
   (cd "$root" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-    -ldflags "-s -w -X main.version=$version" -o "$work/keepgoing$ext" ./cmd/keepgoing)
+    -ldflags "-s -w -X main.version=$version" -o "$work/keepgoing$ext" ./cmd/looptender)
   # LICENSE is the Sustainable Use License: everyone who gets the executable
   # gets its terms. The file points to LICENSING.md and the preserved Apache
   # text, so both ship beside it. THIRD_PARTY_NOTICES carries the terms of

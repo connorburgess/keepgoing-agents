@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
-	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/rungraph"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // The run reference graph is diagnostic history. Nothing below returns an

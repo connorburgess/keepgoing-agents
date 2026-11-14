@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // A held delete-sharing reader must retain the old record without blocking

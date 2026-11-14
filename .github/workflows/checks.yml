@@ -67,7 +67,7 @@ jobs:
           go-version-file: go.mod
       - name: Build CLI for plugin contract fixtures
         working-directory: .
-        run: go build -o "$RUNNER_TEMP/keepgoing-plugin-test" ./cmd/keepgoing
+        run: go build -o "$RUNNER_TEMP/keepgoing-plugin-test" ./cmd/looptender
       - run: npm ci --no-audit --no-fund
       - run: npx tsc --noEmit
       - run: npm test
@@ -102,21 +102,21 @@ jobs:
         if: steps.scope.outputs.scope != 'docs'
         with:
           go-version-file: go.mod
-      - run: go vet ./cmd/keepgoing
+      - run: go vet ./cmd/looptender
         if: steps.scope.outputs.scope != 'docs'
       - name: Verify registered client status and controls on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test ./cmd/keepgoing -run '^TestClient' -count=1
+        run: go test ./cmd/looptender -run '^TestClient' -count=1
       - name: Verify local loop registry on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test ./internal/registry ./cmd/keepgoing -run '^TestRegistry' -count=1
+        run: go test ./internal/registry ./cmd/looptender -run '^TestRegistry' -count=1
       - name: Verify route list edits and their replacement while read on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test ./internal/config ./cmd/keepgoing -run '^TestRouteEdit' -count=1
+        run: go test ./internal/config ./cmd/looptender -run '^TestRouteEdit' -count=1
       - name: Verify the per-user directories, their name and their move on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./internal/userdir ./internal/session ./internal/config ./internal/lock ./internal/registry ./cmd/keepgoing -run '^(TestMove|TestASwapThatStopped|TestOneDirectoryUnderTwoSpellings|TestRewriteMatches|TestRenameProblem|TestRegistryAddThroughAnotherSpelling|TestARecordFromBeforeARename|TestPlaceAt|TestOnePlaceMoved|TestAnInterruptedMove|TestACurrentPlace|TestLookAfterAMove|TestEveryMomentOfAMove|TestOnlyAMoveBetween|TestMigrate|TestRegistryRebase|TestNameIn|TestThisPlatform|TestDirKeepsTheEarlierDirectory|TestClaimsAndRecordsAreHonouredUnderBothNames|TestAClaimIsTakenWhenTheTwoNamesAreOneDirectory|TestLookWhenTheTwoNamesAreOneDirectory|TestHeld|TestStandardRoutesPath|TestInitDefaultDirectory|TestDoctorUserDirectory|TestRegistriesUnderBothNames)' -count=1
-      - run: go test -v ./cmd/keepgoing -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
+        run: go test -v ./internal/userdir ./internal/session ./internal/config ./internal/lock ./internal/registry ./cmd/looptender -run '^(TestMove|TestASwapThatStopped|TestOneDirectoryUnderTwoSpellings|TestRewriteMatches|TestRenameProblem|TestRegistryAddThroughAnotherSpelling|TestARecordFromBeforeARename|TestPlaceAt|TestOnePlaceMoved|TestAnInterruptedMove|TestACurrentPlace|TestLookAfterAMove|TestEveryMomentOfAMove|TestOnlyAMoveBetween|TestMigrate|TestRegistryRebase|TestNameIn|TestThisPlatform|TestDirKeepsTheEarlierDirectory|TestClaimsAndRecordsAreHonouredUnderBothNames|TestAClaimIsTakenWhenTheTwoNamesAreOneDirectory|TestLookWhenTheTwoNamesAreOneDirectory|TestHeld|TestStandardRoutesPath|TestInitDefaultDirectory|TestDoctorUserDirectory|TestRegistriesUnderBothNames)' -count=1
+      - run: go test -v ./cmd/looptender -run '^(TestWindowsACL|TestDoctorACL|TestWindowsAccess|TestDoctorAccess)' -count=1
         if: steps.scope.outputs.scope != 'docs'
       - name: Verify allowance persistence and replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
@@ -124,21 +124,21 @@ jobs:
       - name: Verify runtime records can be replaced while readers poll
         # Report every record even when an earlier step has already failed.
         if: always() && (steps.scope.outputs.scope != 'docs')
-        run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/keepgoing -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
+        run: go test -race -v ./internal/state ./internal/health ./internal/incident ./internal/report ./internal/registry ./internal/daemoninfo ./cmd/looptender -run '^(TestStateSnapshot|Test.*SnapshotSavesWhileReadersPoll$|TestTransferRecordReads)' -count=1
       - name: Verify BB transfer and recovery on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^TestTransfer' -count=1
+        run: go test -v ./cmd/looptender -run '^TestTransfer' -count=1
       - run: go test -v ./internal/config -run '^TestBBTransfer' -count=1
         if: steps.scope.outputs.scope != 'docs'
       - name: Verify goal-aware setup on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^TestInitGoal' -count=1
+        run: go test -v ./cmd/looptender -run '^TestInitGoal' -count=1
       - name: Verify Cursor guided setup on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^(TestInitCursor|TestDoctorCursor)' -count=1
+        run: go test -v ./cmd/looptender -run '^(TestInitCursor|TestDoctorCursor)' -count=1
       - name: Verify guided fallback setup on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^TestFallbacks(Add|Handoff|Remove|Move|Manage)' -count=1
+        run: go test -v ./cmd/looptender -run '^TestFallbacks(Add|Handoff|Remove|Move|Manage)' -count=1
       - name: Verify private goal records on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -v ./internal/control -run '^TestGoal' -count=1
@@ -147,14 +147,14 @@ jobs:
         run: go test -v ./internal/control -run '^TestSaveAdvancesLoadedTimestamp$' -count=1
       - name: Verify daemon control polling with unchanged file metadata
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^TestDaemonWait' -count=1
+        run: go test -v ./cmd/looptender -run '^TestDaemonWait' -count=1
       - name: Verify control snapshots permit atomic replacement on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -race -v ./internal/control ./cmd/keepgoing -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
+        run: go test -race -v ./internal/control ./cmd/looptender -run '^(TestControlSnapshot|TestWindowsControlSnapshot|TestDaemonWaitSnapshot)' -count=1
       - name: Verify executable record, receipt and backup metadata on Windows
         # Metadata helpers only: build replacement remains unsupported here.
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./internal/state ./cmd/keepgoing -run '^(TestWindowsCheckExecutable|TestWindowsBuildReceipt|TestBuildBackupPreserves)' -count=1
+        run: go test -v ./internal/state ./cmd/looptender -run '^(TestWindowsCheckExecutable|TestWindowsBuildReceipt|TestBuildBackupPreserves)' -count=1
       - name: Verify the snapshot package on Windows
         # The whole package: every reader and writer rule of record files is
         # here, and a test that a name filter misses would never run.
@@ -168,7 +168,7 @@ jobs:
         run: go test -race -v ./internal/rungraph -count=1
       - name: Verify offline run navigation on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -race -v ./cmd/keepgoing -run '^TestRuns' -count=1
+        run: go test -race -v ./cmd/looptender -run '^TestRuns' -count=1
       - name: Work skipped for a documentation-only change
         if: steps.scope.outputs.scope == 'docs'
         shell: bash
@@ -213,13 +213,13 @@ jobs:
         run: go test -race -v ./internal/adapter/runner -count=1
       - name: Verify Cursor command recovery and active holds on Windows
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -race -v ./cmd/keepgoing -run '^TestCursorCommand' -count=1
+        run: go test -race -v ./cmd/looptender -run '^TestCursorCommand' -count=1
       - name: Verify Cursor idle holds through the real factory on Windows
         if: steps.scope.outputs.scope != 'docs'
         run: go test -race -v ./internal/supervise -run '^TestCursorHolds' -count=1
       - name: Verify detached background startup with a local process fixture
         if: steps.scope.outputs.scope != 'docs'
-        run: go test -v ./cmd/keepgoing -run '^TestStartBackgroundProcess$' -count=20 -timeout=3m
+        run: go test -v ./cmd/looptender -run '^TestStartBackgroundProcess$' -count=20 -timeout=3m
       - name: Work skipped for a documentation-only change
         if: steps.scope.outputs.scope == 'docs'
         shell: bash
@@ -276,7 +276,7 @@ jobs:
       - name: Smoke check setup and recovery with local fixtures
         if: steps.scope.outputs.scope != 'docs' || matrix.os == 'ubuntu-24.04'
         run: |
-          go build -trimpath -ldflags "-X main.version=smoke-${GITHUB_SHA}" -o "$RUNNER_TEMP/keepgoing-smoke" ./cmd/keepgoing
+          go build -trimpath -ldflags "-X main.version=smoke-${GITHUB_SHA}" -o "$RUNNER_TEMP/keepgoing-smoke" ./cmd/looptender
           python3 scripts/smoke-release.py "$RUNNER_TEMP/keepgoing-smoke"
           python3 -u scripts/smoke-recovery.py "$RUNNER_TEMP/keepgoing-smoke" --include-cursor
       - name: Build and test the optional macOS menu preview
@@ -287,10 +287,10 @@ jobs:
           python3 integrations/macos/scripts/smoke-contract.py "$RUNNER_TEMP/keepgoing-smoke"
       - name: Verify native Linux ACL metadata fixture
         if: runner.os == 'Linux'
-        run: go test -v ./cmd/keepgoing -run '^TestLinuxACLMetadataDetectsDefaultACLHiddenByModeBits$' -count=1
+        run: go test -v ./cmd/looptender -run '^TestLinuxACLMetadataDetectsDefaultACLHiddenByModeBits$' -count=1
       - name: Cross-compile for Windows
         if: runner.os == 'Linux'
-        run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/keepgoing
+        run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/looptender
       - name: Work skipped for a documentation-only change
         if: steps.scope.outputs.scope == 'docs' && matrix.os != 'ubuntu-24.04'
         shell: bash

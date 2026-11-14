@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/looptender/looptender/internal/lock"
 )
 
 func publicationFixture(t *testing.T) (Dir, string) {

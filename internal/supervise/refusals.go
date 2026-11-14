@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // refusalStreakEvent is the report sent when a streak of refused turns

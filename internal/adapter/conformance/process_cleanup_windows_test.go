@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/adapter/runner"
 )
 
 type fixtureProcess struct {

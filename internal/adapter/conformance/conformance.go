@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // Situation is what a stand-in agent is made to be in.

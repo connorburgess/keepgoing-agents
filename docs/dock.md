@@ -1,5 +1,7 @@
 # The keepgoing panel: one page for every loop
 
+**Display name (unreleased).** Builds from `main` label the panel and dock as looptender, including browser titles and expired-link pages. Commands remain `keepgoing panel` and `keepgoing dock`. To see the new page, use an updated executable; an older running panel continues serving its own page until restarted. Restarting the panel leaves supervision running.
+
 `keepgoing dock` serves one read-only page, the keepgoing panel, to this computer only. It shows every [registered](local-clients.md) loop: which ones need you, and for each loop its state, the routes it prefers and the one its records name as current, its lanes, its last check and its limits. It is v0.2.0, tested with fixtures only. "Dock" is the working name of the command and of the page plus a later menu-bar or tray item; the name is not settled. Words such as loop, lane and route are defined in the [glossary](glossary.md); where a configuration key is named (`primary`, a fallback's `id`), the configuration word is kept.
 
 ```sh
@@ -8,7 +10,7 @@ keepgoing dock
 ```
 
 ```text
-The keepgoing panel is being served, read-only, for this computer only:
+The looptender panel is being served, read-only, for this computer only:
 
   http://127.0.0.1:49152/<token>/
 
@@ -368,9 +370,9 @@ A macOS menu-bar preview now opens the panel and lists a row per loop with its s
 
 ## Verification
 
-`go test ./cmd/keepgoing -run Dock` covers: the listener's address; refusal of a missing or wrong token, a foreign or rebound host, a foreign origin, cross-site requests and every write method; the report built from a fixture loop in each state, including three loops on their second route (the first route's reset ahead, passed with no return tried, and not reported) and a route whose tool, provider and account group are the same word; a table from each record to the exact phrase shown; that "nothing needs you" requires every loop to have been read; that a read is not tied to a request and an incomplete read is not reused; that only a loop that is on, unheld and recently checked on a route counts as in use; each route a loop left attributed to its own record, with the time of its own hop (a retarget alone, a sign-in failure then a usage limit, a usage limit with a reset then a sign-in failure, a retarget newer than the handoff, pruned history), and no promised return after a command moved the loop; the shared-limit note and allowances matched on a recorded account identity, and nothing shared without one; that a test is overdue only where the scheduler would run one (not with scheduled tests off, read through the real reader, and not once the day's tests are used up); a reset more than a year away said as such; that each of five wordings the review named fails a test if reintroduced (a sign-in failure worded as a limit, "this result since" without a matching previous check, lanes from a stale listing, overdue with tests off, and a network wait over a stale check); time, ordinal and route-name rules; withheld identifiers, notes, hostname, lane keys and paths; unchanged registry, configuration and state directories after reads; caps on notes, lanes, history entries and routes, each applied after sorting by importance and counted; the 128-loop maximal registry under 6 MiB, also with four-byte names; and exit on interrupt. All of it uses fictional loops and local files.
+`go test ./cmd/looptender -run Dock` covers: the listener's address; refusal of a missing or wrong token, a foreign or rebound host, a foreign origin, cross-site requests and every write method; the report built from a fixture loop in each state, including three loops on their second route (the first route's reset ahead, passed with no return tried, and not reported) and a route whose tool, provider and account group are the same word; a table from each record to the exact phrase shown; that "nothing needs you" requires every loop to have been read; that a read is not tied to a request and an incomplete read is not reused; that only a loop that is on, unheld and recently checked on a route counts as in use; each route a loop left attributed to its own record, with the time of its own hop (a retarget alone, a sign-in failure then a usage limit, a usage limit with a reset then a sign-in failure, a retarget newer than the handoff, pruned history), and no promised return after a command moved the loop; the shared-limit note and allowances matched on a recorded account identity, and nothing shared without one; that a test is overdue only where the scheduler would run one (not with scheduled tests off, read through the real reader, and not once the day's tests are used up); a reset more than a year away said as such; that each of five wordings the review named fails a test if reintroduced (a sign-in failure worded as a limit, "this result since" without a matching previous check, lanes from a stale listing, overdue with tests off, and a network wait over a stale check); time, ordinal and route-name rules; withheld identifiers, notes, hostname, lane keys and paths; unchanged registry, configuration and state directories after reads; caps on notes, lanes, history entries and routes, each applied after sorting by importance and counted; the 128-loop maximal registry under 6 MiB, also with four-byte names; and exit on interrupt. All of it uses fictional loops and local files.
 
-`go test ./cmd/keepgoing -run 'TestVersion|TestBundled|TestClientReports|TestClientFlag'` covers the Versions view and the clients' reports:
+`go test ./cmd/looptender -run 'TestVersion|TestBundled|TestClientReports|TestClientFlag'` covers the Versions view and the clients' reports:
 
 - each label against a reference, as exact words, including a dev build against a release and the newest release across labels;
 - the plugin and menu comparison, including one newer than this build expects;
@@ -410,6 +412,6 @@ An independent review of an earlier commit of the read-only page ran its request
 To see the page with fictional loops, build the fixture registry into an empty private directory outside any checkout and serve it:
 
 ```sh
-KEEPGOING_DOCK_SCRATCH=/private/example-scratch go test ./cmd/keepgoing -run TestDockScratchForScreenshots -count=1
+KEEPGOING_DOCK_SCRATCH=/private/example-scratch go test ./cmd/looptender -run TestDockScratchForScreenshots -count=1
 keepgoing dock --directory /private/example-scratch/registry
 ```

@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/allowance"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
-	"github.com/connorburgess/keepgoing-agents/internal/timing"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/allowance"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/state"
+	"github.com/looptender/looptender/internal/timing"
 )
 
 // TimingNote is what usage-aware timing decided in a check, and what came of

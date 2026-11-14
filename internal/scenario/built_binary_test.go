@@ -21,7 +21,7 @@ func TestBuiltBinaryCannotSkipTheFlush(t *testing.T) {
 		t.Fatalf("go tool nm: %v", err)
 	}
 	symbols := string(out)
-	const pkg = "github.com/connorburgess/keepgoing-agents/internal/snapshot."
+	const pkg = "github.com/looptender/looptender/internal/snapshot."
 	// The flag Sync reads must be there: it shows the helper is linked in and
 	// that this binary still has its symbols to inspect.
 	if !strings.Contains(symbols, pkg+"skipSync") {

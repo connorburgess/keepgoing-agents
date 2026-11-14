@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/adapter/runner"
 )
 
 // The test binary doubles as the stand-in agent, so the suite runs natively

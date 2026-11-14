@@ -26,9 +26,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Phase is what the runner knows about the latest turn.
@@ -63,7 +63,7 @@ type Record struct {
 
 const (
 	livenessLock = "lock"
-	turnLock     = "turn" // listed in migrateLockNames (cmd/keepgoing/migrate.go); so must any new lock file
+	turnLock     = "turn" // listed in migrateLockNames (cmd/looptender/migrate.go); so must any new lock file
 )
 
 // wrapperStartTimeout bounds two waits: Start's wait for the turn lock, and

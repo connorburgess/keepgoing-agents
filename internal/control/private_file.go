@@ -3,7 +3,7 @@ package control
 import (
 	"os"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // WritePrivateFile atomically replaces a 0600 record in a state directory. It

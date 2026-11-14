@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // Outcomes recorded beside the provider's own (retried, queued,

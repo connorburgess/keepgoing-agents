@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	"github.com/looptender/looptender/internal/control"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 var at = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
