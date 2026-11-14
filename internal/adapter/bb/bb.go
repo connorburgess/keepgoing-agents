@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,7 +30,18 @@ type Adapter struct {
 	// activeChildIDs is the verified active children of the last childWork
 	// call, kept beside its count for the run graph.
 	activeChildIDs []string
+	// lanes is the lane log summaries, loaded once per adapter.
+	lanes map[string]laneSummary
+	// laneKey is the secret that salts lane hashes in bb-lanes.json.
+	laneKey []byte
+	// cliPath is the absolute path of the bb executable this adapter last
+	// started: where the system found the configured command.
+	cliPath string
 }
+
+// CLIPath implements adapter.CLIPather: the absolute path of the bb
+// executable this adapter last started, or "" before it started one.
+func (a *Adapter) CLIPath() string { return a.cliPath }
 
 // New returns an adapter for the thread.
 func New(cfg config.BB) *Adapter {
@@ -131,13 +143,18 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		// A fresh notice on an errored thread is still dropped at once when
 		// BB's retry plugin says it will not retry this failure. Nothing is
 		// running on an errored thread, so no later notice can revive it.
-		if obs.Retrying && obs.State == decide.Error && decide.RetryNoticeDead(a.retryService(ctx, sig.turnStartedMs)) {
+		if obs.Retrying && obs.State == decide.Error && decide.RetryNoticeDead(a.retryService(ctx, a.cfg.Thread, sig.turnStartedMs)) {
 			obs.Retrying, obs.RetryExpired, obs.RetryDeclined = false, true, true
 		}
 		if sig.ok && sig.hasError {
 			obs.ErrorClass = sig.class
 		}
 	}
+	if obs.State == decide.Active && sig.ok && sig.turnStartSeq > 0 {
+		// The log sequence number is per thread: the thread is part of the ID.
+		obs.Turn = &decide.TurnActivity{ID: fmt.Sprintf("%s/bb-turn-%d", a.cfg.Thread, sig.turnStartSeq), LastActivityAt: sig.lastEventAt, ToolsRunning: sig.toolsRunning}
+	}
+	obs.TurnUnknown = obs.State == decide.Active && !sig.ok
 	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
 	}
@@ -220,6 +237,8 @@ type signals struct {
 	ok           bool
 	// turnStartedMs is BB's time of the latest turn start, or 0 when unknown.
 	turnStartedMs int64
+	turnStartSeq  int64
+	toolsRunning  bool
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -227,7 +246,8 @@ type signals struct {
 // started count, so a stale error from an earlier turn is ignored.
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
-	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs}
+	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)
@@ -326,7 +346,12 @@ const retryReason = "keepgoing: recover the failed turn"
 // Any other code, delivery or shape is an error: the caller must not treat an
 // unreadable result as permission to send a prompt.
 func (a *Adapter) RetryFailedTurn(ctx context.Context) (adapter.TurnRetry, error) {
-	out, runErr := a.run(ctx, "", "thread", "retry", a.cfg.Thread, "--reason", retryReason, "--json")
+	return a.retryThread(ctx, a.cfg.Thread)
+}
+
+// retryThread runs `bb thread retry` for one thread and reads its result.
+func (a *Adapter) retryThread(ctx context.Context, thread string) (adapter.TurnRetry, error) {
+	out, runErr := a.run(ctx, "", "thread", "retry", thread, "--reason", retryReason, "--json")
 	var res struct {
 		OK       *bool  `json:"ok"`
 		Delivery string `json:"delivery"`
@@ -452,6 +477,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd.WaitDelay = 2 * time.Second
 	// Only the JSON envelope on stdout is trusted; stderr may hold prose.
 	err := cmd.Run()
+	if cmd.Process != nil {
+		// It started: cmd.Path is the executable the system resolved. A
+		// structural fact about this machine, nothing read from its output.
+		if p, perr := filepath.Abs(cmd.Path); perr == nil {
+			a.cliPath = p
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.

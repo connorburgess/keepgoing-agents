@@ -120,6 +120,16 @@ func TestRetryNoticeAfterFailedCompletion(t *testing.T) {
 const toolOutput = `{"type":"item/commandExecution/outputDelta","data":{"providerThreadId":"p1","itemId":"item_example"}}`
 const queuedInput = `{"type":"client/turn/requested","data":{}}`
 
+// requestedInput is requested input as a real BB thread logs it: the client
+// request, then within milliseconds BB's own acknowledgement and a
+// provider/unhandled event, neither of which is a client event. The IDs are
+// fictional.
+func requestedInput(t time.Time, id string) string {
+	return at(`{"type":"client/turn/requested","data":{"requestId":"`+id+`"}}`, t) + `,` +
+		at(`{"type":"turn/input/accepted","data":{"providerThreadId":"p1","clientRequestId":"`+id+`"}}`, t.Add(40*time.Millisecond)) + `,` +
+		at(`{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`, t.Add(45*time.Millisecond))
+}
+
 func stallDecision(o decide.Observation, nudges int) decide.Decision {
 	return decide.Decide(decide.Input{Control: decide.Control{Enabled: true}, InWindow: true, Obs: o, UnchangedFor: 2 * time.Hour, SinceWake: 2 * time.Hour,
 		StallAfter: 30 * time.Minute, MinWakeInterval: time.Hour, Nudges: nudges, MaxNudges: 3,
@@ -132,7 +142,7 @@ func TestActiveThreadRetryNoticeStandsWhileLogIsNotSilent(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
 	events := `[` + at(turnStarted, start) + `,` + at(retryNotice, start.Add(time.Minute))
 	dir := t.TempDir()
-	kinds := []string{toolOutput, retryNotice, `{"type":"item/started","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`}
+	kinds := []string{toolOutput, retryNotice, `{"type":"item/completed","data":{"providerThreadId":"p1","item":{"id":"item_example","type":"commandExecution"}}}`, `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`}
 	for i := 1; i <= 280; i++ { // about 47 hours, one event every ten minutes
 		logged := start.Add(time.Duration(i) * 10 * time.Minute)
 		events += `,` + at(kinds[i%len(kinds)], logged)
@@ -189,6 +199,33 @@ func TestSilentActiveThreadRetryNoticeExpiresIntoStallHandling(t *testing.T) {
 		b.CheckAt(last.Add(time.Duration(minutes+1) * time.Minute))
 		if o, err := b.Observe(context.Background()); err != nil || o.Retrying || !o.RetryExpired || o.Queued != i+1 {
 			t.Fatalf("queued input %d re-armed the notice: %+v %v", i+1, o, err)
+		}
+	}
+	// On a real thread each request is acknowledged at once by a non-client
+	// turn/input/accepted. The pair is not thread activity either: it used
+	// to re-arm the expired notice.
+	paired := outageLog(start, 22*time.Minute)
+	paired = paired[:len(paired)-1] + `,` + requestedInput(reprompted, "req_example_0") + `,` + at(turnStarted, reprompted.Add(time.Second)) + `,` + at(retryNotice, reprompted.Add(time.Minute)) + `]`
+	for i, minutes := range []int{17, 77, 137} {
+		paired = paired[:len(paired)-1] + `,` + requestedInput(last.Add(time.Duration(minutes)*time.Minute), fmt.Sprintf("req_example_%d", i+1)) + `]`
+		b, _ := newFake(`{"thread":{"status":"active","queuedMessageCount":`+fmt.Sprint(i+1)+`}}`, paired, false)
+		b.CheckAt(last.Add(time.Duration(minutes+1) * time.Minute))
+		if o, err := b.Observe(context.Background()); err != nil || o.Retrying || !o.RetryExpired {
+			t.Fatalf("acknowledged input %d re-armed the notice: %+v %v", i+1, o, err)
+		}
+	}
+	// A provider/unhandled event that is not the answer to a request is still
+	// thread activity, as before: an event BB could not interpret is the
+	// thread doing something, and a notice declared silent would let a nudge
+	// be queued into a live turn. Here one follows the request's own, and one
+	// arrives much later by itself.
+	unhandled := `{"type":"provider/unhandled","data":{"providerThreadId":"p1"}}`
+	for name, extraAt := range map[string]time.Duration{"right after the request's own": 138*time.Minute + time.Second, "by itself, later": 150 * time.Minute} {
+		live := paired[:len(paired)-1] + `,` + at(unhandled, last.Add(extraAt)) + `]`
+		b, _ := newFake(`{"thread":{"status":"active","queuedMessageCount":3}}`, live, false)
+		b.CheckAt(last.Add(extraAt + time.Minute))
+		if o, err := b.Observe(context.Background()); err != nil || !o.Retrying || o.RetryExpired {
+			t.Fatalf("%s: an unhandled provider event was not counted as activity: %+v %v", name, o, err)
 		}
 	}
 	// A thread that has not stalled by its own progress rules is simply active.

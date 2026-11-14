@@ -15,8 +15,10 @@ type outage struct {
 	// checks are the moments, after the drop, at which the host was awake
 	// and a check ran. The host sleeps the rest of the time.
 	checks []time.Duration
-	// known lists the assertions that fail on main today and the open work
-	// each one waits on. Every other assertion is enforced.
+	// laneRecovery turns bb.children.retry_errored on. It is off by default.
+	laneRecovery bool
+	// known lists the assertions that fail and what each one waits on. Every
+	// other assertion is enforced.
 	known map[string][]Waiting
 }
 
@@ -43,33 +45,31 @@ var outages = []outage{
 		// One check just after the drop, then the host sleeps until the
 		// network is back.
 		checks: []time.Duration{3 * time.Minute},
-		known:  outageKnown,
 	},
 	{
 		name:   "4h",
 		length: 4 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 50 * time.Minute, 51 * time.Minute, 2*time.Hour + 40*time.Minute, 3*time.Hour + 59*time.Minute},
-		known:  outageKnown,
 	},
 	{
 		name:   "3d",
 		length: 72 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 9 * time.Hour, 9*time.Hour + time.Minute, 30 * time.Hour, 30*time.Hour + 2*time.Minute, 71 * time.Hour},
-		known:  outageKnown,
 	},
 	{
 		name:   "3w",
 		length: 21 * 24 * time.Hour,
 		checks: []time.Duration{3 * time.Minute, 48 * time.Hour, 48*time.Hour + time.Minute, 9 * 24 * time.Hour, 15 * 24 * time.Hour, 15*24*time.Hour + 5*time.Minute, 20*24*time.Hour + 23*time.Hour},
-		known:  outageKnown,
 	},
 }
 
-// What still fails at every length. The network check waits the outage out,
-// through the captive portal, without a send, a hold or a report, and the
-// loop recovers without a person by retrying the failed turn once. The
-// child's failed turn is not retried, so the child is still in error and the
-// retry is followed by the count-only child-error notice: a third message.
+// With lane recovery on (bb.children.retry_errored) every assertion is
+// enforced at every length. With it off, as it is by default, these still
+// fail: the network check waits the outage out, through the captive portal,
+// without a send, a hold or a report, and the loop recovers without a person
+// by retrying the failed turn once, but the child's failed turn is not
+// retried, so the child is still in error and the retry is followed by the
+// count-only child-error notice: a third message.
 var outageKnown = map[string][]Waiting{
 	expectRecoveredOnce:  Waits(WaitChildRecovery),
 	expectChildRecovered: Waits(WaitChildRecovery),
@@ -83,9 +83,19 @@ var outageKnown = map[string][]Waiting{
 func TestScenarioOutage(t *testing.T) {
 	t.Parallel()
 	for _, o := range outages {
+		// Opted in to lane recovery: everything is enforced.
+		on := o
+		on.laneRecovery = true
 		t.Run(o.name, func(t *testing.T) {
 			t.Parallel()
-			runOutage(t, o)
+			runOutage(t, on)
+		})
+		// The default: no lane is ever retried.
+		off := o
+		off.known = outageKnown
+		t.Run(o.name+"/lane-recovery-off", func(t *testing.T) {
+			t.Parallel()
+			runOutage(t, off)
 		})
 	}
 }
@@ -93,6 +103,12 @@ func TestScenarioOutage(t *testing.T) {
 func runOutage(t *testing.T, o outage) {
 	w := NewWorld(t, scenarioStart)
 	w.Init("await_user", "complete", "stop")
+	if o.laneRecovery {
+		w.EditConfig(func(loop map[string]any) {
+			bb, _ := loop["bb"].(map[string]any)
+			bb["children"] = map[string]any{"retry_errored": true}
+		})
+	}
 	primary := w.Thread(primaryThread)
 	child := primary.Child(childThread)
 	expect := func(s *Step, name string, err error) {
@@ -176,6 +192,9 @@ func runOutage(t *testing.T, o outage) {
 	expect(s, expectNotHeldOnline, holds(s))
 	expect(s, expectChildRecovered, sentTo(s, childThread, Send{Kind: "retry", Thread: childThread}))
 	w.Check(s, "child is never sent a message", noTellTo(s, childThread))
+	if !o.laneRecovery {
+		w.Check(s, "with lane recovery off the child is left alone", nothingSentTo(s, childThread))
+	}
 
 	// The daemon keeps checking every five minutes for half an hour. A
 	// session that is still failed after that needs a person to resume it.
@@ -187,10 +206,8 @@ func runOutage(t *testing.T, o outage) {
 	var intervened error
 	if primary.Status() == "error" {
 		intervened = fmt.Errorf("the session was still failed %s after the network returned; a person had to retry it in BB and resume the loop", w.Now.Sub(drop.Add(o.length)))
-		// `resume` alone is not enough on main: it does not refund the
-		// re-prompts (docs/operations.md, "re-prompt caps"), so the next
-		// check holds again while the session is in error. The person
-		// retries the turn in BB first, outside keepgoing.
+		// The person retries the turn in BB, outside keepgoing, and resumes
+		// the loop.
 		w.Advance(time.Minute)
 		primary.StartTurn()
 		s = w.Control("resume")

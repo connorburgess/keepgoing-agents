@@ -111,6 +111,20 @@
               "minimum": 1,
               "default": 3,
               "description": "nudges a stalled session gets before the loop asks a person"
+            },
+            "flag_after_sends": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 6,
+              "description": "sends with no recorded change to the repositories that raise the panel's no-progress flag; 0 is off"
+            },
+            "flag_after_errors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 4,
+              "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
             }
           }
         },
@@ -177,6 +191,23 @@
           "type": "string",
           "description": "path to fallbacks.yaml"
         },
+        "routes": {
+          "type": "string",
+          "enum": [
+            "standard"
+          ],
+          "description": "follow the person's standard route list instead of a fallbacks file of the loop's own"
+        },
+        "routes_allow": {
+          "type": "array",
+          "description": "kinds of standard route this loop opts in to; off by default",
+          "items": {
+            "type": "string",
+            "enum": [
+              "new_conversation"
+            ]
+          }
+        },
         "report": {
           "type": "object",
           "additionalProperties": false,
@@ -225,8 +256,11 @@
                   "probe_failed",
                   "switch_back",
                   "limit_wait",
+                  "check_gap",
+                  "hung_turn",
                   "network_wait",
                   "child_error",
+                  "child_recovery",
                   "test"
                 ]
               }
@@ -309,6 +343,35 @@
           },
           "description": "return to the primary after a handoff once its limit resets and an exact probe passes"
         },
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "probe the first route on a schedule to collect usage readings of its allowance; each probe is a small paid request"
+            },
+            "windows": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+              },
+              "description": "the provider's usage window keys timing acts on, for example seven_day"
+            },
+            "near_reset": {
+              "$ref": "#/$defs/duration",
+              "description": "how close to a named window's reset counts as near; default 6h"
+            },
+            "probe_every": {
+              "$ref": "#/$defs/duration",
+              "description": "interval between timing probes of the first route; default 12h"
+            }
+          },
+          "description": "usage-aware timing, off by default; until the step decision exists it only collects readings and never changes routes"
+        },
         "probe": {
           "type": "object",
           "additionalProperties": false,
@@ -390,6 +453,13 @@
                     "const": false
                   }
                 }
+              },
+              "timing": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
               }
             }
           }
@@ -442,6 +512,29 @@
         "retry_signal_ttl": {
           "$ref": "#/$defs/duration",
           "description": "how long a provider retry notice on an errored thread suppresses error recovery; default 15m, minimum 1m"
+        },
+        "children": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "what keepgoing may do about the thread's lanes (its direct child threads); absent means observe and announce only",
+          "properties": {
+            "retry_errored": {
+              "type": "boolean",
+              "description": "opt in to asking BB to retry a lane's failed turn by reference; default false"
+            },
+            "max_per_check": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "lanes one check may work on; 0 or absent means 5"
+            },
+            "max_per_episode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "lane retries per episode; 0 or absent means 20"
+            }
+          }
         }
       }
     },

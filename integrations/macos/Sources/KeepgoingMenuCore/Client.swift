@@ -24,9 +24,98 @@ private final class Capture {
 public struct LocalClient {
     public let executable: URL
     public let directory: String?
-    public init(executable: URL, directory: String? = nil) {
+    /// A non-default private directory for the panel's runtime files.
+    public let panelDirectory: String?
+    public init(executable: URL, directory: String? = nil, panelDirectory: String? = nil) {
         self.executable = executable
         self.directory = directory
+        self.panelDirectory = panelDirectory
+    }
+    /// Every loop and its state in the panel's words. The read is bounded by
+    /// the CLI at 20 seconds, so this waits a little longer than that.
+    public func panelList() throws -> PanelList {
+        let (data, code) = try run(MenuBuilder.arguments(.readList)!, timeout: 25)
+        return try Contract.panelList(data, exit: code)
+    }
+    /// Whether the panel's background server is running, and when it will
+    /// stop by itself. Asking does not start it or keep it alive.
+    public func panelStatus() throws -> PanelStatus {
+        var arguments = MenuBuilder.arguments(.readStatus)!
+        if let panelDirectory { arguments += ["--panel-directory", panelDirectory] }
+        let (data, code) = try run(arguments, registry: false)
+        return try Contract.panelStatus(data, exit: code)
+    }
+    /// Opens the panel in the browser through `keepgoing panel`, which starts
+    /// its background server when none is running, or stops that server.
+    /// Nothing but the fixed arguments and a validated page key is passed.
+    public func open(_ command: MenuCommand) throws {
+        switch command {
+        case .openPanel, .openLoop, .openPanelWithChanges, .stopPanel: break
+        default: throw ClientFailure.unavailable
+        }
+        guard var arguments = MenuBuilder.arguments(command) else { throw ClientFailure.unavailable }
+        if let panelDirectory { arguments += ["--panel-directory", panelDirectory] }
+        let (_, code) = try run(arguments, timeout: 20, registry: command != .stopPanel)
+        guard code == 0 else { throw ClientFailure.unavailable }
+    }
+    /// The review of one change, read by `keepgoing client review`, which
+    /// changes nothing.
+    public func review(_ action: LoopAction, key: String) throws -> ReviewReading {
+        guard let arguments = MenuBuilder.arguments(.review(action, key: key)) else { throw ClientFailure.invalidResponse }
+        let (data, code) = try run(arguments, timeout: 25)
+        return try Contract.review(data, exit: code, action: action, key: key)
+    }
+    /// Makes one confirmed change through `keepgoing client apply`, which
+    /// refuses it when the loop's control record is no longer the one
+    /// reviewed. It is never run twice: when the reply is lost or cannot be
+    /// read, whether it was saved is not known, and the review's own words
+    /// say so. A command that could not be started did nothing.
+    public func apply(_ command: MenuCommand, review: Review) -> ChangeResult {
+        guard case .apply = command, let arguments = MenuBuilder.arguments(command) else {
+            return ChangeResult(outcome: "refused", text: LocalClient.notAccepted)
+        }
+        do {
+            let (data, code) = try run(arguments, timeout: 25)
+            if let result = try? Contract.applied(data) { return result }
+            // A usage error is refused before anything runs: this keepgoing
+            // does not take these arguments.
+            if code == 2 && data.isEmpty { return ChangeResult(outcome: "refused", text: LocalClient.notAccepted) }
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        } catch ClientFailure.unavailable {
+            return ChangeResult(outcome: "refused", text: LocalClient.notStarted)
+        } catch {
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        }
+    }
+    static let notStarted = "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."
+    static let notAccepted = "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."
+    /// The review of one change to every loop, by `client review --all`,
+    /// which changes nothing.
+    public func reviewAll(_ action: LoopAction) throws -> GroupReading {
+        guard let arguments = MenuBuilder.arguments(.reviewAll(action)) else { throw ClientFailure.invalidResponse }
+        let (data, code) = try run(arguments, timeout: 25)
+        return try Contract.groupReview(data, exit: code, action: action)
+    }
+    /// Makes one confirmed change to every loop reviewed, by `client apply
+    /// --all`, once. Each loop is changed only if its record is the one
+    /// reviewed; the result names each loop's outcome.
+    public func applyAll(_ command: MenuCommand, review: GroupReview) -> ChangeResult {
+        guard case .applyAll = command, let arguments = MenuBuilder.arguments(command) else {
+            return ChangeResult(outcome: "refused", text: LocalClient.notAccepted)
+        }
+        do {
+            // A stop of every loop saves every stop, then carries out those
+            // that can be at once in the time keepgoing gives a change; this
+            // waits a little longer than that.
+            let (data, code) = try run(arguments, timeout: 120)
+            if let result = try? Contract.groupApplied(data) { return result }
+            if code == 2 && data.isEmpty { return ChangeResult(outcome: "refused", text: LocalClient.notAccepted) }
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        } catch ClientFailure.unavailable {
+            return ChangeResult(outcome: "refused", text: LocalClient.notStarted)
+        } catch {
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        }
     }
     public func registry() throws -> [Registration] {
         let (data, code) = try run(["registry", "list", "--json"])
@@ -40,14 +129,29 @@ public struct LocalClient {
         return try Contract.status(data, exit: code, entry: entry)
     }
 
-    // Only the two read operations above are exposed. No shell or commands from
-    // registry/goal metadata are executed; stderr is never displayed or retained.
-    private func run(_ arguments: [String]) throws -> (Data, Int32) {
+    /// The environment every command is given, the one the panel gives its
+    /// own server: where the user's files are, a fixed search path, and the
+    /// locale and time zone. Nothing else reaches it, so the menu acts as no
+    /// BB thread (BB_THREAD_ID is never passed) wherever it was started.
+    public static func environment(_ from: [String: String]) -> [String: String] {
+        var env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        for name in ["HOME", "USER", "LOGNAME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"] {
+            if let value = from[name] { env[name] = value }
+        }
+        return env
+    }
+
+    // Only the commands in MenuBuilder.arguments are run. No shell or
+    // commands from registry/goal metadata are executed; stderr is never
+    // displayed or retained.
+    private func run(_ arguments: [String], timeout: TimeInterval = 5, registry: Bool = true) throws -> (Data, Int32) {
         guard executable.isFileURL, executable.path.hasPrefix("/"),
               FileManager.default.isExecutableFile(atPath: executable.path) else { throw ClientFailure.unavailable }
         let process = Process()
         process.executableURL = executable
-        process.arguments = arguments + (directory.map { ["--directory", $0] } ?? [])
+        // panel status and panel stop take no registry directory.
+        process.arguments = arguments + (registry ? (directory.map { ["--directory", $0] } ?? []) : [])
+        process.environment = LocalClient.environment(ProcessInfo.processInfo.environment)
         let output = Pipe(), errors = Pipe()
         process.standardOutput = output
         process.standardError = errors
@@ -75,7 +179,7 @@ public struct LocalClient {
         }
         process.terminationHandler = { _ in finished.signal() }
         do { try process.run() } catch { throw ClientFailure.unavailable }
-        let deadline = DispatchTime.now() + 5
+        let deadline = DispatchTime.now() + timeout
         if finished.wait(timeout: deadline) != .success {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             _ = finished.wait(timeout: .now() + 1)

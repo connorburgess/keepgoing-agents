@@ -62,7 +62,8 @@ const (
 // provider has no turn retry. The caller then sends the prompt under the same
 // reservation and counts the attempt once there.
 func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Decision) (done bool, err error) {
-	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+	seq, err := t.reserveSend(string(d.Action), t.res.Target)
+	if err != nil {
 		return true, err
 	}
 	t.res.Recovery = string(decide.RecoverByTurnRetry)
@@ -128,7 +129,7 @@ func (t *tick) retryTurn(a adapter.Adapter, r adapter.TurnRetrier, d decide.Deci
 	if outcome == turnRetryNotInError || outcome == string(adapter.TurnRetryAlreadyQueued) {
 		// The provider did nothing for this request, and said so. It is not an
 		// attempt of keepgoing's: no cap, no backoff, and the send is returned.
-		if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+		if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends, seq); err != nil {
 			return true, err
 		}
 		if outcome == turnRetryNotInError {
@@ -171,12 +172,12 @@ func (t *tick) childNoticeAfterRetry(a adapter.Adapter, d decide.Decision) error
 	if childErrors == 0 {
 		return nil
 	}
-	if err := state.ReserveSend(t.loop.StateDir, t.loop.Limits.MaxSends); err != nil {
+	if _, err := t.reserveSend("child_notice", t.res.Target, t.st.ChildErrorNoticeFor); err != nil {
 		// No allowance for it: the notice stays unannounced for a later wake.
 		t.warn("errored-children notice not sent after the turn retry: %v", err)
 		return nil
 	}
-	err := t.send(a, prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren), adapter.ModeAuto, t.res.Target, string(d.Action))
+	err := t.send(a, prompt.ChildErrorsOnlyRetried(childErrors, t.decisionInput.Obs.ActiveChildren, t.lanesRetried), adapter.ModeAuto, t.res.Target, string(d.Action))
 	t.childNoticeSent(childErrors, err)
 	if err != nil {
 		t.warn("errored-children notice after the turn retry: %v", err)

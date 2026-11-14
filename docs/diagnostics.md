@@ -8,7 +8,7 @@ keepgoing doctor -c /private/example-loop/keepgoing.yaml --json
 keepgoing doctor -c /private/example-loop/keepgoing.yaml --offline
 ```
 
-The ordinary command resolves configured executable paths and runs supported agents' `--version` commands, BB's `thread show <id> --json`, and headless providers' login-status commands described below. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution and local daemon queries while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
+The ordinary command resolves configured executable paths and runs supported agents' `--version` commands, BB's `thread show <id> --json`, and headless providers' login-status commands described below. In v0.2.0 it also runs the loop's [connectivity check](operations.md#network-outages) once, reported as `network.check`: one request to the configured target, or one run of `network.command`. Each command has a five-second timeout and a 64 KiB stdout limit. `--timeout` changes the per-command deadline. `--offline` skips all command execution and local daemon queries while still inspecting configuration, files, and executable availability. Custom process-adapter commands, lifecycle logs, model calls, and probe commands are never executed. Explicit diagnostics can query BB even when the loop is held; they do not change that hold.
 
 ## What it checks
 
@@ -31,7 +31,9 @@ Exit status is **1** if any check is `error`, **0** otherwise, and **2** for inv
 
 JSON has `schemaVersion: 1`, `version` (this doctor's binary), `checkedAt`, `staleAfter`, `nextCheck`, and `checks`. With valid configuration it also identifies the loop, recorded target, configured target agent and quota group, readable control state, and last recorded check when available. Each check has `id`, `status`, `message`, and an optional `fix`. Treat IDs and statuses as machine fields; messages are explanatory text. No credentials, environment maps, prompts, or control notes are included.
 
-## Cursor diagnostics (unreleased source)
+<a id="cursor-diagnostics-unreleased-source"></a>
+
+## Cursor diagnostics
 
 For a Cursor loop, doctor resolves the configured `agent` executable and may read `--version`; `--offline` skips that call. It recognizes the date/hash version shape without treating it as a verified compatibility range. Account identity, login health and quota state remain unavailable. The `agent.<target>.capabilities` check also describes the missing IDE attachment, interactive permission bridge and quota/reset/fallback support. Doctor never runs Cursor login, model-list or prompt commands. These source-only checks do not establish real-provider readiness; see [Cursor evidence](cursor.md).
 
@@ -107,7 +109,7 @@ Inspection works offline without commands, permission changes, temporary writes,
 
 ## Saved headless sessions
 
-For each configured primary or enabled fallback using the Claude Code or Codex headless adapter (and the primary-only Cursor adapter in unreleased source), doctor inspects `targets/<target>/session` under the loop's state directory. The `agent.<target>.session` check and the JSON `sessions` map identify the saved resume ID. Text output labels it as saved and unverified live. BB and custom process targets do not have these fields.
+For each configured primary or enabled fallback using the Claude Code or Codex headless adapter (and the primary-only Cursor adapter in v0.2.0), doctor inspects `targets/<target>/session` under the loop's state directory. The `agent.<target>.session` check and the JSON `sessions` map identify the saved resume ID. Text output labels it as saved and unverified live. BB and custom process targets do not have these fields.
 
 Each map entry has `state` (`saved`, `missing`, or `unavailable`), an optional `id`, `source: "runner_session_file"`, `liveVerified: false`, and an explanatory `message`. Missing records are normal before a resume ID is saved. An unreadable or unrecognized record produces a warning without displaying its content. Only UUID-shaped IDs from regular files of at most 128 bytes are displayed; symlink records are not followed. Other ID formats still work as before in the runner, but diagnostics withhold them.
 
@@ -169,21 +171,21 @@ In v0.1.5, diagnostic records retain the finite code `thread_command_failed` fro
 `TestIncidentJourneyBBInterruptedCommandRecovery` verifies the following offline through fresh CLI harness invocations and fictional BB responses:
 
 - A failing status command or invalid JSON records unavailable observation, sends nothing and spends no recovery attempt.
-- A readable `error` status with an interrupted terminal event and generic failure code stays unknown. Queued work prevents another prompt. Once the queue is empty, the existing policy permits one continuation prompt in this fixture.
+- A readable `error` status with an interrupted terminal event and generic failure code stays unknown. Queued work prevents another prompt. Once the queue is empty, the existing policy permits one recovery attempt in this fixture: a continuation prompt through v0.1.5, and in v0.2.0 one retry of the failed turn with no prompt.
 - If the error persists after the configured attempt cap, supervision enters an awaiting-user hold. A new active turn cannot clear that hold; explicit resume permits observation again and clears stale error evidence on the new turn.
 - An isolated copy of keepgoing's journal reconstructs the sequence through `timeline`, including the generic code, unavailable observations and hold transitions, without provider logs or private error text.
 
-This tests existing bounded re-prompt behavior. Through v0.1.5 the adapter recovers with `bb thread tell`. In unreleased source the same re-prompt decision retries the failed turn by reference with `bb thread retry` and sends no prompt; see [recovering a failed BB turn](operations.md#recovering-a-failed-bb-turn-by-retry). It does not restart BB's host daemon or distinguish the host cause from a generic failure. Checks cannot run while their own host or scheduler is unavailable. A transient failure that starts and ends between checks may leave no failure snapshot. Live unattended recovery from a host disconnect and host-specific structured classification remain unverified.
+This tests existing bounded re-prompt behavior. Through v0.1.5 the adapter recovers with `bb thread tell`. In v0.2.0 the same re-prompt decision retries the failed turn by reference with `bb thread retry` and sends no prompt; see [recovering a failed BB turn](operations.md#recovering-a-failed-bb-turn-by-retry). It does not restart BB's host daemon or distinguish the host cause from a generic failure. Checks cannot run while their own host or scheduler is unavailable. A transient failure that starts and ends between checks may leave no failure snapshot. Live unattended recovery from a host disconnect and host-specific structured classification remain unverified.
 
 ## Bounded tick incident history
 
-Available in v0.1.3 or newer; **offline fixtures only**. Every invocation that reaches the supervisor tick attempts to write `incidents.json` in the configured private state directory, including held checks, failed observations and dry runs. Supported control commands also append records as described below. No new provider call is made for diagnostics. A hold records `not_observed`; a failed adapter call records `unavailable`. Successful adapter results retain their normalized state/error class and queue/child counts. BB retry intent is `retrying`, `not_retrying`, `unverified`, `expired` (a [stale retry notice](operations.md#stale-retry-notices) that was no longer honored) or `unavailable`; headless/process retry intent is explicitly unavailable. These are check-time observations, not continuous event capture.
+Available in v0.1.3 or newer; **offline fixtures only**. Every invocation that reaches the supervisor tick attempts to write `incidents.json` in the configured private state directory, including held checks, failed observations and dry runs. Supported control commands also append records as described below. No new provider call is made for diagnostics. A hold records `not_observed`; a failed adapter call records `unavailable`. Successful adapter results retain their normalized state/error class and queue/child counts. BB retry intent is `retrying`, `not_retrying`, `unverified`, `expired` (a [stale retry notice](operations.md#stale-retry-notices) that was no longer honored), `declined` (v0.2.0: a notice dropped because [BB had already declined the retry](operations.md#a-notice-bb-has-already-declined)) or `unavailable`; headless/process retry intent is explicitly unavailable. These are check-time observations, not continuous event capture.
 
 Recognized build labels include numeric release versions, `dev`, commit hashes (with optional `smoke-` prefix and `-dirty` suffix), and, after v0.1.3, numeric versions followed by `-dev.<7–40 lowercase hex characters>` or `-rc.<digits>`. Other suffixes remain `unavailable` rather than exposing arbitrary build text. Earlier records already redacted as `unavailable` cannot be reconstructed. A label is caller-supplied historical metadata, not a verified binary fingerprint.
 
 Schema version 4 contains a monotonic sequence within retained history, check-start time, recognized build label, adapter kind, hashed configured-target alias, normalized decision action/cause/outcome, nudge/re-prompt counts after the tick, control flags before/after, and the last persisted active-recovery timestamp for that target. A missing control snapshot is null; `countersAvailable: false` means the recorded zero counters are placeholders because state could not be loaded. The target key correlates an alias; it neither identifies a provider session nor anonymizes guessable aliases. Only release-style numeric versions, `dev` and recognized commit/smoke hashes are retained as build labels; other labels are unavailable. Provider event time remains unavailable. The source/code fields below describe structured inputs and never infer a network root cause. Counts and recovery metadata come from supervisor state; they are not independent proof of progress or of the agent's current liveness.
 
-The rolling JSON file retains at most **256 records and 512 KiB**. Through v0.1.5 it prunes the oldest record first, which at ten-minute intervals covers roughly 42 hours. Unreleased source keeps the same total bound but splits it into [retention tiers and collapses repeated checks](#retention-tiers-and-collapsed-checks), so moves and holds cannot be evicted by routine checks or probe noise. `dropped` counts retention pruning, not failed writes or missed checks. Each write uses a 0600 temporary file, syncs it and replaces the previous snapshot under `incident.lock`. Readers can use the complete old or new file without locking. Runtime filesystem modes follow existing platform guarantees; Windows ACL evaluation is separate. Corrupt/truncated, oversized, future-schema and symlinked journals are refused without automatic reset. Unknown string values normalize to unavailable. This is not tamper-proof storage; deletion/rollback, external writers, disk failure, a crash during a tick and power-loss durability of directory metadata are outside its guarantees.
+The rolling JSON file retains at most **256 records and 512 KiB**. Through v0.1.5 it prunes the oldest record first, which at ten-minute intervals covers roughly 42 hours. v0.2.0 keeps the same total bound but splits it into [retention tiers and collapses repeated checks](#retention-tiers-and-collapsed-checks), so moves and holds cannot be evicted by routine checks or probe noise. `dropped` counts retention pruning, not failed writes or missed checks. Each write uses a 0600 temporary file, syncs it and replaces the previous snapshot under `incident.lock`. Readers can use the complete old or new file without locking. Runtime filesystem modes follow existing platform guarantees; Windows ACL evaluation is separate. Corrupt/truncated, oversized, future-schema and symlinked journals are refused without automatic reset. Unknown string values normalize to unavailable. This is not tamper-proof storage; deletion/rollback, external writers, disk failure, a crash during a tick and power-loss durability of directory metadata are outside its guarantees.
 
 The history excludes task text, raw provider output/errors, child/provider thread IDs, account/environment values, paths and webhook URLs. Read-only consumers should use the typed loader rather than treating legacy `runs.jsonl` or headless stdout as this contract. Existing history/artifact formats retain their previous behavior and are not covered by these new content guarantees.
 
@@ -232,11 +234,11 @@ The journal append follows the control save and runs outside the control lock. I
 
 If the journal is locked, malformed or unwritable, the save stays in place. Standalone control commands emit a fixed warning, continue their existing log/report processing and return failure. A new completion declaration still gets its existing single delivery attempt, and repeating the command cannot replay it; no new notification retry is introduced. Existing control-log failures retain their prior report-skipping behavior. For `start` or `daemon --take-over`, a journal failure stops startup with an explicit saved-control error; the enabled flag or owner claim may already have changed, and all holds remain. Inspect status and repair history storage before retrying startup. An already-running supervisor can still observe those saved flags.
 
-Schema-1/2/3 records load read-only as ticks with no control-change details. The next append upgrades to schema 4, preserving existing sequence/pruning counts and available observations/decision evidence. Older binaries refuse the newer journal. Tick and control records share the same retention budget. Offline fixtures cover command/held-tick chronology, no-op commands, owner privacy, startup/takeover, rejected/failed saves, history contention/corruption, migration, and preserved completion/report semantics. No installed loop was changed and no live provider was called.
+Schema-1/2/3 records load read-only as ticks with no control-change details. The next append upgrades to the current schema, preserving existing sequence/pruning counts and available observations/decision evidence. Older binaries refuse the newer journal. Tick and control records share the same retention budget. Offline fixtures cover command/held-tick chronology, no-op commands, owner privacy, startup/takeover, rejected/failed saves, history contention/corruption, migration, and preserved completion/report semantics. No installed loop was changed and no live provider was called.
 
 ### Target moves, probes and limit waits
 
-Unreleased source; **offline fixtures only**. Schema 5 adds the evidence needed to see how a loop was passed between targets:
+Released in v0.2.0; **offline fixtures only**. Schema 5 adds the evidence needed to see how a loop was passed between targets:
 
 - `targetKeyAfter` on tick records: the hashed alias of the active target after the check. It differs from `targetKey` only when that check handed off or switched back, so a move records both ends.
 - `probes` on tick records: up to eight results per check, each with a hashed candidate alias, the tier (`scheduled` or `exact`), pass/fail and a normalized error class. `captured` with no results means the check ran no probe. Probe output, models, latency and reset times stay in the existing private health records.
@@ -245,11 +247,11 @@ Unreleased source; **offline fixtures only**. Schema 5 adds the evidence needed 
 
 These are hashes of configured aliases, exactly as `targetKey` already was. They name no thread, session, account or model, and they do not anonymize a guessable alias. Loading schema 1–4 is read-only and leaves these fields `unavailable`; the next append upgrades the file. Older binaries refuse a schema-5 journal, as with earlier upgrades. The 256-record and 512 KiB caps are unchanged; the new fields add roughly 50 bytes to an ordinary check and about 130 bytes per probe result, so probe-heavy history reaches the byte cap slightly sooner. A retarget whose history append fails keeps the saved target, prints a fixed warning and exits 1; it is not rolled back.
 
-Not retained: manual `fallbacks check` probes, an automatic return to the primary when the active fallback is removed or disabled, target changes written by older binaries, and anything done outside keepgoing. In particular, work continued by hand in a different conversation leaves no record here: keepgoing has no identity for a run or a chat yet. That belongs to the planned [run and conversation discovery](run-discovery.md) graph (D1–D3). This history deliberately defines no run, chat or conversation identity of its own, so the two cannot disagree; once that graph exists, these events should reference its node IDs.
+Not retained: manual `fallbacks check` probes, an automatic return to the primary when the active fallback is removed or disabled, target changes written by older binaries, and anything done outside keepgoing. In particular, work continued by hand in a different conversation leaves no record here. Run and chat identity belongs to the [run and conversation discovery](run-discovery.md) graph (D1–D3), which v0.2.0 records and `keepgoing runs` shows. This history deliberately defines no run, chat or conversation identity of its own, so the two cannot disagree; its events do not yet reference that graph's node IDs (roadmap R7c).
 
 ### Retention tiers and collapsed checks
 
-Unreleased source; **offline fixtures only**. Schema 6 keeps the total bound of 256 records and 512 KiB and reserves part of it for each of four tiers:
+Released in v0.2.0; **offline fixtures only**. Schema 6 keeps the total bound of 256 records and 512 KiB and reserves part of it for each of four tiers:
 
 | Tier | Reserved | Records |
 | --- | --- | --- |
@@ -282,7 +284,7 @@ R2 acceptance is verified by `cmd/keepgoing/incident_journey_test.go` with offli
 | --- | --- |
 | BB stand-in CLI | Active network retry persists across checks; retry ends with a structured failure, one re-prompt exhausts the configured allowance, and the next check saves a hold. Provider recovery while held does not cause observation or clear the hold. Explicit resume permits a fresh observation of matching provider activity, clearing old error metadata. |
 | Local process commands | Structured network error and exhausted retry allowance produce a hold. Changing the status fixture to active does not clear it; explicit resume exposes the healthy status. Unsupported retry intent and HTTP/event-time details remain unavailable. |
-| Claude/Codex stand-in processes | Failed local turns emit network-error results/events and exit 1. Re-prompt exhaustion persists a hold. A repaired stand-in and increased configured allowance do not reopen it until resume. Spent retries remain recorded; the next resumed process succeeds, exits 0 and is observed as idle before another ordinary wake. Session-resume arguments reach the stand-ins; this proves fixture behavior only. |
+| Claude/Codex stand-in processes | Failed local turns emit network-error results/events and exit 1. Re-prompt exhaustion persists a hold. A repaired stand-in and increased configured allowance do not reopen it until resume. The resume of that hold starts a new error episode (v0.2.0; through v0.1.5 the spent retries stayed recorded); the next resumed process succeeds, exits 0 and is observed as idle before another ordinary wake. Session-resume arguments reach the stand-ins; this proves fixture behavior only. |
 
 The reconstruction assertions copy **only `incidents.json`** into a fresh directory and read it with the typed loader. No BB logs/cursor, config, control file, runner stdout, session artifacts or transcripts are available to that reader. Assertions check actions, normalized source/error/retry evidence, decision thresholds, before/after controls, unobserved held checks, recovered observations, sequence/build/check metadata and secret-marker exclusion; reading leaves the copy unchanged. Existing tests separately cover bounded retention, schema migration, malformed storage and control/report behavior under journal failure.
 
@@ -302,7 +304,7 @@ The version-1 file holds up to **64 deliveries / 128 KiB**, with monotonically a
 | `attempt_started` | Intent was recorded immediately before calling the HTTP client. It does not prove bytes were sent. A live in-flight request, crash or failed final write can leave this state. |
 | `transport_failed` | The client returned an error without a usable response; delivery may already have occurred. Raw errors and URLs are withheld. |
 | `http_rejected` | The final response was outside 2xx. The numeric status is retained; downstream processing/receipt remains unknown. |
-| `not_sent` | The check had no time left for this report, so no request was made (unreleased). A build older than this outcome treats a history containing it as unavailable. |
+| `not_sent` | The check had no time left for this report, so no request was made (v0.2.0). A build older than this outcome treats a history containing it as unavailable. |
 | `http_accepted` | The client observed 2xx. This proves HTTP acceptance only; destination application and human receipt remain unverified. |
 
 Text status prints historical warnings, their times, request counts and final HTTP statuses. JSON `notifications` contains `state` (`not_recorded`, `recorded`, `unavailable`), `latest` (most recently started retained delivery), `warnings` and `dropped`. Every retained delivery without final HTTP acceptance appears in `warnings`. Later acceptance of another event does not erase an older failure; these warnings age out only with bounded retention. A retry that receives 2xx leaves earlier attempt evidence within that delivery, without a final-failure warning. Doctor adds the same typed summary and a `notifications` check; missing evidence is unavailable, never an all-clear. Reporting disabled/unsubscribed, no invocation, older builds, deletion and crash gaps can all produce no evidence. Do not infer receipt from an empty warning list.
@@ -323,7 +325,7 @@ Available in v0.1.3 or newer; **offline fixtures only**:
 ```sh
 keepgoing timeline -c keepgoing.yaml
 keepgoing timeline -c keepgoing.yaml --json --limit 100 --stale-after 1h
-# Unreleased source: who had the loop, and when it changed hands.
+# v0.2.0: who had the loop, and when it changed hands.
 keepgoing timeline -c keepgoing.yaml --kind moves --since 168h
 keepgoing timeline -c keepgoing.yaml --kind limit_wait,probe --target primary --json
 # Inspect copied/private records even when configuration cannot be loaded:
@@ -334,7 +336,7 @@ keepgoing timeline --state-dir /private/example-loop --json
 
 The text view first shows current saved flags, then retained evidence summaries and chronological events. It answers what was last **recorded**: a check, an active observation (which may include retries), a send-related action, a transition into a hold, held checks, and failed/unconfirmed notifications. An action/outcome is not proof that a message was sent or work succeeded. A last historical hold is deliberately not attributed as the cause of current flags: intervening changes, missing records, retargeting or reused directories can break that link. The hold event includes recorded cause and decision inputs where available, such as spent re-prompts and configured thresholds. It does not rerun the decision engine or invent missing reasons.
 
-JSON schema 3 (unreleased source; v0.1.3–v0.1.5 print schema 1 without `filter`, `retention`, event `kinds`, the `target_moves` layer or the target-move and limit-wait summaries) includes:
+JSON schema 5 (v0.2.0; v0.1.3–v0.1.5 print schema 1 without `filter`, `retention`, event `kinds`, the `target_moves` layer or the target-move and limit-wait summaries) includes:
 
 - `control`: current flag availability/state, flags and available save timestamp, excluding notes and ownership identities. Missing control is explicitly `not_recorded`, with the supervisor's disabled default. Unreadable, non-regular, symlinked, oversized (over 64 KiB) or invalid control is `unavailable`.
 - `retention`: for `incidents.json`, the total record and byte bounds, each tier's reservation, retained count (which can exceed the reservation while the journal has spare room), pruned count and `prunedThrough` time, `collapsedChecks` (folded into retained records), `collapsedPruned` (folded into records since pruned) and `untieredPruned` (dropped by an older build). See [what the view shows about missing history](#collapsed-and-pruned-history).
@@ -349,7 +351,7 @@ The display includes the newest 40 events by local timestamp by default; `--limi
 
 ### Navigating events
 
-Unreleased source; **offline fixtures only**. Every event carries one or more kinds, and four flags narrow the displayed events. Filters apply before `--limit`. Summaries, sources and layers always describe all retained evidence, filtered or not.
+Released in v0.2.0; **offline fixtures only**. Every event carries one or more kinds, and four flags narrow the displayed events. Filters apply before `--limit`. Summaries, sources and layers always describe all retained evidence, filtered or not.
 
 | Kind | Event |
 | --- | --- |
@@ -362,6 +364,7 @@ Unreleased source; **offline fixtures only**. Every event carries one or more ki
 | `limit_wait` | A check that sent nothing because a provider limit has a known reset. |
 | `limit_wait_report` | The check that detected a long limit wait with no handoff possible and requested its one report (or recorded that none was sent). |
 | `turn_retry` | A re-prompt that asked the provider to re-run the failed turn by reference. The row says what the provider answered and whether a prompt was sent instead. |
+| `child_retry` | A check that did [lane recovery](operations.md#lane-recovery) work: lanes whose failed turn BB was asked to retry, lanes given up, lanes put off for lack of time. Counts only. |
 | `hold` | A check or control save that entered a stop, pause, disable, awaiting-user or completed state. |
 | `control` | Any saved control command. |
 | `collapsed` | A check that also summarizes identical earlier checks. |
@@ -377,11 +380,15 @@ When the latest retained check is a limit wait, `nextSteps` says so. keepgoing s
 
 Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`, `nothing_to_retry`, `not_in_error`, `already_queued`, `queue_unconfirmed`, `refused` or `unsupported`. The observation's `retry` value gains `declined` beside `expired`, for a notice dropped because BB's retry plugin had declined the failure; no schema change is needed, and an older build reads it as `unavailable`. The same holds for the error classes `restricted` and `refused` and the causes `restricted`, `refused` and `decline_acknowledged` (unreleased source): they are new values of existing fields, so the schema number does not change, and a build without them rewrites them to `unavailable` when it next saves the journal. Do not run an older build against a state directory whose history you want to keep exact. `summary.lastTurnRetry` references the newest marked check, and timeline JSON is schema 5 with it. Older binaries refuse a schema-8 journal, as with earlier upgrades.
 
+Incident schema 9 adds two fields to a control record's `controlChange`: `caller`, the role that saved the control (`owner_thread`, `other_thread`, `terminal`, `client`, or `unavailable` where it is not recorded; never an identity), and `newEpisode`, true when a `resume` cleared a hold keepgoing had raised for a spent per-episode allowance and so [started a new error episode](operations.md#what-resume-starts-over). `timeline` prints both. Older binaries do not read a schema 9 journal.
+
+Incident schema 10 adds `lanes` on tick records: the counts `retried`, `givenUp` and `deferred` of that check's [lane recovery](operations.md#lane-recovery) work, all zero for a loop without `bb.children.retry_errored` and for records loaded from an older journal. A check that did lane work is never folded into its neighbours and is kept in the `condition` tier. The timeline JSON is schema 6: it adds the `child_retry` kind and `summary.lastChildRetry`. A build older than this change refuses a schema 10 journal.
+
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 
 ### Collapsed and pruned history
 
-Unreleased source; **offline fixtures only**. The view never leaves a gap unexplained:
+Released in v0.2.0; **offline fixtures only**. The view never leaves a gap unexplained:
 
 - A record that summarizes a run says so in its description (`COLLAPSED: 298 identical earlier checks from … to … are summarized here`, with counts of folded passing and failed probe results) and carries `incident.collapsed`. `summary.heldChecks` and `summary.limitWaitChecks` count folded checks too; `summary.retainedChecks` counts records, and the text view prints the folded total beside it.
 - The `retention` line shows, per tier, how many records are retained, its reservation, how many were pruned and through what time, plus the collapsed totals.

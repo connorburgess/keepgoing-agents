@@ -50,7 +50,7 @@ export function createTransferController(d: TransferDependencies) {
     await validateTargets(i);
     const r = await d.transfer(i, "preview");
     const p = previewSchema.safeParse(r.data);
-    if (r.code !== 0 || !p.success) throw new PolicyError("Transfer preview is unavailable or blocked. Check diagnostics and the host's keepgoing version; apply/recover support is required.");
+    if (r.code !== 0 || !p.success) throw new PolicyError("Transfer preview is unavailable or blocked. Check diagnostics and the host's looptender version; apply/recover support is required.");
     const matches = (a: z.infer<typeof identity>, t: SetupTarget) => a.thread === t.threadId && a.project === t.projectId && a.environment === t.environmentId && a.host === t.hostId && a.provider === t.provider;
     if (!matches(p.data.from, i.record) || !matches(p.data.to, i.destination) || p.data.configuredProvider !== i.record.provider) throw new PolicyError("The CLI target differs from the registered setup. No move was performed.");
     return p.data;
@@ -96,7 +96,7 @@ export function createTransferController(d: TransferDependencies) {
     const pending = intents.find(i => i.record.id === input.recordId);
     if (pending) {
       if (pending.destination.threadId !== input.threadId || !["inspect", "recover"].includes(input.action)) throw new PolicyError("This setup has a saved move request. Open its destination and check move status before continuing.");
-      if (pending.bin !== await d.binary()) throw new PolicyError("The keepgoing binary setting changed. Restore it before recovering this saved request.");
+      if (pending.bin !== await d.binary()) throw new PolicyError("The looptender binary setting changed. Restore it before recovering this saved request.");
       const result = await inspect(pending);
       if (input.action !== "recover" || result.moved || !result.canRecover) return result;
       await validateTargets(pending);

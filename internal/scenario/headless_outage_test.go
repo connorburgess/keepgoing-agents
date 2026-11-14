@@ -113,17 +113,6 @@ func runHeadlessOutage(t *testing.T, cli string, o outage, known map[string][]Wa
 		w.Advance(time.Minute)
 		s = w.Tick()
 		expect(s, expectResumeRecovers, all(action(s, "reprompt"), sentExactly(s, Send{Kind: "turn", Thread: cli, Mode: headlessSession})))
-		if s.action() != "reprompt" {
-			// Today's way out: reselecting the target starts a new error
-			// episode, then resume. The saved session is resumed.
-			w.Advance(time.Minute)
-			s = w.Control("retarget", "primary")
-			w.Check(s, "retarget", exit(s, 0))
-			s = w.Control("resume")
-			w.Check(s, "resume", all(exit(s, 0), holds(s)))
-			w.Advance(time.Minute)
-			s = w.Tick()
-		}
 	}
 	w.Check(s, "recovered by a re-prompt into the saved session", all(action(s, "reprompt"), sentExactly(s, Send{Kind: "turn", Thread: cli, Mode: headlessSession}), holds(s)))
 	expect(s, expectNoPerson, intervened)
@@ -161,7 +150,8 @@ func runHeadlessOutage(t *testing.T, cli string, o outage, known map[string][]Wa
 // conversation with the whole task, until the re-prompts are spent and the
 // loop is held. This is today's behaviour, listed as a gap in
 // docs/adapters.md; it replaces cmd/keepgoing's
-// TestOfflineFirstTurnStartsANewSessionOnEveryReprompt.
+// TestOfflineFirstTurnStartsANewSessionOnEveryReprompt. An explicit resume
+// then starts a new error episode.
 func TestScenarioHeadlessFirstTurnFails(t *testing.T) {
 	t.Parallel()
 	for _, cli := range []string{"claude", "codex"} {
@@ -184,6 +174,22 @@ func TestScenarioHeadlessFirstTurnFails(t *testing.T) {
 			w.Advance(10 * time.Minute)
 			s = w.Tick()
 			w.Check(s, "held", all(action(s, "await_user"), nothingSent(s), holds(s, "awaitingUser"), reported(s, "keepgoing.await_user")))
+
+			// A person resumes. That starts a new error episode, so the next
+			// check recovers again; it used to raise the same hold at once.
+			// The provider still fails, and the new episode is bounded like
+			// the first: three re-prompts, then the hold.
+			w.Advance(10 * time.Minute)
+			s = w.Control("resume")
+			w.Check(s, "resume", all(exit(s, 0), holds(s), nothingSent(s)))
+			for i, after := range []time.Duration{time.Minute, 10 * time.Minute, 10 * time.Minute} {
+				w.Advance(after)
+				s = w.Tick()
+				w.Check(s, fmt.Sprintf("re-prompt %d of the new episode", i+1), all(action(s, "reprompt"), sentExactly(s, Send{Kind: "turn", Thread: cli}), holds(s)))
+			}
+			w.Advance(10 * time.Minute)
+			s = w.Tick()
+			w.Check(s, "held again when the new episode is spent", all(action(s, "await_user"), nothingSent(s), holds(s, "awaitingUser")))
 		})
 	}
 }

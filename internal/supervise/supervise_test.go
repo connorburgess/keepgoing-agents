@@ -29,15 +29,21 @@ type fakeAdapter struct {
 	noStop      bool
 	activated   int
 	activateErr error
+	onSend      func() // runs after a send is recorded by the fake
+	observed    int
 }
 
 func (f *fakeAdapter) Name() string { return "fake" }
 func (f *fakeAdapter) Observe(context.Context) (decide.Observation, error) {
+	f.observed++
 	return f.obs, f.obsErr
 }
 func (f *fakeAdapter) Send(_ context.Context, p string, m adapter.Mode) error {
 	f.sent = append(f.sent, p)
 	f.modes = append(f.modes, m)
+	if f.onSend != nil {
+		f.onSend()
+	}
 	return f.sendErr
 }
 func (f *fakeAdapter) Stop(context.Context) error {
@@ -58,6 +64,7 @@ func (f *fakeAdapter) Activate(context.Context) error {
 type world struct {
 	cfg      *config.Config
 	dir      string
+	sessions string // this world's session claims
 	adapters map[string]*fakeAdapter
 	probeOK  map[string]bool // exact and scheduled outcome per candidate
 	// probeClass overrides the error class a failed probe of a candidate
@@ -75,6 +82,9 @@ func (w *world) Report(_ context.Context, e report.Event) error {
 func (w *world) opts(now time.Time) Options {
 	return Options{
 		Now: now,
+		// Each world has its own claims: worlds run in parallel and share
+		// fictional thread IDs.
+		SessionDir: w.sessions,
 		NewAdapter: func(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
 			f, ok := w.adapters[target]
 			if !ok {
@@ -134,7 +144,7 @@ func newWorld(t *testing.T, enabled bool, withFallbacks bool) *world {
 			t.Fatal(err)
 		}
 	}
-	return &world{cfg: cfg, dir: dir, adapters: map[string]*fakeAdapter{}, probeOK: map[string]bool{}}
+	return &world{cfg: cfg, dir: dir, sessions: t.TempDir(), adapters: map[string]*fakeAdapter{}, probeOK: map[string]bool{}}
 }
 
 func (w *world) primary(obs decide.Observation) *fakeAdapter {
@@ -274,6 +284,43 @@ func TestObserveFailureTakesNoAction(t *testing.T) {
 	res, err := Tick(context.Background(), w.cfg, w.opts(t0))
 	if err == nil || res.Action != "none" || len(p.sent) != 0 {
 		t.Errorf("%+v %v", res, err)
+	}
+}
+
+// One failure, one report. A check that could not observe its session used
+// to send two error reports for it, "could not observe primary" and "tick
+// failed: ...", so an outage produced two notifications per check. It sends
+// one, which names the target and carries the cause.
+func TestUnobservableSessionSendsOneErrorReport(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"all"}}
+	p := w.primary(decide.Observation{})
+	p.obsErr = errors.New("fictional observation failure")
+	for i := 1; i <= 3; i++ {
+		if _, err := Tick(context.Background(), w.cfg, w.opts(t0.Add(time.Duration(i)*time.Minute))); err == nil {
+			t.Fatal("the failed observation was not returned")
+		}
+		if got := strings.Count(w.reportTypes(), "error"); got != i {
+			t.Fatalf("check %d: %d error reports in all (%s)", i, got, w.reportTypes())
+		}
+	}
+	e := w.reports[0]
+	if e.Type != "error" || e.Text != "example-loop: could not observe primary: fictional observation failure" || e.Data["target"] != "primary" {
+		t.Fatalf("%+v", e)
+	}
+}
+
+// Any other failed check still sends its one report, in the general wording.
+func TestFailedSendSendsOneErrorReport(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.cfg.Loop.Report = &config.Report{Events: []string{"error"}}
+	p := w.primary(decide.Observation{State: decide.Idle})
+	p.sendErr = errors.New("fictional send failure")
+	if _, err := Tick(context.Background(), w.cfg, w.opts(t0)); err == nil {
+		t.Fatal("the failed send was not returned")
+	}
+	if len(w.reports) != 1 || w.reports[0].Type != "error" || !strings.HasPrefix(w.reports[0].Text, "example-loop: tick failed: ") {
+		t.Fatalf("%+v", w.reports)
 	}
 }
 

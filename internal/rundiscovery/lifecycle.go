@@ -253,6 +253,12 @@ func (a Attempt) Valid() bool {
 		if a.Mode != "auto" && a.Mode != "turn_retry" {
 			return false
 		}
+	case "child_retry":
+		// A retry, by reference, of the failed turn of a lane of the target.
+		// No prompt is composed, so it carries no goal.
+		if a.Mode != "turn_retry" || a.Goal != (GoalRef{}) {
+			return false
+		}
 	case "wake", "handoff", "switch_back":
 		if a.Mode != "auto" {
 			return false

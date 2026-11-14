@@ -1,16 +1,18 @@
 ---
 name: keepgoing
-description: Show or control the keepgoing loops that supervise BB threads, with bb keepgoing status, pause, resume, and stop.
+description: Show or control the looptender (formerly keepgoing) loops that supervise BB threads, with bb keepgoing status, pause, resume, and stop.
 ---
 
-# keepgoing in BB
+# looptender in BB
+
+keepgoing is being renamed to looptender. The plugin's labels in BB say looptender ("looptender: enabled"); the commands below, the `keepgoing` executable and `keepgoing.yaml` keep their names for now.
 
 keepgoing supervises agent loops: it wakes an idle thread, nudges a stalled one, and hands off to a confirmed fallback on a usage limit. This plugin shows its state in each supervised thread's context card and exposes these commands:
 
 ```sh
 bb keepgoing status           # every configured loop: control state, target, last state
 bb keepgoing pause <loop>     # stop waking the thread until resumed
-bb keepgoing resume <loop>    # clear pause, stop, and awaiting-user
+bb keepgoing resume <loop>    # clear pause, stop, and awaiting-user; on a loop held for spent re-prompts or nudges those counts start over
 bb keepgoing stop <loop>      # stop the running turn, then send nothing more
 ```
 

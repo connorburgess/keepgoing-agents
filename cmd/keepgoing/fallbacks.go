@@ -55,6 +55,7 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		e.errf("%v", err)
 		return exitUsage
 	}
+	plan.Timing = cfg.TimingSummary()
 	w := e.stderr
 	if dryRun {
 		w = e.stdout
@@ -123,8 +124,8 @@ func fallbacksList(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 }
 
 func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallbacksOut {
-	fb := cfg.FallbackSet
 	st, _ := state.Load(cfg.Loop.StateDir)
+	fb := effectiveRoutes(cfg, st)
 	group := cfg.Loop.Group
 	if c, ok := fb.Find(st.Target()); ok {
 		group = c.Group
@@ -135,7 +136,7 @@ func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallback
 		if en, ok := reg.Candidates[c.ID]; ok {
 			row.Last = en.Last
 		}
-		row.Usage = usageOf(reg, c, now)
+		row.Usage = usageOf(reg, c, now, projectionRules(fb))
 		out.Candidates = append(out.Candidates, row)
 	}
 	return out
@@ -176,7 +177,7 @@ func printFallbacks(e env, out fallbacksOut, asJSON bool, cfgPath string) {
 	}
 	fmt.Fprintln(e.stdout)
 	for _, r := range out.Candidates {
-		printUsage(e.stdout, "usage ", []usageView{r.Usage})
+		printUsage(e.stdout, "usage ", "projected ", []usageView{r.Usage})
 	}
 	fmt.Fprintf(e.stdout, "\n%d healthy of %d eligible, %d distinct by %s, need %d: %s\n", len(s.Healthy), len(s.Eligible), s.Distinct, s.Span, s.Min, verdict)
 	var unprobed []string

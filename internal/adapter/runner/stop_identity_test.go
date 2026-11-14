@@ -108,6 +108,8 @@ func TestStopAfterWrapperCrashNeverTargetsReusedPID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "prompt"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// A wrapper runs only the turn its record names.
+	saveStopRecord(t, Dir(root), Record{StopKey: key, Liveness: livenessLock})
 	cmd, err := wrapperCommand([]string{self}, root, root, []string{envTurnKey + "=" + key, "KEEPGOING_TEST_HELPER=leaf", "KEEPGOING_TEST_RESULT=" + result}, "")
 	if err != nil {
 		t.Fatal(err)

@@ -32,7 +32,7 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 		return errors.New("control state unavailable")
 	}
 	if p := ctl.PendingTransfer; p != nil {
-		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.FallbackSet != nil {
+		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 			return errors.New("transfer recovery record unavailable or inconsistent")
 		}
 		digest := cfg.SourceDigest()
@@ -104,7 +104,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 		e.errf("transfer: configuration unavailable; inspect it privately")
 		return exitUsage
 	}
-	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.FallbackSet != nil {
+	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 		return fail(errors.New("apply/recover support only a single BB primary without fallbacks"))
 	}
 	if err := transferPrivatePaths(*path, cfg); err != nil {

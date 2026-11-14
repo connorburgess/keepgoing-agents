@@ -1,6 +1,8 @@
 package supervise
 
 import (
+	"time"
+
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
@@ -27,7 +29,7 @@ func (t *tick) recordIncident(failed bool) error {
 		TargetKeyAfter: incident.TargetKey(t.res.Target), Probes: t.incidentProbes,
 		ControlBefore: t.incidentControl, Cause: cause, Action: t.res.Action, Outcome: outcome, DryRun: t.opts.DryRun,
 		CountersAvailable: t.incidentStateLoaded, Nudges: t.st.Nudges, Reprompts: t.st.Reprompts,
-		LimitWaitReport: t.incidentLimitWaitReport, NewThread: t.incidentNewThread, TurnRetry: t.incidentTurnRetry}
+		LimitWaitReport: t.incidentLimitWaitReport, NewThread: t.incidentNewThread, TurnRetry: t.incidentTurnRetry, Lanes: t.incidentLanes}
 	if c, err := control.Load(t.loop.StateDir); err == nil {
 		r.ControlAfter = incident.Gate(c.Gate())
 	}
@@ -42,6 +44,12 @@ func (t *tick) decide(stage string, in decide.Input) decide.Decision {
 	d := decide.Decide(in)
 	t.incidentDecisions.Add(stage, in, d)
 	t.incidentLimitWait = d.LimitWait
+	// A limit wait with a structured reset still ahead: a daemon checks again
+	// at that reset rather than at the end of its interval.
+	t.limitResetsAt = time.Time{}
+	if d.LimitWait != "" && in.Obs.ResetsAt.After(t.now) {
+		t.limitResetsAt = in.Obs.ResetsAt
+	}
 	t.handoffAvailable = in.Failover.Available
 	return d
 }

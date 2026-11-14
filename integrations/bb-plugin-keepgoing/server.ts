@@ -1,7 +1,7 @@
 // bb-plugin-keepgoing: shows keepgoing's state beside the threads it
 // supervises, and offers pause, resume, and stop. It only calls the keepgoing
 // CLI; every decision stays in keepgoing.
-import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails } from "./status-details.ts";
+import { checkSchema, runtimeSchema, daemonSchema, detailsSchema, goalDetails, scheduleSchema } from "./status-details.ts";
 import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -31,6 +31,7 @@ const statusSchema = z.object({
     .passthrough(),
   redundancy: z.object({ healthy: z.array(z.string()), distinct: z.number(), min: z.number(), meets: z.boolean() }).optional(),
   runtime: runtimeSchema.optional(),
+  schedule: scheduleSchema.optional(),
   daemon: daemonSchema.optional(),
   targetConfigured: z.boolean().optional(),
   primaryAgent: agentRef,
@@ -85,8 +86,11 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     keepgoingPath: {
       type: "string",
-      label: "keepgoing binary",
-      description: "Absolute path to the keepgoing executable. A bare name is looked up on the BB server's PATH.",
+      // The key and the default keep the tool's earlier name: the key is
+      // stored with the setting, and releases up to v0.2.0 install the
+      // executable as keepgoing.
+      label: "looptender binary",
+      description: "Absolute path to the looptender executable, which releases up to v0.2.0 install as keepgoing. A bare name is looked up on the BB server's PATH.",
       default: "keepgoing",
     },
     configs: {
@@ -131,17 +135,17 @@ export default async function plugin(bb: BbPluginApi) {
 
   const status = async (bin: string, configPath: string) => {
     const result = await run(bin, ["status", "--json", "-c", configPath]);
-    if (result.code !== 0) throw new Error(`${configPath}: keepgoing status exited ${result.code}`);
+    if (result.code !== 0) throw new Error(`${configPath}: looptender status exited ${result.code}`);
     let raw: unknown;
     try {
       raw = JSON.parse(result.stdout);
     } catch {
-      throw new Error(`${configPath}: keepgoing status did not print JSON`);
+      throw new Error(`${configPath}: looptender status did not print JSON`);
     }
     const parsed = statusSchema.safeParse(raw);
     if (!parsed.success) {
       const old = typeof raw === "object" && raw !== null && !("primaryAgent" in raw);
-      throw new Error(old ? `${configPath}: this keepgoing is too old for the plugin; it needs a build with primaryAgent in status --json (after 0.1.0)` : `${configPath}: unexpected keepgoing status JSON`);
+      throw new Error(old ? `${configPath}: this looptender is too old for the plugin; it needs a build with primaryAgent in status --json (after 0.1.0)` : `${configPath}: unexpected looptender status JSON`);
     }
     return parsed.data;
   };
@@ -153,6 +157,7 @@ export default async function plugin(bb: BbPluginApi) {
       targetThread: s.targetAgent.bbThread ?? null, targetAdapter: s.targetAgent.adapter,
       targetConfigured: s.targetConfigured ?? null, runtime: s.runtime ?? null,
       daemon: s.daemon ?? null, lastCheck: s.state.lastCheck ?? null,
+      schedule: s.schedule ?? null,
     },
     loop: s.loop,
     configPath,
@@ -216,7 +221,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
-        return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `keepgoing ${action} failed; inspect host status` };
+        return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `looptender ${action} failed; inspect host status` };
       } catch { return { ok: false, message: "Host control unavailable or target changed. No transfer was performed." }; }
     }
     if (!paths.includes(configPath)) return { ok: false, message: "That loop is not in the plugin's configured list." };
@@ -224,7 +229,7 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish(CHANGED, { at: Date.now() });
     return result.code === 0
       ? { ok: true, message: result.stdout.trim() || `${action} done` }
-      : { ok: false, message: `keepgoing ${action} exited ${result.code}` };
+      : { ok: false, message: `looptender ${action} exited ${result.code}` };
   };
 
   const setup = createSetupController({
@@ -270,7 +275,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "keepgoing",
-    summary: "Show and control the keepgoing loops this plugin is configured for",
+    summary: "Show and control the looptender loops this plugin is configured for",
     commands: [
       { name: "status", summary: "List configured loops with their control state and target", usage: "bb keepgoing status" },
       { name: "pause", summary: "Pause a loop by name", usage: "bb keepgoing pause <loop>" },

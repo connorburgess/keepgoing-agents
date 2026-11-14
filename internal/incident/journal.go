@@ -19,7 +19,10 @@ const FileName = "incidents.json"
 // key, probe results, retarget records and limit-wait causes. Version 6 adds
 // retention tiers and collapsed runs of identical checks. Version 7 adds the
 // long limit-wait report marker. Version 8 adds the turn-retry marker.
-const SchemaVersion = 8
+// Version 9 adds, on control records, who saved the control and whether a
+// resume started a new error episode.
+// Version 10 adds the lane-work counts on tick records.
+const SchemaVersion = 10
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -172,6 +175,16 @@ func Load(dir string) (Journal, error) {
 		if j.SchemaVersion < 8 {
 			r.TurnRetry = ""
 		}
+		if j.SchemaVersion < 9 && r.ControlChange != nil {
+			// Older writers recorded neither who saved a control nor whether
+			// a resume started a new error episode.
+			c := *r.ControlChange
+			c.Caller, c.NewEpisode = "", false
+			r.ControlChange = &c
+		}
+		if j.SchemaVersion < 10 {
+			r.Lanes = LaneWork{}
+		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
 		}
@@ -228,7 +241,7 @@ func Append(dir string, r Record) error {
 		f.Close()
 		return ErrUnavailable
 	}
-	if err = f.Sync(); err != nil {
+	if err = snapshot.Sync(f); err != nil {
 		f.Close()
 		return ErrUnavailable
 	}
