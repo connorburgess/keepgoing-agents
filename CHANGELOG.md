@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The BB plugin says looptender.** keepgoing is being renamed to looptender, and the plugin (v0.3.1) is the first part to show it: BB lists it as looptender, and its labels and messages read `looptender: enabled`, `looptender: watching …`, `looptender: checks have stopped` and so on. Nothing you type changes: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting, the `keepgoing` executable and `keepgoing.yaml` keep their names, so updating keeps the plugin's settings, secrets and schedules. It still runs whichever executable the setting names. Plugin unit tests only; not yet reinstalled into a running BB.
+
 ## 0.2.0 (2026-11-14)
 
 **The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
