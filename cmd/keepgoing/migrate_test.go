@@ -55,7 +55,11 @@ func newMigrateHome(t *testing.T) migrateHome {
 	put(filepath.Join(earlier, "routes.yaml"), "version: 1\nroutes: []\n")
 	put(filepath.Join(earlier, "loops", "example-inside", "keepgoing.yaml"), "fictional")
 	put(filepath.Join(earlier, "loops", "example-inside", "state", "state.json"), "{}")
+	// Windows sidecars travel with their records through move, interrupted
+	// rebase and undo. The full tree comparison below includes these entries.
+	put(filepath.Join(earlier, "loops", "example-inside", "state", "state.json.present"), "")
 	put(filepath.Join(state, "keepgoing", "sessions", "0123456789abcdef0123456789abcdef.holder"), "{}")
+	put(filepath.Join(state, "keepgoing", "sessions", "0123456789abcdef0123456789abcdef.holder.present"), "")
 	h.outsideState = filepath.Join(filepath.Dir(config), "elsewhere", "state")
 	put(filepath.Join(h.outsideState, "state.json"), "{}")
 	dir := filepath.Join(earlier, "registry")

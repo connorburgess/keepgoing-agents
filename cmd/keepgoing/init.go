@@ -18,6 +18,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 	"gopkg.in/yaml.v3"
@@ -765,7 +766,11 @@ func writeInit(dir string, files map[string][]byte, spec *control.GoalSpec) (*co
 	defer func() {
 		if !ok {
 			for i := len(created) - 1; i >= 0; i-- {
-				_ = os.Remove(created[i])
+				if filepath.Base(created[i]) == control.GoalName {
+					_ = snapshot.Remove(created[i])
+				} else {
+					_ = os.Remove(created[i])
+				}
 			}
 			_ = os.Remove(dir)
 		}

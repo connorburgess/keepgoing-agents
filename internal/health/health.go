@@ -60,7 +60,7 @@ type Registry struct {
 // Load reads the registry; a missing file is empty.
 func Load(stateDir string) (*Registry, error) {
 	r := &Registry{Candidates: map[string]*Entry{}}
-	b, err := snapshot.ReadFile(filepath.Join(stateDir, FileName))
+	b, err := snapshot.ReadRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
 	}

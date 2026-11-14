@@ -534,7 +534,7 @@ func Load(stateDir string) (File, error) {
 	var f File
 	// Status readers poll this file while a daemon replaces it. Open it so a
 	// reader never makes the writer's replacement fail (Windows).
-	r, err := snapshot.Open(filepath.Join(stateDir, FileName))
+	r, err := snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return f, nil
 	}
@@ -722,7 +722,7 @@ const LaneKeyName = "lanes.key"
 // different name in every loop. It is written before it is first used.
 func LaneKey(dir string) ([]byte, error) {
 	path := filepath.Join(dir, LaneKeyName)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := snapshot.ReadRecord(path); err == nil {
 		if key, err := hex.DecodeString(strings.TrimSpace(string(b))); err == nil && len(key) == 32 {
 			return key, nil
 		}

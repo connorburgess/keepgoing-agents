@@ -26,6 +26,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -441,7 +442,7 @@ func controlSignature(stateDir string) string {
 
 func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, error)) string {
 	path := filepath.Join(stateDir, control.FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if err != nil {
 		return "missing"
 	}
@@ -1618,7 +1619,7 @@ func classifyRecord(dir, file string, err error) unreadableRecord {
 		// Only an error from the filesystem means the file was not read;
 		// what is at the path says which.
 		r.Problem = "cannot_open"
-		if info, lerr := os.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
+		if info, lerr := snapshot.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
 			r.Problem = "not_a_file"
 		}
 	case errors.As(err, &syntax):

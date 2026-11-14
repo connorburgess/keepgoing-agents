@@ -657,7 +657,7 @@ func timelineGate(c *incident.Controls) string {
 func readTimelineControl(dir string) timelineControl {
 	unavailable := timelineControl{Availability: "unavailable", State: "unavailable"}
 	p := filepath.Join(dir, control.FileName)
-	info, err := snapshot.Lstat(p)
+	info, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return timelineControl{Availability: "not_recorded", State: "disabled", Flags: &incident.Controls{}}
 	}
@@ -666,7 +666,7 @@ func readTimelineControl(dir string) timelineControl {
 		return unavailable
 	}
 	// Never block a concurrent control or state save (Windows).
-	f, err := snapshot.Open(p)
+	f, err := snapshot.OpenRecord(p)
 	if err != nil {
 		return unavailable
 	}

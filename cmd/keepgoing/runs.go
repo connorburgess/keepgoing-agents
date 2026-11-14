@@ -20,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -435,7 +436,7 @@ type runsContext struct {
 // absent reports whether a record file does not exist, without creating or
 // following anything.
 func absent(dir, name string) bool {
-	_, err := os.Lstat(filepath.Join(dir, name))
+	_, err := snapshot.Lstat(filepath.Join(dir, name))
 	return errors.Is(err, os.ErrNotExist)
 }
 

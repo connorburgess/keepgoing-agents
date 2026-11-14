@@ -62,7 +62,7 @@ const maxPending = 64
 // contents. The caller serializes access with the loop's tick lock.
 func LoadLedger(dir string) (Ledger, error) {
 	zero := int64(0)
-	b, err := snapshot.ReadFile(filepath.Join(dir, SendsName))
+	b, err := snapshot.ReadRecord(filepath.Join(dir, SendsName))
 	if errors.Is(err, os.ErrNotExist) {
 		return Ledger{Version: 1, Used: &zero}, nil
 	}
