@@ -950,3 +950,78 @@ func laneName(t *testing.T, w *world, id string) string {
 	}
 	return state.LaneHash(key, id)
 }
+
+// plantLaneRetry records a lane retry the way a check does just before it
+// asks BB, and leaves it unsettled: the check was killed before it could
+// save what happened.
+func plantLaneRetry(t *testing.T, w *laneWorld, id string, at time.Time) {
+	t.Helper()
+	if _, err := state.Reserve(w.dir, w.cfg.Loop.Limits.MaxSends, 0, state.SendIntent{At: at, Action: laneRetryAction, Target: state.Primary, Key: laneName(t, w.world, id)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A check that recorded a lane retry and was killed before it saved what
+// happened. The next check counts that retry once, as made: one attempt,
+// one for the day and the episode, and the spacing from when it was
+// recorded. It does not retry that lane again in that check; the lane that
+// was not reached is retried as usual.
+func TestRecordedLaneRetryIsCountedOnceAfterAKilledCheck(t *testing.T) {
+	w := newLaneWorld(t) // three attempts, ten minutes apart
+	ids := laneIDs(2)
+	w.working(t, t0, ids...)
+	w.failed(ids...)
+	killedAt := t0.Add(time.Minute)
+	plantLaneRetry(t, w, ids[0], killedAt)
+	res := w.tick(t, killedAt.Add(time.Minute))
+	if strings.Join(w.a.retried, ",") != ids[1] || res.Lanes == nil || res.Lanes.Retried != 1 {
+		t.Fatalf("retried %v, %+v", w.a.retried, res.Lanes)
+	}
+	l := w.lanes(t)
+	r := l.Retries[laneName(t, w.world, ids[0])]
+	if r.Attempts != 1 || r.DayRetries != 1 || !r.LastAt.Equal(killedAt) || !r.DayStart.Equal(killedAt) || l.EpisodeRetries != 2 {
+		t.Fatalf("%+v, episode %d", r, l.EpisodeRetries)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "a lane retry was recorded at") {
+		t.Fatalf("%v", res.Warnings)
+	}
+	// Counted once: the next check, inside the spacing, neither retries it
+	// nor counts the record again.
+	w.tick(t, killedAt.Add(5*time.Minute))
+	if len(w.a.retried) != 1 || w.lanes(t).Retries[laneName(t, w.world, ids[0])].Attempts != 1 || w.lanes(t).EpisodeRetries != 2 {
+		t.Fatalf("retried %v, %+v", w.a.retried, w.lanes(t))
+	}
+	// Ten minutes after it was recorded, its second attempt (the other lane's
+	// spacing has run out too, and it gets its second).
+	w.tick(t, killedAt.Add(11*time.Minute))
+	first := 0
+	for _, id := range w.a.retried {
+		if id == ids[0] {
+			first++
+		}
+	}
+	if first != 1 || len(w.a.retried) != 3 || w.lanes(t).Retries[laneName(t, w.world, ids[0])].Attempts != 2 {
+		t.Fatalf("retried %v, %+v", w.a.retried, w.lanes(t))
+	}
+}
+
+// With lane recovery switched off since the killed check, its record counts
+// for nothing: no lane record, no warning, and not a send to the session.
+func TestRecordedLaneRetryCountsForNothingOnceSwitchedOff(t *testing.T) {
+	w := newLaneWorld(t)
+	ids := laneIDs(1)
+	w.working(t, t0, ids...)
+	w.failed(ids...)
+	killedAt := t0.Add(time.Minute)
+	plantLaneRetry(t, w, ids[0], killedAt)
+	before := savedState(t, w.dir).LastWakeAt
+	w.cfg.Loop.Agent.BB.Children = nil
+	res := w.tick(t, killedAt.Add(time.Minute))
+	st := savedState(t, w.dir)
+	if st.Lanes != nil || len(w.a.retried) != 0 || !st.LastWakeAt.Equal(before) {
+		t.Fatalf("%+v retried %v wake %v", st.Lanes, w.a.retried, st.LastWakeAt)
+	}
+	if strings.Contains(strings.Join(res.Warnings, "\n"), "a lane retry was recorded at") {
+		t.Fatalf("%v", res.Warnings)
+	}
+}

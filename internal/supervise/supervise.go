@@ -2224,7 +2224,8 @@ func (t *tick) countUnrecordedSends() error {
 			// send to the supervised session. Nothing if lane recovery has
 			// been switched off since.
 			agentSend = false
-			if l := t.st.Lanes; l != nil {
+			if _, agent := t.resolve(t.st.Target()); agent.BB.RetryErroredLanes() && t.st.Lanes != nil {
+				l := t.st.Lanes
 				r := l.Retries[p.Key]
 				if r.DayStart.IsZero() {
 					r.DayStart = p.At
