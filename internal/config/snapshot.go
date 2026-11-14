@@ -160,3 +160,15 @@ func sourceUnreadable(path string) bool {
 	_, err = io.Copy(io.Discard, io.LimitReader(f, (1<<20)+1))
 	return err != nil
 }
+
+// UnreadableSources reports any previously present source that cannot now be
+// read. Unlike SourcesUnavailable it does not authorize a stop: readable
+// changed sources still prevent use of the retained configuration.
+func (c *Config) UnreadableSources() bool {
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		if s.path != "" && !s.absent && sourceUnreadable(s.path) {
+			return true
+		}
+	}
+	return false
+}

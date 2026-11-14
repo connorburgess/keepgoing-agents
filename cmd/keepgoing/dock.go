@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -465,6 +466,11 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	}
 	in.Client = readClientStatus(ctx, dir, entry.ID, false, false, d.staleAfter, now, query)
 	in.Daemon = daemon
+	// A missing configuration binding cannot authorize controls or expose a
+	// target, but its registered state directory can answer a live diagnostic.
+	if in.Client.Snapshot == nil && d.query != nil && ctx.Err() == nil && slices.Contains(in.Client.Issues, "binding_unavailable") {
+		in.Daemon = d.query(ctx, entry.StateDir, version, false)
+	}
 	if d.versions {
 		in.ServiceFile = d.services.compare(ctx, entry.StateDir)
 		bc, _ := d.builds.assess(entry, daemon, now)

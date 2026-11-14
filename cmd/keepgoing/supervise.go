@@ -238,16 +238,19 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 	// stopDone is the control signature of the last saved stop this daemon
 	// saw carried out, so the fast retry below is for a stop still to do.
 	stopDone := ""
+	var configUnavailableSince *time.Time
 	for {
 		// Reload so edits to the configuration or fallbacks file apply without
 		// a restart. A broken edit retains the timing/diagnostic context,
 		// but the source guard suppresses provider work until it is repaired.
+		loaded := false
 		if fresh, err := config.Load(cfgPath); err != nil {
 			e.errf("config reload failed; retaining timing and diagnostics, provider work requires verified sources: %v", err)
 		} else if fresh.Loop.StateDir != cfg.Loop.StateDir {
 			e.errf("config reload changes state_dir; restart the daemon to apply it; retaining timing and diagnostics, skipping provider work")
 		} else {
 			cfg = fresh
+			loaded = true
 		}
 		if e.ctx.Err() != nil {
 			return exitOK
@@ -279,6 +282,8 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 				stopDone = sig // the stop check succeeded and was saved
 			}
 		}
+		configUnavailableSince = updateDaemonConfiguration(pass, cfg, loaded, dryRun, lease, configUnavailableSince)
+		monitor.SetConfigUnavailable(configUnavailableSince)
 		// Stop wins: a stop that was skipped (another loop's check held the
 		// session, or another tick held the lock) is tried again at the next
 		// control poll, not after a whole interval. A stop already carried

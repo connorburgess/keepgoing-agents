@@ -137,7 +137,8 @@ type dockNeed struct {
 	Since        *time.Time `json:"since,omitempty"`
 	// SinceEvidence is hold_recorded when Since is the time the hold was
 	// saved, or control_changed when only the last control change is known,
-	// which makes WaitedSeconds a lower bound.
+	// or daemon_reported for the first unavailable-configuration diagnostic.
+	// These make WaitedSeconds a lower bound.
 	SinceEvidence string `json:"sinceEvidence,omitempty"`
 	WaitedSeconds *int64 `json:"waitedSeconds,omitempty"`
 	// Waited is how long, in words.
@@ -1294,6 +1295,14 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 				l.Detail = "On, in dry-run mode: its last check decided and sent nothing."
 			}
 		}
+	}
+	if in.Daemon.State == "responsive" && in.Daemon.ConfigUnavailableSince != nil {
+		if snap == nil || snap.Controls == nil || (snap.Controls.Enabled && !snap.Controls.Paused && !snap.Controls.Stop && !snap.Controls.Completed && !snap.Controls.AwaitingUser) {
+			l.State, l.Phrase, l.Detail = "unknown", "Checks stopped", "Its daemon cannot load the configuration file; ordinary checks have stopped."
+		} else {
+			l.Detail += " Its daemon cannot load the configuration file."
+		}
+		need = &dockNeed{Kind: "unreadable", Reason: "Its checks have stopped: the configuration file cannot be loaded.", Action: "Restore a readable, valid configuration file at the daemon's configured path. A saved stop may use the last configuration read.", Since: in.Daemon.ConfigUnavailableSince, SinceEvidence: "daemon_reported"}
 	}
 	if st != nil && st.NewThreads.Pending && need == nil {
 		need = &dockNeed{Kind: "held", Reason: "A new conversation it tried to create for a move to another route could not be confirmed.",
