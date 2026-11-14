@@ -26,6 +26,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 )
 
 // routeChangeOut is the versioned result of one change to a route list, for
@@ -292,6 +293,15 @@ func confirmRouteChange(e env, preview routeChangeOut, input io.Reader, req *rou
 	return exitOK, true
 }
 
+// allowedRefusal words a refusal from the ownership and source checks with
+// fixed text: never the owner's thread ID or a raw error.
+func allowedRefusal(err error) *routeRefusal {
+	if strings.HasPrefix(err.Error(), "Ownership:") {
+		return refuseRoute("not_owner", "This loop is owned by another BB thread, or its ownership cannot be confirmed; only the owning thread or a person can change its list.")
+	}
+	return refuseRoute("sources_changed", "The loop's configuration changed since it was loaded; run the command again.")
+}
+
 func agentIdentityRefusal() *routeRefusal {
 	return refuseRoute("agent_identity", "Only a person can change the standard route list: every loop that follows it uses the change. Run this outside a BB thread.")
 }
@@ -317,6 +327,11 @@ func routeChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 			return routeChangeRefused(req, ref), exitUsage
 		}
 		return p.out, exitOK
+	}
+	// Before the lock, which is a file beside the list: nothing is created
+	// where the list may not be written.
+	if ref := routesWriteLocation(path); ref != nil {
+		return routeChangeRefused(req, ref), exitUsage
 	}
 	l, err := lock.AcquireNamed(filepath.Dir(path), "routes")
 	if errors.Is(err, lock.ErrHeld) {
@@ -394,16 +409,8 @@ func planStandardChange(req routeChangeRequest, path string) (*standardPlan, *ro
 		code := config.RoutesProblem(err)
 		return nil, refuseRoute(code, "The standard route list cannot be used: %s.", routesProblemText(code))
 	}
-	// A link is written through only to an existing file outside any Git
-	// checkout: the list names private account directories.
-	if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
-		target, terr := filepath.EvalSymlinks(path)
-		switch {
-		case absent || terr != nil:
-			return nil, refuseRoute("dangling_link", "routes.yaml is a symbolic link to a file that does not exist; point it at an existing file or remove the link.")
-		case config.InsideCheckout(target):
-			return nil, refuseRoute(config.RoutesInsideCheckout, "routes.yaml is a symbolic link into a Git checkout. It is read there, but never written there, because the list names private account directories; edit it by hand or move the file out of the checkout.")
-		}
+	if ref := routesWriteLocation(path); ref != nil {
+		return nil, ref
 	}
 	cur := &config.Routes{Version: 1}
 	if !absent {
@@ -553,11 +560,53 @@ func planStandardChange(req routeChangeRequest, path string) (*standardPlan, *ro
 	return p, nil
 }
 
+// routesWriteLocation refuses to write the list, its history or its lock
+// where they would end up inside a Git checkout, the list naming private
+// account directories: through a link at routes.yaml, or a link at any
+// directory above it, as GNU Stow makes when it folds a directory. A link
+// at routes.yaml must also name a file that exists. Reading the list there
+// is still allowed.
+func routesWriteLocation(path string) *routeRefusal {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return refuseRoute("dangling_link", "routes.yaml is a symbolic link to a file that does not exist; point it at an existing file or remove the link.")
+		}
+		if config.InsideCheckout(target) {
+			return checkoutRefusal()
+		}
+	}
+	// The directory as it really is: the nearest directory above the list
+	// that exists, with every link in it followed.
+	dir, rest := filepath.Dir(path), filepath.Base(path)
+	for {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			if config.InsideCheckout(filepath.Join(real, rest)) {
+				return checkoutRefusal()
+			}
+			return nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return refuseRoute("unreadable", "The standard route list's directory cannot be resolved.")
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}
+
+func checkoutRefusal() *routeRefusal {
+	return refuseRoute(config.RoutesInsideCheckout, "routes.yaml, or a directory above it, is a symbolic link into a Git checkout. The list is read there, but never written there, because it names private account directories; edit it by hand or move it out of the checkout.")
+}
+
 // idInLoopRecords refuses an id that a registered loop following the list
-// still has check results, a rejected-handoff count or a session recorded
-// under, which a route added with that id would inherit. This covers ids
-// removed by hand, which the history does not name. A loop with its own list
-// keeps records for its own ids; following the list clears them.
+// is on (its saved target, or its record of the route it is on) or still has
+// check results, a rejected-handoff count or a session recorded under: a
+// route added with that id would take their place. This covers ids removed
+// by hand, which the history does not name. A loop with its own list keeps
+// records for its own ids; following the list clears them. A loop whose
+// configuration cannot be loaded is checked through the state directory
+// the registry records for it, and refuses the id if that cannot be read.
 func idInLoopRecords(req routeChangeRequest, o *routeChangeOut) *routeRefusal {
 	dir, err := registryDirectory(req.registry)
 	var reg registry.File
@@ -568,23 +617,58 @@ func idInLoopRecords(req routeChangeRequest, o *routeChangeOut) *routeRefusal {
 		return refuseRoute("registry_unavailable", "The loop registry cannot be read, so it is unknown whether a loop has records under the id %q.", bbLabel(req.id, 40))
 	}
 	for _, entry := range reg.Entries {
-		cfg, err := config.Load(entry.ConfigPath)
+		stateDir, name := entry.StateDir, entry.Loop
+		if cfg, err := config.Load(entry.ConfigPath); err == nil {
+			if !cfg.Loop.FollowsStandard() {
+				continue
+			}
+			stateDir, name = cfg.Loop.StateDir, cfg.Loop.Name
+		}
+		found, err := loopRecordsUnder(stateDir, req.id)
 		if err != nil {
-			o.Warnings = append(o.Warnings, fmt.Sprintf("loop %s could not be loaded, so its records were not checked for this id", entry.Loop))
-			continue
+			return refuseRoute("loop_records_unreadable", "Loop %s's records cannot be read, so it is unknown whether it has any under the id %q.", name, bbLabel(req.id, 40))
 		}
-		if !cfg.Loop.FollowsStandard() {
-			continue
-		}
-		left, err := findFallbackLeftovers(cfg, req.id)
-		if err != nil {
-			return refuseRoute("loop_records_unreadable", "Loop %s's records cannot be read, so it is unknown whether it has any under the id %q.", cfg.Loop.Name, bbLabel(req.id, 40))
-		}
-		if left.any() {
-			return refuseRoute("id_in_loop_records", "Loop %s still has %s recorded under the id %q, which a new route with that id would inherit; pick another id.", cfg.Loop.Name, strings.Join(left.names(), ", "), bbLabel(req.id, 40))
+		if len(found) > 0 {
+			return refuseRoute("id_in_loop_records", "Loop %s still has %s under the id %q, which a new route with that id would take the place of; pick another id.", name, strings.Join(found, ", "), bbLabel(req.id, 40))
 		}
 	}
 	return nil
+}
+
+// loopRecordsUnder lists what a loop's state directory holds under id: the
+// target it is on, the record of the route it is on, check results, a
+// rejected-handoff count and a session.
+func loopRecordsUnder(stateDir, id string) ([]string, error) {
+	if stateDir == "" || !filepath.IsAbs(stateDir) {
+		return nil, errors.New("no state directory")
+	}
+	var found []string
+	st, err := state.Load(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if st.Target() == id {
+		found = append(found, "its current route")
+	}
+	if rt, ok := supervise.LoadCurrentRoute(stateDir); ok && rt.ID == id {
+		found = append(found, "the record of the route it is on")
+	}
+	reg, err := health.Load(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := reg.Candidates[id]; ok {
+		found = append(found, "check results")
+	}
+	if _, ok := st.HandoffBriefs[id]; ok {
+		found = append(found, "a rejected-handoff count")
+	}
+	if _, err := os.Lstat(filepath.Join(stateDir, "targets", id)); err == nil {
+		found = append(found, "a session")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return found, nil
 }
 
 func sameRoutes(got, want []config.Route) bool {
@@ -874,8 +958,8 @@ func openRouteHistory(dir string) (*os.File, error) {
 // The ids a record cut short still names: its route, and its before and
 // after lists as far as they got.
 var (
-	historyRoutePattern = regexp.MustCompile(`"route":"([a-z0-9][a-z0-9-]*)"`)
-	historyListPattern  = regexp.MustCompile(`"(?:before|after)":\[([^\]]*)`)
+	historyRoutePattern = regexp.MustCompile(`"route"\s*:\s*"([a-z0-9][a-z0-9-]*)"`)
+	historyListPattern  = regexp.MustCompile(`"(?:before|after)"\s*:\s*\[([^\]]*)`)
 	historyQuoted       = regexp.MustCompile(`"([a-z0-9][a-z0-9-]*)"`)
 )
 
@@ -910,7 +994,13 @@ func routeHistoryIDs(dir string) (map[string]bool, string, error) {
 			continue
 		}
 		var rec routeHistoryRecord
-		if err := json.NewDecoder(bytes.NewReader(line)).Decode(&rec); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(line))
+		err := dec.Decode(&rec)
+		if err == nil && len(bytes.TrimSpace(line[dec.InputOffset():])) != 0 {
+			// A record followed by anything else on its line is damaged.
+			return nil, "", fmt.Errorf("line %d is not a history record; %s", i+1, historyRecovery)
+		}
+		if err != nil {
 			// A record cut short by a write that did not finish (the next
 			// append starts a new line after it) is skipped; any id it got
 			// as far as naming still counts. Anything else is refused.
@@ -989,11 +1079,7 @@ func ownRouteChange(req routeChangeRequest, apply bool) (routeChangeOut, int) {
 		return routeChangeRefused(req, ref), exitUsage
 	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
-		reason := "sources_changed"
-		if strings.HasPrefix(err.Error(), "Ownership:") {
-			reason = "not_owner"
-		}
-		return routeChangeRefused(req, refuseRoute(reason, "%v", err)), code
+		return routeChangeRefused(req, allowedRefusal(err)), code
 	}
 	p, out, ref := planOwnChange(req, cfg)
 	if ref != nil {

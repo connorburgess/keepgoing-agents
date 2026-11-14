@@ -40,6 +40,10 @@ const (
 	RoutineReserved   = 64
 	MaxRecords        = KeyReserved + ConditionReserved + ActivityReserved + RoutineReserved
 	MaxBytes          = 512 * 1024
+	// RouteChangeCap bounds the route_change records within the key tier,
+	// so a run of list edits never costs the loop its handoff, retarget and
+	// ownership history: past it, the oldest list edit goes first.
+	RouteChangeCap = 16
 )
 
 // pruneOrder is the order in which tiers give up records: among tiers over
@@ -325,8 +329,37 @@ func (j *Journal) add(r Record) {
 		return
 	}
 	j.Records = append(j.Records, r)
+	if r.Kind == "route_change" {
+		j.capRouteChanges()
+	}
 	for len(j.Records) > MaxRecords {
 		j.dropFromFullestTier()
+	}
+}
+
+// capRouteChanges prunes the oldest route_change records past their cap.
+func (j *Journal) capRouteChanges() {
+	n := 0
+	for _, r := range j.Records {
+		if r.Kind == "route_change" {
+			n++
+		}
+	}
+	for i := 0; n > RouteChangeCap && i < len(j.Records); {
+		r := j.Records[i]
+		if r.Kind != "route_change" {
+			i++
+			continue
+		}
+		p := j.Pruned.tier(r.Tier)
+		p.Count++
+		if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
+			at := r.CheckStartedAt
+			p.NewestAt = &at
+		}
+		j.Dropped++
+		j.Records = append(j.Records[:i], j.Records[i+1:]...)
+		n--
 	}
 }
 

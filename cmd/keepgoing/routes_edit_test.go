@@ -324,6 +324,14 @@ func TestRoutesTimelineNotesAListChangeOnce(t *testing.T) {
 	if code, v, _ := r.change("move", "codex-headless", "--to", "1", "--yes"); code != 0 || v.Outcome != "changed" {
 		t.Fatalf("%d %+v", code, v)
 	}
+	// A dry run records nothing, and leaves the note to the next check.
+	out.Reset()
+	if code := run(context.Background(), []string{"tick", "--dry-run", "-c", r.follower}, &out, &errb); code != 0 {
+		t.Fatalf("dry run: %s", &errb)
+	}
+	if runs, _ := os.ReadFile(filepath.Join(filepath.Dir(r.follower), "state", "runs.jsonl")); strings.Contains(string(runs), "listChanged") {
+		t.Fatalf("a dry run recorded the note:\n%s", runs)
+	}
 	v := tick()
 	routes, _ := v["routes"].(map[string]any)
 	if routes == nil || routes["listChanged"] != true {
@@ -516,5 +524,108 @@ routes:
 	}
 	if !found {
 		t.Fatalf("timeline: %s", &out)
+	}
+}
+
+func TestRoutesEditRefusesADirectoryLinkIntoACheckout(t *testing.T) {
+	r := newRoutesFixture(t)
+	// GNU Stow folds a directory: the whole keepgoing directory is a link
+	// into a dotfiles checkout.
+	checkout := filepath.Join(t.TempDir(), "dotfiles")
+	folded := filepath.Join(checkout, "keepgoing")
+	os.MkdirAll(filepath.Join(checkout, ".git"), 0o700)
+	os.MkdirAll(folded, 0o700)
+	write(t, filepath.Join(folded, config.RoutesFileName), routesStandardList, 0o600)
+	userDir := filepath.Dir(r.list)
+	os.RemoveAll(userDir)
+	if err := os.Symlink(folded, userDir); err != nil {
+		t.Fatal(err)
+	}
+	if code, v, _ := r.change("move", "codex-new", "--to", "1", "--yes"); code == 0 || v.Refusal == nil || v.Refusal.Code != config.RoutesInsideCheckout {
+		t.Fatalf("folded directory: %d %+v", code, v)
+	}
+	// Nor is a first list added there.
+	os.Remove(filepath.Join(folded, config.RoutesFileName))
+	if code, v, _ := r.change("add", "--id", "new-route", "--provider", "codex", "--model", "example-codex", "--group", "codex-b", "--enter", "headless", "--account-dir", "/fictional/private/account", "--yes"); code == 0 || v.Refusal == nil || v.Refusal.Code != config.RoutesInsideCheckout {
+		t.Fatalf("first add: %d %+v", code, v)
+	}
+	entries, _ := os.ReadDir(folded)
+	if len(entries) != 0 {
+		t.Fatalf("written into the checkout: %v", entries)
+	}
+}
+
+func TestRoutesAddRefusesTheIDALoopIsOnOrCannotBeChecked(t *testing.T) {
+	r := newRoutesFixture(t)
+	write(t, r.list, routesStandardList, 0o600)
+	stateDir := filepath.Join(filepath.Dir(r.follower), "state")
+	add := func(id string, extra ...string) (int, routeChangeOut) {
+		code, v, _ := r.change(append([]string{"add", "--id", id, "--provider", "codex", "--model", "example-codex", "--group", "codex-b", "--enter", "headless"}, extra...)...)
+		return code, v
+	}
+	// Put there by retarget, then the route removed by hand.
+	if err := state.Save(stateDir, state.File{ActiveTarget: "on-it"}); err != nil {
+		t.Fatal(err)
+	}
+	if code, v := add("on-it", "--dry-run"); code == 0 || v.Refusal == nil || v.Refusal.Code != "id_in_loop_records" || !strings.Contains(v.Refusal.Text, "its current route") {
+		t.Fatalf("target: %d %+v", code, v)
+	}
+	write(t, filepath.Join(stateDir, "route-current.yaml"), "version: 1\nroute: {id: recorded-only, provider: codex, model: example-codex, group: codex-b, enter: headless}\n", 0o600)
+	if code, v := add("recorded-only", "--dry-run"); code == 0 || v.Refusal == nil || !strings.Contains(v.Refusal.Text, "the record of the route it is on") {
+		t.Fatalf("record: %d %+v", code, v)
+	}
+	// Records that cannot be read refuse the id.
+	write(t, filepath.Join(stateDir, health.FileName), "not json", 0o600)
+	if code, v := add("fresh-id", "--dry-run"); code == 0 || v.Refusal == nil || v.Refusal.Code != "loop_records_unreadable" {
+		t.Fatalf("unreadable: %d %+v", code, v)
+	}
+	// A loop whose configuration cannot be loaded is checked through the
+	// state directory the registry records.
+	os.Remove(filepath.Join(stateDir, health.FileName))
+	write(t, r.follower, "not: [a valid configuration\n", 0o600)
+	if code, v := add("on-it", "--dry-run"); code == 0 || v.Refusal == nil || v.Refusal.Code != "id_in_loop_records" || !strings.Contains(v.Refusal.Text, "follower-loop") {
+		t.Fatalf("unloadable loop: %d %+v", code, v)
+	}
+	if code, v := add("fresh-id", "--dry-run"); code != 0 || v.Outcome != "preview" {
+		t.Fatalf("fresh id: %d %+v", code, v)
+	}
+}
+
+func TestRoutesHistoryRefusesTrailingContentAndReadsSpacedTornRecords(t *testing.T) {
+	r := newRoutesFixture(t)
+	write(t, r.list, routesStandardList, 0o600)
+	history := filepath.Join(filepath.Dir(r.list), routesHistoryName)
+	add := func(id string) (int, routeChangeOut) {
+		code, v, _ := r.change("add", "--id", id, "--provider", "codex", "--model", "example-codex", "--group", "codex-b", "--enter", "headless", "--dry-run")
+		return code, v
+	}
+	write(t, history, `{"at":"2026-11-01T00:00:00Z","op":"remove","route":"old-route","before":[],"after":[],"by":"person","source":"cli"} and more`+"\n", 0o600)
+	if code, v := add("brand-new"); code == 0 || v.Refusal == nil || v.Refusal.Code != "history_unreadable" {
+		t.Fatalf("trailing content: %d %+v", code, v)
+	}
+	write(t, history, `{"at": "2026-11-01T00:00:00Z", "op": "remove", "route": "spaced-id", "before": ["spaced-id", "other-`, 0o600)
+	if code, v := add("spaced-id"); code == 0 || v.Refusal == nil || v.Refusal.Code != "id_used_before" {
+		t.Fatalf("spaced torn record: %d %+v", code, v)
+	}
+	if code, v := add("brand-new"); code != 0 || v.Outcome != "preview" {
+		t.Fatalf("other id: %d %+v", code, v)
+	}
+}
+
+func TestRoutesOwnListExpectAndFixedOwnerWording(t *testing.T) {
+	r := newRoutesFixture(t)
+	// A reviewed apply whose plan is now refused is review_again.
+	if code, v, _ := r.change("remove", "no-such-fallback", "--loop", "example-loop", "--yes", "--expect", "stale"); code != exitSkipped || v.Outcome != "review_again" {
+		t.Fatalf("own-list expect: %d %+v", code, v)
+	}
+	t.Setenv("BB_THREAD_ID", "thr_example_owner")
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"enable", "-c", r.own.cfg}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	t.Setenv("BB_THREAD_ID", "thr_example_visitor")
+	code, v, _ := r.change("off", "codex-main", "--loop", "example-loop", "--yes")
+	if code == 0 || v.Refusal == nil || v.Refusal.Code != "not_owner" || strings.Contains(v.Refusal.Text, "thr_") || strings.Contains(v.Refusal.Text, "\n") {
+		t.Fatalf("not owner: %d %+v", code, v)
 	}
 }
