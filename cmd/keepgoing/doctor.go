@@ -253,6 +253,9 @@ func doctor(e env, args []string, run doctorRun) int {
 	schedulerStatus, buildStatus := "unavailable", "unavailable"
 	if d.State == "responsive" {
 		schedulerStatus = "ok"
+		if d.ConfigUnavailableSince != nil {
+			schedulerStatus = "error"
+		}
 	}
 	if d.BinaryComparison == "match" {
 		buildStatus = "ok"
