@@ -12,7 +12,9 @@ final class ClientTests: XCTestCase {
         try ("#!/bin/sh\n[ -z \"${KEEPGOING_TESTEXEC_WARM:-}\" ] || exit 0\n" + body).write(to: binary, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
         try Self.runOnce(binary)
-        return (binary, LocalClient(executable: binary, directory: dir.appendingPathComponent("registry with spaces").path))
+        // No menu version: the test runner's own bundle has one, which would
+        // add --client to every list. Tests of --client pass one explicitly.
+        return (binary, LocalClient(executable: binary, directory: dir.appendingPathComponent("registry with spaces").path, menuVersion: nil))
     }
     /// Runs a new executable once before a test depends on it. macOS checks a
     /// file the first time it is run, and on a busy machine can refuse it: the
@@ -119,7 +121,7 @@ final class ClientTests: XCTestCase {
     func testPanelCommandsPassOnlyFixedArgumentsAndAValidatedKey() throws {
         let reply = "{\"schemaVersion\":1,\"readAt\":\"2030-01-01T12:00:00Z\",\"registry\":\"available\",\"complete\":true,\"allClear\":true,\"needsYou\":0,\"unread\":0,\"omitted\":0,\"loops\":[]}"
         let (binary, base) = try fixture("printf '%s\\n' \"$@\" > \"$0.args\"\nprintf '%s' '\(reply)'\n")
-        let client = LocalClient(executable: base.executable, directory: base.directory, panelDirectory: "/private/example panel")
+        let client = LocalClient(executable: base.executable, directory: base.directory, panelDirectory: "/private/example panel", menuVersion: nil)
         func args() throws -> [String] { try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init) }
         XCTAssertEqual(try client.panelList().loops, [])
         XCTAssertEqual(Array(try args().prefix(4)), ["panel", "list", "--json", "--directory"])
