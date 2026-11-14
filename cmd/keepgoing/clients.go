@@ -160,7 +160,7 @@ var errClients = errors.New("client reports unavailable")
 // loadClients reads the record: nil with no error when there is none.
 func loadClients(dir string) (*clientsFile, error) {
 	path := filepath.Join(dir, clientsName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

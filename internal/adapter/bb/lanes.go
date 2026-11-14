@@ -78,7 +78,7 @@ func (a *Adapter) loadLanes() map[string]laneSummary {
 	}
 	lanes := map[string]laneSummary{}
 	if p := a.lanesPath(); p != "" {
-		if b, err := snapshot.ReadFile(p); err == nil {
+		if b, err := snapshot.ReadRecord(p); err == nil {
 			var stored lanesFile
 			if json.Unmarshal(b, &stored) == nil && stored.Lanes != nil {
 				if key, err := hex.DecodeString(stored.Key); err == nil && len(key) == laneKeyBytes {

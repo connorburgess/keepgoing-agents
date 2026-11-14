@@ -482,7 +482,7 @@ func Recorded(dir string, id Identity) ([]Supervisor, error) {
 // recorded is Recorded for one directory.
 func recorded(dir string, id Identity) ([]Supervisor, error) {
 	path := filepath.Join(dir, id.Key()+".json")
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := snapshot.LstatRecord(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	var r record
@@ -533,14 +533,14 @@ func all(dir string, limit int, seen map[string]bool, out []Supervisor) []Superv
 }
 
 func readJSON(path string, limit int64, v any) error {
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if err != nil {
 		return err
 	}
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return errors.New("not a readable record")
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if err != nil {
 		return err
 	}

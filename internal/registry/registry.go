@@ -55,7 +55,7 @@ func CheckDirectory(dir string) error {
 	return nil
 }
 func privateFile(path string) error {
-	info, err := snapshot.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -82,7 +82,7 @@ func Load(dir string) (File, error) {
 	if privateFile(path) != nil {
 		return File{}, ErrInvalid
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
 	}

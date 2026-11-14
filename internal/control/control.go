@@ -102,7 +102,7 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return snapshot.Open(filepath.Join(stateDir, FileName))
+	return snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.
@@ -181,7 +181,7 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := snapshot.Lstat(filepath.Join(stateDir, FileName))
+	info, err := snapshot.LstatRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

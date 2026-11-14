@@ -523,7 +523,7 @@ func Load(stateDir string) (File, error) {
 	var f File
 	// Status readers poll this file while a daemon replaces it. Open it so a
 	// reader never makes the writer's replacement fail (Windows).
-	r, err := snapshot.Open(filepath.Join(stateDir, FileName))
+	r, err := snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return f, nil
 	}

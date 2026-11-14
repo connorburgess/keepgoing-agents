@@ -213,7 +213,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 
 func readTransferRecord(dir, name string, dst any) error {
 	p := filepath.Join(dir, name)
-	info, err := snapshot.Lstat(p)
+	info, err := snapshot.LstatRecord(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -221,7 +221,7 @@ func readTransferRecord(dir, name string, dst any) error {
 		return errors.New("record unavailable")
 	}
 	// Never block a concurrent control or state save (Windows).
-	f, err := snapshot.Open(p)
+	f, err := snapshot.OpenRecord(p)
 	if err != nil {
 		return errors.New("record unavailable")
 	}

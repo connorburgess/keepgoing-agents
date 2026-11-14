@@ -358,7 +358,7 @@ func (a *Adapter) loadCursor() Cursor {
 	}
 	var c Cursor
 	if p := a.cursorPath(); p != "" {
-		if b, err := snapshot.ReadFile(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
+		if b, err := snapshot.ReadRecord(p); err == nil && json.Unmarshal(b, &c) == nil && c.Thread == a.cfg.Thread {
 			return c
 		}
 	}

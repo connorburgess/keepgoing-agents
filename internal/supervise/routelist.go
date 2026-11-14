@@ -46,7 +46,7 @@ type currentRoute struct {
 // LoadCurrentRoute reads the saved template. A missing, oversized or
 // malformed record is simply no record.
 func LoadCurrentRoute(stateDir string) (config.Route, bool) {
-	f, err := snapshot.Open(filepath.Join(stateDir, CurrentRouteName))
+	f, err := snapshot.OpenRecord(filepath.Join(stateDir, CurrentRouteName))
 	if err != nil {
 		return config.Route{}, false
 	}

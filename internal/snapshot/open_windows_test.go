@@ -39,13 +39,14 @@ func TestWindowsControlSnapshotOpenRetriesOnlyDuringReplacement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			attempts := 0
 			var slept time.Duration
+			retry := replacementInProgress // OpenRecord's rule
 			handle, err := openWithRetry(func() (syscall.Handle, error) {
 				attempts++
 				if attempts <= len(tc.failures) {
 					return syscall.InvalidHandle, tc.failures[attempts-1]
 				}
 				return syscall.Handle(42), nil
-			}, func(d time.Duration) { slept += d })
+			}, retry, func(d time.Duration) { slept += d })
 			if (err == nil) != tc.ok || (tc.attempts != 0 && attempts != tc.attempts) {
 				t.Fatalf("attempts=%d err=%v", attempts, err)
 			}
@@ -80,11 +81,18 @@ func TestWindowsLstatDescribesWhatIsThere(t *testing.T) {
 		t.Fatalf("directory: %v %v", info, err)
 	}
 	start := time.Now()
-	if _, err := Lstat(filepath.Join(dir, "missing.json")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := LstatRecord(filepath.Join(dir, "missing.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing: %v", err)
 	}
 	if took := time.Since(start); took < retryBudget {
 		t.Fatalf("a missing record was believed after %s, before the %s budget", took, retryBudget)
+	}
+	start = time.Now()
+	if _, err := Lstat(filepath.Join(dir, "missing.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing, plain: %v", err)
+	}
+	if took := time.Since(start); took >= retryBudget {
+		t.Fatalf("plain Lstat waited %s for a missing file", took)
 	}
 	if _, err := Lstat(filepath.Join(dir, "no-such-dir", "record.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing directory: %v", err)
@@ -95,5 +103,30 @@ func TestWindowsLstatDescribesWhatIsThere(t *testing.T) {
 	}
 	if info, err := Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("link is followed or not described: %v %v", info, err)
+	}
+}
+
+// Open's rule retries a file held by another program, and reports "not
+// found" at once: only OpenRecord waits that out.
+func TestWindowsPlainOpenDoesNotWaitOutAMissingFile(t *testing.T) {
+	for name, tc := range map[string]struct {
+		failures []syscall.Errno
+		attempts int
+		ok       bool
+	}{
+		"held_then_open":      {[]syscall.Errno{5, 32}, 3, true},
+		"missing_not_retried": {[]syscall.Errno{2}, 1, false},
+	} {
+		attempts := 0
+		_, err := openWithRetry(func() (syscall.Handle, error) {
+			attempts++
+			if attempts <= len(tc.failures) {
+				return syscall.InvalidHandle, tc.failures[attempts-1]
+			}
+			return syscall.Handle(42), nil
+		}, heldByAnother, func(time.Duration) {})
+		if attempts != tc.attempts || (err == nil) != tc.ok {
+			t.Errorf("%s: attempts=%d err=%v", name, attempts, err)
+		}
 	}
 }

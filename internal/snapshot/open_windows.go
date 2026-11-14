@@ -17,7 +17,15 @@ import (
 // a few times over about thirty milliseconds; a lasting denial is returned
 // after that short delay, and any other error at once.
 func Open(path string) (*os.File, error) {
-	return openShared(path, "open", syscall.GENERIC_READ, syscall.FILE_ATTRIBUTE_NORMAL)
+	return openShared(path, "open", syscall.GENERIC_READ, syscall.FILE_ATTRIBUTE_NORMAL, heldByAnother)
+}
+
+// OpenRecord is Open for a record replaced by rename whose absence a reader
+// would act on (see the package comment): it also retries "not found", for
+// up to retryBudget, because Windows reports the existing name missing for a
+// moment while it is replaced.
+func OpenRecord(path string) (*os.File, error) {
+	return openShared(path, "open", syscall.GENERIC_READ, syscall.FILE_ATTRIBUTE_NORMAL, replacementInProgress)
 }
 
 // fileReadAttributes is FILE_READ_ATTRIBUTES: enough to describe a file
@@ -29,10 +37,15 @@ const fileReadAttributes = 0x80
 // falls back to CreateFile with no sharing, which during a replacement both
 // reports an existing record missing and, while that handle is open, makes
 // the replacing save fail with access denied. Lstat opens the path itself,
-// sharing it fully and asking only to read its attributes, with the same
-// bounded retry as Open, and describes the open handle.
-func Lstat(path string) (os.FileInfo, error) {
-	f, err := openShared(path, "lstat", fileReadAttributes, syscall.FILE_FLAG_OPEN_REPARSE_POINT|syscall.FILE_FLAG_BACKUP_SEMANTICS)
+// sharing it fully and asking only to read its attributes, retries as Open
+// does, and describes the open handle.
+func Lstat(path string) (os.FileInfo, error) { return lstatWith(path, heldByAnother) }
+
+// LstatRecord is Lstat with OpenRecord's retry of "not found".
+func LstatRecord(path string) (os.FileInfo, error) { return lstatWith(path, replacementInProgress) }
+
+func lstatWith(path string, retry func(error) bool) (os.FileInfo, error) {
+	f, err := openShared(path, "lstat", fileReadAttributes, syscall.FILE_FLAG_OPEN_REPARSE_POINT|syscall.FILE_FLAG_BACKUP_SEMANTICS, retry)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +58,7 @@ func Lstat(path string) (os.FileInfo, error) {
 // replacement in progress gives. No create, truncate, privilege adjustment
 // or inheritable handle; DELETE sharing permits replacement and does not
 // grant delete access.
-func openShared(path, op string, access, flags uint32) (*os.File, error) {
+func openShared(path, op string, access, flags uint32, retry func(error) bool) (*os.File, error) {
 	name, err := snapshotWindowsPath(path)
 	if err != nil {
 		return nil, &os.PathError{Op: op, Path: path, Err: err}
@@ -54,7 +67,7 @@ func openShared(path, op string, access, flags uint32) (*os.File, error) {
 		return syscall.CreateFile(&name[0], access,
 			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
 			nil, syscall.OPEN_EXISTING, flags, 0)
-	}, time.Sleep)
+	}, retry, time.Sleep)
 	if err != nil {
 		return nil, &os.PathError{Op: op, Path: path, Err: err}
 	}
@@ -75,13 +88,13 @@ const retryBudget = 250 * time.Millisecond
 // maxRetryDelay caps one wait between tries.
 const maxRetryDelay = 25 * time.Millisecond
 
-func openWithRetry(open func() (syscall.Handle, error), sleep func(time.Duration)) (syscall.Handle, error) {
+func openWithRetry(open func() (syscall.Handle, error), retry func(error) bool, sleep func(time.Duration)) (syscall.Handle, error) {
 	var handle syscall.Handle
 	err := retryReplacing(func() error {
 		var err error
 		handle, err = open()
 		return err
-	}, replacementInProgress, sleep)
+	}, retry, sleep)
 	return handle, err
 }
 

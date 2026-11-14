@@ -118,14 +118,14 @@ func Reserved(tier string) int {
 // Corrupt, oversized, aliased or future-schema history is never silently reset.
 func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
-	info, err := snapshot.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Journal{SchemaVersion: SchemaVersion, NextSequence: 1, Records: []Record{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBytes {
 		return Journal{}, ErrUnavailable
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if err != nil {
 		return Journal{}, ErrUnavailable
 	}
