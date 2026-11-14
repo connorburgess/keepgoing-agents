@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+## 0.2.0 (proposed; not yet released)
+
+**The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
+- the licence changes;
+- several behaviours change on upgrade;
+- v0.1.5 cannot read the records this version writes without the steps below.
+
+**What is new.**
+- **Recovery that does not spend into a dead network:** a connectivity check before every recovery step.
+- **BB recovery:** a failed BB turn retried by reference, and stale or declined retry notices no longer waited on.
+- **Hung turns:** a turn that hung through an outage or a sleep has its nudges held back.
+- **Stopped schedulers and children:** a stopped scheduler is noticed; failed child threads are reported; failed lanes are recovered (opt-in); `stop --lanes`.
+- **Daemon timing:** the daemon checks again within a minute of the network returning, and at a limit's reported reset.
+- **Bounds:** one loop per session; every automatic send recorded before it is made; a hard time limit per check; the no-progress flag.
+- **The panel** (`keepgoing panel`, `dock`, with controls behind `--allow-changes`) and a rebuilt macOS menu preview.
+- **New commands:** `keepgoing runs`; a navigable `timeline`; usage readings.
+- **Agents and fallbacks:** agents defined in configuration (`adapter: custom`); a primary-only Cursor adapter; handoff into a new BB conversation; `fallbacks` editing commands.
+
+**Behaviour changes.**
+- keepgoing makes one outbound request of its own (`GET https://api.github.com/zen`, no identifier) before a recovery step; `loop.network` changes or turns it off.
+- Sends are recorded before they are made.
+- `resume` of a loop held on a spent cap starts a new episode.
+- Three corrections to BB retry notices.
+- `no_progress_timeout` and the stall clock skip time in which nothing could run.
+- Time windows follow the local clock across daylight-saving changes.
+- `tick` exits 0 whenever the check was recorded.
+- `enable --take-over` waits up to 5 seconds for the lock.
+- The panel's runtime files move to the user state directory.
+- Windows needs 10 version 1709 or newer.
+
+**Upgrade.**
+1. Copy each loop's state directory.
+2. Replace the executable.
+3. Restart each daemon or service.
+
+No configuration change is needed. External schedulers such as BB automations keep working; the daemon's faster re-checks apply only under `start` or a service.
+
+**Going back to v0.1.5.** A loop that ran on 0.2.0 needs these steps first, each detailed in the [release notes](docs/releases/v0.2.0.md#going-back-to-v015):
+- restore or remove `incidents.json` (schema 9);
+- move aside a `deliveries.json` that records a new event;
+- remove settings and report events v0.1.5 does not know (it reads the configuration strictly);
+- do not run it against a run graph that records a new conversation.
+
+It drops the newer fields of `state.json`, `control.json` and `bb-cursor.json`.
+
+**Evidence.** The new reliability behaviour is implemented and fixture-tested only, and the [live outage check](docs/testing.md#live-check-a-long-time-offline) has not been run. Live so far:
+- one Cursor walkthrough on macOS (first turn, exact resume, stop);
+- the earlier BB, daemon, probe and report checks listed in [integrations](docs/integrations.md).
+
+### Detail
+
 - **Behavior change: the nudges to a BB turn that hung through an outage are held back.** For loops that track Git progress, inside their operating window, a turn that has logged nothing since an outage began (a failed connectivity check, or a gap the missed-time rule judges missed, such as the computer sleeping, counted from its waking), and nothing for `stall_after`, with no tool item open and nothing else to explain its silence, may be hung. The stall rule then decides as always, but each nudge it would send is held back: counted and recorded as a nudge, with the same connectivity check first, and not sent. So the stall rule's own hold after its nudges comes at the same check, now with the reason that the nudges were held back. A turn that logs again is handed back to the stall rule. Tests run each journey with the watch on and off and find the same actions, holds, connectivity checks, probes and sends, except the held-back nudges. A held-back nudge is not a send, so it spends nothing of `loop.limits.max_sends`: where the stall rule alone would have reached that limit's hold first (with `max_sends: 1` at the defaults, 2h40m against the nudge hold at 5h30m), the watch holds at the nudge hold. `status` tells held-back nudges from sent ones, and the timeline gives them their own causes (`nudge_held`, `hung_wait`, `stall_limit_held`). Before, the nudges were sent into the hung turn. A new `hung_turn` report event, not in the default list, says once that the nudges are being held back. Older binaries reject `hung_turn` in `report.events` and cannot read a `deliveries.json` that records it; see [upgrading and going back](docs/operations.md#upgrading-and-going-back) and [a turn that hung through an outage](docs/operations.md#a-turn-that-hung-through-an-outage).
 
 - The time an untracked active session may stay silent after its retry notice expired (`stall_after` plus a `min_wake_interval` per nudge) now stops at the longest time instead of overflowing to a negative one with an extreme `min_wake_interval`, so such a session is never held at once.

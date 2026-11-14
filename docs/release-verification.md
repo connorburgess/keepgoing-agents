@@ -10,6 +10,36 @@ Releases through v0.1.5 are Apache-2.0 and their archives hold the executable, `
 - **Third-party notices.** `THIRD_PARTY_NOTICES` reproduces the terms of the Go runtime and standard library and of every module linked into the executable. `scripts/build-release.sh` runs `scripts/third-party-notices.sh --check` first and stops when the file does not match the modules of the six release targets, so a module added without its notice cannot be released. Pull-request CI runs the same check. After adding or updating a module, run `scripts/third-party-notices.sh`, read the result and commit it.
 - **Homebrew formula.** The tap is a separate repository. Its formula installs v0.1.5 today, which stays Apache-2.0, so its license field is correct until then. The formula update for the first release under the new license must change that field with the URLs and checksums, and its install check should confirm the new files are present. Do not change the field before that release.
 
+## v0.2.0 candidate preparation
+
+Proposed version **v0.2.0**, the first release under the [Sustainable Use License 1.0](../LICENSE). [Version-specific notes](releases/v0.2.0.md) explain why it is 0.2.0 rather than 0.1.6, and collect the upgrade and rollback notes. Nothing has been tagged or published. The Homebrew formula is unchanged and still installs v0.1.5.
+
+Candidate evidence:
+- **Build.** A clean export (`git archive`) of main `eb224083eda0d17d725e4f2ed82f693088b03012` built all six `v0.2.0-rc.1` archives with `scripts/build-release.sh v0.2.0-rc.1` on macOS arm64. The script's `scripts/third-party-notices.sh --check` passed first.
+- **Checksums.** Every archive matched `checksums.txt`.
+- **Archive inventory.** Each archive holds exactly the executable, `README.md`, `LICENSE`, `LICENSING.md`, `LICENSES/Apache-2.0.txt` and `THIRD_PARTY_NOTICES`, with no AppleDouble or other files, as required [above](#archive-contents-and-packaging-from-the-next-release). Both Windows ZIPs passed integrity checks.
+- **The macOS executable.** The unpacked macOS arm64 executable reported `v0.2.0-rc.1`, with SHA-256 `06aa60abfdf1af591e212087fd6dbae5bc92a7b5ecf4c5db5176a8a059218c92`.
+- **`scripts/smoke-release.py` against it.** All six setup variants passed (BB, Claude Code and Codex, each prompt-only and goal), covering setup, offline diagnostics, holds, completion and ownership, with zero provider commands.
+- **`scripts/smoke-recovery.py` against it.** All four journeys passed (BB, process, Claude Code, Codex), covering failure, alert rejection, held-daemon SIGKILL and restart, explicit recovery, completion, and preserved allowance and owner. With `--include-cursor`, the Cursor journey passed as well.
+- **The BB plugin.** The same export installed the plugin with `npm ci --omit=dev --omit=optional --ignore-scripts` and built its server, app and host bundles with `bb plugin build` (BB 0.48.1, SDK 0.6.104). Every bundle's metadata reports plugin `0.2.0`. That version was not changed, although the plugin source changed after its v0.2.0; whether it gets a new version with this release is a separate decision.
+
+**Found while running the checks.** Both smoke scripts inherit the caller's `HOME`, and the recovery journeys create session claims in the user state directory (`~/Library/Application Support/keepgoing/sessions` on macOS) and leave them there. That happens despite the script reporting that state was removed. These runs set `HOME` and the `XDG_*` directories to a throwaway directory, so no real user state was touched. The scripts should set them themselves; that is a script change for its own PR.
+
+**Not run:**
+- the Go test suite on the export (CI runs it on every pull request, and the release workflow runs it before building);
+- native execution of the Linux, Windows and Intel macOS archives;
+- downloaded-asset verification;
+- the Homebrew formula update and fresh-install check;
+- actual Git installation of the plugin;
+- any live provider or first-loop walkthrough.
+
+**Before tagging:**
+1. Rebuild the six archives from the final checked commit, which will include any work merged after this candidate (#216 and others), with the final version label.
+2. Repeat the checks above against that build.
+3. Set the release date in the changelog.
+
+Publication, downloaded-asset checks, the Homebrew formula (with its licence field) and the plugin's install remain separate gates.
+
 ## v0.1.5 release and package evidence
 
 [v0.1.5](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) tags checked head `1f2b0cd87ff12b79f9b58627e27ca9da966b299b`, whose tree matches merge `1ff9ab25edd74a8c42e183835fa4e7e70c396dd1`. The [five-job PR run](https://github.com/connorburgess/keepgoing-agents/actions/runs/43131838775) passed on that head against base `bfb9006988792eb81cfbaaad10b6dad289aa63e0`: Ubuntu/macOS build and tests, Windows diagnostics, BB plugin checks and contribution metadata. The [Build and publish job](https://github.com/connorburgess/keepgoing-agents/actions/runs/43132257828) passed on the tagged head, including Go tests, six archive builds/checksums and the unpacked Linux amd64 setup/recovery checks.
