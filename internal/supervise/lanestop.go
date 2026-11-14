@@ -86,6 +86,10 @@ func (t *tick) stopLanes(a adapter.Adapter) {
 		return
 	}
 	t.laneStopRecords()
+	// A person asked for the lanes to stop: what lane recovery knew of them
+	// is forgotten, so after a resume a lane is retried only once a check
+	// has seen it working again.
+	t.st.Lanes = nil
 	rec := &state.LaneStop{For: t.stopLanesFor, At: t.now, Outcome: "done", Failed: map[string]int{}}
 	doneBefore, dequeuedBefore, failedBefore := map[string]bool{}, map[string]bool{}, map[string]string{}
 	if prev != nil {

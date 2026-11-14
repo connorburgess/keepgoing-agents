@@ -139,6 +139,9 @@ type Result struct {
 	// Recovery says how a re-prompt was carried out: turn_retry re-ran the
 	// failed turn by reference with no new text, prompt sent the wake text.
 	Recovery string `json:"recovery,omitempty"`
+	// Lanes is the lane work this check did under bb.children.retry_errored:
+	// counts only. Absent when it did none.
+	Lanes *state.LaneCheck `json:"lanes,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is
 	// a lower bound. ChildErrorNote is set when this check's wake announces
@@ -197,6 +200,20 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// lanesRetried is how many of the errored lanes keepgoing has asked BB to
+	// retry and has not given up on, after this check's lane work. The
+	// notice to the session says so.
+	lanesRetried int
+	// laneRecoveryOn: the observed target has bb.children.retry_errored set.
+	laneRecoveryOn bool
+	// lanesInRecovery are the errored lanes keepgoing is recovering or will
+	// recover, under the hashes the child-error notice record uses. It lives
+	// for one check and is never saved.
+	lanesInRecovery map[string]bool
+	// lanesPerEpisode is the active target's episode limit, for the report.
+	lanesPerEpisode int
+	// incidentLanes is this check's lane work, for the incident history.
+	incidentLanes incident.LaneWork
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -929,6 +946,18 @@ func (t *tick) run() error {
 	}
 	kept, unannounced := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren),
 		t.st.ChildErrorsAnnounced, !obs.ChildrenUnverified, t.now, loop.Progress.MinWakeInterval.Duration)
+	// Lane recovery runs here, before the decision, so that the decision and
+	// the notice already know which lanes are being recovered. It is gated on
+	// what the engine would decide with every unannounced lane counted, which
+	// differs from the final decision only in whether a notice is due and in
+	// what a dead network changes, and lane work waits for the network itself.
+	in.UnannouncedErroredChildren = len(unannounced)
+	in.ChildErrorNoticeAttempts, in.MaxChildErrorNotices = t.st.ChildErrorNoticeAttempts, loop.Errors.MaxReprompts
+	t.recoverLanes(a, agent, obs, decide.Decide(in), inWindow)
+	// A lane keepgoing is recovering is not announced to the session: there
+	// is nothing for it to do yet. It is announced like any other the moment
+	// it is given up or turns out not to be retryable.
+	unannounced = t.lanesNotInRecovery(unannounced)
 	t.childNoticeKept, t.childNoticeNew = kept, unannounced
 	if !t.opts.DryRun {
 		t.st.ChildErrorsAnnounced = kept
@@ -1690,9 +1719,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		childErrors := decide.ChildErrorNote(t.decisionInput, d)
 		if d.ChildErrorWake {
 			// Notice only: the parent is waiting on other children on purpose.
-			text = prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren)
+			text = prompt.ChildErrorsOnlyRetried(childErrors, t.decisionInput.Obs.ActiveChildren, t.lanesRetried)
 		} else {
-			text = prompt.WithChildErrors(text, childErrors)
+			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
 		if !reserved {
 			if _, err := t.reserveSend(string(d.Action), t.res.Target); err != nil {
@@ -2233,6 +2262,26 @@ func (t *tick) countUnrecordedSends() error {
 			// Settled by its own record in state.json, saved before the
 			// conversation was created (see createThread).
 			agentSend = false
+		case laneRetryAction:
+			// A lane's failed turn, retried by reference: counted for that
+			// lane as a made retry, so it is spaced and capped. It is not a
+			// send to the supervised session. Nothing if lane recovery has
+			// been switched off since.
+			agentSend = false
+			if _, agent := t.resolve(t.st.Target()); agent.BB.RetryErroredLanes() && t.st.Lanes != nil {
+				l := t.st.Lanes
+				r := l.Retries[p.Key]
+				if r.DayStart.IsZero() {
+					r.DayStart = p.At
+				}
+				r.Attempts, r.DayRetries, r.LastAt, r.NoOps = r.Attempts+1, r.DayRetries+1, p.At, 0
+				if l.Retries == nil {
+					l.Retries = map[string]state.LaneRetry{}
+				}
+				l.Retries[p.Key] = r
+				l.EpisodeRetries++
+				t.warn("a lane retry was recorded at %s but that check could not save what happened, so it may have been made; it is counted as made", p.At.Format(time.RFC3339))
+			}
 		case "child_notice":
 			if t.st.ChildErrorNoticeFor != p.Key {
 				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
@@ -2740,7 +2789,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true, checkGapEvent: true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
@@ -2751,7 +2800,7 @@ const maxLateReports = 3
 // using anything up.
 func (t *tick) canReport(typ string) bool {
 	// A report that makes a single attempt would be lost into a dead network.
-	if (typ == limitWaitEvent || typ == childErrorEvent) && t.networkDown() {
+	if (typ == limitWaitEvent || typ == childErrorEvent || typ == laneRecoveryEvent) && t.networkDown() {
 		return false
 	}
 	return t.left() >= minReportTime || (essentialReports[typ] && t.lateReports < maxLateReports)
