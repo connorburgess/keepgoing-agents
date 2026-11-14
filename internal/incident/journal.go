@@ -22,10 +22,7 @@ const FileName = "incidents.json"
 // Version 9 adds, on control records, who saved the control and whether a
 // resume started a new error episode.
 // Version 10 adds the lane-work counts on tick records.
-// Version 11 adds, on tick records, that the standard route list changed
-// since the loop's previous check, and route_change records: a change to a
-// loop's own route list, with who made it.
-const SchemaVersion = 11
+const SchemaVersion = 10
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
