@@ -344,7 +344,7 @@ Two workflows produce the six checks on a pull request. `checks.yml` runs the bu
 
 | Job | Steps | Typical (main, 17:28 run) | Worst seen (the run that hit the limit) | Limit |
 | --- | --- | --- | --- | --- |
-| `Windows access diagnostics (storage and controls)` | vet, client and registry, ACLs, records replaced while readers poll, transfer, setup, fallbacks, goals, control snapshots, run graph, run navigation | about 230 s | about 360 s | 12 min |
+| `Windows access diagnostics (storage and controls)` | vet, client and registry, per-user directories, ACLs, records replaced while readers poll, transfer, setup, fallbacks, goals, control snapshots, run graph, run navigation | about 230 s | about 360 s | 12 min |
 | `Windows access diagnostics (processes)` | headless runners and owned cancellation, Cursor command journeys, Cursor idle holds, detached start (20 times) | about 305 s | about 330 s | 12 min |
 
 The worst figures for the old single job are measured; the per-job split of them is the sum of the same steps in those runs plus about 25 s of setup each, so the first runs of the two jobs are the real measurement. Twelve minutes is about twice the worst. The slowest steps, for the next time this grows: the runner package (157 s, of which 34 s is `TestAntigravityRunnerRefusesInconsistentRecords`), the Cursor command journeys (76 s), records replaced while readers poll (72 s, up to 142 s on a slow runner), the run graph store (44 s) and the detached start repeated 20 times (42 s).

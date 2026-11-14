@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "refusal", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -366,6 +366,9 @@ func timelineKinds(r incident.Record) []string {
 		if r.Lanes != (incident.LaneWork{}) {
 			kinds = append(kinds, "child_retry")
 		}
+		if r.RouteListChanged {
+			kinds = append(kinds, "route_list")
+		}
 		if r.Refusal != "" || r.ModelFallback {
 			kinds = append(kinds, "refusal")
 		}
@@ -376,6 +379,8 @@ func timelineKinds(r incident.Record) []string {
 		}
 	case "retarget":
 		kinds = append(kinds, "retarget")
+	case "route_change":
+		kinds = append(kinds, "route_change")
 	}
 	if entered {
 		kinds = append(kinds, "hold")
@@ -403,7 +408,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 7, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 8, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -672,6 +677,14 @@ func describeIncident(r incident.Record) string {
 	if r.Kind == "retarget" {
 		return fmt.Sprintf("manual retarget saved: target %s -> %s; recorded build %s; no probe, send or provider check is implied", timelineTarget(r.TargetKey), timelineTarget(r.TargetKeyAfter), r.Build)
 	}
+	if r.Kind == "route_change" && r.RouteChange != nil {
+		c := r.RouteChange
+		by := map[string]string{"owner_thread": "the owning BB thread", "terminal": "a person (no BB thread identity)"}[c.Caller]
+		if by == "" {
+			by = "an unrecorded caller"
+		}
+		return fmt.Sprintf("route list change saved: %s route %s in the loop's own list, by %s; recorded build %s; the loop uses it after its next configuration reload", c.Operation, timelineTarget(c.TargetKey), by, r.Build)
+	}
 	if r.Kind != "tick" {
 		return "incident kind unavailable; no check or control save inferred"
 	}
@@ -715,6 +728,9 @@ func describeIncident(r incident.Record) string {
 			result = "failed (" + p.ErrorClass + ")"
 		}
 		text += fmt.Sprintf(" %s %s %s", timelineTarget(p.TargetKey), p.Tier, result)
+	}
+	if r.RouteListChanged {
+		text += "; ROUTE LIST: the standard route list changed since this loop's previous check, and this check used the new list (keepgoing routes list shows it)"
 	}
 	if r.NewThread {
 		text += "; NEW THREAD: keepgoing created a BB thread for this handoff and left the earlier conversation as it was (`keepgoing runs` shows both references)"

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -40,6 +41,12 @@ type standardListView struct {
 	Routes     []standardRouteRow `json:"routes"`
 	// Followers are the loops shown here that follow the standard list.
 	Followers []string `json:"followers"`
+	// Can lists the changes this caller may make to the list: add, move,
+	// remove, off and on. When it is empty, CanReason says why:
+	// agent_identity (only a person changes the standard list) or
+	// list_unreadable.
+	Can       []string `json:"can"`
+	CanReason string   `json:"canReason,omitempty"`
 }
 
 type redundancyView struct {
@@ -77,6 +84,12 @@ type loopRoutesView struct {
 	Skipped    []skippedRoute  `json:"skipped"`
 	Redundancy *health.Summary `json:"redundancy,omitempty"`
 	Warnings   []string        `json:"warnings"`
+	// Can lists the changes this caller may make to the loop's own list with
+	// routes --loop: move, remove, off and on. When it is empty, CanReason
+	// says why: follows_standard, no_list, not_owner, ownership_unknown or
+	// configuration_unavailable.
+	Can       []string `json:"can"`
+	CanReason string   `json:"canReason,omitempty"`
 }
 
 type loopRouteRow struct {
@@ -111,8 +124,16 @@ type skippedRoute struct {
 }
 
 func routesCommand(e env, args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "add", "move", "remove", "off", "on":
+			return routesEditCommand(e, args[0], args[1:])
+		case "check":
+			return routesCheckCommand(e, args[1:])
+		}
+	}
 	if len(args) == 0 || args[0] != "list" {
-		e.errf("routes needs a subcommand: list")
+		e.errf("routes needs a subcommand: list, add, move, remove, off, on or check")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("routes list", flag.ContinueOnError)
@@ -120,7 +141,7 @@ func routesCommand(e env, args []string) int {
 	asJSON := fs.Bool("json", false, "print the versioned route lists object")
 	cfgPath := fs.String("c", "", "show one loop by its config file instead of every registered loop")
 	loopName := fs.String("loop", "", "show one registered loop by name")
-	directory := fs.String("directory", "", "private registry directory (default: user config/keepgoing/registry)")
+	directory := fs.String("directory", "", "private registry directory (default: the registry in the user configuration directory)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 || (*cfgPath != "" && *loopName != "") {
 		if err == nil {
 			e.errf("routes list takes --json and one of -c or --loop")
@@ -187,8 +208,32 @@ func routeLists(configPaths []routeLoopRef, now time.Time) routeListsOut {
 	return out
 }
 
-func standardList() standardListView {
-	view := standardListView{State: "unreadable", Routes: []standardRouteRow{}, Followers: []string{}}
+func standardList() (view standardListView) {
+	view = standardListView{State: "unreadable", Routes: []standardRouteRow{}, Followers: []string{}, Can: []string{}}
+	var path string
+	// Can offers only what would work now: nothing for an agent or an
+	// unreadable list, only add for an empty or missing list, and no add
+	// while the history cannot be read.
+	defer func() {
+		switch {
+		case os.Getenv("BB_THREAD_ID") != "":
+			view.CanReason = "agent_identity"
+			return
+		case view.State == "ok" && len(view.Routes) > 0:
+			view.Can = []string{"add", "move", "remove", "off", "on"}
+		case view.State == "ok", view.State == "missing":
+			view.Can = []string{"add"}
+		default:
+			view.CanReason = "list_unreadable"
+			return
+		}
+		if _, _, err := routeHistoryIDs(filepath.Dir(path)); err != nil {
+			view.Can = view.Can[1:]
+			if len(view.Can) == 0 {
+				view.CanReason = "history_unreadable"
+			}
+		}
+	}()
 	path, err := config.StandardRoutesPath()
 	if err != nil {
 		view.Problem = config.RoutesProblem(err)
@@ -242,13 +287,21 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 	if name == "" {
 		name = filepath.Base(filepath.Dir(ref.path))
 	}
-	view := loopRoutesView{Loop: name, List: "none", Handoff: "off", Routes: []loopRouteRow{}, Skipped: []skippedRoute{}, Warnings: []string{}}
+	view := loopRoutesView{Loop: name, List: "none", Handoff: "off", Routes: []loopRouteRow{}, Skipped: []skippedRoute{}, Warnings: []string{}, Can: []string{}}
 	cfg, err := config.Load(ref.path)
 	if err != nil {
-		view.Problem = "configuration_unavailable"
+		view.Problem, view.CanReason = "configuration_unavailable", "configuration_unavailable"
 		return view
 	}
 	l := cfg.Loop
+	switch {
+	case l.FollowsStandard():
+		view.CanReason = "follows_standard"
+	case cfg.FallbackSet == nil:
+		view.CanReason = "no_list"
+	default:
+		view.Can, view.CanReason = ownListCan(l.StateDir)
+	}
 	view.Loop = l.Name
 	if cfg.RouteList.Source != "" {
 		view.List = cfg.RouteList.Source
@@ -397,9 +450,28 @@ func currentRoutes(cfg *config.Config) *config.Fallbacks {
 // follows the standard route list, which has no fallbacks file to edit.
 func followsStandardRefusal(sub string) string {
 	if sub == "handoff" {
-		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml; routes commands arrive with P10b."
+		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml."
 	}
-	return "This loop follows the standard route list. Edit routes.yaml instead (keepgoing routes list shows where); routes add, move and remove arrive with P10b."
+	return "This loop follows the standard route list. Change that list instead with keepgoing routes add, move, remove, off or on."
+}
+
+// ownListCan is what this caller may change in a loop's own list: all of it
+// for the loop's owner, or a person outside BB, and nothing for another
+// thread, or for any thread when the loop has no recorded owner. It only
+// reads; the write checks again under the lock.
+func ownListCan(stateDir string) ([]string, string) {
+	f, err := control.Load(stateDir)
+	if err != nil {
+		return []string{}, "ownership_unknown"
+	}
+	caller := os.Getenv("BB_THREAD_ID")
+	if caller != "" && f.Ownership == nil {
+		return []string{}, "agent_identity"
+	}
+	if control.CheckOwner(f, caller, false) != nil {
+		return []string{}, "not_owner"
+	}
+	return []string{"move", "remove", "off", "on"}, ""
 }
 
 // routesProblemText says what to do about each refusal reason.

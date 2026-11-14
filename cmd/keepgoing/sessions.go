@@ -96,7 +96,10 @@ func findOtherLoops(cfg *config.Config) []otherLoop {
 		seen[key] = true
 		candidates = append(candidates, found{loop, configPath, key})
 	}
-	if dir, err := registryDirectory(""); err == nil {
+	// The registry in use and, when the default one has a counterpart under
+	// the tool's other directory name, that one too: a loop registered
+	// before the name in use changed is still another loop.
+	for _, dir := range registriesUnderBothNames() {
 		if f, err := registry.Load(dir); err == nil {
 			for _, e := range f.Entries {
 				add(e.Loop, e.ConfigPath, e.StateDir)

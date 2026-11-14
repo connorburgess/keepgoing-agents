@@ -129,6 +129,9 @@ type File struct {
 	// RoutesUnreadable is true while a loop that follows the standard route
 	// list cannot read it, so that beginning and ending are each reported once.
 	RoutesUnreadable bool `json:"routesUnreadable,omitempty"`
+	// RoutesDigest identifies the standard list this loop last read, so a
+	// change to it is noted once in the loop's timeline.
+	RoutesDigest string `json:"routesDigest,omitempty"`
 	// ClaimUnavailable is set while checks run without a session claim
 	// because there is no user state directory to keep claims in; its start
 	// and end are reported once each.

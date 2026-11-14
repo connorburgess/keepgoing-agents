@@ -36,6 +36,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // DirEnv names a directory to use instead of the default. Loops given
@@ -44,28 +45,8 @@ import (
 const DirEnv = envvar.Prefix + string(envvar.SessionDir)
 
 // StateHome is the user's state directory, where keepgoing keeps runtime
-// files that belong to no single loop: $XDG_STATE_HOME or ~/.local/state on
-// Linux and other Unix systems, Application Support on macOS, and the local
-// application data folder on Windows.
-func StateHome() (string, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return os.UserConfigDir() // ~/Library/Application Support
-	case "windows":
-		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return d, nil
-		}
-		return os.UserConfigDir()
-	}
-	if d := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(d) {
-		return d, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "state"), nil
-}
+// files that belong to no single loop; see userdir.StateHome.
+func StateHome() (string, error) { return userdir.StateHome() }
 
 // UndeterminedError: there is no user state directory to keep claims in
 // (no HOME and no XDG_STATE_HOME). Checks go ahead unprotected.
@@ -114,11 +95,12 @@ func Dir(repair ...bool) (dir string, tightened bool, err error) {
 			fix: "unset one of them, or set both to the same directory"}
 	}
 	if dir == "" {
-		base, err := StateHome()
-		if err != nil || base == "" {
+		// Under the state directory, in looptender/, or in keepgoing/ on a
+		// computer that already has one: see userdir.
+		dir, err = userdir.State("sessions")
+		if err != nil {
 			return "", false, &UndeterminedError{Reason: "no user state directory: HOME and XDG_STATE_HOME are not set"}
 		}
-		dir = filepath.Join(base, "keepgoing", "sessions")
 	}
 	if !filepath.IsAbs(dir) {
 		return "", false, &UnsafeError{Path: dir, Problem: "is not an absolute path"}
@@ -295,17 +277,37 @@ func Take(dir string, id Identity, me Holder) (*Claim, error) {
 	if info, err := os.Lstat(lockPath); err == nil && (!info.Mode().IsRegular() || !ownedByMe(info)) {
 		return nil, &UnsafeError{Path: lockPath, Problem: "is not a claim file of this user's"}
 	}
-	lk, err := lock.AcquireNamed(dir, key)
-	if errors.Is(err, lock.ErrHeld) {
+	claimed := func(in string) *ClaimedError {
 		e := &ClaimedError{Session: id, Now: time.Now()}
 		var h Holder
-		if readJSON(filepath.Join(dir, key+".holder"), 4096, &h) == nil && h.PID > 0 {
+		if readJSON(filepath.Join(in, key+".holder"), 4096, &h) == nil && h.PID > 0 {
 			e.Holder = &h
 		}
-		return nil, e
+		return e
+	}
+	lk, err := lock.AcquireNamed(dir, key)
+	if errors.Is(err, lock.ErrHeld) {
+		return nil, claimed(dir)
 	}
 	if err != nil {
 		return nil, &UnsafeError{Path: lockPath, Problem: "cannot be opened as a claim file"}
+	}
+	// The default claim directory has two possible names (see userdir), and
+	// two checks can for a moment disagree on which is in use. So a claim is
+	// good only if the same session is not claimed under the other name
+	// either. Each check takes its own claim first and looks at the other
+	// directory second, so of two that overlap at least one sees the other
+	// and gives way. A directory that cannot be looked at is not assumed
+	// free.
+	if other := Sibling(dir); other != "" {
+		held, err := lock.Held(other, key)
+		if held || err != nil {
+			_ = lk.Release()
+			if held {
+				return nil, claimed(other)
+			}
+			return nil, &UnsafeError{Path: filepath.Join(other, key+".lock"), Problem: "cannot be checked for a claim"}
+		}
 	}
 	c := &Claim{lk: lk, holder: filepath.Join(dir, key+".holder")}
 	_ = writeJSON(dir, c.holder, me)
@@ -356,7 +358,7 @@ func Note(dir string, id Identity, s Supervisor, wait time.Duration) error {
 		}
 	}
 	defer lk.Release()
-	list := Known(dir, id)
+	list := known(dir, id)
 	out := []Supervisor{s}
 	for _, e := range list {
 		if e.StateDir != s.StateDir {
@@ -377,9 +379,63 @@ type record struct {
 	Supervisors   []Supervisor `json:"supervisors"`
 }
 
-// Known returns the loops in a session's record. A record that cannot be
-// read, or that names another session, gives none.
+// Sibling returns the claim directory under the tool's other name, when dir
+// is the default claim directory under one of its two names and the other
+// exists as a different directory. It is "" for a directory a person chose
+// (see DirEnv), which has no other name, and "" when the two names are one
+// directory, as when one name is a link to the other: there is then one set
+// of claims, and looking for a claim "under the other name" would find this
+// check's own. Claims and records are honoured in both.
+func Sibling(dir string) string {
+	base, err := userdir.StateHome()
+	if err != nil || base == "" || dir == "" {
+		return ""
+	}
+	for _, names := range [][2]string{{userdir.Name, userdir.LegacyName}, {userdir.LegacyName, userdir.Name}} {
+		mine := filepath.Join(base, names[0], "sessions")
+		if filepath.Clean(dir) != mine && CleanPath(dir) != CleanPath(mine) {
+			continue
+		}
+		other := filepath.Join(base, names[1], "sessions")
+		theirs, err := os.Stat(other) // through a link: what the name leads to
+		if err != nil || !theirs.IsDir() {
+			return ""
+		}
+		if ours, err := os.Stat(mine); err == nil && os.SameFile(ours, theirs) {
+			return ""
+		}
+		return other
+	}
+	return ""
+}
+
+// both is dir and, after it, its Sibling when there is one.
+func both(dir string) []string {
+	if other := Sibling(dir); other != "" {
+		return []string{dir, other}
+	}
+	return []string{dir}
+}
+
+// Known returns the loops in a session's record, and in its record under
+// the tool's other directory name when there is one (see Sibling). A record
+// that cannot be read, or that names another session, gives none.
 func Known(dir string, id Identity) []Supervisor {
+	var out []Supervisor
+	seen := map[string]bool{}
+	for _, d := range both(dir) {
+		for _, s := range known(d, id) {
+			if !seen[s.StateDir] && len(out) < maxSupervisors {
+				seen[s.StateDir] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// known is Known for one directory.
+func known(dir string, id Identity) []Supervisor {
 	var r record
 	if readJSON(filepath.Join(dir, id.Key()+".json"), maxRecordBytes, &r) != nil || r.SchemaVersion != 1 || r.Kind != id.Kind || r.ID != id.ID {
 		return nil
@@ -395,6 +451,25 @@ func Known(dir string, id Identity) []Supervisor {
 // read, is too large, has another schema or names another session. No
 // record at all is not an error: no loop has recorded the session.
 func Recorded(dir string, id Identity) ([]Supervisor, error) {
+	var out []Supervisor
+	seen := map[string]bool{}
+	for _, d := range both(dir) {
+		list, err := recorded(d, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range list {
+			if !seen[s.StateDir] {
+				seen[s.StateDir] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out, nil
+}
+
+// recorded is Recorded for one directory.
+func recorded(dir string, id Identity) ([]Supervisor, error) {
 	path := filepath.Join(dir, id.Key()+".json")
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -413,12 +488,20 @@ func Recorded(dir string, id Identity) ([]Supervisor, error) {
 // most limit of them. It is how a loop finds others that share a working
 // directory or a repository rather than a session.
 func All(dir string, limit int) []Supervisor {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
 	seen := map[string]bool{}
 	var out []Supervisor
+	for _, d := range both(dir) {
+		out = all(d, limit, seen, out)
+	}
+	return out
+}
+
+// all is All for one directory, adding to out the loops not yet seen.
+func all(dir string, limit int, seen map[string]bool, out []Supervisor) []Supervisor {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".json") || len(name) != 32+len(".json") {
@@ -484,6 +567,16 @@ func writeJSON(dir, path string, v any) error {
 // taking it, or nil. Taking it to find out could make a check that starts at
 // that instant skip, so status never does.
 func Peek(dir string, id Identity) *Holder {
+	for _, d := range both(dir) {
+		if h := peek(d, id); h != nil {
+			return h
+		}
+	}
+	return nil
+}
+
+// peek is Peek for one directory.
+func peek(dir string, id Identity) *Holder {
 	var h Holder
 	if readJSON(filepath.Join(dir, id.Key()+".holder"), 4096, &h) != nil || h.PID <= 0 || !alive(h.PID) {
 		return nil

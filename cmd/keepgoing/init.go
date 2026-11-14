@@ -19,6 +19,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -411,11 +412,10 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 		return fail(errors.New("name must be 1-64 lowercase letters, digits, or hyphens, starting with a letter or digit"))
 	}
 	if o.directory == "" {
-		base, err := os.UserConfigDir()
+		o.directory, err = userdir.Config("loops", o.name)
 		if err != nil {
 			return fail(err)
 		}
-		o.directory = filepath.Join(base, "keepgoing", "loops", o.name)
 	}
 	o.directory, err = canonicalFuturePath(o.directory)
 	if err != nil {

@@ -317,7 +317,7 @@ func TestFallbacksCommandsOnAFollowingLoopPointToTheStandardList(t *testing.T) {
 		t.Run(args[1], func(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), append(args, "-c", r.follower), &out, &errb)
-			want := "Edit routes.yaml"
+			want := "keepgoing routes add, move, remove, off or on"
 			if args[1] == "handoff" {
 				want = "errors.failover_on"
 			}
