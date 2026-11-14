@@ -320,7 +320,7 @@ test("an existing loop, an unverified status, a missing program and a full plugi
 
   const empty = fixture();
   empty.c.dispatched(empty.dispatch(await empty.arm(), { text: "   " })); await empty.c.advance("thr_new");
-  assert.equal(empty.w.setups.length, 0); assert.match((await empty.outcome()).message, /no text keepgoing can use/);
+  assert.equal(empty.w.setups.length, 0); assert.match((await empty.outcome()).message, /no text looptender can use/);
 
   const noPreview = fixture(); noPreview.w.previewOk = false;
   noPreview.c.dispatched(noPreview.dispatch(await noPreview.arm())); await noPreview.c.advance("thr_new");
@@ -350,22 +350,22 @@ test("keepgoing's own refusal reaches the thread in its words, with the other lo
   const atPreview = fixture();
   const setup = atPreview.d.setup;
   atPreview.d.setup = async (input, bounds) => input.action === "preview"
-    ? (atPreview.w.setups.push({ action: "preview", threadId: input.threadId, name: input.name, task: input.task, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session." })
+    ? (atPreview.w.setups.push({ action: "preview", threadId: input.threadId, name: input.name, task: input.task, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "looptender refused to set up this loop: loop other-loop already supervises this thread's session." })
     : setup(input, bounds);
   atPreview.c.dispatched(atPreview.dispatch(await atPreview.arm())); await atPreview.c.advance("thr_new");
   const o = await atPreview.outcome();
-  assert.equal(o.state, "failed"); assert.equal(o.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session.");
+  assert.equal(o.state, "failed"); assert.equal(o.message, "looptender refused to set up this loop: loop other-loop already supervises this thread's session.");
   assert.deepEqual(atPreview.w.setups.map(s => s.action), ["preview"]); assert.equal(o.configPath, undefined);
 
   const atStart = fixture(); atStart.w.mode = "automatic";
   const setup2 = atStart.d.setup;
   atStart.d.setup = async (input, bounds) => input.action === "start"
-    ? (atStart.w.setups.push({ action: "start", threadId: input.threadId, bounds }), { ok: false, started: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to start this loop: loop other-loop already supervises this thread's session. Nothing was started." })
+    ? (atStart.w.setups.push({ action: "start", threadId: input.threadId, bounds }), { ok: false, started: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "looptender refused to start this loop: loop other-loop already supervises this thread's session. Nothing was started." })
     : setup2(input, bounds);
   atStart.c.dispatched(atStart.dispatch(await atStart.arm())); await atStart.c.advance("thr_new");
   const s = await atStart.outcome();
   assert.equal(s.state, "ready"); assert.equal(s.startedAutomatically, false);
-  assert.match(s.message, /left switched off\. keepgoing refused to start this loop: loop other-loop/);
+  assert.match(s.message, /left switched off\. looptender refused to start this loop: loop other-loop/);
   await atStart.c.advance("thr_new"); await atStart.outcome();
   assert.equal(atStart.w.setups.filter(x => x.action === "start").length, 1, "never retried");
 });
@@ -440,12 +440,12 @@ test("a refusal at creation shows keepgoing's words only, with no path and no cl
   const f = fixture();
   const setup = f.d.setup;
   f.d.setup = async (input, bounds) => input.action === "create"
-    ? (f.w.setups.push({ action: "create", threadId: input.threadId, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created." })
+    ? (f.w.setups.push({ action: "create", threadId: input.threadId, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "looptender refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created." })
     : setup(input, bounds);
   f.c.dispatched(f.dispatch(await f.arm())); await f.c.advance("thr_new");
   const o = await f.outcome();
   assert.equal(o.state, "failed");
-  assert.equal(o.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created.");
+  assert.equal(o.message, "looptender refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created.");
   assert.equal(o.configPath, undefined); assert.ok(!/may exist|delete its directory/.test(o.message));
 });
 

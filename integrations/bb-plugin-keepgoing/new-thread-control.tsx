@@ -74,7 +74,7 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
       <span><button type="button" style={button} onClick={() => turnOn(key)}>Check again</button></span>
     </section>;
   }
-  if (!mode) return <section aria-label="Keep going" aria-live="polite" style={card}><span role="status">Checking keepgoing…</span></section>;
+  if (!mode) return <section aria-label="Keep going" aria-live="polite" style={card}><span role="status">Checking looptender…</span></section>;
 
   const send = async () => {
     setBusy(true); setError("");
@@ -101,8 +101,8 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
   const blocked = composer.isSubmittingBlocked;
   return <section aria-label="Keep going" aria-live="polite" style={card}>
     <span>{mode === "automatic"
-      ? "keepgoing will supervise the thread this message creates, starting once the thread exists."
-      : "keepgoing will set up supervision for the thread this message creates. It is created switched off; you start it from the thread."}</span>
+      ? "looptender will supervise the thread this message creates, starting once the thread exists."
+      : "looptender will set up supervision for the thread this message creates. It is created switched off; you start it from the thread."}</span>
     <span>{boundsPhrase(draft.bounds)}</span>
     <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
       <button type="button" disabled={busy || blocked} title={blocked ? composer.submittingBlockedReason ?? "" : undefined} onClick={() => void send()} style={{ ...button, fontWeight: 600 }}>Send and keep going</button>
@@ -123,7 +123,7 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
           </select></label>
         <span>The loop is named after the project, with a short suffix; it does not use the message or the thread's title. Later wakes point the agent at the saved task; the first message is not sent again.</span>
         {setups && <span>This plugin holds {setups.used} of {setups.max} setups and cannot remove one yet.</span>}
-        <span>How often it checks, and how many times it nudges a stalled turn or re-prompts after an error, are keepgoing's defaults. The thread shows the exact numbers once the loop is created.</span>
+        <span>How often it checks, and how many times it nudges a stalled turn or re-prompts after an error, are looptender's defaults. The thread shows the exact numbers once the loop is created.</span>
       </div>
     </details>
     {error && <span role="alert">{error}</span>}

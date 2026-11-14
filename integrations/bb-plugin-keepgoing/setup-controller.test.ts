@@ -152,7 +152,7 @@ test("keepgoing's refusal to set up a second loop is shown in plain words with t
     const p = await f.preview();
     const r = at === "preview" ? p : await f.create(p.ticket);
     assert.equal(r.ok, false, at); assert.deepEqual(r.refused, refused);
-    assert.equal(r.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.");
+    assert.equal(r.message, "looptender refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.");
     assert.equal(f.records().length, 0, `${at}: no reference is saved`);
     assert.ok(!f.calls.includes("start"), `${at}: nothing is started`);
     assert.ok(!/allow-second-loop|override|anyway/i.test(r.message), "the plugin offers no way around the refusal");
@@ -168,7 +168,7 @@ test("keepgoing's refusal to start is shown with the other loop's name and is no
     : command(bin, record, op);
   const r = await f.controller.call({ action: "start", threadId: "thr_example" });
   assert.equal(r.ok, false); assert.equal(r.started, false); assert.equal(r.canStart, false); assert.deepEqual(r.refused, refused);
-  assert.match(r.message, /^keepgoing refused to start this loop: loop other-loop already supervises this thread's session/);
+  assert.match(r.message, /^looptender refused to start this loop: loop other-loop already supervises this thread's session/);
   assert.match(r.message, /Nothing was started\./);
   assert.equal(f.calls.filter(c => c === "start").length, 1);
   // A start failure without a structured reason keeps the existing wording.

@@ -145,9 +145,9 @@ function useThreadOutcome(threadId: string, loop: LoopView | undefined) {
   return { outcome, start, control };
 }
 
-const READY_NOT_STARTED = "keepgoing: ready, not started";
+const READY_NOT_STARTED = "looptender: ready, not started";
 // A thread started from the New thread screen carries its own Pause and Stop.
-const KEEPING_GOING = "keepgoing: keeping this going";
+const KEEPING_GOING = "looptender: keeping this going";
 
 function CardRow({ threadId }: { threadId: string }) {
   const { loop, refresh, failed, loaded } = useLoop(threadId);

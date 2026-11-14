@@ -114,7 +114,7 @@ test("goal choice is explicit, invalidates preview on change, and shows recorded
 });
 
 test("keepgoing's refusal is shown in its words and the panel offers no way around it", async () => {
-  const message = "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.";
+  const message = "looptender refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created. To have this thread supervised here instead, pause or disable other-loop first.";
   const call = async (input: { action: string }): Promise<SetupResult> => input.action === "preview"
     ? { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message }
     : { ok: true, message: "Enter a task" };

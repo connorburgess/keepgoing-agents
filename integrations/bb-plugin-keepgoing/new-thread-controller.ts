@@ -60,10 +60,10 @@ interface Job {
   withdrawn?: string;
 }
 
-const NOT_READY = "This thread's first turn did not start in time, so keepgoing set nothing up. Use Supervise this thread to set it up here.";
-const NOT_MATCHED = "keepgoing could not confirm that this thread is the one Send and keep going was pressed for, so nothing was created or started. Use Supervise this thread to set it up here.";
-const NOT_SENT = "The message may not have been sent, so keepgoing set nothing up and started nothing.";
-const LIMITS = "Setup did not report the loop-wide limits that were asked for, so keepgoing did not create it. Nothing was created or started.";
+const NOT_READY = "This thread's first turn did not start in time, so looptender set nothing up. Use Supervise this thread to set it up here.";
+const NOT_MATCHED = "looptender could not confirm that this thread is the one Send and keep going was pressed for, so nothing was created or started. Use Supervise this thread to set it up here.";
+const NOT_SENT = "The message may not have been sent, so looptender set nothing up and started nothing.";
+const LIMITS = "Setup did not report the loop-wide limits that were asked for, so looptender did not create it. Nothing was created or started.";
 const FULL = (c: { used: number; max: number }) => `This plugin already holds ${c.used} of ${c.max} setups, which is the most it can hold, and it has no way to remove one yet. Keep going cannot create another.`;
 
 export function createNewThreadController(d: NewThreadDependencies) {
@@ -110,7 +110,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
     let attempted: { loop: string; configPath: string } | undefined;
     try {
       const supervision = await d.supervision(threadId);
-      if (supervision !== "none") { fail(job, supervision === "supervised" ? "Another loop already supervises this thread. Nothing was created or started." : "keepgoing could not check whether this thread is already supervised, so it set nothing up. Refresh, then use Supervise this thread."); return; }
+      if (supervision !== "none") { fail(job, supervision === "supervised" ? "Another loop already supervises this thread. Nothing was created or started." : "looptender could not check whether this thread is already supervised, so it set nothing up. Refresh, then use Supervise this thread."); return; }
       const capacity = await d.capacity();
       if (capacity.used >= capacity.max) { fail(job, FULL(capacity)); return; }
       const preview = await d.setup({ action: "preview", threadId, name: loopName(ready.project, d.id()), task, withGoal: true }, job.bounds);
@@ -130,7 +130,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
       if (!created.ok || !created.record) {
         // Creation was asked for and not confirmed: something may exist on the
         // host. Say what and where, so it is not left behind unseen.
-        fail(job, `${created.message || "Setup could not be confirmed."} A switched-off setup named ${attempted.loop} may exist on this thread's host and was not started. Check it there with keepgoing status -c on the path below; to discard it, delete its directory.`, attempted);
+        fail(job, `${created.message || "Setup could not be confirmed."} A switched-off setup named ${attempted.loop} may exist on this thread's host and was not started. Check it there with keepgoing status -c (looptender's command in releases up to v0.2.0) on the path below; to discard it, delete its directory.`, attempted);
         return;
       }
       const l = preview.plan.limits;
@@ -160,7 +160,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
       }
     } catch {
       fail(job, attempted
-        ? `Setup could not complete. A switched-off setup named ${attempted.loop} may exist on this thread's host and was not started. Check it there with keepgoing status -c on the path below; to discard it, delete its directory.`
+        ? `Setup could not complete. A switched-off setup named ${attempted.loop} may exist on this thread's host and was not started. Check it there with keepgoing status -c (looptender's command in releases up to v0.2.0) on the path below; to discard it, delete its directory.`
         : "Setup could not complete. Nothing was created or started.", attempted);
     } finally { job.task = ""; d.changed(); }
   };
@@ -244,7 +244,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
         intent.threadId = x.threadId; // single use, whatever happens next
         const exact = x.projectId === intent.projectId && x.attempt === "start-turn" && x.initiator === "user" && x.senderThreadId === null && x.parentThreadId === null && x.sourceThreadId === null && x.queued === 0 && x.threadCreatedAt >= intent.createdAt;
         if (!exact) return explain(x.threadId, NOT_MATCHED);
-        if (!x.text.trim() || Buffer.byteLength(x.text) > 262144) return explain(x.threadId, "The first message has no text keepgoing can use as a task, or is larger than 256 KiB. Nothing was created. Use Supervise this thread to enter a task.");
+        if (!x.text.trim() || Buffer.byteLength(x.text) > 262144) return explain(x.threadId, "The first message has no text looptender can use as a task, or is larger than 256 KiB. Nothing was created. Use Supervise this thread to enter a task.");
         jobs.set(x.threadId, { threadId: x.threadId, task: x.text, bounds: intent.bounds, mode: intent.mode, expires: d.now() + JOB_WAIT_MS, outcome: { state: "waiting", message: "keepgoing is waiting for this thread's first turn to start, then sets it up from the first message." } });
       } catch { /* never fail a send */ }
     },

@@ -27,11 +27,11 @@ export function useOutcome(threadId: string, call: NewThreadCall, refreshKey: un
 
 /** A short label for the collapsed banner; null when this thread was not created with Keep going on. */
 export function outcomeLabel(outcome: Outcome, controlState: string | undefined, supervising: boolean | undefined): string | null {
-  if (outcome.state === "waiting") return "keepgoing: setting up";
-  if (outcome.state === "failed") return controlState ? null : "keepgoing: not set up";
+  if (outcome.state === "waiting") return "looptender: setting up";
+  if (outcome.state === "failed") return controlState ? null : "looptender: not set up";
   if (outcome.state !== "ready") return null;
-  if (controlState === "disabled") return "keepgoing: ready, not started";
-  if (controlState === "enabled" && supervising) return "keepgoing: keeping this going";
+  if (controlState === "disabled") return "looptender: ready, not started";
+  if (controlState === "enabled" && supervising) return "looptender: keeping this going";
   return null;
 }
 
@@ -44,10 +44,10 @@ export function NewThreadOutcome({ threadId, outcome, controlState, supervising,
   const [result, setResult] = useState<{ ok: boolean; message: string }>();
   if (outcome.state === "none") return null;
   const box = { display: "grid", gap: 6, padding: "6px 12px", fontSize: 12 } as const;
-  if (outcome.state === "waiting") return <section aria-label="Keep going for this thread" aria-live="polite" style={box}><strong>keepgoing: setting up</strong><span role="status">{outcome.message}</span></section>;
+  if (outcome.state === "waiting") return <section aria-label="Keep going for this thread" aria-live="polite" style={box}><strong>looptender: setting up</strong><span role="status">{outcome.message}</span></section>;
   // Once a loop exists for the thread, the ordinary status row speaks for it.
   if (outcome.state === "failed") return controlState ? null : <section aria-label="Keep going for this thread" style={box}>
-    <strong>keepgoing could not set this thread up</strong><span role="alert">{outcome.message}</span>
+    <strong>looptender could not set this thread up</strong><span role="alert">{outcome.message}</span>
     {outcome.configPath && <span>Configuration: {outcome.configPath}</span>}
   </section>;
   const label = outcomeLabel(outcome, controlState, supervising);

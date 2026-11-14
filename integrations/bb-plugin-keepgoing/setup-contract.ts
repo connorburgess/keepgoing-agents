@@ -39,7 +39,7 @@ export type Refusal = z.infer<typeof refusalSchema>;
 /** What `keepgoing init --json` and `start` print on stdout when they refuse. */
 export const refusedReportSchema = z.object({ schemaVersion: z.literal(1), outcome: z.literal("refused"), refusal: refusalSchema });
 export function refusalMessage(r: Refusal, command: "init" | "start"): string {
-  return `keepgoing refused to ${command === "init" ? "set up" : "start"} this loop: loop ${r.otherLoop} already supervises this thread's session, and two loops on one session would both prompt it. ${command === "init" ? "Nothing was created." : "Nothing was started."} To have this thread supervised here instead, pause or disable ${r.otherLoop} first.`;
+  return `looptender refused to ${command === "init" ? "set up" : "start"} this loop: loop ${r.otherLoop} already supervises this thread's session, and two loops on one session would both prompt it. ${command === "init" ? "Nothing was created." : "Nothing was started."} To have this thread supervised here instead, pause or disable ${r.otherLoop} first.`;
 }
 export const checkSchema = z.object({ id: text, status: z.enum(["ok", "warning", "error", "unavailable"]), message: text, fix: z.string().max(4096).optional() });
 export const setupResult = z.object({

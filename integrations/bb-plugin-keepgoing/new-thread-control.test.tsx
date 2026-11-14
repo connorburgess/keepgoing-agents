@@ -42,7 +42,7 @@ test("off shows only the switch; on explains once, states the bound and the plai
     assert.equal(toggle.getAttribute("aria-checked"), "false");
     assert.equal(w.ui.queryByLabelText("Keep going"), null); assert.equal(w.calls.length, 0);
     fireEvent.click(toggle);
-    await w.ui.findByText("keepgoing will set up supervision for the thread this message creates. It is created switched off; you start it from the thread.");
+    await w.ui.findByText("looptender will set up supervision for the thread this message creates. It is created switched off; you start it from the thread.");
     assert.equal(toggle.getAttribute("aria-checked"), "true");
     assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     assert.ok(w.ui.getByText("A plain Enter sends without supervision."));
@@ -100,7 +100,7 @@ test("automatic mode says in the control that supervision starts once the thread
   const w = world({ mode: "automatic" });
   try {
     fireEvent.click(w.ui.getByRole("switch"));
-    await w.ui.findByText("keepgoing will supervise the thread this message creates, starting once the thread exists.");
+    await w.ui.findByText("looptender will supervise the thread this message creates, starting once the thread exists.");
     assert.ok(w.ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     // The mode on screen at the press is what the request carries.
     fireEvent.click(w.ui.getByRole("button", { name: "Send and keep going" }));
@@ -212,7 +212,7 @@ test("a thread that was started shows that it is running, with Pause and Stop be
   const ui = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "ready", message: "Started when this thread was created.", loop: "release-notes-for-2-4", bounds: DEFAULT_BOUNDS, startedAutomatically: true }} controlState="enabled" supervising={true}
     start={async () => ({ ok: true, message: "" })} control={async action => { actions.push(action); return { ok: true, message: `${action} done` }; }} onChanged={() => changed++} />);
   try {
-    assert.ok(ui.getByText("keepgoing: keeping this going"));
+    assert.ok(ui.getByText("looptender: keeping this going"));
     assert.deepEqual(ui.getAllByRole("button").map(b => b.textContent), ["Pause", "Stop"]);
     fireEvent.click(ui.getByRole("button", { name: "Stop" }));
     assert.equal((await ui.findByRole("status")).textContent, "stop done");
@@ -229,7 +229,7 @@ test("a thread created with Keep going on shows one button that says what it sta
   const ui = render(<NewThreadOutcome threadId="thr_example" outcome={ready} controlState="disabled" supervising={true}
     start={async input => { starts.push(input); return { ok: true, message: "Background supervision started. Existing timers were not changed." }; }} onChanged={() => changed++} />);
   try {
-    assert.ok(ui.getByText("keepgoing: ready, not started"));
+    assert.ok(ui.getByText("looptender: ready, not started"));
     assert.ok(ui.getByText(/Loop release-notes-for-2-4\. Created from this thread's first message/));
     assert.ok(ui.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     assert.equal(ui.getAllByRole("button").length, 1);
@@ -243,14 +243,14 @@ test("after it is started the same words are used and the button is gone; waitin
   const start = async () => ({ ok: true, message: "" });
   const started = render(<NewThreadOutcome threadId="thr_example" outcome={{ ...ready, startedAutomatically: true }} controlState="enabled" supervising={true} start={start} onChanged={() => {}} />);
   try {
-    assert.ok(started.getByText("keepgoing: keeping this going"));
+    assert.ok(started.getByText("looptender: keeping this going"));
     assert.ok(started.getByText(/Started when this thread was created\./));
     assert.ok(started.getByText(boundsPhrase(DEFAULT_BOUNDS)));
     assert.equal(started.queryByRole("button", { name: "Start keeping this going" }), null);
     assert.equal(started.queryByRole("button", { name: "Pause" }), null, "without a control route there are no control buttons");
   } finally { started.unmount(); cleanup(); }
   const waiting = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "waiting", message: "keepgoing is waiting for this thread's environment." }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
-  try { assert.ok(waiting.getByText("keepgoing: setting up")); assert.match(waiting.getByRole("status").textContent ?? "", /waiting/); assert.equal(waiting.queryByRole("button"), null); }
+  try { assert.ok(waiting.getByText("looptender: setting up")); assert.match(waiting.getByRole("status").textContent ?? "", /waiting/); assert.equal(waiting.queryByRole("button"), null); }
   finally { waiting.unmount(); cleanup(); }
   const failed = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "failed", message: "Another loop already supervises this thread. Nothing was created or started." }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
   try { assert.match(failed.getByRole("alert").textContent ?? "", /already supervises/); assert.equal(failed.queryByRole("button"), null); }
@@ -261,6 +261,6 @@ test("after it is started the same words are used and the button is gone; waitin
   const none = render(<NewThreadOutcome threadId="thr_example" outcome={{ state: "none", message: "" }} controlState={undefined} supervising={undefined} start={start} onChanged={() => {}} />);
   try { assert.equal(none.container.textContent, ""); } finally { none.unmount(); cleanup(); }
   assert.equal(outcomeLabel({ state: "none", message: "" }, "enabled", true), null);
-  assert.equal(outcomeLabel({ state: "failed", message: "x" }, undefined, undefined), "keepgoing: not set up");
+  assert.equal(outcomeLabel({ state: "failed", message: "x" }, undefined, undefined), "looptender: not set up");
   assert.equal(outcomeLabel(ready, "paused", true), null, "holds are reported by the ordinary status row");
 });
