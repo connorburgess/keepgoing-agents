@@ -70,9 +70,16 @@ func mark(dir, line string) {
 }
 
 // work is an agent that keeps working until it is stopped or told to quit.
-func work(dir string) {
+func work(dir, generation string) {
 	for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(filepath.Join(dir, "quit")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(dir, "quit")); err == nil && string(b) == fmt.Sprintf("%s %d", generation, os.Getpid()) {
+			if _, gateErr := os.Stat(filepath.Join(dir, "consume-gate")); gateErr == nil {
+				os.WriteFile(filepath.Join(dir, "quit-blocked"), nil, 0600)
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(dir, "quit-ack"), b, 0600); err != nil {
+				os.Exit(93)
+			}
 			return
 		}
 	}
@@ -99,7 +106,11 @@ func standIn(part, dir string, args []string) int {
 		if part == "codex" && len(args) > 0 && args[0] == "app-server" {
 			return codexAppServer(situation)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "agent-process"), []byte(fmt.Sprintf("%d %d", os.Getpid(), os.Getppid())), 0600); err != nil {
+		generation, err := os.ReadFile(filepath.Join(dir, "stage-generation"))
+		if err != nil {
+			return 95
+		}
+		if err := os.WriteFile(filepath.Join(dir, "agent-process"), []byte(fmt.Sprintf("%d %d %s", os.Getpid(), os.Getppid(), generation)), 0600); err != nil {
 			return 95
 		}
 		mark(dir, "begin")
@@ -107,7 +118,7 @@ func standIn(part, dir string, args []string) int {
 		if part == "codex" {
 			play = standInCodex
 		}
-		code := play(dir, situation, args)
+		code := play(dir, situation, args, string(generation))
 		mark(dir, "finish")
 		if situation == Crashed {
 			if b, err := os.ReadFile(filepath.Join(dir, "exit-delay")); err == nil {
@@ -177,7 +188,7 @@ func standInProcess(dir string, situation Situation, args []string) int {
 }
 
 // standInClaude plays `claude -p --output-format json`.
-func standInClaude(dir string, situation Situation, args []string) int {
+func standInClaude(dir string, situation Situation, args []string, generation string) int {
 	session := ""
 	for i, a := range args {
 		if a == "--resume" && i+1 < len(args) {
@@ -208,7 +219,7 @@ func standInClaude(dir string, situation Situation, args []string) int {
 		fmt.Fprintln(os.Stderr, "rate limit exceeded (429), try again later")
 		return 1
 	case Active, Hanging, Crashed:
-		work(dir)
+		work(dir, generation)
 	case Oversized:
 		filler(oversize)
 		fmt.Println(ok)
@@ -250,7 +261,7 @@ func codexAppServer(situation Situation) int {
 }
 
 // standInCodex plays `codex exec --json`.
-func standInCodex(dir string, situation Situation, args []string) int {
+func standInCodex(dir string, situation Situation, args []string, generation string) int {
 	session := ""
 	if len(args) > 2 && args[1] == "resume" {
 		session = args[len(args)-2]
@@ -280,7 +291,7 @@ func standInCodex(dir string, situation Situation, args []string) int {
 	case Garbage:
 		fmt.Println("All done! The task is complete.")
 	case Active, Hanging, Crashed:
-		work(dir)
+		work(dir, generation)
 	case Oversized:
 		fmt.Println(started)
 		filler(oversize)

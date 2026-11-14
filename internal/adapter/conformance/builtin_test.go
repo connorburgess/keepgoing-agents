@@ -23,11 +23,14 @@ import (
 
 // rig is the stand-in side of a built-in adapter under test.
 type rig struct {
-	dir         string // the stand-in's own records
-	stateDir    string
-	turns       bool // the agent runs one turn per process
-	supports    map[Situation]bool
-	retainAgent func(int) error
+	dir             string // the stand-in's own records
+	stateDir        string
+	turns           bool // the agent runs one turn per process
+	supports        map[Situation]bool
+	retainAgent     func(int) error
+	stageSequence   int
+	pendingQuit     string
+	pendingDeadline time.Time
 }
 
 func (r *rig) Supports(s Situation) bool     { return r.supports[s] }
@@ -63,11 +66,19 @@ func (r *rig) Sent() ([]Sent, error) {
 // process is only ever in a situation because a turn ended that way, so a
 // turn is run; a working or hanging one is left running.
 func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
+	if err := r.waitQuitConsumption(ctx); err != nil {
+		return err
+	}
 	if err := r.set(s); err != nil {
 		return err
 	}
 	if !r.turns {
 		return nil
+	}
+	r.stageSequence++
+	generation := fmt.Sprintf("stage-%d", r.stageSequence)
+	if err := os.WriteFile(filepath.Join(r.dir, "stage-generation"), []byte(generation), 0600); err != nil {
+		return err
 	}
 	os.Remove(filepath.Join(r.dir, "quit"))
 	before, _ := r.running()
@@ -80,7 +91,8 @@ func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
 	if s == Crashed {
 		// End the turn's wrapper before it can record anything, then let the
 		// agent it started go.
-		for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		deadline := time.Now().Add(20 * time.Second)
+		for ; ; time.Sleep(10 * time.Millisecond) {
 			if now, _ := r.running(); now > before {
 				break
 			}
@@ -99,7 +111,7 @@ func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
 			return err
 		}
 		fields := strings.Fields(string(b))
-		if len(fields) != 2 {
+		if len(fields) != 3 || fields[2] != generation {
 			return errors.New("invalid fixture agent identity")
 		}
 		pid, err := strconv.Atoi(fields[0])
@@ -125,11 +137,40 @@ func (r *rig) Stage(ctx context.Context, a adapter.Adapter, s Situation) error {
 		if err := errors.Join(killErr, wrapper.Release()); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(r.dir, "quit"), nil, 0o600); err != nil {
+		r.pendingQuit = fmt.Sprintf("%s %d", generation, pid)
+		r.pendingDeadline = deadline // Share the existing begin/consumption staging bound.
+		if err := os.WriteFile(filepath.Join(r.dir, "quit"), []byte(r.pendingQuit), 0o600); err != nil {
+			return err
+		}
+		if err := r.waitQuitConsumption(ctx); err != nil {
 			return err
 		}
 	}
 	return r.Settle(ctx, a)
+}
+
+// A receipt proves only that this stand-in consumed this generation's quit.
+// Never clear/reuse quit after timeout until that exact receipt is present.
+func (r *rig) waitQuitConsumption(ctx context.Context) error {
+	for r.pendingQuit != "" {
+		b, err := os.ReadFile(filepath.Join(r.dir, "quit-ack"))
+		if err == nil && string(b) == r.pendingQuit {
+			r.pendingQuit = ""
+			return nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(r.pendingDeadline) {
+			return fmt.Errorf("stand-in did not acknowledge quit %q within staging deadline (receipt %q)", r.pendingQuit, b)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return nil
 }
 
 // running counts the stand-in agents that began and have not finished.
