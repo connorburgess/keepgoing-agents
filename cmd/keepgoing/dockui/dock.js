@@ -368,11 +368,14 @@
   }
 
   // ---- Overview: what needs you, then what else is not routine ----
-  // Pause all: offered while any loop can be paused; the server reviews
-  // every loop and words the review and the outcome.
+  // Pause all and stop all: each offered while any loop can have it; the
+  // server reviews every loop and words the review, its options and the
+  // outcome.
   function groupBox(d) {
-    var any = list(d.loops).some(function (l) { return list(l.can).indexOf("pause") >= 0; });
-    return changeBox({ key: "all", can: any ? ["pause"] : [] }, true);
+    var can = ["pause", "stop"].filter(function (a) {
+      return list(d.loops).some(function (l) { return list(l.can).indexOf(a) >= 0; });
+    });
+    return changeBox({ key: "all", can: can }, true);
   }
   function renderHome(d, pane) {
     pane.appendChild(paneHead("Needs you"));
