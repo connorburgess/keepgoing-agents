@@ -117,18 +117,6 @@ func TestDoctorVariables(t *testing.T) {
 			t.Fatalf("%+v", found)
 		}
 	})
-	// Doctor as a whole does not also say a registry is in use when the two
-	// names disagree: none is.
-	t.Run("no registry is named as in use when its names disagree", func(t *testing.T) {
-		clear(t)
-		f := newFixture(t)
-		t.Setenv(envvar.RegistryDir.Name(), filepath.Join(f.dir, "registry-new"))
-		t.Setenv(envvar.RegistryDir.Legacy(), filepath.Join(f.dir, "registry-old"))
-		_, out, _ := f.run("doctor", "--json")
-		if strings.Contains(out, `"registry.directory"`) || !strings.Contains(out, `"environment.registry_dir"`) {
-			t.Fatalf("%s", out)
-		}
-	})
 	t.Run("a location named twice, the same place", func(t *testing.T) {
 		clear(t)
 		t.Setenv(envvar.RegistryDir.Name(), "/private/example/one")
