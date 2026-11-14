@@ -21,9 +21,9 @@ Candidate evidence:
 - **The macOS executable.** The unpacked macOS arm64 executable reported `v0.2.0-rc.1`, with SHA-256 `06aa60abfdf1af591e212087fd6dbae5bc92a7b5ecf4c5db5176a8a059218c92`.
 - **`scripts/smoke-release.py` against it.** All six setup variants passed (BB, Claude Code and Codex, each prompt-only and goal), covering setup, offline diagnostics, holds, completion and ownership, with zero provider commands.
 - **`scripts/smoke-recovery.py` against it.** All four journeys passed (BB, process, Claude Code, Codex), covering failure, alert rejection, held-daemon SIGKILL and restart, explicit recovery, completion, and preserved allowance and owner. With `--include-cursor`, the Cursor journey passed as well.
-- **The BB plugin.** The same export installed the plugin with `npm ci --omit=dev --omit=optional --ignore-scripts` and built its server, app and host bundles with `bb plugin build` (BB 0.48.1, SDK 0.6.104). Every bundle's metadata reports plugin `0.2.0`. That version was not changed, although the plugin source changed after its v0.2.0; whether it gets a new version with this release is a separate decision.
+- **The BB plugin.** The same export installed the plugin with `npm ci --omit=dev --omit=optional --ignore-scripts` and built its server, app and host bundles with `bb plugin build` (BB 0.48.1, SDK 0.6.104). Every bundle's metadata reports plugin `0.2.0`, the version at that commit; this release sets it to `0.3.0`, and the final candidate's build must report that.
 
-**Found while running the checks.** Both smoke scripts inherit the caller's `HOME`, and the recovery journeys create session claims in the user state directory (`~/Library/Application Support/keepgoing/sessions` on macOS) and leave them there. That happens despite the script reporting that state was removed. These runs set `HOME` and the `XDG_*` directories to a throwaway directory, so no real user state was touched. The scripts should set them themselves; that is a script change for its own PR.
+**Found while running the checks.** `scripts/smoke-release.py` inherited the caller's `HOME`, and its checks left six session claims in the user's state directory (`~/Library/Application Support/keepgoing/sessions` on macOS), although it reported its loops removed. `scripts/smoke-recovery.py` already set its own home. These runs set `HOME` and the `XDG_*` directories to a throwaway directory, so no real user state was touched. [#223](https://github.com/connorburgess/keepgoing-agents/pull/223) makes the release smoke use a home of its own; the final candidate is checked with it.
 
 **Not run:**
 - the Go test suite on the export (CI runs it on every pull request, and the release workflow runs it before building);
@@ -34,9 +34,10 @@ Candidate evidence:
 - any live provider or first-loop walkthrough.
 
 **Before tagging:**
-1. Rebuild the six archives from the final checked commit, which will include any work merged after this candidate (#216 and others), with the final version label.
-2. Repeat the checks above against that build.
+1. Rebuild the six archives from the final checked commit, with the final version label. It includes the work merged after this candidate that this release announces (#216, #217, #218, #220, #221) and the smoke fix (#223).
+2. Repeat the checks above against that build, including the plugin build reporting `0.3.0`.
 3. Set the release date in the changelog.
+4. Point the BB plugin README's install line at the new tag.
 
 Publication, downloaded-asset checks, the Homebrew formula (with its licence field) and the plugin's install remain separate gates.
 

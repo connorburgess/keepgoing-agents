@@ -9,6 +9,8 @@
 - several behaviours change on upgrade;
 - v0.1.5 cannot read the records this version writes without the steps below.
 
+The BB plugin is released from the same tag as **0.3.0**. Its loop card says when checks have stopped, and it is under the same licence.
+
 **What is new.**
 - **Recovery that does not spend into a dead network:** a connectivity check before every recovery step.
 - **BB recovery:** a failed BB turn retried by reference, and stale or declined retry notices no longer waited on.
