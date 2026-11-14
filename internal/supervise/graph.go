@@ -188,6 +188,10 @@ type graphWaiting struct {
 	target   string
 	listing  string
 	children []rungraph.Child
+	// titles are the titles BB reported for the listed children, by hashed
+	// key, for the panel's private lane-titles file. Only a complete listing
+	// has them.
+	titles map[string]string
 }
 
 // graphChildren keeps what this check's observation said about child threads.
@@ -219,8 +223,13 @@ func (t *tick) graphChildren(adapterKind, target string, obs decide.Observation,
 		return
 	}
 	byKey := map[string]string{}
+	titles := map[string]string{}
 	for id, st := range status {
-		byKey[decide.ChildHashes([]string{id})[0]] = st
+		key := decide.ChildHashes([]string{id})[0]
+		byKey[key] = st
+		if title, ok := obs.ChildTitles[id]; ok {
+			titles[key] = title
+		}
 	}
 	keys := make([]string, 0, len(byKey))
 	for key := range byKey {
@@ -230,7 +239,7 @@ func (t *tick) graphChildren(adapterKind, target string, obs decide.Observation,
 	for _, key := range keys {
 		w.children = append(w.children, rungraph.Child{Key: key, Status: byKey[key]})
 	}
-	w.listing = rungraph.ListingComplete
+	w.listing, w.titles = rungraph.ListingComplete, titles
 }
 
 // graphWait records the child picture of a check that observed a BB target.
@@ -241,5 +250,11 @@ func (t *tick) graphWait() {
 	if w == nil || t.opts.DryRun {
 		return
 	}
-	t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Wait(w.target, w.listing, w.children, t.now) })
+	recorded := t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Wait(w.target, w.listing, w.children, t.now) })
+	// The panel's lane titles follow the listing they came from: replaced
+	// only by a complete listing the graph recorded, never by an incomplete
+	// one. They are for display; a failure to save them changes nothing.
+	if recorded && w.listing == rungraph.ListingComplete {
+		_ = state.SaveLaneTitles(t.loop.StateDir, t.now, w.titles)
+	}
 }
