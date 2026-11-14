@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -148,5 +150,40 @@ func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
 	write(t, f.cfg, string(cfgText)+timingYAML, 0o600)
 	if _, out, _ := f.run("status", "-now", "2026-11-09T12:00:00Z"); !strings.Contains(out, "timing at the next turn boundary: stay: no steps are configured, so timing only collects readings\n") {
 		t.Fatalf("no steps: %s", out)
+	}
+}
+
+// status lines from timing's record, word for word: the last move with its
+// window's reset as it stands now, a step up given up, a return retried, an
+// unsettled step, a route being reapplied, and a step that left the
+// configuration.
+func TestTimingRecordLines(t *testing.T) {
+	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	move := &state.TimingMove{At: now.Add(-65 * time.Minute), From: "primary", To: "example-large", Action: "up", Window: "seven_day", ResetsAt: now.Add(time.Hour)}
+	for _, c := range []struct {
+		st   state.File
+		want []string
+	}{
+		{state.File{ActiveTarget: "example-large", TargetSetBy: state.SetByTiming, Timing: &state.TimingRecord{LastMove: move}},
+			[]string{"timing last moved 1h 5m ago: stepped up from primary to example-large for the seven_day window, which resets 2026-11-09 13:00Z"}},
+		{state.File{Timing: &state.TimingRecord{LastMove: &state.TimingMove{At: now.Add(-3 * time.Hour), From: "primary", To: "example-large", Action: "up", Window: "seven_day", ResetsAt: now.Add(-time.Hour)},
+			Capped: true, Failures: 2, FailedTo: "example-large", FailedWindow: "seven_day"}},
+			[]string{"timing last moved 3h 0m ago: stepped up from primary to example-large for the seven_day window, which has reset since (2026-11-09 11:00Z)",
+				"timing: could not step up to example-large 2 times for this seven_day window; it stops trying until the window resets"}},
+		{state.File{ActiveTarget: "example-large", Timing: &state.TimingRecord{Failures: 3, FailedTo: "primary", FailedAction: "back"}},
+			[]string{"timing: could not move to primary 3 times; it tries again at each turn boundary"}},
+		{state.File{Timing: &state.TimingRecord{Pending: &state.TimingMove{From: "primary", To: "example-large"}}},
+			[]string{"timing: a step from primary to example-large was recorded and not settled; the next check that acts sets the thread to primary, the route on record"}},
+		{state.File{ReapplyRoute: true},
+			[]string{"route: the loop is on primary because its route left the configuration; the next check that acts sets the thread's model and effort to primary's"}},
+	} {
+		if got := timingRecordLines(c.st, now); strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+		}
+	}
+	cfg := &config.Config{Loop: config.Loop{Timing: &config.Timing{Enabled: false}}}
+	w := timingWouldOf(cfg, state.File{ActiveTarget: "example-large", TargetSetBy: state.SetByTiming}, control.File{}, nil, now)
+	if w == nil || w.Text != "timing at the next turn boundary: return to primary: example-large is no longer a timing step" || w.Reason != "left_configuration" {
+		t.Fatalf("%+v", w)
 	}
 }

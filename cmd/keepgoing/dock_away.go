@@ -22,6 +22,7 @@ const (
 	dockLeftNetwork   = "network"
 	dockLeftError     = "other_error"
 	dockLeftCommand   = "command"
+	dockLeftTiming    = "timing"       // usage-aware timing stepped off it
 	dockLeftUnknown   = "not_recorded" // no record of why
 	dockLeftNotKept   = "not_retained" // the history no longer reaches it
 	dockReturnOn      = "on"
@@ -30,6 +31,8 @@ const (
 	// dockReturnNoHandoff: returning is on, but it follows only a handoff and
 	// state records none (a retarget does not set one), so it will not come.
 	dockReturnNoHandoff = "no_handoff"
+	// dockReturnTiming: usage-aware timing returns at its window's reset.
+	dockReturnTiming = "timing"
 )
 
 // dockDeparture is one route the loop left on its way to its current route.
@@ -72,6 +75,10 @@ type dockAway struct {
 	Short  dockText `json:"short"`
 	Why    dockText `json:"why"`
 	Picker string   `json:"picker"`
+	// timing is the move usage-aware timing made to the current route.
+	timing *state.TimingMove
+	// timingLeft: that route is no longer a timing step.
+	timingLeft bool
 }
 
 // dockMove is one recorded move of the loop from one route to another.
@@ -134,6 +141,9 @@ func dockAwayOf(st *statusOut, chain *dockChainInput, entries []dockChainEntry, 
 		return nil
 	}
 	a := &dockAway{Return: dockReturnOff, Departures: []dockDeparture{}}
+	if tr := st.State.Timing; st.State.TargetSetBy == state.SetByTiming && tr != nil && tr.LastMove != nil && tr.LastMove.To == st.Target {
+		return dockTimingAway(a, st, chain, entries, now)
+	}
 	position := map[string]int{incident.TargetKey(state.Primary): 0}
 	for i, cand := range chain.Candidates {
 		position[incident.TargetKey(cand.ID)] = i + 1
@@ -263,6 +273,8 @@ func (a *dockAway) finish(now time.Time) {
 		a.Why = txt("First choice left after an error")
 	case dockLeftCommand:
 		a.Why = txt("Moved off its first choice by a command")
+	case dockLeftTiming:
+		a.Why = a.timingWhy()
 	case dockLeftNotKept:
 		a.Why = txt("The record of why it left its first choice is no longer retained")
 	default:
@@ -316,6 +328,8 @@ func (a *dockAway) departureText(d dockDeparture, subject string, now time.Time)
 		}
 	case dockLeftCommand:
 		s = txt(who+" was pointed at another route by a command", on(), ".")
+	case dockLeftTiming:
+		return a.timingDeparture(d, who, on())
 	case dockLeftNotKept:
 		s = txt("The record of why " + lowerFirst(who) + " left this route is no longer retained.")
 	default:
@@ -368,6 +382,86 @@ func (a *dockAway) departureText(d dockDeparture, subject string, now time.Time)
 func lowerFirst(s string) string {
 	if s == "The loop" {
 		return "the loop"
+	}
+	return s
+}
+
+// dockTimingAway describes a loop on a step usage-aware timing chose, from the
+// move on record: when, which window it was for and when that resets.
+func dockTimingAway(a *dockAway, st *statusOut, chain *dockChainInput, entries []dockChainEntry, now time.Time) *dockAway {
+	m := st.State.Timing.LastMove
+	a.timing, a.Return, a.How = m, dockReturnTiming, dockLeftTiming
+	at := m.At
+	a.Since = &at
+	position := map[string]int{state.Primary: 0}
+	for i, cand := range chain.Candidates {
+		position[cand.ID] = i + 1
+		if cand.ID == st.Target {
+			a.Choice = i + 2
+		}
+	}
+	routeKey := func(pos int) string {
+		for _, e := range entries {
+			if e.Position == pos {
+				return e.Route
+			}
+		}
+		return ""
+	}
+	if pos, ok := position[m.From]; ok {
+		a.Departures = append(a.Departures, dockDeparture{Position: pos, Route: routeKey(pos), How: dockLeftTiming, At: &at})
+	}
+	if m.From != state.Primary {
+		// An earlier timing move left the first route; only the last is kept.
+		a.Departures = append(a.Departures, dockDeparture{Position: 0, Route: routeKey(0), How: dockLeftTiming})
+	}
+	cfgSteps := chain.TimingSteps
+	a.timingLeft = !chain.TimingOn || !containsString(cfgSteps, st.Target)
+	a.finish(now)
+	return a
+}
+
+// timingWhy is the Route card's second line for a loop on a timing step.
+func (a *dockAway) timingWhy() dockText {
+	m := a.timing
+	if m == nil {
+		return txt("Moved off its first choice by usage-aware timing")
+	}
+	verb := "stepped up"
+	if m.Action == "down" {
+		verb = "stepped down"
+	}
+	s := txt("Usage-aware timing " + verb)
+	if m.Window != "" && !m.ResetsAt.IsZero() {
+		s = txt(s, " for the "+dockWindowName(m.Window)+" window, which resets ", tm(m.ResetsAt, "datetime"))
+	}
+	if a.timingLeft {
+		return txt(s, "; it is no longer a timing step, so the next turn boundary returns it to its first choice")
+	}
+	return s
+}
+
+// timingDeparture is the sentence about the route timing moved the loop off.
+func (a *dockAway) timingDeparture(d dockDeparture, who string, on dockText) dockText {
+	m := a.timing
+	if m == nil || d.At == nil {
+		return txt("Usage-aware timing moved " + lowerFirst(who) + " off this route.")
+	}
+	var s dockText
+	switch m.Action {
+	case "down":
+		s = txt("Usage-aware timing stepped down from here", on, ": the "+dockWindowName(m.Window)+" window was projected to run out before its reset.")
+	default:
+		s = txt("Usage-aware timing stepped up from here", on, ", to use the "+dockWindowName(m.Window)+" allowance before it resets.")
+	}
+	if d.Position != 0 {
+		return s
+	}
+	switch {
+	case a.timingLeft:
+		return txt(s, " That route is no longer a timing step: the next turn boundary returns here.")
+	case !m.ResetsAt.IsZero():
+		return txt(s, " Timing returns here when that window resets, ", tm(m.ResetsAt, "datetime"), ", or earlier if the readings show it running out.")
 	}
 	return s
 }

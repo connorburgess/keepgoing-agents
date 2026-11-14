@@ -32,6 +32,10 @@ type timingWould struct {
 // error or unknown last observation, a route the failover rules or a person
 // chose) apply as they would then.
 func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *health.Registry, now time.Time) *timingWould {
+	if timing.LeftConfiguration(cfg.Loop, st) {
+		return &timingWould{Action: timing.Back, To: timing.First, Rule: timing.RuleGate, Reason: "left_configuration",
+			Text: fmt.Sprintf("timing at the next turn boundary: return to %s: %s is no longer a timing step", timing.First, st.Target())}
+	}
 	if !cfg.Loop.TimingOn() {
 		return nil
 	}
@@ -40,7 +44,7 @@ func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *hea
 	in.Held = ctl.Paused || ctl.Stop || ctl.AwaitingUser || ctl.Completed
 	if c := st.LastCheck; c != nil {
 		in.InError = c.ObservedState == string(decide.Error)
-		in.RefusalOrUnknown = c.ObservedState == string(decide.Unknown)
+		in.Unknown = c.ObservedState == string(decide.Unknown)
 	}
 	if at := timing.RetargetReset(in); at != nil {
 		in.Retarget.ResetsAt = at
@@ -53,6 +57,9 @@ func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *hea
 // timingResetAfter is the reset of the first named window in the latest
 // reading of the first route's account that is still to come, or nil.
 func timingResetAfter(cfg *config.Config, now time.Time) *time.Time {
+	if cfg.Loop.Timing == nil {
+		return nil
+	}
 	reg, err := health.Load(cfg.Loop.StateDir)
 	if err != nil {
 		return nil
@@ -73,26 +80,41 @@ func timingResetAfter(cfg *config.Config, now time.Time) *time.Time {
 	return nil
 }
 
-// timingRecordLines are status lines from timing's record: its last move and
-// a step it has stopped trying.
+// timingRecordLines are status lines from timing's record: its last move,
+// with its window's reset as it stands now, a step it stopped trying, a move
+// it keeps retrying, a step not yet settled, and a route reapplied.
 func timingRecordLines(st state.File, now time.Time) []string {
+	var out []string
+	if st.ReapplyRoute {
+		out = append(out, fmt.Sprintf("route: the loop is on %s because its route left the configuration; the next check that acts sets the thread's model and effort to %s's", st.Target(), st.Target()))
+	}
 	tr := st.Timing
 	if tr == nil {
-		return nil
+		return out
 	}
-	var out []string
 	if m := tr.LastMove; m != nil {
-		text := m.Text
-		if text == "" {
-			text = m.Action + " to " + m.To
+		verb := map[string]string{"up": "stepped up", "down": "stepped down", "back": "returned"}[m.Action]
+		if verb == "" {
+			verb = "moved"
 		}
-		out = append(out, fmt.Sprintf("timing last moved %s: %s", usageAge(int64(now.Sub(m.At)/time.Second)), text))
+		line := fmt.Sprintf("timing last moved %s: %s from %s to %s", usageAge(int64(now.Sub(m.At)/time.Second)), verb, m.From, m.To)
+		if m.Window != "" && !m.ResetsAt.IsZero() {
+			when := "resets " + m.ResetsAt.UTC().Format("2006-01-02 15:04Z")
+			if !m.ResetsAt.After(now) {
+				when = "has reset since (" + m.ResetsAt.UTC().Format("2006-01-02 15:04Z") + ")"
+			}
+			line += fmt.Sprintf(" for the %s window, which %s", m.Window, when)
+		}
+		out = append(out, line)
 	}
-	if tr.Capped {
-		out = append(out, fmt.Sprintf("timing: could not step to %s %d times for this window; it stops trying until the window resets", tr.FailedTo, tr.Failures))
+	switch {
+	case tr.Capped:
+		out = append(out, fmt.Sprintf("timing: could not step up to %s %d times for this %s window; it stops trying until the window resets", tr.FailedTo, tr.Failures, tr.FailedWindow))
+	case tr.Failures > 0:
+		out = append(out, fmt.Sprintf("timing: could not move to %s %d times; it tries again at each turn boundary", tr.FailedTo, tr.Failures))
 	}
 	if p := tr.Pending; p != nil {
-		out = append(out, fmt.Sprintf("timing: a step from %s to %s was recorded and not settled; the next check sets the thread to the route on record", p.From, p.To))
+		out = append(out, fmt.Sprintf("timing: a step from %s to %s was recorded and not settled; the next check that acts sets the thread to %s, the route on record", p.From, p.To, st.Target()))
 	}
 	return out
 }

@@ -850,9 +850,12 @@ func dockShareAcrossLoops(loops []dockLoop, routes []dockRoute, now time.Time) {
 type dockChainInput struct {
 	Primary    config.Candidate
 	Candidates []config.Candidate
-	FailoverOn []string
-	Summary    *fallbacksOut
-	PrimaryUse *usageView
+	// TimingOn and TimingSteps are usage-aware timing's configuration.
+	TimingOn    bool
+	TimingSteps []string
+	FailoverOn  []string
+	Summary     *fallbacksOut
+	PrimaryUse  *usageView
 	// ProbeEvery is the configured interval of scheduled probes; zero when
 	// scheduled probes are off. SwitchBack is whether automatic return to
 	// the first route is configured.
