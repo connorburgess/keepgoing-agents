@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.2.0 (proposed; not yet released)
+## 0.2.0 (2026-11-14)
 
 **The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
 - the licence changes;
@@ -54,6 +54,12 @@ It drops the newer fields of `state.json`, `control.json` and `bb-cursor.json`.
 - the earlier BB, daemon, probe and report checks listed in [integrations](docs/integrations.md).
 
 ### Detail
+
+- The release smoke check (`scripts/smoke-release.py`) runs in a home of its own, so running it no longer leaves session claims in the caller's state directory (#223).
+
+- Pull-request checks refuse a change that adds git conflict markers (#224).
+
+- `docs/devices.md` revises the proposed first-version defaults for moving loops between devices. It is a design document; nothing in it is implemented (#218).
 
 - **The daemon checks again as soon as it can tell recovery is possible.** Under `keepgoing start` or a service, while the last check found the network down, the daemon makes the same connectivity check at most once a minute and starts the next check when it passes, instead of waiting out `daemon.interval`. A check that waits on a provider limit records the limit's structured reset (`limitResetsAt` in `state.json`), and the daemon runs the next check at that reset when it comes before the end of the interval. Nothing is sent from the wait. External schedulers, including BB automations, are unchanged. See [network outages](docs/operations.md#network-outages).
 
