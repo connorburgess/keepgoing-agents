@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -111,4 +113,34 @@ func ownershipError(e env, err error) int {
 		return exitSkipped
 	}
 	return exitFailed
+}
+
+// takeoverLockWait is how long enable --take-over waits for the check lock
+// the old owner's supervisor holds during a check or control poll, as stop
+// --immediately waits for a running check.
+var takeoverLockWait = 5 * time.Second
+
+// lockRetried, when set by a test, is called each time acquireWithin finds
+// the lock held and is about to wait.
+var lockRetried func()
+
+// acquireWithin takes the loop's check lock, waiting up to wait while
+// another process holds it. A lock still held after that is lock.ErrHeld,
+// as it is from lock.Acquire; any other error is returned at once.
+func acquireWithin(ctx context.Context, stateDir string, wait time.Duration) (*lock.Lock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		l, err := lock.Acquire(stateDir)
+		if err == nil || !errors.Is(err, lock.ErrHeld) || !time.Now().Before(deadline) {
+			return l, err
+		}
+		if lockRetried != nil {
+			lockRetried()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
