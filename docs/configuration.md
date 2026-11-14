@@ -254,7 +254,7 @@ Unreleased source; before, a span's times on a day the clock changed were counte
 
 ## timing
 
-Unreleased source, and the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). **It does not change routes yet**: nothing decides from the readings until the step decision (U4) exists. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+Unreleased source, and the first parts of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3 and U4). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection), and `status` says what it would do with them. **It does not change routes yet**: nothing acts on the decision until U5. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
 
 ```yaml
 loop:
@@ -266,6 +266,11 @@ loop:
     windows: [seven_day]         # the provider's window keys timing acts on
     near_reset: 6h               # default
     probe_every: 12h             # default
+    steps: [example-small, primary, example-large]  # cheapest to strongest
+    ceiling: example-large       # default: the last step
+    unused_at_least: 0.25        # default
+    down_at: 0.95                # default
+    min_on_step: 2h              # default
 ```
 
 | Field | Default | Meaning |
@@ -274,6 +279,11 @@ loop:
 | `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
 | `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
 | `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
+| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on. The order is yours; keepgoing never ranks models or effort levels. Without steps timing only collects readings. |
+| `ceiling` | the last step | The strongest step timing may use, at or above `primary`. |
+| `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, above 0 and below 1. |
+| `down_at` | `0.95` | The projected use at reset that makes timing step down, above 0 and at most 1. |
+| `min_on_step` | `2h` | The least time between timing moves, except the return at a reset; between 1m and 168h. |
 
 Timing needs `loop.fallbacks` (its `probe.daily_cap` and `probe.timeout` apply) and a way to probe the first route (`loop.provider` of `claude-code` or `codex`, or `loop.probe`); `validate` refuses it otherwise and names what is missing. It is not available for Cursor loops.
 
@@ -285,9 +295,20 @@ When timing probes run:
 
 **What it costs.** `validate`, `status`, `doctor` and `fallbacks check --dry-run` state it, for example: `about 14 small paid probes a week for this allowance at a 12h cadence, plus one as each named window (seven_day) nears its reset, never above probe.daily_cap (6 a day); on example-small, the probe model`. The probes use `loop.probe.model` when set, otherwise the route's own model.
 
-**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is a decision for the step design (U4), with its cost stated.
+**What the readings cover.** A probe reports the windows its model reports. A window for one model alone is reported only on a probe that uses that model, so it is read only when the probe's model is the route's own model; a cheaper probe model does not report it. The cost line says which applies. Probing on the route's own model to read such a window is not offered yet; it would be a separate choice with its cost stated.
 
 **Where the readings come from.** A probe runs the CLI on this computer with its sign-in, or `loop.probe.env`. For a loop on a BB thread that may not be the account BB uses for the thread; `validate` and `doctor` warn whenever timing is on for a BB loop.
+
+**What it would do.** `status` (text and JSON `timingWould`) says what timing would do at the loop's next turn boundary, from the same decision U5 will act on, ending `(not acted on yet)`. The rules are tried in order and the first that applies decides, even when it decides to stay. Each decision names its rule and a reason code, both stable:
+
+1. `gate`: timing stays when no steps are configured (`no_steps`), the loop is held (`held`), the session is in error (`in_error`), another move was decided in the same check (`other_move`), the last turn was a refusal or unknown (`refusal_or_unknown`), a turn is running (`turn_not_ended`), the failover rules moved the loop to the route it is on (`on_fallback_by_failover`), a person moved it and the window it was moved in has not reset (`retargeted`), or it is on a route that is not a step (`not_on_step`). Timing never moves a loop off a route the failover rules chose.
+2. `return_at_reset`: after a timing move, once the reset that move was for has passed, back to `primary` (`reset_passed`), however long ago the move was.
+3. `step_back_early`: after a step up, when the readings taken since then project the window running out before its reset, back to `primary` (`runs_out_since_step_up`).
+4. `step_down`: when a named window, from readings taken since the last timing move with the newest within the fallbacks' `probe.ttl`, is projected at `down_at` or more with more than `near_reset` left, down one step (`projected_over_down_at`), never below the cheapest (`at_floor`).
+5. `step_up`: when a named window resets within `near_reset`, a reading no older than 1h shows at least `unused_at_least` unused and no other named window is at or projected at `down_at`, straight to the ceiling (`near_reset_unused`); once per window instance (`already_stepped_up`), not above the ceiling (`at_ceiling`), and not while another named window is high (`other_window_high`).
+6. `nothing_due`: no reading (`no_reading`), none of the named windows reported (`no_named_window`), a reading too old to step up on (`reading_too_old`), projected under `down_at` (`projected_under_down_at`), or not projectable (`cannot_project`).
+
+Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missing, stale or malformed reading never leads to a move. `status` cannot see a turn end, so it decides as if the next check found one; the gates it can read from records still apply.
 
 ## errors
 
