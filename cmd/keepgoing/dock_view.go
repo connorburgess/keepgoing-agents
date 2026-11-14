@@ -183,6 +183,9 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// Refusals is the refusal gauge and any open question about refusals or
+	// a restriction, as status shows them; nil before the first refusal.
+	Refusals *refusalStatus `json:"refusals,omitempty"`
 	// Build is the build that ran the loop's last check, against this
 	// panel's own; listed under "Worth knowing" when they differ.
 	Build dockBuild `json:"build"`
@@ -1325,6 +1328,9 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	if st != nil {
 		np := st.NoProgress
 		l.NoProgress = &np
+		if r := st.Refusals; r.Total > 0 || r.Question != "" {
+			l.Refusals = &r
+		}
 		if np.Availability == "flagged" {
 			l.PickerState += " \u00B7 no progress"
 		}
@@ -1491,6 +1497,13 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		n.Reason, n.Action = "No Git progress within its time limit.", "See why, then resume or mark it finished."
 	case "stall_limit":
 		n.Reason, n.Action = "No progress after repeated nudges.", "See why, then resume or mark it finished."
+	case "refusal_ask":
+		n.Reason, n.Action = "The model or provider declined turn after turn, and a continue did not clear it.", "Look at the conversation, then decide how the loop goes on: keepgoing resume continues, keepgoing pause or stop ends it. Starting a fresh session from here is coming, not yet available."
+		if st != nil && st.Refusals.Streak > 0 {
+			n.Reason = fmt.Sprintf("The model or provider declined %d turns in a row, and a continue did not clear it.", st.Refusals.Streak)
+		}
+	case "restricted":
+		n.Reason, n.Action = "The provider denied permission for this request or account.", "Fix the account's access, then resume for one more try, or pause or stop it."
 	case "stall_limit_held":
 		n.Reason, n.Action = "No progress after nudges that were held back because the turn looked hung.", "Retry the turn in BB, or stop the loop and resume it."
 		if st != nil && st.State.Nudges > 0 {

@@ -438,10 +438,12 @@ type statusOut struct {
 	SharedWith []string `json:"sharedWith,omitempty"`
 	// SessionClaim describes a check of another loop acting on this loop's
 	// primary session right now, or one that is stuck holding it.
-	SessionClaim      string                   `json:"sessionClaim,omitempty"`
-	PromptSend        promptSendStatus         `json:"promptSend"`
-	LimitWait         limitWaitStatus          `json:"limitWait"`
-	TurnRetry         turnRetryStatus          `json:"turnRetry"`
+	SessionClaim string           `json:"sessionClaim,omitempty"`
+	PromptSend   promptSendStatus `json:"promptSend"`
+	LimitWait    limitWaitStatus  `json:"limitWait"`
+	TurnRetry    turnRetryStatus  `json:"turnRetry"`
+	// Refusals is the refusal gauge in words and counts.
+	Refusals          refusalStatus            `json:"refusals"`
 	Lanes             lanesStatus              `json:"laneRecovery"`
 	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
 	NewThreads        newThreadStatus          `json:"newThreads"`
@@ -628,6 +630,12 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	printLimitWait(w, out.LimitWait)
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
 	printTurnRetry(w, out.TurnRetry)
+	if out.Refusals.Text != "" {
+		fmt.Fprintf(w, "refusals:  %s\n", out.Refusals.Text)
+	}
+	if out.Refusals.Question != "" {
+		fmt.Fprintf(w, "question:  %s\n", out.Refusals.Question)
+	}
 	printLanes(w, out.Lanes)
 	printChildReport(w, out.ChildErrorReport)
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
@@ -888,6 +896,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
 	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
 	// The lane record is per-lane hashes and their key. Status shows its
 	// counts above and never the record itself.
@@ -1135,6 +1144,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
+			f.Question = nil // a resume ends the open question; the check that follows honours it
 			if !f.Stop {
 				f.StopLanesAt, f.StopLanesDropQueued = nil, false // the stop it belonged to has ended
 			}
@@ -1167,8 +1177,12 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 	}[cmd]
 	newEpisode, openQuestion := false, false
 	var settledBriefs []control.Brief
+	endedQuestion := ""
 	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
-		newEpisode, openQuestion, settledBriefs = false, false, nil
+		newEpisode, openQuestion, settledBriefs, endedQuestion = false, false, nil, ""
+		if cmd == "resume" && f.Question != nil {
+			endedQuestion = f.Question.ID
+		}
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -1210,6 +1224,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 		}
 		return exitFailed
 	}
+	recordQuestionEnded(cfg.Loop.StateDir, endedQuestion)
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
 		return exitFailed

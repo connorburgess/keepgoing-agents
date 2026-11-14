@@ -90,7 +90,7 @@ func TestTimelineShowsTheLongLimitWaitReport(t *testing.T) {
 	// An unknown marker is not stored as a report.
 	appendTimelineRecord(t, dir, incident.Record{Kind: "tick", CheckStartedAt: now, Action: "none", Outcome: "succeeded", LimitWaitReport: "PRIVATE_MARKER", ControlBefore: on, ControlAfter: on})
 	all := timelineJSON(t, dir)
-	if all.SchemaVersion != 7 || all.Summary.LastLimitWaitReport == nil || all.Summary.LastLimitWaitReport.Sequence != 7 || all.Summary.LimitWaitChecks != 8 {
+	if all.SchemaVersion != 8 || all.Summary.LastLimitWaitReport == nil || all.Summary.LastLimitWaitReport.Sequence != 7 || all.Summary.LimitWaitChecks != 8 {
 		t.Fatalf("%+v", all.Summary)
 	}
 	got := timelineJSON(t, dir, "--kind", "limit_wait_report")

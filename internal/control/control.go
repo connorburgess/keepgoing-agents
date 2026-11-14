@@ -55,7 +55,10 @@ type File struct {
 	// task was declared complete, with its note. Completion ends the hold,
 	// but what a person was being asked is kept until a resume.
 	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
+	// Question is the one open question the loop holds for until a person
+	// answers it. See question.go.
+	Question  *Question `json:"question,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Brief is a brief to another conversation: Action is handoff or

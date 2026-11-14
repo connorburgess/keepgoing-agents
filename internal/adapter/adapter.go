@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 )
 
@@ -188,11 +189,15 @@ func ClassifyCode(code string) decide.ErrorClass {
 	if c == "" {
 		return decide.ErrUnknown
 	}
+	// One list, shared with the validation of agent definitions.
+	if declined := config.DeclinedCode(c); declined != "" {
+		return decide.ErrorClass(declined)
+	}
 	if n, err := strconv.Atoi(c); err == nil {
 		switch n {
 		case 429:
 			return decide.ErrRateLimit
-		case 401, 403:
+		case 401:
 			return decide.ErrAuth
 		case 503, 529:
 			return decide.ErrOverloaded
@@ -202,7 +207,7 @@ func ClassifyCode(code string) decide.ErrorClass {
 	switch c {
 	case "rate_limit", "rate-limit", "rate_limited", "ratelimit", "rate_limit_event", "rate_limit_error", "usage_limit", "usage_limit_reached", "quota_exceeded", "insufficient_quota", "too_many_requests", "subscription_window_blocked":
 		return decide.ErrRateLimit
-	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "permission_denied", "forbidden", "invalid_api_key", "oauth_token_expired":
+	case "auth", "unauthorized", "unauthenticated", "authentication", "authentication_error", "authentication_failed", "invalid_api_key", "oauth_token_expired":
 		return decide.ErrAuth
 	case "overloaded", "overloaded_error", "service_unavailable", "capacity", "server_overloaded":
 		return decide.ErrOverloaded
@@ -210,6 +215,42 @@ func ClassifyCode(code string) decide.ErrorClass {
 		return decide.ErrNetwork
 	}
 	return decide.ErrUnknown
+}
+
+// Classify classifies an error that carries several structured fields. A
+// refusal or a restriction in any field wins over every other class: a
+// provider that reports "unauthorized" together with HTTP 403, or a policy
+// block together with a rate-limit code, has declined the request, and that
+// must never read as a login or a limit a loop may fail over on. Otherwise
+// the first field that maps to a known class decides.
+func Classify(codes ...string) decide.ErrorClass {
+	classes := make([]decide.ErrorClass, len(codes))
+	for i, c := range codes {
+		classes[i] = ClassifyCode(c)
+	}
+	return Prefer(classes...)
+}
+
+// Prefer chooses among the classes several fields of one error gave, by the
+// same rule: a restriction wins, then a refusal, then the first known class.
+// A restriction is an account-level denial and holds at once; a refusal is
+// continued, so a denial that also carries a policy signal must not be.
+func Prefer(classes ...decide.ErrorClass) decide.ErrorClass {
+	first, refused := decide.ErrUnknown, false
+	for _, cl := range classes {
+		switch {
+		case cl == decide.ErrRestricted:
+			return cl
+		case cl == decide.ErrRefused:
+			refused = true
+		case first == decide.ErrUnknown && cl != "" && cl != decide.ErrNone:
+			first = cl
+		}
+	}
+	if refused {
+		return decide.ErrRefused
+	}
+	return first
 }
 
 // ParseState maps a provider's status string onto the engine's states.

@@ -5,6 +5,7 @@ package testexec
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,15 +120,46 @@ func TestRunOnceRetriesALaunchEndedByASignal(t *testing.T) {
 	}
 }
 
-// A program refused on every launch is an environment failure that names
-// the path, after a bounded number of launches.
-func TestRunOnceReportsARefusalAsAnEnvironmentFailure(t *testing.T) {
-	p := newProbe(t)
-	if err := os.WriteFile(p.kills, []byte("always"), 0o600); err != nil {
-		t.Fatal(err)
+// killedError is the error of a real launch ended by SIGKILL, from a shell
+// that kills itself. /bin/sh is a system program the host has run before, so
+// its launch is not itself at risk of a first-run refusal; and whichever of
+// the two kills it, the error is the same kind.
+func killedError(t *testing.T) error {
+	t.Helper()
+	err := exec.Command("/bin/sh", "-c", "kill -KILL $$").Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.Exited() {
+		t.Fatalf("a shell that killed itself: %v", err)
 	}
-	path := p.dir.File("probe")
-	err := RunOnce(path, p.env)
+	return err
+}
+
+// fakeLaunches makes every launch return the next error in errs, the last one
+// repeating, and counts the launches.
+func fakeLaunches(t *testing.T, errs ...error) *int {
+	t.Helper()
+	n := 0
+	old := launch
+	launch = func(string, []string, []string) error {
+		n++
+		if n <= len(errs) {
+			return errs[n-1]
+		}
+		return errs[len(errs)-1]
+	}
+	t.Cleanup(func() { launch = old })
+	return &n
+}
+
+// A program refused on every launch is an environment failure that names
+// the path, after a bounded number of launches. The launches are replayed,
+// not real: a real program that kills itself can still end some other way on
+// a loaded host (once on CI it was reported as ending on its own), and a real
+// refusal ends it before it can count its own launch.
+func TestRunOnceReportsARefusalAsAnEnvironmentFailure(t *testing.T) {
+	launches := fakeLaunches(t, killedError(t))
+	path := filepath.Join(t.TempDir(), "probe")
+	err := RunOnce(path, nil)
 	var refused *RefusedError
 	if !errors.As(err, &refused) || refused.Path != path || refused.Launches != maxLaunches {
 		t.Fatalf("%T %v", err, err)
@@ -135,12 +167,48 @@ func TestRunOnceReportsARefusalAsAnEnvironmentFailure(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), EnvironmentFailure+": the host ended "+path+" by a signal on each of 20 launches") {
 		t.Fatalf("message: %s", err)
 	}
-	if got := len(p.runs(t)); got != 1+maxLaunches {
-		t.Fatalf("%d launches, want %d", got, 1+maxLaunches)
+	if *launches != maxLaunches {
+		t.Fatalf("%d launches, want %d", *launches, maxLaunches)
 	}
 	// Adding such a program to a Dir fails the same way.
-	if _, err := p.dir.Alias("probe", "refused", p.env); !errors.As(err, &refused) || refused.Path != p.dir.File("refused") {
+	d, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.File("probe"), nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Alias("probe", "refused", nil); !errors.As(err, &refused) || refused.Path != d.File("refused") {
 		t.Fatalf("alias of a refused program: %v", err)
+	}
+}
+
+// The retry rule on replayed launches: signals are retried until a launch
+// ends on its own, whatever its exit code; a program that could not be
+// started is returned at once, and is not a refusal.
+func TestRunOnceRetryRule(t *testing.T) {
+	killed := killedError(t)
+	exited := exec.Command("/bin/sh", "-c", "exit 3").Run()
+	if exited == nil {
+		t.Fatal("a shell that exits 3 succeeded")
+	}
+	notStarted := errors.New("fictional: no such file")
+	for name, c := range map[string]struct {
+		errs     []error
+		launches int
+		ok       bool
+	}{
+		"killed three times, then ran": {[]error{killed, killed, killed, nil}, 4, true},
+		"killed, then exited 3":        {[]error{killed, exited}, 2, true},
+		"could not be started":         {[]error{notStarted}, 1, false},
+		"killed, then could not start": {[]error{killed, notStarted}, 2, false},
+	} {
+		launches := fakeLaunches(t, c.errs...)
+		err := RunOnce("example", nil)
+		var refused *RefusedError
+		if (err == nil) != c.ok || *launches != c.launches || errors.As(err, &refused) {
+			t.Errorf("%s: %v after %d launches", name, err, *launches)
+		}
 	}
 }
 
