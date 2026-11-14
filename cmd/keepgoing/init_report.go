@@ -64,17 +64,21 @@ type initReport struct {
 	Outcome       string `json:"outcome"` // preview or created
 	// StartJSON says this build's start accepts --background --json, which
 	// reports a refusal as a code and the other loop's name.
-	StartJSON   bool              `json:"startJson"`
-	Loop        string            `json:"loop"`
-	Project     string            `json:"project"`
-	ConfigPath  string            `json:"configPath"`
-	StateDir    string            `json:"stateDir"`
-	PromptPath  string            `json:"promptPath"`
-	TaskPath    string            `json:"taskPath,omitempty"`
-	Goal        *initGoalReport   `json:"goal,omitempty"`
-	TaskSource  string            `json:"taskSource"`  // stdin, file, inline
-	TaskBinding string            `json:"taskBinding"` // snapshot
-	Primary     initTarget        `json:"primary"`
+	StartJSON   bool            `json:"startJson"`
+	Loop        string          `json:"loop"`
+	Project     string          `json:"project"`
+	ConfigPath  string          `json:"configPath"`
+	StateDir    string          `json:"stateDir"`
+	PromptPath  string          `json:"promptPath"`
+	TaskPath    string          `json:"taskPath,omitempty"`
+	Goal        *initGoalReport `json:"goal,omitempty"`
+	TaskSource  string          `json:"taskSource"`  // stdin, file, inline
+	TaskBinding string          `json:"taskBinding"` // snapshot
+	Primary     initTarget      `json:"primary"`
+	// Routes is standard for a loop that follows the standard list (its
+	// fallbacks are that list as it resolves for the loop now), own for a
+	// loop with fallbacks of its own, and none.
+	Routes      string            `json:"routes"`
 	Fallbacks   []initFallbackRef `json:"fallbacks"`
 	Limits      initLimits        `json:"limits"`
 	Probes      *initProbePolicy  `json:"probes,omitempty"`
@@ -170,6 +174,12 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 		r.TaskSource = "stdin"
 	} else if o.taskFile != "" {
 		r.TaskSource = "file"
+	}
+	r.Routes = "none"
+	if cfg.Loop.FollowsStandard() {
+		r.Routes = config.RoutesStandard
+	} else if cfg.FallbackSet != nil {
+		r.Routes = "own"
 	}
 	if fs := cfg.FallbackSet; fs != nil {
 		for _, c := range fs.Candidates {

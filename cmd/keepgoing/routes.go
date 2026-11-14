@@ -83,10 +83,11 @@ type loopRoutesView struct {
 	Skipped    []skippedRoute  `json:"skipped"`
 	Redundancy *health.Summary `json:"redundancy,omitempty"`
 	Warnings   []string        `json:"warnings"`
-	// Can lists the changes this caller may make to the loop's own list with
-	// routes --loop: move, remove, off and on. When it is empty, CanReason
-	// says why: follows_standard, no_list, not_owner, ownership_unknown or
-	// configuration_unavailable.
+	// Can lists the changes this caller may make to the loop with routes
+	// --loop: move, remove, off and on for its own list, follow_standard for
+	// a loop that could follow the standard list, and own for one that
+	// does. When it is empty, CanReason says why: no_list, not_owner,
+	// ownership_unknown or configuration_unavailable.
 	Can       []string `json:"can"`
 	CanReason string   `json:"canReason,omitempty"`
 }
@@ -129,10 +130,12 @@ func routesCommand(e env, args []string) int {
 			return routesEditCommand(e, args[0], args[1:])
 		case "check":
 			return routesCheckCommand(e, args[1:])
+		case "follow-standard", "own":
+			return routesFollowCommand(e, args[0], args[1:])
 		}
 	}
 	if len(args) == 0 || args[0] != "list" {
-		e.errf("routes needs a subcommand: list, add, move, remove, off, on or check")
+		e.errf("routes needs a subcommand: list, add, move, remove, off, on, check, follow-standard or own")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("routes list", flag.ContinueOnError)
@@ -281,13 +284,18 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 		return view
 	}
 	l := cfg.Loop
-	switch {
-	case l.FollowsStandard():
-		view.CanReason = "follows_standard"
-	case cfg.FallbackSet == nil:
-		view.CanReason = "no_list"
-	default:
-		view.Can, view.CanReason = ownListCan(l.StateDir)
+	view.Can, view.CanReason = ownListCan(l.StateDir)
+	if view.CanReason == "" {
+		switch {
+		case l.FollowsStandard():
+			view.Can = []string{"own"}
+		case cfg.FallbackSet == nil && (l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex"):
+			view.Can = []string{"follow_standard"}
+		case cfg.FallbackSet == nil:
+			view.Can, view.CanReason = []string{}, "no_list"
+		case l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex":
+			view.Can = append(view.Can, "follow_standard")
+		}
 	}
 	view.Loop = l.Name
 	if cfg.RouteList.Source != "" {
@@ -444,7 +452,8 @@ func followsStandardRefusal(sub string) string {
 
 // ownListCan is what this caller may change in a loop's own list: all of it
 // for the loop's owner, or a person outside BB, and nothing for another
-// thread. It only reads; the write checks again under the lock.
+// thread; loopRoutes narrows it by what the loop has. It only reads; the
+// write checks again under the lock.
 func ownListCan(stateDir string) ([]string, string) {
 	f, err := control.Load(stateDir)
 	if err != nil {

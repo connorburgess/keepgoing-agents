@@ -84,6 +84,8 @@ Fallbacks:
                            Change the standard route list (a person only), or with
                            --loop NAME a loop's own list; preview, then confirm
   routes check             Validate the standard list; --loop NAME [ID] probes that loop's routes
+  routes follow-standard | own
+                           Make a loop follow the standard list, or keep a copy of it as its own
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)

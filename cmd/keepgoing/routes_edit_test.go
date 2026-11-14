@@ -180,7 +180,7 @@ func TestRoutesStandardListChangesArePersonOnlyAndBoundToTheReview(t *testing.T)
 	}
 	t.Setenv("BB_THREAD_ID", "")
 	_, list, _, _ = r.list_("--json")
-	if strings.Join(list.Standard.Can, ",") != "add,move,remove,off,on" || loopView(t, list, "follower-loop").CanReason != "follows_standard" || strings.Join(loopView(t, list, "example-loop").Can, ",") != "move,remove,off,on" {
+	if strings.Join(list.Standard.Can, ",") != "add,move,remove,off,on" || strings.Join(loopView(t, list, "follower-loop").Can, ",") != "own" || strings.Join(loopView(t, list, "example-loop").Can, ",") != "move,remove,off,on,follow_standard" {
 		t.Fatalf("person can: %+v", list)
 	}
 	// A preview, then the list changes: the reviewed apply writes nothing.
