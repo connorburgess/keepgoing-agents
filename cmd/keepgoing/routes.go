@@ -297,19 +297,6 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 		return view
 	}
 	l := cfg.Loop
-	view.Can, view.CanReason = ownListCan(l.StateDir)
-	if view.CanReason == "" {
-		switch {
-		case l.FollowsStandard():
-			view.Can = []string{"own"}
-		case cfg.FallbackSet == nil && (l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex"):
-			view.Can = []string{"follow_standard"}
-		case cfg.FallbackSet == nil:
-			view.Can, view.CanReason = []string{}, "no_list"
-		case l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex":
-			view.Can = append(view.Can, "follow_standard")
-		}
-	}
 	view.Loop = l.Name
 	if cfg.RouteList.Source != "" {
 		view.List = cfg.RouteList.Source
@@ -328,6 +315,7 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 	}
 	st, _ := state.Load(l.StateDir)
 	view.Current = st.Target()
+	view.Can, view.CanReason = loopCan(cfg, view.Current)
 	view.First = &loopRouteRow{ID: state.Primary, Provider: l.Provider, Model: l.Agent.Model(), Effort: agentEffort(l.Agent), Group: l.Group, Enter: "first", Source: "loop", Current: view.Current == state.Primary, Healthy: true}
 	fb, outside := supervise.EffectiveRoutes(cfg, st)
 	if fb == nil {
@@ -461,6 +449,35 @@ func followsStandardRefusal(sub string) string {
 		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml."
 	}
 	return "This loop follows the standard route list. Change that list instead with keepgoing routes add, move, remove, off or on."
+}
+
+// loopCan is what this caller may do to a loop with routes --loop, offering
+// only what would work now: follow_standard for a bb, claude or codex loop
+// on its first route while a standard list with routes exists, and own for
+// a following loop whose list can be read and gives it routes.
+func loopCan(cfg *config.Config, current string) ([]string, string) {
+	l := cfg.Loop
+	can, reason := ownListCan(l.StateDir)
+	if reason != "" {
+		return can, reason
+	}
+	_, written := standardRoutesWritten()
+	followable := (l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex") && current == state.Primary && written
+	switch {
+	case l.FollowsStandard() && cfg.RouteList.Unreadable:
+		return []string{}, "list_unreadable"
+	case l.FollowsStandard() && cfg.FallbackSet == nil:
+		return []string{}, "no_route_applies"
+	case l.FollowsStandard():
+		return []string{"own"}, ""
+	case cfg.FallbackSet == nil && followable:
+		return []string{"follow_standard"}, ""
+	case cfg.FallbackSet == nil:
+		return []string{}, "no_list"
+	case followable:
+		return append(can, "follow_standard"), ""
+	}
+	return can, ""
 }
 
 // ownListCan is what this caller may change in a loop's own list: all of it

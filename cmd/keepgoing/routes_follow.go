@@ -208,7 +208,7 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 		if ref := allowedRefusal(err); ref.Code == "not_owner" {
 			return routeChangeRefused(req, ref), code
 		}
-		return routeReviewAgain(p.out), code
+		return routeReviewAgain(p.out), exitSkipped
 	}
 	// Under the lock the plan is made again from what is on disk now, and
 	// must be the one reviewed.
@@ -282,15 +282,17 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		loop := l
 		loop.Fallbacks, loop.Routes = "", config.RoutesStandard
 		after, skipped = r.Resolve(loop)
-		if after != nil {
-			for _, c := range after.Candidates {
-				left, err := findFallbackLeftovers(cfg, c.ID)
-				if err != nil {
-					return nil, refuseRoute("not_possible", "%v", err)
-				}
-				if left.any() {
-					p.clear = append(p.clear, c.ID)
-				}
+		// Every id in the list, not only those that apply now: a route
+		// switched off, left out for this loop, or not yet allowed can apply
+		// later (routes on, routes_allow), and must not inherit what the
+		// loop recorded for a route of its own with that id.
+		for _, rt := range r.Routes {
+			left, err := findFallbackLeftovers(cfg, rt.ID)
+			if err != nil {
+				return nil, refuseRoute("not_possible", "%v", err)
+			}
+			if left.any() {
+				p.clear = append(p.clear, rt.ID)
 			}
 		}
 		edited, ok := setLoopRoutes(raw, true, "")
@@ -350,7 +352,14 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 			return nil, refuseRoute("edit_by_hand", "keepgoing.yaml's loop section cannot be changed line by line; set loop.fallbacks by hand.")
 		}
 		p.configYAML = edited
-		o.Warnings = append(o.Warnings, "changes to the standard list no longer reach this loop; its routes are copied as they resolve now")
+		// The files as they would be must load as the loop will load them:
+		// config.Load also checks what a parse does not, such as a tick
+		// timeout too short for the copied probe timeout.
+		if msg := loadsAsWritten(cfg.Path(), edited, file, p.fallbacksYAML); msg != "" {
+			return nil, refuseRoute("not_possible", "The loop would not load with its own copy of the routes, so nothing is written: %s", msg)
+		}
+		o.Warnings = append(o.Warnings, "changes to the standard list no longer reach this loop; its routes are copied as they resolve now",
+			"the copy includes, for each route, what the loop resolves into it from keepgoing.yaml: environment values, executable, extra arguments and working directory, and the loop's own conversation for a same-conversation route; later changes to those in keepgoing.yaml no longer reach these routes")
 	default:
 		return nil, refuseRoute("usage", "unknown change %q", req.op)
 	}
@@ -367,7 +376,8 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		}
 		v.NoRouteApplies = len(v.After) == 0
 		if after != nil {
-			v.BelowMinHealthy = belowMinHealthy(cfg, after, after.Redundancy.MinHealthy, current, req.now)
+			// As it will be: after the planned clear.
+			v.BelowMinHealthy = belowMinHealthy(cfg, after, after.Redundancy.MinHealthy, current, req.now, p.clear...)
 		}
 		o.Loops = append(o.Loops, v)
 		if len(l.Errors.FailoverOn) == 0 {
@@ -566,4 +576,24 @@ func printRouteSource(e env, o routeChangeOut) {
 	for _, warning := range o.Warnings {
 		fmt.Fprintf(w, "note: %s\n", warning)
 	}
+}
+
+// loadsAsWritten loads the configuration and its new fallbacks file as they
+// would be written, from a private directory beside keepgoing.yaml under
+// the same names, and returns why it fails, naming no path.
+func loadsAsWritten(cfgPath string, configYAML []byte, file string, fallbacksYAML []byte) string {
+	dir, err := os.MkdirTemp(filepath.Dir(cfgPath), ".routes-own-*")
+	if err != nil {
+		return "a private directory to check it in could not be created"
+	}
+	defer os.RemoveAll(dir)
+	cfgCopy := filepath.Join(dir, filepath.Base(cfgPath))
+	if os.WriteFile(cfgCopy, configYAML, 0o600) != nil || os.WriteFile(filepath.Join(dir, file), fallbacksYAML, 0o600) != nil {
+		return "the files could not be written to check them"
+	}
+	if _, err := config.Load(cfgCopy); err != nil {
+		msg := strings.ReplaceAll(err.Error(), dir+string(os.PathSeparator), "")
+		return strings.ReplaceAll(msg, dir, "")
+	}
+	return ""
 }

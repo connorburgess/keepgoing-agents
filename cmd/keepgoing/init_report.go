@@ -181,11 +181,12 @@ func printInitJSON(e env, o initOptions, cfg *config.Config, goal *control.Goal)
 	} else if cfg.FallbackSet != nil {
 		r.Routes = "own"
 	}
+	// What is written, whether or not any route applies yet.
+	r.Limits.FailoverOn = append([]string{}, cfg.Loop.Errors.FailoverOn...)
 	if fs := cfg.FallbackSet; fs != nil {
 		for _, c := range fs.Candidates {
 			r.Fallbacks = append(r.Fallbacks, initFallbackRef{ID: c.ID, Target: initTargetOf(c.Agent)})
 		}
-		r.Limits.FailoverOn = []string{"rate_limit"}
 		r.Probes = &initProbePolicy{fs.Probe.Every.String(), fs.Probe.TTL.String(), fs.Probe.DailyCap, true, true}
 	}
 	if err := json.NewEncoder(e.stdout).Encode(r); err != nil {

@@ -770,7 +770,7 @@ func candidateIDs(fb *config.Fallbacks) []string {
 // belowMinHealthy says whether, by its recorded check results, the loop would
 // have fewer distinct healthy routes than min asks for. Without results it
 // says nothing.
-func belowMinHealthy(cfg *config.Config, fb *config.Fallbacks, min int, current string, now time.Time) bool {
+func belowMinHealthy(cfg *config.Config, fb *config.Fallbacks, min int, current string, now time.Time, cleared ...string) bool {
 	if min <= 0 {
 		return false
 	}
@@ -780,6 +780,9 @@ func belowMinHealthy(cfg *config.Config, fb *config.Fallbacks, min int, current 
 	reg, err := health.Load(cfg.Loop.StateDir)
 	if err != nil {
 		return false
+	}
+	for _, id := range cleared {
+		delete(reg.Candidates, id)
 	}
 	group := cfg.Loop.Group
 	if c, ok := fb.Find(current); ok {
@@ -1139,7 +1142,7 @@ func ownListAuthority(stateDir, caller string) *routeRefusal {
 	// Another thread's loop, and ownership that cannot be read, are refused
 	// by the ownership check every change makes (fallbackAddAllowed).
 	if f, err := control.Load(stateDir); err == nil && f.Ownership == nil {
-		return refuseRoute("agent_identity", "This loop has no recorded owner, so only a person can change its list. Run this outside a BB thread, or from the thread that owns the loop.")
+		return refuseRoute("agent_identity", "This loop has no recorded owner, so only a person can change its list. Run this outside a BB thread, or make this thread the owner first: keepgoing start or keepgoing enable, run from it, records it as the loop's owner.")
 	}
 	return nil
 }

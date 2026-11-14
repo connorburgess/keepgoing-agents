@@ -317,8 +317,12 @@ func collectInit(e env, o *initOptions, input io.Reader, lookPath func(string) (
 	// The offer to follow the standard list: yes unless declined, and only
 	// when asked. A script follows it only with --routes standard.
 	if !visited["routes"] && !visited["fallback"] && initCanFollow(o.agent) {
-		if n, ok := standardRoutesWritten(); ok {
-			choice, err := ask(fmt.Sprintf("Follow your standard route list (%d routes) for handoffs? (yes/no)", n), "yes")
+		if applies, total := initStandardOffer(o, lookPath); applies > 0 {
+			verb := "apply"
+			if applies == 1 {
+				verb = "applies"
+			}
+			choice, err := ask(fmt.Sprintf("Follow your standard route list for handoffs? %d of its %d routes %s to this loop. (yes/no)", applies, total, verb), "yes")
 			if err != nil {
 				return err
 			}
@@ -510,6 +514,9 @@ func planInit(o *initOptions, lookPath func(string) (string, error)) (map[string
 			}
 			return fail(fmt.Errorf("--routes standard: the standard route list cannot be used (%s): %s", code, routesProblemText(code)))
 		}
+		if len(standard.Routes) == 0 {
+			return fail(errors.New("--routes standard: the standard route list has no routes yet; add one first with keepgoing routes add"))
+		}
 	default:
 		return fail(errors.New("--routes is standard or own"))
 	}
@@ -654,6 +661,32 @@ func initAgent(kind, account, group, model, project string, lookPath func(string
 // initCanFollow reports whether a loop of this agent can follow the
 // standard route list.
 func initCanFollow(agent string) bool { return agent == "bb" || agent == "claude" || agent == "codex" }
+
+// initStandardOffer is how many of the standard list's routes would apply
+// to the loop being set up, and how many it has. Nothing is offered when
+// none would apply, or when the loop cannot be described yet.
+func initStandardOffer(o *initOptions, lookPath func(string) (string, error)) (int, int) {
+	path, err := config.StandardRoutesPath()
+	if err != nil {
+		return 0, 0
+	}
+	r, err := config.LoadRoutes(path)
+	if err != nil || len(r.Routes) == 0 {
+		return 0, 0
+	}
+	a, err := initAgent(o.agent, o.account, o.group, o.model, o.project, lookPath)
+	if err != nil {
+		return 0, len(r.Routes)
+	}
+	if a.BB != nil {
+		a.BB.Thread, a.Provider = strings.TrimSpace(o.thread), strings.TrimSpace(o.provider)
+		if a.Group == "" {
+			a.Group = a.Provider
+		}
+	}
+	fb, _ := r.Resolve(config.Loop{Name: o.name, Agent: a})
+	return len(candidateIDs(fb)), len(r.Routes)
+}
 
 // standardRoutesWritten is the number of routes in the standard list, when
 // one is written and can be used.
