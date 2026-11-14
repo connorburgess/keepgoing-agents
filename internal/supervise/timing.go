@@ -9,6 +9,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/timing"
 )
@@ -63,6 +64,11 @@ func (t *tick) reapplyRoute(target string, obs decide.Observation) {
 		t.warn("the thread may not be on %s, the route on record, and it could not be set (%v); the next check tries again", target, err)
 		return
 	}
+	reason := "route_left_configuration"
+	if pending {
+		reason = "unsettled_step"
+	}
+	t.incidentTiming("repair", incident.TimingRepair, reason)
 	if pending {
 		t.warn("timing: a step from %s to %s was recorded and not settled; the thread was set to %s, the route on record", tr.Pending.From, tr.Pending.To, target)
 		tr.Pending = nil
@@ -211,6 +217,14 @@ func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingN
 	}
 	t.res.Target = move.To
 	note.Outcome = "applied"
+	cause := incident.TimingReturn
+	switch move.Action {
+	case timing.Up:
+		cause = incident.TimingStepUp
+	case timing.Down:
+		cause = incident.TimingStepDown
+	}
+	t.incidentTiming(move.Rule, cause, move.Reason)
 	text := fmt.Sprintf("%s: timing %s", l.Name, timingPast(note.Text))
 	if failed > 0 {
 		text += fmt.Sprintf(" (after %d failed attempts)", failed)
@@ -257,6 +271,17 @@ func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) 
 func sameInstance(a, b time.Time) bool {
 	d := a.Sub(b)
 	return d <= allowance.SameReset && d >= -allowance.SameReset
+}
+
+// incidentTiming gives the check's history record a timing cause and the
+// timing evaluation with the decision's rule and reason codes. A move
+// outranks a repair in the same check.
+func (t *tick) incidentTiming(rule, cause, reason string) {
+	if t.incidentTimingCause != "" && cause == incident.TimingRepair {
+		return
+	}
+	t.incidentTimingCause = cause
+	t.incidentDecisions.AddTiming(rule, cause, reason)
 }
 
 func (t *tick) timingRecord() *state.TimingRecord {

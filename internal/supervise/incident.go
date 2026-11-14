@@ -21,6 +21,11 @@ func (t *tick) recordIncident(failed bool) error {
 	if t.incidentLimitWait != "" && t.res.Action == string(decide.None) {
 		cause = string(t.incidentLimitWait)
 	}
+	// A check in which usage-aware timing changed the thread has its cause;
+	// the engine's own decision stays among the record's evaluations.
+	if t.incidentTimingCause != "" {
+		cause = t.incidentTimingCause
+	}
 	r := incident.Record{Kind: "tick", Decisions: t.incidentDecisions, CheckStartedAt: t.now, Build: t.opts.Version, Adapter: t.incidentAdapter,
 		TargetKey: incident.TargetKey(t.incidentTarget), Observation: t.incidentObservation,
 		// The target after this check differs when a handoff, a switch-back,

@@ -200,6 +200,9 @@ type tick struct {
 	// afterSave runs once the check's state is saved: reports of what the
 	// state records.
 	afterSave []func()
+	// incidentTimingCause is the history's cause for a check in which
+	// usage-aware timing changed the thread.
+	incidentTimingCause string
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool

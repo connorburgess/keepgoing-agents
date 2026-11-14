@@ -10,6 +10,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
@@ -685,5 +686,57 @@ func TestTimingRepairBudgetAndDryRun(t *testing.T) {
 	res := runTick(t, w, t0)
 	if st := loadState(t, w); p.activated != 0 || st.Timing.Pending == nil || !strings.Contains(strings.Join(res.Warnings, "\n"), "no time left in this check to set it") {
 		t.Fatalf("no time: activated %d, %+v, %v", p.activated, st.Timing, res.Warnings)
+	}
+}
+
+// The history gives a check in which timing changed the thread its own
+// cause, with a timing evaluation carrying the decision's stable rule and
+// reason codes, beside the engine's own evaluation.
+func TestTimingCausesInTheHistory(t *testing.T) {
+	timingEval := func(r incident.Record) *incident.Evaluation {
+		for i := range r.Decisions.Evaluations {
+			if strings.HasPrefix(r.Decisions.Evaluations[i].Stage, "timing_") {
+				return &r.Decisions.Evaluations[i]
+			}
+		}
+		return nil
+	}
+	// A step up.
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	nearReset(t, w, t0)
+	runTick(t, w, t0)
+	r := lastIncident(t, w)
+	e := timingEval(r)
+	if r.Cause != incident.TimingStepUp || r.Action != "wake" || r.TargetKeyAfter != incident.TargetKey("example-large") ||
+		e == nil || e.Stage != "timing_step_up" || e.Action != incident.TimingStepUp || e.Cause != "near_reset_unused" {
+		t.Fatalf("step up: cause %s action %s, %+v", r.Cause, r.Action, e)
+	}
+	engine := false
+	for _, x := range r.Decisions.Evaluations {
+		engine = engine || (x.Stage == "normal" && x.Action == "wake" && x.Cause == "idle")
+	}
+	if !engine {
+		t.Fatalf("the engine's own decision is missing: %+v", r.Decisions.Evaluations)
+	}
+	// The return at the reset.
+	w.adapters["example-large"].obs = decide.Observation{State: decide.Idle}
+	editState(t, w, func(s *state.File) { s.Timing.LastMove.ResetsAt = t0.Add(5 * time.Minute) })
+	runTick(t, w, t0.Add(10*time.Minute))
+	r = lastIncident(t, w)
+	if e = timingEval(r); r.Cause != incident.TimingReturn || e == nil || e.Stage != "timing_return_at_reset" || e.Cause != "reset_passed" {
+		t.Fatalf("return: cause %s, %+v", r.Cause, e)
+	}
+	// A repair: kept in the condition tier, never folded into a run of
+	// routine checks.
+	w = stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	editState(t, w, func(s *state.File) {
+		s.Timing = &state.TimingRecord{Pending: &state.TimingMove{At: t0.Add(-10 * time.Minute), From: state.Primary, To: "example-large", Action: "up"}}
+	})
+	runTick(t, w, t0)
+	r = lastIncident(t, w)
+	if e = timingEval(r); r.Cause != incident.TimingRepair || r.Tier != incident.TierCondition || e == nil || e.Stage != "timing_repair" || e.Cause != "unsettled_step" {
+		t.Fatalf("repair: cause %s tier %s, %+v", r.Cause, r.Tier, e)
 	}
 }
