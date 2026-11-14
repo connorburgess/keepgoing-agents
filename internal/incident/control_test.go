@@ -104,7 +104,7 @@ func TestControlRecordCallerAndNewEpisode(t *testing.T) {
 		}
 	}
 	j, err := Load(dir)
-	if err != nil || j.SchemaVersion != 9 {
+	if err != nil || j.SchemaVersion != SchemaVersion {
 		t.Fatal(j.SchemaVersion, err)
 	}
 	for i, want := range []ControlChange{{Operation: "resume", Caller: "owner_thread", NewEpisode: true}, {Operation: "pause", Caller: "unavailable"}, {Operation: "resume", Caller: "client"}} {
