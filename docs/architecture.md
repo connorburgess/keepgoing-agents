@@ -22,6 +22,7 @@ internal/envvar             the environment variables' two names: LOOPTENDER_X, 
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
+internal/timing             pure usage-aware step decision; unreleased status preview only, no actions
 internal/supervise          one tick: observe, probe, decide, act, record
 internal/adapter            the Adapter interface and the code-to-class mapping
 internal/adapter/bb         BB threads over the bb CLI's JSON
@@ -330,3 +331,9 @@ Current-target resolution after transfer and lock-holder identification remain u
 ### Panel build replacement storage
 
 The panel owns `build-replacements/<key>/build-update.json` and its `upgrade-backups/<time>/` binary/configuration/state snapshots under its private runtime directory, outside loop state. The key binds registration ID, configuration and state directory. The receipt expires after seven days. A startup executable handle and hash supply replacement bytes; opened-directory-relative operations bind the target. Undo only swaps the binary and invalidates the private receipt; it never writes a loop record. See [the panel protocol](dock.md#changes-from-the-page-keepgoing-panel---allow-changes).
+
+## Timing decision preview (U4, unreleased)
+
+`internal/timing.Decide` consumes recorded facts and returns an action, stable rule and reason code, and display facts. It performs no IO and keeps no state. Only `status` calls it in U4, assuming the next turn boundary; the supervisor does not apply it. Disabled supervision, holds, errors, missing/unrecognized/refusal/unknown observations, other moves and failover-selected routes gate the decision. Only recorded idle/active observations can reach a next-boundary move preview; pending, stopping and awaiting-input observations remain gated. The panel receives no timing moves.
+
+Configuration validates optional ordered same-allowance steps after loading the loop's own fallbacks. For an externally followed standard list, unresolved or ineligible references retain a warning and withhold the preview while leaving the loop loadable. The standard resolver's primary-group exclusion is unchanged; multi-step previews need the loop's own file. Explicit timing syntax, ceilings, thresholds and durations remain validation errors. Unreadable controls or state also withhold `timingWould`; absence is no decision. No route, control, process or account changes are made by a preview.

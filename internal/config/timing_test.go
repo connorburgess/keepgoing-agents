@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -86,5 +87,171 @@ func TestTimingSummaryWords(t *testing.T) {
 	if s := cfg.TimingSummary(); !strings.Contains(s.Cost, "about 28 small paid probes a week") || !strings.Contains(s.Cost, "at a 6h cadence") || len(s.Warnings) != 2 ||
 		s.Warnings[1] != "timing: scheduled probes are off in the fallbacks file (probe.scheduled_disabled), so no timing probe runs" {
 		t.Errorf("6h, disabled: %q %q", s.Cost, s.Warnings)
+	}
+}
+
+// Steps are routes on the first route's allowance, checked against the
+// fallbacks once both files are read.
+func TestTimingSteps(t *testing.T) {
+	dir := t.TempDir()
+	fallbacks := `version: 1
+candidates:
+  - id: example-large
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_example123, model: example-large}
+    probe: {model: example-small}
+  - id: example-off
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    disabled: true
+    bb: {thread: thr_example123, model: example-medium}
+  - id: other-account
+    adapter: bb
+    provider: claude-code
+    group: claude-account-b
+    bb: {thread: thr_example456}
+`
+	write := func(name, body string) string {
+		p := dir + "/" + name
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("fallbacks.yaml", fallbacks)
+	loop := strings.Replace(timingValid, "  provider: claude-code\n", "  provider: claude-code\n  group: claude-account-a\n", 1)
+	load := func(extra string) (*Config, error) { return Load(write("keepgoing.yaml", loop+extra)) }
+
+	cfg, err := load("    steps: [primary, example-large]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := cfg.Loop.Timing
+	if tm.Ceiling != "example-large" || tm.UnusedAtLeast != 0.25 || tm.DownAt != 0.95 || tm.MinOnStep.Duration != 2*time.Hour {
+		t.Fatalf("defaults: %+v", tm)
+	}
+	for name, c := range map[string]struct{ extra, want string }{
+		"another account":   {"    steps: [primary, other-account]\n", `"other-account" is on account group "claude-account-b", not the first route's "claude-account-a"`},
+		"switched off":      {"    steps: [primary, example-off]\n", `"example-off" is switched off`},
+		"unknown":           {"    steps: [primary, example-missing]\n", `"example-missing" is not a fallback`},
+		"no primary":        {"    steps: [example-large]\n", "must include primary"},
+		"listed twice":      {"    steps: [primary, primary]\n", "is listed twice"},
+		"ceiling elsewhere": {"    steps: [primary, example-large]\n    ceiling: other-account\n", "is not one of loop.timing.steps"},
+		"ceiling below":     {"    steps: [example-large, primary]\n    ceiling: example-large\n", "is below primary"},
+		"ceiling, no steps": {"    ceiling: example-large\n", "needs loop.timing.steps"},
+		"unused 0":          {"    unused_at_least: 1\n", "unused_at_least must be above 0 and below 1"},
+		"down_at over 1":    {"    down_at: 1.5\n", "down_at must be above 0 and at most 1"},
+		"min_on_step short": {"    min_on_step: 30s\n", "min_on_step must be between 1m and 168h"},
+	} {
+		if _, err := load(c.extra); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A standard list is external data. Losing a referenced route must not make
+// the loop's own controls unloadable, while malformed timing stays invalid.
+func TestTimingStepsWithChangingStandardRoutes(t *testing.T) {
+	list := standardList
+	path := writeRoutes(t, list)
+	body := bbLoop + "  timing:\n    enabled: true\n    windows: [seven_day]\n    steps: [primary]\n"
+	p := loopFile(t, body)
+	for _, tc := range []struct {
+		name, list string
+		absent     bool
+	}{
+		{"valid", list, false},
+		{"missing", "", true},
+
+		{"restored", list, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.list == "" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tc.list), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "") != tc.absent {
+				t.Fatalf("unavailable: %q", cfg.TimingStepsUnavailable)
+			}
+			if tc.absent && len(cfg.TimingSummary().Warnings) < 2 {
+				t.Fatal("missing preview warning")
+			}
+		})
+	}
+	// Standard routes intentionally exclude the primary's quota group, so a
+	// non-primary timing step cannot resolve there. Removing that reference
+	// is a change in external route data, not an unloadable loop.
+	for _, routes := range []string{list, "version: 1\nroutes: []\n"} {
+		if err := os.WriteFile(path, []byte(routes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		steps := strings.Replace(body, "steps: [primary]", "steps: [primary, large-same]", 1)
+		cfg, err := Load(loopFile(t, steps))
+		if err != nil || cfg.TimingStepsUnavailable == "" || len(cfg.RouteList.Warnings) == 0 {
+			t.Fatalf("changed steps: %+v %v", cfg, err)
+		}
+	}
+	// Invalid explicit configuration still fails before resolving any list.
+	for _, extra := range []string{"    steps: [primary, primary]\n", "    down_at: 2\n", "    ceiling: missing\n", "    min_on_step: -1h\n"} {
+		bad := strings.Replace(body, "    steps: [primary]\n", extra, 1)
+		if _, err := Load(loopFile(t, bad)); err == nil {
+			t.Fatalf("invalid timing accepted: %s", extra)
+		}
+	}
+}
+
+func TestTimingThresholdsAreFinite(t *testing.T) {
+	for _, field := range []string{"unused_at_least", "down_at"} {
+		for _, value := range []string{".nan", ".inf", "-.inf"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				_, err := Parse([]byte(timingValid + "    " + field + ": " + value + "\n"))
+				if err == nil || !strings.Contains(err.Error(), "loop.timing."+field) {
+					t.Fatalf("nonfinite threshold accepted or unnamed: %v", err)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct {
+		field, value string
+		want         float64
+		valid        bool
+	}{
+		{"unused_at_least", "0", DefaultTimingUnused, true},
+		{"unused_at_least", "0.000001", 0.000001, true},
+		{"unused_at_least", "0.999999", 0.999999, true},
+		{"unused_at_least", "1", 0, false},
+		{"unused_at_least", "-0.01", 0, false},
+		{"down_at", "0", DefaultTimingDownAt, true},
+		{"down_at", "0.000001", 0.000001, true},
+		{"down_at", "1", 1, true},
+		{"down_at", "1.000001", 0, false},
+		{"down_at", "-0.01", 0, false},
+	} {
+		t.Run(tc.field+"/"+tc.value, func(t *testing.T) {
+			cfg, err := Parse([]byte(timingValid + "    " + tc.field + ": " + tc.value + "\n"))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v: %v", tc.valid, err)
+			}
+			if err != nil {
+				return
+			}
+			got := cfg.Loop.Timing.UnusedAtLeast
+			if tc.field == "down_at" {
+				got = cfg.Loop.Timing.DownAt
+			}
+			if got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
 	}
 }

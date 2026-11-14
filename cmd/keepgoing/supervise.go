@@ -514,8 +514,9 @@ type statusOut struct {
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
-	// Timing is what usage-aware timing does for this loop; absent when off.
-	Timing *config.TimingSummary `json:"timing,omitempty"`
+	// Timing and TimingWould describe collection and the next-boundary preview; absent when off.
+	Timing      *config.TimingSummary `json:"timing,omitempty"`
+	TimingWould *timingWould          `json:"timingWould,omitempty"`
 	// Routes is set for a loop that follows the standard route list.
 	Routes   *supervise.RouteNote `json:"routes,omitempty"`
 	StateDir string               `json:"stateDir"`
@@ -959,6 +960,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			fmt.Fprintln(w, "warning: "+x)
 		}
 	}
+	if tw := out.TimingWould; tw != nil {
+		fmt.Fprintln(w, tw.Text)
+	}
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
 	return code
 }
@@ -1142,6 +1146,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	if cfg.RouteList.Source == config.RoutesStandard {
 		out.Routes = &supervise.RouteNote{Source: cfg.RouteList.Source, Unreadable: cfg.RouteList.Unreadable, CurrentNotInList: outsideList}
 	}
+	var timingRegistry *health.Registry
 	if fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when
@@ -1157,6 +1162,16 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 			s := health.Evaluate(fb, reg, now, st.Target(), group)
 			out.Redundancy = &s
 		}
+		if err != nil {
+			reg = nil
+		}
+		timingRegistry = reg
+	}
+	if !out.stateUnreadable && !out.controlUnreadable {
+		if fb == nil && l.TimingOn() {
+			timingRegistry, _ = health.Load(l.StateDir)
+		}
+		out.TimingWould = timingWouldOf(cfg, st, ctl, timingRegistry, now)
 	}
 	if out.stateUnreadable {
 		// Nothing read from state.json is shown: computed from an empty

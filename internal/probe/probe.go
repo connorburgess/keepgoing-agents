@@ -53,8 +53,8 @@ type Result struct {
 	// ResetsAt is when a reported usage limit lifts, when the provider says.
 	ResetsAt *time.Time `json:"resetsAt,omitempty"`
 	// Usage is a usage reading the probe happened to carry. It is stored once
-	// per candidate by the health registry, not with each result, and no
-	// decision reads it.
+	// per candidate by the health registry, not with each result. The timing
+	// preview reads it, but no supervision action is decided from it.
 	Usage *Usage `json:"-"`
 	// UsageIdentity fingerprints the account the probe ran against, set on
 	// every result so a reading from another account can be discarded.

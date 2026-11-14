@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,10 +48,13 @@ type Config struct {
 	// FallbackSet is loaded from Loop.Fallbacks by Load; nil when unset.
 	FallbackSet *Fallbacks `yaml:"-"`
 	// RouteList says where the loop's other routes came from. Load derives it.
-	RouteList    RouteStatus `yaml:"-"`
-	routesSource sourceSnapshot
-	source       sourceSnapshot
-	readAt       time.Time // successful configuration load, private runtime metadata
+	RouteList RouteStatus `yaml:"-"`
+	// TimingStepsUnavailable describes externally followed routes that cannot
+	// currently support the configured preview; explicit timing syntax still validates.
+	TimingStepsUnavailable string `yaml:"-"`
+	routesSource           sourceSnapshot
+	source                 sourceSnapshot
+	readAt                 time.Time // successful configuration load, private runtime metadata
 }
 
 // Loop describes one supervised agent loop.
@@ -113,10 +117,75 @@ type Timing struct {
 	NearReset Duration `yaml:"near_reset,omitempty"`
 	// ProbeEvery is the interval between timing probes of the first route.
 	ProbeEvery Duration `yaml:"probe_every,omitempty"`
+	// Steps are the routes on the first route's allowance timing may move
+	// between, cheapest to strongest, by ID: primary and fallbacks in the
+	// first route's group. The order is the person's; keepgoing never ranks
+	// models or effort levels. Without steps timing only collects readings.
+	Steps []string `yaml:"steps,omitempty"`
+	// Ceiling is the strongest step timing may use; the last step by default.
+	Ceiling string `yaml:"ceiling,omitempty"`
+	// UnusedAtLeast is the unused share near a reset that makes timing step
+	// up, and DownAt the projected use at reset that makes it step down.
+	UnusedAtLeast float64 `yaml:"unused_at_least,omitempty"`
+	DownAt        float64 `yaml:"down_at,omitempty"`
+	// MinOnStep is the least time between timing moves, except the return
+	// at a reset.
+	MinOnStep Duration `yaml:"min_on_step,omitempty"`
 }
 
 // TimingOn reports whether usage-aware timing is turned on for the loop.
 func (l Loop) TimingOn() bool { return l.Timing != nil && l.Timing.Enabled }
+
+// StepIndex is the position of a route among the steps, or -1.
+func (t Timing) StepIndex(id string) int {
+	for i, s := range t.Steps {
+		if s == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// checkTimingSteps checks each step other than primary against the loaded
+// fallbacks: it must be a fallback on the first route's allowance (its
+// group), switched on. Timing never moves a loop to another allowance.
+func (c *Config) checkTimingSteps() error {
+	l := c.Loop
+	if !l.TimingOn() {
+		return nil
+	}
+	var errs []string
+	for _, id := range l.Timing.Steps {
+		if id == "primary" {
+			continue
+		}
+		var cand *Candidate
+		if c.FallbackSet != nil {
+			if f, ok := c.FallbackSet.Find(id); ok {
+				cand = &f
+			}
+		}
+		switch {
+		case cand == nil:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is not a fallback in %s", id, l.timingRouteSource()))
+		case cand.Group != l.Group:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is on account group %q, not the first route's %q; timing only moves between routes on one allowance", id, cand.Group, l.Group))
+		case cand.Disabled:
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is switched off in %s", id, l.timingRouteSource()))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (l Loop) timingRouteSource() string {
+	if l.FollowsStandard() {
+		return "the resolved standard route list"
+	}
+	return l.Fallbacks
+}
 
 // Limits bound future supervisor work, not the lifetime of an agent turn.
 type Limits struct {
@@ -357,6 +426,9 @@ const (
 	DefaultSwitchBackRetry   = 30 * time.Minute
 	DefaultTimingNearReset   = 6 * time.Hour
 	DefaultTimingProbeEvery  = 12 * time.Hour
+	DefaultTimingMinOnStep   = 2 * time.Hour
+	DefaultTimingUnused      = 0.25
+	DefaultTimingDownAt      = 0.95
 )
 
 // ReportEvents lists the events a report may subscribe to.
@@ -427,6 +499,13 @@ func Load(path string) (*Config, error) {
 		}
 	} else if l.FollowsStandard() {
 		cfg.loadStandardRoutes()
+	}
+	if err := cfg.checkTimingSteps(); err != nil {
+		if !l.FollowsStandard() {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		cfg.TimingStepsUnavailable = err.Error()
+		cfg.RouteList.Warnings = append(cfg.RouteList.Warnings, "timing preview unavailable: "+err.Error())
 	}
 	return cfg, nil
 }
@@ -520,9 +599,19 @@ func (c *Config) applyDefaults() {
 	}
 	setDur(&l.SwitchBack.MinAfter, DefaultSwitchBackAfter)
 	setDur(&l.SwitchBack.RetryEvery, DefaultSwitchBackRetry)
-	if l.Timing != nil {
-		setDur(&l.Timing.NearReset, DefaultTimingNearReset)
-		setDur(&l.Timing.ProbeEvery, DefaultTimingProbeEvery)
+	if t := l.Timing; t != nil {
+		setDur(&t.NearReset, DefaultTimingNearReset)
+		setDur(&t.ProbeEvery, DefaultTimingProbeEvery)
+		setDur(&t.MinOnStep, DefaultTimingMinOnStep)
+		if t.UnusedAtLeast == 0 {
+			t.UnusedAtLeast = DefaultTimingUnused
+		}
+		if t.DownAt == 0 {
+			t.DownAt = DefaultTimingDownAt
+		}
+		if t.Ceiling == "" && len(t.Steps) > 0 {
+			t.Ceiling = t.Steps[len(t.Steps)-1]
+		}
 	}
 	if l.Probe.Kind == "" {
 		switch l.Provider {
@@ -764,6 +853,34 @@ func (c *Config) Validate() error {
 		}
 		if d := tm.ProbeEvery.Duration; d < time.Hour {
 			add("loop.timing.probe_every must be at least 1h")
+		}
+		if v := tm.UnusedAtLeast; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v >= 1 {
+			add("loop.timing.unused_at_least must be above 0 and below 1")
+		}
+		if v := tm.DownAt; math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 1 {
+			add("loop.timing.down_at must be above 0 and at most 1")
+		}
+		if d := tm.MinOnStep.Duration; d < time.Minute || d > 7*24*time.Hour {
+			add("loop.timing.min_on_step must be between 1m and 168h")
+		}
+		if len(tm.Steps) > 0 {
+			seen := map[string]bool{}
+			for _, id := range tm.Steps {
+				if seen[id] {
+					add("loop.timing.steps: %q is listed twice", id)
+				}
+				seen[id] = true
+			}
+			if !seen["primary"] {
+				add("loop.timing.steps must include primary, the loop's first route")
+			}
+			if !seen[tm.Ceiling] {
+				add("loop.timing.ceiling %q is not one of loop.timing.steps", tm.Ceiling)
+			} else if tm.StepIndex(tm.Ceiling) < tm.StepIndex("primary") {
+				add("loop.timing.ceiling %q is below primary", tm.Ceiling)
+			}
+		} else if tm.Ceiling != "" {
+			add("loop.timing.ceiling needs loop.timing.steps")
 		}
 	}
 	switch l.Network.Check {

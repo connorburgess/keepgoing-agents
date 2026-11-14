@@ -40,6 +40,8 @@ Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when o
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
+                           Opt-in timing preview only, not acted on; multi-step previews need
+                           the loop's own fallbacks file (standard routes exclude its allowance)
   validate                 Check the configuration file and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
