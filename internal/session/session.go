@@ -376,6 +376,25 @@ func Known(dir string, id Identity) []Supervisor {
 	return r.Supervisors
 }
 
+// Recorded is Known for a caller that must not take an unreadable record
+// for an empty one: it returns an error when a record exists but cannot be
+// read, is too large, has another schema or names another session. No
+// record at all is not an error: no loop has recorded the session.
+func Recorded(dir string, id Identity) ([]Supervisor, error) {
+	path := filepath.Join(dir, id.Key()+".json")
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	var r record
+	if err := readJSON(path, maxRecordBytes, &r); err != nil {
+		return nil, fmt.Errorf("the session record of %s cannot be read", id.Describe())
+	}
+	if r.SchemaVersion != 1 || r.Kind != id.Kind || r.ID != id.ID || len(r.Supervisors) > maxSupervisors {
+		return nil, fmt.Errorf("the session record of %s is not one this build reads", id.Describe())
+	}
+	return r.Supervisors, nil
+}
+
 // All returns every loop in every record in the directory, each once, at
 // most limit of them. It is how a loop finds others that share a working
 // directory or a repository rather than a session.

@@ -39,6 +39,17 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// StopOnly: the check is run by a command that carries out a stop at once
+	// (keepgoing stop --now). It does nothing unless a stop is requested.
+	StopOnly bool
+	// Deadline, when set and sooner than the check's own hard limit, is the
+	// check's hard limit instead: a stop carried out for a caller that has
+	// less time than a check (the page and the menu).
+	Deadline time.Time
+	// CallerThread is the BB thread the command runs in, for a stop carried
+	// out at once: if the stop covers it, it is stopped after every other
+	// target. Empty for a check, and for the panel and the menu.
+	CallerThread string
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
 	SessionDir  string
@@ -131,6 +142,9 @@ type Result struct {
 	// a lower bound. ChildErrorNote is set when this check's wake announces
 	// them. ChildErrorNoticeStopped: the notice was given up after repeated
 	// rejected sends.
+	// LaneStop is what a stop that covers the lanes did on this check, by
+	// count (keepgoing stop --lanes).
+	LaneStop                *state.LaneStop `json:"laneStop,omitempty"`
 	ErroredChildren         int             `json:"erroredChildren,omitempty"`
 	ErroredChildrenPartial  bool            `json:"erroredChildrenPartial,omitempty"`
 	ChildErrorNote          bool            `json:"childErrorNote,omitempty"`
@@ -224,8 +238,27 @@ type tick struct {
 	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
 	briefHold           []control.Brief // briefs named by a hold already raised for them
 	stopRequested       bool            // a stop is requested in control.json
-	stopsMade           []string        // targets this check sent a stop to
-	enabled             bool            // the loop is enabled in control.json
+	// stopLanesFor is the request, in control.json, for the stop to cover
+	// the lanes; zero when none. laneStopsRecorded are the lanes an earlier
+	// check recorded a stop of, for this request, without saving whether it
+	// was made; laneStopReportRecorded says its report was recorded so.
+	stopLanesFor           time.Time
+	stopLanesDropQueued    bool
+	laneStopsRecorded      map[string]bool
+	laneStopReportRecorded bool
+	// parentStopped: this check stopped the supervised conversation.
+	parentStopped bool
+	// laneStop is this check's stop of the lanes, once it has walked them.
+	laneStop *state.LaneStop
+	// sendsRead: this check read the send records (countUnrecordedSends).
+	// A check that did not settles none of them.
+	sendsRead bool
+	// keepFailureCounters: this check says nothing about whether checks
+	// work (a stop-only check whose stop was lifted), so it leaves the
+	// counts of failed checks as they were.
+	keepFailureCounters bool
+	stopsMade           []string // targets this check sent a stop to
+	enabled             bool     // the loop is enabled in control.json
 	schedule            state.ScheduleInput
 	startClock          time.Time      // the check's own clock when it began
 	gap                 *state.Gap     // a gap this check is the first after, to report once recorded
@@ -318,6 +351,9 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
 	t.startClock = opts.Clock()
 	t.deadline = t.startClock.Add(tickBudget(cfg.Loop) + checkTail)
+	if !opts.Deadline.IsZero() && opts.Deadline.Before(t.deadline) {
+		t.deadline = opts.Deadline
+	}
 	t.reserve = reserveFingerprint + reserveSend + reserveReports
 	if opts.Online != nil {
 		// The connectivity check is mandatory when it is needed, so its
@@ -534,6 +570,10 @@ func (t *tick) run() error {
 	}
 	res.Control = ctl.Summary()
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
+	if ctl.Stop && ctl.StopLanesAt != nil {
+		t.stopLanesFor = ctl.StopLanesAt.UTC()
+		t.stopLanesDropQueued = ctl.StopLanesDropQueued
+	}
 	t.enabled = ctl.Enabled
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
@@ -560,6 +600,13 @@ func (t *tick) run() error {
 	gate := ctl.Gate()
 	if gate.Stop {
 		return t.stop(target, agent, gate)
+	}
+	if t.opts.StopOnly {
+		// A command asked for a stop and carries it out itself; a resume
+		// has lifted it since. Nothing else is done in its name.
+		res.State, res.Action, res.Reason, res.Window = "not observed", string(decide.None), "stop no longer requested; nothing done", "not checked"
+		t.keepFailureCounters = true
+		return t.record(nil)
 	}
 	if !gate.Enabled || gate.Paused || gate.AwaitingUser || gate.Completed {
 		switch {
@@ -1049,6 +1096,9 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
+	// A stop takes no fingerprint and sends no prompt: of the time kept back
+	// for the mandatory steps, only one report's remains.
+	t.reserve = min(t.reserve, minReportTime)
 	// Stop wins over every other rule. It waits only while another loop's
 	// live check holds the session, which the claim proves; if the claim
 	// cannot be taken for any other reason, the stop goes ahead without it.
@@ -1077,6 +1127,9 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
+		// The lanes are found and stopped on their own: stop wins.
+		t.stopLanes(a)
+		t.finishLaneStop(parentNotObserved)
 		return t.record(err)
 	}
 	res.State = string(obs.State)
@@ -1108,7 +1161,12 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			}
 			stopped = append(stopped, id)
 		}
-		stopOne(target, a)
+		// The caller's own thread is stopped last: its stop may end the
+		// command that carries the stop out.
+		own := t.isCaller(agent)
+		if !own {
+			stopOne(target, a)
+		}
 		seen := map[string]bool{target: true}
 		for _, b := range briefs {
 			if seen[b.Target] {
@@ -1144,7 +1202,18 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			}
 			stopOne(b.Target, ba)
 		}
+		t.stopLanes(a)
+		if own {
+			t.warn("this command runs in %s; it is stopped last", target)
+			stopOne(target, a)
+		}
+		parent := parentStopFailed
+		if slices.Contains(stopped, target) {
+			parent = parentStopped
+		}
 		t.stopsMade = stopped
+		// After the supervised thread's own stop, so the report says how it went.
+		t.finishLaneStop(parent)
 		if len(errs) == 0 && !waiting {
 			t.st.StopRequestedSent = true // otherwise the next check stops them all again
 		}
@@ -1158,6 +1227,8 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if len(t.unsettledBriefs) > 0 {
 		// Already stopped for this request: hold for the new briefs.
 		t.st.LastState = string(obs.State)
+		t.stopLanes(a)
+		t.finishLaneStop(parentStoppedEarlier)
 		return t.record(t.holdForBriefs())
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
@@ -1166,10 +1237,31 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	res.Action, res.Reason = string(d.Action), d.Reason
 	var actErr error
-	if !t.opts.DryRun && d.Action == decide.Stop {
+	parent := parentNotRunning
+	if t.st.StopRequestedSent {
+		parent = parentStoppedEarlier
+	}
+	stopParent := !t.opts.DryRun && d.Action == decide.Stop
+	caller := stopParent && t.isCaller(agent)
+	if caller {
+		// The caller's own thread is stopped last: its stop may end the
+		// command that carries the stop out.
+		t.stopLanes(a)
+		t.warn("this command runs in %s; it is stopped last", target)
+	}
+	if stopParent {
 		actErr = t.act(a, d)
+		parent = parentStopped
+		if actErr != nil {
+			parent = parentStopFailed
+		}
 	}
 	t.st.LastState = string(obs.State)
+	if !caller {
+		t.stopLanes(a)
+	}
+	// After the supervised thread's own stop, so the report says how it went.
+	t.finishLaneStop(parent)
 	return t.record(actErr)
 }
 
@@ -1618,7 +1710,10 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			return err
 		}
 		t.st.StopRequestedSent = true
-		t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		t.parentStopped = true
+		if !t.laneReportToCome() {
+			t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		} // otherwise the lanes' stop report says it, once
 	}
 	return nil
 }
@@ -1684,13 +1779,14 @@ func (t *tick) record(actErr error) error {
 	t.noteNetwork()
 	// Consecutive failed checks, so a loop that keeps running without
 	// completing a check is visible. A dry run changes nothing.
-	switch outcome {
-	case "failed":
+	switch {
+	case t.keepFailureCounters:
+	case outcome == "failed":
 		if t.st.FailedChecks == 0 {
 			t.st.FailedSince = t.now
 		}
 		t.st.FailedChecks++
-	case "succeeded":
+	case outcome == "succeeded":
 		t.st.FailedChecks, t.st.FailedSince = 0, time.Time{}
 	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
@@ -1805,7 +1901,7 @@ func contains(list []string, s string) bool {
 // countUnrecordedSends.
 func (t *tick) reserveSend(action, target string, key ...string) (int64, error) {
 	max := t.loop.Limits.MaxSends
-	if action == "stop" || strings.HasPrefix(action, "report:") {
+	if action == "stop" || strings.HasPrefix(action, "stop:") || strings.HasPrefix(action, "report:") {
 		max = 0 // recorded, but not a send against the allowance
 	}
 	intent := state.SendIntent{At: t.now, Action: action, Target: target}
@@ -1816,8 +1912,32 @@ func (t *tick) reserveSend(action, target string, key ...string) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+	if !t.sendsRead && (action == laneStopAction || action == "report:"+laneStopReport) {
+		// A check that has not read the send records (it could not observe
+		// its target) settles nothing: its lane records stay unsettled beside
+		// the ones it did not read, for the next check that reads them all.
+		return seq, nil
+	}
 	t.st.SendsRecorded = seq
 	return seq, nil
+}
+
+// laneReportToCome reports whether a stop of the lanes will send the stop
+// report that covers the supervised thread too: one is asked for and its
+// report has not gone out. A stop of the thread made once that report has
+// gone out (a later check, or a retry after a failed stop) sends its own.
+func (t *tick) laneReportToCome() bool {
+	if t.stopLanesFor.IsZero() {
+		return false
+	}
+	l := t.st.LaneStop
+	return l == nil || !l.For.Equal(t.stopLanesFor) || !l.Reported
+}
+
+// isCaller reports whether agent's session is the BB thread the command
+// carrying out this stop runs in.
+func (t *tick) isCaller(agent config.Agent) bool {
+	return t.opts.CallerThread != "" && agent.Adapter == "bb" && agent.BB != nil && agent.BB.Thread == t.opts.CallerThread
 }
 
 // holdForBriefs raises the hold for briefs to other conversations whose
@@ -2024,6 +2144,7 @@ func (t *tick) countUnrecordedSends() error {
 	if err != nil {
 		return t.sendRecordUnreadable(err)
 	}
+	t.sendsRead = true
 	if !t.opts.DryRun {
 		t.st.SendRecordUnreadable = false
 	}
@@ -2074,6 +2195,10 @@ func (t *tick) countUnrecordedSends() error {
 			// StopRequestedSent.
 			agentSend = false
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
+		case laneStopAction, "report:" + laneStopReport:
+			// Read by stopLanes, which looks at the lane again (see
+			// laneStopRecords). Not a send to the agent.
+			agentSend = false
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
 		case "report:degraded", "report:recovered":
@@ -2172,6 +2297,11 @@ func (t *tick) observeProgress() (state.Progress, error) {
 
 // newAdapter builds an adapter and gives it this check's time.
 func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
+	if t.opts.StopOnly {
+		// A stop carried out by a command: bb as the latest check found it,
+		// when this PATH cannot find the configured bare name.
+		a, _ = stopAgent(a, t.st)
+	}
 	ad, err := t.opts.NewAdapter(a, stateDir, target)
 	if c, ok := ad.(adapter.CheckTimer); ok && err == nil {
 		c.CheckAt(t.now)
@@ -2265,6 +2395,13 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 	obs, err := a.Observe(ctx)
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("observation exceeded %s", limit)
+	}
+	if c, ok := a.(adapter.CLIPather); ok && !t.opts.DryRun && !t.opts.StopOnly {
+		// Where the system found the configured executable for this check,
+		// for a stop run later from a shorter PATH.
+		if p := c.CLIPath(); p != "" {
+			t.st.BBPath = p
+		}
 	}
 	return obs, err
 }
