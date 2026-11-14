@@ -35,7 +35,7 @@ def main():
         # Do not inherit the caller's Git repository or configuration overrides,
         # keepgoing or BB settings, or base directories.
         for key in list(environment):
-            if key.startswith(("GIT_", "KEEPGOING_", "BB_", "XDG_")):
+            if key.startswith(("GIT_", "KEEPGOING_", "LOOPTENDER_", "BB_", "XDG_")):
                 del environment[key]
         # A home of its own, removed with the temporary directory: session
         # claims and other per-user records live under the user's state or

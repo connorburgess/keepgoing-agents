@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 )
 
@@ -18,10 +19,10 @@ func TestMain(m *testing.M) {
 	// Loaded configurations check connectivity before an error re-prompt or
 	// a probe. Tests must not depend on the real network: this stand-in
 	// reports it up unless a test replaces it.
-	os.Setenv("KEEPGOING_NET_PROBE", "exit 0")
+	os.Setenv(envvar.NetProbe.Name(), "exit 0")
 	// No test may open a real browser: unless a test names its own stand-in,
 	// the panel's launcher is a program that does nothing.
-	os.Setenv("KEEPGOING_PANEL_OPENER", "/usr/bin/true")
+	os.Setenv(panelOpenerEnv, "/usr/bin/true")
 	// No test reads or writes the person's own registry or session claims.
 	// The variables are inherited by every binary a test runs.
 	private, err := os.MkdirTemp("", "keepgoing-test-user")
@@ -30,6 +31,11 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv(registryDirEnv, filepath.Join(private, "registry"))
 	os.Setenv(session.DirEnv, filepath.Join(private, "sessions"))
+	// The earlier names of these variables are still read. One set in the
+	// shell that runs the tests must not reach them.
+	for _, v := range envvar.Set {
+		os.Unsetenv(v.Legacy())
+	}
 	code := m.Run()
 	panelTestCleanup() // the binary and launcher the panel tests share
 	os.RemoveAll(private)

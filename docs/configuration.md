@@ -61,7 +61,7 @@ loop:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `status_command` | required | argv. Prints a JSON status object on stdout. |
-| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `KEEPGOING_MODE`. |
+| `resume_command` | required | argv. Receives the prompt on stdin and the mode, `auto` or `queue`, in `LOOPTENDER_MODE` (and in `KEEPGOING_MODE`, its [earlier name](#environment-variables)). |
 | `stop_command` | none | argv. Without it, a stop request means nothing more is sent. |
 | `exit_codes` | none | Map from a status-command exit code to an error class, for example `{75: rate_limit}`. Any other non-zero exit is an error of class `unknown`. |
 | `env` | none | Extra environment variables for all three commands. |
@@ -321,7 +321,7 @@ The connectivity check made before an error re-prompt, a handoff, a stall nudge 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `check` | `on` | `off` disables the check; nothing is gated. Quote the value, since YAML reads bare `on` and `off` as booleans. |
-| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `KEEPGOING_NET_PROBE` (a shell command line) and `KEEPGOING_NET_PROBE_URL` variables apply, then `https://api.github.com/zen`. |
+| `url` | none | An `http` or `https` URL with a host that answers a GET itself when the network is up. Any status counts except a redirect or `511`; redirects are not followed. With neither `url` nor `command`, the `LOOPTENDER_NET_PROBE` (a shell command line) and `LOOPTENDER_NET_PROBE_URL` [variables](#environment-variables) apply, then `https://api.github.com/zen`. |
 | `command` | none | An argv whose exit 0 means online. Set this or `url`, not both. |
 | `timeout` | `8s` | Between `1s` and `30s`. It applies to every kind of check. |
 | `verify_after` | `1h` | Once the check has failed this long, ask the provider directly with one probe and attempt a `network_wait` report; then again after twice as long each time, up to a week. If the probe passes or is refused with `rate_limit` or `overloaded`, the check is set aside for that outage. At least `1m`. |
@@ -332,7 +332,7 @@ See [operations.md](operations.md).
 
 | Field | Default |
 | --- | --- |
-| `report.url_env`, `report.secret_env` | `KEEPGOING_WEBHOOK_URL`, `KEEPGOING_WEBHOOK_SECRET` |
+| `report.url_env`, `report.secret_env` | `LOOPTENDER_WEBHOOK_URL`, `LOOPTENDER_WEBHOOK_SECRET`; each is also read under its [earlier name](#environment-variables) |
 | `report.secret_file` | none |
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
@@ -342,6 +342,43 @@ See [operations.md](operations.md).
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
 | `tick_timeout` | `3m`, or `probe.timeout` plus `90s` when that is longer. A check ends within this plus 90 seconds. Minimum `2m40s`; the connectivity check needs `network.timeout` more than that to have its full time; with fallbacks an explicit value must be at least `probe.timeout` plus `90s`. See [check time budget](operations.md#check-time-budget) |
+
+## Environment variables
+
+Every variable has two names: `LOOPTENDER_X`, and `KEEPGOING_X`, its name before the tool was renamed. The earlier names keep working; nothing needs to change in an existing setup. Releases up to v0.2.0 read only the `KEEPGOING_` names.
+
+Variables you set:
+
+| Variable | Earlier name | What it does |
+|---|---|---|
+| `LOOPTENDER_SESSION_DIR` | `KEEPGOING_SESSION_DIR` | The directory for [session claims](operations.md#one-loop-per-session), in place of the default. |
+| `LOOPTENDER_REGISTRY_DIR` | `KEEPGOING_REGISTRY_DIR` | The [loop registry](local-clients.md) to use when no `--directory` is given. |
+| `LOOPTENDER_ROUTES_FILE` | `KEEPGOING_ROUTES_FILE` | The [standard route list](routes.md), in place of the default. |
+| `LOOPTENDER_PANEL_OPENER` | `KEEPGOING_PANEL_OPENER` | A program that opens the [panel](dock.md)'s page, in place of the default browser. |
+| `LOOPTENDER_NET_PROBE` | `KEEPGOING_NET_PROBE` | A shell command line whose exit 0 means [online](operations.md#network-outages). |
+| `LOOPTENDER_NET_PROBE_URL` | `KEEPGOING_NET_PROBE_URL` | An address that must answer for the network to count as up. |
+| `LOOPTENDER_WEBHOOK_URL` | `KEEPGOING_WEBHOOK_URL` | Where reports are sent, when `report.url_env` is not set. |
+| `LOOPTENDER_WEBHOOK_SECRET` | `KEEPGOING_WEBHOOK_SECRET` | The reports' secret, when `report.secret_env` is not set. |
+
+When only one name is set, it is read. When both are set:
+
+- **The three that name a place** (`SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`) must agree. Set to different places, they are refused, and the message names both variables: a command that honoured one and a command that honoured the other would work in different places without saying so. Until one is unset, a check acts on nothing (a requested stop still goes ahead), registry commands refuse, and the standard route list reads as unusable (`named_twice`). Two spellings of the same path are the same place.
+- **The others**: the `LOOPTENDER_` name is used, and `doctor` warns that the two differ.
+
+`doctor` also lists the earlier names in use (`environment.earlier_names`). It never prints a variable's value.
+
+The webhook pair is read from the environment first and then from `report.secret_file`, as before; in each, the `LOOPTENDER_` name comes first. This applies only to the default names: a name you give in `report.url_env` or `report.secret_env` is read exactly as written, including a `KEEPGOING_` one.
+
+Variables set for the commands you configure, each under both names with the same value, so a script written for either keeps working:
+
+| Variable | Earlier name | Set for | Value |
+|---|---|---|---|
+| `LOOPTENDER_MODE` | `KEEPGOING_MODE` | `process.resume_command` | `auto` or `queue` |
+| `LOOPTENDER_PROBE_TIER` | `KEEPGOING_PROBE_TIER` | a probe command | `scheduled`, `exact` or `manual` |
+| `LOOPTENDER_PROBE_MODEL` | `KEEPGOING_PROBE_MODEL` | a probe command | the model to check |
+| `LOOPTENDER_CANDIDATE` | `KEEPGOING_CANDIDATE` | a probe command | the fallback's `id` |
+
+**Going back to v0.2.0 or earlier:** those releases read only the `KEEPGOING_` names. Before going back, set any variable you gave only its `LOOPTENDER_` name under its `KEEPGOING_` name as well, and have your resume and probe commands read the `KEEPGOING_` names.
 
 ## Tick output
 
