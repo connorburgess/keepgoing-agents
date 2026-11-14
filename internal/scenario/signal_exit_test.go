@@ -9,20 +9,17 @@ import (
 	"time"
 )
 
-// A bb command the host kills in the middle of a check (an overloaded or
-// out-of-memory machine does this) is not a failure of the session: the
-// check treats what it could not read as unverified, sends nothing, raises
-// no hold, says the host killed a command, and the next check carries on.
-// This scenario kills the stand-in on purpose, so it opts out of the
-// harness's own check, which fails any other step whose stand-in did not end
-// on its own as an environment failure.
-func TestScenarioHostKilledCommand(t *testing.T) {
+// A stand-in bb self-signals during a read. The check keeps the read
+// unverified, sends nothing, raises no hold, and warns about the signal with
+// unknown source/cause. The next check carries on without another warning.
+// This explicitly opts out of the harness's unexpected-termination check.
+func TestScenarioSignalTerminatedCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("a process cannot be ended by a signal on Windows")
 	}
 	t.Parallel()
 	w := NewWorld(t, scenarioStart)
-	w.AllowHostKills = true
+	w.AllowSignalExits = true
 	w.Init("await_user", "complete", "stop")
 	primary := w.Thread(primaryThread)
 	w.Control("enable")
@@ -33,22 +30,22 @@ func TestScenarioHostKilledCommand(t *testing.T) {
 	w.Advance(2 * time.Minute)
 	primary.NetworkError(false)
 
-	// The host kills the read of the thread's log on the next check.
+	// The stand-in self-signals during the next read of the thread log.
 	if err := os.WriteFile(filepath.Join(w.world, "kill.next"), []byte("log"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	w.Advance(time.Minute)
 	s = w.Tick()
 	w.Check(s, "the check waits", all(exit(s, 0), action(s, "none"), reasonIs(s, "provider retry state unverified"), nothingSent(s), holds(s), noReports(s)))
-	if killed := hostKilled(s); !strings.Contains(killed, "killed by the host, not by keepgoing's time limit") {
-		w.Failf(s, "the check did not say the host killed a command: warnings %v", s.Tick["warnings"])
+	if killed := signalTermination(s); !strings.Contains(killed, "terminated by a Unix signal outside the adapter timeout/cancellation; signal source and cause are unknown") {
+		w.Failf(s, "the check did not report a signal with unknown source/cause: warnings %v", s.Tick["warnings"])
 	}
 
 	// Nothing was spent: the next check recovers the turn as usual.
 	w.Advance(time.Minute)
 	s = w.Tick()
 	w.Check(s, "the next check recovers the turn", all(action(s, "reprompt"), sentTo(s, primaryThread, Send{Kind: "retry", Thread: primaryThread}), holds(s)))
-	if hostKilled(s) != "" {
+	if signalTermination(s) != "" {
 		w.Failf(s, "the kill was reported again")
 	}
 }

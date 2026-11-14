@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A `bb` command that the host kills during a check (an out-of-memory or overloaded machine) is now named in a warning on that check. The read it was making was already treated as unverified; the warning says why. Unix only: on Windows a kill by signal is not reported as one.
+- Unreleased Unix diagnostic: an observation warns when a `bb` command terminates by a signal outside the adapter timeout/cancellation. Signal source and cause remain unknown, including for self-signals or crashes; read verification and decisions are unchanged. Windows emits no such warning.
 
 - Rebranded native macOS menu labels, accessibility text, local error/notification wording and bundle display name to looptender, preserving its command protocol and application identity. Source build only; replacing a running menu remains a separate action.
 

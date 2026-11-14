@@ -95,12 +95,11 @@ type LaneRecoverer interface {
 	ForgetLanes()
 }
 
-// KillReporter is implemented by adapters that can tell when the host ended
-// one of their provider commands with a signal they did not send. The
-// affected read is already treated as unverified; the count lets a check say
-// why.
-type KillReporter interface {
-	HostKills() int
+// SignalExitReporter exposes a cumulative count of Unix signal exits outside
+// adapter timeout/cancellation. The signal's source and cause are unknown.
+// Callers take a before/after difference to scope the count to their work.
+type SignalExitReporter interface {
+	SignalExits() int
 }
 
 // CLIPather is implemented by adapters that run a provider executable: the

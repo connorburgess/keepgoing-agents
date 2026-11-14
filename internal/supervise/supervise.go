@@ -318,22 +318,19 @@ type tick struct {
 	// work (a stop-only check whose stop was lifted), so it leaves the
 	// counts of failed checks as they were.
 	keepFailureCounters bool
-	// hostKillsNoted is how many host-killed provider commands this check
-	// has already warned about.
-	hostKillsNoted  int
-	stopsMade       []string // targets this check sent a stop to
-	enabled         bool     // the loop is enabled in control.json
-	schedule        state.ScheduleInput
-	startClock      time.Time      // the check's own clock when it began
-	gap             *state.Gap     // a gap this check is the first after, to report once recorded
-	stBeforeRecords state.File     // state before the records were handled, to undo them
-	quietFailure    bool           // a failure already reported by an earlier check
-	failure         *failureReport // wording for the one error report of a failed check
-	observeSpent    time.Duration  // observation time used by a lookup for an unsettled thread creation
-	lateReports     int            // reports started after the budget was spent
-	lateProbed      bool
-	graphFailed     bool
-	graphClosed     bool
+	stopsMade           []string // targets this check sent a stop to
+	enabled             bool     // the loop is enabled in control.json
+	schedule            state.ScheduleInput
+	startClock          time.Time      // the check's own clock when it began
+	gap                 *state.Gap     // a gap this check is the first after, to report once recorded
+	stBeforeRecords     state.File     // state before the records were handled, to undo them
+	quietFailure        bool           // a failure already reported by an earlier check
+	failure             *failureReport // wording for the one error report of a failed check
+	observeSpent        time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports         int            // reports started after the budget was spent
+	lateProbed          bool
+	graphFailed         bool
+	graphClosed         bool
 	// waiting is the child picture this check observed, for the run graph.
 	waiting *graphWaiting
 }
@@ -804,7 +801,6 @@ func (t *tick) run() error {
 	}
 	t.observedTarget = target
 	obs, err := t.observe(a)
-	t.noteHostKills(a)
 	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
@@ -1280,7 +1276,6 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	t.observedTarget = target
 	obs, err := t.observe(a)
-	t.noteHostKills(a)
 	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
@@ -2804,7 +2799,19 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 	limit := observeTimeout - t.observeSpent // less a lookup for an unsettled thread creation
 	ctx, cancel := context.WithTimeout(t.ctx, limit)
 	defer cancel()
+	// A factory may reuse an adapter across checks, and one check may observe
+	// more than once. Only exits during this observation belong in its warning.
+	var signals adapter.SignalExitReporter
+	before := 0
+	if k, ok := a.(adapter.SignalExitReporter); ok {
+		signals, before = k, k.SignalExits()
+	}
 	obs, err := a.Observe(ctx)
+	if signals != nil {
+		if n := signals.SignalExits() - before; n > 0 {
+			t.warn("%d provider command(s) during this observation terminated by a Unix signal outside the adapter timeout/cancellation; signal source and cause are unknown; affected reads remain unverified", n)
+		}
+	}
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("observation exceeded %s", limit)
 	}
@@ -2816,20 +2823,6 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 		}
 	}
 	return obs, err
-}
-
-// noteHostKills says so when the host ended a provider command of this check
-// with a signal the adapter did not send. Whatever that command was reading
-// was already treated as unverified; this is why.
-func (t *tick) noteHostKills(a adapter.Adapter) {
-	k, ok := a.(adapter.KillReporter)
-	if !ok {
-		return
-	}
-	if n := k.HostKills(); n > t.hostKillsNoted {
-		t.warn("%d provider command(s) of this check were killed by the host, not by keepgoing's time limit; what they were reading was treated as unverified. A machine that is out of memory or overloaded does this", n-t.hostKillsNoted)
-		t.hostKillsNoted = n
-	}
 }
 
 // networkDown checks connectivity at most once per check, and only when

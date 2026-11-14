@@ -136,13 +136,13 @@ type World struct {
 	Project string
 	Config  string
 	Now     time.Time
-	// AllowHostKills lets a scenario kill a stand-in on purpose. Otherwise a
+	// AllowSignalExits lets a scenario kill a stand-in on purpose. Otherwise a
 	// stand-in that did not end on its own fails the step as an environment
 	// failure (standinTrouble).
-	AllowHostKills bool
-	Net            *Connectivity
-	Hooks          *Receiver
-	Threads        map[string]*Thread
+	AllowSignalExits bool
+	Net              *Connectivity
+	Hooks            *Receiver
+	Threads          map[string]*Thread
 	// otherLoops is set when another loop sends to the same stand-ins, so
 	// this loop's runs do not account for every send.
 	otherLoops bool
@@ -671,7 +671,7 @@ func (w *World) record(label string, r Result, line map[string]any) *Step {
 	// A headless turn started by this command runs detached; let it end so
 	// this step records what it sent and the next one sees its result.
 	w.settle()
-	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" && !w.AllowHostKills {
+	if trouble := standinTrouble(w.world, r.Stderr); trouble != "" && !w.AllowSignalExits {
 		w.t.Fatalf("ENVIRONMENT FAILURE in %s at %s (%s): %s. Nothing in keepgoing or in this harness ends a stand-in early, so this step's result says nothing about the product. Run the scenario again; if it keeps happening, look for what is killing processes on this machine.",
 			w.Name, w.stamp(), label, trouble)
 	}
@@ -794,19 +794,15 @@ func (w *World) Check(s *Step, name string, err error) {
 	}
 }
 
-// hostKilled returns what keepgoing said about a provider command the host
-// killed, or "": a warning on a check that went on with the read unverified,
-// or the error of a check that could not observe its target at all.
-func hostKilled(s *Step) string {
+// signalTermination returns the diagnostic for a Unix signal exit observed
+// outside adapter timeout/cancellation. It does not identify the cause.
+func signalTermination(s *Step) string {
 	if warnings, _ := s.Tick["warnings"].([]any); len(warnings) > 0 {
 		for _, w := range warnings {
-			if text, _ := w.(string); strings.Contains(text, "killed by the host") {
+			if text, _ := w.(string); strings.Contains(text, "terminated by a Unix signal") {
 				return text
 			}
 		}
-	}
-	if strings.Contains(s.Result.Stderr, "signal: killed") {
-		return strings.TrimSpace(s.Result.Stderr)
 	}
 	return ""
 }
