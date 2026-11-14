@@ -254,7 +254,7 @@ Unreleased source; before, a span's times on a day the clock changed were counte
 
 ## timing
 
-Unreleased source, and the first parts of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3 and U4). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection), and `status` says what it would do with them. **It does not change routes yet**: nothing acts on the decision until U5. `validate`, `status` and `doctor` say so: `timing: collecting usage readings for the first route (…); it does not change routes yet`.
+Unreleased source, and the first parts of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U3 to U5). Off by default. Turned on, it probes the loop's first route on a schedule, including while the loop runs on it, so that its allowance has usage readings to [project](fallbacks.md#reading-history-and-projection). With `steps` configured, it moves the loop between them at turn boundaries: up to the ceiling near a reset that would otherwise leave much of the allowance unused, down a step when the readings project it running out before its reset, and back to `primary` when that reason passes. Without steps it only collects readings and changes no route; `validate`, `status` and `doctor` say which: `timing: collecting usage readings for the first route (…) and moving between its steps (…) up to … at turn boundaries`.
 
 ```yaml
 loop:
@@ -279,7 +279,7 @@ loop:
 | `windows` | required when on | The usage windows timing acts on, by the provider's own keys as `fallbacks list` shows them (for example `seven_day`). Keys are not interpreted. |
 | `near_reset` | `6h` | How close to a named window's reported reset counts as near, between 1m and 168h. |
 | `probe_every` | `12h` | The interval between timing probes of the first route; at least 1h. |
-| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on. The order is yours; keepgoing never ranks models or effort levels. Without steps timing only collects readings. |
+| `steps` | none | The routes timing may move between, cheapest to strongest, by ID: `primary` and fallbacks in the first route's group, switched on, each on the loop's own BB thread with its own `bb.model` or `bb.reasoning`. The order is yours; keepgoing never ranks models or effort levels. Without steps timing only collects readings. |
 | `ceiling` | the last step | The strongest step timing may use, at or above `primary`. |
 | `unused_at_least` | `0.25` | The unused share near a reset that makes timing step up, above 0 and below 1. |
 | `down_at` | `0.95` | The projected use at reset that makes timing step down, above 0 and at most 1. |
@@ -299,7 +299,7 @@ When timing probes run:
 
 **Where the readings come from.** A probe runs the CLI on this computer with its sign-in, or `loop.probe.env`. For a loop on a BB thread that may not be the account BB uses for the thread; `validate` and `doctor` warn whenever timing is on for a BB loop.
 
-**What it would do.** `status` (text and JSON `timingWould`) says what timing would do at the loop's next turn boundary, from the same decision U5 will act on, ending `(not acted on yet)`. The rules are tried in order and the first that applies decides, even when it decides to stay. Each decision names its rule and a reason code, both stable:
+**What it decides.** At each check timing decides, from recorded facts only, with the rules below, and `status` (text, and `timingWould` in JSON) says what it would decide at the next turn boundary. The rules are tried in order and the first that applies decides, even when it decides to stay. Each decision names its rule and a reason code, both stable:
 
 1. `gate`: timing stays when no steps are configured (`no_steps`), the loop is held (`held`), the session is in error (`in_error`), another move was decided in the same check (`other_move`), the last turn was a refusal or unknown (`refusal_or_unknown`), a turn is running (`turn_not_ended`), the failover rules moved the loop to the route it is on (`on_fallback_by_failover`), a person moved it and the window it was moved in has not reset (`retargeted`), or it is on a route that is not a step (`not_on_step`). Timing never moves a loop off a route the failover rules chose.
 2. `return_at_reset`: after a timing move, once the reset that move was for has passed, back to `primary` (`reset_passed`), however long ago the move was.
@@ -309,6 +309,24 @@ When timing probes run:
 6. `nothing_due`: no reading (`no_reading`), none of the named windows reported (`no_named_window`), a reading too old to step up on (`reading_too_old`), projected under `down_at` (`projected_under_down_at`), or not projectable (`cannot_project`).
 
 Rules 3 to 5 wait `min_on_step` after the last timing move (`too_soon`). A missing, stale or malformed reading never leads to a move. `status` cannot see a turn end, so it decides as if the next check found one; the gates it can read from records still apply.
+
+**Steps are BB routes on the loop's own thread, for now.** A step changes the model and effort of the conversation the loop is in; it never starts a new one. So every step must be a fallback naming the loop's own BB thread, with its own `bb.model` or `bb.reasoning`, and the loop must set `bb.model` (and `bb.reasoning`, when a step sets one), so that returning to `primary` sets the thread back. `validate` refuses anything else and says why. Headless Claude Code and Codex loops keep a separate session per route, so they cannot have steps yet.
+
+**How a step is made.**
+
+- Only in a check that made no other move, and only at a turn boundary: the session idle after a turn that did not end in an error or an unknown state, with nothing held. Before the check's wake, if it sends one, so the next turn runs on the new route. A step sends no message of its own and uses no send allowance.
+- It is recorded in `state.json` before the thread is changed. Then the thread's model and effort are set as for a handoff to a route on the same thread (`bb thread update`), and the route, the move and what put the loop there (`targetSetBy: timing`) are recorded. If the check ends in between, the next check sets the thread back to the route on record and decides afresh.
+- The control record is read again just before the thread is changed: a stop or pause written during the check wins, and nothing is changed.
+- If the thread cannot be changed, the loop stays where it is and the check's wake still goes out there. After `errors.max_reprompts` failures for one step and window instance, timing stops trying that step until the window resets.
+- Each step applied, and each failure cap reached, is reported as `timing` (on by default); `status` shows the last move, and the check's output carries `timing` with the decision and what came of it. `keepgoing timeline` shows the change of route on that check; it does not yet say that timing made it.
+
+**Failover, switch-back and a person's choice.**
+
+- Timing never moves a loop off a route a handoff chose (`on_fallback_by_failover`). Steps share the first route's group, so on a step a usage limit hands off to another account, never to another step, as on the first route.
+- Switch-back returns only from a route a handoff chose, never from a step timing chose. After a handoff from a step and a switch-back to `primary`, timing does not step up again for the same window instance.
+- `keepgoing retarget` is a person's choice: timing waits until the first named window resets, as the latest reading reports it then. With no reading of it at the time of the retarget, timing waits for the reset reported by the first reading taken after it.
+
+**Before going back to an older binary.** An older binary drops `targetSetBy` and the timing record from `state.json`, and its switch-back can then pull a loop off a timing step after `min_after`. First turn timing off (`loop.timing.enabled: false`) and run `keepgoing retarget primary -c <config>`, so the loop is on its first route.
 
 ## errors
 
@@ -353,7 +371,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait` and `child_error` are unreleased source; `check_gap`, also unreleased, is not a default and must be named) |
+| `report.events` | `handoff, switch_back, timing, degraded, recovered, await_user, limit_wait, network_wait, child_error, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `timing` are unreleased source; `check_gap`, also unreleased, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |
