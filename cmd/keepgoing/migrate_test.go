@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
@@ -626,4 +627,88 @@ func TestMigrateSmallCases(t *testing.T) {
 			t.Fatal("the preview changed something")
 		}
 	})
+}
+
+// Only the tool's own lock files are lock files. macOS keeps extended
+// attributes in "._name" files on FAT, exFAT and some network volumes; a
+// "._tick.lock" is not a lock, is never opened, and the move goes ahead.
+// Other names that merely end in ".lock" are not opened either.
+func TestMigrateTakesOnlyTheToolsOwnLockFiles(t *testing.T) {
+	for _, name := range []string{"tick.lock", "daemon.lock", "registry.lock", "routes.lock", "panel-server.lock", "0123456789abcdef0123456789abcdef.lock", "0123456789abcdef0123456789abcdef-record.lock"} {
+		if !migrateIsLock(name) {
+			t.Errorf("%s is not taken for a lock", name)
+		}
+	}
+	for _, name := range []string{"._tick.lock", "._0123456789abcdef0123456789abcdef.lock", "package.lock", "yarn.lock", "Gemfile.lock", "tick.lock.bak", "TICK.lock"} {
+		if migrateIsLock(name) {
+			t.Errorf("%s is taken for a lock", name)
+		}
+	}
+	h := newMigrateHome(t)
+	planted := filepath.Join(h.inside.StateDir, "._tick.lock")
+	if err := os.WriteFile(planted, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Held by another holder: if it were taken for a lock, the move would
+	// be refused as in use.
+	other, err := lock.HoldFile(planted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Release()
+	if code, out, _ := migrateRun(t, "--apply"); code != exitOK || out.Outcome != "done" {
+		t.Fatalf("%d %+v", code, out)
+	}
+}
+
+// No lock attempt can wait without end (opening a lock file can, on FAT,
+// exFAT and some network volumes). A lock file that cannot be tried in time
+// is in use as far as the move is concerned: the move is refused, names it,
+// and changes nothing.
+func TestMigrateRefusesALockThatCannotBeTriedInTime(t *testing.T) {
+	h := newMigrateHome(t)
+	slow := filepath.Join(h.inside.StateDir, lock.Tick+".lock")
+	if err := os.WriteFile(slow, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	prevHold, prevHeld, prevWait := migrateHoldFile, migrateHeldFile, migrateLockWait
+	migrateHoldFile = func(path string) (*lock.Lock, error) {
+		if path == slow {
+			<-stuck
+		}
+		return prevHold(path)
+	}
+	migrateHeldFile = func(path string) (bool, error) {
+		if path == slow {
+			<-stuck
+		}
+		return prevHeld(path)
+	}
+	migrateLockWait = 200 * time.Millisecond
+	t.Cleanup(func() { migrateHoldFile, migrateHeldFile, migrateLockWait = prevHold, prevHeld, prevWait })
+	before := h.tree(t)
+	for _, args := range [][]string{nil, {"--apply"}} {
+		start := time.Now()
+		var buf bytes.Buffer
+		code := run(context.Background(), append([]string{"migrate", "--json"}, args...), &buf, &bytes.Buffer{})
+		if took := time.Since(start); took > 5*time.Second {
+			t.Fatalf("%v: took %v", args, took)
+		}
+		var out migrateOutput
+		if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, r := range out.Refusals {
+			found = found || (r.Code == "lock_not_tried" && r.Path == slow)
+		}
+		if code != exitFailed || out.Outcome != "refused" || !found {
+			t.Fatalf("%v: %d %+v", args, code, out)
+		}
+	}
+	if after := h.tree(t); !same(before, after) {
+		t.Fatal("something changed")
+	}
 }

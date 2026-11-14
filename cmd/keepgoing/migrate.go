@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -66,6 +68,37 @@ const (
 	migrateWalkLimit = 200000
 	migrateHoldLimit = 4096
 )
+
+// migrateLockWait bounds how long one lock file may take to open and be
+// tried. On some file systems (FAT, exFAT, some network volumes) opening a
+// lock file can wait without end; a lock that cannot be tried in time is
+// treated as in use, and named.
+var migrateLockWait = 3 * time.Second
+
+// migrateLockNames are the tool's own lock files, by exact name. Session
+// claims and their records are named by a hash and matched by pattern.
+var migrateLockNames = func() map[string]bool {
+	names := map[string]bool{}
+	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", "graph"} {
+		names[n+".lock"] = true
+	}
+	return names
+}()
+
+// The lock calls, replaced by tests.
+var migrateHoldFile, migrateHeldFile = lock.HoldFile, lock.HeldFile
+
+var migrateClaimLock = regexp.MustCompile(`^[0-9a-f]{32}(-record)?\.lock$`)
+
+// migrateIsLock reports whether a file name is one of the tool's lock
+// files. A name beginning "._" is never one: macOS keeps a file's extended
+// attributes in such a file on file systems that cannot hold them.
+func migrateIsLock(name string) bool {
+	if strings.HasPrefix(name, "._") {
+		return false
+	}
+	return migrateLockNames[name] || migrateClaimLock.MatchString(name)
+}
 
 // migrateHoldLocks says whether the locks found free are held through the
 // move. On Windows an open file keeps its directory from being renamed, so
@@ -268,16 +301,51 @@ func (h *migrateHeld) release() {
 	h.locks = nil
 }
 
+// errLockSlow means a lock file could not be opened and tried in time.
+var errLockSlow = errors.New("it could not be tried in time")
+
 // probe looks at one lock file: busy when another holds it. When holding,
-// a free lock is taken and kept.
+// a free lock is taken and kept. Nothing here can wait longer than
+// migrateLockWait: a lock that cannot be tried in that time is in use as
+// far as the move is concerned. (Its attempt is left to finish or not;
+// whatever it takes is let go when the command exits.)
 func (h *migrateHeld) probe(path string) (busy bool, err error) {
 	if !h.hold {
-		return lock.HeldFile(path)
+		type result struct {
+			busy bool
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			b, err := migrateHeldFile(path)
+			done <- result{b, err}
+		}()
+		select {
+		case r := <-done:
+			return r.busy, r.err
+		case <-time.After(migrateLockWait):
+			return true, errLockSlow
+		}
 	}
 	if len(h.locks) >= migrateHoldLimit {
 		return false, errors.New("too many locks to hold")
 	}
-	l, err := lock.HoldFile(path)
+	type result struct {
+		l   *lock.Lock
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		l, err := migrateHoldFile(path)
+		done <- result{l, err}
+	}()
+	var l *lock.Lock
+	select {
+	case r := <-done:
+		l, err = r.l, r.err
+	case <-time.After(migrateLockWait):
+		return true, errLockSlow
+	}
 	switch {
 	case errors.Is(err, lock.ErrHeld):
 		return true, nil
@@ -311,8 +379,12 @@ func (h *migrateHeld) inUse(root string) []migrateRefusal {
 		}
 		name := d.Name()
 		switch {
-		case strings.HasSuffix(name, ".lock"):
+		case migrateIsLock(name):
 			busy, err := h.probe(path)
+			if errors.Is(err, errLockSlow) {
+				out = append(out, migrateRefusal{Code: "lock_not_tried", Path: path, Message: "this lock could not be tried in " + migrateLockWait.String() + " (the file system may not support locks well), so it is taken to be in use"})
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -402,6 +474,10 @@ func (h *migrateHeld) loopsInUse(places []userdir.Place, walked []string) []migr
 			{lock.Tick, "it is being checked right now; try again in a moment"},
 		} {
 			busy, err := h.probe(filepath.Join(l.stateDir, probe.name+".lock"))
+			if errors.Is(err, errLockSlow) {
+				out = append(out, migrateRefusal{Code: "lock_not_tried", Loop: l.name, Message: "its " + probe.name + " lock could not be tried in " + migrateLockWait.String() + ", so it is taken to be running"})
+				break
+			}
 			if err != nil {
 				out = append(out, migrateRefusal{Code: "not_inspected", Loop: l.name, Message: "whether it is running could not be told"})
 				break

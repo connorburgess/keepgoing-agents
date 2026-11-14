@@ -408,6 +408,12 @@ func (p Place) MoveBack() error {
 	if betweenSteps != nil {
 		betweenSteps()
 	}
+	// As for a move: whatever appeared at the earlier name meanwhile is not
+	// this move's to replace. The marker stays, so the place says what
+	// happened, where the files are and how to finish.
+	if _, err := os.Lstat(p.Earlier); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("something is already at %s, so %s was not renamed back; the files are in %s", p.Earlier, p.Current, p.Current)
+	}
 	if err := os.Rename(p.Current, p.Earlier); err != nil {
 		if p.Status == Moved {
 			// Put the link back: the place is as it was.

@@ -649,3 +649,26 @@ func TestMoveNeverReplacesWhatAppearsAtTheCurrentName(t *testing.T) {
 		})
 	}
 }
+
+// The same for a move back, where a rename follows the removal of the link:
+// something that appears at the earlier name in between is not replaced,
+// the files stay where they are, and the place says so.
+func TestMoveBackNeverReplacesWhatAppearsAtTheEarlierName(t *testing.T) {
+	base := t.TempDir()
+	needLinks(t, base)
+	noSwap(t)
+	write(t, filepath.Join(base, LegacyName, "registry", "loops.json"), "registry")
+	if err := status(t, base, Earlier).Move(); err != nil {
+		t.Fatal(err)
+	}
+	betweenSteps = func() { write(t, filepath.Join(base, LegacyName), "something else") }
+	t.Cleanup(func() { betweenSteps = nil })
+	err := status(t, base, Moved).MoveBack()
+	betweenSteps = nil
+	if err == nil || !strings.Contains(err.Error(), "the files are in "+filepath.Join(base, Name)) {
+		t.Fatalf("%v", err)
+	}
+	if read(t, filepath.Join(base, LegacyName)) != "something else" || read(t, filepath.Join(base, Name, "registry", "loops.json")) != "registry" {
+		t.Fatal("something was replaced or lost")
+	}
+}
