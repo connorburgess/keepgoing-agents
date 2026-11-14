@@ -13,6 +13,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // Availability says what a read found. Only Available has usable records.
@@ -43,7 +44,7 @@ func NewID(prefix string) (string, error) {
 // record: anything but Available returns an empty graph.
 func Load(dir string) (Graph, Availability) {
 	path := filepath.Join(dir, FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Graph{}, Missing
 	}

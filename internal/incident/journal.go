@@ -25,7 +25,9 @@ const FileName = "incidents.json"
 // Version 11 (route-list notes) adds, on tick records, that the standard
 // route list changed since the loop's previous check, and route_change
 // records: a change to a loop's own route list, with who made it.
-const SchemaVersion = 11
+// Version 12 adds the refusal and model-fallback markers on tick records,
+// and the question IDs on control records.
+const SchemaVersion = 12
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -114,7 +116,7 @@ func Reserved(tier string) int {
 // Corrupt, oversized, aliased or future-schema history is never silently reset.
 func Load(dir string) (Journal, error) {
 	path := filepath.Join(dir, FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Journal{SchemaVersion: SchemaVersion, NextSequence: 1, Records: []Record{}}, nil
 	}
