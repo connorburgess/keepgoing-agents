@@ -10,6 +10,8 @@ The core is a single binary for macOS, Linux and Windows. Use its daemon or an e
 
 **Version guide: CLI [v0.2.0](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) + BB plugin v0.3.0, from the same tag.** v0.2.0 is the first release under the [Sustainable Use License 1.0](LICENSE); v0.1.5 and earlier stay Apache-2.0. Its [release notes](docs/releases/v0.2.0.md) say what is new, what changes on upgrade and how to go back. Package evidence is [recorded here](docs/release-verification.md#v020-release-preparation). Check `keepgoing version` for the installed package. Installing a release does not upgrade a separately deployed supervisor executable or install the BB plugin or macOS companion.
 
+Unreleased headless runner completion requires wrapper protocol 3 (previously 2). Before upgrading, stop supervision and let old detached turns finish, or use owned stop and confirm actual exit, then replace/restart. The handshake protects new launches only; see [completion and upgrade limits](docs/operations.md#owned-headless-cancellation).
+
 | Surface | What you can use | Verification boundary |
 | --- | --- | --- |
 | Core CLI | Setup, start, controls, bounds, diagnostics, goals and BB transfer | v0.2.0 adds network-aware recovery, the panel and the rest in its [notes](docs/releases/v0.2.0.md); broad offline tests, with partial live BB evidence |

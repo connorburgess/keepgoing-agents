@@ -490,18 +490,18 @@ func (d Dir) discardAside() {
 // turnProtocol is what a binary answers when asked which turn wrapper it
 // is. It names the contract between Start and the wrapper: what the wrapper
 // locks, checks and writes. It changes only when that contract changes, not
-// with every release, so two builds with the same label can be mixed. A
+// with every release, so two builds with the same protocol can interoperate. A
 // binary that answers anything else, or nothing, would not keep the contract:
 // started as a wrapper it could run the agent without the turn lock.
 const (
-	turnProtocol = "keepgoing-turn-wrapper 2"
+	turnProtocol = "keepgoing-turn-wrapper 3"
 	envTurnProbe = "KEEPGOING_RUN_TURN_PROBE"
 )
 
 // The two reasons a start is refused over the binary on disk. They are fixed
 // texts: the check reports them and status and doctor repeat them.
 const (
-	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process (it is another build): stop the daemon, then start it again"
+	ReasonWrapperDiffers = "the keepgoing binary on disk does not speak the turn-wrapper protocol of the running process: stop the daemon, then start it again"
 	ReasonWrapperSilent  = "the keepgoing binary on disk could not be asked which turn wrapper it is (it did not run, or did not answer in time): check that it is in place and executable, then restart the daemon"
 )
 

@@ -277,6 +277,40 @@ func TestStartRefusesABinaryThatIsNotItsOwnWrapper(t *testing.T) {
 	}
 }
 
+// Protocol 2 allowed publication after releasing turn.lock. A parent requiring
+// completion and watcher drain under that lock must refuse it before setup.
+func TestStartRefusesProtocol2BeforeMutation(t *testing.T) {
+	forget := func() {
+		agreed.Lock()
+		agreed.info = nil
+		agreed.Unlock()
+	}
+	forget()
+	t.Cleanup(forget)
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	cli := helperCLI(t, "{}", 0, 0)
+	err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", []string{"KEEPGOING_TEST_WRAPPER=protocol-2"})
+	if err == nil {
+		waitFor(t, d, Finished) // Join logical completion even on the old failure.
+		t.Fatal("protocol 2 was accepted for the completion-under-lock contract")
+	}
+	var refused adapter.ErrNotStarted
+	var none notSpawned
+	if !errors.As(err, &refused) || refused.Reason != ReasonWrapperDiffers || !errors.As(err, &none) {
+		t.Fatalf("protocol 2: Start returned %v", err)
+	}
+	if _, statErr := os.Stat(string(d)); !os.IsNotExist(statErr) || ranAgent(cli) {
+		t.Fatal("protocol mismatch created the turn directory or ran the agent")
+	}
+	if turnProtocol != "keepgoing-turn-wrapper 3" {
+		t.Fatalf("fixed wrapper advertises %q", turnProtocol)
+	}
+	if err := d.Start([]string{cli}, filepath.Dir(string(d)), "fictional prompt", nil); err != nil {
+		t.Fatalf("matching protocol 3: %v", err)
+	}
+	waitFor(t, d, Finished)
+}
+
 // An abandoned first turn left no conversation: no process ever ran it. The
 // Cursor runner treats it like a turn that never started, so the next send
 // starts normally. It used to refuse every later send.
