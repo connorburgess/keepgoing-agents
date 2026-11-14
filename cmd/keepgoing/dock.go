@@ -24,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // keepgoing dock serves one read-only page about every registered loop on the
@@ -471,6 +472,9 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	in.Timeline = &tl
 	if c := in.Client.Snapshot.Controls; c != nil && c.AwaitingUser {
 		in.Hold = dockHoldFromTimeline(in.Timeline)
+	}
+	if titles, err := state.LoadLaneTitles(entry.StateDir); err == nil {
+		in.LaneTitles = titles
 	}
 	loop, _, _ := readRegisteredRunsWith(entry, all, true, runsMaxLimit, 0, d.staleAfter, validated)
 	in.Runs, in.RunsKnown = loop, loop.Binding == recordAvailable

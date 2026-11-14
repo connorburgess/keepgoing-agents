@@ -457,6 +457,8 @@
       li.appendChild(el("span", "lane-state", x.phrase));
       var what = el("span", "lane-what");
       what.appendChild(el("span", "lane-title", x.title || "Lane " + x.number));
+      // A recorded title is the person's own text: shown with identifiers only.
+      if (!x.title && x.titleEvidence === "withheld") what.appendChild(el("span", "sub", " · title withheld"));
       if (x.loop) {
         what.appendChild(document.createTextNode(" · also a registered loop: "));
         what.appendChild(link("#/loop/" + x.loopKey, x.loop));

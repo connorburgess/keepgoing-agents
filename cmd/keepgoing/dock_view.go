@@ -874,6 +874,9 @@ type dockInput struct {
 	// not read. Hostname is this computer's name, shown only with identifiers.
 	Timeline *timelineReport
 	Hostname string
+	// LaneTitles is the loop's private lane-titles file; nil when missing or
+	// unusable.
+	LaneTitles *state.LaneTitles
 }
 
 // dockHold is the retained history record of an awaiting-user hold starting.
@@ -1264,7 +1267,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	use := dockUse(l, st)
-	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers, use.Target != "", now)
+	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers, use.Target != "", in.LaneTitles, now)
 	l.Chain = dockHandoffChain(in.Chain, use, dockTestingOf(l.State, st, in.Chain), l.Fallbacks, now, identifiers)
 	l.Away = dockAwayOf(st, in.Chain, l.Chain.Entries, in.Timeline, now)
 	l.PickerState = l.Phrase

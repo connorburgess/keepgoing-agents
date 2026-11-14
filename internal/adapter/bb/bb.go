@@ -29,6 +29,9 @@ type Adapter struct {
 	// activeChildIDs is the verified active children of the last childWork
 	// call, kept beside its count for the run graph.
 	activeChildIDs []string
+	// childTitles is the title field of each verified direct child's show
+	// reply in the last childWork, by ID, for display only.
+	childTitles map[string]string
 }
 
 // New returns an adapter for the thread.
@@ -99,6 +102,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	obs.ActiveChildren, obs.ChildrenUnverified, obs.AwaitingChildren, obs.ErroredChildren, obs.HealthyChildren = a.childWork(ctx)
 	obs.ActiveChildIDs = a.activeChildIDs
+	obs.ChildTitles = a.childTitles
 	if len(obs.AwaitingChildren) > 0 {
 		if obs.State == decide.Error {
 			obs.ErrorClass = decide.ErrUnknown

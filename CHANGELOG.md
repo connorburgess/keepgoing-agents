@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The keepgoing panel can show each lane's title. For a BB thread, a check now reads the `title` from the `bb thread show` reply it already makes for each direct child; still no log or message, and no decision uses it. Titles are kept in a private `lane-titles.json` in the loop's state directory, for the newest complete listing only, at most 64, cut to 120 characters with control characters removed. The panel shows them only with "Show identifiers and notes", and says "title withheld" otherwise. No title is in the run graph, `state.json`, the incident history, `status`, the timeline, `runs`, reports, webhooks, `panel list` or the menu. Fixtures only. See [the panel](docs/dock.md).
+
 - New: the no-progress flag. A loop with `progress.repositories` is flagged when it keeps being prompted with no recorded change to its repositories:
   - at `progress.flag_after_sends` messages actually sent (default 6): each send in the run graph by its own result, with turn retries counted only when the provider accepted them, so a re-prompt that sent nothing is not counted;
   - or at `progress.flag_after_errors` checks that found an error or retried the turn (default 4).
