@@ -2,6 +2,8 @@ package bb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -55,7 +57,7 @@ type Cursor struct {
 	AnsweringRequest bool `json:"answeringRequest,omitempty"`
 	// TurnStartSeq is the sequence of the latest turn/started event, and so
 	// names the current turn. OpenTools are the tool items that turn started
-	// and has not completed, by item ID. ToolsUncertain says the bookkeeping
+	// and has not completed, by a hash of the item ID (itemKey). ToolsUncertain says the bookkeeping
 	// cannot be trusted for this turn: an item without an ID or type, an item
 	// type not recognised, or more open items than are kept. A turn with an
 	// open or uncertain tool item is waiting on a tool, not on the model.
@@ -93,7 +95,7 @@ func (c *Cursor) trackItem(e event) {
 		return // another provider thread's item
 	}
 	if e.Type != "item/started" {
-		delete(c.OpenTools, d.Item.ID) // a completion of an item never seen closes nothing
+		delete(c.OpenTools, itemKey(d.Item.ID)) // a completion of an item never seen closes nothing
 		return
 	}
 	switch {
@@ -106,8 +108,15 @@ func (c *Cursor) trackItem(e event) {
 		if c.OpenTools == nil {
 			c.OpenTools = map[string]bool{}
 		}
-		c.OpenTools[d.Item.ID] = true
+		c.OpenTools[itemKey(d.Item.ID)] = true
 	}
+}
+
+// itemKey names an open tool item in the cursor by a hash of its ID, so no
+// item ID is kept between checks.
+func itemKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:12])
 }
 
 // ref returns a provider reference as the summary keeps it: as given, or as a
