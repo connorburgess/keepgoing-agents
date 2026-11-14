@@ -58,23 +58,31 @@ func TestLaneTitlesAreRecordedPrivatelyAndNowhereElse(t *testing.T) {
 	if len(got) != len(want) || got[childKeyOf("thr_child_a")] != want[childKeyOf("thr_child_a")] || got[childKeyOf("thr_child_b")] != want[childKeyOf("thr_child_b")] {
 		t.Fatalf("%v", got)
 	}
-	// No other file of the loop holds a title.
-	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() == state.LaneTitlesName {
-			return err
-		}
-		if b, err := os.ReadFile(path); err == nil && bytes.Contains(b, []byte(laneSecret)) {
-			t.Errorf("%s holds a lane title", d.Name())
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// Nor does any command's output, or any report.
+	// No command's output holds a title.
 	for _, args := range [][]string{{"status"}, {"status", "--json"}, {"timeline"}, {"timeline", "--json"}, {"runs"}, {"runs", "--json"}} {
 		if _, out, errs := f.run(args...); strings.Contains(out+errs, laneSecret) {
 			t.Errorf("%v shows a lane title", args)
 		}
+	}
+	// Nor does any file but lane-titles.json, anywhere keepgoing wrote: state,
+	// history, registry, sessions. Only the stand-in bb's own replies, the
+	// titles' source, are skipped.
+	if err := filepath.WalkDir(f.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (path == f.bbDir || path == filepath.Join(f.dir, "bin")) {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || path == filepath.Join(dir, state.LaneTitlesName) {
+			return nil
+		}
+		if b, err := os.ReadFile(path); err == nil && bytes.Contains(b, []byte(laneSecret)) {
+			t.Errorf("%s holds a lane title", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	reports, _ := json.Marshal(f.hooks.events)
 	if bytes.Contains(reports, []byte(laneSecret)) {
