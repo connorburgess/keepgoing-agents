@@ -491,7 +491,7 @@ func TestLaneWithNothingToRetryIsLeftAlone(t *testing.T) {
 // alone and named, by count only, in one owner report.
 func TestOnlyALaneWithEveryFactEstablishedIsRetried(t *testing.T) {
 	w := newLaneWorld(t)
-	ids := laneIDs(9)
+	ids := laneIDs(11)
 	w.working(t, t0, ids...)
 	w.failed(ids...)
 	w.cfg.Loop.Agent.BB.Children.MaxPerCheck = 20
@@ -509,11 +509,13 @@ func TestOnlyALaneWithEveryFactEstablishedIsRetried(t *testing.T) {
 	set(6, func(f *decide.LaneFacts) { f.Retrying = true })
 	set(7, func(f *decide.LaneFacts) { f.ClassKnown = false })
 	set(8, func(f *decide.LaneFacts) { f.Verified = false })
+	set(9, func(f *decide.LaneFacts) { f.Class = decide.ErrRestricted })
+	set(10, func(f *decide.LaneFacts) { f.Class = decide.ErrRefused })
 	res := w.tick(t, t0.Add(time.Minute))
 	if strings.Join(w.a.retried, ",") != ids[0] || res.Lanes.Retried != 1 {
 		t.Fatalf("retried %v: %+v", w.a.retried, res.Lanes)
 	}
-	want := map[string]int{"waiting_on_person": 2, "rate_limit": 1, "auth": 1, "queued": 1, "provider_retrying": 1, "unknown": 1, "unverified": 1}
+	want := map[string]int{"waiting_on_person": 2, "rate_limit": 1, "auth": 1, "declined": 2, "queued": 1, "provider_retrying": 1, "unknown": 1, "unverified": 1}
 	for k, n := range want {
 		if res.Lanes.NotRetried[k] != n {
 			t.Fatalf("%s: %+v", k, res.Lanes.NotRetried)
@@ -523,7 +525,7 @@ func TestOnlyALaneWithEveryFactEstablishedIsRetried(t *testing.T) {
 		t.Fatal(w.reportTypes())
 	}
 	e := w.laneReports()[0]
-	if e.Data["rateLimited"] != 1 || e.Data["authFailed"] != 1 || e.Data["givenUp"] != 0 || e.Data["retried"] != 1 || !strings.Contains(e.Text, "1 were not retried because they are rate limited and 1 because they need a login") {
+	if e.Data["rateLimited"] != 1 || e.Data["authFailed"] != 1 || e.Data["declined"] != 2 || e.Data["givenUp"] != 0 || e.Data["retried"] != 1 || !strings.Contains(e.Text, "1 were not retried because they are rate limited, 1 because they need a login and 2 because the provider refused or restricted them") {
 		t.Fatalf("%+v", e)
 	}
 	// However long they stay that way they are never retried, and reported once.

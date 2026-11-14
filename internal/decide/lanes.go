@@ -44,6 +44,7 @@ const (
 	LaneWaitingPerson LaneVerdict = "waiting_on_person" // a prompt or question is pending, or could not be ruled out
 	LaneRateLimited   LaneVerdict = "rate_limit"        // a retry runs into the same limit
 	LaneAuth          LaneVerdict = "auth"              // needs a person
+	LaneDeclined      LaneVerdict = "declined"          // the provider refused or restricted it: needs a person, never retried
 	LaneRetrying      LaneVerdict = "provider_retrying" // the provider is retrying it
 	LaneUnknown       LaneVerdict = "unknown"           // the failure could not be read
 )
@@ -67,6 +68,8 @@ func LaneVerdictFor(f LaneFacts) LaneVerdict {
 		return LaneRateLimited
 	case f.Class == ErrAuth:
 		return LaneAuth
+	case Declined(f.Class):
+		return LaneDeclined
 	case f.Retrying:
 		return LaneRetrying
 	}
