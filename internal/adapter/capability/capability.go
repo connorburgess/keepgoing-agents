@@ -64,6 +64,9 @@ type Adapter struct {
 	// TurnRetrier says the adapter can ask its provider to re-run a failed
 	// turn by reference (adapter.TurnRetrier).
 	TurnRetrier bool
+	// LaneStopper says the adapter can find and stop the conversation's
+	// lanes for keepgoing stop --lanes (adapter.LaneStopper).
+	LaneStopper bool
 	// SessionEvidence says a check records a chat/session reference for it.
 	SessionEvidence bool
 }
@@ -78,7 +81,7 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, SessionEvidence: true,
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneStopper: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
@@ -277,6 +280,12 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Live, "The same wrapper. Live once on macOS; a helper process Cursor leaves running per project is not managed.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorOwnedStopOnThisPlatform")}},
 			"process": {Partial, Fixture, "Only if a stop command is configured; keepgoing owns no process to cancel.", []Ref{t(processTest, "TestStopUnsupported")}},
 		})},
+	{ID: "stop_lanes", Title: "Stop the lanes too", What: "On a person's request (keepgoing stop --lanes), stop the conversations the supervised one started, and theirs, along with it.",
+		Cells: merge(map[string]Cell{
+			"bb": {Yes, Fixture, "Verified descendants by parentThreadId, 3 levels and 50 threads at most; running ones and those in error with a retry queued are stopped with `bb thread stop`, a queued provider retry is cancelled with `bb provider-retry cancel`, only with `--drop-queued`, the messages queued in a lane that has not started or is idle are deleted with `bb thread queue delete`, and another loop's lane is left to that loop. Each stop is recorded first. Run against a stand-in bb only.",
+				[]Ref{t("internal/supervise/lanestop_test.go", "TestStopWithLanesStopsTheRunningLanesOnce"), t("internal/supervise/lanestop_test.go", "TestLaneStopRecoversAfterACheckKilledMidStop"), t("internal/scenario/stop_lanes_test.go", "TestScenarioStopLanesNow"), d("docs/operations.md#stopping-the-lanes-too")}},
+		}, same(Cell{NA, None, "Not applicable: a headless turn has no child conversations outside its own process. The stop goes ahead and its report says lanes do not apply.", nil}, headless...),
+			same(Cell{NA, None, "Not applicable: no child identities are reported. The stop goes ahead and its report says lanes do not apply.", nil}, "process"))},
 	{ID: "permissions", Title: "Permission prompts", What: "Notice that the agent is waiting for a person to approve something, hold, and report it once.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "From the interaction list; shapes come from real lifecycle events.", []Ref{d(providers), t(bbTest, "TestPendingInteractionMeansWaitingOnAPerson")}},
@@ -316,6 +325,7 @@ var customCells = map[string]Cell{
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
 	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
 	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
 }
 

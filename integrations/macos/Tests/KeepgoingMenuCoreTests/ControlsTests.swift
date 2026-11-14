@@ -44,9 +44,7 @@ final class ControlsTests: XCTestCase {
         let invalid: [(Data, Int32, LoopAction)] = [
             (reviewJSON(key: "l000000000000"), 0, .stop), (reviewJSON(action: "pause"), 0, .stop), (reviewJSON(expect: "abc"), 0, .stop),
             (reviewJSON(expect: String(repeating: "C1", count: 32)), 0, .stop), (reviewJSON(), 1, .stop), (refused, 0, .stop),
-            (reviewJSON(action: "pause", stop: conversation), 0, .pause), (reviewJSON(stop: "{\"immediately\":true,\"options\":[]}"), 0, .stop),
-            (reviewJSON(stop: "{\"immediately\":true,\"options\":[{\"label\":\"\\u0007\",\"lanes\":false}]}"), 0, .stop),
-            (reviewJSON(stop: "{\"immediately\":true,\"options\":[{\"label\":\"A\",\"lanes\":true},{\"label\":\"B\",\"lanes\":true}]}"), 0, .stop),
+            (reviewJSON(action: "pause", stop: conversation), 0, .pause),
             (reviewJSON(expect: String(repeating: "c1", count: 32)), 0, .stop),
             (Data("{\"schemaVersion\":1,\"result\":{\"outcome\":\"maybe\",\"text\":\"x\"}}".utf8), 1, .stop),
             (Data("fictional-private-bad-json".utf8), 0, .stop), (Data(), 0, .stop),
@@ -90,6 +88,56 @@ final class ControlsTests: XCTestCase {
         let none = ConfirmationBuilder.build(try review("{\"immediately\":true,\"options\":[{\"label\":\"Stop example-api\",\"lanes\":false}]}"))
         XCTAssertEqual(none.buttons.map(\.title), ["Cancel", "Stop example-api"])
         XCTAssertEqual(none.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
+    }
+
+    // #209's third option: it also deletes the messages queued in lanes that
+    // have not started. Only that option passes --drop-queued, and always
+    // with --lanes.
+    func testTheDropQueuedOptionAloneDropsQueuedMessages() throws {
+        let three = "{\"lanes\":2,\"queued\":4,\"immediately\":true,\"options\":[{\"label\":\"Stop the Conversation\",\"lanes\":false},{\"label\":\"Stop It and Its 2 Lanes\",\"lanes\":true},{\"label\":\"Stop It, Its Lanes and Their 4 Queued Messages\",\"lanes\":true,\"dropQueued\":true}]}"
+        let c = ConfirmationBuilder.build(try review(three))
+        XCTAssertEqual(c.buttons.map(\.title), ["Cancel", "Stop the Conversation", "Stop It and Its 2 Lanes", "Stop It, Its Lanes and Their 4 Queued Messages"])
+        XCTAssertEqual(c.buttons.map(\.destructive), [false, true, true, true])
+        XCTAssertNil(c.defaultButton.command)
+        let args = c.buttons.dropFirst().map { MenuBuilder.arguments($0.command!)! }
+        XCTAssertEqual(args[0], ["client", "apply", "stop", "--loop", key, "--expect", expect, "--immediately", "--json"])
+        XCTAssertEqual(args[1], ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--immediately", "--json"])
+        XCTAssertEqual(args[2], ["client", "apply", "stop", "--loop", key, "--expect", expect, "--lanes", "--immediately", "--drop-queued", "--json"])
+        XCTAssertEqual(args.filter { $0.contains("--drop-queued") }.count, 1)
+        // Never without --lanes, and never for anything but a stop.
+        XCTAssertNil(MenuBuilder.arguments(.apply(.stop, key: key, expect: expect, lanes: false, immediately: true, dropQueued: true)))
+        XCTAssertNil(MenuBuilder.arguments(.apply(.pause, key: key, expect: expect, lanes: false, immediately: false, dropQueued: true)))
+    }
+
+    // So that the next additive change cannot break Stop: the review is still
+    // shown, and only the options this menu fully understands are offered.
+    // An option with a field it does not know is never offered without that
+    // field, because its button would then do less than its words say.
+    func testAnOptionTheMenuDoesNotUnderstandIsNotOfferedAndTheReviewStillIs() throws {
+        func titles(_ stop: String) throws -> [String] { ConfirmationBuilder.build(try review(stop)).buttons.map(\.title) }
+        let base = "{\"label\":\"Stop the Conversation\",\"lanes\":false}"
+        // A field it does not know.
+        XCTAssertEqual(try titles("{\"immediately\":true,\"options\":[\(base),{\"label\":\"Stop It and Forget Its History\",\"lanes\":true,\"dropHistory\":true}]}"), ["Cancel", "Stop the Conversation"])
+        // A known field of the wrong type, or missing.
+        XCTAssertEqual(try titles("{\"immediately\":true,\"options\":[\(base),{\"label\":\"B\",\"lanes\":\"yes\"},{\"label\":\"C\",\"lanes\":true,\"dropQueued\":1},{\"label\":\"D\"}]}"), ["Cancel", "Stop the Conversation"])
+        // Not an object at all.
+        XCTAssertEqual(try titles("{\"immediately\":true,\"options\":[\"fictional\",\(base),7]}"), ["Cancel", "Stop the Conversation"])
+        // Dropping queued messages without stopping the lanes; a label with
+        // nothing to show; two alike: the first is kept.
+        XCTAssertEqual(try titles("{\"immediately\":true,\"options\":[{\"label\":\"X\",\"lanes\":false,\"dropQueued\":true},{\"label\":\"\\u0007\",\"lanes\":true},\(base),{\"label\":\"Again\",\"lanes\":false}]}"), ["Cancel", "Stop the Conversation"])
+        // Nothing understood, no options, or an unreadable `immediately`: the
+        // one plain stop, which waits for the next check unless keepgoing
+        // said it can be made at once.
+        for stop in ["{\"immediately\":true,\"options\":[{\"label\":\"Z\",\"lanes\":true,\"future\":1}]}", "{\"immediately\":true,\"options\":[]}", "{\"immediately\":true}"] {
+            let c = ConfirmationBuilder.build(try review(stop))
+            XCTAssertEqual(c.buttons.map(\.title), ["Cancel", "Stop example-api"], stop)
+            XCTAssertEqual(c.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: true))
+        }
+        let unreadable = ConfirmationBuilder.build(try review("{\"immediately\":\"soon\",\"options\":[\(base)]}"))
+        XCTAssertEqual(unreadable.buttons.map(\.title), ["Cancel", "Stop example-api"])
+        XCTAssertEqual(unreadable.buttons[1].command, .apply(.stop, key: key, expect: expect, lanes: false, immediately: false))
+        // The review's own sentences are always shown.
+        XCTAssertEqual(ConfirmationBuilder.build(try review("{\"immediately\":true,\"options\":[{\"x\":1}]}")).informativeText, lines.joined(separator: "\n\n"))
     }
 
     func testPauseAndResumeAreNotStyledAsDestructive() throws {

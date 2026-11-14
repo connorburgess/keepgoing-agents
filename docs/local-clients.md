@@ -80,13 +80,16 @@ This CLI surface is released in v0.1.4. Offline CLI/storage fixtures cover priva
 ```sh
 keepgoing client pause --id loop_0123456789abcdef0123456789abcdef --json
 keepgoing client stop --id loop_0123456789abcdef0123456789abcdef --json
+keepgoing client stop --lanes --immediately --id loop_0123456789abcdef0123456789abcdef --json
 ```
 
 These are explicit requests to add a hold to the registered loop, independent of whichever target it currently supervises. They do not resume, enable, take over ownership, clear any hold, stop a process directly or start a supervisor. `pause` sets only paused; `stop` sets only stop. Both preserve notes, disabled/completed/awaiting-user state, owner generation and pending transfer metadata. As with ordinary CLI pause/stop, a different BB caller can add these restrictive holds without taking over. They intentionally need no earlier status token, live target lookup or healthy daemon response. A stop is executed by a later authorized supervisor check; its save does not confirm provider termination.
 
+In unreleased source `client stop` takes three options. `--drop-queued` (only with `--lanes`) also deletes the messages queued in lanes that have not started or are idle; their text is not kept, and the supervised thread's own queue is never touched ([stopping the lanes too](operations.md#stopping-the-lanes-too)). The other two: `--lanes` asks the stop to cover the lanes too, the conversations the supervised one started and theirs ([stopping the lanes too](operations.md#stopping-the-lanes-too)). `--immediately` carries the stop out in the command once it is saved, through the same stop path a check uses, under the loop's check lock and the session-claim rules, and records it as a check ([carrying a stop out now](operations.md#carrying-a-stop-out-now)); it waits at most five seconds for a check that holds the lock. Only with `--immediately` does `client stop` take the tick lock and run provider commands, and then only those of a stop. `client pause` has neither option.
+
 Use `--directory` for a non-default private registry. The command pins an existing registration under the short registry lock, loads the current config, then revalidates registration, loop name, canonical runtime binding and config/fallback source bytes inside the control update. Registry removal and other control writers cannot overlap those locks. Missing/broken/rebound configs or malformed/non-object/oversized control records are refused rather than repaired. Pending transfers remain held and may receive additional restrictive flags. The command takes no tick lock and performs no provider, BB, daemon, scheduler or notification calls. Lock acquisition is nonblocking; it never waits for a running tick.
 
-JSON responses have `schemaVersion: 1`, `registrationId`, `operation`, `controlSave`, `issues`, and `controls` only after a confirmed save. All issues are fixed codes; paths, notes, task text, owner identity and raw errors are withheld. Save evidence is explicit:
+JSON responses have `schemaVersion: 1`, `registrationId`, `operation`, `controlSave`, `issues`, and `controls` only after a confirmed save. In unreleased source a stop also has `carriedOut`, `now` when the command ran the stop or `left_to_check` when a check carries it out, with `leftBecause` (`check_running`, `session_claimed`, `bb_not_found`, `cancelled`, `sources_changed`, `lock_unavailable`) when `--immediately` was asked for and could not be done, and the stop check's `warnings` as fixed codes (`lane_stops_unrecorded`, `lane_stop_unrecorded`, `provider_retry_cancel_unsupported`, `lanes_out_of_time`, `lane_listing_unreadable`, `caller_stopped_last`, `reports_disabled`, `stop_unrecorded`, `session_claim_unavailable`, or `check_warning`, which `status` shows in full), never a path or an error's text; and, with `--lanes`, `lanes` with `requested: true` and, when the stop ran in the command, `result`: the counts of the check's `laneStop`, without its bookkeeping. An issue `stop_now_failed` (exit 1) means the stop was saved but could neither be carried out nor left to a running check; `check_running` and `session_claimed` are not failures. All issues are fixed codes; paths, notes, task text, owner identity and raw errors are withheld. Save evidence is explicit:
 
 - `confirmed`: the control save succeeded. Exit 0 means control and diagnostic writes succeeded; exit 1 with `incident_history_unavailable` or `run_history_unavailable` means the hold is saved but diagnostic history is incomplete. Neither means the provider acted.
 - `not_attempted`: a precondition, cancellation or busy lock prevented a save. Exit 75 with `busy` means contention; other refusals return exit 1. Other issue codes include `registry_unavailable`, `binding_unavailable`, `registration_changed`, `binding_changed`, `control_unavailable`, `cancelled` and `control_or_registration_unavailable`.
@@ -126,7 +129,7 @@ Unreleased; fixtures and the menu's contract smoke only.
 
 ```sh
 keepgoing client review stop --loop l0123456789ab --json
-keepgoing client apply stop --loop l0123456789ab --expect <the review's expect value> --json
+keepgoing client apply stop --loop l0123456789ab --expect <the review's expect value> [--lanes [--drop-queued]] [--immediately] --json
 ```
 
 These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-changes) pause, stop and resume for a local program that shows its own confirmation, such as the [macOS menu](../integrations/macos/README.md). Both take the loop by the page key `panel list --json` gives (`--loop`), never a registration ID or path, and act as the BB thread in `BB_THREAD_ID`, or as no thread outside BB, exactly as the ordinary commands do: pause and stop are anyone's, and a resume of a loop another conversation owns is refused, as `keepgoing resume` and `client prepare-resume` refuse it. The menu runs them with no `BB_THREAD_ID`, as a person at a terminal outside BB.
@@ -137,18 +140,27 @@ These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-ch
 - The history records these as ordinary `pause`, `stop` and `resume`, as `client pause|stop` and `client resume` do, not as from the panel.
 - `client review --help` and `client apply --help` print the usage and exit 0.
 
-`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). Today a stop stops the conversation only, at the loop's next check, and the review says so.
+`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). A stop review offers the stop's options, below.
 
-**Stop options (planned, for `stop --lanes` and `--immediately`).** When the CLI can stop a loop's lanes and stop at once, `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
+**Stop options.** Unreleased; offline fixtures and a stand-in bb only. `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
 
 ```json
 "stop": {
+  "lanes": 3,
+  "queued": 4,
   "immediately": true,
   "options": [
     {"label": "Stop the Conversation", "lanes": false},
-    {"label": "Stop It and Its 3 Lanes", "lanes": true}
+    {"label": "Stop It and Its 3 Lanes", "lanes": true},
+    {"label": "Stop It, Its Lanes and Their 4 Queued Messages", "lanes": true, "dropQueued": true}
   ]
 }
 ```
 
-`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object (today's) offers the one stop, which waits for the next check. The macOS menu already reads this shape and offers it only when it is there.
+`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`, and one with `dropQueued: true` also passes `--drop-queued`. There are one to four options, each with a label, and no two with the same `lanes` and `dropQueued`. A review with no `stop` object offers the one stop, which waits for the next check. The macOS menu reads this shape and offers it only when it is there.
+
+**Reading it so the next addition cannot break Stop.** The macOS menu shows the review whatever the options say, and offers only the options it fully understands, up to four: an option with a field it does not know, or a known field of the wrong type, or `dropQueued` without `lanes`, or with no label, or alike in what it does to an earlier one, is not offered. An option is never offered without a field the menu does not know, because its button would then do less than its words say. With no option understood, or `immediately` unreadable, it offers the one plain stop. The menu passes `--drop-queued` for the option that says so alone, and never without `--lanes`.
+
+`lanes` is how many of the loop's lanes the stop would stop now, counted from a fresh read with the stop's own bounds and rules ([stopping the lanes too](operations.md#stopping-the-lanes-too)): those running, or in error with a retry queued, and not another loop's. The count runs `bb thread list` and `bb thread show` with the `bb` the loop's own configuration names, stops nothing and records nothing. `lanesAtLeast: true` means it is a lower bound (a listing could not be read, or something lay past the bounds), and the label says "or More"; `lanes` is absent when nothing could be counted, and the label is "Stop It and Its Lanes". `queued` counts the messages queued in lanes that have not started (`pending`) or are idle. A stop with lanes keeps them, and BB may run them. When it is above 0 a third option deletes them (`dropQueued: true`), and the review's lines say that what was written in them is not kept anywhere; a program passes `--drop-queued` only for that option, and the page's confirmation is refused unless its review offered it. With none running there is one option. A loop whose agent has no child conversations keepgoing can see (anything but a BB thread) gets no `stop` object: its stop is the one stop, which waits for the next check. Where there are options, the review's line about the next check carrying out the stop, and its line that lanes keep running, are replaced by what the options do; the line saying when the review expires stays last. When bb cannot be found from here (a bare `bb` in the configuration, not on this PATH, and no usable path recorded by a check; see [finding bb](operations.md#carrying-a-stop-out-now)), `immediately` is false, the options are "Stop the Conversation" and "Stop It and Its Lanes", and the lines say "bb could not be found from here; the next check will stop the lanes." The review's lines say the same in sentences.
+
+`client apply stop --lanes --immediately` (or `--immediately` alone) carries the chosen option out in the command, as `client stop` does, within the 20 seconds a change is given: the stop check takes that as its hard limit, and what it cannot reach in it the next check finishes. The reply's `text` says what was done: "Stopped now, as a check would stop it. Lanes: …", or that it was left to a running check or to another loop's check on the session. Options are taken only by `client apply stop`; `client review` and the other actions refuse them as usage errors.

@@ -107,6 +107,7 @@ func clearForResume(f *control.File) resumeEffect {
 	e := resumeEffect{Paused: f.Paused, Stop: f.Stop, AwaitingUser: f.AwaitingUser, Completed: f.Completed,
 		Note: f.Note != "", OpenQuestion: f.OpenQuestion != nil, NewEpisode: f.EpisodeHold}
 	f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, false, false, false
+	f.StopLanesAt, f.StopLanesDropQueued = nil, false
 	f.Note, f.EpisodeHold, f.OpenQuestion, f.BriefHold = "", false, nil, nil
 	return e
 }
