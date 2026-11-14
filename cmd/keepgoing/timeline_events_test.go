@@ -66,7 +66,7 @@ func TestTimelineFiltersByKindTargetAndTime(t *testing.T) {
 	dir, fallback := eventLogFixture(t)
 	before := timelineFiles(t, dir)
 	all := timelineJSON(t, dir)
-	if all.SchemaVersion != 7 || all.Filter.ReachesPrunedHistory || len(all.Events) != 6 || all.Filter.Matched != 6 || all.Filter.Excluded != 0 || len(all.Filter.Kinds) != 0 || all.Filter.TargetKey != "" {
+	if all.SchemaVersion != 9 || all.Filter.ReachesPrunedHistory || len(all.Events) != 6 || all.Filter.Matched != 6 || all.Filter.Excluded != 0 || len(all.Filter.Kinds) != 0 || all.Filter.TargetKey != "" {
 		t.Fatalf("%+v", all.Filter)
 	}
 	wantKinds := [][]string{{"check", "limit_wait"}, {"check", "limit_wait"}, {"control", "ownership"}, {"retarget"}, {"check", "wake", "probe"}, {"check", "switch_back", "probe"}}
@@ -116,9 +116,9 @@ func TestTimelineFiltersByKindTargetAndTime(t *testing.T) {
 	code, out, errs = timelineCLI(t, dir, "--target", "fictional-fallback", "--kind", "moves", "--since", "24h")
 	short := "fallback " + fallback[:8]
 	for _, want := range []string{
-		"filter: kinds handoff,switch_back,retarget,ownership; target " + short + "; since ", "matched 2 of 6 retained events",
+		"filter: kinds handoff,switch_back,return,retarget,ownership; target " + short + "; since ", "matched 2 of 6 retained events",
 		"manual retarget saved: target primary -> " + short, "retarget_save_observed_at", "action switch_back", "target " + short + " -> primary", "probes: primary exact passed",
-		"last recorded target move (handoff, switch-back or retarget): incidents.json #6", "checks waiting for a provider limit: 2", "target_moves: recorded",
+		"last recorded target move (handoff, switch-back, return to the primary or retarget): incidents.json #6", "checks waiting for a provider limit: 2", "target_moves: recorded",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("text view lacks %q:\n%s", want, out)

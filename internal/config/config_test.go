@@ -70,6 +70,27 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+// A refusal or a restriction is a class an adapter may report, and one a loop
+// can never fail over on: the configuration says why instead of treating it
+// as a misspelled class.
+func TestDeclinedClassesAreReportableButNeverFailoverClasses(t *testing.T) {
+	for _, class := range []string{"restricted", "refused"} {
+		_, err := Parse([]byte(valid + "  errors:\n    failover_on: [rate_limit, " + class + "]\n"))
+		if err == nil || !strings.Contains(err.Error(), "is not a limit and never causes a handoff") {
+			t.Errorf("failover_on %s: %v", class, err)
+		}
+		reported := strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
+			"  bb:\n    thread: thr_example123\n",
+			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {78: "+class+"}\n", 1)
+		if _, err := Parse([]byte(reported)); err != nil {
+			t.Errorf("exit_codes mapped to %s: %v", class, err)
+		}
+		if !ValidErrorClass(class) {
+			t.Errorf("%s is not a reportable class", class)
+		}
+	}
+}
+
 func TestDurationParsing(t *testing.T) {
 	src := valid + "  progress:\n    stall_after: 45m\n    min_wake_interval: 2h\n"
 	cfg, err := Parse([]byte(src))

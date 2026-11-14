@@ -113,6 +113,12 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 	for _, e := range entries {
 		b, _ := os.ReadFile(filepath.Join(state_, e.Name()))
 		for _, secret := range []string{private, "thr_child_", "provider_private1"} {
+			// The stand-in bb gives each lane a title holding the private text;
+			// lane-titles.json is the one file meant to keep a title, for the
+			// panel's identifier view. It still holds no lane ID or reference.
+			if secret == private && e.Name() == state.LaneTitlesName {
+				continue
+			}
 			if strings.Contains(string(b), secret) {
 				t.Errorf("%s holds %q", e.Name(), secret)
 			}
@@ -164,7 +170,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 		t.Fatalf("timeline %d %s\n%s", code, errs, out)
 	}
 	code, out, errs = f.run("timeline", "--kind", "child_retry", "--json")
-	if code != exitOK || errs != "" || !strings.Contains(out, `"schemaVersion": 7`) || !strings.Contains(out, `"lastChildRetry"`) {
+	if code != exitOK || errs != "" || !strings.Contains(out, `"schemaVersion": 9`) || !strings.Contains(out, `"lastChildRetry"`) {
 		t.Fatalf("timeline json %d %s\n%s", code, errs, out)
 	}
 

@@ -213,7 +213,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 
 func readTransferRecord(dir, name string, dst any) error {
 	p := filepath.Join(dir, name)
-	info, err := os.Lstat(p)
+	info, err := snapshot.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

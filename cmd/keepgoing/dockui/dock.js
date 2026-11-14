@@ -468,6 +468,8 @@
       li.appendChild(el("span", "lane-state", x.phrase));
       var what = el("span", "lane-what");
       what.appendChild(el("span", "lane-title", x.title || "Lane " + x.number));
+      // A recorded title is the person's own text: shown with identifiers only.
+      if (!x.title && x.titleEvidence === "withheld") what.appendChild(el("span", "sub", " · title withheld"));
       if (x.loop) {
         what.appendChild(document.createTextNode(" · also a registered loop: "));
         what.appendChild(link("#/loop/" + x.loopKey, x.loop));
@@ -571,6 +573,12 @@
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
       list(np.lines).forEach(function (s) { pf.appendChild(el("div", "sub", s)); });
       dl.appendChild(fact("Progress", pf));
+    }
+    if (l.refusals && (l.refusals.text || l.refusals.question)) {
+      var rf = frag();
+      if (l.refusals.text) rf.appendChild(el("span", null, l.refusals.text));
+      if (l.refusals.question) rf.appendChild(el("div", "sub", "Question: " + l.refusals.question));
+      dl.appendChild(fact("Refusals", rf));
     }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
     checks.appendChild(dl);
