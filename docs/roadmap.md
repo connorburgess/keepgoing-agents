@@ -92,7 +92,7 @@ Reliability of supervision comes before new features: a day of live supervision 
 3. **Add a dock: one visible place for every loop.** The detail lives in a local page keepgoing serves on the loopback interface; a native menu-bar or tray item is only presence, a "needs you" count and a way to open the page. Implemented in v0.2.0 ([section 10](#10-optional-macos-menu-bar-companion-planned)): the read-only page with its picker (V1, #185) and route view with recorded limits, lanes and recent history (V2, #187); `keepgoing panel`, which opens it with one command (#186); pause, stop and resume from the page with `--allow-changes` (V4a, #192); a macOS menu preview that opens the panel and lists loops as rows (#188), and pauses, stops and resumes a loop after a native confirmation showing the page's review (`client review`/`client apply`); usage projections in the route view and allowances strip (#197); and the no-progress flag (V3, #198). Evidence: fixtures and Chromium against fixture loops; one read-only read of two live loops by the coordinator (#185); #185, #186, #187 and #192 each had an independent review by the coordinator before merge, with its findings fixed before merge. Real readings, real screen-reader speech, Safari, Firefox and Windows are not verified. Next: route configuration from the page (the rest of V4) as a front end to the guided `fallbacks` commands; installation. Actions on many lanes wait for first-class lanes and groups; remote access waits for real authentication. Configured stages can be shown when supplied; a stage engine is not required.
 4. **Make fallbacks easy and quota-aware.** Guided setup covers headless and BB-thread candidates, model and thread pick lists, handoff on/off, reorder and remove: implemented, run only against stand-in CLIs. Usage readings from existing probes are recorded and shown (Q1, Q2): live once, by one manual Claude probe. Readings are now kept over time per account and window and projected to the window's reset (U1, U2, #194): fixture-tested only. Open:
    - The switch threshold (Q4, P2): move to the next fallback at a configured share of a quota window, evaluated at turn end. A model-specific window is reported only by a probe or turn on that model, so the reading must come from there. A reading that is unavailable never triggers a switch, and keepgoing never reads credentials to obtain one.
-   - Usage-aware timing with its controls (U3–U13), planned in #191; nothing implemented.
+   - Usage-aware timing with its controls (U4–U13), planned in #191; nothing implemented. U3, timed probes of the home allowance, is implemented in v0.2.0 and fixture-tested; it changes no route yet.
    - More sources (Q3), including Codex readings on healthy probes.
    - Pick lists for detected accounts on headless candidates.
    - A live handoff to a candidate created by the guided flow.
@@ -102,6 +102,8 @@ Reliability of supervision comes before new features: a day of live supervision 
 7. **Finish safe BB transfer.** `transfer preview|apply|recover` preserves holds and goal identity and fences stale owners: released in v0.1.4, fixture-tested, not live-verified. Remaining: reset thread-specific observations when moving ([section 5](#5-bb-conversation-setup-and-transfer)). Work that a person moves to a different conversation outside keepgoing should leave a record once run discovery can express it.
 8. **Add minimal portable goal state.** Goal identity, a display title, revisions, references and an explicit `recorded` state were released in v0.1.4, and goal-aware setup in v0.1.5 (fixture-tested). Remaining: bind completion, evidence and external stage results to a goal revision, and preserve goal identity through target changes ([section 8](#8-bounded-work-and-portable-goals)). Keep execution planning outside the supervisor.
 9. **Pilot bounded independent review.** Use an external workflow with pinned inputs, preserved dissent, explicit incomplete results and budget limits. Evaluate value against a single-review baseline before adding more orchestration. Not started.
+
+[Section 12](#12-any-machine-anywhere-planned) adds the near end of running keepgoing on any machine, anywhere: notifications, reach, platforms, evidence, spend and provider terms, all planned. Among its items, phone notification presets (N1, with H1) and a repeatable live network-cut run (EV3) come first.
 
 Independent items may proceed in parallel when they touch separate packages; merges stay sequential, each against current main. When a priority's listed work is done or its order changes, update this list in the same change, so it never describes finished work as underway.
 
@@ -372,7 +374,7 @@ The Claude Code, Codex and Cursor runners already share the detached turn, priva
 - [ ] **K2 — Agents defined in configuration.** Let a loop describe an agent it has no built-in runner for: start and resume commands, where the session ID comes from, which exit codes and JSON fields mean idle, error (and of which class) or waiting on a person, and its capability declaration. No shell, no text matching on prose, bounded output; anything undeclared is `unknown`. Acceptance: a definition written only from an agent's documented interface passes the conformance suite against a stand-in, and `doctor` shows what it can and cannot do. Implemented in v0.2.0 as `adapter: custom` ([format](configuration.md#an-agent-defined-in-configuration), [design](architecture.md#runner-contract)): a definition written from a fictional agent's documented interface runs through the built-in runners' fixture journeys and one scenario journey against stand-ins, `doctor` lists what it can and cannot do, and the capability matrix has a column for it. Left unchecked because the acceptance names the adapter conformance suite (T1), which has not merged, and no real agent has been run from a definition. Not expressible yet: state spread over several event types, usage readings, and the self-supervision capabilities K3 needs.
 - [ ] **K3 — First agent built from a definition: Hermes Agent.** It retries, fails over between providers and can schedule itself, so it also exercises deferring to an agent's own supervisor. Offline evidence first; a live two-turn walkthrough needs the owner's authorization.
 - [ ] **K4 — Protocol transport.** Several agents (Cursor, Hermes, Zed, Gemini CLI and others) speak the Agent Client Protocol, which carries structured permission requests, questions and cancellation that one-shot command-line turns lack. Build one protocol runner on the existing Antigravity protocol gate and exchange so that family shares it, with the durable permission hold already implemented. Source so far: the [unregistered Antigravity runner](antigravity.md#detached-runner) (A3) is a first owned worker for this transport, with the prompt on private stdin, a saved prompt reservation and hold, exact resume and owned stop, tested only against a stand-in agent. It is named and shaped for one agent and takes its command from the caller; turning it into the shared protocol runner, and resolving chat-only questions, remain K4 work.
-- [ ] **K5 — Further agents**, each from a definition plus its conformance run and an authorized live walkthrough, in order of demand. Candidates to verify against their published interfaces: Gemini CLI, OpenCode, Amp, Aider, Goose, Copilot CLI.
+- [ ] **K5 — Further agents**, each from a definition plus its conformance run and an authorized live walkthrough, in order of demand. Candidates to verify against their published interfaces: Gemini CLI with a paid API key only (consumer access ended on 18 June 2026; DR9), OpenCode, Amp, Aider, Goose, Copilot CLI.
 - [ ] **K6 — IDE chats.** Where an IDE documents a way for an outside process to observe and continue a chat open in its window (through the protocol transport or an extension interface), support it; where it does not, say so in the capability matrix. Documentation review, 2026-11-13: none of Cursor, Antigravity, VS Code agent chat, Windsurf (now Devin Desktop) or Zed documents a way for an outside process to observe and continue a chat already open in its window; three document hooks the IDE itself runs, and VS Code documents an open protocol for a host you start yourself. See [the record with links](adapters.md#chats-already-open-in-an-ide). Nothing is implemented.
 - [ ] **K7 — Cloud-session targets.** Supervise an agent session hosted by its vendor through a documented interface that both reads its state and continues it, with structured error evidence; start with services that document both halves. Such a target keeps running while the machine running keepgoing sleeps, so setup and `doctor` must say that it needs a machine that stays on. Not started; the [design record](command-center.md#interfaces-cloud-sessions-offer-an-outside-process) lists which services document what.
 - [ ] **K8 — Small Linux ARM headless target.** Run keepgoing as a boot-time service on a small `linux/arm64` device with no desktop or login session, with reports queued until a connection returns and a remote view only. Acceptance includes a native run of the `linux/arm64` archive on such a device. Builds on network-aware waiting (v0.2.0, fixture-tested). Starting at boot stays the person's act: keepgoing never enables lingering or installs a system unit; `doctor` and `service status` detect a unit that will not start at boot and print the command to run, and a separate command prints a system unit for image builders ([decision](command-center.md#consequences-for-the-roadmap)). Not started; see [edge devices](command-center.md#edge-devices-and-local-models).
@@ -501,7 +503,7 @@ Controls. Each is set in four places: the loop's configuration file; a command, 
 
 Design only: [loops across devices](devices.md). Nothing below is built, and nothing here starts before P9. The items are in order; each names what it depends on. What a person sees of this in the panel is listed under [Panel feature set](#panel-feature-set), "Across devices, later"; H5 and H6 are the items behind those lines.
 
-- [ ] **H1 — Every loop is shown with its device.** Accepted when status, timelines, reports and panel text name the device for every loop on a single machine, and "this device" appears only as the [glossary](glossary.md#naming-the-device) allows. Depends on nothing.
+- [ ] **H1 — Every loop is shown with its device.** Accepted when status, timelines, reports and panel text name the device for every loop on a single machine, and "this device" appears only as the [glossary](glossary.md#naming-the-device) allows. Depends on nothing. Pulled forward with N1 ([section 12](#12-any-machine-anywhere-planned)).
 - [ ] **H2 — Records and ownership rules, with no carrier.** Accepted when offers, claims, grants, withdrawals and owner generations are defined as signed, sealed record files, and a pure function with table tests shows that no sequence of them yields two owners while the origin is alive. Depends on the owner's choices on sealing and signing.
 - [ ] **H3 — Enrollment, allowances and revocation.** Accepted when a device joins the fleet only by a person's action on it and a confirmation on a device already in the fleet, guarded by the operating system where the confirming device offers that and otherwise recorded and shown as unguarded and limited to the panel role until a guarded device confirms it again, may take nothing until allowed on the device that would do the work, and stops being accepted by the others once revoked. Depends on H2 and P9.
 - [ ] **H4 — The cooperative hop over a folder the person configures.** Accepted when a loop offered on one device is taken by exactly one other in fixtures covering every [failure case](devices.md#failure-cases), with bounds carried, the taken loop arriving held and running in the permission mode its taker's allowance names, hops capped and spaced, the origin fenced and no login, transcript or checkout file crossing. Depends on H3, on P9's default bound and device-wide stop, and on P8 for refusing to offer a loop held for a refusal.
@@ -518,7 +520,7 @@ The owner wants keepgoing to move to another target at a usage threshold, for ex
 
 - [x] **Q1 — Readings from probes that already run.** Record per-candidate usage windows (opaque key, used fraction, reset time, status) with their observation time in `health.json`: from the Claude probe's `rate_limit_event` stream messages and from the Codex app-server read that already follows an unclassified probe failure. The Claude probe now requests `stream-json`; fixtures show the same judgement as `json` for the same result object. Bounded and defensively parsed; a reading is tied to the account identity it was read from and goes stale once its window resets. No raw output stored, no decision reads the values, no provider call added. Implemented in v0.2.0 with offline fixtures only. The Claude event shape was observed by the project coordinator on Claude Code 2.1.318 with live one-turn probes on two models; it is not documented. The `stream-json` argv change affects every Claude probe; its live evidence is one live manual probe by the project coordinator, with a binary built from this source, of one headless Claude candidate on Claude Code 2.1.318 and macOS arm64, judged healthy with a reading recorded. Other tiers, a failing probe, Codex readings, other CLI versions and Windows are not live-verified. See [usage readings](fallbacks.md#usage-readings).
 - [x] **Q2 — Display.** `fallbacks list` and `status` show each reading with its age and source, or `stale` / `unavailable`, in text and JSON. Cursor and other providers show unavailable. CLI fixtures only; the BB plugin and macOS preview do not show it. Released in v0.2.0.
-- [ ] **Q3 — More sources.** Decide whether a healthy Codex probe may add the app-server read (an extra provider call per probe), capture the event from headless Claude turns, and ask BB to expose it for BB-run turns. Until then the active target usually has no fresh reading.
+- [ ] **Q3 — More sources.** Decide whether a healthy Codex probe may add the app-server read (an extra provider call per probe), capture the event from headless Claude turns, and ask BB to expose it for BB-run turns. Until then the active target usually has no fresh reading. Documented sources to start from: B8 ([section 12](#12-any-machine-anywhere-planned)).
 - [ ] **Q4 — Switch threshold.** Optional per-target `switch_at`, evaluated only at turn end on the highest used fraction among reported windows, as a pure decision with tables. Requires a confirmed fallback and the existing exact probe; stop, pause and holds win; a missing, stale or malformed reading never switches. Needs a freshness rule and live evidence before any claim.
 
 ### 9. Independent review and configured stages (planned)
@@ -626,7 +628,7 @@ Trust
 
 Across devices, later
 
-- [ ] Reach the page over a private network the person already runs, by an explicit setting for the names it may be reached by; today it answers only to its own loopback address. (V5a)
+- [ ] Reach the page over a private network the person already runs, by an explicit setting for the names it may be reached by; today it answers only to its own loopback address. (V5a; pulled forward with V5b, [section 12](#12-any-machine-anywhere-planned))
 - [ ] The same page for another device's loops, and one view of a fleet. (V5, after P9 and the [device design](devices.md); roadmap H5)
 - [ ] Pause and stop from a device that is only a panel, such as a phone, with anything more allowed per device. (roadmap H6, [the panel role](devices.md#a-phone-used-only-as-a-panel))
 
@@ -646,6 +648,166 @@ The [feature analysis](supervision-feature-analysis.md) compares documented Clau
 - [ ] **F5 — Provider/model discovery.** A versioned structured capability view covers supported options, exact IDs/aliases/defaults, provider/CLI context, cache freshness, timeout and unavailable discovery. No paid probes or login/model changes; missing catalogue entries alone are not retirement evidence.
 - [ ] **F6 — Model lifecycle policy.** After F5, show actionable structured unavailability findings and review compatible replacements. Tests prove exact selections never silently change, unknown cost/access remains visible, holds win and only explicitly authorized selection/policy plus existing probe rules can change a model. Provider CLI updates and keepgoing releases stay separate operations; no extra watcher.
 - [ ] **F7 — Usable optional menu.** Complete section 10's goal/freshness display, native accessibility, install/remove and separate login-start choice. Pause, stop and reviewed resume are built (v0.2.0) and still need a person's walkthrough; a build is partial progress, not acceptance.
-- [ ] **F8 — Events and scheduling semantics.** After the core live walkthrough, first test bounded typed event wake with identity, expiry, deduplication and goal binding. Then independently test one-off/recurring timezone, DST, missed-run, overlap, restart and host-availability behavior. Events target the existing loop; no automatic thread creation or second timer.
+- [ ] **F8 — Events and scheduling semantics.** After the core live walkthrough, first test bounded typed event wake with identity, expiry, deduplication and goal binding. Then independently test one-off/recurring timezone, DST, missed-run, overlap, restart and host-availability behavior. Events target the existing loop; no automatic thread creation or second timer. The first half is made concrete by the wake hint, E1 ([section 12](#12-any-machine-anywhere-planned)).
 
 The linked analysis defines the tests for each ID. Close an item only with implementation/test links and its required live evidence; keep release availability separate. Shared items above and in earlier sections describe the same work, not additional completion credit. Prioritize F1/F2/F4 and the F3 goal foundation, then F5/F6; F7 can advance against established contracts. Active reliability regressions retain first priority. Any live check needing the owner blocks only itself.
+
+### 12. Any machine, anywhere (planned)
+
+The theme: bring keepgoing to any machine a person runs, such as a laptop, a headless Linux server or VPS, a Windows PC or a container, with its loops visible and controllable from wherever that person is. Today "keepgoing plus a subscription or API key" holds for one loop on one machine. Installation is verified only with Homebrew on macOS arm64 ([release evidence](release-verification.md#v020-release-and-package-evidence)), the panel answers only on its own loopback address, reports go to one webhook, and most recovery is fixture-tested, with one [observed outage](testing.md#observed-once-a-real-outage-2026-11-14). The far end of the theme is already on this roadmap: fleet safety (P9), loops across devices (H1 to H10), remote panel access (V5) and native platform runs (T4). This section adds the near end, from a 14 November 2026 review of keepgoing's weak spots against what comparable tools do. Nothing in it is checked off.
+
+#### Fleet coordination
+
+Planned, not started. keepgoing observes delivery state and tells the owning agent. It never assigns work, reviews, rebases or merges.
+
+- [ ] **FC1 — Delivery state.** A tracked pull request's merge state, checks, review decision and head commit, per loop and then per lane, read-only in `status`, `runs` and the panel. The routine chore a coordinator does by hand today. An `UNKNOWN` state stays unknown and triggers nothing. Per lane depends on P6.
+- [ ] **FC2 — Base-moved notice.** One fixed notice to the owning session when its tracked pull request falls behind its base or conflicts. Nothing else tells it. First use of F8 through E1. The agent rebases; keepgoing never does.
+- [ ] **FC5 — `pr-ready`.** A helper beside `ci-wait` that exits 0 only when the current head has passing checks on the current base and is mergeable, and prints the commit to pin. It turns the merge rules into one exit code. The agent still merges.
+- [ ] **FC7 — One needs-you list across loops.** Ordered by lanes blocked and time waited, because attention is the scarce resource. Depends on D4's blocked-by links.
+- [ ] **FC6 — Review backlog bound.** An opt-in hold on new idle wakes while N pull requests wait on a person, so unreviewed work stops piling up.
+- [ ] **FC8 — Stale-review and failing-head flags.** Flag a review given on an older head and repeated failing heads, with an optional hold at a count, so an agent cannot retry without limit.
+- [ ] **FC3 — Shared paths between lanes.** A count of changed paths that open lanes share, informational, because overlapping lanes conflict often. Path intersection only: `git merge-tree` is out because it can write objects into the repository.
+- [ ] **FC4 — Collision keys.** Opt-in keys from owner-configured path patterns, so two lanes taking the same schema or migration number are visible as soon as the second one pushes.
+- [ ] **FC9 — Duplicate-goal warning.** A warning when two loops share a goal revision or task snapshot hash, the only duplicate visible without reading the task.
+- [ ] **FC10 — Fleet guide.** A guide and a README limitation: what keepgoing does for one loop, and what a coordinator still does for many, because the claim holds for one loop and not for a fleet.
+- [ ] **Section 9 amendment (proposed).** Review evidence is a formal GitHub review, a check run, or a section 9 result on a named head; a review left as a comment counts as nothing, because in a repository without required reviews it is invisible.
+
+#### Spend
+
+Planned, not started. keepgoing stays out of the request path. Every dollar figure is an estimate and is labelled so.
+
+- [ ] **B1 — Usage ledger.** Per loop, tokens by class and the runner's own cost estimate, from structured result fields only, because nothing records what a loop consumed today.
+- [ ] **B2 — Token and estimate limits.** `loop.limits.max_tokens` and `max_cost_estimate`, checked at turn end and counting cache tokens, because `max_sends` is not a money bound and a cap that ignores cache tokens has failed elsewhere. Depends on B1.
+- [ ] **B3 — Per-turn cap on metered routes.** Pass `--max-budget-usd` to headless Claude turns on metered routes, the only stop inside a running turn.
+- [ ] **B4 — Device-wide daily budget.** Holds every loop until the next day, because each extra loop multiplies spend and no limit spans loops. Builds on B1 and P9's stop-all. The default is an owner decision.
+- [ ] **B5 — Hold threshold.** Hold at a share of a named window, for loops with no fallback. Extends Q4 and U10, which only switch or step.
+- [ ] **B6 — Billing basis per route.** Record each route's billing basis (subscription, credits, API key) from the provider CLI's own status command and show it in `status`; a metered route needs a limit or an explicit opt-out. P7 needs a definition of metered. Part of P7; the requirement is an owner decision.
+- [ ] **B7 — Overage guard.** Hold for a person when a subscription route starts drawing on paid credits, the moment allowance becomes money. Needs a documented or live-verified signal first.
+- [ ] **B8 — Documented reading sources for Q3.** The Claude Code status line's `rate_limits` JSON (opt-in) and Codex's `account/rateLimits/read`, both documented, needing no probe and no credentials.
+- [ ] **B9 — Provider-side caps.** Docs and `doctor` tell users of metered routes to set a spend cap with the provider, because keepgoing cannot stop a bill.
+- [ ] **B10 — Probe usage history; B11 — usage in the completion report.** What past probes used, and tokens and estimate in the completion report. Both fall out of B1.
+
+#### Provider terms
+
+Planned, not started. This is the project's reading of provider terms on 14 November 2026, not legal advice; TOS8 will carry the detail. Running a provider's own unmodified CLI as the user is what the providers' own documentation describes; rotating between accounts of one provider to get more allowance is what their terms restrict.
+
+- [ ] **TOS1 — A restriction holds the whole provider.** An account restriction on one account holds every route on that provider, because a restriction is about the person, not one login. Extends P8.
+- [ ] **TOS2 — Claude Code's account categories as P8 signals.** Read the documented categories `account_on_hold`, `oauth_org_not_allowed`, `billing_error` and `authentication_failed` as P8 signals: they are structured, and none is a usage limit.
+- [ ] **TOS3 — Same-provider consumer handoff is opt-in per pair.** Handoff between two consumer subscriptions of one provider becomes opt-in per pair, off by default, with the reason in the preview. Owner decision.
+- [ ] **TOS6 — Limits on P2 and P4.** Moving before the limit (P2) and spreading lanes across allowances (P4) apply only between different providers or billing types unless the owner opts in, because between two subscriptions of one provider they amount to rotation. Owner decision.
+- [ ] **TOS4 — The standard second route.** Recommend "subscription, then the same provider's usage credits or API key", the path the providers themselves describe. Ships with P7.
+- [ ] **TOS5 — Confirm a second account.** One confirmation in `init`, `fallbacks add` and `routes add` when a second account of one provider is added, and a `doctor` note, so the configuration that carries the risk is seen.
+- [ ] **TOS7 — Terms review before the Cursor and Antigravity tracks release.** Their terms are less clear than their docs. Whether those tracks continue is an owner decision.
+- [ ] **TOS8 — "Accounts, plans and provider terms".** A dated docs page, reviewed at each release, with the README's promises: keepgoing runs the provider's own unmodified tool as the user, holds no credentials and never calls a model itself. Provider pages change between releases.
+
+#### Reaction time
+
+Planned, not started. An event is a payload-free hint to run an ordinary check sooner. The check observes through the usual structured sources and decides as before; the scheduled check is unchanged and stays the safety net, so a lost hint costs today's wait and a forged one costs one extra check.
+
+- [ ] **E1 — The wake hint.** Payload-free, coalesced, rate-limited, recorded with its source, and able to run one check under an external scheduler, so every source below has one safe entry point. Makes the first half of F8 concrete.
+- [ ] **E2 — A headless turn's exit.** keepgoing's own detached wrapper requests a check when its headless Claude Code or Codex child exits: the fastest event available, and keepgoing already owns it. Depends on E1.
+- [ ] **E3 — BB plugin events.** The BB plugin forwards `turn.failed`, `thread.failed`, `thread.idle` and `interaction.pending` as hints, dropping payload text. Depends on E1.
+- [ ] **E4 — Claude Code hooks.** Opt-in hooks for interactive sessions, installed with consent and verified by `doctor`, the only push signal for sessions keepgoing does not own. Owner decision: it edits another tool's settings.
+- [ ] **E5 — Codex hooks.** Opt-in, with `notify` as the fallback. Same owner decision as E4.
+- [ ] **E6 — Measure it.** Record each hint's source and its hint-to-check delay, with fixtures for lost, duplicated, forged and stormed hints, to prove the gain and that a missing hint costs nothing extra.
+- [ ] **E7 — Without a resident daemon.** A documented systemd path or socket unit and a launchd socket job that run one check on a hint.
+- Q3 pointer: read headless Claude's `stream-json` so limit and retry events arrive in time.
+
+#### Upstream drift
+
+Planned, not started.
+
+- [ ] **DR1 — Tested versions.** A tested-versions record for every adapter; `doctor` and `adapter check` warn outside it, because no vendor promises compatibility for headless output. Extends C3.
+- [ ] **DR2 — Nightly upstream canary.** In the project's CI, with no model spend: versions, the flags the runners use, schema snapshots, login-status shape and the ACP handshake; it opens and closes its own issue. It runs in project CI, so F6's "no extra watcher" on the user's machine holds.
+- [ ] **DR3 — Fixture provenance.** Upstream version, date and capture method on every recorded fixture, with a re-record procedure, because fixtures are most of the evidence and go stale silently.
+- [ ] **DR4 — Count what was not recognised.** Count and surface unrecognised event types, fields and enum values; classification stays `unknown`. A silent break becomes a visible one.
+- [ ] **DR5 — Failed is not healthy.** A contract case for a failure that looks healthy: a rate-limited `claude -p` reporting success with exit 0 ([claude-code#79500](https://github.com/anthropics/claude-code/issues/79500)), and a stream with no terminal event. Add to T1 (#175, open).
+- [ ] **DR6 — Which credential a headless Claude route uses.** Detect it, and hold with a clear message if `-p` stops reading the subscription login: Anthropic's [headless docs](https://code.claude.com/docs/en/headless) say `--bare` will become the default for `-p`, with no date.
+- [ ] **DR7 — ACP version and limits.** The ACP runner speaks version 1, and the capability matrix says ACP supplies no limit, quota or authentication class, so every ACP failure is `unknown`. Within K4.
+- [ ] **DR8 — Capability checks first.** Prefer capability checks over version comparisons where a vendor documents them.
+- [ ] **DR9 — Gemini CLI in K5.** Consumer access to Gemini CLI ended on 18 June 2026; K5 now lists it for paid API keys only.
+
+#### Evidence and platforms
+
+Planned, not started.
+
+- [ ] **EV3 — A repeatable network-cut run.** In a VM, cut and restore the network under a real supervised loop. Together with the full procedure, it closes priority 0's "Prove recovery live": the one outage so far was unplanned and did not include lane recovery. Needs the owner's authorization, because it spends allowance.
+- [ ] **EV1 — Evidence page.** A published, dated page generated from one table: platform, agent, last passing live run, versions and tier, so a stranger can see what the evidence labels point at.
+- [ ] **EV2 — Support tiers.** Tiers defined by testing, so "any machine" is a checkable statement.
+- [ ] **EV4 — Weekly live canary.** Per provider, behind a switch and capped in sends. Needs the owner's authorization: it spends allowance and needs a stored credential.
+- [ ] **EV5 — Public recovery log.** Each naturally observed limit, outage or authentication failure, redacted and turned into a fixture, because rare failures may not be manufactured.
+- [ ] **EV6 — Scheduled native VM runs.** Service install, logout, reboot, sleep and a signed-in CLI, which hosted runners cannot test.
+- [ ] **M1 — Windows in the full CI matrix.** Windows as a full matrix member, plus the hosted Windows ARM and Linux ARM runners, so cross-compiling becomes a native run on every change. Within T4.
+- [ ] **M2 — Install paths per platform.** Each verified natively: deb, rpm and a checksum-verifying script; Scoop and winget; a multi-architecture container image with an init. A VPS, a Windows PC and a container each lack the one package manager supported today.
+- [ ] **M3 — A service path on every platform.** Verified across a reboot, including the Windows scheduled task and a container entrypoint.
+- [ ] **M4 — Headless sign-in.** A guide per provider and platform, and `doctor` checks for login presence, credential source and expiry from each CLI's own status command, because signing a CLI in without a browser is where a new server user fails first.
+- [ ] **M5 — A five-row tested-on matrix.** macOS arm64; a headless Linux x86_64 server; Linux arm64 (K8); Windows 11 x64, native; a container. Each row: install, run as a service, one provider signed in headlessly, two turns, resume, stop and a reboot, with a date and versions.
+
+#### Devices and reach
+
+Planned, not started. Transport is any private network the person already has. Whether Tailscale is the documented default is an owner decision.
+
+- [ ] **N1 — Phone notification presets.** ntfy, Pushover, a Telegram bot, Slack and Discord webhooks, and BB push, carrying loop, device and cause only, outbound only. Being told when a loop needs you is the request users of comparable tools repeat most, and it works the same on every machine. Pulls H1 forward.
+- [ ] **V5b — Pair a browser as a panel-only device.** For one machine: a single-use code or QR with a short expiry, a hashed per-device token, and list and revoke. Pause, stop and stop-all first; resume through the existing ticket after. A phone for one machine needs none of the fleet records that H6 waits on. Pulls V5a forward.
+- [ ] **V5c — The panel as a home-screen web app.** No native app, store or gateway; Web Push from it is a later spike.
+- [ ] **H3a — Headless enrolment.** A code shown in the terminal and approved on another device, because a server has no browser. A single-use join token for containers and images is an owner decision, because it pre-grants H3's confirmation.
+- [ ] **H5a — Fleet status by outward snapshot.** Each device sends a signed snapshot outward, with "device not seen" as a need and a notification, because P9 forbids reaching into a device and a dead server cannot report itself. Extends H5.
+- [ ] **N2 — Reply actions through the notifier.** A button whose answer the machine pulls, as a signed single-use ticket bound to one hold, for people with no private network. Reuses V5b's ticket and device key.
+
+#### Order
+
+Most valuable for the theme first. It does not displace work in flight: the rename, the route list, versions, decisions and the event log. P8 is merged (#174), so the account guard rails build on it; T1 (#175, open) should merge before DR5.
+
+1. N1, with H1: phone notification presets.
+2. EV3: a repeatable live network-cut run.
+3. M4, B6, DR6, B3: credentials and billing on a new machine.
+4. TOS8, FC10, B9: the honest-limits documentation pass.
+5. M1: Windows in the full CI matrix, plus the ARM runners.
+6. M2, M3: an install path and a service path on every platform.
+7. V5b, with V5a and V4e: a paired browser as a panel-only device, after recovery is proven.
+8. M5, EV1, EV2, EV6: the tested-on matrix, the evidence page, support tiers and scheduled VM runs.
+9. H5a, H3a: fleet status by outward snapshot, and headless enrolment.
+10. DR2, DR1, DR5: the upstream canary, tested versions and the failed-is-not-healthy case.
+11. E1, E2, E6: the wake hint, the wake on a headless turn's exit, and its measurement.
+12. B1, B2, B4: the usage ledger, per-loop limits and a device-wide daily budget.
+13. TOS3, TOS1, TOS2, TOS6, TOS5, TOS4, TOS7: the account guard rails.
+14. E3: the BB plugin as an event forwarder.
+15. FC1, FC2, FC5, FC7: delivery state, the base-moved notice, `pr-ready` and the needs-you list.
+16. N2: reply actions through the notifier.
+17. B5, B7, B8: the hold threshold, the overage guard and documented reading sources.
+18. DR4, DR3, DR8, DR7: unrecognised-shape counters, fixture provenance, capability checks and the ACP statement. DR9 is done in K5's own line.
+19. EV4, EV5: the weekly live canary and the public recovery log.
+20. E4, E5, E7: opt-in hooks and examples without a resident daemon.
+21. FC6, FC8, FC3, FC4, FC9: the review-backlog bound, flags, lane overlap, collision keys and the duplicate-goal warning.
+22. V5c: the panel as a home-screen web app.
+23. B10, B11: probe usage history and usage in the completion report.
+
+#### Decisions for the owner
+
+1. Should the README's pitch be reworded, and should several accounts of one provider stay a described capability or become an opt-in described with its risk?
+2. Should handoff between two consumer subscriptions of one provider be opt-in per pair and off by default (TOS3), and should P2 and P4 be barred from such pairs (TOS6)?
+3. Should the Cursor and Antigravity tracks continue, and should a terms review gate their release (TOS7)?
+4. Is the network-cut run against a real agent (EV3) authorized, and a weekly canary with a stored long-lived credential (EV4)? If so, where may that credential live on a server or in a container?
+5. Should Tailscale be the documented default for reaching the panel, and is embedding it worth a spike?
+6. May a single-use join token for containers stand in for H3's confirmation on a device already in the fleet (H3a)?
+7. May keepgoing install hooks into a user's Claude Code or Codex configuration with consent (E4, E5)?
+8. FC3 uses path intersection only; should `git merge-tree`, which can write objects into a repository, ever be allowed? May session files ever be opened for token counts?
+9. Must a loop on a metered route have a limit or an explicit opt-out (B6)? What is the default daily budget (B4)?
+
+#### Deliberately out of scope
+
+- A planner or task queue; splitting work or planning dependencies.
+- Running reviewers or judging a review.
+- Choosing merge order, enqueueing or merging, or a built-in merge queue.
+- Rebasing or resolving conflicts.
+- Acting as a proxy or gateway in the request path.
+- Converting usage percentages to dollars.
+- Reading stored credentials or calling a provider's usage endpoint.
+- Buying credits or raising a spend limit.
+- Round-robin across accounts of one provider, or pooling accounts between people.
+- Scraping transcripts or terminals for state.
+- Acting on hook payloads; a hint only starts a check.
+- Pinning, installing or updating provider CLIs.
+- Telemetry.
+- Answering an agent's permission prompt from the phone view; that stays in the vendor's own app.
+- A hosted relay, a native mobile app, or a public tunnel by default.
