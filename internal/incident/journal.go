@@ -25,6 +25,8 @@ const FileName = "incidents.json"
 // Version 11 (route-list notes) adds, on tick records, that the standard
 // route list changed since the loop's previous check, and route_change
 // records: a change to a loop's own route list, with who made it.
+// Version 12 adds the refusal and model-fallback markers on tick records,
+// and the question IDs on control records.
 // Version 13 (returns and manual probes) adds the return to the primary on
 // tick records and the probe records of a manual `fallbacks check`.
 const SchemaVersion = 13

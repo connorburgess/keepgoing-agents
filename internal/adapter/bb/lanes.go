@@ -147,9 +147,16 @@ func (a *Adapter) scanLane(ctx context.Context, id string) (Cursor, bool) {
 	key := a.laneHash(id)
 	sum := lanes[key]
 	c := sum.Cursor
+	if c.RetrySchema != summarySchema {
+		// A summary derived by an earlier build keeps the error class as that
+		// build read it: a refusal or restriction may be cached as unknown
+		// or auth, and would be retried. Read the lane's log again from the
+		// start, as the supervised thread's own summary is.
+		c = Cursor{}
+	}
 	// The summary holds no thread ID, hashes the provider reference, and
 	// keeps no interaction IDs.
-	c.Thread, c.HashRefs, c.RetrySchema = "", true, 1
+	c.Thread, c.HashRefs, c.RetrySchema = "", true, summarySchema
 	c.hashRef = a.laneHash
 	seenAt := a.now().UTC()
 	for pages := 0; pages < lanePages; pages++ {

@@ -188,6 +188,21 @@ fi`)
 // The stream-json probe must judge a turn exactly as the earlier json probe
 // did: same health, class, detail and credential expiry for the same result
 // object, whether or not usage events surround it.
+// A probe the model declined, or the provider forbade, does not make a
+// candidate healthy, whatever the exit code and the error marker say.
+func TestClaudeProbeDeclinedIsNotHealthy(t *testing.T) {
+	for name, tc := range map[string]struct{ line, exit, class string }{
+		"refused":                   {`{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","result":"example"}`, "1", "refused"},
+		"refused, marked a success": {`{"type":"result","subtype":"success","is_error":false,"stop_reason":"refusal","result":"example"}`, "0", "refused"},
+		"forbidden":                 {`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":403,"result":"example"}`, "1", "restricted"},
+	} {
+		r := Run(context.Background(), cand("claude", fake(t, `echo '`+tc.line+`'; exit `+tc.exit)), Scheduled, 10*time.Second)
+		if r.OK || r.ErrorClass != tc.class {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+}
+
 func TestClaudeProbeJudgesStreamAndPlainOutputAlike(t *testing.T) {
 	results := map[string]struct{ line, exit string }{
 		"success":                          {`{"type":"result","subtype":"success","is_error":false,"session_id":"s","credential_expires_at":"2026-12-04T18:46:30.684Z","result":"OK"}`, "0"},
@@ -195,6 +210,10 @@ func TestClaudeProbeJudgesStreamAndPlainOutputAlike(t *testing.T) {
 		"auth":                             {`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":401,"result":"login"}`, "1"},
 		"unknown":                          {`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"x"}`, "1"},
 		"error exit with a success result": {`{"type":"result","subtype":"success","is_error":false,"result":"OK"}`, "3"},
+		"forbidden":                        {`{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":403,"result":"example"}`, "1"},
+		// A declined probe is not a healthy candidate, even marked as a success.
+		"refused":                   {`{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","result":"example"}`, "1"},
+		"refused, marked a success": {`{"type":"result","subtype":"success","is_error":false,"stop_reason":"refusal","result":"example"}`, "0"},
 	}
 	for name, r := range results {
 		t.Run(name, func(t *testing.T) {

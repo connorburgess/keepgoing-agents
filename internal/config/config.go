@@ -61,10 +61,13 @@ type Loop struct {
 	PromptGoal  bool   `yaml:"prompt_goal,omitempty"`
 	HandoffFile string `yaml:"handoff_file,omitempty"`
 
-	Progress  Progress   `yaml:"progress"`
-	Window    *Window    `yaml:"window,omitempty"`
-	Errors    ErrorRules `yaml:"errors"`
-	Fallbacks string     `yaml:"fallbacks,omitempty"`
+	Progress Progress   `yaml:"progress"`
+	Window   *Window    `yaml:"window,omitempty"`
+	Errors   ErrorRules `yaml:"errors"`
+	// Refusal sets when a streak of refused turns asks a person instead of
+	// continuing.
+	Refusal   RefusalRules `yaml:"refusal,omitempty"`
+	Fallbacks string       `yaml:"fallbacks,omitempty"`
 	// Routes is "standard" for a loop that follows the person's standard
 	// route list. It excludes Fallbacks, which is a list of the loop's own.
 	Routes string `yaml:"routes,omitempty"`
@@ -354,12 +357,12 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "refusal_streak", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "refusal_streak", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -626,6 +629,9 @@ func (c *Config) Validate() error {
 			add("loop.progress.%s must be from 0 (off) to %d", f.name, maxFlagAfter)
 		}
 	}
+	if a := l.Refusal.AskAfter; a != nil && (*a < 0 || *a > 1000) {
+		add("loop.refusal.ask_after must be 0 (never ask) to 1000")
+	}
 	if l.Errors.MaxReprompts < 1 {
 		add("loop.errors.max_reprompts must be at least 1")
 	}
@@ -633,7 +639,9 @@ func (c *Config) Validate() error {
 		add("loop.errors.report_wait_after must not be negative")
 	}
 	for _, class := range l.Errors.FailoverOn {
-		if !ValidErrorClass(class) || class == "none" || class == "unknown" {
+		if DeclinedClass(class) {
+			add("loop.errors.failover_on: %q is not allowed: a provider refusal or restriction is not a limit and never causes a handoff", class)
+		} else if !ValidErrorClass(class) || class == "none" || class == "unknown" {
 			add("loop.errors.failover_on: %q is not allowed (use rate_limit, auth, overloaded, or network)", class)
 		}
 	}
@@ -783,7 +791,31 @@ func (c *Config) Validate() error {
 }
 
 // ErrorClasses lists the structured error classes an adapter may report.
-var ErrorClasses = []string{"none", "rate_limit", "auth", "overloaded", "network", "unknown"}
+var ErrorClasses = []string{"none", "rate_limit", "auth", "restricted", "refused", "overloaded", "network", "unknown"}
+
+// DeclinedCode says which structured codes keepgoing itself reads as a
+// provider denying permission ("restricted") or a model or provider declining
+// the turn ("refused"), and "" for every other code. It is the one list both
+// the classifier and the validation of agent definitions use, so a
+// definition cannot relabel such a code as a limit.
+//
+// "policy" is BB's typed category for a provider's policy block, and the two
+// Codex identifiers are what BB's Codex provider maps to it.
+// "oauth_org_not_allowed" is Claude Code's code for an organisation that may
+// not use the login.
+func DeclinedCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "403", "restricted", "permission_denied", "permission_error", "forbidden", "oauth_org_not_allowed":
+		return "restricted"
+	case "refused", "refusal", "policy", "cyberpolicy", "misalignmentpolicyviolation":
+		return "refused"
+	}
+	return ""
+}
+
+// DeclinedClass reports whether a class is a restriction or a refusal: a
+// decision against the request, which never causes a handoff.
+func DeclinedClass(class string) bool { return class == "restricted" || class == "refused" }
 
 // ValidErrorClass reports whether s is a known error class.
 func ValidErrorClass(s string) bool { return contains(ErrorClasses, s) }
@@ -865,4 +897,24 @@ func resolve(base, p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(base, p)
+}
+
+// DefaultRefusalAskAfter is how many consecutive refused turns, with no turn
+// recovered by a continue in between, make a loop ask a person how to go on.
+const DefaultRefusalAskAfter = 10
+
+// RefusalRules configures the answer to refused turns. A refused turn gets a
+// plain continue in the same session, spaced by the streak; after AskAfter
+// refusals in a row the loop stops continuing and asks a person.
+type RefusalRules struct {
+	// AskAfter: nil means DefaultRefusalAskAfter, 0 means never ask.
+	AskAfter *int `yaml:"ask_after,omitempty"`
+}
+
+// AskAfterCount is the threshold in force: 0 means never ask.
+func (r RefusalRules) AskAfterCount() int {
+	if r.AskAfter == nil {
+		return DefaultRefusalAskAfter
+	}
+	return *r.AskAfter
 }

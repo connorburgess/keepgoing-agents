@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "return", "retarget", "ownership"}
@@ -339,7 +339,7 @@ var timelineReturnReasons = map[string]string{
 }
 
 func timelineLimitWait(cause string) bool {
-	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled" || cause == "limit_refusal_unrecovered"
 }
 
 // timelineKinds labels a record from its typed fields. A dry run decided an
@@ -393,6 +393,9 @@ func timelineKinds(r incident.Record) []string {
 		}
 		if r.RouteListChanged {
 			kinds = append(kinds, "route_list")
+		}
+		if r.Refusal != "" || r.ModelFallback {
+			kinds = append(kinds, "refusal")
 		}
 	case "control":
 		kinds = append(kinds, "control")
@@ -766,6 +769,15 @@ func describeIncident(r incident.Record) string {
 	if timelineLimitWait(r.Cause) && len(r.Decisions.Evaluations) > 0 {
 		in := r.Decisions.Evaluations[len(r.Decisions.Evaluations)-1].Input
 		text += fmt.Sprintf("; waiting for a provider limit: recorded reset in %s, failover eligible %t, fallback available %t; no prompt is sent while waiting", in.ResetIn.Round(time.Minute), in.FailoverEligible, in.FailoverAvailable)
+	}
+	switch r.Refusal {
+	case "refused":
+		text += "; REFUSAL: the model or provider declined the turn (counted once; a plain continue follows in the same session, never another route)"
+	case "recovered":
+		text += "; REFUSAL RECOVERED: a turn ended without a refusal after a continue"
+	}
+	if r.ModelFallback {
+		text += "; MODEL FALLBACK: the provider fell back to another model after a refusal (a note only; keepgoing took no action)"
 	}
 	switch r.TurnRetry {
 	case "retried":
