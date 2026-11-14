@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The event log records two more events** (roadmap R7d, first part; offline fixtures only).
+  - **A return to the primary.** A check that begins on a fallback the loop can no longer use (removed from the configuration, disabled, or a new-thread fallback with no created thread on record) has returned the loop to the primary with only a warning. The check's record now says which fallback it left, by hashed alias, and why. `timeline` shows it with the new `return` kind, included in `moves`, and the panel's recent history says so.
+  - **A manual `fallbacks check`.** Each run that probes leaves one `probe` record of its results, with hashed aliases and pass/fail only. A dry run leaves none. If the history write fails, the results stay saved and the command exits 1.
+  - **Upgrade and rollback.** `incidents.json` moves to schema 13 and `timeline --json` to schema 9. v0.2.0 refuses a schema 13 journal: left in place, it still acts on each check but exits 1 on every one and its `timeline` has no history. Move `incidents.json` aside before running v0.2.0, and put it back after upgrading again ([details](docs/diagnostics.md#navigating-events)).
+
 - **Windows: a record being saved is no longer read as missing.** A command that read `state.json`, `control.json` or another record while a check replaced it could be told by Windows that the file was not there, and took it for a new record: an empty state or a disabled loop. CI saw this once, for `state.json`. Every reader that treats a missing record as new now asks again, a few times over about 30 ms, before believing it is missing, as reads already did when Windows refused them during a replacement.
 
 - **Behaviour change: `fallbacks move` and `remove` refuse an agent on a loop with no recorded owner.** A BB thread could move or remove a fallback of any loop no one had claimed; it is now refused with exit code 2 and nothing written, as for the standard route list. A person, and the loop's owning thread, are unaffected. Each move and remove that is written is now a `route_change` event in the loop's timeline, with who made it as a role. If that event cannot be recorded the change stands; the text output notes it and `--json` does not.
