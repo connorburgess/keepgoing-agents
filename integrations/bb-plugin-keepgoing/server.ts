@@ -13,6 +13,7 @@ import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
 import { createNewThreadController } from "./new-thread-controller.ts";
 import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
 import { randomUUID } from "node:crypto";
+import { withClientFlag } from "./client-flag.ts";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
 const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
@@ -77,11 +78,13 @@ export const rpcContract = defineRpcContract({
 
 const CHANGED = "changed";
 
-function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: 15_000, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+      const e = error as { code?: unknown; killed?: boolean; signal?: unknown } | null;
+      const timedOut = !!e && e.killed === true;
+      const code = e ? (typeof e.code === "number" ? e.code : 1) : 0;
+      resolve({ code, stdout: String(stdout), stderr: String(stderr), timedOut });
     });
   });
 }
@@ -146,7 +149,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const status = async (bin: string, configPath: string) => {
-    const result = await run(bin, ["status", "--json", "-c", configPath]);
+    const result = await withClientFlag(bin, (extra) => run(bin, ["status", "--json", ...extra, "-c", configPath]), (r) => ({ code: r.code, emptyStdout: r.stdout === "", timedOut: r.timedOut }));
     if (result.code !== 0) throw new Error(`${configPath}: looptender status exited ${result.code}`);
     let raw: unknown;
     try {

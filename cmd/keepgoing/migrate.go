@@ -82,7 +82,7 @@ var migrateLockWait = 3 * time.Second
 // looked at nor held while those directories move.
 var migrateLockNames = func() map[string]bool {
 	names := map[string]bool{}
-	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", "graph"} {
+	for _, n := range []string{lock.Tick, lock.Daemon, lock.Control, lock.Service, "turn", panelOpenLock, panelServerLock, "routes", registry.LockName, "incident", "delivery", "graph", clientsLock} {
 		names[n+".lock"] = true
 	}
 	return names
@@ -440,6 +440,8 @@ func migrateLockMeaning(root, path string) string {
 	switch {
 	case strings.HasPrefix(dir, "sessions/"):
 		return "a check is running: it holds a session claim"
+	case strings.HasPrefix(dir, "panel/") && name == clientsLock+".lock":
+		return "the BB plugin or the macOS menu is recording which version it is; try again in a moment"
 	case strings.HasPrefix(dir, "panel/"):
 		return "the panel is running; stop it with keepgoing panel stop"
 	case strings.HasPrefix(dir, "registry/"):

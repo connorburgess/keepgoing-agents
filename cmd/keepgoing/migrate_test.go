@@ -243,6 +243,13 @@ func TestMigrateRefusesWhileInUse(t *testing.T) {
 			}
 			return func() { l.Release() }
 		}, "in_use", "the panel is running"},
+		{"a client is recording its version", func(t *testing.T, h migrateHome) func() {
+			l, err := lock.AcquireNamed(filepath.Join(h.state, "keepgoing", "panel"), clientsLock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return func() { l.Release() }
+		}, "in_use", "recording which version it is"},
 		{"a daemon of a loop kept inside", func(t *testing.T, h migrateHome) func() {
 			l, err := lock.AcquireNamed(h.inside.StateDir, lock.Daemon)
 			if err != nil {
@@ -635,7 +642,7 @@ func TestMigrateSmallCases(t *testing.T) {
 // "._tick.lock" is not a lock, is never opened, and the move goes ahead.
 // Other names that merely end in ".lock" are not opened either.
 func TestMigrateTakesOnlyTheToolsOwnLockFiles(t *testing.T) {
-	for _, name := range []string{"tick.lock", "daemon.lock", "registry.lock", "routes.lock", "panel-server.lock", "0123456789abcdef0123456789abcdef.lock", "0123456789abcdef0123456789abcdef-record.lock"} {
+	for _, name := range []string{"tick.lock", "daemon.lock", "registry.lock", "routes.lock", "panel-server.lock", "clients.lock", "0123456789abcdef0123456789abcdef.lock", "0123456789abcdef0123456789abcdef-record.lock"} {
 		if !migrateIsLock(name) {
 			t.Errorf("%s is not taken for a lock", name)
 		}

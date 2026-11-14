@@ -23,7 +23,11 @@ type daemonStatus struct {
 	LastPassStartedAt *time.Time `json:"lastPassStartedAt,omitempty"`
 	NextCheck         string     `json:"nextCheck"`
 	BinaryComparison  string     `json:"binaryComparison"`
-	DryRun            bool       `json:"dryRun"`
+	// version is the build label the daemon reported, made safe to show.
+	// Status JSON withholds raw build labels; only the panel's Versions
+	// view, which already shows each loop's last-check label, reads it.
+	version string
+	DryRun  bool `json:"dryRun"`
 }
 
 func inspectDaemon(ctx context.Context, dir, current string, offline bool) daemonStatus {
@@ -44,6 +48,7 @@ func inspectDaemon(ctx context.Context, dir, current string, offline bool) daemo
 	d.State, d.Message = "responsive", "A keepgoing daemon answered a fresh local challenge. This does not establish agent health or future execution."
 	d.Phase, d.StartedAt, d.ObservedAt, d.NextCheckAt, d.LastPassAt, d.LastPassStartedAt, d.DryRun = s.Phase, &s.StartedAt, &s.ObservedAt, s.NextCheckAt, s.LastPassAt, s.LastPassStartedAt, s.DryRun
 	d.BinaryComparison = compareCheckVersion(&state.Check{Version: s.Version}, current)
+	d.version = dockBuildLabel(s.Version)
 	d.NextCheck = "check in progress; the next interval starts after this pass finishes"
 	if s.Phase == "waiting" && s.NextCheckAt != nil {
 		d.NextCheck = "normally due " + s.NextCheckAt.UTC().Format(time.RFC3339) + "; control changes can trigger an earlier check"
