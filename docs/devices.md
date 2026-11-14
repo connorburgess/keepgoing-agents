@@ -226,7 +226,7 @@ After lanes are first-class members of a loop (roadmap P6), a lane could be offe
 Two limits on these claims should be read with the table.
 
 - **looptender's protections are cooperative on one machine.** An agent, or anyone, who can edit looptender's files or run its commands as the person has the person's authority on that device; [transfer](transfer.md) says the same about today's ownership. The checks that matter against a compromised device are therefore the ones made on the *other* devices.
-- **Rule 8 depends on a signal that does not exist yet.** No adapter reports a refusal or restriction as its own structured state today (roadmap P8). Until one does, such a turn looks idle or unknown, and looptender cannot refuse to offer the loop on that ground.
+- **Rule 8 depends on adapter coverage.** Merged, unreleased P8 support detects structured refusals and restrictions in BB, Claude Code and Codex; see the [capability matrix](adapters.md#refusals-continue-restrictions-hold). A restriction holds for a person, and a refusal stays in the same session with bounded, spaced continuations. Text-only refusals and adapters without a structured signal remain gaps; no real refusal or restriction has been captured. Hops are still design only, so enforcement when offering a loop remains unimplemented.
 
 ## How existing systems solve the same problems
 
@@ -290,7 +290,7 @@ Tor is "designed to anonymize" traffic: a client downloads "a signed directory o
 2. **Enrolled devices trust each other with the text of work.** A compromised device can publish an offer whose goal or brief is hostile, and a device with a standing allowance for that loop will give it to an agent running with its own logins. Allowances per loop, a hold on a changed goal revision, carried bounds and the agent's own safeguards narrow this; they do not close it. Enrolling a machine means trusting it to write prompts for agents on the others.
 3. **Everything on one device rests on cooperation.** An agent that can run commands as the person can run looptender's commands, including offering a loop or starting an enrollment. looptender can require a second machine and make the event visible, but it cannot tell the person from a process running as the person without something outside itself, such as a confirmation the operating system guards. A second machine alone is weak: an agent with SSH from the laptop to a server can run both halves of an enrollment. Servers, virtual machines and small devices usually have no guarded confirmation at all, and passwordless administrator access defeats one.
 
-Also weak, and already noted: rule 8 has no structured signal behind it yet; the recommended carrier needs a rule reworded; and work that was not pushed does not cross.
+Also weak, and already noted: rule 8 still has gaps in structured signal coverage; the recommended carrier needs a rule reworded; and work that was not pushed does not cross.
 
 ## Decided, and first-version defaults
 

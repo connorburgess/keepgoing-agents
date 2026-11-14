@@ -204,6 +204,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
 - [Architecture](docs/architecture.md): how supervision, adapters and loops fit together; [examples](examples/) and [JSON Schemas](schema/) provide configuration contracts.
 - [Roadmap](docs/roadmap.md): current priorities, planned scaling across devices and remaining acceptance gates; [feature analysis](docs/supervision-feature-analysis.md) gives checkable criteria.
+- [Current scale limits and read-only benchmarks](docs/scale-baseline.md): local bounds, loss domains and measurement scope; no fleet capacity claim.
 - [Where the supervisor runs](docs/command-center.md): design record on why looptender runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
