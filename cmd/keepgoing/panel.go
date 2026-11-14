@@ -117,43 +117,73 @@ var (
 // creates the directory when missing.
 func panelDirectory(path string) (string, error) {
 	bad := errors.New("the panel directory must be a private path outside Git checkouts")
-	defaulted := path == ""
-	if defaulted {
+	if path == "" {
 		base, err := panelStateBase()
 		if err != nil {
 			return "", bad
 		}
 		path = filepath.Join(base, "keepgoing", "panel")
 	}
-	dir, err := panelPrivateDirectory(path, bad)
-	if err == nil && defaulted {
-		panelRetireLegacy(dir)
+	return panelPrivateDirectory(path, bad)
+}
+
+// panelLegacyNotice is what a read-only command says when it finds a server
+// an earlier build started at the old location. It does not act on it.
+const panelLegacyNotice = "A panel started by an earlier build is running at %s; keepgoing panel stop ends it."
+
+// panelLegacy returns the directory an earlier build used, when it is a
+// different place from the default one now and is a private directory of
+// this user's. It creates and changes nothing.
+func panelLegacy() (string, bool) {
+	base, err := panelLegacyBase()
+	if err != nil {
+		return "", false
 	}
-	return dir, err
+	now, err := panelStateBase()
+	if err != nil {
+		return "", false
+	}
+	legacy := filepath.Join(base, "keepgoing", "panel")
+	if session.CleanPath(legacy) == session.CleanPath(filepath.Join(now, "keepgoing", "panel")) {
+		return "", false // the same place on this platform
+	}
+	if info, err := os.Lstat(legacy); err != nil || !info.IsDir() || registry.CheckDirectory(legacy) != nil {
+		return "", false // nothing there, or nothing of ours to touch
+	}
+	return legacy, true
+}
+
+// panelLegacyRunning says whether a server an earlier build started is
+// running at the old location. Read-only: with no lock file there, nothing
+// can hold it, and none is created.
+func panelLegacyRunning() (string, bool) {
+	legacy, ok := panelLegacy()
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Lstat(filepath.Join(legacy, panelServerLock+".lock")); err != nil {
+		return "", false
+	}
+	return legacy, panelServerHeld(legacy)
 }
 
 // panelRetireLegacy deals once with the directory an earlier build used. A
 // panel server that build started is found there and stopped, so it is not
 // left running unseen; then its runtime files and the directory are
 // removed, and it is never looked at again. A server that does not stop is
-// left, and the next command tries again.
-func panelRetireLegacy(current string) {
-	base, err := panelLegacyBase()
-	if err != nil {
-		return
+// left, and the next command tries again. Only keepgoing panel (opening) and
+// keepgoing panel stop call it; status and list only report what they find.
+// It returns the old directory when it stopped a server there.
+func panelRetireLegacy() (string, bool) {
+	legacy, ok := panelLegacy()
+	if !ok {
+		return "", false
 	}
-	legacy := filepath.Join(base, "keepgoing", "panel")
-	if session.CleanPath(legacy) == session.CleanPath(current) {
-		return // the same place on this platform
-	}
-	if info, err := os.Lstat(legacy); err != nil || !info.IsDir() || registry.CheckDirectory(legacy) != nil {
-		return // nothing there, or nothing of ours to touch
-	}
+	stopped := false
 	if panelServerHeld(legacy) {
 		if _, err := panelControl(context.Background(), legacy, panelRequest{Op: "stop"}); err != nil {
-			return
+			return "", false
 		}
-		stopped := false
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 			if !panelServerHeld(legacy) {
 				stopped = true
@@ -161,7 +191,7 @@ func panelRetireLegacy(current string) {
 			}
 		}
 		if !stopped {
-			return
+			return "", false
 		}
 	}
 	panelRemoveLeftovers(legacy)
@@ -169,6 +199,7 @@ func panelRetireLegacy(current string) {
 		_ = os.Remove(filepath.Join(legacy, name))
 	}
 	_ = os.Remove(legacy) // only if it is now empty
+	return legacy, stopped
 }
 
 func panelPrivateDirectory(path string, bad error) (string, error) {
@@ -619,6 +650,11 @@ func panelCommand(e env, args []string) int {
 		e.errf("panel: %v", err)
 		return exitUsage
 	}
+	if *panelDir == "" {
+		if legacy, stopped := panelRetireLegacy(); stopped {
+			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
+		}
+	}
 	key := ""
 	if *loop != "" {
 		if key, err = panelLoopKey(*directory, *loop); err != nil {
@@ -710,6 +746,9 @@ type panelStatus struct {
 	// them for ChangesAllowedSeconds (since it started).
 	ChangesAllowed        bool `json:"changesAllowed"`
 	ChangesAllowedSeconds *int `json:"changesAllowedSeconds,omitempty"`
+	// EarlierBuildPanel is the old location when a server an earlier build
+	// started is running there. Reported only; keepgoing panel stop ends it.
+	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
 	// Exposure is what the page's footer says about allowing changes, for a
 	// program that offers to start the panel with them.
 	Exposure string `json:"exposure"`
@@ -734,6 +773,11 @@ func panelStatusCommand(e env, args []string) int {
 		return exitUsage
 	}
 	st := panelStatus{SchemaVersion: 1, Exposure: panelExposure}
+	if *panelDir == "" {
+		if legacy, running := panelLegacyRunning(); running {
+			st.EarlierBuildPanel = legacy
+		}
+	}
 	if panelServerHeld(dir) {
 		st.Running = true
 		if reply, err := panelControl(e.ctx, dir, panelRequest{Op: "status"}); err == nil && reply.Record != nil && validPanelRecord(*reply.Record) {
@@ -749,6 +793,9 @@ func panelStatusCommand(e env, args []string) int {
 	if *asJSON {
 		_ = json.NewEncoder(e.stdout).Encode(st)
 		return exitOK
+	}
+	if st.EarlierBuildPanel != "" {
+		fmt.Fprintf(e.stdout, panelLegacyNotice+"\n", st.EarlierBuildPanel)
 	}
 	switch {
 	case !st.Running:
@@ -789,6 +836,11 @@ func panelStopCommand(e env, args []string) int {
 	if err != nil {
 		e.errf("panel stop: %v", err)
 		return exitUsage
+	}
+	if *panelDir == "" {
+		if legacy, stopped := panelRetireLegacy(); stopped {
+			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
+		}
 	}
 	lk, err := acquirePanelOpenLock(e.ctx, dir)
 	if err != nil {
@@ -832,6 +884,8 @@ type panelList struct {
 	Unread        int             `json:"unread"`
 	Omitted       int             `json:"omitted"`
 	Loops         []panelListLoop `json:"loops"`
+	// EarlierBuildPanel: as in panel status.
+	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
 }
 
 type panelListLoop struct {
@@ -891,6 +945,9 @@ func panelListCommand(e env, args []string) int {
 	ctx, cancel := context.WithTimeout(e.ctx, dockReadTimeout)
 	defer cancel()
 	list := buildPanelList(reader.read(ctx, false))
+	if legacy, running := panelLegacyRunning(); running {
+		list.EarlierBuildPanel = legacy
+	}
 	if e.ctx.Err() != nil {
 		e.errf("panel list: cancelled")
 		return exitFailed
@@ -919,6 +976,9 @@ func panelListCommand(e env, args []string) int {
 			fmt.Fprintln(w, "Nothing needs you.")
 		case list.Registry == "available":
 			fmt.Fprintln(w, "Not every loop was read, so this cannot say that nothing needs you.")
+		}
+		if list.EarlierBuildPanel != "" {
+			fmt.Fprintf(w, panelLegacyNotice+"\n", list.EarlierBuildPanel)
 		}
 		_ = w.Flush()
 	}
