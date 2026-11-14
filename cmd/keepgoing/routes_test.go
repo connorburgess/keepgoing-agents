@@ -178,18 +178,30 @@ func TestRoutesListShowsStandardListAndEachLoopsEffectiveRoutes(t *testing.T) {
 }
 
 func TestRoutesListWithUnusableStandardListStillAnswers(t *testing.T) {
-	for _, tc := range []struct{ name, content, state string }{
-		{"missing", "", "missing"},
-		{"invalid", "version: 1\nroutes:\n  - {id: bad, provider: other, model: m, group: g, enter: headless}\n", "unreadable"},
+	for _, tc := range []struct {
+		name, content, state, problem string
+		mode                          os.FileMode
+	}{
+		{"missing", "", "missing", "", 0o600},
+		{"invalid", "version: 1\nroutes:\n  - {id: bad, provider: other, model: m, group: g, enter: headless}\n", "unreadable", "invalid", 0o600},
+		{"not_private", routesStandardList, "unreadable", "not_private", 0o644},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRoutesFixture(t)
 			if tc.content != "" {
-				write(t, r.list, tc.content, 0o600)
+				write(t, r.list, tc.content, tc.mode)
+				if err := os.Chmod(r.list, tc.mode); err != nil {
+					t.Fatal(err)
+				}
 			}
 			code, v, raw, errs := r.list_("--json")
-			if code != 0 || v.Standard.State != tc.state || len(v.Standard.Routes) != 0 {
+			if code != 0 || v.Standard.State != tc.state || v.Standard.Problem != tc.problem || len(v.Standard.Routes) != 0 || strings.Contains(raw, r.list) {
 				t.Fatalf("%d %s %s", code, raw, errs)
+			}
+			if tc.problem != "" {
+				if _, _, text, _ := r.list_(); !strings.Contains(text, "unreadable ("+tc.problem+")") {
+					t.Fatalf("text form lacks the reason:\n%s", text)
+				}
 			}
 			f := loopView(t, v, "follower-loop")
 			if f.List != "standard" || !f.ListUnreadable || len(f.Routes) != 0 || f.First == nil || !strings.Contains(strings.Join(f.Warnings, "\n"), config.StandardRoutesUnreadable) {
@@ -202,6 +214,9 @@ func TestRoutesListWithUnusableStandardListStillAnswers(t *testing.T) {
 			var out, errb bytes.Buffer
 			if code := run(context.Background(), []string{"validate", "-c", r.follower}, &out, &errb); code != 0 || !strings.Contains(errb.String(), config.StandardRoutesUnreadable) {
 				t.Fatalf("validate: %d %s %s", code, &out, &errb)
+			}
+			if tc.problem == "invalid" && !strings.Contains(errb.String(), "provider must be claude-code or codex") {
+				t.Fatalf("validate does not say why the list is invalid: %s", &errb)
 			}
 			out.Reset()
 			errb.Reset()

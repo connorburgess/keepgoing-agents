@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const standardList = `version: 1
@@ -379,14 +381,31 @@ routes:
 		if c.Claude.Env["CLAUDE_CONFIG_DIR"] != "/fictional/second" {
 			t.Fatalf("%+v", c.Claude.Env)
 		}
-		// Each resolved route is accepted back as one the list produced, and
-		// a changed one is not.
-		if !ResolvedFor(cfg.Loop, c, cfg.FallbackSet) {
-			t.Fatal("a resolved route was not recognised")
+		// The template read back from a resolved route holds the route only,
+		// not the loop's environment, and resolves to the same route again.
+		rt, ok := RouteOf(cfg.Loop, c)
+		if !ok || rt.AccountDir != "/fictional/second" || rt.Model != "example-large" || rt.Enter != EnterHeadless {
+			t.Fatalf("%+v %t", rt, ok)
 		}
-		c.Claude.ExtraArgs = append(c.Claude.ExtraArgs, "--another")
-		if ResolvedFor(cfg.Loop, c, cfg.FallbackSet) {
-			t.Fatal("a changed route was recognised")
+		raw, _ := yaml.Marshal(rt)
+		if strings.Contains(string(raw), "EXAMPLE_SETTING") || strings.Contains(string(raw), "fictional-claude-flag") || strings.Contains(string(raw), "/fictional/first") {
+			t.Fatalf("template carries the loop's settings: %s", raw)
+		}
+		again, ok := ResolveSaved(cfg.Loop, rt, cfg.FallbackSet)
+		a, _ := yaml.Marshal(again)
+		b, _ := yaml.Marshal(c)
+		if !ok || string(a) != string(b) {
+			t.Fatalf("resolved again differently:\n%s\n%s", a, b)
+		}
+		// Switched off and new-conversation templates resolve, since the loop
+		// is already on them; one that no longer fits the loop does not.
+		rt.Disabled = true
+		if _, ok := ResolveSaved(cfg.Loop, rt, cfg.FallbackSet); !ok {
+			t.Fatal("a switched-off saved route was refused")
+		}
+		rt.Enter = EnterSameConversation
+		if _, ok := ResolveSaved(cfg.Loop, rt, cfg.FallbackSet); ok {
+			t.Fatal("a conversation route resolved for a headless loop")
 		}
 	})
 }

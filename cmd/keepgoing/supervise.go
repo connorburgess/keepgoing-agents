@@ -53,7 +53,10 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 		// standard list is in.
 		switch fb := cfg.FallbackSet; {
 		case cfg.RouteList.Unreadable:
-			e.errf("warning: %s", config.StandardRoutesUnreadable)
+			e.errf("warning: %s (%s: %s)", config.StandardRoutesUnreadable, cfg.RouteList.Problem, routesProblemText(cfg.RouteList.Problem))
+			if cfg.RouteList.Invalid != "" {
+				e.errf("  %s", strings.ReplaceAll(cfg.RouteList.Invalid, "\n", "\n  "))
+			}
 		case fb == nil:
 			e.errf("warning: follows the standard route list, but none of its routes applies to this loop; see keepgoing routes list")
 		default:

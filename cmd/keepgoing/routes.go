@@ -30,7 +30,11 @@ type routeListsOut struct {
 
 type standardListView struct {
 	// State is ok, missing (no list has been written) or unreadable.
-	State      string             `json:"state"`
+	State string `json:"state"`
+	// Problem is the fixed reason an unreadable list was refused: not_private,
+	// not_owned, not_regular, too_large, inside_checkout, unreadable or
+	// invalid. It names no path.
+	Problem    string             `json:"problem,omitempty"`
 	Redundancy *redundancyView    `json:"redundancy,omitempty"`
 	Routes     []standardRouteRow `json:"routes"`
 	// Followers are the loops shown here that follow the standard list.
@@ -186,6 +190,7 @@ func standardList() standardListView {
 	view := standardListView{State: "unreadable", Routes: []standardRouteRow{}, Followers: []string{}}
 	path, err := config.StandardRoutesPath()
 	if err != nil {
+		view.Problem = config.RoutesProblem(err)
 		return view
 	}
 	r, err := config.LoadRoutes(path)
@@ -194,6 +199,7 @@ func standardList() standardListView {
 		return view
 	}
 	if err != nil {
+		view.Problem = config.RoutesProblem(err)
 		return view
 	}
 	view.State = "ok"
@@ -304,7 +310,7 @@ func printRouteLists(e env, out routeListsOut) {
 	case "missing":
 		fmt.Fprintln(w, "Standard route list: none written yet.")
 	case "unreadable":
-		fmt.Fprintln(w, "Standard route list: unreadable. Loops that follow it have no other routes until it is repaired.")
+		fmt.Fprintf(w, "Standard route list: unreadable (%s): %s. Loops that follow it have no other routes until it is repaired.\n", out.Standard.Problem, routesProblemText(out.Standard.Problem))
 	default:
 		fmt.Fprintf(w, "Standard route list: %d routes; followed by %d of the loops shown.\n", len(out.Standard.Routes), len(out.Standard.Followers))
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -393,4 +399,25 @@ func followsStandardRefusal(sub string) string {
 		return "This loop follows the standard route list. To turn handoff on or off, edit errors.failover_on in keepgoing.yaml; routes commands arrive with P10b."
 	}
 	return "This loop follows the standard route list. Edit routes.yaml instead (keepgoing routes list shows where); routes add, move and remove arrive with P10b."
+}
+
+// routesProblemText says what to do about each refusal reason.
+func routesProblemText(code string) string {
+	switch code {
+	case config.RoutesNotPrivate:
+		return "it is readable or writable by others; run chmod 600 on it"
+	case config.RoutesNotOwned:
+		return "it, or the symbolic link to it, is owned by another user"
+	case config.RoutesNotRegular:
+		return "it is not a regular file"
+	case config.RoutesTooLarge:
+		return "it is larger than 1 MiB"
+	case config.RoutesInsideCheckout:
+		return "KEEPGOING_ROUTES_FILE points inside a Git checkout"
+	case "missing":
+		return "no list has been written"
+	case config.RoutesInvalid:
+		return "its contents are not a valid route list; keepgoing validate shows why"
+	}
+	return "it could not be read"
 }

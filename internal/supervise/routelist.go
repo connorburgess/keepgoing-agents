@@ -31,36 +31,38 @@ type RouteNote struct {
 // CurrentRouteName is the saved record of the route a following loop is on.
 const CurrentRouteName = "route-current.yaml"
 
-const currentRouteLimit = 1 << 20
+const currentRouteLimit = 64 << 10
 
+// currentRoute holds the template of the route only, never the resolved agent:
+// the loop's own environment, which may hold secrets, stays in keepgoing.yaml.
 type currentRoute struct {
-	Version   int              `yaml:"version"`
-	Candidate config.Candidate `yaml:"candidate"`
+	Version int          `yaml:"version"`
+	Route   config.Route `yaml:"route"`
 }
 
-// LoadCurrentRoute reads the saved record. A missing, oversized or malformed
-// record is simply no record.
-func LoadCurrentRoute(stateDir string) (config.Candidate, bool) {
+// LoadCurrentRoute reads the saved template. A missing, oversized or
+// malformed record is simply no record.
+func LoadCurrentRoute(stateDir string) (config.Route, bool) {
 	f, err := snapshot.Open(filepath.Join(stateDir, CurrentRouteName))
 	if err != nil {
-		return config.Candidate{}, false
+		return config.Route{}, false
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, currentRouteLimit+1))
 	if err != nil || len(raw) > currentRouteLimit {
-		return config.Candidate{}, false
+		return config.Route{}, false
 	}
 	var rec currentRoute
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
-	if dec.Decode(&rec) != nil || rec.Version != 1 || rec.Candidate.ID == "" || rec.Candidate.ID == state.Primary {
-		return config.Candidate{}, false
+	if dec.Decode(&rec) != nil || rec.Version != 1 || rec.Route.ID == "" || rec.Route.ID == state.Primary {
+		return config.Route{}, false
 	}
-	return rec.Candidate, true
+	return rec.Route, true
 }
 
-func saveCurrentRoute(stateDir string, c config.Candidate) error {
-	raw, err := yaml.Marshal(currentRoute{Version: 1, Candidate: c})
+func saveCurrentRoute(stateDir string, rt config.Route) error {
+	raw, err := yaml.Marshal(currentRoute{Version: 1, Route: rt})
 	if err != nil || len(raw) > currentRouteLimit {
 		return errors.New("current route record could not be written")
 	}
@@ -103,14 +105,17 @@ func EffectiveRoutes(cfg *config.Config, st state.File) (*config.Fallbacks, bool
 	if c, ok := fb.Find(target); ok && !c.Disabled {
 		return fb, false
 	}
-	c, ok := LoadCurrentRoute(cfg.Loop.StateDir)
-	// Only a route the standard list could have resolved for this loop as it
-	// is configured now: never another adapter, command, directory or
-	// executable, whatever the file says.
-	if !ok || c.ID != target || !config.ResolvedFor(cfg.Loop, c, fb) {
+	rt, ok := LoadCurrentRoute(cfg.Loop.StateDir)
+	if !ok || rt.ID != target {
 		return fb, false
 	}
-	c.Disabled = false
+	// The saved template is resolved again for this loop as it is configured
+	// now, exactly as the standard list would resolve it: never another
+	// adapter, command, directory or executable, whatever the file says.
+	c, ok := config.ResolveSaved(cfg.Loop, rt, fb)
+	if !ok {
+		return fb, false
+	}
 	return config.WithCurrentRoute(fb, c), true
 }
 
@@ -150,8 +155,11 @@ func SaveCurrentRoute(cfg *config.Config, fb *config.Fallbacks, target string) e
 	if !ok {
 		return nil
 	}
-	c.Disabled = false
-	return saveCurrentRoute(cfg.Loop.StateDir, c)
+	rt, ok := config.RouteOf(cfg.Loop, c)
+	if !ok {
+		return errors.New("the route cannot be described as a standard route")
+	}
+	return saveCurrentRoute(cfg.Loop.StateDir, rt)
 }
 
 // noteRouteList records the route-list picture in the result and reports,

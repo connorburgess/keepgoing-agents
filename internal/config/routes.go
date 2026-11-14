@@ -88,6 +88,11 @@ type RouteStatus struct {
 	// Unreadable is true when the loop follows the standard list and that list
 	// is missing, unreadable or invalid. The loop then has no other routes.
 	Unreadable bool
+	// Problem is the fixed reason (see RoutesProblem), or "missing".
+	Problem string
+	// Invalid holds the validation errors of a list that was read but is not
+	// valid, for validate to show. It names no path.
+	Invalid string
 	// Skipped lists standard routes that do not apply to this loop.
 	Skipped []RouteSkip
 	// Warnings are conditions that do not stop supervision.
@@ -119,7 +124,7 @@ func StandardRoutesPath() (string, error) {
 		}
 		p = filepath.Clean(p)
 		if insideCheckout(p) {
-			return "", errors.New(RoutesFileEnv + " must not be inside a Git checkout: the list names private account directories")
+			return "", routesRefusal(RoutesInsideCheckout, RoutesFileEnv+" must not be inside a Git checkout: the list names private account directories")
 		}
 		return p, nil
 	}
@@ -151,52 +156,102 @@ func LoadRoutes(path string) (*Routes, error) {
 	}
 	r, err := ParseRoutes(raw)
 	if err != nil {
-		return nil, err
+		return nil, &RoutesFileError{Code: RoutesInvalid, msg: err.Error()}
 	}
 	r.source = snapshot(path, raw)
 	return r, nil
 }
 
+// Fixed reasons a standard list cannot be used. They name no path.
+const (
+	RoutesNotRegular     = "not_regular"
+	RoutesTooLarge       = "too_large"
+	RoutesNotOwned       = "not_owned"
+	RoutesNotPrivate     = "not_private"
+	RoutesInsideCheckout = "inside_checkout"
+	RoutesUnreadableFile = "unreadable"
+	RoutesInvalid        = "invalid"
+)
+
+// RoutesFileError is a refusal of the standard list with its fixed reason.
+type RoutesFileError struct {
+	Code string
+	msg  string
+}
+
+func (e *RoutesFileError) Error() string { return e.msg }
+
+func routesRefusal(code, msg string) error { return &RoutesFileError{Code: code, msg: msg} }
+
+// RoutesProblem is the fixed reason for an error from StandardRoutesPath or
+// LoadRoutes: one of the Routes* codes, or "" for a missing file.
+func RoutesProblem(err error) string {
+	var e *RoutesFileError
+	switch {
+	case err == nil, errors.Is(err, os.ErrNotExist):
+		return ""
+	case errors.As(err, &e):
+		return e.Code
+	}
+	return RoutesUnreadableFile
+}
+
 // readPrivateFile reads the standard list the way the loop registry is read:
 // a regular file of at most 1 MiB, owned by this user and not readable or
 // writable by anyone else. A symbolic link is followed when this user owns
-// it, as dotfile managers create them; the file it names must pass the same
-// checks. The checks and the read use one opened file. Every refusal says why.
+// it, as dotfile managers create them, wherever the file it names is; that
+// file must pass the same checks. The type is checked before opening, and the
+// open does not block, so a FIFO or device at the path cannot hang a check.
+// The checks are repeated on the opened file, which is the one read.
 func readPrivateFile(path string) ([]byte, error) {
 	link, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
 	if link.Mode()&os.ModeSymlink != 0 && !ownedByUser(link) {
-		return nil, errors.New("standard route list is a symbolic link owned by another user")
+		return nil, routesRefusal(RoutesNotOwned, "standard route list is a symbolic link owned by another user")
 	}
-	f, err := os.Open(path)
+	target, err := os.Stat(path)
 	if err != nil {
 		return nil, err
+	}
+	if err := checkRoutesFile(target); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	if err != nil {
+		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be opened")
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be inspected")
 	}
-	switch {
-	case !info.Mode().IsRegular():
-		return nil, errors.New("standard route list must be a regular file")
-	case info.Size() > 1<<20:
-		return nil, errors.New("standard route list must be at most 1 MiB")
-	case !ownedByUser(info):
-		return nil, errors.New("standard route list must be owned by this user")
-	case !privateMode(info):
-		return nil, errors.New("standard route list must not be readable or writable by group or others (chmod 600)")
+	if err := checkRoutesFile(info); err != nil {
+		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
 	if err != nil {
-		return nil, err
+		return nil, routesRefusal(RoutesUnreadableFile, "standard route list could not be read")
 	}
 	if len(raw) > 1<<20 {
-		return nil, errors.New("standard route list must be at most 1 MiB")
+		return nil, routesRefusal(RoutesTooLarge, "standard route list must be at most 1 MiB")
 	}
 	return raw, nil
+}
+
+func checkRoutesFile(info os.FileInfo) error {
+	switch {
+	case !info.Mode().IsRegular():
+		return routesRefusal(RoutesNotRegular, "standard route list must be a regular file")
+	case info.Size() > 1<<20:
+		return routesRefusal(RoutesTooLarge, "standard route list must be at most 1 MiB")
+	case !ownedByUser(info):
+		return routesRefusal(RoutesNotOwned, "standard route list must be owned by this user")
+	case !privateMode(info):
+		return routesRefusal(RoutesNotPrivate, "standard route list must not be readable or writable by group or others (chmod 600)")
+	}
+	return nil
 }
 
 // ParseRoutes decodes and validates standard route list YAML.
@@ -463,9 +518,10 @@ func resolveRoute(l Loop, rt Route, red Redundancy, probe ProbePolicy) (Candidat
 	return one.Candidates[0], ""
 }
 
-// CandidateRoute is the template a resolved candidate came from, as far as
-// it can be read back from the candidate itself and the loop.
-func candidateRoute(l Loop, c Candidate) (Route, bool) {
+// RouteOf is the template a resolved candidate came from, read back from the
+// candidate and the loop: what the record of a route a loop is on holds. It
+// carries no environment or executable of the loop's own.
+func RouteOf(l Loop, c Candidate) (Route, bool) {
 	rt := Route{ID: c.ID, Provider: c.Provider, Group: c.Group, Probe: RouteProbe{Model: c.Probe.Model}}
 	if len(c.Probe.Env) > 1 {
 		return Route{}, false
@@ -504,32 +560,27 @@ func candidateRoute(l Loop, c Candidate) (Route, bool) {
 	return rt, true
 }
 
-// ResolvedFor reports whether c is exactly what the standard list would
-// resolve for this loop from some template, so a saved record of a route can
-// be trusted. Anything else (another adapter, commands, another directory or
-// executable, arguments the loop does not have) is refused.
-func ResolvedFor(l Loop, c Candidate, policy *Fallbacks) bool {
-	rt, ok := candidateRoute(l, c)
-	if !ok || !nameRE.MatchString(c.ID) || c.ID == "primary" {
-		return false
+// ResolveSaved resolves the saved template of the route a loop is on, for the
+// loop as it is configured now. The template must be a valid route. It is
+// resolved as if it were switched on, and a new-conversation route as if the
+// loop allowed one, because the loop is already on it; every other reason a
+// route does not apply still refuses it.
+func ResolveSaved(l Loop, rt Route, policy *Fallbacks) (Candidate, bool) {
+	rt.Disabled = false
+	one := &Routes{Version: 1, Routes: []Route{rt}}
+	one.applyDefaults()
+	if one.Validate() != nil {
+		return Candidate{}, false
 	}
-	red, probe := Redundancy{}, ProbePolicy{}
+	if rt.Enter == EnterNewConversation && !l.AllowsNewConversation() {
+		l.RoutesAllow = append(append([]string(nil), l.RoutesAllow...), EnterNewConversation)
+	}
+	red, probe := one.Redundancy, one.Probe
 	if policy != nil {
 		red, probe = policy.Redundancy, policy.Probe
 	}
-	want, reason := resolveRoute(l, rt, red, probe)
-	if reason != "" {
-		// A route the loop is on may have become one that would be skipped
-		// for a reason that does not change its shape, such as being switched
-		// off. Resolve it as if it were on.
-		rt.Disabled = false
-		if want, reason = resolveRoute(l, rt, red, probe); reason != "" {
-			return false
-		}
-	}
-	a, errA := yaml.Marshal(want)
-	b, errB := yaml.Marshal(c)
-	return errA == nil && errB == nil && bytes.Equal(a, b)
+	c, reason := resolveRoute(l, rt, red, probe)
+	return c, reason == ""
 }
 
 // loadStandardRoutes resolves the standard list for a loop that follows it.
@@ -539,7 +590,7 @@ func (c *Config) loadStandardRoutes() {
 	c.RouteList = RouteStatus{Source: RoutesStandard}
 	path, err := StandardRoutesPath()
 	if err != nil {
-		c.RouteList.Unreadable = true
+		c.RouteList.Unreadable, c.RouteList.Problem = true, RoutesProblem(err)
 		return
 	}
 	// Remember what was looked at, so a list that appears or changes later
@@ -547,7 +598,13 @@ func (c *Config) loadStandardRoutes() {
 	c.routesSource = snapshotFile(path)
 	r, err := LoadRoutes(path)
 	if err != nil {
-		c.RouteList.Unreadable = true
+		c.RouteList.Unreadable, c.RouteList.Problem = true, RoutesProblem(err)
+		if c.RouteList.Problem == "" {
+			c.RouteList.Problem = "missing"
+		}
+		if c.RouteList.Problem == RoutesInvalid {
+			c.RouteList.Invalid = err.Error()
+		}
 		return
 	}
 	c.routesSource = r.source

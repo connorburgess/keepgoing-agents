@@ -228,8 +228,8 @@ func startPreflight(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 	check("primary", cfg.Loop.Agent)
-	if cfg.FallbackSet != nil {
-		for _, c := range cfg.FallbackSet.Candidates {
+	if fb := currentRoutes(cfg); fb != nil {
+		for _, c := range fb.Candidates {
 			if !c.Disabled {
 				check(c.ID, c.Agent)
 			}

@@ -7,6 +7,9 @@ import (
 	"syscall"
 )
 
+// openNonblock keeps opening a FIFO or device from blocking.
+const openNonblock = syscall.O_NONBLOCK
+
 func ownedByUser(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(st.Uid) == os.Getuid()

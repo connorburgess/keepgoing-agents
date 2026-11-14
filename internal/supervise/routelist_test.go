@@ -234,7 +234,7 @@ func TestRouteRemovedFromStandardListWhileInUseStaysAndIsMarked(t *testing.T) {
 			if res := runTick(t, w, t0); res.Target != "large" || res.Routes != nil {
 				t.Fatalf("before: %+v", res)
 			}
-			if c, ok := LoadCurrentRoute(w.dir); !ok || c.ID != "large" || c.BB == nil || c.BB.Thread != "thr_primary" || c.BB.Model != "example-large" {
+			if c, ok := LoadCurrentRoute(w.dir); !ok || c.ID != "large" || c.Enter != config.EnterSameConversation || c.Model != "example-large" || c.Group != "claude-large" {
 				t.Fatalf("saved record: %+v %t", c, ok)
 			}
 			switch kind {
@@ -270,66 +270,61 @@ func TestRouteRemovedFromStandardListWhileInUseStaysAndIsMarked(t *testing.T) {
 	}
 }
 
-// Only a record the standard list could have produced for this loop, as it
-// is configured now, is used. Anything else returns the loop to its first
-// route, as for any target that is not in its list.
-func TestSavedRouteRecordMustBeAShapeTheListCanProduce(t *testing.T) {
+// The record holds a route template, resolved again for the loop as it is
+// configured now. A record that is not a valid route, or no longer fits the
+// loop, returns the loop to its first route, as for any target not in its list.
+func TestSavedRouteRecordIsResolvedAgainForTheLoop(t *testing.T) {
 	w := standardWorld(t)
-	real := w.cfg.FallbackSet.Candidates[0]
+	real, _ := config.RouteOf(w.cfg.Loop, w.cfg.FallbackSet.Candidates[0])
 	for _, tc := range []struct {
 		name string
-		edit func(*config.Candidate)
+		raw  string
 	}{
-		{"process_adapter", func(c *config.Candidate) {
-			c.Adapter, c.BB = "process", nil
-			c.Process = &config.Process{StatusCommand: []string{"/fictional/status"}, ResumeCommand: []string{"/fictional/resume"}}
-		}},
-		{"two_adapters", func(c *config.Candidate) { c.Claude = &config.Claude{Workdir: "/fictional/elsewhere"} }},
-		{"another_thread", func(c *config.Candidate) { c.BB.Thread = "thr_somebody_else" }},
-		{"another_bb_cli", func(c *config.Candidate) { c.BB.CLI = "/fictional/other-bb" }},
-		{"command_probe", func(c *config.Candidate) { c.Probe.Kind, c.Probe.Command = "command", []string{"/fictional/probe"} }},
-		{"probe_env", func(c *config.Candidate) { c.Probe.Env = map[string]string{"PATH": "/fictional"} }},
-		{"bad_id", func(c *config.Candidate) { c.ID = "Not An ID" }},
+		{"another_adapter", "version: 1\nroute: {id: large, provider: claude-code, model: m, group: g, enter: same_conversation, adapter: process}\n"},
+		{"names_a_thread", "version: 1\nroute: {id: large, provider: claude-code, model: m, group: g, enter: same_conversation, thread: thr_somebody_else}\n"},
+		{"commands", "version: 1\nroute: {id: large, provider: claude-code, model: m, group: g, enter: same_conversation, probe: {command: [/fictional/probe]}}\n"},
+		{"other_tool", "version: 1\nroute: {id: large, provider: other-tool, model: m, group: g, enter: same_conversation}\n"},
+		{"headless_on_a_conversation_loop", "version: 1\nroute: {id: large, provider: claude-code, model: m, group: g, enter: headless}\n"},
+		{"same_group_as_first", "version: 1\nroute: {id: large, provider: claude-code, model: m, group: claude-account-a, enter: same_conversation}\n"},
+		{"bad_id", "version: 1\nroute: {id: Not An ID, provider: claude-code, model: m, group: g, enter: same_conversation}\n"},
+		{"old_candidate_shape", "version: 1\ncandidate: {id: large, adapter: bb, bb: {thread: thr_primary}}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := real
-			bb := *real.BB
-			c.BB = &bb
-			tc.edit(&c)
-			if err := saveCurrentRoute(w.dir, c); err != nil {
-				t.Fatal(err)
-			}
-			if err := state.Save(w.dir, state.File{ActiveTarget: c.ID}); err != nil {
+			if err := os.WriteFile(filepath.Join(w.dir, CurrentRouteName), []byte(tc.raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			setList(t, w, "large")
-			if fb, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: c.ID}); outside {
-				t.Fatalf("record accepted: %+v", fb)
+			if _, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"}); outside {
+				t.Fatal("record accepted")
+			}
+			if err := state.Save(w.dir, state.File{ActiveTarget: "large"}); err != nil {
+				t.Fatal(err)
 			}
 			w.primary(decide.Observation{State: decide.Idle})
 			if res := runTick(t, w, t0); res.Target != state.Primary {
-				t.Fatalf("an untrusted record was used: %+v", res)
+				t.Fatalf("an unusable record was used: %+v", res)
 			}
 		})
 	}
-	// The genuine record is used.
+	// The genuine record is used, and resolves to the loop's thread as it is
+	// configured now.
 	if err := saveCurrentRoute(w.dir, real); err != nil {
 		t.Fatal(err)
 	}
 	setList(t, w, "large")
-	if _, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"}); !outside {
-		t.Fatal("the genuine record was refused")
+	fb, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"})
+	if c, _ := fb.Find("large"); !outside || c.BB == nil || c.BB.Thread != "thr_primary" || c.BB.Model != "example-large" {
+		t.Fatalf("genuine record: %+v %t", c, outside)
 	}
-	// A loop whose own configuration changed since (another thread) refuses it.
-	w.cfg.Loop.BB.Thread = "thr_moved"
-	if _, outside := EffectiveRoutes(w.cfg, state.File{ActiveTarget: "large"}); outside {
-		t.Fatal("a record for another configuration was used")
+	raw, _ := os.ReadFile(filepath.Join(w.dir, CurrentRouteName))
+	if strings.Contains(string(raw), "thr_primary") || strings.Contains(string(raw), "cli") {
+		t.Fatalf("the record holds more than the route: %s", raw)
 	}
 }
 
 func TestCurrentRouteRecordIsOnlyUsedForItsOwnTargetAndStandardLoops(t *testing.T) {
 	w := standardWorld(t)
-	real := w.cfg.FallbackSet.Candidates[0]
+	real, _ := config.RouteOf(w.cfg.Loop, w.cfg.FallbackSet.Candidates[0])
 	if err := saveCurrentRoute(w.dir, real); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +351,7 @@ func TestCurrentRouteRecordIsOnlyUsedForItsOwnTargetAndStandardLoops(t *testing.
 		t.Fatalf("unrelated record used: %+v", res)
 	}
 
-	for name, content := range map[string]string{"malformed": "version: [", "future": "version: 2\ncandidate: {id: large}\n", "primary": "version: 1\ncandidate: {id: primary}\n", "unknown_field": "version: 1\ncandidate: {id: large}\nextra: true\n", "oversized": "version: 1\n# " + strings.Repeat("x", currentRouteLimit) + "\n"} {
+	for name, content := range map[string]string{"malformed": "version: [", "future": "version: 2\nroute: {id: large}\n", "primary": "version: 1\nroute: {id: primary}\n", "unknown_field": "version: 1\nroute: {id: large}\nextra: true\n", "oversized": "version: 1\n# " + strings.Repeat("x", currentRouteLimit) + "\n"} {
 		if err := os.WriteFile(filepath.Join(w.dir, CurrentRouteName), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
