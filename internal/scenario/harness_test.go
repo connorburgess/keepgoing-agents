@@ -779,8 +779,9 @@ func (w *World) Check(s *Step, name string, err error) {
 type Waiting string
 
 const (
-	// WaitChildRecovery is the lane recovering a direct child's failed turn.
-	WaitChildRecovery Waiting = "child recovery, in progress"
+	// WaitChildRecovery is lane recovery, which retries a direct child's
+	// failed turn. It is opt-in, so a loop without it keeps these failures.
+	WaitChildRecovery Waiting = "lane recovery is opt-in and off here (bb.children.retry_errored)"
 )
 
 // Known records an assertion that fails today because of open work. It never

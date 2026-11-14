@@ -84,10 +84,11 @@ keepgoing status -c /private/example-loop/keepgoing.yaml
 keepgoing pause -c /private/example-loop/keepgoing.yaml --note "reviewing by hand"
 keepgoing resume -c /private/example-loop/keepgoing.yaml
 keepgoing stop -c /private/example-loop/keepgoing.yaml
+keepgoing stop --lanes --immediately -c /private/example-loop/keepgoing.yaml
 keepgoing complete -c /private/example-loop/keepgoing.yaml --note "Task verified"
 ```
 
-`complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
+A plain `stop` is carried out by the next check and stops the supervised conversation only; in unreleased source `--lanes` also stops the conversations it started, and theirs, and `--immediately` carries the stop out in the command ([stopping the lanes too](docs/operations.md#stopping-the-lanes-too)). `complete` saves a completion hold; it is a declaration by the agent or operator, not independent verification. `resume` explicitly clears pause, stop, awaiting-user and completion holds; in unreleased source, a resume of a hold that keepgoing raised because its re-prompts or nudges were spent also starts the counts over. Existing holds remain intact when starting or restarting a supervisor.
 
 In v0.1.5, repeated control writes advance the loaded timestamp even when the system clock repeats or moves backwards, so an older registered-resume ticket cannot overlook a repeated pause. This is covered by offline tests; v0.1.4 does not include the correction.
 
@@ -153,7 +154,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 
 ## What it does
 
-- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. In unreleased source a session that is itself in error is recovered whether or not its BB children are working.
+- **Wakes, nudges and retries.** Idle sessions can wake at each ordinary check. Stall nudges and error re-prompts have separate caps/backoff. In unreleased source a failed BB turn is retried by reference, not prompted again. A BB loop may also opt in (`bb.children.retry_errored`, off by default) to having the failed turn of a child conversation retried the same way; a child is never messaged or created; it is retried only with `bb.children.retry_errored` and stopped only by an explicit `stop --lanes`, and only typed fields of its event log are read, never message text. Active BB children and pending provider retries suppress duplicate work; pending human input requires attention. In unreleased source a session that is itself in error is recovered whether or not its BB children are working.
 - **Bounds automatic work.** Optional deadlines, total send allowances and Git-based no-progress timeouts persist across turns and restarts. Failed sends count; resume does not refund them. These are not dollar budgets or proof of useful work. See [operations](docs/operations.md).
 - **Confirms fallbacks before handoff.** Eligible configured fallbacks need health evidence and an exact-model probe. Known reset times can hold recovery while ordinary checks continue. Switch-back is opt-in; no configured fallbacks means no automatic handoff. See [fallbacks](docs/fallbacks.md).
 - **One loop per session.** In unreleased source two loops never act on one BB thread or headless working directory at the same moment: a check claims its session first, and one that finds it claimed by another loop sends nothing. Turning on a second loop on a supervised session is refused, naming the first, unless asked for. See [one loop per session](docs/operations.md#one-loop-per-session).

@@ -7,8 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
+	"slices"
+	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -22,6 +26,32 @@ type clientHoldReport struct {
 	ControlSave    string          `json:"controlSave"`
 	Issues         []string        `json:"issues"`
 	Controls       *clientControls `json:"controls,omitempty"`
+	// Stop only. Lanes: the stop was asked to cover the lanes, and what it
+	// did to them when it ran now. CarriedOut: whether this command ran the
+	// stop ("now") or left it to the loop's checks ("left_to_check").
+	Lanes      *clientLanes `json:"lanes,omitempty"`
+	CarriedOut string       `json:"carriedOut,omitempty"`
+	// LeftBecause says why a stop asked to run now was left to a check.
+	LeftBecause string `json:"leftBecause,omitempty"`
+	// Warnings are the stop check's warnings, for a stop carried out now, as
+	// fixed codes: never a path or an error's own text.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// clientLanes is the lanes part of a client stop.
+type clientLanes struct {
+	Requested bool `json:"requested"`
+	// Result is what the stop did to them, when it ran in this command.
+	Result *state.LaneStop `json:"result,omitempty"`
+}
+
+// holdOptions are the stop's options: cover the lanes, carry it out now.
+// CallerThread is the BB thread the command runs in, for a stop carried out
+// now; the panel and the menu leave it empty, acting as no BB thread.
+type holdOptions struct {
+	Lanes, Now   bool
+	DropQueued   bool // with Lanes: delete the messages queued in lanes that have not started
+	CallerThread string
 }
 
 func clientHoldCommand(e env, args []string) int {
@@ -30,6 +60,12 @@ func clientHoldCommand(e env, args []string) int {
 	id := fs.String("id", "", "registration ID to hold")
 	directory := fs.String("directory", "", "private registry directory")
 	asJSON := fs.Bool("json", false, "print versioned save evidence")
+	var opts holdOptions
+	if args[0] == "stop" {
+		fs.BoolVar(&opts.Lanes, "lanes", false, "also stop the lanes: the conversations the supervised one started, and theirs")
+		fs.BoolVar(&opts.Now, "immediately", false, "carry the stop out in this command instead of leaving it to the next check")
+		fs.BoolVar(&opts.DropQueued, "drop-queued", false, "with --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
 			fs.SetOutput(e.stdout)
@@ -39,11 +75,18 @@ func clientHoldCommand(e env, args []string) int {
 		e.errf("client: invalid hold arguments; see client pause --help or client stop --help")
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !clientRegistrationID.MatchString(*id) {
+	if fs.NArg() != 0 || !clientRegistrationID.MatchString(*id) || (opts.DropQueued && !opts.Lanes) {
 		e.errf("client: provide a registration ID; no positional arguments")
 		return exitUsage
 	}
-	r, code := applyClientHold(e.ctx, *directory, *id, args[0])
+	if opts.Now {
+		opts.CallerThread = os.Getenv("BB_THREAD_ID")
+		if opts.CallerThread != "" && !*asJSON {
+			// As keepgoing stop says it: before anything is stopped.
+			fmt.Fprintf(e.stdout, "this command runs in BB thread %s; if the stop covers it, it is stopped last, and if that ends this command the next check finishes the rest\n", opts.CallerThread)
+		}
+	}
+	r, code := applyClientHoldWith(e.ctx, *directory, *id, args[0], "", "", opts)
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(r) != nil {
 			return exitFailed
@@ -53,8 +96,19 @@ func clientHoldCommand(e env, args []string) int {
 		for _, issue := range r.Issues {
 			fmt.Fprintf(e.stdout, "issue: %s\n", issue)
 		}
-		if r.ControlSave == "confirmed" {
+		switch {
+		case r.CarriedOut == "now":
+			fmt.Fprintln(e.stdout, "Stop carried out in this command.")
+			if r.Lanes != nil && r.Lanes.Result != nil {
+				fmt.Fprintln(e.stdout, describeLaneStop(*r.Lanes.Result))
+			}
+		case r.ControlSave == "confirmed" && r.LeftBecause != "":
+			fmt.Fprintf(e.stdout, "Stop saved and left to the loop's checks: %s.\n", r.LeftBecause)
+		case r.ControlSave == "confirmed":
 			fmt.Fprintln(e.stdout, "Hold saved; provider action is not confirmed. Inspect status before another action.")
+		}
+		for _, w := range r.Warnings {
+			fmt.Fprintf(e.stdout, "warning: %s\n", stopWarningWords(w))
 		}
 	}
 	return code
@@ -70,6 +124,20 @@ func applyClientHold(ctx context.Context, directory, id, operation string) (clie
 // reviewed: the hold is refused as observation_changed, inside the control
 // lock, when the record is no longer that one.
 func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, expect string) (clientHoldReport, int) {
+	return applyClientHoldWith(ctx, directory, id, operation, origin, expect, holdOptions{})
+}
+
+// applyClientHoldWith is applyClientHoldFrom with the stop's options. A
+// stop with Now is carried out in the call, under the loop's check lock, as
+// keepgoing stop --immediately does; the panel and the menu act as no BB thread.
+func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, expect string, opts holdOptions) (clientHoldReport, int) {
+	if operation != "stop" {
+		opts = holdOptions{}
+	}
+	if !opts.Lanes {
+		opts.DropQueued = false
+	}
+	var stopCfg *config.Config
 	r := clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}
 	reject := errors.New("client hold rejected")
 	fail := func(issue string) error { r.Issues = append(r.Issues, issue); return reject }
@@ -121,6 +189,10 @@ func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, 
 				f.Paused = true
 			} else {
 				f.Stop = true
+				if opts.Lanes {
+					at := time.Now().UTC()
+					f.StopLanesAt, f.StopLanesDropQueued = &at, opts.DropQueued
+				}
 			}
 			r.ControlSave = "unconfirmed" // A save error/lost reply is not permission to replay.
 			return nil
@@ -133,6 +205,7 @@ func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, 
 		}
 		r.ControlSave = "confirmed"
 		r.Controls = &clientControls{f.Enabled, f.Paused, f.Stop, f.AwaitingUser, f.Completed}
+		stopCfg = cfg
 		if errors.Is(err, errControlHistory) {
 			r.Issues = append(r.Issues, "incident_history_unavailable")
 		}
@@ -150,6 +223,29 @@ func applyClientHoldFrom(ctx context.Context, directory, id, operation, origin, 
 			r.Issues = append(r.Issues, "control_or_registration_unavailable")
 		}
 		return r, exitFailed
+	}
+	if operation == "stop" {
+		r.CarriedOut = "left_to_check"
+		if opts.Lanes {
+			r.Lanes = &clientLanes{Requested: true}
+		}
+	}
+	if operation == "stop" && opts.Now && stopCfg != nil && r.ControlSave == "confirmed" {
+		// Outside the registry entry's lock: the stop check takes the loop's
+		// own check lock, and may wait a few seconds for it.
+		now, err := stopNow(ctx, stopCfg, stopNowWait, opts.CallerThread)
+		r.CarriedOut, r.LeftBecause = now.CarriedOut, now.Why
+		for _, w := range now.Warnings {
+			if c := stopWarningCode(w); !slices.Contains(r.Warnings, c) {
+				r.Warnings = append(r.Warnings, c)
+			}
+		}
+		if r.Lanes != nil {
+			r.Lanes.Result = now.Lanes
+		}
+		if now.failed(err) {
+			r.Issues = append(r.Issues, "stop_now_failed")
+		}
 	}
 	if len(r.Issues) > 0 {
 		return r, exitFailed

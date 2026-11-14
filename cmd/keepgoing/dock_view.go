@@ -1260,6 +1260,13 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		need = &dockNeed{Kind: "held", Reason: "A new conversation it tried to create for a move to another route could not be confirmed.",
 			Action: "Find that conversation in BB, then settle it with keepgoing retarget."}
 	}
+	// No check has run for longer than the overdue rule allows, on a loop
+	// that is neither disabled nor held: the computer may have slept or the
+	// loop's scheduler stopped, and nothing else would say so.
+	if snap != nil && snap.Runtime != nil && snap.Runtime.Overdue && need == nil {
+		need = &dockNeed{Kind: "overdue", Reason: "Its checks have stopped: " + snap.Runtime.OverdueMessage + ".",
+			Action: "Find out why no check has run, and start its scheduler again if it stopped; the next check ends this.", Since: snap.Runtime.CheckedAt, SinceEvidence: "last_check"}
+	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
 		if need.Since != nil {
@@ -1448,6 +1455,15 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		n.Reason, n.Action = "No Git progress within its time limit.", "See why, then resume or mark it finished."
 	case "stall_limit":
 		n.Reason, n.Action = "No progress after repeated nudges.", "See why, then resume or mark it finished."
+	case "stall_limit_held":
+		n.Reason, n.Action = "No progress after nudges that were held back because the turn looked hung.", "Retry the turn in BB, or stop the loop and resume it."
+		if st != nil && st.State.Nudges > 0 {
+			held := "all held back"
+			if st.State.HeldNudges < st.State.Nudges {
+				held = fmt.Sprintf("%d of them held back", st.State.HeldNudges)
+			}
+			n.Reason = fmt.Sprintf("No progress after %d nudges, %s because the turn looked hung.", st.State.Nudges, held)
+		}
 	}
 	if hold != nil && !hold.At.IsZero() {
 		at := hold.At

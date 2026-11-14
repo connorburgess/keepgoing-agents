@@ -173,6 +173,15 @@ func (t *tick) graphFinish(id, outcome string) {
 	t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Finish(id, rd.Outcome(outcome), t.now) })
 }
 
+// graphDiscard removes a lane-retry intent the provider answered by doing
+// nothing, so no-op answers cannot fill the graph.
+func (t *tick) graphDiscard(id string) {
+	if id == "" {
+		return
+	}
+	t.graphUpdate(func(g *rungraph.Graph) (bool, error) { return g.Discard(id) })
+}
+
 // graphWaiting is one check's verified picture of the target's direct child
 // threads. Only keys are kept: a child's thread ID never reaches the graph.
 type graphWaiting struct {

@@ -7,12 +7,16 @@ let args = Array(CommandLine.arguments.dropFirst())
 let options = ["--executable", "--registry-directory", "--panel-directory", "--render-menu"]
 var values: [String: String] = [:]
 var dark = false
+var notifications = true
 var index = 0
 var valid = true
 while index < args.count {
     let name = args[index]
     if name == "--dark", !dark {
         dark = true
+        index += 1
+    } else if name == "--no-notifications", notifications {
+        notifications = false
         index += 1
     } else if options.contains(name), values[name] == nil, args.indices.contains(index + 1), args[index + 1].hasPrefix("/") {
         values[name] = args[index + 1]
@@ -23,7 +27,7 @@ while index < args.count {
     }
 }
 guard valid, let path = values["--executable"] else {
-    fputs("Usage: KeepgoingMenu --executable /absolute/path/to/keepgoing [--registry-directory /absolute/path] [--panel-directory /absolute/path]\n       KeepgoingMenu ... --render-menu /absolute/path.png [--dark]   draw the menu's rows to a picture and quit\n", stderr)
+    fputs("Usage: KeepgoingMenu --executable /absolute/path/to/keepgoing [--registry-directory /absolute/path] [--panel-directory /absolute/path] [--no-notifications]\n       KeepgoingMenu ... --render-menu /absolute/path.png [--dark]   draw the menu's rows to a picture and quit\n", stderr)
     exit(2)
 }
 
@@ -64,6 +68,7 @@ final class Backdrop: NSView {
 
 final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let client: LocalClient
+    let notifier: Notifier
     let renderPath: String?
     let renderDark: Bool
     let menu = NSMenu()
@@ -76,8 +81,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var menuOpen = false
     var notice: String?
     var loading = false
-    init(client: LocalClient, renderPath: String?, renderDark: Bool) {
+    init(client: LocalClient, notifier: Notifier, renderPath: String?, renderDark: Bool) {
         self.client = client
+        self.notifier = notifier
         self.renderPath = renderPath
         self.renderDark = renderDark
     }
@@ -282,6 +288,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .review(let action, let key):
             review(action, key: key)
             return
+        case .reviewAll(let action):
+            reviewAll(action)
+            return
         case .openPanelWithChanges:
             openWithControls()
             return
@@ -356,6 +365,37 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             } else {
                                 tell(result.outcome == "uncertain" ? "keepgoing could not confirm the change" : "Nothing was changed", Contract.text(result.text))
                             }
+                            refresh()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads the review of a change to every loop, shows it, and applies it
+    /// only if confirmed while the review is current. The result always
+    /// names each loop's outcome, so a partial result is never taken for
+    /// success; nothing is retried by itself.
+    func reviewAll(_ action: LoopAction) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let reading = try? client.reviewAll(action)
+            DispatchQueue.main.async { [self] in
+                switch reading {
+                case .none:
+                    tell("keepgoing could not prepare this review", "Nothing was changed. Run keepgoing client review \(action.rawValue) --all in a terminal to see why.")
+                case .refused(let result):
+                    tell("Nothing was changed", Contract.text(result.text))
+                case .review(let review):
+                    guard let command = ask(ConfirmationBuilder.build(review)) else { return }
+                    guard ConfirmationBuilder.current(review, now: Date()) else {
+                        tell("Nothing was changed", Contract.text(review.expired))
+                        return
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        let result = client.applyAll(command, review: review)
+                        DispatchQueue.main.async { [self] in
+                            tell(Contract.text(result.text), (result.lines ?? []).map(Contract.text).joined(separator: "\n"))
                             refresh()
                         }
                     }
@@ -446,6 +486,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 loading = false
                 scheduleNextRead()
                 render()
+                notifier.update(result)
                 if let path = renderPath { renderMenu(to: path) }
             }
         }
@@ -459,7 +500,8 @@ final class Command: NSObject {
 }
 
 let app = NSApplication.shared
-let delegate = MenuApp(client: LocalClient(executable: URL(fileURLWithPath: path), directory: values["--registry-directory"], panelDirectory: values["--panel-directory"]), renderPath: values["--render-menu"], renderDark: dark)
+let delegate = MenuApp(client: LocalClient(executable: URL(fileURLWithPath: path), directory: values["--registry-directory"], panelDirectory: values["--panel-directory"]),
+                       notifier: Notifier(enabled: notifications && values["--render-menu"] == nil), renderPath: values["--render-menu"], renderDark: dark)
 app.setActivationPolicy(.accessory)
 app.delegate = delegate
 app.run()
