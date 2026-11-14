@@ -40,6 +40,7 @@ loop:
 | `routes_allow` | no | With `routes: standard`: `[new_conversation]` lets a standard route that starts a new conversation apply to this loop. Off by default. |
 | `probe` | for switch-back and timing | How to probe the primary, with the same fields as a candidate's `probe`. The kind defaults from `provider`. |
 | `timing` | no | Usage-aware timing. Off by default. Today it only probes the first route on a schedule to collect usage readings of its allowance; it never changes routes. See [timing](#timing). |
+| `refusal` | no | Unreleased. `ask_after`: how many refused turns in a row ask a person (default 10, `0` never). See [refusal](#refusal). |
 
 ## bb
 
@@ -186,7 +187,7 @@ loop:
 
 Your mapping decides it. A code, HTTP status or exit code that you map to a class in the loop's `errors.failover_on` (by default `rate_limit`) **moves work to a fallback**, and so does a `limits` lookup that reports the account blocked.
 
-**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): the loop then holds for a person at once and never moves, and a `resume` asks for one more try ([operations](operations.md#a-refused-or-restricted-turn)). Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code keepgoing itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
+**Map only a real provider limit to such a class.** A refusal, a policy block or an account restriction is not a limit. Map the agent's code for one to `refused` (the model or provider declined the turn) or `restricted` (the provider denied permission): a restricted turn holds for a person at once and a `resume` asks for one more try, and a refused turn is continued in the same session with growing spacing until `refusal.ask_after` asks a person; neither ever moves ([operations](operations.md#a-refused-or-restricted-turn)). A declared refusal or restriction also wins over a matching `finished` rule, so a turn the agent reports as finished but declined is not counted as done. Left unmapped it is `unknown`, which never moves work either: the loop re-prompts within its bounds and then holds. Validation refuses a definition that maps a code keepgoing itself reads as a restriction or a refusal (`refusal`, `refused`, `policy`, `permission_denied`, `permission_error`, `forbidden`, `restricted`, `oauth_org_not_allowed`, `cyberPolicy`, `misalignmentPolicyViolation`, `403`) to `rate_limit`, `auth`, `overloaded` or `network`. keepgoing is never a way around a provider's safeguards, and it cannot check that a code you mapped really means a limit, so it says every such mapping in words instead:
 
 ```text
 failover (primary, defined agent example-agent): exit code 75 is treated as a network failure and will move work to a fallback
@@ -306,7 +307,21 @@ When timing probes run:
 | `wait_if_reset_within` | `30m` | When the provider reports a limit reset this soon, wait instead of handing off. |
 | `report_wait_after` | `6h` | v0.2.0. When a limit is being waited out with no handoff possible and its reported reset is further away than this, send one `limit_wait` report for that wait. The loop is not held and no decision changes. There is no off value: leaving it out or setting `0` uses the default. To receive nothing, give `report.events` an explicit list without `limit_wait`. See [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). |
 
-The re-prompt budget resets when the session is seen idle, or when it is active and the Git fingerprint changes; seeing it active is not enough, because a re-prompt itself makes it active. An `auth` error goes to awaiting user unless a handoff happens, because retrying cannot fix it. In unreleased source a `restricted` error (the provider denied permission: HTTP 403 or a permission code) or a `refused` error (the model or provider declined the turn: a refusal or a policy block reported in a structured field) always goes to awaiting user at once: it is never re-prompted by keepgoing and never handed off, whatever `failover_on` lists, and a `resume` asks for exactly one more try. Earlier versions classed HTTP 403 and permission codes as `auth`, so a loop with `auth` in `failover_on` could move to another account on them; it no longer does. See [a refused or restricted turn](operations.md#a-refused-or-restricted-turn). For a class listed in `failover_on`, a reported reset time is honored: the loop waits for the reset instead of spending re-prompts when no fallback is available. For other classes the reset time is ignored. `failover_on: []` turns handoff off.
+The re-prompt budget resets when the session is seen idle, or when it is active and the Git fingerprint changes; seeing it active is not enough, because a re-prompt itself makes it active. An `auth` error goes to awaiting user unless a handoff happens, because retrying cannot fix it. In unreleased source a `restricted` error (the provider denied permission: HTTP 403 or a permission code) or a `refused` error (the model or provider declined the turn: a refusal or a policy block reported in a structured field) is never handed off, whatever `failover_on` lists. A restricted turn goes to awaiting user at once, and a `resume` asks for exactly one more try. A refused turn is continued in the same session with a plain continue, spaced 1, 2 and 5 minutes and then every 10, outside `max_reprompts` and within the loop-wide limits, until [`refusal.ask_after`](#refusal) refusals in a row ask a person. Earlier versions classed HTTP 403 and permission codes as `auth`, so a loop with `auth` in `failover_on` could move to another account on them; it no longer does. See [a refused or restricted turn](operations.md#a-refused-or-restricted-turn). For a class listed in `failover_on`, a reported reset time is honored: the loop waits for the reset instead of spending re-prompts when no fallback is available. For other classes the reset time is ignored. `failover_on: []` turns handoff off.
+
+## refusal
+
+Unreleased source. How a loop handles a run of [refused turns](operations.md#a-refused-turn-is-continued). A refused turn is always continued in the same session with spacing that grows to 10 minutes; these settings only decide when a person is asked.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `ask_after` | `10` | After this many refused turns in a row with no turn that recovered, stop continuing, hold this loop and raise a question for a person. `0` never asks; at most `1000`. |
+
+```yaml
+loop:
+  refusal:
+    ask_after: 10
+```
 
 ## Validation and defaults
 
@@ -339,7 +354,7 @@ See [operations.md](operations.md).
 | `report.source` | the loop name |
 | `report.scheme` | `standard-webhooks` (or `bearer`) |
 | `report.format` | `standard` (or `text`) |
-| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `check_gap`, also v0.2.0, is not a default and must be named) |
+| `report.events` | `handoff, switch_back, degraded, recovered, await_user, limit_wait, network_wait, child_error, child_recovery, refusal_streak, complete, stop, error` (the `complete` event requires v0.1.3 or newer; `limit_wait`, `network_wait`, `child_error` and `child_recovery` are v0.2.0; `child_recovery` is sent only by a loop with `bb.children.retry_errored`; `refusal_streak`, unreleased, is sent when a streak of refused turns reaches 3, 10 and every 10 after; `check_gap`, also v0.2.0, is not a default and must be named) |
 | `report.timeout` | `20s` |
 | `yield.busy_command`, `yield.timeout` | required, `10s` |
 | `daemon.interval`, `daemon.control_poll` | `5m`, `2s` |

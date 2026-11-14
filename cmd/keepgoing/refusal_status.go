@@ -46,7 +46,7 @@ func describeRefusals(g state.RefusalGauge, q *control.Question, now time.Time) 
 		if q.Kind == control.QuestionRestricted {
 			what = "the provider denied permission for this request or account"
 		}
-		r.Question = fmt.Sprintf("open since %s: %s; how should this loop proceed? Answers: %s. Until it is answered nothing is sent; keepgoing resume answers it by going on.", q.RaisedAt.UTC().Format(time.RFC3339), what, strings.Join(ids, ", "))
+		r.Question = fmt.Sprintf("open since %s: %s; how should this loop proceed? Answers: %s. Until it is answered nothing is sent; keepgoing resume withdraws it and goes on.", q.RaisedAt.UTC().Format(time.RFC3339), what, strings.Join(ids, ", "))
 	}
 	return r
 }

@@ -545,7 +545,7 @@ const (
 	RefusalAskReason = "refusal streak: how should this loop proceed?"
 	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
 	// resuming a loop held for either reason.
-	DeclineAcknowledgedReason = "resumed by a person after a refusal or restriction; one re-prompt"
+	DeclineAcknowledgedReason = "resumed by a person after a restriction; one re-prompt"
 )
 
 // RefusalSpacing is how long a refused turn waits before its continue: 1m
