@@ -213,6 +213,8 @@ func dockScratch(t testing.TB, root string, now time.Time) string {
 		switch name {
 		case "docs-site-refresh":
 			st.CheckedAt, st.LastCheck = recent, dockFixtureCheck(recent, "active", "none", "child work running")
+			// The build that ran its last check, for the panel's build line.
+			st.LastCheck.Version = "v0.1.5-dev.26f91db"
 			// Its repositories changed 57 minutes ago: the no-progress flag is clear.
 			st.Fingerprint, st.LastProgressAt, st.ProgressChangedAt = "fixture-fingerprint", now.Add(-57*time.Minute), now.Add(-57*time.Minute)
 			// One lane is itself a registered loop: mobile-onboarding's thread.

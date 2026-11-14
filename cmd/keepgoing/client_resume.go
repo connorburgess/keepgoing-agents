@@ -249,9 +249,14 @@ func clientResume(ctx context.Context, directory, id, operation, ticket string, 
 				return err
 			}
 			defer held.Release()
-			before, _, err := binding()
+			before, checked, err := binding()
 			if err != nil {
 				return fail("resume_evidence_unavailable")
+			}
+			// A reviewed resume (expect) is refused before its ticket would
+			// replace one another client prepared.
+			if expect != "" && controlDigest(checked) != expect {
+				return fail("observation_changed")
 			}
 			snapshot := readClientStatus(ctx, dir, id, private, true, defaultStaleAfter, now().UTC(), inspectDaemon)
 			if snapshot.Outcome != "available" {

@@ -237,7 +237,7 @@ func Append(dir string, r Record) error {
 		f.Close()
 		return ErrUnavailable
 	}
-	if err = f.Sync(); err != nil {
+	if err = snapshot.Sync(f); err != nil {
 		f.Close()
 		return ErrUnavailable
 	}
