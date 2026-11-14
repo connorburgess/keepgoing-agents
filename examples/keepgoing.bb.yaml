@@ -38,7 +38,7 @@ loop:
     report_wait_after: 6h        # report once when a limit wait with no handoff possible resets later than this; needs limit_wait in report.events
   fallbacks: fallbacks.yaml
   report:
-    secret_file: ~/.config/keepgoing/example-bb-loop.env   # KEEPGOING_WEBHOOK_URL and KEEPGOING_WEBHOOK_SECRET
+    secret_file: ~/.config/keepgoing/example-bb-loop.env   # LOOPTENDER_WEBHOOK_URL and LOOPTENDER_WEBHOOK_SECRET
     events: [handoff, degraded, recovered, await_user, stop, error]
   yield:
     busy_command: ["./busy-check.sh"]

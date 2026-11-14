@@ -366,3 +366,35 @@ func TestProcessSessionsAreDescribedWithoutTheirCommand(t *testing.T) {
 		t.Fatal(id.Describe())
 	}
 }
+
+// The directory variable is still read under its earlier name. The two names
+// set to different directories are refused, naming both and what to do,
+// rather than one being chosen: the claims kept in the other would be hidden.
+func TestDirReadsTheEarlierName(t *testing.T) {
+	const earlier = "KEEPGOING_SESSION_DIR"
+	old, current := filepath.Join(t.TempDir(), "sessions"), filepath.Join(t.TempDir(), "sessions")
+	t.Setenv(DirEnv, "")
+	t.Setenv(earlier, old)
+	if dir, _, err := Dir(true); err != nil || dir != old {
+		t.Fatalf("the earlier name alone: %q %v", dir, err)
+	}
+	t.Setenv(DirEnv, current)
+	t.Setenv(earlier, current+string(filepath.Separator))
+	if dir, _, err := Dir(true); err != nil || dir != current {
+		t.Fatalf("both names, one place: %q %v", dir, err)
+	}
+	t.Setenv(earlier, old)
+	var unsafe *UnsafeError
+	_, _, err := Dir(true)
+	if !errors.As(err, &unsafe) {
+		t.Fatalf("both names, different places: %v", err)
+	}
+	for _, want := range []string{DirEnv, earlier} {
+		if !strings.Contains(unsafe.Error(), want) {
+			t.Fatalf("%q does not name %s", unsafe.Error(), want)
+		}
+	}
+	if strings.Contains(unsafe.Error(), old) || strings.Contains(unsafe.Fix(), "remove ") || !strings.Contains(unsafe.Fix(), "unset one of them") {
+		t.Fatalf("error %q, fix %q", unsafe.Error(), unsafe.Fix())
+	}
+}

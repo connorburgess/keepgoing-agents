@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 )
 
@@ -15,6 +16,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv(session.DirEnv, filepath.Join(private, "sessions"))
+	os.Unsetenv(envvar.SessionDir.Legacy()) // the earlier name is still read
 	code := m.Run()
 	os.RemoveAll(private)
 	os.Exit(code)

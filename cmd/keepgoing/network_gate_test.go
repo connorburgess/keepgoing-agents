@@ -44,7 +44,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 	networkConfig(t, f, "")
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
 	f.run("enable")
-	t.Setenv("KEEPGOING_NET_PROBE", "exit 1")
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 1")
 	for i := 0; i < 4; i++ {
 		code, r := networkTick(t, f)
 		if code != exitOK || r["action"] != "none" || r["reason"] != "network down; waiting for connectivity" || r["network"] != "down" || r["outcome"] != "succeeded" || r["reprompts"] != nil {
@@ -63,7 +63,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 		t.Fatalf("timeline does not name the wait:\n%s", timeline)
 	}
 
-	t.Setenv("KEEPGOING_NET_PROBE", "exit 0")
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 0")
 	if code, r := networkTick(t, f); code != exitOK || r["action"] != "reprompt" || r["network"] != "restored" || r["networkDownFor"] == nil || r["reprompts"] != float64(1) {
 		t.Fatalf("first check after connectivity returned: exit %d %v", code, r)
 	}
@@ -75,7 +75,7 @@ func TestNetworkDownGatesRepromptsEndToEnd(t *testing.T) {
 // The check can be pointed at a command or turned off. With it off, recovery
 // is attempted whatever the network is doing, as before this change.
 func TestNetworkCheckConfiguration(t *testing.T) {
-	t.Setenv("KEEPGOING_NET_PROBE", "exit 1") // the default check would say down
+	t.Setenv("LOOPTENDER_NET_PROBE", "exit 1") // the default check would say down
 	for _, tc := range []struct {
 		name, network, action string
 	}{
@@ -137,7 +137,7 @@ func TestDoctorTestsTheConnectivityCheck(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Remove(marker)
-			t.Setenv("KEEPGOING_NET_PROBE", tc.env)
+			t.Setenv("LOOPTENDER_NET_PROBE", tc.env)
 			f := newFixture(t)
 			networkConfig(t, f, tc.network)
 			if got := check(t, f, tc.args...); !strings.Contains(got, tc.want) {
@@ -173,7 +173,7 @@ func TestDoctorNamesARedirect(t *testing.T) {
 // the check has no room, is not made, and validate and status say so.
 func TestDryRunAndSmallTickTimeoutMakeNoConnectivityRequest(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probed")
-	t.Setenv("KEEPGOING_NET_PROBE", "touch "+marker+"; exit 1")
+	t.Setenv("LOOPTENDER_NET_PROBE", "touch "+marker+"; exit 1")
 	f := newFixture(t)
 	networkConfig(t, f, "")
 	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"error"}}`, 0600)
