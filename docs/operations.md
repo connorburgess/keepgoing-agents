@@ -153,13 +153,14 @@ Each step is either mandatory, with a fixed maximum that is reserved for it unti
 | Yield command | mandatory | `yield.timeout` (10s) | runs first |
 | [Connectivity check](#network-outages) | mandatory when needed | `network.timeout` (8s) | reserved until it has run; made at most once |
 | Observing the target (for BB: status, children, log, interactions) | mandatory | 90s for the whole observation, 30s per `bb` command | at the limit the check records `could not verify state; no action taken` |
+| Setting the thread to the route on record (after a step that was not settled, or a route that left the configuration) | optional | 30s (one `bb` command) | after the holds, the session claim and the observation, between turns only; started only when 30s are free, otherwise a later check does it |
 | Scheduled fallback probes | optional | `probe.timeout` each (90s) | started only when the whole timeout fits; never shortened |
 | Git progress fingerprint | mandatory | 60s for the whole fingerprint, 30s per `git` command | reserved until it has been taken |
 | Exact probes before a handoff | optional | `probe.timeout` each | may be shortened to the time that is free |
 | Exact probe before a switch-back | optional | `probe.timeout` | started only when the whole timeout fits |
-| Model switch and send (wake, nudge, re-prompt or brief) | mandatory | 60s (30s per `bb` command) | reserved until the send has been made. A [handoff to a new thread](fallbacks.md#hand-off-to-a-new-conversation) uses the same 60s instead: read the place 10s, `bb thread spawn` 30s, look the thread up by title 20s. Looking for a thread whose creation is unsettled, at the start of a check, takes up to 20s out of the observation's 90s |
+| Model switch and send (wake, nudge, re-prompt or brief; a usage-aware timing step is the model switch before a wake) | mandatory | 60s (30s per `bb` command) | reserved until the send has been made. A [handoff to a new thread](fallbacks.md#hand-off-to-a-new-conversation) uses the same 60s instead: read the place 10s, `bb thread spawn` 30s, look the thread up by title 20s. Looking for a thread whose creation is unsettled, at the start of a check, takes up to 20s out of the observation's 90s |
 | Routine reports (`probe_failed`, `degraded`, `recovered`, `wake`, `nudge`, `reprompt`) | optional | two attempts of `report.timeout` (20s) each | sent only with at least 10s free, and limited to the free time |
-| Essential reports (`await_user`, `error`, `stop`, `handoff`, `switch_back`, `complete`, `limit_wait`, `child_error`, `network_wait`, `check_gap`) | mandatory | 30s reserved: three reports of 10s each | use free time when there is some |
+| Essential reports (`await_user`, `error`, `stop`, `handoff`, `switch_back`, `timing`, `complete`, `limit_wait`, `child_error`, `network_wait`, `check_gap`) | mandatory | 30s reserved: three reports of 10s each | use free time when there is some |
 
 With the network down, each due fallback's scheduled probe ran to its 90-second timeout and was followed by a failed report, before the session was considered at all. Four due fallbacks made one check last over seven minutes, so a scheduler with a five-minute timeout killed it before it wrote anything.
 

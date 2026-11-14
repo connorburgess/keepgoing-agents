@@ -87,10 +87,10 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "timing_move", "timing_repair", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "refusal", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
-var timelineMoveKinds = []string{"handoff", "switch_back", "return", "retarget", "ownership"}
+var timelineMoveKinds = []string{"handoff", "switch_back", "return", "timing_move", "retarget", "ownership"}
 
 type timelineSource struct {
 	Source        string `json:"source"`
@@ -375,6 +375,16 @@ func timelineKinds(r incident.Record) []string {
 				kinds = append(kinds, r.Action)
 			}
 		}
+		// Usage-aware timing changed the thread: a step that moved the loop,
+		// or a repair setting the thread to the route on record.
+		switch r.Cause {
+		case incident.TimingStepUp, incident.TimingStepDown, incident.TimingReturn:
+			if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey {
+				kinds = append(kinds, "timing_move")
+			}
+		case incident.TimingRepair:
+			kinds = append(kinds, "timing_repair")
+		}
 		if timelineReturned(r) {
 			kinds = append(kinds, "return")
 		}
@@ -463,7 +473,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		}
 		for _, k := range entry.Kinds {
 			switch k {
-			case "handoff", "switch_back", "return", "retarget":
+			case "handoff", "switch_back", "return", "timing_move", "retarget":
 				r.Summary.LastTargetMove = timelineReference(entry)
 			case "limit_wait_report":
 				r.Summary.LastLimitWaitReport = timelineReference(entry)
@@ -880,7 +890,7 @@ func printTimeline(w io.Writer, r timelineReport) {
 	for _, item := range []struct {
 		name string
 		ref  *timelineRef
-	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back, return to the primary or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}, {"last recorded lane work (failed child turns re-run by reference; not proof they succeeded)", r.Summary.LastChildRetry}} {
+	}{{"latest recorded check", r.Summary.LatestCheck}, {"last recorded active observation", r.Summary.LastObservedActive}, {"last recorded send action (not proof of a sent message or task success)", r.Summary.LastSendAction}, {"last recorded hold entry (not attributed to current flags)", r.Summary.LastHoldEntry}, {"last recorded target move (handoff, switch-back, timing, return to the primary or retarget)", r.Summary.LastTargetMove}, {"last recorded limit wait", r.Summary.LastLimitWait}, {"last recorded long limit-wait report (one per wait; not proof of receipt)", r.Summary.LastLimitWaitReport}, {"last recorded turn retry (a failed turn re-run by reference; not proof it succeeded)", r.Summary.LastTurnRetry}, {"last recorded lane work (failed child turns re-run by reference; not proof they succeeded)", r.Summary.LastChildRetry}} {
 		if item.ref == nil {
 			fmt.Fprintf(w, "%s: unavailable\n", item.name)
 			continue

@@ -99,8 +99,8 @@ type Loop struct {
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
 	// Timing is usage-aware timing for the loop's first route. Off by
-	// default. Until the step decision exists (roadmap U4) it only collects
-	// usage readings of the first route's allowance; it never changes routes.
+	// default. It collects usage readings of the first route's allowance and,
+	// with steps, moves the loop between them at turn boundaries.
 	Timing *Timing `yaml:"timing,omitempty"`
 }
 
@@ -155,6 +155,7 @@ func (c *Config) checkTimingSteps() error {
 		return nil
 	}
 	var errs []string
+	reasoning := false
 	for _, id := range l.Timing.Steps {
 		if id == "primary" {
 			continue
@@ -172,7 +173,16 @@ func (c *Config) checkTimingSteps() error {
 			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is on account group %q, not the first route's %q; timing only moves between routes on one allowance", id, cand.Group, l.Group))
 		case cand.Disabled:
 			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is switched off in %s", id, l.timingRouteSource()))
+		case l.BB != nil && (cand.Adapter != "bb" || cand.BB == nil || cand.BB.NewThread || cand.BB.Thread != l.BB.Thread):
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q is not on the loop's own BB thread; a step must never start a new conversation", id))
+		case l.BB != nil && cand.BB.Model == "" && cand.BB.Reasoning == "":
+			errs = append(errs, fmt.Sprintf("loop.timing.steps: %q sets neither bb.model nor bb.reasoning, so stepping to it would change nothing", id))
+		default:
+			reasoning = reasoning || cand.BB != nil && cand.BB.Reasoning != ""
 		}
+	}
+	if reasoning && l.BB != nil && l.BB.Reasoning == "" {
+		errs = append(errs, "loop.timing.steps: a step sets bb.reasoning, so loop.bb.reasoning is needed too, so that returning to primary can set it back")
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
@@ -432,12 +442,12 @@ const (
 )
 
 // ReportEvents lists the events a report may subscribe to.
-var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "refusal_streak", "test"}
+var ReportEvents = []string{"wake", "nudge", "reprompt", "handoff", "degraded", "recovered", "await_user", "complete", "stop", "error", "probe_failed", "switch_back", "network_wait", "limit_wait", "child_error", "child_recovery", "check_gap", "hung_turn", "refusal_streak", "timing", "test"}
 
 // DefaultReportEvents are sent when report.events is empty. limit_wait and
 // child_error are among them because, like await_user, they say a person may
 // be needed; an explicit list must name them (or all) to receive them.
-var DefaultReportEvents = []string{"handoff", "switch_back", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "refusal_streak", "complete", "stop", "error"}
+var DefaultReportEvents = []string{"handoff", "switch_back", "timing", "degraded", "recovered", "await_user", "limit_wait", "network_wait", "child_error", "child_recovery", "refusal_streak", "complete", "stop", "error"}
 
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -699,6 +709,17 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, l.Agent.validate("loop.")...)
+	if l.TimingOn() && len(l.Timing.Steps) > 0 {
+		// A step changes the model and effort of the loop's own conversation.
+		// It must never start a new one, so only BB loops can have steps for
+		// now: headless and Codex loops keep one session per route.
+		if l.Adapter != "bb" || l.BB == nil {
+			add("loop.timing.steps needs a loop on a BB thread for now: a step must never start a new conversation, and headless and Codex loops keep a separate session per route")
+		} else if len(l.Timing.Steps) > 1 && l.BB.Model == "" {
+			add("loop.timing.steps needs loop.bb.model, so that returning to primary can set the thread's model back")
+		}
+	}
+
 	if l.Prompt == "" && l.PromptFile == "" {
 		add("one of loop.prompt or loop.prompt_file is required")
 	}

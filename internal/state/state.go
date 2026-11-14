@@ -123,10 +123,23 @@ type File struct {
 	// did, by count. It is about the request in control.json's stopLanesAt.
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
 
-	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
-	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
-	Handoffs      int       `json:"handoffs,omitempty"`
-	Degraded      bool      `json:"degraded,omitempty"`
+	ActiveTarget string `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
+	// ReapplyRoute: the loop was moved to ActiveTarget without its model and
+	// effort being set on the thread (its route left the configuration). The
+	// next check that acts sets them.
+	ReapplyRoute bool `json:"reapplyRoute,omitempty"`
+	// TargetSetBy says what put the loop on ActiveTarget: handoff,
+	// new_thread, switch_back, retarget, timing or configuration. Empty in
+	// state written before it existed. Usage-aware timing never moves a loop
+	// off a route a handoff chose, and switch-back never returns from a route
+	// timing chose.
+	TargetSetBy string `json:"targetSetBy,omitempty"`
+	// Timing is usage-aware timing's record: its last move, a move recorded
+	// before it was made, and a person's retarget it waits on.
+	Timing        *TimingRecord `json:"timing,omitempty"`
+	LastHandoffAt time.Time     `json:"lastHandoffAt,omitempty"`
+	Handoffs      int           `json:"handoffs,omitempty"`
+	Degraded      bool          `json:"degraded,omitempty"`
 	// RoutesUnreadable is true while a loop that follows the standard route
 	// list cannot read it, so that beginning and ending are each reported once.
 	RoutesUnreadable        bool                     `json:"routesUnreadable,omitempty"`
@@ -745,6 +758,67 @@ func LaneHash(key []byte, id string) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(id))
 	return hex.EncodeToString(mac.Sum(nil)[:12])
+}
+
+// What put a loop on its current route, as TargetSetBy records it.
+const (
+	SetByHandoff       = "handoff"
+	SetByNewThread     = "new_thread"
+	SetBySwitchBack    = "switch_back"
+	SetByRetarget      = "retarget"
+	SetByTiming        = "timing"
+	SetByConfiguration = "configuration"
+)
+
+// TimingRecord is usage-aware timing's state.
+type TimingRecord struct {
+	// LastMove is the last step timing made. It is kept after a handoff, so
+	// timing does not step up twice for one window instance.
+	LastMove *TimingMove `json:"lastMove,omitempty"`
+	// LastUp is the last step up, kept apart from LastMove so a step back in
+	// between does not allow a second step up for one window instance.
+	LastUp *TimingMove `json:"lastUp,omitempty"`
+	// Pending is a step recorded before the thread was changed and not yet
+	// settled. The next check makes the thread match ActiveTarget again.
+	Pending *TimingMove `json:"pending,omitempty"`
+	// Retarget is a person's retarget timing waits on, until ResetsAt.
+	Retarget *TimingRetarget `json:"retarget,omitempty"`
+	// Failures counts failed activations of FailedTo (FailedAction up, down
+	// or back) for the window instance resetting at FailedResetsAt. Only a
+	// step up is capped: Capped is set once its failures reach the cap. A
+	// return or a step down is tried at every turn boundary; FailReported is
+	// set once its first failure was reported.
+	Failures       int       `json:"failures,omitempty"`
+	FailedTo       string    `json:"failedTo,omitempty"`
+	FailedAction   string    `json:"failedAction,omitempty"`
+	FailedWindow   string    `json:"failedWindow,omitempty"`
+	FailedResetsAt time.Time `json:"failedResetsAt,omitempty"`
+	Capped         bool      `json:"capped,omitempty"`
+	FailReported   bool      `json:"failReported,omitempty"`
+	// GaveUp is the step up timing stopped trying, kept until its window
+	// instance resets, whatever moves are made in between.
+	GaveUp *TimingMove `json:"gaveUp,omitempty"`
+}
+
+// TimingMove is one step: from and to route IDs, up, down or back, the
+// rule and reason that decided it, and the window instance it was for.
+type TimingMove struct {
+	At       time.Time `json:"at"`
+	From     string    `json:"from"`
+	To       string    `json:"to"`
+	Action   string    `json:"action"`
+	Rule     string    `json:"rule"`
+	Reason   string    `json:"reason"`
+	Window   string    `json:"window,omitempty"`
+	ResetsAt time.Time `json:"resetsAt,omitempty"`
+	Text     string    `json:"text,omitempty"`
+}
+
+// TimingRetarget is a person's retarget: when, and the reset of the named
+// window current then, if known.
+type TimingRetarget struct {
+	At       time.Time  `json:"at"`
+	ResetsAt *time.Time `json:"resetsAt,omitempty"`
 }
 
 // StartRefused is a standing refusal to start turns. Reason is one of the

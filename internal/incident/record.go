@@ -220,7 +220,7 @@ func repeatable(r Record) bool {
 	if dry {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
-	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && !r.RouteListChanged && r.Refusal == "" && !r.ModelFallback
+	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread && !r.RouteListChanged && r.Refusal == "" && !r.ModelFallback && r.Cause != TimingRepair
 }
 
 // returned reports a check that returned the loop to the primary. The
@@ -276,7 +276,7 @@ func tierOf(r Record) string {
 		if (r.Action == "handoff" || r.Action == "switch_back") && r.TargetKeyAfter == "unavailable" && r.Outcome == "succeeded" {
 			return TierKey
 		}
-		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" || r.Lanes != (LaneWork{}) {
+		if attempted(r) || failedProbes(r) > 0 || limitWaitCause(r.Cause) || r.LimitWaitReport != "none" || r.Lanes != (LaneWork{}) || r.Cause == TimingRepair {
 			return TierCondition
 		}
 		if repeatable(r) && r.Outcome != "failed" {
@@ -691,8 +691,11 @@ func DecisionCause(d decide.Decision) string {
 }
 
 func cleanCause(value string) string {
-	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged", "other")
+	return oneOf(value, "unavailable", "disabled", "paused", "awaiting_user", "completed", "retrying", "retry_unverified", "retry_silent", "handoff_deferred", "network_down", "deadline", "send_limit", "git_limit", "stall_limit", "stall_limit_held", "nudge_held", "hung_wait", "stall", "idle", "active", "child_input", "child_busy", "child_error", "child_unverified", "input", "stop", "limit_wait", "limit_no_fallback", "limit_failover_disabled", "limit_refusal_unrecovered", "restricted", "refused_continue", "refused_wait", "refusal_ask", "decline_acknowledged",
+		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair,
+		"near_reset_unused", "projected_over_down_at", "reset_passed", "runs_out_since_step_up", "left_configuration", "unsettled_step", "route_left_configuration", "other")
 }
 func cleanAction(value string) string {
-	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back")
+	return oneOf(value, "unavailable", "none", "wake", "nudge", "reprompt", "await_user", "stop", "handoff", "switch_back",
+		TimingStepUp, TimingStepDown, TimingReturn, TimingRepair)
 }

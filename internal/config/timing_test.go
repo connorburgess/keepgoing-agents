@@ -66,9 +66,14 @@ func TestTimingSummaryWords(t *testing.T) {
 	cfg.FallbackSet = &Fallbacks{Probe: ProbePolicy{DailyCap: 6}}
 	cfg.Loop.Probe.Model = "example-small"
 	s := cfg.TimingSummary()
-	if s.Collecting != "timing: collecting usage readings for the first route (example-large); it does not change routes yet" {
+	if s.Collecting != "timing: collecting usage readings for the first route (example-large); with no steps configured it does not change routes" {
 		t.Errorf("collecting: %q", s.Collecting)
 	}
+	cfg.Loop.Timing.Steps, cfg.Loop.Timing.Ceiling = []string{"primary", "example-xl"}, "example-xl"
+	if s := cfg.TimingSummary(); s.Collecting != "timing: collecting usage readings for the first route (example-large) and moving between its steps (primary, example-xl) up to example-xl at turn boundaries" {
+		t.Errorf("with steps: %q", s.Collecting)
+	}
+	cfg.Loop.Timing.Steps, cfg.Loop.Timing.Ceiling = nil, ""
 	want := "timing: about 14 small paid probes a week for this allowance at a 12h cadence, plus one as each named window (seven_day) nears its reset, never above probe.daily_cap (6 a day); on example-small, the probe model: readings cover the windows that model reports, and a window for example-large alone is read only when the probe model is the route's own model"
 	if s.Cost != want {
 		t.Errorf("cost:\n got  %q\n want %q", s.Cost, want)
@@ -111,8 +116,28 @@ candidates:
   - id: other-account
     adapter: bb
     provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_example456, model: example-large}
+  - id: other-group
+    adapter: bb
+    provider: claude-code
     group: claude-account-b
-    bb: {thread: thr_example456}
+    bb: {thread: thr_example123, model: example-large}
+  - id: new-conversation
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {new_thread: true, model: example-large}
+  - id: no-change
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_example123}
+  - id: higher-effort
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_example123, model: example-large, reasoning: high}
 `
 	write := func(name, body string) string {
 		p := dir + "/" + name
@@ -123,6 +148,7 @@ candidates:
 	}
 	write("fallbacks.yaml", fallbacks)
 	loop := strings.Replace(timingValid, "  provider: claude-code\n", "  provider: claude-code\n  group: claude-account-a\n", 1)
+	loop = strings.Replace(loop, "    thread: thr_example123\n", "    thread: thr_example123\n    model: example-medium\n", 1)
 	load := func(extra string) (*Config, error) { return Load(write("keepgoing.yaml", loop+extra)) }
 
 	cfg, err := load("    steps: [primary, example-large]\n")
@@ -134,7 +160,11 @@ candidates:
 		t.Fatalf("defaults: %+v", tm)
 	}
 	for name, c := range map[string]struct{ extra, want string }{
-		"another account":   {"    steps: [primary, other-account]\n", `"other-account" is on account group "claude-account-b", not the first route's "claude-account-a"`},
+		"another account":   {"    steps: [primary, other-group]\n", `"other-group" is on account group "claude-account-b", not the first route's "claude-account-a"`},
+		"another thread":    {"    steps: [primary, other-account]\n", `"other-account" is not on the loop's own BB thread; a step must never start a new conversation`},
+		"new conversation":  {"    steps: [primary, new-conversation]\n", `"new-conversation" is not on the loop's own BB thread`},
+		"changes nothing":   {"    steps: [primary, no-change]\n", `"no-change" sets neither bb.model nor bb.reasoning`},
+		"effort to restore": {"    steps: [primary, higher-effort]\n", "loop.bb.reasoning is needed too"},
 		"switched off":      {"    steps: [primary, example-off]\n", `"example-off" is switched off`},
 		"unknown":           {"    steps: [primary, example-missing]\n", `"example-missing" is not a fallback`},
 		"no primary":        {"    steps: [example-large]\n", "must include primary"},
@@ -147,6 +177,29 @@ candidates:
 		"min_on_step short": {"    min_on_step: 30s\n", "min_on_step must be between 1m and 168h"},
 	} {
 		if _, err := load(c.extra); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A step must never start a new conversation, and primary must name what a
+// return sets the thread back to.
+func TestTimingStepsNeedTheLoopsOwnBBThread(t *testing.T) {
+	dir := t.TempDir()
+	fb := "version: 1\ncandidates:\n  - id: example-large\n    adapter: bb\n    provider: claude-code\n    group: claude-account-a\n    bb: {thread: thr_example123, model: example-large}\n"
+	if err := os.WriteFile(dir+"/fallbacks.yaml", []byte(fb), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := strings.Replace(timingValid, "  provider: claude-code\n", "  provider: claude-code\n  group: claude-account-a\n", 1) + "    steps: [primary, example-large]\n"
+	headless := strings.Replace(strings.Replace(base, "adapter: bb", "adapter: claude", 1), "  bb:\n    thread: thr_example123\n", "  claude: {workdir: "+dir+", model: example-medium}\n", 1)
+	for name, c := range map[string]struct{ yaml, want string }{
+		"headless loop":     {headless, "loop.timing.steps needs a loop on a BB thread for now: a step must never start a new conversation"},
+		"no model on first": {base, "loop.timing.steps needs loop.bb.model"},
+	} {
+		if err := os.WriteFile(dir+"/keepgoing.yaml", []byte(c.yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(dir + "/keepgoing.yaml"); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -195,11 +248,20 @@ func TestTimingStepsWithChangingStandardRoutes(t *testing.T) {
 		if err := os.WriteFile(path, []byte(routes), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		steps := strings.Replace(body, "steps: [primary]", "steps: [primary, large-same]", 1)
+		steps := strings.Replace(strings.Replace(body, "  bb: {thread: thr_example123}", "  bb: {thread: thr_example123, model: example-medium}", 1), "steps: [primary]", "steps: [primary, large-same]", 1)
 		cfg, err := Load(loopFile(t, steps))
 		if err != nil || cfg.TimingStepsUnavailable == "" || len(cfg.RouteList.Warnings) == 0 {
 			t.Fatalf("changed steps: %+v %v", cfg, err)
 		}
+	}
+	if _, err := Load(loopFile(t, strings.Replace(body, ", model: example-medium", "", 1))); err != nil {
+		t.Fatalf("primary-only configuration needs no model change: %v", err)
+	}
+	// Explicit inability to restore a multi-step loop remains invalid even
+	// when the external list cannot resolve the reference.
+	multi := strings.Replace(strings.Replace(body, ", model: example-medium", "", 1), "steps: [primary]", "steps: [primary, large-same]", 1)
+	if _, err := Load(loopFile(t, multi)); err == nil || !strings.Contains(err.Error(), "loop.bb.model") {
+		t.Fatalf("missing primary model accepted: %v", err)
 	}
 	// Invalid explicit configuration still fails before resolving any list.
 	for _, extra := range []string{"    steps: [primary, primary]\n", "    down_at: 2\n", "    ceiling: missing\n", "    min_on_step: -1h\n"} {

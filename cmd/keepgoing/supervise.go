@@ -960,6 +960,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			fmt.Fprintln(w, "warning: "+x)
 		}
 	}
+	for _, line := range timingRecordLines(out.State, now) {
+		fmt.Fprintln(w, line)
+	}
 	if tw := out.TimingWould; tw != nil {
 		fmt.Fprintln(w, tw.Text)
 	}
@@ -1583,7 +1586,19 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 		e.errf("retarget: could not save the record of route %s, so the target is unchanged: %v", id, err)
 		return exitFailed
 	}
-	st.ActiveTarget = id
+	st.ActiveTarget, st.TargetSetBy = id, state.SetByRetarget
+	{
+		// A person chose the route: timing, now or once turned on, waits
+		// until the window current now resets, and a step recorded but not
+		// settled is overridden by the route just applied.
+		if st.Timing == nil {
+			st.Timing = &state.TimingRecord{}
+		}
+		now := time.Now().UTC()
+		st.Timing.Pending = nil
+		st.Timing.Retarget = &state.TimingRetarget{At: now, ResetsAt: timingResetAfter(cfg, now)}
+		st.ReapplyRoute = false
+	}
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	st.ClearBriefs()      // an operator's retarget starts a new episode
 	st.ClearChildErrors() // children belong to the previous target

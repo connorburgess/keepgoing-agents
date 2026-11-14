@@ -257,7 +257,8 @@
                   "switch_back",
                   "limit_wait",
                   "check_gap",
-                  "hung_turn",
+                  "timing",
+                "hung_turn",
                   "refusal_streak",
                   "network_wait",
                   "child_error",
@@ -384,7 +385,7 @@
               "items": {
                 "type": "string"
               },
-              "description": "route IDs on the first route's allowance, cheapest to strongest: primary and enabled same-group fallbacks from the loop's own file; the standard list excludes that group, so multi-step previews need loop.fallbacks"
+              "description": "route IDs on the first route's allowance and own BB thread, cheapest to strongest: primary and enabled same-group fallbacks; multiple steps need loop.bb.model to restore primary and loop.fallbacks because the standard list excludes that group"
             },
             "ceiling": {
               "type": "string",
@@ -407,7 +408,7 @@
               "description": "least time between timing moves, except the return at a reset; default 2h"
             }
           },
-          "description": "usage-aware timing, off by default; collects readings and previews a pure step decision in status; no route changes yet"
+          "description": "usage-aware timing, off by default; collects readings and, with same-thread BB steps, applies decisions at idle turn boundaries; status previews recorded evidence"
         },
         "probe": {
           "type": "object",

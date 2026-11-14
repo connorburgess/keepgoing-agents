@@ -153,7 +153,7 @@ func TestHandoffToANewThreadCreatesItOnce(t *testing.T) {
 	st, _ := state.Load(w.dir)
 	created := st.NewThreads["claude-other"]
 	if st.Target() != "claude-other" || created.Thread != "thr_created_1" || created.Title != r.Title || created.From != state.Primary || created.Continues != "thr_primary" ||
-		st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || st.NewThreadIntent != nil || st.Handoffs != 1 {
+		st.NewThreadsCreated != 1 || !st.LastNewThreadAt.Equal(t0) || st.NewThreadIntent != nil || st.Handoffs != 1 || st.TargetSetBy != state.SetByNewThread {
 		t.Fatalf("state %+v", st)
 	}
 	// The conversation that was left: nothing sent, nothing stopped.

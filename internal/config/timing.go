@@ -40,8 +40,12 @@ func (c *Config) TimingSummary() *TimingSummary {
 	if m := first.Model(); m != "" {
 		route += " (" + m + ")"
 	}
+	collecting := "timing: collecting usage readings for " + route + "; with no steps configured it does not change routes"
+	if len(t.Steps) > 0 {
+		collecting = "timing: collecting usage readings for " + route + " and moving between its steps (" + strings.Join(t.Steps, ", ") + ") up to " + t.Ceiling + " at turn boundaries"
+	}
 	s := &TimingSummary{
-		Collecting: "timing: collecting usage readings for " + route + "; it does not change routes yet",
+		Collecting: collecting,
 		Warnings:   []string{},
 		ProbeEvery: t.ProbeEvery.Duration.String(),
 		ProbeModel: first.ProbeModel(false),

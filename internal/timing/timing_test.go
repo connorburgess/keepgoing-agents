@@ -79,7 +79,7 @@ func TestDecideTable(t *testing.T) {
 		{"held", with(func(in *Input) { nearWeek(in); in.Held = true }), Stay, "", RuleGate, Held},
 		{"in error", with(func(in *Input) { nearWeek(in); in.InError = true }), Stay, "", RuleGate, InError},
 		{"another move this check", with(func(in *Input) { nearWeek(in); in.OtherMove = true }), Stay, "", RuleGate, OtherMove},
-		{"refusal or unknown", with(func(in *Input) { nearWeek(in); in.RefusalOrUnknown = true }), Stay, "", RuleGate, RefusalOrUnknown},
+		{"unknown state", with(func(in *Input) { nearWeek(in); in.RefusalOrUnknown = true }), Stay, "", RuleGate, RefusalOrUnknown},
 		{"turn running", with(func(in *Input) { nearWeek(in); in.TurnEnded = false }), Stay, "", RuleGate, TurnNotEnded},
 		{"on a fallback the failover rules chose", with(func(in *Input) { nearWeek(in); in.Current, in.MovedByFailover = "codex-main", true }), Stay, "", RuleGate, OnFallbackByFailover},
 		{"failover onto a listed step, reset passed", with(func(in *Input) {
@@ -190,6 +190,36 @@ func TestDecideTable(t *testing.T) {
 			in.Current = "example-small"
 			in.LastMove = &Move{At: h(-1), From: First, To: "example-small", Action: Down, Window: "seven_day", ResetsAt: h(2)}
 		}), Stay, "", RuleStepUp, TooSoon},
+
+		// A handoff from a step, then switch-back to primary: no second step
+		// up for the same window instance, and one for the next instance.
+		{"on the fallback a handoff from a step chose", with(func(in *Input) {
+			nearWeek(in)
+			in.Current, in.MovedByFailover = "claude-other", true
+			in.LastMove = &Move{At: h(-1), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleGate, OnFallbackByFailover},
+		{"switched back to primary, same instance", with(func(in *Input) {
+			nearWeek(in)
+			in.LastMove = &Move{At: h(-1), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleStepUp, AlreadySteppedUp},
+		{"switched back to primary, the next instance", with(func(in *Input) {
+			nearWeek(in)
+			in.LastMove = &Move{At: h(-170), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(-166)}
+		}), Up, "example-large", RuleStepUp, NearResetUnused},
+
+		{"up, back early, near the same reset again: no second step up", with(func(in *Input) {
+			nearWeek(in)
+			in.LastStepUp = &Move{At: h(-5), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+			in.LastMove = &Move{At: h(-1), From: "example-large", To: First, Action: Back, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleStepUp, AlreadySteppedUp},
+		{"timing gave up on this step up", with(func(in *Input) {
+			nearWeek(in)
+			in.GaveUp = &Move{To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleStepUp, GaveUp},
+		{"gave up for an earlier instance", with(func(in *Input) {
+			nearWeek(in)
+			in.GaveUp = &Move{To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(-166)}
+		}), Up, "example-large", RuleStepUp, NearResetUnused},
 
 		// 6. Nothing applies.
 		{"no reading", base(), Stay, "", RuleNothingDue, NoReading},

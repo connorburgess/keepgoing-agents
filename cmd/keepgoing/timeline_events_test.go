@@ -116,9 +116,9 @@ func TestTimelineFiltersByKindTargetAndTime(t *testing.T) {
 	code, out, errs = timelineCLI(t, dir, "--target", "fictional-fallback", "--kind", "moves", "--since", "24h")
 	short := "fallback " + fallback[:8]
 	for _, want := range []string{
-		"filter: kinds handoff,switch_back,return,retarget,ownership; target " + short + "; since ", "matched 2 of 6 retained events",
+		"filter: kinds handoff,switch_back,return,timing_move,retarget,ownership; target " + short + "; since ", "matched 2 of 6 retained events",
 		"manual retarget saved: target primary -> " + short, "retarget_save_observed_at", "action switch_back", "target " + short + " -> primary", "probes: primary exact passed",
-		"last recorded target move (handoff, switch-back, return to the primary or retarget): incidents.json #6", "checks waiting for a provider limit: 2", "target_moves: recorded",
+		"last recorded target move (handoff, switch-back, timing, return to the primary or retarget): incidents.json #6", "checks waiting for a provider limit: 2", "target_moves: recorded",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("text view lacks %q:\n%s", want, out)

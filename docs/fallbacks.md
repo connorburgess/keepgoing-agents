@@ -490,7 +490,7 @@ loop:
 
 Switch-back only happens when all of these hold:
 
-1. A fallback is active and has just finished a turn, so the fallback is never interrupted mid-turn.
+1. A fallback a handoff chose is active and has just finished a turn, so the fallback is never interrupted mid-turn. A route [usage-aware timing](configuration.md#timing) chose is not a fallback in this sense: timing returns from its own steps.
 2. The primary's limit has had time to lift. That means the reset time the provider reported at the handoff, or `min_after` since the handoff when none was reported.
 3. The last failed attempt was at least `retry_every` ago.
 4. The primary passes an exact probe right now.

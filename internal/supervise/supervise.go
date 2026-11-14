@@ -133,6 +133,8 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
+	// Timing is what usage-aware timing decided and what came of it.
+	Timing *TimingNote `json:"timing,omitempty"`
 	// RetrySignal says why a provider retry notice was not honoured, so that
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
@@ -226,6 +228,15 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// resolvedMove: the check moved the loop because its route left the
+	// configuration, which counts as another move for timing.
+	resolvedMove bool
+	// afterSave runs once the check's state is saved: reports of what the
+	// state records.
+	afterSave []func()
+	// incidentTimingCause is the history's cause for a check in which
+	// usage-aware timing changed the thread.
+	incidentTimingCause string
 	// lanesRetried is how many of the errored lanes keepgoing has asked BB to
 	// retry and has not given up on, after this check's lane work. The
 	// notice to the session says so.
@@ -626,7 +637,9 @@ func (t *tick) resolveActive() (string, config.Agent) {
 	saved := t.st.Target()
 	target, agent, why := t.resolveWhy(saved)
 	if target != saved {
-		t.st.ActiveTarget = target
+		t.st.ActiveTarget, t.st.TargetSetBy = target, state.SetByConfiguration
+		t.st.ReapplyRoute = true
+		t.resolvedMove = true
 		if why != "" {
 			t.incidentReturn = &incident.Return{FromKey: incident.TargetKey(saved), Reason: why}
 		}
@@ -799,6 +812,9 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	// Past the holds, with the session claimed and observed: a thread that
+	// may not be on the route on record is set to it, between turns only.
+	t.reapplyRoute(target, obs)
 	t.noteRouteList()
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
@@ -1119,9 +1135,13 @@ func (t *tick) run() error {
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
+		setBy := t.st.TargetSetBy // what put the loop on the route it leaves
 		moved, err := t.handoff(target, agent, obs, summary)
-		if moved && err == nil && !t.opts.DryRun && target == state.Primary {
-			t.st.PrimaryResetsAt = obs.ResetsAt // switch-back waits for this
+		// Switch-back waits for the first route's limit. A step timing chose
+		// is on the first route's allowance, so its limit is that limit; any
+		// other route's handoff leaves the recorded reset as it was.
+		if moved && err == nil && !t.opts.DryRun && (target == state.Primary || setBy == state.SetByTiming) {
+			t.st.PrimaryResetsAt = obs.ResetsAt
 		}
 		if err != nil {
 			actErr = err
@@ -1182,8 +1202,18 @@ func (t *tick) run() error {
 				actErr = t.act(a, d)
 			}
 		}
-	} else if !t.opts.DryRun {
-		actErr = t.act(a, d)
+	} else {
+		// Usage-aware timing acts only when no other move was made in this
+		// check, and before a wake, so the next turn runs on its route. On a
+		// dry run it only says what it would do.
+		a = t.timingStep(a, d, obs, gate)
+		if d.Action == decide.Wake && t.routeNeedsRepair() {
+			// BB tell supplies no model/effort. A failed update may have
+			// changed the thread, so the old adapter cannot establish its route.
+			res.Action, res.Reason = string(decide.None), "timing route not established; waiting for repair before wake"
+		} else if !t.opts.DryRun {
+			actErr = t.act(a, d)
+		}
 	}
 	if t.opts.DryRun && res.Action == string(decide.Reprompt) {
 		// Preview the method only; a dry run asks the provider for nothing.
@@ -1437,8 +1467,9 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 // timingProbe runs the first route's usage-aware timing probe when it is due.
 // It is the one scheduled probe of a route in use: the owner turned timing on
 // to read that allowance. It runs under the same conditions as the other
-// scheduled probes, counts against the route's own daily cap, and only
-// collects a reading; nothing decides from it.
+// scheduled probes and counts against the route's own daily cap. The
+// probe records a reading; timing decides from recorded readings at a turn
+// boundary, not from this probe's result.
 func (t *tick) timingProbe() bool {
 	if !t.loop.TimingOn() || t.fb == nil || t.reg == nil {
 		return false
@@ -1632,6 +1663,8 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 		t.st.ClearChildErrors()
 		note.To = id
 		t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = id, t.now, t.now
+		t.st.TargetSetBy = state.SetByHandoff
+		t.routeApplied()
 		t.st.Handoffs++
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.res.Target = id
@@ -1672,6 +1705,11 @@ func (t *tick) rejectSwitchBack(from string) {
 func (t *tick) switchBackReady(target string) bool {
 	sb := t.loop.SwitchBack
 	if !sb.Enabled || target == state.Primary || t.st.LastHandoffAt.IsZero() {
+		return false
+	}
+	// Switch-back returns from a route a handoff chose, never from one
+	// usage-aware timing chose: timing returns from its own steps.
+	if t.st.TargetSetBy == state.SetByTiming {
 		return false
 	}
 	earliest := t.st.LastHandoffAt.Add(sb.MinAfter.Duration)
@@ -1772,6 +1810,8 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
 	t.res.Target = state.Primary
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
+	t.st.TargetSetBy = state.SetBySwitchBack
+	t.routeApplied()
 	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
 	t.st.ClearBriefs()
 	t.st.ClearChildErrors()
@@ -2122,6 +2162,9 @@ func (t *tick) record(actErr error) error {
 		if err := state.Settle(t.loop.StateDir, t.st.SendsRecorded); err != nil {
 			t.warn("the send records were recorded in state.json but could not be marked settled in sends.json: %v", err)
 		}
+	}
+	for _, f := range t.afterSave {
+		f()
 	}
 	// After the state save, so graph work never delays it, and before the
 	// event is built, so a graph warning reaches runs.jsonl.
@@ -2687,10 +2730,15 @@ func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adap
 //	  spawn 30s, look the thread up by title 20s)
 //	essential reports    30s       the end (three of 10s each)
 //
-// Optional steps are scheduled probes, exact probes and routine reports.
+// Optional steps are scheduled probes, exact probes, routine reports, and
+// setting a thread to the route on record (repairRouteTime, one bb command),
+// which waits for the next check when it does not fit.
 const (
 	minProbeTime  = 10 * time.Second
 	minReportTime = 10 * time.Second
+	// repairRouteTime is one bb thread update, setting the thread to the
+	// route on record.
+	repairRouteTime = 30 * time.Second
 	// observeTimeout bounds one whole observation, however many commands it
 	// runs: a hung bb or an endless log cannot hold the check open.
 	observeTimeout = 90 * time.Second
@@ -3055,6 +3103,7 @@ func (t *tick) noteNetwork() {
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
 	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true, hungTurnEvent: true, refusalStreakEvent: true,
+	"timing": true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
@@ -3172,4 +3221,13 @@ func (t *tick) stallSinceActive(obs decide.Observation, unchanged time.Duration)
 		unchanged = min(unchanged, max(time.Duration(0), t.now.Sub(since)))
 	}
 	return unchanged
+}
+
+// routeApplied: a handoff or switch-back set the thread to its new route, so
+// a step recorded and not settled, or a pending reapply, no longer applies.
+func (t *tick) routeApplied() {
+	t.st.ReapplyRoute = false
+	if t.st.Timing != nil {
+		t.st.Timing.Pending = nil
+	}
 }

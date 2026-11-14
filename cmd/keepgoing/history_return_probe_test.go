@@ -53,7 +53,7 @@ func TestTimelineShowsAReturnToThePrimary(t *testing.T) {
 		"RETURNED TO THE PRIMARY: the loop was on " + short + ", which is disabled, so this check ran on the primary",
 		"outcome failed; cause idle; controls enabled -> enabled; target primary; RETURNED TO THE PRIMARY: the loop was on " + short + ", which is no longer configured, so this check ran on the primary",
 		"which has no created thread on record, so this check ran on the primary; DRY RUN (no executed action)",
-		"last recorded target move (handoff, switch-back, return to the primary or retarget): incidents.json #5",
+		"last recorded target move (handoff, switch-back, timing, return to the primary or retarget): incidents.json #5",
 	} {
 		if code != exitOK || !strings.Contains(out, want) {
 			t.Fatalf("lacks %q:\n%s", want, out)
