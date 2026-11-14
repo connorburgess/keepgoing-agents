@@ -112,7 +112,7 @@ Only standalone primary loops are accepted: no `fallbacks`, enabled `switch_back
 
 ## An agent defined in configuration
 
-Unreleased source (roadmap K2); **fixture-tested with stand-in agents only, no real agent has been run from a definition**. `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
+Unreleased source (roadmap K2); fixture-tested with stand-in agents, and **run live once, on macOS, with Claude Code as the defined agent** ([evidence](#live-evidence)). `adapter: custom` describes an agent keepgoing has no built-in runner for, from its documented command-line interface. It runs one turn per process through the same runner as headless Claude Code and Codex: a detached turn, a private prompt file, per-target session storage and the owned stop.
 
 Three rules hold for every definition:
 
@@ -200,6 +200,41 @@ The hold's note is the fixed text keepgoing uses for any interaction it cannot a
 A saved session identity is checked again each time it is read. A value that is not a token (for example after the file was edited or damaged) is never passed to the agent. If the last turn reported its session, that is saved again and used. Otherwise keepgoing cannot name the conversation to continue, and it does not start a new one in its place, because that would lose the agent's context without anyone deciding to: the loop is held for a person with the reason `target gone (archived, deleted, or not found)`. Restore the identifier in `targets/<target>/session` under the state directory, or remove that file to start a new conversation on purpose, then `resume`.
 
 `keepgoing doctor` checks that the working directory exists, resolves the executable of every command the definition names (start, resume, probe, limits) without running any, and lists what the definition lets keepgoing do and what it cannot (`agent.<target>.capabilities` and `agent.<target>.limits`). It queries no version, login or account for a defined agent. The [capability matrix](adapters.md) has a column for defined agents. Guided `init` and `fallbacks add` do not create one; write the entry by hand. The saved session identifier is used to resume but is not shown by `status` or `keepgoing runs`.
+
+### Live evidence
+
+One run, on 2026-11-14, on one macOS machine, with Claude Code 2.1.318 as the defined agent and its `haiku` model. The loop lived in a throwaway directory under `$TMPDIR`, with a fictional task ("Create hello.txt containing hi, then stop."), `max_sends: 3`, a 30-minute deadline, and `--max-budget-usd 0.50` in the definition's command. It touched no live loop, no real registry entry and no BB thread, and was deleted afterwards. The definition was written from Claude Code's documented command line only:
+
+```yaml
+custom:
+  name: claude-code-defined
+  workdir: project
+  values: {model: haiku}
+  definition:
+    settings: [model]
+    start: [claude, -p, --output-format, json, --model, "{model}", --max-budget-usd, "0.50", --permission-mode, acceptEdits]
+    resume: [claude, -p, --output-format, json, --model, "{model}", --max-budget-usd, "0.50", --permission-mode, acceptEdits, --resume, "{session}"]
+    output: {format: json}
+    session: {field: session_id}
+    finished: {exit_codes: [0], field: is_error, equals: ["false"]}
+    errors: {http_status_field: api_error_status}
+    capabilities: {exact_resume: true, can_be_stopped: true, structured_errors: true}
+```
+
+What was shown:
+
+| Step | What keepgoing did and observed |
+| --- | --- |
+| `validate` | Accepted the definition, listed the bounds (deadline, max_sends), and said in words that an HTTP status of 429 in `api_error_status` would move work to a fallback. |
+| `doctor --offline` | Working directory exists; the start executable resolves and was not run; can start a turn with the prompt on stdin, continue the session, stop a turn, classify from declared codes, bound output; cannot tell waiting on a person, probe, or tell a usage limit from another failure unless a declared code says so. |
+| First check | Observed `idle` (never run), decided `wake`, and started one turn with the task on standard input. |
+| During the turn | A dry-run check observed `active` and sent nothing. |
+| End of the turn | The agent exited 0 after about 8 seconds with `type: result`, `subtype: success`, `is_error: false` and a `session_id`, which keepgoing saved. A dry-run check then observed `idle`. The task's file existed with the expected content. The turn's own report put its cost at under one US cent. |
+| Second check | Decided `wake` and started a second turn whose command line carried `--resume` with the saved session (checked against the running process, without recording the identifier). |
+| Stop | `keepgoing stop`, then a check: decided `stop` on the `active` turn. The owned wrapper acknowledged the stop request and the agent's process ended with no exit record, so the next check observed an `error` of unknown class with the stop still requested, and sent nothing. |
+| Totals | Two sends of the three allowed, recorded in the send ledger; the timeline shows the enable, both wakes, the stop request and the stop. |
+
+What was not shown live: a failed turn classified from a declared code (no failure occurred, and none was provoked); the limit lookup, the probe and a waiting rule (the definition declares none); the oversize-output path; a lost session and its hold; a fallback; any platform but macOS; and the adapter conformance suite (T1), which the definition has not been run through. Claude Code kept its own history of the two turns in its usual place; keepgoing does not manage that.
 
 ## progress
 
