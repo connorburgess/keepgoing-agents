@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -32,7 +33,7 @@ type standardListView struct {
 	// State is ok, missing (no list has been written) or unreadable.
 	State string `json:"state"`
 	// Problem is the fixed reason an unreadable list was refused: not_private,
-	// not_owned, not_regular, too_large, inside_checkout, unreadable or
+	// not_owned, not_regular, too_large, inside_checkout, named_twice, unreadable or
 	// invalid. It names no path.
 	Problem    string             `json:"problem,omitempty"`
 	Redundancy *redundancyView    `json:"redundancy,omitempty"`
@@ -413,7 +414,9 @@ func routesProblemText(code string) string {
 	case config.RoutesTooLarge:
 		return "it is larger than 1 MiB"
 	case config.RoutesInsideCheckout:
-		return "KEEPGOING_ROUTES_FILE points inside a Git checkout"
+		return config.RoutesFileEnv + " points inside a Git checkout"
+	case config.RoutesNamedTwice:
+		return envvar.RoutesFile.Name() + " and " + envvar.RoutesFile.Legacy() + " name different files; unset one of them"
 	case "missing":
 		return "no list has been written"
 	case config.RoutesInvalid:

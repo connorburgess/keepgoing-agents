@@ -21,6 +21,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/netretry"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
@@ -108,9 +109,12 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	// The variables move what every command reads, so doctor says where.
-	if dir := os.Getenv(registryDirEnv); dir != "" {
-		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
+	// (Two names that disagree are reported by doctorVariables instead: no
+	// registry is used then.)
+	if dir, name, err := envvar.RegistryDir.Path(); err == nil && dir != "" {
+		r.add("registry.directory", "ok", name+" is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
 	}
+	doctorVariables(&r)
 	// A check claims its session before acting on it. Doctor says what is
 	// wrong with the claim directory, in terms of its real cause.
 	if status, message, fix := sessionDirectoryCheck(); status != "" {
@@ -714,4 +718,34 @@ func doctorAgentVersion(adapter string, raw []byte) string {
 		return ""
 	}
 	return doctorVersion(raw)
+}
+
+// doctorVariables says when a variable's two names, LOOPTENDER_X and the
+// earlier KEEPGOING_X, are set to different values, and which earlier names
+// are in use. It never prints a value: two of them are credentials.
+//
+// The session directory is left to its own check, which reports the same
+// disagreement as the reason claims cannot be kept.
+func doctorVariables(r *doctorReport) {
+	location := map[envvar.Var]bool{}
+	for _, v := range envvar.Locations {
+		location[v] = true
+	}
+	var earlier []string
+	for _, v := range envvar.Set {
+		id := "environment." + strings.ToLower(string(v))
+		switch _, name, err := v.Path(); {
+		case location[v] && err != nil:
+			if v != envvar.SessionDir {
+				r.add(id, "error", v.Name()+" and "+v.Legacy()+" are set to different places. Commands that read either refuse until they agree.", "Unset "+v.Legacy()+", or set both to the same place.")
+			}
+		case !location[v] && v.Disagrees():
+			r.add(id, "warning", v.Name()+" and "+v.Legacy()+" are set to different values. "+v.Name()+" is the one used.", "Unset "+v.Legacy()+".")
+		case name == v.Legacy():
+			earlier = append(earlier, name)
+		}
+	}
+	if len(earlier) > 0 {
+		r.add("environment.earlier_names", "ok", "Read under an earlier name: "+strings.Join(earlier, ", ")+". Earlier names still work; the current names begin "+envvar.Prefix+" in place of "+envvar.LegacyPrefix+".", "")
+	}
 }
