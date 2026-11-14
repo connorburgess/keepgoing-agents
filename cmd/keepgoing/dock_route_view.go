@@ -525,6 +525,24 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		case r.Action == "wake" || r.Action == "nudge" || r.Action == "reprompt":
 			ev.Detail = "Delivery is not confirmed."
 		}
+		if timelineReturned(r) {
+			// Said before anything else the check did, which ran on the primary.
+			why := timelineReturnReasons[r.Returned.Reason]
+			if why == "" {
+				why = "could not be used"
+			}
+			text := "Returned to " + names.of(r.TargetKey) + ", because the route it was on " + why + "."
+			switch {
+			case strings.HasPrefix(ev.Detail, "to "): // a handoff from the primary
+				text += " Then " + ev.Detail + "."
+			case ev.Detail != "":
+				text += " " + ev.Detail
+			}
+			if ev.Tone != "hold" {
+				ev.Tone = "key"
+			}
+			ev.Detail = text
+		}
 		if c := r.Collapsed; c != nil && c.Count > 0 {
 			first := c.FirstAt
 			ev.Folded, ev.FoldedSince = c.Count, &first
@@ -540,6 +558,18 @@ func dockWordIncident(ev *dockEvent, r incident.Record, names dockRouteNames) {
 		}
 	case "retarget":
 		ev.Tone, ev.Phrase, ev.Detail = "key", "Pointed at another route by a command", "to "+names.of(r.TargetKeyAfter)
+	case "probe":
+		failed := 0
+		for _, p := range r.Probes.Results {
+			if !p.OK {
+				failed++
+			}
+		}
+		ev.Phrase = "Fallbacks checked by hand"
+		ev.Detail = fmt.Sprintf("%d passed, %d failed.", len(r.Probes.Results)-failed, failed)
+		if failed > 0 {
+			ev.Tone = "problem"
+		}
 	default:
 		ev.Phrase = "A history entry of a kind this page does not know"
 	}

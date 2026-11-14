@@ -192,6 +192,7 @@ type tick struct {
 	incidentStateLoaded bool
 	incidentAdapter     string
 	incidentTarget      string
+	incidentReturn      *incident.Return
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
@@ -561,24 +562,49 @@ func (t *tick) releaseClaims() {
 // resolve returns the agent for a target id, reverting to primary when a
 // candidate has been removed from the fallbacks file.
 func (t *tick) resolve(target string) (string, config.Agent) {
+	id, agent, _ := t.resolveWhy(target)
+	return id, agent
+}
+
+// resolveWhy is resolve with the reason a fallback could not be used, one of
+// the incident return reasons, or "" when target is usable.
+func (t *tick) resolveWhy(target string) (string, config.Agent, string) {
 	if target == state.Primary {
-		return target, t.loop.Agent
+		return target, t.loop.Agent, ""
 	}
 	c, ok := t.fb.Find(target)
 	if !ok || c.Disabled {
 		t.warn("active target %q is no longer an enabled fallback; returning to primary", target)
-		return state.Primary, t.loop.Agent
+		why := incident.ReturnRemoved
+		if ok {
+			why = incident.ReturnDisabled
+		}
+		return state.Primary, t.loop.Agent, why
 	}
 	if isNewThread(c) {
 		// Its thread is the one created for it at handoff.
 		a, ok := t.st.CandidateAgent(c)
 		if !ok {
 			t.warn("active target %q has no created thread on record; returning to primary", target)
-			return state.Primary, t.loop.Agent
+			return state.Primary, t.loop.Agent, incident.ReturnNoCreatedThread
 		}
-		return c.ID, a
+		return c.ID, a, ""
 	}
-	return c.ID, c.Agent
+	return c.ID, c.Agent, ""
+}
+
+// resolveActive resolves the saved target and, when it can no longer be
+// used, returns the loop to the primary and records why for the history.
+func (t *tick) resolveActive() (string, config.Agent) {
+	saved := t.st.Target()
+	target, agent, why := t.resolveWhy(saved)
+	if target != saved {
+		t.st.ActiveTarget = target
+		if why != "" {
+			t.incidentReturn = &incident.Return{FromKey: incident.TargetKey(saved), Reason: why}
+		}
+	}
+	return target, agent
 }
 
 func (t *tick) label(target string) string {
@@ -615,10 +641,7 @@ func (t *tick) run() error {
 		t.st.StopRequestedSent = false
 	}
 	t.keepCurrentRoute()
-	target, agent := t.resolve(t.st.Target())
-	if target != t.st.Target() {
-		t.st.ActiveTarget = target
-	}
+	target, agent := t.resolveActive()
 	res.Target = target
 	t.incidentTarget = target
 	t.incidentAdapter = agent.Adapter
@@ -720,6 +743,8 @@ func (t *tick) run() error {
 		return t.record(nil)
 	}
 	if moved {
+		// Not resolveActive: a created thread that cannot be used here is
+		// returned from, and recorded, by the next check, as before.
 		target, agent = t.resolve(t.st.Target())
 		res.Target, t.incidentTarget, t.incidentAdapter = target, target, agent.Adapter
 	}

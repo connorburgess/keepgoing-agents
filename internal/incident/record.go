@@ -14,7 +14,8 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
-// Record describes a tick, a saved control update or a saved manual retarget.
+// Record describes a tick, a saved control update, a saved manual retarget or
+// the probes of a manual `fallbacks check`.
 // Timestamps describe local operations, not provider event time. Unsupported
 // source details are explicitly unavailable.
 type Record struct {
@@ -25,7 +26,11 @@ type Record struct {
 	NewThread bool   `json:"newThread,omitempty"`
 	TurnRetry string `json:"turnRetry"`
 	// Lanes counts the lane work of a check that recovers lanes. Counts only.
-	Lanes                LaneWork       `json:"lanes"`
+	Lanes LaneWork `json:"lanes"`
+	// Returned is set on a check that began on a fallback no longer able to
+	// take the loop, and so returned it to the primary before doing anything
+	// else. TargetKey is then the primary's.
+	Returned             *Return        `json:"returned"`
 	Tier                 string         `json:"tier"`
 	Collapsed            *Collapsed     `json:"collapsed"`
 	TargetKeyAfter       string         `json:"targetKeyAfter"`
@@ -83,6 +88,21 @@ const (
 	TierActivity  = "activity"
 	TierRoutine   = "routine"
 )
+
+// Return reasons: why a check returned the loop from a fallback to the
+// primary before it observed anything.
+const (
+	ReturnRemoved         = "removed"           // the fallback is no longer configured
+	ReturnDisabled        = "disabled"          // the fallback is configured but disabled
+	ReturnNoCreatedThread = "no_created_thread" // a new-thread fallback with no created thread on record
+)
+
+// Return records a return to the primary: the hashed alias of the fallback
+// the loop was on, and why it could no longer be used.
+type Return struct {
+	FromKey string `json:"fromKey"`
+	Reason  string `json:"reason"`
+}
 
 // LaneWork is what one check did about the supervised session's lanes.
 type LaneWork struct {
@@ -162,7 +182,7 @@ func attempted(r Record) bool {
 // attempted nothing, so a run of them can be summarized without losing an
 // event. A scheduled probe does not prevent it; see consistentProbes.
 func repeatable(r Record) bool {
-	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) {
+	if r.Kind != "tick" || !sameControls(r.ControlBefore, r.ControlAfter) || targetMoved(r) || r.Returned != nil {
 		return false
 	}
 	dry := r.DryRun || r.Outcome == "dry_run"
@@ -170,6 +190,13 @@ func repeatable(r Record) bool {
 		return true // A dry run executes nothing, whatever it proposed.
 	}
 	return r.Action == "none" && !attempted(r) && r.LimitWaitReport == "none" && r.Lanes == (LaneWork{}) && !r.NewThread
+}
+
+// returned reports a check that returned the loop to the primary and saved
+// it. A dry run saves its state too, so its return is a move; a failed check
+// may not have saved it, so it is not.
+func returned(r Record) bool {
+	return r.Kind == "tick" && r.Returned != nil && (r.Outcome == "succeeded" || r.Outcome == "dry_run")
 }
 
 func limitWaitCause(cause string) bool {
@@ -191,6 +218,12 @@ func tierOf(r Record) string {
 	switch r.Kind {
 	case "retarget":
 		return TierKey
+	case "probe":
+		// A person asked for these probes; a failure is evidence of a problem.
+		if failedProbes(r) > 0 {
+			return TierCondition
+		}
+		return TierActivity
 	case "control":
 		c := r.ControlChange
 		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish")) {
@@ -198,6 +231,9 @@ func tierOf(r Record) string {
 		}
 		return TierActivity
 	case "tick":
+		if returned(r) {
+			return TierKey
+		}
 		dry := r.DryRun || r.Outcome == "dry_run"
 		if dry {
 			return TierRoutine
@@ -338,7 +374,7 @@ func cleanProbes(p Probes) Probes {
 		if !keyPattern.MatchString(r.TargetKey) {
 			r.TargetKey = "unavailable"
 		}
-		r.Tier = oneOf(r.Tier, "unavailable", "scheduled", "exact")
+		r.Tier = oneOf(r.Tier, "unavailable", "scheduled", "exact", "manual")
 		r.ErrorClass = oneOf(r.ErrorClass, "unavailable", "none", "rate_limit", "auth", "overloaded", "network", "unknown")
 	}
 	return p
@@ -444,12 +480,18 @@ func oneOf(value, fallback string, allowed ...string) string {
 // clean is the storage boundary: no arbitrary strings or provider-supplied maps
 // cross it. Unknown fields are unavailable rather than truncated raw text.
 func clean(r Record) Record {
-	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control", "retarget")
+	r.Kind = oneOf(r.Kind, "unavailable", "tick", "control", "retarget", "probe")
 	if r.Kind == "retarget" {
 		// A retarget saves the active target without observing, deciding, probing
 		// or sending. Its note and the configured aliases never enter the journal.
 		r = Record{Kind: r.Kind, Sequence: r.Sequence, CheckStartedAt: r.CheckStartedAt, Build: r.Build,
 			TargetKey: r.TargetKey, TargetKeyAfter: r.TargetKeyAfter, Action: "none", Cause: "other", Outcome: "target_saved"}
+	}
+	if r.Kind == "probe" {
+		// A manual `fallbacks check` probes candidates and saves their health;
+		// it observes no session, decides nothing and sends nothing.
+		r = Record{Kind: r.Kind, Sequence: r.Sequence, CheckStartedAt: r.CheckStartedAt, Build: r.Build,
+			Probes: r.Probes, Action: "none", Cause: "other", Outcome: oneOf(r.Outcome, "unavailable", "probes_saved")}
 	}
 	if r.Kind == "control" {
 		// Control updates do not observe an adapter or run a decision. Never attach
@@ -484,14 +526,21 @@ func clean(r Record) Record {
 	r.Cause = cleanCause(r.Cause)
 	r.Action = cleanAction(r.Action)
 	r.Decisions = cleanDecisions(r.Decisions)
-	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved")
+	r.Outcome = oneOf(r.Outcome, "unavailable", "succeeded", "failed", "dry_run", "control_saved", "target_saved", "probes_saved")
 	// Whether this check detected a long limit wait and what it did about the one report.
 	r.LimitWaitReport = oneOf(r.LimitWaitReport, "none", "requested", "delivery_failed", "not_subscribed")
 	// What a re-prompt that retried the failed turn by reference was told.
 	r.TurnRetry = oneOf(r.TurnRetry, "none", "retried", "queued", "nothing_to_retry", "not_in_error", "already_queued", "queue_unconfirmed", "refused", "unsupported")
 	r.Lanes = LaneWork{Retried: max(0, r.Lanes.Retried), GivenUp: max(0, r.Lanes.GivenUp), Deferred: max(0, r.Lanes.Deferred)}
 	if r.Kind != "tick" {
-		r.LimitWaitReport, r.TurnRetry, r.Lanes = "none", "none", LaneWork{}
+		r.LimitWaitReport, r.TurnRetry, r.Lanes, r.Returned = "none", "none", LaneWork{}, nil
+	}
+	if r.Returned != nil {
+		ret := Return{FromKey: r.Returned.FromKey, Reason: oneOf(r.Returned.Reason, "unavailable", ReturnRemoved, ReturnDisabled, ReturnNoCreatedThread)}
+		if !keyPattern.MatchString(ret.FromKey) {
+			ret.FromKey = "unavailable"
+		}
+		r.Returned = &ret
 	}
 	o := &r.Observation
 	o.Availability = oneOf(o.Availability, "not_observed", "observed", "unavailable", "not_observed")

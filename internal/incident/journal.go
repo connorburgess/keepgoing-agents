@@ -22,7 +22,9 @@ const FileName = "incidents.json"
 // Version 9 adds, on control records, who saved the control and whether a
 // resume started a new error episode.
 // Version 10 adds the lane-work counts on tick records.
-const SchemaVersion = 10
+// Version 11 adds the return to the primary on tick records and the probe
+// records of a manual `fallbacks check`.
+const SchemaVersion = 11
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -184,6 +186,13 @@ func Load(dir string) (Journal, error) {
 		}
 		if j.SchemaVersion < 10 {
 			r.Lanes = LaneWork{}
+		}
+		if j.SchemaVersion < 11 {
+			// Older writers recorded no return and no manual probes.
+			r.Returned = nil
+			if r.Kind == "probe" {
+				return Journal{}, ErrUnavailable
+			}
 		}
 		if !validRecord(r) {
 			return Journal{}, ErrUnavailable
@@ -390,6 +399,10 @@ func validRecord(r Record) bool {
 	}
 	// A retarget is a move: both hashed targets are known and they differ.
 	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter) || r.TargetKey == r.TargetKeyAfter) {
+		return false
+	}
+	// A manual probe record holds at least one captured result.
+	if r.Kind == "probe" && (r.Probes.Availability != "captured" || len(r.Probes.Results) == 0) {
 		return false
 	}
 	return r.Kind != "control" || (r.ControlChange != nil && !r.ControlChange.SaveObservedAt.IsZero() && r.ControlBefore != nil && r.ControlAfter != nil)
