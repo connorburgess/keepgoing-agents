@@ -90,7 +90,7 @@ Answering reuses the review and apply path the panel and the menu already use ([
 - ends or finishes the loop;
 - acts on another conversation.
 
-Options that leave things as they are (pause, keep waiting, not now), and continue, which is the normal path, do not.
+Options that leave things as they are (pause, keep waiting, not now), and continue, which is the normal path, do not. The notification's button applies an option directly only when it has `review: false`; for `refused` that is `continue`, which only returns to looptender's own continue-with-spacing.
 
 A stale answer does nothing, and says where the loop is now and what to do next. For example: "Nothing was changed. This loop was paused from the menu at 05:51, which closed this question. It is paused now; resume it from its page when you are ready."
 
@@ -157,7 +157,7 @@ Every situation found in `decide`, `supervise`, the panel and the reports, as of
 | `target_gone` | `target gone (archived, deleted, or not found)`. | "The conversation this loop supervises is gone. What now?" | ★ `move_here`: in BB this is "Move supervision here" (the plugin's transfer flow), elsewhere the `retarget` command · `stop` **R** | Picks another conversation. |
 | `deadline` | `loop deadline reached` (stage `deadline`). | "This loop reached its deadline, 14 Nov 18:00. Finish, or give it more time?" | ★ `finish` **R** · `extend` **R**, new: "Moves the deadline to … (choose)." · `pause`. Answerers: person only. | Extends its own deadline. |
 | `sends_used` | `loop send limit reached` (`max_sends`). | "This loop has used all 60 of its sends. Finish, or allow more?" | ★ `finish` **R** · `allow_more` **R**, new: "Allows 20 more sends." · `pause`. Answerers: person only. | Raises its own limit. |
-| `progress_window` | `no Git progress within loop.limits.no_progress_timeout`. | "No change to its repositories in 6 h. How should this loop go on?" | ★ `continue` **R**, new: "Starts a new 6 h window." · `finish` **R** · `pause` | Starts a new window. |
+| `progress_window` | `no Git progress within loop.limits.no_progress_timeout`. | "No change to its repositories in 6 h. How should this loop go on?" | ★ `finish` **R** · `pause`. Later, new: `continue` **R**, "Starts a new 6 h window.", once a "new no-progress window" setting exists. | Starts a new window. |
 | `new_thread_unsettled` | A conversation created for a move could not be confirmed (`unsettledReason`). | "A new conversation for the move to backup could not be confirmed. Was it created?" | ★ Open BB (a link) · `adopt` **R**: "Moves supervision to that conversation." · `discard` **R**: "Forgets it and stays here." (`retarget --discard-pending-thread`) | Creates another conversation. |
 | `new_threads_used` | `NewThreadCapReason` (`max_new_threads`). | "This loop has used its 3 new conversations. Allow one more?" | ★ `pause` · `allow_one` **R**, new · `finish` **R**. Answerers: person only. | Raises its own cap. |
 | `agent_asked` | `keepgoing await-user`, run by the agent or by a person: it was marked as waiting for a person. | "This loop was marked as waiting for a person." Its note is shown only with identifiers, as today. | ★ Open the conversation (a link) · `resume` · `stop` **R** | Reads or answers the note. |
@@ -217,7 +217,6 @@ Each step is its own PR, after this one is agreed. The roadmap calls them Q1 to 
 
 ## Open decisions
 
-- `progress_window`'s `continue` needs a "new window" that the configuration does not have today (the timeout is measured from the last change). Until it exists, the option is left out and the question offers `finish` and `pause`, plus the configuration edit as words.
 - Should the BB card appear on the lead thread only, or also on a lane's thread for `lane_input`? The proposal is the lead thread only, since lanes are not supervised conversations.
 - Should the report carry the answer command with the loop's configuration path? The proposal is no; `looptender answer LOOP` finds the loop through the registry.
 - One answer for several loops held for the same reason ("Continue both loops that declined") is left out for now: each answer is reviewed and bound to one loop. It could come later as a reviewed group, the way `client review --all` reviews a pause of every loop.
