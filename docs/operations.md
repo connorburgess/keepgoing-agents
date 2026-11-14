@@ -21,11 +21,11 @@ The fingerprint streams the opened regular file's observed length with bounded m
 
 ### Loaded configuration checks
 
-After acquiring `tick.lock`, ticks, daemon notification polls, retargets, and executing manual fallback probes verify that `keepgoing.yaml` and its loaded `fallbacks.yaml` still contain the exact bytes originally parsed. Changed, missing, unreadable, or non-regular sources suppress provider work. Ticks, retargets, and probe execution return exit 75 with a reload/retry diagnostic; early polls wait for the next ordinary reload instead of querying the stale target. Rejected work leaves control, state, health, history, and cursors unchanged. A skipped tick does not advance the last-check timestamp; a responsive daemon alone does not prove checks are succeeding.
+After acquiring `tick.lock`, ticks, daemon notification polls, retargets, and executing manual fallback probes verify that `keepgoing.yaml` and its loaded `fallbacks.yaml`, or for a loop that follows it the [standard route list](routes.md), still contain the exact bytes originally parsed (for the standard list, still missing if it was missing). Changed, missing, unreadable, or non-regular sources suppress provider work. Ticks, retargets, and probe execution return exit 75 with a reload/retry diagnostic; early polls wait for the next ordinary reload instead of querying the stale target. Rejected work leaves control, state, health, history, and cursors unchanged. A skipped tick does not advance the last-check timestamp; a responsive daemon alone does not prove checks are succeeding.
 
 Pause and other holds remain saved. **Stop execution also waits for a verified configuration:** the supervisor cannot safely observe or stop a target from an unverified snapshot. Repair the configuration and let the daemon reload (on its interval or the next control change), or reload and retry the command. Once verified, stop retains precedence over pause, disabled, completed, and awaiting-user holds. If the agent must stop before repair, use its provider's own stop control against the verified target. A changed `state_dir` requires restoring the original binding or restarting deliberately; the daemon never moves its lock or diagnostics automatically.
 
-This is a prerequisite for a future cooperative thread-transfer operation, not a transfer feature. Only writers using the same `tick.lock` are serialized with provider work; arbitrary external file edits can still race after verification. The check covers the two loaded YAML sources, not referenced prompt/secret files, executables, or runtime records. Private source digests are kept only in memory and are not serialized or printed. Byte-identical replacements are accepted. No target-state reset, cursor/session migration, or automatic thread transfer is implemented.
+This is a prerequisite for a future cooperative thread-transfer operation, not a transfer feature. Only writers using the same `tick.lock` are serialized with provider work; arbitrary external file edits can still race after verification. The check covers the loaded YAML sources (`keepgoing.yaml` and `fallbacks.yaml` or the standard route list), not referenced prompt/secret files, executables, or runtime records. Private source digests are kept only in memory and are not serialized or printed. Byte-identical replacements are accepted. No target-state reset, cursor/session migration, or automatic thread transfer is implemented.
 
 ## Starting supervision
 
@@ -391,6 +391,44 @@ An in-flight check may finish past the deadline, and an already-running or queue
 To continue, revise or remove the deadline under the task's existing authorization and explicitly `resume`. Resume alone with an expired deadline causes another hold on the next check. Enable, restart, retarget and ownership takeover do not extend the configured deadline. Existing disabled/pause/stop/completion/awaiting-user holds retain precedence. Manual operations, including `fallbacks check`, `retarget` activation and read-only `doctor` queries, remain explicit operations outside this automatic cutoff. Existing config-snapshot and ownership checks still apply.
 
 Available in v0.1.3 or newer. Verification uses decision tables, CLI and supervisor fixtures; no live provider or service deadline was exercised.
+
+## Upgrading and rolling back
+
+**Before every upgrade, stop supervision and copy the loop's state directory.** That copy is the only supported way back. Stop the daemon, service or scheduler first, so nothing writes while you copy, and copy the whole directory named by `loop.state_dir`. The files that matter in it:
+
+| File | Why it matters |
+| --- | --- |
+| `control.json` | the holds (paused, stop, awaiting a person, completed), their note, and who owns the loop |
+| `state.json` | the active target, the re-prompt and nudge counts, the last send and the last check |
+| `sends.json`, `progress.json` | the total send allowance used and the no-progress evidence, when those limits are on |
+| `health.json` | fallback probe evidence |
+| `targets/` | each target's saved session ID, the BB log cursor and headless turn files |
+| `incidents.json`, `deliveries.json`, `runs.jsonl`, `graph.json` | history and run references; diagnostic, but an older build stops on the journal (below) |
+| `goal.json` | the private goal record, when one was set |
+
+The configuration (`keepgoing.yaml`, `fallbacks.yaml`, the prompt file) lives outside the state directory; keep a copy of those too if the upgrade changes them.
+
+**Upgrading keeps the loop where it was.** A newer build reads the state directory of every released version, v0.1.0 to v0.1.5. A loop held for a person stays held with its note, the first check sends nothing and runs no agent command, the saved re-prompt count and last send time are kept, and after `resume` the loop carries on from the saved session without repeating a send. Records are upgraded in place the first time the new build writes them: an incident journal from v0.1.3 to v0.1.5 keeps its earlier records, and a state directory from before the journal or the run graph gets them from the first check and control command on. This is fixture evidence, from each release's own binary and the scenario suite (see [testing](testing.md#scenario-suite-t2)); no live loop was upgraded for it.
+
+**Rolling back by restoring only the older binary is not supported.** Once a newer build has written to the state directory, an older build does not read it and does not fail safely. What v0.1.5 does with a state directory today's source has written to:
+
+| Command | What happens | Exit |
+| --- | --- | --- |
+| `tick` | The check still observes and acts (it sent a re-prompt), then prints `tick: incident history unavailable; check private state storage`. Its line carries the warning `incident history write failed; diagnostic evidence is incomplete`. | 1, on every check |
+| `resume`, `pause` and the other control commands | The control change is saved, with `warning: control saved; incident history write failed; diagnostic evidence is incomplete`. | 1 |
+| `status` | Works, from `state.json` and `control.json`. | 0 |
+| `timeline` | `source incidents.json: unavailable; schema 0; retained 0; dropped 0`. | 1 |
+
+So:
+
+- A scheduler that disables a job after a few failing exits stops calling the older build, although every one of those checks ran and may have sent.
+- The older build rewrites `state.json` without the fields it does not know. What the newer build saved there is lost: the count of failed checks, the last turn retry, the child-error episode and the like.
+- Nothing is recorded in the journal while the older build runs.
+- An older build refuses a configuration that names something newer than itself, before doing anything: v0.1.2 answers `loop.report.events: unknown event "complete"` and exits 2.
+
+The run graph (unreleased) differs from the journal. A build that meets a graph holding a record kind it does not know carries on: the check does the same work, exits 0, and has the warning `run reference record unavailable; discovery evidence is incomplete`. But `keepgoing runs` exits 1 and shows `graph: corrupt`, with nothing read from it. The build cannot tell a record kind it does not know from damage, so after a rollback "corrupt" may only mean "written by a newer build". Neither file is rewritten or reset by the older build.
+
+**To go back:** stop supervision, restore the loop's state directory from the copy taken before the upgrade, then restore the older binary, and start supervision again. Work the newer build did after the copy is not in it: sends it made are not counted, and holds set since then have to be set again. Without a copy there is no supported way back: the older build can only be started on a new, empty state directory, which starts the loop's counters and history again.
 
 ## Yielding to other work
 

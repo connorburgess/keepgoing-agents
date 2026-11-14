@@ -183,6 +183,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Where the supervisor runs](docs/command-center.md): design record on why keepgoing runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
+- [Standard route list](docs/routes.md): one ordered list of routes that loops can follow instead of a list each. Unreleased source; reading it is built, editing it is not yet.
 - [Licensing](LICENSING.md): what is free, what needs a commercial agreement, and what stays under Apache-2.0.
 
 ## Contributing

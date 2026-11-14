@@ -548,6 +548,7 @@ type Timeline struct {
 	Control struct {
 		State string `json:"state"`
 	} `json:"control"`
+	Sources timelineSources `json:"sources"`
 	Summary struct {
 		LatestCheck *struct {
 			Sequence    int       `json:"sequence"`
@@ -558,6 +559,33 @@ type Timeline struct {
 		HeldChecks     int `json:"heldChecks"`
 	} `json:"summary"`
 	Raw string `json:"-"`
+}
+
+// timelineSources is the list of records the timeline was read from.
+type timelineSources []struct {
+	Source       string `json:"source"`
+	Availability string `json:"availability"`
+	Retained     int    `json:"retained"`
+}
+
+// retained is how many records the timeline kept from one source.
+func (ts timelineSources) retained(source string) int {
+	for _, x := range ts {
+		if x.Source == source {
+			return x.Retained
+		}
+	}
+	return 0
+}
+
+// availability is how the timeline describes one source.
+func (ts timelineSources) availability(source string) string {
+	for _, x := range ts {
+		if x.Source == source {
+			return x.Availability
+		}
+	}
+	return ""
 }
 
 // Runs is the part of `runs --json` the scenarios read.

@@ -126,6 +126,9 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// RoutesUnreadable is true while a loop that follows the standard route
+	// list cannot read it, so that beginning and ending are each reported once.
+	RoutesUnreadable bool `json:"routesUnreadable,omitempty"`
 	// ClaimUnavailable is set while checks run without a session claim
 	// because there is no user state directory to keep claims in; its start
 	// and end are reported once each.

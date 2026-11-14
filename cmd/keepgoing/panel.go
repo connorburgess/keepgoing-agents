@@ -886,7 +886,7 @@ type panelList struct {
 	Omitted       int             `json:"omitted"`
 	Loops         []panelListLoop `json:"loops"`
 	// CanAll is which changes can be made to every loop at once
-	// (client review|apply --all): pause, while any loop can be paused.
+	// (client review|apply --all): pause and stop, while any loop can be.
 	CanAll []string `json:"canAll"`
 	// EarlierBuildPanel: as in panel status.
 	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
@@ -925,8 +925,10 @@ func buildPanelList(r dockReport) panelList {
 	}
 	out.CanAll = []string{}
 	for _, l := range r.Loops {
-		if slices.Contains(l.Can, "pause") && !slices.Contains(out.CanAll, "pause") {
-			out.CanAll = append(out.CanAll, "pause")
+		for _, a := range []string{"pause", "stop"} {
+			if slices.Contains(l.Can, a) && !slices.Contains(out.CanAll, a) {
+				out.CanAll = append(out.CanAll, a)
+			}
 		}
 		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can, OverdueSince: overdue[l.Key]}
 		if np := l.NoProgress; np != nil && np.Availability == "flagged" {
