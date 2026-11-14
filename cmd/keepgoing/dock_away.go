@@ -111,6 +111,8 @@ func dockMoves(tl *timelineReport) []dockMove {
 		switch {
 		case r.Kind == "retarget":
 			m.how = dockLeftCommand
+		case r.Kind == "tick" && (r.Cause == incident.TimingStepUp || r.Cause == incident.TimingStepDown || r.Cause == incident.TimingReturn):
+			m.how = dockLeftTiming
 		case r.Kind == "tick" && (r.Action == "handoff" || r.Action == "switch_back") && r.Outcome == "succeeded":
 			m.isHandoff = r.Action == "handoff"
 			m.errorClass = r.Observation.ErrorClass

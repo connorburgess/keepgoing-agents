@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -52,5 +53,38 @@ func TestDockDescribesALoopOnATimingStep(t *testing.T) {
 		Timing: &state.TimingRecord{LastMove: &state.TimingMove{At: at, From: state.Primary, To: "example-large", Action: "up"}}}}
 	if a := dockAwayOf(st, chain, nil, nil, dockNow); a == nil || a.How == dockLeftTiming {
 		t.Fatalf("a handoff described as timing: %+v", a)
+	}
+}
+
+// The history's timing causes: a timing move and a repair are timeline kinds
+// of their own, a timing move is the last move, and the panel words them and
+// counts a timing move as a departure from the route it left.
+func TestTimingCausesInTimelineAndPanel(t *testing.T) {
+	a, b := incident.TargetKey(state.Primary), incident.TargetKey("example-large")
+	up := incident.Record{Kind: "tick", Action: "wake", Cause: incident.TimingStepUp, Outcome: "succeeded", TargetKey: a, TargetKeyAfter: b, LimitWaitReport: "none", TurnRetry: "none"}
+	repair := incident.Record{Kind: "tick", Action: "none", Cause: incident.TimingRepair, Outcome: "succeeded", TargetKey: a, TargetKeyAfter: a, LimitWaitReport: "none", TurnRetry: "none"}
+	if k := timelineKinds(up); !containsString(k, "timing_move") || containsString(k, "handoff") {
+		t.Errorf("step up kinds %v", k)
+	}
+	if k := timelineKinds(repair); !containsString(k, "timing_repair") || containsString(k, "timing_move") {
+		t.Errorf("repair kinds %v", k)
+	}
+	if !containsString(timelineKindNames, "timing_move") || !containsString(timelineKindNames, "timing_repair") {
+		t.Error("the kinds are not filterable")
+	}
+	for cause, want := range map[string]string{
+		incident.TimingStepUp:   "usage-aware timing stepped up",
+		incident.TimingStepDown: "usage-aware timing stepped down",
+		incident.TimingReturn:   "usage-aware timing returned to the first route",
+		incident.TimingRepair:   "the thread was set to the route on record",
+	} {
+		if got := dockReason(cause); got != want {
+			t.Errorf("%s: %q", cause, got)
+		}
+	}
+	tl := &timelineReport{Events: []timelineEntry{{At: dockNow.Add(-time.Hour), Incident: &up}, {At: dockNow, Incident: &repair}}}
+	moves := dockMoves(tl)
+	if len(moves) != 1 || moves[0].how != dockLeftTiming || moves[0].from != a || moves[0].to != b {
+		t.Fatalf("moves %+v", moves)
 	}
 }

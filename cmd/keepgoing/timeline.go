@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "timing_move", "timing_repair", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "retarget", "ownership"}
@@ -349,6 +349,16 @@ func timelineKinds(r incident.Record) []string {
 				kinds = append(kinds, r.Action)
 			}
 		}
+		// Usage-aware timing changed the thread: a step that moved the loop,
+		// or a repair setting the thread to the route on record.
+		switch r.Cause {
+		case incident.TimingStepUp, incident.TimingStepDown, incident.TimingReturn:
+			if r.TargetKeyAfter != "unavailable" && r.TargetKeyAfter != r.TargetKey {
+				kinds = append(kinds, "timing_move")
+			}
+		case incident.TimingRepair:
+			kinds = append(kinds, "timing_repair")
+		}
 		// A summary stands for the probes folded into it as well as its own.
 		if len(r.Probes.Results) > 0 || (r.Collapsed != nil && r.Collapsed.PassedProbes+r.Collapsed.FailedProbes > 0) {
 			kinds = append(kinds, "probe")
@@ -421,7 +431,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		}
 		for _, k := range entry.Kinds {
 			switch k {
-			case "handoff", "switch_back", "retarget":
+			case "handoff", "switch_back", "timing_move", "retarget":
 				r.Summary.LastTargetMove = timelineReference(entry)
 			case "limit_wait_report":
 				r.Summary.LastLimitWaitReport = timelineReference(entry)

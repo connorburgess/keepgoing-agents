@@ -148,6 +148,10 @@ var dockReasons = map[string]string{
 	"limit_wait":              "a usage limit, waiting for its reset",
 	"limit_no_fallback":       "a usage limit with no other route able to take over",
 	"limit_failover_disabled": "a usage limit, with automatic moves off",
+	"timing_step_up":          "usage-aware timing stepped up",
+	"timing_step_down":        "usage-aware timing stepped down",
+	"timing_return":           "usage-aware timing returned to the first route",
+	"timing_repair":           "the thread was set to the route on record",
 }
 
 func dockReason(cause string) string {
