@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // How the loop got to its route decides the failover gate: only a handoff

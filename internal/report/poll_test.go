@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // status inspects delivery history while a report records its attempts.

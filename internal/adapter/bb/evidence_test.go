@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 func TestErrorEvidenceRestartAndRecovery(t *testing.T) {

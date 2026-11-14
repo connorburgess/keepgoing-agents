@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const FileName = "incidents.json"

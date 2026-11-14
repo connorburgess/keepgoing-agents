@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // Deterministic form of the polling case: a reader opened the way Load opens

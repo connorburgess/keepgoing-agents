@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 // Only a lane-retry intent that has no outcome can be discarded: the one case

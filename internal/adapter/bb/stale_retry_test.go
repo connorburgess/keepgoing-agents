@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // stamped adds BB's createdAt field, given here as raw JSON, to a synthetic event.

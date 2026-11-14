@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const ProgressName = "progress.json"

@@ -25,7 +25,7 @@ var headlessKnown = map[string][]Waiting{}
 // TestScenarioHeadlessOutage is the owner's outage on a headless Claude Code
 // or Codex loop: a turn breaks when the network drops, the host sleeps so
 // checks run irregularly, the network returns behind a captive portal, and
-// the portal clears. It replaces cmd/keepgoing's TestOfflineScenarioHeadless.
+// the portal clears. It replaces cmd/looptender's TestOfflineScenarioHeadless.
 func TestScenarioHeadlessOutage(t *testing.T) {
 	t.Parallel()
 	for _, cli := range []string{"claude", "codex"} {
@@ -149,7 +149,7 @@ func runHeadlessOutage(t *testing.T, cli string, o outage, known map[string][]Wa
 // the CLI reports a session, nothing is saved, so each re-prompt starts a new
 // conversation with the whole task, until the re-prompts are spent and the
 // loop is held. This is today's behaviour, listed as a gap in
-// docs/adapters.md; it replaces cmd/keepgoing's
+// docs/adapters.md; it replaces cmd/looptender's
 // TestOfflineFirstTurnStartsANewSessionOnEveryReprompt. An explicit resume
 // then starts a new error episode.
 func TestScenarioHeadlessFirstTurnFails(t *testing.T) {

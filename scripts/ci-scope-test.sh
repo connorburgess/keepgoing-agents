@@ -22,10 +22,10 @@ check docs integrations/macos/README.md "docs/café-项目.md"
 
 # Anything else runs everything.
 check full ""
-check full cmd/keepgoing/main.go
+check full cmd/looptender/main.go
 check full README.md internal/decide/decide.go
 check full internal/README.md
-check full cmd/keepgoing/testdata/example.md
+check full cmd/looptender/testdata/example.md
 check full integrations/bb-plugin-keepgoing/src/testdata/example.md
 check full integrations/bb-plugin-keepgoing/package.json
 check full integrations/macos/Package.swift

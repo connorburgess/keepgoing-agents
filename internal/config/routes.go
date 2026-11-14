@@ -11,8 +11,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
-	"github.com/connorburgess/keepgoing-agents/internal/userdir"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/userdir"
 )
 
 // RoutesStandard is the only value of loop.routes: the loop follows the

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 const agyFixtureID = "11111111-2222-4333-8444-555555555555"

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	snapfile "github.com/looptender/looptender/internal/snapshot"
 )
 
 // Snapshots bind exactly the bytes parsed by Load, not a later read. They are

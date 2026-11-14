@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
 )
 
 // Agents on the runner contract are built from its registry. A definition

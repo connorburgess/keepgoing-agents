@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 func TestHeadlessResultEvidence(t *testing.T) {

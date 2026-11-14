@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // A lane is a direct child thread of the supervised thread. This file is

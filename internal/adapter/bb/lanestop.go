@@ -6,7 +6,7 @@ import (
 	"errors"
 	"regexp"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/looptender/looptender/internal/adapter"
 )
 
 // This file is everything the BB adapter does for a stop that covers the

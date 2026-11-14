@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // FileName of the control file inside the state directory.

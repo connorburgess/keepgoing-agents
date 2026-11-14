@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/looptender/looptender/internal/probe"
 )
 
 var (

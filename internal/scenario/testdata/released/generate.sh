@@ -27,7 +27,7 @@ go build -o "$work/bb" "$root/internal/scenario/standin"
 for tag in v0.1.0 v0.1.1 v0.1.2 v0.1.3 v0.1.4 v0.1.5; do
 	src="$work/src-$tag"
 	[ -d "$src" ] || git -C "$root" worktree add -q --detach "$src" "$tag"
-	(cd "$src" && go build -o "$work/keepgoing-$tag" ./cmd/keepgoing)
+	(cd "$src" && go build -o "$work/keepgoing-$tag" ./cmd/looptender)
 	loop="$work/loop-$tag"
 	rm -rf "$loop" && mkdir -p "$loop/world"
 	cat > "$loop/keepgoing.yaml" <<YAML

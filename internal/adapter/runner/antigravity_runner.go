@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // AntigravityConfig is what the runner needs to start one ACP turn. Command is

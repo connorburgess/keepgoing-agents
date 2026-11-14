@@ -10,9 +10,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/snapshot"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // RouteNote says where a loop's other routes come from and whether anything

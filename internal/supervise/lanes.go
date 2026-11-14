@@ -7,13 +7,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/prompt"
-	"github.com/connorburgess/keepgoing-agents/internal/report"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/prompt"
+	"github.com/looptender/looptender/internal/report"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // laneRecoveryEvent is the report event for lanes given up or left alone

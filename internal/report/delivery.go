@@ -11,9 +11,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/lock"
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/lock"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 const DeliveryFile = "deliveries.json"

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/config"
 )
 
 func TestOverlapCountsOnlyTimeInsideTheWindow(t *testing.T) {

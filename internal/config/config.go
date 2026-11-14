@@ -17,7 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // Duration is a time.Duration that unmarshals from strings such as "30m".

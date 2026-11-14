@@ -8,7 +8,7 @@ import (
 	"io"
 	"unicode/utf8"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // This protocol foundation is intentionally not a registered adapter. In

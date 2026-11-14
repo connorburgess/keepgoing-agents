@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/netretry"
+	"github.com/looptender/looptender/internal/netretry"
 )
 
 const sha = "0123456789abcdef0123456789abcdef01234567"

@@ -13,11 +13,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/adapter"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/envvar"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // Adapter runs the configured commands.

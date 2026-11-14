@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/envvar"
+	"github.com/looptender/looptender/internal/envvar"
 )
 
 // ExitNetworkGone is returned when the network never came back in time.

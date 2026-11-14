@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // stopAgent is agent as a stop carried out by a command, or a lane count,
