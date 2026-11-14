@@ -41,10 +41,12 @@ Or download a [release archive](https://github.com/connorburgess/keepgoing-agent
 With Go 1.24 or newer:
 
 ```sh
-go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
+go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@v0.2.0
 ```
 
-`go install` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
+The released v0.2.0 command above installs `keepgoing`. The source module is being moved to `github.com/looptender/looptender`, with its command at `cmd/looptender`. After that change is merged in the transferred repository, `go install github.com/looptender/looptender/cmd/looptender@main` installs the unreleased `looptender` command. The new path's `@latest` is not available until a release declares the new module path. Old-path installs remain valid when pinned to old releases; after the module change, new versions cannot be installed through the old module path. Keep any existing `keepgoing` executable or compatibility link until the installation that manages it provides the alias. A fresh install of `cmd/looptender` creates only `looptender`; run it as `looptender`. The `keepgoing` examples below, existing schedulers and an unset BB plugin `keepgoingPath` still need a `keepgoing` executable or an explicit path/command update. On macOS/Linux, if no `keepgoing` file exists in the install directory and you choose to keep those callers unchanged, a `keepgoing` symbolic link to the new executable provides that name; the Go install does not create it.
+
+`go install` with `@latest` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
 [CLI v0.2.0 and BB plugin v0.3.0](docs/releases/v0.2.0.md) are released from one tag. If your package source still provides v0.1.5, use a published v0.2.0 archive. The plugin has a separate [pinned installation path](integrations/bb-plugin-keepgoing/README.md#install); Homebrew does not install it.
 
@@ -53,12 +55,12 @@ go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@latest
 On macOS/Linux, keep a source build separate from the installed release:
 
 ```sh
-git clone https://github.com/connorburgess/keepgoing-agents.git
-cd keepgoing-agents
+git clone https://github.com/looptender/looptender.git
+cd looptender
 revision=$(git rev-parse HEAD)
 mkdir -p "$HOME/.local/bin"
 go build -trimpath -ldflags "-X main.version=dev-$revision" \
-  -o "$HOME/.local/bin/keepgoing-dev" ./cmd/keepgoing
+  -o "$HOME/.local/bin/keepgoing-dev" ./cmd/looptender
 "$HOME/.local/bin/keepgoing-dev" version
 ```
 

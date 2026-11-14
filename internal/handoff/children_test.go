@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/looptender/looptender/internal/config"
 )
 
 // A brief sent to a different conversation says how many child conversations

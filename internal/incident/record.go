@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/evidence"
 )
 
 // questionIDPattern is control.QuestionIDPattern; the journal does not import control.

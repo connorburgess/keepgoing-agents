@@ -3,8 +3,8 @@ package supervise
 import (
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // retrySilentFor tracks how long the active target has been observed with an

@@ -11,9 +11,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/allowance"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/looptender/looptender/internal/allowance"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/probe"
 )
 
 // First is the loop's first route, the step timing returns to.

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // Only a stop-only check may run from the last configuration a daemon read:

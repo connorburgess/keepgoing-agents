@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"time"
 
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 // childKey is the short hash decide.ChildHashes produces.

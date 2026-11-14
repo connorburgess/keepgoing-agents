@@ -3,11 +3,11 @@ package timing
 import (
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/allowance"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/allowance"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // FromRecords builds the decision's input from a loop's records: its route

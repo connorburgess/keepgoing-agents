@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // status reads the send and progress allowances while a tick replaces them. A

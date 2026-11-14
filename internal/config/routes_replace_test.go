@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	snapfile "github.com/looptender/looptender/internal/snapshot"
 )
 
 // A loop's check of its loaded sources reads the standard list while it may

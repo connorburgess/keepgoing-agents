@@ -1,7 +1,7 @@
 package decide
 
 import (
-	"github.com/connorburgess/keepgoing-agents/internal/evidence"
+	"github.com/looptender/looptender/internal/evidence"
 	"testing"
 	"time"
 )

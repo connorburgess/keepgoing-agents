@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/testexec"
+	"github.com/looptender/looptender/internal/adapter/runner"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/testexec"
 )
 
 func fake(t *testing.T, body string) string {

@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/incident"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/state"
 )
 
 func TestIncidentRecordsHandoffSwitchBackTargetsAndProbes(t *testing.T) {

@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/handoff"
-	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
-	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/handoff"
+	"github.com/looptender/looptender/internal/health"
+	"github.com/looptender/looptender/internal/probe"
+	"github.com/looptender/looptender/internal/state"
 )
 
 // childWork is what a check can see of a parent's children without any of

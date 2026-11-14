@@ -17,7 +17,7 @@ var ErrHeld = errors.New("lock held by another process")
 //
 // A new lock file under the per-user directories or a loop's state
 // directory must also be added to migrateLockNames in
-// cmd/keepgoing/migrate.go, or keepgoing migrate neither looks at it nor
+// cmd/looptender/migrate.go, or keepgoing migrate neither looks at it nor
 // holds it while the directories move.
 const (
 	Tick    = "tick"

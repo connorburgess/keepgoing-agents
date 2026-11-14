@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/control"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/control"
 )
 
 func TestCurrentGoalIsOptInAndReread(t *testing.T) {

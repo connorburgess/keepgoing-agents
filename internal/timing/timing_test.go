@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/allowance"
-	"github.com/connorburgess/keepgoing-agents/internal/config"
-	"github.com/connorburgess/keepgoing-agents/internal/probe"
+	"github.com/looptender/looptender/internal/allowance"
+	"github.com/looptender/looptender/internal/config"
+	"github.com/looptender/looptender/internal/probe"
 )
 
 var now = time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)

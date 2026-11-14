@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 // A hold for a restricted turn, the one re-prompt a person asks for by

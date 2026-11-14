@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/looptender/looptender/internal/decide"
 )
 
 func retryLog(tail string) string {

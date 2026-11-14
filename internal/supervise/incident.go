@@ -3,9 +3,9 @@ package supervise
 import (
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/control"
-	"github.com/connorburgess/keepgoing-agents/internal/decide"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/looptender/looptender/internal/control"
+	"github.com/looptender/looptender/internal/decide"
+	"github.com/looptender/looptender/internal/incident"
 )
 
 func (t *tick) recordIncident(failed bool) error {

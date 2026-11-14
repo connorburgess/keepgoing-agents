@@ -3,7 +3,7 @@ package incident
 import (
 	"testing"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot/snapshottest"
+	"github.com/looptender/looptender/internal/snapshot/snapshottest"
 )
 
 // timeline and doctor read the journal while every tick appends to it.

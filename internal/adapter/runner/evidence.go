@@ -1,6 +1,6 @@
 package runner
 
-import "github.com/connorburgess/keepgoing-agents/internal/evidence"
+import "github.com/looptender/looptender/internal/evidence"
 
 func runnerEvidence(st Status) evidence.Detail {
 	d := evidence.Detail{Source: "runner_state"}

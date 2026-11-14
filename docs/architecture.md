@@ -16,7 +16,7 @@
 ## Packages
 
 ```
-cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, ci-wait, net-retry
+cmd/looptender               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             a loop's configuration file (looptender.yaml, or keepgoing.yaml) and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
 internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
@@ -167,7 +167,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
-| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/keepgoing/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/looptender/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
 | `targets/<id>/` | the tool | headless turn files (`run.json` with private stop key, `turn.lock` held by the live turn wrapper, `turn.started` naming the turn whose wrapper took the lock, `turn.finishing` while a wrapper publishes its exit code, stop request/acknowledgement, prompt, stdout, stderr, exit code, session id) the BB log cursor (`bb-cursor.json`), and, from internal fixtures only, create-once ACP interaction-hold records (`acp-prompt-reserved.json`, `acp-needs-user.json`, `acp-hold-adopted.json`) |
 
 ## Ownership and control writes
@@ -254,7 +254,7 @@ Status and doctor read the ledger independently of the tick's last decision. War
 
 ## Offline incident view
 
-`cmd/keepgoing` implements `timeline` as a read-only composition of `incident.Load`, `report.LoadDeliveries` and a bounded control-file projection. No new decision or storage package is introduced. The command reads these files independently, without locks or provider/daemon/scheduler/CI calls, and keeps current flags separate from historical hold entries. `--state-dir` bypasses normal config loading for copied records or broken configuration. It never consumes transcript text, raw logs or provider output.
+`cmd/looptender` implements `timeline` as a read-only composition of `incident.Load`, `report.LoadDeliveries` and a bounded control-file projection. No new decision or storage package is introduced. The command reads these files independently, without locks or provider/daemon/scheduler/CI calls, and keeps current flags separate from historical hold entries. `--state-dir` bypasses normal config loading for copied records or broken configuration. It never consumes transcript text, raw logs or provider output.
 
 A long limit wait is reported by the tick orchestrator after the decision and its action, never by the decision engine: `internal/supervise` reads the decision's typed limit-wait rule, the observed reset time and `errors.report_wait_after`, saves the wait to `state.json` and then requests its `limit_wait` report, so a restart cannot repeat it; the wait is cleared only on positive recovery evidence. It writes no control and returns the tick's decision unchanged. The `child_error` report for child threads in error follows the same shape: the pure rule in `internal/decide` says whether newly errored children are reported, and the orchestrator saves the episode before the one request.
 
@@ -302,7 +302,7 @@ All saved state fields are bound, so an intervening ordinary tick may require an
 
 ## Dock page
 
-`cmd/keepgoing` implements `dock` as three separate layers so that remote reach can be added later without a rewrite. `dockGuard` accepts only loopback `Host` values, same-origin requests and `GET`/`HEAD`. `dockAuth` is an interface that decides who may read; its only implementation requires a per-run random token as the first path segment, compared in constant time. `dockReader` builds one versioned report (`/api/v1/dock`) that the embedded page consumes; ages are computed against the report's read time, not the browser's clock. The listener binds `127.0.0.1` only. There is no write endpoint and no control path.
+`cmd/looptender` implements `dock` as three separate layers so that remote reach can be added later without a rewrite. `dockGuard` accepts only loopback `Host` values, same-origin requests and `GET`/`HEAD`. `dockAuth` is an interface that decides who may read; its only implementation requires a per-run random token as the first path segment, compared in constant time. `dockReader` builds one versioned report (`/api/v1/dock`) that the embedded page consumes; ages are computed against the report's read time, not the browser's clock. The listener binds `127.0.0.1` only. There is no write endpoint and no control path.
 
 The reader composes existing reads and no new evidence: `registry.Load`, `readClientStatus` (with its bounded query of the loop's existing daemon endpoint, reused for the same loop's status read), `readStatus` (the function behind `status --json`), `readRegisteredRunsWith` (behind `runs --registry-id`), `summarize` (behind `fallbacks list`) and `readTimeline` (behind `timeline`) for recent history, the record of a hold starting and how long the last result has repeated. A read runs on the command's context with its own time limit, never a request's; each registered configuration is validated once per read and shared with the runs read; an incomplete read is marked, never cached, and its unread loops are listed as needing a look. It takes no lock, creates no file, and runs no adapter, provider, `bb`, scheduler or Git command.
 

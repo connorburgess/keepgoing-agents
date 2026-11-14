@@ -3,7 +3,7 @@ package rungraph
 import (
 	"time"
 
-	rd "github.com/connorburgess/keepgoing-agents/internal/rundiscovery"
+	rd "github.com/looptender/looptender/internal/rundiscovery"
 )
 
 // Gate is the saved control state a run boundary is recorded from.

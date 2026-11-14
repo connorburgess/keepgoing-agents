@@ -22,7 +22,7 @@ modules() {
   go mod download
   for t in $targets; do
     GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go list -deps \
-      -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' ./cmd/keepgoing
+      -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' ./cmd/looptender
   done | LC_ALL=C sort -u
 }
 

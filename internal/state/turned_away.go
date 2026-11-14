@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // TurnedAwayName records the latest check that exited without running

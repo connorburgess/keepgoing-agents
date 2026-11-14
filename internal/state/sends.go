@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/looptender/looptender/internal/snapshot"
 )
 
 // SendsName is separate from diagnostic state so a failed check or stale record
