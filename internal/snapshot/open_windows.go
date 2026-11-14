@@ -32,8 +32,9 @@ func Open(path string) (*os.File, error) {
 // never missing. Choose this call whenever a false absence could permit an
 // action, hide a hold, or reset a cap (see the package comment).
 func OpenRecord(path string) (*os.File, error) {
-	f, err := openShared(path, "open", syscall.GENERIC_READ, syscall.FILE_ATTRIBUTE_NORMAL, recordRetry(path))
-	return f, recordReadError(path, err)
+	retry, marked := recordRetryState(path)
+	f, err := openShared(path, "open", syscall.GENERIC_READ, syscall.FILE_ATTRIBUTE_NORMAL, retry)
+	return f, recordReadError(path, err, *marked)
 }
 
 // fileReadAttributes is FILE_READ_ATTRIBUTES: enough to describe a file
@@ -52,8 +53,9 @@ func Lstat(path string) (os.FileInfo, error) { return lstatWith(path, heldByAnot
 
 // LstatRecord is Lstat with OpenRecord's handling of "not found".
 func LstatRecord(path string) (os.FileInfo, error) {
-	info, err := lstatWith(path, recordRetry(path))
-	return info, recordReadError(path, err)
+	retry, marked := recordRetryState(path)
+	info, err := lstatWith(path, retry)
+	return info, recordReadError(path, err, *marked)
 }
 
 func lstatWith(path string, retry func(error) bool) (os.FileInfo, error) {
@@ -221,11 +223,8 @@ func Remove(path string) error {
 // A marked record still absent after the budget is unavailable, not empty.
 // Do not wrap the not-found error: record loaders use errors.Is to create a
 // new record, which could reset a cap or permit a duplicate send.
-func recordReadError(path string, err error) error {
-	if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if _, markerErr := os.Lstat(markerFor(path)); !errors.Is(markerErr, os.ErrNotExist) {
+func recordReadError(path string, err error, marked bool) error {
+	if errors.Is(err, os.ErrNotExist) && marked {
 		return fmt.Errorf("record unavailable after replacement wait: %s", path)
 	}
 	return err
@@ -239,6 +238,14 @@ func recordReadError(path string, err error) error {
 // once for longer than 30 ms); a missing directory is never retried. The
 // marker is looked at once, on the first "not found".
 func recordRetry(path string) func(error) bool {
+	retry, _ := recordRetryState(path)
+	return retry
+}
+
+// Preserve the marker observation made by the retry rule. Looking again
+// after a no-marker miss could see a first publisher's new marker and turn
+// a legitimate initial absence into an unavailable error without waiting.
+func recordRetryState(path string) (func(error) bool, *bool) {
 	checked, present := false, false
 	return func(err error) bool {
 		if heldByAnother(err) {
@@ -253,7 +260,7 @@ func recordRetry(path string) func(error) bool {
 			checked, present = true, !errors.Is(merr, os.ErrNotExist)
 		}
 		return present
-	}
+	}, &present
 }
 
 func snapshotWindowsPath(path string) ([]uint16, error) {

@@ -324,3 +324,18 @@ func TestWindowsWriterCrashLeavesControlAndCapsRecoverable(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsInitialAbsenceDoesNotBecomeAnUnwaitedFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	retry, marked := recordRetryState(path)
+	if retry(syscall.ERROR_FILE_NOT_FOUND) {
+		t.Fatal("never-written record was retried")
+	}
+	// The first publisher starts after the reader has observed true absence.
+	if err := ensureMarker(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordReadError(path, syscall.ERROR_FILE_NOT_FOUND, *marked); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("initial absence became unavailable without a retry: %v", err)
+	}
+}
