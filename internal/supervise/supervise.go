@@ -121,7 +121,9 @@ type Result struct {
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
 	// that it will not retry the failed turn. Empty otherwise.
-	RetrySignal  string     `json:"retrySignal,omitempty"`
+	RetrySignal string `json:"retrySignal,omitempty"`
+	// Routes is set when the loop's route list needs attention.
+	Routes       *RouteNote `json:"routes,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
 	Target       string     `json:"target"`
@@ -175,8 +177,12 @@ type Result struct {
 }
 
 type tick struct {
-	heldNudge   bool      // this check held back a nudge
-	wakeAtStart time.Time // LastWakeAt as this check found it
+	limitResetsAt time.Time // the structured reset of the limit this check waits on
+	// routeOutsideList: a loop following the standard list is on a route that
+	// list no longer resolves; the route is kept from its saved record.
+	routeOutsideList bool
+	heldNudge        bool      // this check held back a nudge
+	wakeAtStart      time.Time // LastWakeAt as this check found it
 	// claims are the session claims this check holds, by key. A check holds
 	// its active session's claim from before it first observes it until it
 	// ends, and a fallback's or the primary's before it probes or sends there.
@@ -224,6 +230,8 @@ type tick struct {
 	// child-error notice and what to record.
 	// newThreadCapped: a handoff needed a new thread and the loop had created
 	// its maximum. newThreadUnresolved: a creation's outcome is unknown.
+	// incidentRouteListChanged: this check read a changed standard list.
+	incidentRouteListChanged bool
 	// incidentNewThread: this check recorded a created thread.
 	newThreadCapped     bool
 	newThreadUnresolved bool
@@ -358,9 +366,8 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	if timeout := cfg.Loop.NetworkCheckTimeout(); opts.Online == nil && timeout > 0 {
-		n := cfg.Loop.Network
-		opts.Online = netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+	if opts.Online == nil {
+		opts.Online = Connectivity(cfg)
 	}
 	if opts.Threads == nil {
 		opts.Threads = bbThreads
@@ -609,6 +616,7 @@ func (t *tick) run() error {
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
+	t.keepCurrentRoute()
 	target, agent := t.resolve(t.st.Target())
 	if target != t.st.Target() {
 		t.st.ActiveTarget = target
@@ -741,6 +749,7 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	t.noteRouteList()
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
@@ -1890,6 +1899,7 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	t.st.LimitResetsAt = t.limitResetsAt
 	// Something was sent this check when the time of the last wake moved
 	// and it was not for a held-back nudge.
 	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
@@ -1938,6 +1948,7 @@ func (t *tick) record(actErr error) error {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
 	t.st.CheckFinishedAt = t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
+	t.saveRouteRecord()
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
@@ -1978,6 +1989,9 @@ func (t *tick) record(actErr error) error {
 	}
 	if t.res.Handoff != nil {
 		extra["handoff"] = t.res.Handoff
+	}
+	if t.res.Routes != nil {
+		extra["routes"] = t.res.Routes
 	}
 	if len(t.res.Probes) > 0 {
 		extra["probes"] = t.res.Probes
@@ -2365,6 +2379,13 @@ func (t *tick) countUnrecordedSends() error {
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
 			t.st.SwitchBackRejected, agentSend = max(t.st.SwitchBackRejected, t.loop.Errors.MaxReprompts), false
+		case "report:routes-unreadable", "report:routes-readable":
+			t.st.RoutesUnreadable = p.Action == "report:routes-unreadable"
+		}
+		// A report is never a send to the agent, whatever its key, as in
+		// SettleIntoEpisode: a key added later cannot be counted as one.
+		if strings.HasPrefix(p.Action, "report:") {
+			agentSend = false
 		}
 		if agentSend && p.At.After(t.st.LastWakeAt) {
 			t.st.LastWakeAt = p.At
@@ -2570,6 +2591,17 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 // something that needs the network is about to be done. It reports whether
 // that work should wait. Without a configured check, in a dry run, or once a
 // failing check has been shown wrong, it reports false and nothing is gated.
+// Connectivity is the loop's connectivity check, as each check makes it, or
+// nil when none is configured.
+func Connectivity(cfg *config.Config) func(context.Context) bool {
+	timeout := cfg.Loop.NetworkCheckTimeout()
+	if timeout <= 0 {
+		return nil
+	}
+	n := cfg.Loop.Network
+	return netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+}
+
 func (t *tick) networkDown() bool {
 	if t.opts.Online == nil || t.opts.DryRun {
 		return false // a dry run makes no request
@@ -2890,11 +2922,13 @@ func (t *tick) reportContext(typ, text string) (context.Context, context.CancelF
 func (t *tick) noteRedundancy(target, group string) health.Summary {
 	summary := health.Evaluate(t.fb, t.reg, t.now, target, group)
 	t.res.Redundancy = &summary
+	// While the standard list is unreadable there are no other routes at all;
+	// that is reported once by noteRouteList, not again as lost redundancy.
 	key := "recovered"
 	if !summary.Meets {
 		key = "degraded"
 	}
-	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && t.reserveReport(key) {
+	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && !t.cfg.RouteList.Unreadable && t.reserveReport(key) {
 		t.st.Degraded = degraded
 		if degraded {
 			t.report("degraded", fmt.Sprintf("%s: only %d of the required %d distinct healthy fallbacks; handoffs are refused", t.loop.Name, summary.Distinct, summary.Min), map[string]any{"redundancy": summary})

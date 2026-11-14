@@ -21,11 +21,13 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/daemoninfo"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
 	"github.com/connorburgess/keepgoing-agents/internal/netretry"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // Diagnostics never return raw command output, environment values, task text,
@@ -91,6 +93,9 @@ func doctor(e env, args []string, run doctorRun) int {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		r.add("config", "error", "Configuration or fallbacks could not be read or validated.", "Check the selected config path and YAML against the configuration guide. Raw parser errors are withheld to protect values.")
+		// What belongs to the user and to no loop is reported all the same.
+		doctorVariables(&r)
+		doctorUserDirectory(&r, userdir.Look())
 		return printDoctor(e, r, *asJSON)
 	}
 	r.Loop = cfg.Loop.Name
@@ -108,9 +113,13 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	// The variables move what every command reads, so doctor says where.
-	if dir := os.Getenv(registryDirEnv); dir != "" {
-		r.add("registry.directory", "ok", "KEEPGOING_REGISTRY_DIR is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
+	// (Two names that disagree are reported by doctorVariables instead: no
+	// registry is used then.)
+	if dir, name, err := envvar.RegistryDir.Path(); err == nil && dir != "" {
+		r.add("registry.directory", "ok", name+" is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
 	}
+	doctorVariables(&r)
+	doctorUserDirectory(&r, userdir.Look())
 	// A check claims its session before acting on it. Doctor says what is
 	// wrong with the claim directory, in terms of its real cause.
 	if status, message, fix := sessionDirectoryCheck(); status != "" {
@@ -164,7 +173,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		a := cfg.Loop.Agent
 		valid := true
 		if r.Target != state.Primary {
-			candidate, ok := cfg.FallbackSet.Find(r.Target)
+			candidate, ok := effectiveRoutes(cfg, st).Find(r.Target)
 			if !ok || candidate.Disabled {
 				valid = false
 				r.add("target", "error", "Recorded active target is missing or disabled in the fallback configuration.", "Review the intended target and use retarget explicitly before resuming.")
@@ -210,8 +219,10 @@ func doctor(e env, args []string, run doctorRun) int {
 		}
 	}
 	checkAgent("primary", cfg.Loop.Agent)
-	if cfg.FallbackSet != nil {
-		for _, c := range cfg.FallbackSet.Candidates {
+	// The effective routes: for a loop that follows the standard list, a
+	// current route that is no longer in it is checked too.
+	if fb := currentRoutes(cfg); fb != nil {
+		for _, c := range fb.Candidates {
 			if c.Disabled {
 				continue
 			}
@@ -712,4 +723,76 @@ func doctorAgentVersion(adapter string, raw []byte) string {
 		return ""
 	}
 	return doctorVersion(raw)
+}
+
+// doctorVariables says when a variable's two names, LOOPTENDER_X and the
+// earlier KEEPGOING_X, are set to different values, and which earlier names
+// are in use. It never prints a value: two of them are credentials.
+//
+// The session directory is left to its own check, which reports the same
+// disagreement as the reason claims cannot be kept.
+func doctorVariables(r *doctorReport) {
+	location := map[envvar.Var]bool{}
+	for _, v := range envvar.Locations {
+		location[v] = true
+	}
+	var earlier []string
+	for _, v := range envvar.Set {
+		id := "environment." + strings.ToLower(string(v))
+		switch _, name, err := v.Path(); {
+		case location[v] && err != nil:
+			if v != envvar.SessionDir {
+				r.add(id, "error", v.Name()+" and "+v.Legacy()+" are set to different places. Commands that read either refuse until they agree.", "Unset "+v.Legacy()+", or set both to the same place.")
+			}
+		case !location[v] && v.Disagrees():
+			r.add(id, "warning", v.Name()+" and "+v.Legacy()+" are set to different values. "+v.Name()+" is the one used.", "Unset "+v.Legacy()+".")
+		case name == v.Legacy():
+			earlier = append(earlier, name)
+		}
+	}
+	if len(earlier) > 0 {
+		r.add("environment.earlier_names", "ok", "Read under an earlier name: "+strings.Join(earlier, ", ")+". Earlier names still work; the current names begin "+envvar.Prefix+" in place of "+envvar.LegacyPrefix+".", "")
+	}
+}
+
+// doctorUserDirectory says which name the tool's per-user directories go by
+// on this computer and why. It warns when a registry or route list exists
+// under the other name as well (those are not read), and when the name was
+// decided by a directory that could not be inspected. It never suggests
+// removing anything: a directory of either name can also hold a loop's own
+// files.
+func doctorUserDirectory(r *doctorReport, f userdir.Found) {
+	const holds = "the loop registry, the standard route list, session claims and the panel's files"
+	const guide = "See \"Per-user directories\" in docs/configuration.md."
+	list := func(paths []string) string { return strings.Join(paths, ", ") }
+	linked := ""
+	if len(f.Linked) > 0 {
+		linked = " In " + list(f.Linked) + " the two names are one directory, one being a link to the other."
+	}
+	switch {
+	case f.Name == userdir.LegacyName && len(f.Unread) > 0:
+		r.add("user.directory", "warning", "Per-user files ("+holds+") are read from directories named "+userdir.LegacyName+", the tool's earlier name ("+doctorUsed(f)+"). These, kept under the name "+userdir.Name+", are not read while that is so: "+list(f.Unread)+". A loop registered only there is not listed, and a route list there is not followed. Session claims are honoured under both names, so loops run by this release or later never act on one session at once."+linked,
+			"Nothing is removed or moved for you, and nothing here needs removing. "+guide)
+	case f.Name == userdir.LegacyName && len(f.Unknown) > 0:
+		r.add("user.directory", "warning", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+"."+linked,
+			"Make "+list(f.Unknown)+" readable by this user, so what it holds can decide the name. "+guide)
+	case f.Name == userdir.LegacyName:
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+". Nothing is moved; a computer without them uses "+userdir.Name+"."+linked, "")
+	default:
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.Name+" under the user configuration and state directories."+linked, "")
+	}
+}
+
+// doctorUsed says what makes the earlier name the one in use: the tool's
+// files that are there, or a directory that could not be looked into.
+func doctorUsed(f userdir.Found) string {
+	switch {
+	case len(f.Used) > 0 && len(f.Unknown) > 0:
+		return "this computer already has them there: " + strings.Join(f.Used, ", ") + "; and " + strings.Join(f.Unknown, ", ") + " could not be inspected"
+	case len(f.Used) > 0:
+		return "this computer already has them there: " + strings.Join(f.Used, ", ")
+	case len(f.Unknown) > 0:
+		return strings.Join(f.Unknown, ", ") + " could not be inspected, which counts as the earlier name"
+	}
+	return "an entry of that name was found"
 }

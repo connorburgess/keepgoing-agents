@@ -1,6 +1,6 @@
 # Adapter capabilities
 
-keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It is unreleased documentation of source on `main`; see [integrations](integrations.md) for what is in a published release.
+keepgoing is meant to supervise every popular coding agent, not only BB threads. This page says what each adapter can do today, how strong the evidence is, and what is missing. It documents the source on `main`; see [integrations](integrations.md) for what is in a published release.
 
 An adapter is how the supervisor talks to one kind of agent. The decision engine is the same for all of them, but it can only act on what an adapter reports and can only do what an adapter can carry out.
 
@@ -312,7 +312,7 @@ Notice that the agent is waiting for a person to approve something, hold, and re
 
 The scenario: the network drops while a turn is running; the host may sleep; the outage lasts twenty minutes, four hours, three days or three weeks; and the network returns behind a captive portal. It was run with stand-in executables in [`TestScenarioHeadlessOutage`](../internal/scenario/headless_outage_test.go), through the real commands, with the check clock moved forward. Nothing here was run against the real CLIs, and how the real CLIs print a network failure is an assumption: the stand-ins print the documented result shape with an error and no recognised code, print a stream-disconnect code (Codex), print nothing, or print an HTML page.
 
-What happens, with default settings and the connectivity check on (unreleased source). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
+What happens, with default settings and the connectivity check on (v0.2.0). Before the check existed, three re-prompts went into the outage ten minutes apart, the loop was on an awaiting-user hold within half an hour, and nothing brought it back:
 
 | Moment | What keepgoing does |
 | --- | --- |
@@ -341,8 +341,8 @@ Unless a row says otherwise, none of these is fixed. Each needs a decision or is
 
 | Gap | Affects | Evidence |
 | --- | --- | --- |
-| **Closed in unreleased source: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
-| **Closed in unreleased source: `resume` did not recover an error hold on a headless loop.** The spent re-prompts were kept, so the loop held again at once and the way out was `retarget primary`, then `resume`. An explicit `resume` now starts a new error episode. | Headless Claude Code, Codex, Cursor | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go); [what `resume` starts over](operations.md#what-resume-starts-over) |
+| **Closed in v0.2.0: an outage ended in a hold that needed a person.** Re-prompts were spent into a dead network, and nothing acted when it returned. The connectivity check now waits the outage out. What remains: the idle wake that runs into the outage is still sent, and a provider outage with a working network is still re-prompted into. | Every adapter | The scenario above; [network outages](operations.md#network-outages) |
+| **Closed in v0.2.0: `resume` did not recover an error hold on a headless loop.** The spent re-prompts were kept, so the loop held again at once and the way out was `retarget primary`, then `resume`. An explicit `resume` now starts a new error episode. | Headless Claude Code, Codex, Cursor | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go); [what `resume` starts over](operations.md#what-resume-starts-over) |
 | **A first turn that fails before a session is reported starts a new conversation on every re-prompt.** | Headless Claude Code, Codex | [`TestScenarioHeadlessFirstTurnFails`](../internal/scenario/headless_outage_test.go) |
 | **An idle headless session is woken at every check**, with the whole task prompt, until it declares completion or a limit stops it. | Headless Claude Code, Codex, Cursor | The scenario above; [operations](operations.md#bounds-on-repeated-work) |
 | **No typed permission state.** A headless turn cannot wait for approval, and a denial is not reported as waiting on a person. | Headless Claude Code, Codex, Cursor | Matrix, permission prompts |

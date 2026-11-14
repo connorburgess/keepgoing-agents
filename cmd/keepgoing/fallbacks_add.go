@@ -235,6 +235,9 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	if cfg.Loop.Adapter == "cursor" {
 		return refuse(errors.New("A Cursor primary supports standalone loops only; fallbacks are unverified."))
 	}
+	if cfg.Loop.FollowsStandard() {
+		return refuse(errors.New(followsStandardRefusal("add")))
+	}
 	if cfg.Loop.Fallbacks != "" {
 		if info, err := os.Lstat(cfg.Loop.Fallbacks); err != nil || !info.Mode().IsRegular() {
 			return refuse(errors.New("The loop's fallbacks file is a symbolic link or not a regular file.\n  Point loop.fallbacks at the real file instead."))

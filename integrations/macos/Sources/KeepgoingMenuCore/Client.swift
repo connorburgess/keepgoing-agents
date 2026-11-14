@@ -104,7 +104,10 @@ public struct LocalClient {
             return ChangeResult(outcome: "refused", text: LocalClient.notAccepted)
         }
         do {
-            let (data, code) = try run(arguments, timeout: 60)
+            // A stop of every loop saves every stop, then carries out those
+            // that can be at once in the time keepgoing gives a change; this
+            // waits a little longer than that.
+            let (data, code) = try run(arguments, timeout: 120)
             if let result = try? Contract.groupApplied(data) { return result }
             if code == 2 && data.isEmpty { return ChangeResult(outcome: "refused", text: LocalClient.notAccepted) }
             return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))

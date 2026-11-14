@@ -4,7 +4,7 @@
 version: 1
 loop:
   name: example-headless-loop
-  state_dir: ~/.local/state/keepgoing/example-headless-loop
+  state_dir: ~/.local/state/agent-loops/example-headless-loop
   adapter: claude
   claude:
     workdir: ~/src/example-app

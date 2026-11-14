@@ -32,11 +32,21 @@ def main():
             stub.write_text('#!/bin/sh\n: > "$SMOKE_PROVIDER_MARKER"\nexit 99\n')
             stub.chmod(0o700)
         environment = os.environ.copy()
-        # Do not inherit the caller's Git repository or configuration overrides.
+        # Do not inherit the caller's Git repository or configuration overrides,
+        # keepgoing or BB settings, or base directories.
         for key in list(environment):
-            if key.startswith("GIT_"):
+            if key.startswith(("GIT_", "KEEPGOING_", "LOOPTENDER_", "BB_", "XDG_")):
                 del environment[key]
+        # A home of its own, removed with the temporary directory: session
+        # claims and other per-user records live under the user's state or
+        # configuration directory, and must not be left in the caller's.
+        home = root / "home"
+        home.mkdir()
         environment.update({
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_STATE_HOME": str(home / ".local" / "state"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
             "PATH": str(commands) + os.pathsep + os.environ.get("PATH", ""),
             "SMOKE_PROVIDER_MARKER": str(marker),
             "BB_THREAD_ID": "thr_smoke_owner",

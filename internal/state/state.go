@@ -126,6 +126,12 @@ type File struct {
 	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
 	Handoffs      int       `json:"handoffs,omitempty"`
 	Degraded      bool      `json:"degraded,omitempty"`
+	// RoutesUnreadable is true while a loop that follows the standard route
+	// list cannot read it, so that beginning and ending are each reported once.
+	RoutesUnreadable bool `json:"routesUnreadable,omitempty"`
+	// RoutesDigest identifies the standard list this loop last read, so a
+	// change to it is noted once in the loop's timeline.
+	RoutesDigest string `json:"routesDigest,omitempty"`
 	// ClaimUnavailable is set while checks run without a session claim
 	// because there is no user state directory to keep claims in; its start
 	// and end are reported once each.
@@ -162,6 +168,10 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// LimitResetsAt is the structured reset of the provider limit the last
+	// check waited on, when it waited on one with a reset still ahead; zero
+	// otherwise. A daemon checks again at it.
+	LimitResetsAt time.Time `json:"limitResetsAt,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
 	// Lanes is the record of lane recovery (bb.children.retry_errored). It

@@ -191,17 +191,34 @@
           "type": "string",
           "description": "path to fallbacks.yaml"
         },
+        "routes": {
+          "type": "string",
+          "enum": [
+            "standard"
+          ],
+          "description": "follow the person's standard route list instead of a fallbacks file of the loop's own"
+        },
+        "routes_allow": {
+          "type": "array",
+          "description": "kinds of standard route this loop opts in to; off by default",
+          "items": {
+            "type": "string",
+            "enum": [
+              "new_conversation"
+            ]
+          }
+        },
         "report": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "url_env": {
               "type": "string",
-              "default": "KEEPGOING_WEBHOOK_URL"
+              "default": "LOOPTENDER_WEBHOOK_URL"
             },
             "secret_env": {
               "type": "string",
-              "default": "KEEPGOING_WEBHOOK_SECRET"
+              "default": "LOOPTENDER_WEBHOOK_SECRET"
             },
             "secret_file": {
               "type": "string"
