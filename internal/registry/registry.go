@@ -247,3 +247,43 @@ func WithEntry(dir, id string, fn func(Entry) error) error {
 		return false, fn(e)
 	})
 }
+
+// Rebase rewrites the paths of every reference whose config path or runtime
+// directory is inside the directory from, to the same place inside to, and
+// returns how many references changed. It is for a directory that has been
+// renamed as a whole. A registry that does not exist is left absent.
+func Rebase(dir, from, to string) (int, error) {
+	if _, err := os.Lstat(filepath.Join(dir, FileName)); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if !filepath.IsAbs(from) || !filepath.IsAbs(to) || filepath.Clean(from) != from || filepath.Clean(to) != to {
+		return 0, errors.New("invalid directory")
+	}
+	move := func(p string) string {
+		if rel, err := filepath.Rel(from, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return filepath.Join(to, rel)
+		}
+		return p
+	}
+	changed := 0
+	err := update(dir, func(f *File) (bool, error) {
+		paths, states := map[string]bool{}, map[string]bool{}
+		for i, e := range f.Entries {
+			moved := e
+			moved.ConfigPath, moved.StateDir = move(e.ConfigPath), move(e.StateDir)
+			if !validEntry(moved) || paths[moved.ConfigPath] || states[moved.StateDir] {
+				return false, errors.New("the references cannot be rewritten without two of them naming one place; nothing was changed")
+			}
+			paths[moved.ConfigPath], states[moved.StateDir] = true, true
+			if moved != e {
+				f.Entries[i] = moved
+				changed++
+			}
+		}
+		return changed > 0, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return changed, nil
+}

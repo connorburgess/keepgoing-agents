@@ -220,3 +220,86 @@ func TestRegistryPinnedEntry(t *testing.T) {
 		t.Fatal("missing registry created")
 	}
 }
+
+// Rebase rewrites references into a renamed directory and no others, is
+// safe to repeat, refuses a rewrite that would make two references name one
+// place, and never creates a registry.
+func TestRegistryRebase(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "user", "registry")
+	from, to := filepath.Join(root, "user", "keepgoing"), filepath.Join(root, "user", "looptender")
+
+	// No registry: none is made.
+	if n, err := Rebase(dir, from, to); n != 0 || err != nil {
+		t.Fatalf("no registry: %d %v", n, err)
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a registry directory was created")
+	}
+
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	inside, err := Add(dir, "inside", filepath.Join(from, "loops", "inside", "keepgoing.yaml"), filepath.Join(from, "loops", "inside", "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only its runtime directory is inside.
+	half, err := Add(dir, "half", filepath.Join(root, "elsewhere", "half.yaml"), filepath.Join(from, "half-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A sibling whose name only begins the same is not inside.
+	outside, err := Add(dir, "outside", filepath.Join(from+"-old", "outside.yaml"), filepath.Join(root, "elsewhere", "outside-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := Rebase(dir, from, to)
+	if err != nil || n != 2 {
+		t.Fatalf("Rebase: %d %v", n, err)
+	}
+	f, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Entry{
+		inside.ID:  {ID: inside.ID, Loop: "inside", ConfigPath: filepath.Join(to, "loops", "inside", "keepgoing.yaml"), StateDir: filepath.Join(to, "loops", "inside", "state")},
+		half.ID:    {ID: half.ID, Loop: "half", ConfigPath: half.ConfigPath, StateDir: filepath.Join(to, "half-state")},
+		outside.ID: outside,
+	}
+	for _, e := range f.Entries {
+		if e != want[e.ID] {
+			t.Fatalf("%+v, want %+v", e, want[e.ID])
+		}
+	}
+	if len(f.Entries) != 3 {
+		t.Fatalf("%d references", len(f.Entries))
+	}
+	// Again: nothing left to rewrite. And back again.
+	if n, err := Rebase(dir, from, to); n != 0 || err != nil {
+		t.Fatalf("a second Rebase: %d %v", n, err)
+	}
+	if n, err := Rebase(dir, to, from); n != 2 || err != nil {
+		t.Fatalf("Rebase back: %d %v", n, err)
+	}
+	if f, _ := Load(dir); len(f.Entries) != 3 || f.Entries[0] != inside {
+		t.Fatalf("not as it was: %+v", f.Entries)
+	}
+
+	// A reference already at the place another would be rewritten to.
+	if _, err := Add(dir, "clash", filepath.Join(to, "loops", "inside", "keepgoing.yaml"), filepath.Join(root, "elsewhere", "clash-state")); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, FileName))
+	if n, err := Rebase(dir, from, to); err == nil || n != 0 {
+		t.Fatalf("a clash was rewritten: %d %v", n, err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, FileName)); string(after) != string(before) {
+		t.Fatal("a refused rewrite changed the registry")
+	}
+	// Directories that are not clean absolute paths are refused.
+	if _, err := Rebase(dir, "relative", to); err == nil {
+		t.Fatal("a relative directory was accepted")
+	}
+}
