@@ -81,7 +81,7 @@ func TestClientReviewIsThePanelsReview(t *testing.T) {
 			p.Refused != page.Preview.Refused || !p.ExpiresAt.Equal(page.Preview.ExpiresAt) || p.Key != dockKey(e.ID) || p.Action != x.action {
 			t.Errorf("%s %s: the menu's review differs from the page's:\n%+v\n%q", x.loop, x.action, p, want)
 		}
-		if digest, expires, ok := parseClientExpect(p.Expect, dockKey(e.ID), x.action); !ok || digest != controlDigest(before) || expires.Unix() != p.ExpiresAt.Unix() {
+		if digest, expires, _, ok := parseClientStopExpect(p.Expect, dockKey(e.ID), x.action); !ok || digest != controlDigest(before) || expires.Unix() != p.ExpiresAt.Unix() {
 			t.Errorf("%s: expect does not bind the record reviewed, the loop, the action and the expiry", x.loop)
 		}
 		if after := controlOf(t, e); !reflect.DeepEqual(after, before) || incidentCount(t, e) != records {

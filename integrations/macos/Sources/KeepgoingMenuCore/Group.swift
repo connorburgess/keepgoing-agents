@@ -1,6 +1,6 @@
 import Foundation
 
-// Pause all: one review of every loop from `keepgoing client review pause
+// Pause all and stop all: one review of every loop from `keepgoing client review pause
 // --all --json`, one native confirmation, then `keepgoing client apply pause
 // --all --expect KEY=VALUE…`, which changes each loop on its own, only if its
 // control record is still the one reviewed. Every sentence comes from the
@@ -32,6 +32,8 @@ public struct GroupReview: Decodable, Equatable {
     public let refused: String
     public let expired: String
     public let loops: [Loop]
+    /// For a stop: the options of the whole, read as a single stop's are.
+    public var stop: StopOptions? = nil
 
     /// The loops it changes, with their own expect values.
     public var targets: [LoopExpect] { loops.compactMap { l in l.expect.map { LoopExpect(key: l.key, expect: $0) } } }
@@ -103,7 +105,15 @@ extension ConfirmationBuilder {
         let rest = lines.dropFirst(named)
         let text = ([block] + rest).filter { !$0.isEmpty }.joined(separator: "\n\n")
         var buttons = [ConfirmButton(title: "Cancel", destructive: false, command: nil)]
-        if let action = LoopAction(rawValue: review.action) {
+        // A stop's options in keepgoing's words, those this menu fully
+        // understands; deleting queued messages is never one for every loop.
+        let options = (review.stop?.offered ?? []).filter { !$0.dropsQueued }
+        if let action = LoopAction(rawValue: review.action), action == .stop, !options.isEmpty {
+            for option in options {
+                buttons.append(ConfirmButton(title: Contract.text(option.label), destructive: true,
+                                             command: .applyAll(.stop, expects: review.targets, lanes: option.lanes)))
+            }
+        } else if let action = LoopAction(rawValue: review.action) {
             buttons.append(ConfirmButton(title: Contract.text(review.confirm), destructive: action == .stop,
                                          command: .applyAll(action, expects: review.targets)))
         }

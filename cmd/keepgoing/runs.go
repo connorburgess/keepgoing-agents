@@ -513,7 +513,7 @@ func (c *runsContext) current(run rungraph.Node, e rungraph.Edge) bool {
 	if c.cfg != nil {
 		agent := c.cfg.Loop.Agent
 		if e.Target != state.Primary {
-			candidate, ok := c.cfg.FallbackSet.Find(e.Target)
+			candidate, ok := currentRoutes(c.cfg).Find(e.Target)
 			if !ok {
 				return false
 			}
