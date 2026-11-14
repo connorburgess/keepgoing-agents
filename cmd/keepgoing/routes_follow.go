@@ -584,14 +584,20 @@ func printRouteSource(e env, o routeChangeOut) {
 // ownCheckPrefix names the private directories own checks its copy in.
 const ownCheckPrefix = ".routes-own-"
 
+// ownCheckStale is how old a check directory must be to count as left by an
+// own that was killed: a check takes well under a second.
+const ownCheckStale = 10 * time.Minute
+
 // removeOwnCheckLeftovers removes check directories an earlier own left
 // beside keepgoing.yaml when it was killed. They may hold copies of the
 // configuration, environment values included. Only directories this user
-// owns are removed; a link or file with the name is left alone.
+// owns, last changed more than ownCheckStale ago, are removed, so a check
+// another own is running now is left alone; a link or file with the name
+// is never touched.
 func removeOwnCheckLeftovers(cfgPath string) {
 	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(cfgPath), ownCheckPrefix+"*"))
 	for _, m := range matches {
-		if info, err := os.Lstat(m); err == nil && info.IsDir() && config.OwnedByUser(info) {
+		if info, err := os.Lstat(m); err == nil && info.IsDir() && config.OwnedByUser(info) && time.Since(info.ModTime()) > ownCheckStale {
 			_ = os.RemoveAll(m)
 		}
 	}

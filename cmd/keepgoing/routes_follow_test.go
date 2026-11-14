@@ -284,9 +284,26 @@ func TestRoutesOwnRefusesACopyTheLoopCouldNotLoad(t *testing.T) {
 	}
 	// A check directory left by a killed own, holding a copy of the
 	// configuration, is removed by the next own.
+	// One another own is using now (changed just now) is left alone.
 	leftover := filepath.Join(filepath.Dir(r.follower), ".routes-own-12345")
 	os.Mkdir(leftover, 0o700)
 	write(t, filepath.Join(leftover, "keepgoing.yaml"), withTimeout, 0o600)
+	inUse := filepath.Join(filepath.Dir(r.follower), ".routes-own-67890")
+	os.Mkdir(inUse, 0o700)
+	old := time.Now().Add(-11 * time.Minute)
+	if err := os.Chtimes(leftover, old, old); err != nil {
+		t.Fatal(err)
+	}
+	removeOwnCheckLeftovers(r.follower)
+	if _, err := os.Stat(inUse); err != nil {
+		t.Fatalf("a check in use was removed: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("a stale leftover was kept: %v", err)
+	}
+	os.Remove(inUse)
+	os.Mkdir(leftover, 0o700)
+	os.Chtimes(leftover, old, old)
 	code, v, _ := r.change("own", "--loop", "follower-loop", "--yes")
 	if code == 0 || v.Refusal == nil || v.Refusal.Code != "not_possible" || !strings.Contains(v.Refusal.Text, "would not load") || !strings.Contains(v.Refusal.Text, "tick_timeout") || strings.Contains(v.Refusal.Text, r.own.dir) {
 		t.Fatalf("own: %d %+v", code, v)
