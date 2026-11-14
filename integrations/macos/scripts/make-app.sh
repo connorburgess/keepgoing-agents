@@ -5,12 +5,18 @@
 # Remove it with: rm -rf integrations/macos/.build/KeepgoingMenu.app
 set -eu
 package=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# The menu's version, from the one place it is kept. It becomes the app's
+# CFBundleShortVersionString, which the menu reports to the CLI.
+menu_version=$(cat "$package/VERSION")
+case "$menu_version" in
+  *[!0-9.]* | "" | .* | *. | *..*) echo "VERSION must be a plain version such as 0.1.0, not '$menu_version'" >&2; exit 1 ;;
+esac
 swift build --package-path "$package" -c release
 app="$package/.build/KeepgoingMenu.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$package/.build/release/KeepgoingMenu" "$app/Contents/MacOS/KeepgoingMenu"
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -24,7 +30,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.0.0</string>
+	<string>$menu_version</string>
 	<key>CFBundleVersion</key>
 	<string>0</string>
 	<key>LSMinimumSystemVersion</key>

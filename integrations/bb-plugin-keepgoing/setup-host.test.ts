@@ -122,9 +122,12 @@ test("host commands route to the recorded file and set the owner; no shell or ta
 
 test("real local subprocess receives stdin and errors are withheld", async () => {
   const r = await execute(process.execPath, ["-e", "let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({bytes:input.length,thread:process.env.BB_THREAD_ID})))"], "Fictional task", "thr_example");
-  assert.deepEqual(r, { code: 0, data: { bytes: 14, thread: "thr_example" } });
+  assert.deepEqual(r, { code: 0, data: { bytes: 14, thread: "thr_example" }, emptyStdout: false, timedOut: false });
   const bad = await execute(process.execPath, ["-e", "process.stderr.write('fictional-secret');process.exit(1)"], "", "thr_example");
-  assert.deepEqual(bad, { code: 1, data: null });
+  assert.deepEqual(bad, { code: 1, data: null, emptyStdout: true, timedOut: false });
+  // The real exit code, so a usage error (2) can be told from a failure (1).
+  const usage = await execute(process.execPath, ["-e", "process.exit(2)"], "", "thr_example");
+  assert.deepEqual(usage, { code: 2, data: null, emptyStdout: true, timedOut: false });
   const large = await execute(process.execPath, ["-e", "process.stdout.write('x'.repeat(2**21))"], "", "thr_example");
   assert.equal(large.code, 1); assert.equal(large.data, null);
 });

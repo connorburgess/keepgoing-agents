@@ -40,7 +40,8 @@ type noProgressView struct {
 	// not_enough_history (a lower bound below a threshold, with nothing
 	// raised), not_shown (the loop is off, stopped or finished) or
 	// not_available. Reason says why it is not available: no_progress_source,
-	// no_check, clock_behind or history_unavailable.
+	// no_check, clock_behind, history_unavailable, or record_unreadable when
+	// status could not read control.json or state.json.
 	Availability string `json:"availability"`
 	Reason       string `json:"reason,omitempty"`
 	// Since is when the window starts: the last recorded change, or with
