@@ -359,19 +359,19 @@ func (a *dockAway) departureText(d dockDeparture, subject string, now time.Time)
 	}
 	switch a.Return {
 	case dockReturnOff:
-		s = txt(s, " keepgoing will not return by itself: returning is switched off for "+forWhom+".")
+		s = txt(s, " looptender will not return by itself: returning is switched off for "+forWhom+".")
 	case dockReturnStopped:
-		s = txt(s, " keepgoing has stopped trying to return, after its attempts were refused.")
+		s = txt(s, " looptender has stopped trying to return, after its attempts were refused.")
 	case dockReturnNoHandoff:
 		if d.How == dockLeftCommand {
-			s = txt(s, " keepgoing will not return by itself: the loop was moved by a command.")
+			s = txt(s, " looptender will not return by itself: the loop was moved by a command.")
 		} else {
-			s = txt(s, " keepgoing will not return by itself: its state records no handoff to return from.")
+			s = txt(s, " looptender will not return by itself: its state records no handoff to return from.")
 		}
 	default:
 		switch {
 		case d.How == dockLeftLimit && d.ResetsAt != nil && !d.ResetPassed:
-			s = txt(s, " keepgoing returns after that, once a test passes.")
+			s = txt(s, " looptender returns after that, once a test passes.")
 		case a.LastReturnTry != nil:
 			s = txt(s, " A return was last tried "+dockAgo(now, *a.LastReturnTry)+".")
 		default:

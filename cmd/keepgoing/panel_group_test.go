@@ -123,7 +123,7 @@ func TestPauseAllResultIsNeverPartialSuccess(t *testing.T) {
 		var r panelGroupResult
 		for i, o := range outcomes {
 			name := fmt.Sprintf("example-%02d", i)
-			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: o, Text: panelGroupLoopText(name, "pause", panelResult{Outcome: o, Text: "keepgoing is in the middle of a check on this loop. Nothing was changed."}, panelLoopTo{})})
+			r.Loops = append(r.Loops, panelLoopTo{Key: name, Name: name, Outcome: o, Text: panelGroupLoopText(name, "pause", panelResult{Outcome: o, Text: "looptender is in the middle of a check on this loop. Nothing was changed."}, panelLoopTo{})})
 		}
 		return panelGroupTotal("pause", r)
 	}
@@ -359,7 +359,7 @@ func TestStopAllReviewUsesEachLoopsOwnOptions(t *testing.T) {
 	}
 	// No loop with lanes and none at once: no options, the plain stop.
 	c, lines = panelGroupStopReview([]panelGroupItem{{Name: "example-docs", Fits: true}})
-	if c != nil || lines[0] != "Each loop's next check carries out its stop; this review cannot confirm that the sessions stopped." || lines[1] != "This stops each conversation only: no loop here has lanes keepgoing can stop." {
+	if c != nil || lines[0] != "Each loop's next check carries out its stop; this review cannot confirm that the sessions stopped." || lines[1] != "This stops each conversation only: no loop here has lanes looptender can stop." {
 		t.Errorf("%+v %q", c, lines)
 	}
 	// Every loop with lanes, none counted.
