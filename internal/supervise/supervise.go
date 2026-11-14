@@ -117,6 +117,8 @@ type HandoffNote struct {
 
 // Result is what a tick did, printed as JSON by the CLI.
 type Result struct {
+	// Timing is what usage-aware timing decided and what came of it.
+	Timing *TimingNote `json:"timing,omitempty"`
 	// RetrySignal says why a provider retry notice was not honoured, so that
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
@@ -192,6 +194,9 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// resolvedMove: the check moved the loop because its route left the
+	// configuration, which counts as another move for timing.
+	resolvedMove bool
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -591,11 +596,13 @@ func (t *tick) run() error {
 	}
 	target, agent := t.resolve(t.st.Target())
 	if target != t.st.Target() {
-		t.st.ActiveTarget = target
+		t.st.ActiveTarget, t.st.TargetSetBy = target, state.SetByConfiguration
+		t.resolvedMove = true
 	}
 	res.Target = target
 	t.incidentTarget = target
 	t.incidentAdapter = agent.Adapter
+	t.settleTimingIntent(target, agent)
 
 	gate := ctl.Gate()
 	if gate.Stop {
@@ -1058,8 +1065,14 @@ func (t *tick) run() error {
 				actErr = t.act(a, d)
 			}
 		}
-	} else if !t.opts.DryRun {
-		actErr = t.act(a, d)
+	} else {
+		// Usage-aware timing acts only when no other move was made in this
+		// check, and before a wake, so the next turn runs on its route. On a
+		// dry run it only says what it would do.
+		a = t.timingStep(a, d, obs, gate)
+		if !t.opts.DryRun {
+			actErr = t.act(a, d)
+		}
 	}
 	if t.opts.DryRun && res.Action == string(decide.Reprompt) {
 		// Preview the method only; a dry run asks the provider for nothing.
@@ -1508,6 +1521,7 @@ func (t *tick) handoff(from string, fromAgent config.Agent, obs decide.Observati
 		t.st.ClearChildErrors()
 		note.To = id
 		t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = id, t.now, t.now
+		t.st.TargetSetBy = state.SetByHandoff
 		t.st.Handoffs++
 		t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 		t.res.Target = id
@@ -1548,6 +1562,11 @@ func (t *tick) rejectSwitchBack(from string) {
 func (t *tick) switchBackReady(target string) bool {
 	sb := t.loop.SwitchBack
 	if !sb.Enabled || target == state.Primary || t.st.LastHandoffAt.IsZero() {
+		return false
+	}
+	// Switch-back returns from a route a handoff chose, never from one
+	// usage-aware timing chose: timing returns from its own steps.
+	if t.st.TargetSetBy == state.SetByTiming {
 		return false
 	}
 	earliest := t.st.LastHandoffAt.Add(sb.MinAfter.Duration)
@@ -1640,6 +1659,7 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.res.Handoff = &HandoffNote{From: from, To: state.Primary, Reason: "switch_back"}
 	t.res.Target = state.Primary
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = state.Primary, t.now, t.now
+	t.st.TargetSetBy = state.SetBySwitchBack
 	t.st.PrimaryResetsAt, t.st.LastSwitchBackTry = time.Time{}, time.Time{}
 	t.st.ClearBriefs()
 	t.st.ClearChildErrors()

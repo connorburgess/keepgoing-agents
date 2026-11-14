@@ -191,6 +191,22 @@ func TestDecideTable(t *testing.T) {
 			in.LastMove = &Move{At: h(-1), From: First, To: "example-small", Action: Down, Window: "seven_day", ResetsAt: h(2)}
 		}), Stay, "", RuleStepUp, TooSoon},
 
+		// A handoff from a step, then switch-back to primary: no second step
+		// up for the same window instance, and one for the next instance.
+		{"on the fallback a handoff from a step chose", with(func(in *Input) {
+			nearWeek(in)
+			in.Current, in.MovedByFailover = "claude-other", true
+			in.LastMove = &Move{At: h(-1), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleGate, OnFallbackByFailover},
+		{"switched back to primary, same instance", with(func(in *Input) {
+			nearWeek(in)
+			in.LastMove = &Move{At: h(-1), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(2)}
+		}), Stay, "", RuleStepUp, AlreadySteppedUp},
+		{"switched back to primary, the next instance", with(func(in *Input) {
+			nearWeek(in)
+			in.LastMove = &Move{At: h(-170), From: First, To: "example-large", Action: Up, Window: "seven_day", ResetsAt: h(-166)}
+		}), Up, "example-large", RuleStepUp, NearResetUnused},
+
 		// 6. Nothing applies.
 		{"no reading", base(), Stay, "", RuleNothingDue, NoReading},
 		{"no named window in the reading", with(func(in *Input) { in.Usage = reading(0.1, win{"example_window", 0.5, 30}) }), Stay, "", RuleNothingDue, NoNamedWindow},

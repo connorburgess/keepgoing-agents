@@ -202,6 +202,7 @@ func (t *tick) moveToCreated(in *state.NewThreadIntent, thread string, note *Han
 	t.st.ClearChildErrors()
 	note.To, note.NewThread, note.Continues = in.Candidate, thread, in.Continues
 	t.st.ActiveTarget, t.st.LastHandoffAt, t.st.LastWakeAt = in.Candidate, t.now, t.now
+	t.st.TargetSetBy = state.SetByNewThread
 	t.st.Handoffs++
 	t.st.Reprompts, t.st.LastRepromptAt = 0, time.Time{}
 	t.res.Target = in.Candidate
