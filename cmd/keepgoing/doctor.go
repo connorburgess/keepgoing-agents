@@ -756,26 +756,35 @@ func doctorVariables(r *doctorReport) {
 }
 
 // doctorUserDirectory says which name the tool's per-user directories go by
-// on this computer and why, and warns when the tool's own files exist under
-// the other name as well: those are not read. It never suggests removing
-// anything: a directory of either name can also hold a loop's own files.
+// on this computer and why. It warns when a registry or route list exists
+// under the other name as well (those are not read), and when the name was
+// decided by a directory that could not be inspected. It never suggests
+// removing anything: a directory of either name can also hold a loop's own
+// files.
 func doctorUserDirectory(r *doctorReport, f userdir.Found) {
 	const holds = "the loop registry, the standard route list, session claims and the panel's files"
 	const guide = "See \"Per-user directories\" in docs/configuration.md."
 	list := func(paths []string) string { return strings.Join(paths, ", ") }
+	linked := ""
+	if len(f.Linked) > 0 {
+		linked = " In " + list(f.Linked) + " the two names are one directory, one being a link to the other."
+	}
 	switch {
 	case f.Name == userdir.LegacyName && len(f.Unread) > 0:
-		r.add("user.directory", "warning", "Per-user files ("+holds+") are read from directories named "+userdir.LegacyName+", the tool's earlier name ("+doctorUsed(f)+"). These, kept under the name "+userdir.Name+", are not read while that is so: "+list(f.Unread)+". A loop registered only there is not listed, and a route list there is not followed. Session claims are honoured under both names, so no session is acted on twice.",
+		r.add("user.directory", "warning", "Per-user files ("+holds+") are read from directories named "+userdir.LegacyName+", the tool's earlier name ("+doctorUsed(f)+"). These, kept under the name "+userdir.Name+", are not read while that is so: "+list(f.Unread)+". A loop registered only there is not listed, and a route list there is not followed. Session claims are honoured under both names, so loops run by this release or later never act on one session at once."+linked,
 			"Nothing is removed or moved for you, and nothing here needs removing. "+guide)
+	case f.Name == userdir.LegacyName && len(f.Unknown) > 0:
+		r.add("user.directory", "warning", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+"."+linked,
+			"Make "+list(f.Unknown)+" readable by this user, so what it holds can decide the name. "+guide)
 	case f.Name == userdir.LegacyName:
-		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+". Nothing is moved; a computer without them uses "+userdir.Name+".", "")
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+". Nothing is moved; a computer without them uses "+userdir.Name+"."+linked, "")
 	default:
-		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.Name+" under the user configuration and state directories.", "")
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.Name+" under the user configuration and state directories."+linked, "")
 	}
 }
 
 // doctorUsed says what makes the earlier name the one in use: the tool's
-// files that are there, or a place that could not be looked at.
+// files that are there, or a directory that could not be looked into.
 func doctorUsed(f userdir.Found) string {
 	switch {
 	case len(f.Used) > 0 && len(f.Unknown) > 0:

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -52,11 +54,169 @@ func TestDoctorUserDirectoryThroughTheCommand(t *testing.T) {
 	if c := found(); c.Status != "ok" || !strings.Contains(c.Message, "named looptender") {
 		t.Fatalf("a loop's state_dir under the earlier name: %+v", c)
 	}
+	// The tool's own claims under the earlier name: that name is in use.
+	// Claims are honoured under both names, so this alone is no warning.
+	if err := os.MkdirAll(filepath.Join(state, "keepgoing", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c := found(); c.Status != "ok" || !strings.Contains(c.Message, "named keepgoing") {
+		t.Fatalf("claims under both names: %+v", c)
+	}
+	// A registry under the current name is not read: a warning naming it.
+	if err := os.MkdirAll(filepath.Join(config, "looptender", "registry"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c := found(); c.Status != "warning" || !strings.Contains(c.Message, filepath.Join(state, "keepgoing", "sessions")) || !strings.Contains(c.Message, "not read while that is so: "+filepath.Join(config, "looptender", "registry")) || strings.Contains(c.Message+c.Fix, "emove it") {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// One name linked to the other, in either direction: checks run as usual.
+// (Taking a claim once looked "under the other name", found its own, and
+// refused every check for good.)
+func TestChecksRunWhenTheTwoNamesAreOneDirectory(t *testing.T) {
+	for _, link := range []string{"looptender", "keepgoing"} {
+		t.Run(link+" is the link", func(t *testing.T) {
+			f := newFixture(t)
+			config, state := userHome(t)
+			defaultPlaces(t)
+			real := map[string]string{"looptender": "keepgoing", "keepgoing": "looptender"}[link]
+			places := []string{config}
+			if state != config {
+				places = append(places, state)
+			}
+			for _, base := range places {
+				if err := os.MkdirAll(filepath.Join(base, real), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(real, filepath.Join(base, link)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(state, real, "sessions"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if code, _, errs := f.run("enable"); code != exitOK {
+				t.Fatalf("enable: %s", errs)
+			}
+			for i := 0; i < 2; i++ {
+				code, out, errs := f.run("tick")
+				if code != exitOK || !strings.Contains(out, `"outcome":"succeeded"`) {
+					t.Fatalf("check %d: %d %s %s", i+1, code, out, errs)
+				}
+			}
+			if !strings.Contains(f.read("calls"), "thr_primary") {
+				t.Fatalf("nothing reached the session: %q", f.read("calls"))
+			}
+			if c := func() string { _, out, _ := f.run("doctor"); return out }(); !strings.Contains(c, "the two names are one directory") {
+				t.Fatalf("doctor does not say the names are linked: %s", c)
+			}
+		})
+	}
+}
+
+// shortUserHome is userHome somewhere short enough for the panel's socket.
+func shortUserHome(t *testing.T) (config, state string) {
+	t.Helper()
+	root := panelShortDir(t)
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "c"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "s"))
+	var err error
+	if config, err = userdir.ConfigHome(); err != nil {
+		t.Fatal(err)
+	}
+	if state, err = userdir.StateHome(); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{config, state} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defaultPlaces(t)
+	return config, state
+}
+
+func panelRunHere(args ...string) (int, string, string) {
+	var out, errs bytes.Buffer
+	code := panelCommand(env{context.Background(), &out, &errs}, args)
+	return code, out.String(), errs.String()
+}
+
+// The name in use changes while a panel is running. keepgoing panel still
+// opens that panel: it serves the default registry, under the name that was
+// in use when it started, which is not "another registry". No second server
+// is started. A registry a person named is still another registry.
+func TestPanelOpensTheRunningPanelAfterTheNameChanges(t *testing.T) {
+	config, state := shortUserHome(t)
+	runsClock(t, dockNow)
+	started := filepath.Join(state, "looptender", "panel")
+	if err := os.MkdirAll(started, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	done := panelServeAt(t, started, "")
+	// A build from before the rename registers a loop.
 	if err := os.MkdirAll(filepath.Join(config, "keepgoing", "registry"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if c := found(); c.Status != "warning" || !strings.Contains(c.Message, filepath.Join(config, "keepgoing", "registry")) || !strings.Contains(c.Message, filepath.Join(state, "looptender", "sessions")) || strings.Contains(c.Message+c.Fix, "emove it") {
-		t.Fatalf("%+v", c)
+	if userdir.DirName() != "keepgoing" {
+		t.Fatal("the earlier name is not in use")
+	}
+	code, out, errs := panelRunHere("--no-open")
+	if code != exitOK || !strings.Contains(out, "Open this address") || strings.Contains(errs, "another registry") {
+		t.Fatalf("open: %d %s %s", code, out, errs)
+	}
+	if held, _ := lock.Held(filepath.Join(state, "keepgoing", "panel"), panelServerLock); held {
+		t.Fatal("a second server was started under the name now in use")
+	}
+	if code, out, _ := panelRunHere("status"); code != exitOK || !strings.Contains(out, "is running") {
+		t.Fatalf("status: %d %s", code, out)
+	}
+	// A registry chosen with --directory is another registry, as before.
+	chosen := filepath.Join(filepath.Dir(config), "chosen")
+	if err := os.MkdirAll(chosen, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := panelRunHere("--no-open", "--directory", chosen); code != exitFailed || !strings.Contains(errs, "another registry") {
+		t.Fatalf("a chosen registry: %d %s", code, errs)
+	}
+	if code, out, errs := panelRunHere("stop"); code != exitOK || !strings.Contains(out, "Stopped the keepgoing panel") {
+		t.Fatalf("stop: %d %s %s", code, out, errs)
+	}
+	panelStoppedWithin(t, done, "the server")
+}
+
+// Two servers, one under each name (a build from before the rename started
+// the second). One keepgoing panel stop stops both.
+func TestPanelStopStopsServersUnderBothNames(t *testing.T) {
+	config, state := shortUserHome(t)
+	runsClock(t, dockNow)
+	if err := os.MkdirAll(filepath.Join(config, "looptender", "registry"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var servers []chan int
+	for _, name := range []string{"looptender", "keepgoing"} {
+		dir := filepath.Join(state, name, "panel")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		servers = append(servers, panelServeAt(t, dir, filepath.Join(config, "looptender", "registry")))
+	}
+	code, out, errs := panelRunHere("stop")
+	if code != exitOK || !strings.Contains(out, "Stopped the keepgoing panel") || !strings.Contains(out, "Stopped a second panel, running at "+filepath.Join(state, "looptender", "panel")) {
+		t.Fatalf("stop: %d %s %s", code, out, errs)
+	}
+	for i, done := range servers {
+		panelStoppedWithin(t, done, []string{"the server under looptender", "the server under keepgoing"}[i])
+	}
+	for _, name := range []string{"looptender", "keepgoing"} {
+		if held, _ := lock.Held(filepath.Join(state, name, "panel"), panelServerLock); held {
+			t.Fatalf("a server is still running under %s", name)
+		}
+	}
+	if code, out, _ := panelRunHere("stop"); code != exitOK || !strings.Contains(out, "is not running") {
+		t.Fatalf("a second stop: %d %s", code, out)
 	}
 }
 

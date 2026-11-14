@@ -158,9 +158,16 @@ func State(elem ...string) (string, error) {
 type Found struct {
 	Name    string   // the name in use: DirName
 	Used    []string // the tool's entries under that name that exist
-	Unread  []string // the tool's entries under the other name, which are not read while Name is in use
-	Unknown []string // places that could not be inspected, which is why the earlier name is in use
+	Unread  []string // the registry and route list under the other name, which are not read while Name is in use
+	Unknown []string // directories that could not be inspected, which is why the earlier name is in use
+	Linked  []string // places where the two names are one directory, one being a link to the other
 }
+
+// unread are the entries that are read under the name in use only. Session
+// claims and their records are honoured under both names (see session), a
+// panel server is found under either, and loops/ is only where init puts a
+// new loop.
+var unread = []string{"registry", "routes.yaml"}
 
 // Look reports the name in use and which of the tool's own entries exist
 // under each name. It reads directory entries only and changes nothing.
@@ -179,18 +186,42 @@ func Look() Found {
 		}
 		seen[base] = true
 		if _, unknown := earlierEntry(base); unknown {
-			f.Unknown = append(f.Unknown, base)
+			// Say which directory, not the place it is in: the place itself
+			// when even that cannot be looked into.
+			blocked := filepath.Join(base, LegacyName)
+			if _, err := os.Lstat(blocked); err != nil {
+				blocked = base
+			}
+			f.Unknown = append(f.Unknown, blocked)
 		}
 		for _, name := range Entries {
 			if p := filepath.Join(base, f.Name, name); exists(p) {
 				f.Used = append(f.Used, p)
 			}
+		}
+		// The two names can be one directory, one a link to the other: then
+		// nothing is under "the other name" that is not also under this one.
+		if sameDirectory(filepath.Join(base, f.Name), filepath.Join(base, other)) {
+			f.Linked = append(f.Linked, base)
+			continue
+		}
+		for _, name := range unread {
 			if p := filepath.Join(base, other, name); exists(p) {
 				f.Unread = append(f.Unread, p)
 			}
 		}
 	}
 	return f
+}
+
+// sameDirectory reports whether two paths lead to one directory.
+func sameDirectory(a, b string) bool {
+	ia, err := os.Stat(a)
+	if err != nil || !ia.IsDir() {
+		return false
+	}
+	ib, err := os.Stat(b)
+	return err == nil && os.SameFile(ia, ib)
 }
 
 func exists(path string) bool {

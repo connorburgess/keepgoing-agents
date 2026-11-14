@@ -242,8 +242,10 @@ func TestThisPlatform(t *testing.T) {
 	}
 
 	// The tool's own claims under the earlier name, in the state directory
-	// alone, move both places to the earlier name, and the claims under the
-	// current name are reported as not read.
+	// alone, move both places to the earlier name. A registry under the
+	// current name is then reported as not read; the claims under it are
+	// not, as claims are honoured under both names.
+	registry := mkdir(t, config, Name, "registry")
 	earlier := mkdir(t, state, LegacyName, "sessions")
 	if got := DirName(); got != LegacyName {
 		t.Fatalf("DirName = %q", got)
@@ -255,7 +257,62 @@ func TestThisPlatform(t *testing.T) {
 		t.Fatalf("State = %q", p)
 	}
 	f := Look()
-	if f.Name != LegacyName || !reflect.DeepEqual(f.Used, []string{earlier}) || !reflect.DeepEqual(f.Unread, []string{current}) || len(f.Unknown) != 0 {
+	if f.Name != LegacyName || !reflect.DeepEqual(f.Used, []string{earlier}) || !reflect.DeepEqual(f.Unread, []string{registry}) || len(f.Unknown) != 0 || len(f.Linked) != 0 {
+		t.Fatalf("Look = %+v", f)
+	}
+}
+
+// Where one name is a link to the other, in either direction, the two are
+// one directory: nothing is "under the other name", and Look says so.
+func TestLookWhenTheTwoNamesAreOneDirectory(t *testing.T) {
+	for _, link := range []string{Name, LegacyName} {
+		t.Run(link+" is the link", func(t *testing.T) {
+			config, state := home(t)
+			real := LegacyName
+			if link == LegacyName {
+				real = Name
+			}
+			mkdir(t, config, real, "registry")
+			mkdir(t, state, real, "sessions")
+			places := []string{config}
+			if state != config {
+				places = append(places, state)
+			}
+			for _, base := range places {
+				if err := os.Symlink(real, filepath.Join(base, link)); err != nil {
+					t.Skip("links are not available here")
+				}
+			}
+			// The tool's entries are reached under the earlier name either
+			// way, so that is the name in use; both lead to the same files.
+			f := Look()
+			if f.Name != LegacyName || len(f.Unread) != 0 || !reflect.DeepEqual(f.Linked, places) || len(f.Unknown) != 0 {
+				t.Fatalf("Look = %+v", f)
+			}
+			p, err := Config("registry")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(p); err != nil {
+				t.Fatalf("the registry is not reached at %s: %v", p, err)
+			}
+		})
+	}
+}
+
+// A directory of the earlier name that cannot be looked into is named as
+// such, not the place it is in.
+func TestLookNamesTheDirectoryThatCannotBeInspected(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory this user cannot search")
+	}
+	config, _ := home(t)
+	shut := mkdir(t, config, LegacyName)
+	if err := os.Chmod(shut, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(shut, 0o700) })
+	if f := Look(); f.Name != LegacyName || !reflect.DeepEqual(f.Unknown, []string{shut}) {
 		t.Fatalf("Look = %+v", f)
 	}
 }

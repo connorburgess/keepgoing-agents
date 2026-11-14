@@ -558,3 +558,89 @@ func TestClaimsAndRecordsAreHonouredUnderBothNames(t *testing.T) {
 		t.Fatalf("Sibling of a chosen directory = %q", got)
 	}
 }
+
+// One of the two names can be a link to the other, in either direction, or
+// the claim directories themselves can be linked. The two are then one
+// directory with one set of claims. A claim must be taken there as usual,
+// under either name: looking for a claim "under the other name" would find
+// the check's own and refuse every check for good.
+func TestAClaimIsTakenWhenTheTwoNamesAreOneDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(state string) (target, at string)
+	}{
+		{"looptender is a link to keepgoing", func(state string) (string, string) {
+			return "keepgoing", filepath.Join(state, "looptender")
+		}},
+		{"keepgoing is a link to looptender", func(state string) (string, string) {
+			return "looptender", filepath.Join(state, "keepgoing")
+		}},
+		{"the claim directory under looptender is a link to the one under keepgoing", func(state string) (string, string) {
+			return filepath.Join(state, "keepgoing", "sessions"), filepath.Join(state, "looptender", "sessions")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv(DirEnv, "")
+			t.Setenv("KEEPGOING_SESSION_DIR", "")
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+			t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+			t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+			state, err := userdir.StateHome()
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, at := tc.link(state)
+			real := target
+			if !filepath.IsAbs(real) {
+				real = filepath.Join(state, target)
+			}
+			if filepath.Base(real) != "sessions" {
+				real = filepath.Join(real, "sessions")
+			}
+			if err := os.MkdirAll(real, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, at); err != nil {
+				t.Skip("links are not available here")
+			}
+			id := Identity{Kind: "bb", ID: "thr_example"}
+			me := func(loop string) Holder {
+				return Holder{Loop: loop, PID: os.Getpid(), Since: time.Now(), Until: time.Now().Add(time.Hour)}
+			}
+			for _, name := range []string{"keepgoing", "looptender"} {
+				dir := filepath.Join(state, name, "sessions")
+				if got := Sibling(dir); got != "" {
+					t.Fatalf("Sibling(%s) = %q: the two are one directory", dir, got)
+				}
+				c, err := Take(dir, id, me("example-loop"))
+				if err != nil {
+					t.Fatalf("a claim under %s was refused: %v", name, err)
+				}
+				// Held once, it is held under the other name too: one claim.
+				other := filepath.Join(state, map[string]string{"keepgoing": "looptender", "looptender": "keepgoing"}[name], "sessions")
+				var claimed *ClaimedError
+				if _, err := Take(other, id, me("example-loop-b")); !errors.As(err, &claimed) {
+					t.Fatalf("a second claim under the other name was taken: %v", err)
+				}
+				c.Release()
+			}
+			// The name the tool decides on gives a claim directory that works.
+			dir, _, err := Dir(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := Take(dir, id, me("example-loop"))
+			if err != nil {
+				t.Fatalf("a claim in %s was refused: %v", dir, err)
+			}
+			c.Release()
+		})
+	}
+}

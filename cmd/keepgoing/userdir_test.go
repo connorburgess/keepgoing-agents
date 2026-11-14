@@ -118,13 +118,19 @@ func TestDoctorUserDirectory(t *testing.T) {
 	if c := check(userdir.Found{Name: "keepgoing", Used: []string{"/private/example/config/keepgoing/registry"}}); c.Status != "ok" || !strings.Contains(c.Message, "named keepgoing") || !strings.Contains(c.Message, "already has them there: /private/example/config/keepgoing/registry") || !strings.Contains(c.Message, "Nothing is moved") {
 		t.Fatalf("an earlier directory: %+v", c)
 	}
-	// A place that could not be inspected is the reason, said as such.
-	if c := check(userdir.Found{Name: "keepgoing", Unknown: []string{"/private/example/config"}}); c.Status != "ok" || !strings.Contains(c.Message, "/private/example/config could not be inspected, which counts as the earlier name") {
-		t.Fatalf("a place that cannot be inspected: %+v", c)
+	// A directory that could not be inspected is the reason, said as such
+	// and by its own path, and it is a warning: the name was not decided
+	// from what is there.
+	if c := check(userdir.Found{Name: "keepgoing", Unknown: []string{"/private/example/config/keepgoing"}}); c.Status != "warning" || !strings.Contains(c.Message, "/private/example/config/keepgoing could not be inspected, which counts as the earlier name") || !strings.Contains(c.Fix, "Make /private/example/config/keepgoing readable") {
+		t.Fatalf("a directory that cannot be inspected: %+v", c)
 	}
-	c := check(userdir.Found{Name: "keepgoing", Used: []string{"/private/example/config/keepgoing/registry"}, Unread: []string{"/private/example/state/looptender/sessions", "/private/example/config/looptender/registry"}})
-	if c.Status != "warning" || !strings.Contains(c.Message, "are not read while that is so: /private/example/state/looptender/sessions, /private/example/config/looptender/registry") || !strings.Contains(c.Message, "Session claims are honoured under both names") || !strings.Contains(c.Fix, "Nothing is removed or moved for you") {
+	c := check(userdir.Found{Name: "keepgoing", Used: []string{"/private/example/config/keepgoing/registry"}, Unread: []string{"/private/example/config/looptender/registry", "/private/example/config/looptender/routes.yaml"}})
+	if c.Status != "warning" || !strings.Contains(c.Message, "are not read while that is so: /private/example/config/looptender/registry, /private/example/config/looptender/routes.yaml") || !strings.Contains(c.Message, "loops run by this release or later never act on one session at once") || !strings.Contains(c.Fix, "Nothing is removed or moved for you") {
 		t.Fatalf("both names: %+v", c)
+	}
+	// The two names as one directory: said, and not a warning.
+	if c := check(userdir.Found{Name: "keepgoing", Used: []string{"/private/example/config/keepgoing/registry"}, Linked: []string{"/private/example/config"}}); c.Status != "ok" || !strings.Contains(c.Message, "In /private/example/config the two names are one directory") {
+		t.Fatalf("linked names: %+v", c)
 	}
 }
 

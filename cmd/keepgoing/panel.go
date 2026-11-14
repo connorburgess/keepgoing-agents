@@ -164,6 +164,42 @@ func panelRunningUnderOtherName(base string) string {
 	return ""
 }
 
+// panelServerUnderOtherName returns the default panel directory under the
+// name that dir is not under, when a panel server is running there and it is
+// a different directory from dir. It creates nothing.
+func panelServerUnderOtherName(dir string) string {
+	base, err := panelStateBase()
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		candidate := filepath.Join(base, name, "panel")
+		if session.CleanPath(candidate) == session.CleanPath(dir) {
+			continue
+		}
+		if held, err := lock.Held(candidate, panelServerLock); err == nil && held {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// panelSameDefaultRegistry reports whether a and b are both the default
+// registry, under the tool's two directory names.
+func panelSameDefaultRegistry(a, b string) bool {
+	base, err := panelLegacyBase() // the user configuration directory
+	if err != nil {
+		return false
+	}
+	defaults := map[string]bool{}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		if p, err := canonicalFuturePath(filepath.Join(base, name, "registry")); err == nil {
+			defaults[p] = true
+		}
+	}
+	return defaults[a] && defaults[b]
+}
+
 // panelLegacyNotice is what a read-only command says when it finds a server
 // an earlier build started at the old location. It does not act on it.
 const panelLegacyNotice = "A panel started by an earlier build is running at %s; keepgoing panel stop ends it."
@@ -713,7 +749,10 @@ func panelCommand(e env, args []string) int {
 		return exitFailed
 	}
 	if !started {
-		if want, _ := registryDirectory(*directory); rec.Registry != want {
+		// A server started before the name in use changed (see userdir)
+		// serves the default registry under the other name: it is the
+		// running panel all the same, not one for another registry.
+		if want, _ := registryDirectory(*directory); rec.Registry != want && !panelSameDefaultRegistry(rec.Registry, want) {
 			e.errf("panel: a panel for another registry is already running; run keepgoing panel stop first")
 			return exitFailed
 		}
@@ -881,33 +920,62 @@ func panelStopCommand(e env, args []string) int {
 			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
 		}
 	}
-	lk, err := acquirePanelOpenLock(e.ctx, dir)
+	// A second server can be running under the tool's other directory name:
+	// one started before the name in use changed, or by a build from before
+	// the rename. Stop means no panel is left running, so it is stopped too.
+	other := ""
+	if *panelDir == "" {
+		other = panelServerUnderOtherName(dir)
+	}
+	wasRunning, err := panelStopAt(e, dir)
 	if err != nil {
 		e.errf("panel stop: %v", err)
 		return exitFailed
+	}
+	if other != "" {
+		also, err := panelStopAt(e, other)
+		if err != nil {
+			e.errf("panel stop: the panel running at %s: %v", other, err)
+			return exitFailed
+		}
+		if also {
+			fmt.Fprintf(e.stdout, "Stopped a second panel, running at %s.\n", other)
+		}
+		wasRunning = wasRunning || also
+	}
+	if !wasRunning {
+		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
+		return exitOK
+	}
+	fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
+	return exitOK
+}
+
+// panelStopAt stops the panel server in dir and waits for it to finish. It
+// reports whether one was running.
+func panelStopAt(e env, dir string) (bool, error) {
+	lk, err := acquirePanelOpenLock(e.ctx, dir)
+	if err != nil {
+		return false, err
 	}
 	defer lk.Release()
 	presence, _ := panelFind(e.ctx, dir)
 	if presence == panelAbsent {
 		// Nothing is running; files a crash left behind are cleared.
 		panelRemoveLeftovers(dir)
-		fmt.Fprintln(e.stdout, "The keepgoing panel is not running.")
-		return exitOK
+		return false, nil
 	}
 	if _, err := panelControl(e.ctx, dir, panelRequest{Op: "stop"}); err != nil {
-		e.errf("panel stop: %s", panelNotAnsweringText)
-		return exitFailed
+		return true, errors.New(panelNotAnsweringText)
 	}
 	// The server holds its lock until its record and socket are gone, so the
 	// lock being free proves it has finished, not only stopped answering.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if !panelServerHeld(dir) {
-			fmt.Fprintln(e.stdout, "Stopped the keepgoing panel. Supervision is not affected.")
-			return exitOK
+			return true, nil
 		}
 	}
-	e.errf("panel stop: the panel was asked to stop and has not finished")
-	return exitFailed
+	return true, errors.New("the panel was asked to stop and has not finished")
 }
 
 // panelList is the picker without a server: each loop's name and its state in

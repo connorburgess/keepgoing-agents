@@ -381,8 +381,11 @@ type record struct {
 
 // Sibling returns the claim directory under the tool's other name, when dir
 // is the default claim directory under one of its two names and the other
-// exists. It is "" for a directory a person chose (see DirEnv), which has no
-// other name. Claims and records are honoured in both.
+// exists as a different directory. It is "" for a directory a person chose
+// (see DirEnv), which has no other name, and "" when the two names are one
+// directory, as when one name is a link to the other: there is then one set
+// of claims, and looking for a claim "under the other name" would find this
+// check's own. Claims and records are honoured in both.
 func Sibling(dir string) string {
 	base, err := userdir.StateHome()
 	if err != nil || base == "" || dir == "" {
@@ -394,7 +397,11 @@ func Sibling(dir string) string {
 			continue
 		}
 		other := filepath.Join(base, names[1], "sessions")
-		if info, err := os.Lstat(other); err != nil || !info.IsDir() {
+		theirs, err := os.Stat(other) // through a link: what the name leads to
+		if err != nil || !theirs.IsDir() {
+			return ""
+		}
+		if ours, err := os.Stat(mine); err == nil && os.SameFile(ours, theirs) {
 			return ""
 		}
 		return other
