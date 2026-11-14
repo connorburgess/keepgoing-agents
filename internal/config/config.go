@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // Duration is a time.Duration that unmarshals from strings such as "30m".
@@ -532,10 +534,10 @@ func (c *Config) applyDefaults() {
 	setDur(&l.Daemon.ControlPoll, DefaultControlPoll)
 	if r := l.Report; r != nil {
 		if r.URLEnv == "" {
-			r.URLEnv = "KEEPGOING_WEBHOOK_URL"
+			r.URLEnv = envvar.WebhookURL.Name() // report also reads the earlier name
 		}
 		if r.SecretEnv == "" {
-			r.SecretEnv = "KEEPGOING_WEBHOOK_SECRET"
+			r.SecretEnv = envvar.WebhookSecret.Name()
 		}
 		if r.Source == "" {
 			r.Source = l.Name

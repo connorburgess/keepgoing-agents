@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
@@ -60,7 +61,7 @@ const (
 	// panelOpenerEnv names a program to run instead of the platform's browser
 	// the default web browser. It receives the path of the launch page as its
 	// only argument.
-	panelOpenerEnv = "KEEPGOING_PANEL_OPENER"
+	panelOpenerEnv = envvar.Prefix + string(envvar.PanelOpener)
 )
 
 // panelRecord is the runtime record. It carries no token, code or cookie.

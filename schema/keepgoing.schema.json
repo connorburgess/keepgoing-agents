@@ -214,11 +214,11 @@
           "properties": {
             "url_env": {
               "type": "string",
-              "default": "KEEPGOING_WEBHOOK_URL"
+              "default": "LOOPTENDER_WEBHOOK_URL"
             },
             "secret_env": {
               "type": "string",
-              "default": "KEEPGOING_WEBHOOK_SECRET"
+              "default": "LOOPTENDER_WEBHOOK_SECRET"
             },
             "secret_file": {
               "type": "string"
