@@ -1,14 +1,14 @@
 {
   "name": "bb-plugin-keepgoing",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "engines": {
     "bb": ">=0.48",
     "bbPluginSdk": ">=0.6.104"
   },
   "bb": {
-    "name": "keepgoing",
-    "description": "Shows keepgoing's state beside the threads it supervises, with pause, resume, and stop.",
+    "name": "looptender",
+    "description": "Shows looptender's state beside the threads it supervises, with pause, resume, and stop.",
     "branding": {
       "icon": "Repeat"
     },
@@ -36,7 +36,7 @@
     "tsx": "^4.23.15",
     "typescript": "^5.7.0"
   },
-  "description": "Shows keepgoing's state beside the BB threads it supervises.",
+  "description": "Shows looptender's state beside the BB threads it supervises.",
   "license": "SEE LICENSE IN ../../LICENSE",
   "scripts": {
     "build": "bb plugin build",
