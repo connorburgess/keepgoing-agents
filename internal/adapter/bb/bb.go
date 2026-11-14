@@ -150,6 +150,11 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 			obs.ErrorClass = sig.class
 		}
 	}
+	if obs.State == decide.Active && sig.ok && sig.turnStartSeq > 0 {
+		// The log sequence number is per thread: the thread is part of the ID.
+		obs.Turn = &decide.TurnActivity{ID: fmt.Sprintf("%s/bb-turn-%d", a.cfg.Thread, sig.turnStartSeq), LastActivityAt: sig.lastEventAt, ToolsRunning: sig.toolsRunning}
+	}
+	obs.TurnUnknown = obs.State == decide.Active && !sig.ok
 	if obs.State != decide.Error && obs.State != decide.Idle {
 		return obs, nil
 	}
@@ -232,6 +237,8 @@ type signals struct {
 	ok           bool
 	// turnStartedMs is BB's time of the latest turn start, or 0 when unknown.
 	turnStartedMs int64
+	turnStartSeq  int64
+	toolsRunning  bool
 }
 
 // signals reads the thread's new log events and returns the current error,
@@ -239,7 +246,8 @@ type signals struct {
 // started count, so a stale error from an earlier turn is ignored.
 func (a *Adapter) signals(ctx context.Context) signals {
 	c, ok := a.scan(ctx)
-	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs}
+	s := signals{class: decide.ErrUnknown, ok: ok, blocked: c.Blocked, resetsAt: c.ResetsAt, pending: len(c.Pending) > 0, lastEventAt: c.LastEventAt, turnStartedMs: c.TurnStartedMs,
+		turnStartSeq: c.TurnStartSeq, toolsRunning: c.ToolsUncertain || len(c.OpenTools) > 0}
 	if c.Error != nil {
 		s.hasError = true
 		s.evidence = evidence.Clean(c.Error.Evidence)

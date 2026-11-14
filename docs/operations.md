@@ -362,7 +362,7 @@ Unreleased; **fixture-tested only**. A check used to save what it did only at it
 
 **The rule.**
 
-1. **Record before sending.** Every automatic send gets a numbered record in private `sends.json` before the adapter is asked to make it, with or without `loop.limits.max_sends`: a wake, nudge or re-prompt, a [turn retry](#recovering-a-failed-bb-turn-by-retry), a handoff or switch-back brief, a new conversation's first prompt, a child-error notice, a stop, and the one-off reports (the supervised thread waiting on a person, `degraded` and `recovered`, switch-back stopped). The record holds when, what and to which target, never the text. With `max_sends` set the same write counts the attempt against it; a stop or a report never counts. **If the record cannot be saved, nothing is sent**: the check records action `none` with `could not save the record of the send before making it, so nothing was sent`, exits 1 and names the cause. A stop is the one exception: it is made anyway, with a warning, because stopping again is harmless and not stopping when asked is worse.
+1. **Record before sending.** Every automatic send gets a numbered record in private `sends.json` before the adapter is asked to make it, with or without `loop.limits.max_sends`: a wake, nudge or re-prompt, a [turn retry](#recovering-a-failed-bb-turn-by-retry), a handoff or switch-back brief, a new conversation's first prompt, a child-error notice, a stop, and the one-off reports (the supervised thread waiting on a person, `degraded` and `recovered`, switch-back stopped, `hung_turn`). The record holds when, what and to which target, never the text. With `max_sends` set the same write counts the attempt against it; a stop or a report never counts. **If the record cannot be saved, nothing is sent**: the check records action `none` with `could not save the record of the send before making it, so nothing was sent`, exits 1 and names the cause. A stop is the one exception: it is made anyway, with a warning, because stopping again is harmless and not stopping when asked is worse.
 2. **A record is settled only by a check that read it.** A check settles a record by recording its outcome: its own sends when it saves `state.json` at its end, and earlier checks' records when it has read and handled them (rule 3) and then saved. A check that does not read the records settles none of them, so they are still there for the next check that does: a held check (paused, awaiting a person, completed, disabled), the deadline's hold, a check that cannot read `sends.json`, and a dry run. Nothing is settled by time, and an older binary that rewrites `state.json` cannot make a settled record look unsettled again (see rolling back, below).
 3. **An unsettled record is counted as made, unless it may have put the task on a second conversation.** The next check that reads it cannot tell whether the check that made it was killed before or after the send, or only failed to save. So:
    - **Sends into the conversation the loop is already on are counted and spaced**, as a send whose result is unknown: a re-prompt or turn retry spends `max_reprompts` and starts `errors.backoff`; a nudge spends `max_nudges`; each sets the time of the last send, which spaces the next nudge by `min_wake_interval` (an idle wake is not spaced, as before); a child-error notice counts as an attempt of its announcement. A one-off report is not sent again. If unconfirmed re-prompts are what reach the cap, the hold says `error persisted after re-prompts; N of them were recorded but could not be confirmed as sent`. The check warns `a <kind> to <target> was recorded at <time> but that check could not save what happened, so it may have been sent; it is counted as sent`.
@@ -423,7 +423,7 @@ keepgoing report test --dry-run   # print the body
 keepgoing report test             # deliver it
 ```
 
-Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `check_gap` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait` and `child_error`, are included in the default event list on `main`; an explicit event list must include them or `all`. `check_gap` is not: name it, or `all`, to receive it. All five make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
+Events: `wake`, `nudge`, `reprompt`, `handoff`, `switch_back`, `degraded`, `recovered`, `await_user`, `limit_wait` (unreleased source), `network_wait` (unreleased source), `child_error` (unreleased source), `check_gap` (unreleased source), `hung_turn` (unreleased source), `complete` (v0.1.3+), `stop`, `error`, `probe_failed`, `test`, or `all`. `complete`, and in unreleased source `limit_wait`, `network_wait` and `child_error`, are included in the default event list on `main`; an explicit event list must include them or `all`. `check_gap` and `hung_turn` are not: name them, or `all`, to receive them. `complete`, `limit_wait`, `network_wait`, `child_error`, `check_gap` and `hung_turn` make a single attempt without following redirects. Other events retain their existing one-retry policy. `keepgoing report test` sends a `test` event, whatever events are subscribed.
 
 ## Situations that need a person
 
@@ -518,6 +518,86 @@ The probe is the only thing sent during an outage, and it is a real request when
 - With `tick_timeout` at its minimum there is no room for the check in the time accounting. It is then not made, and `validate`, `status` and `doctor` say so; raise `tick_timeout` to `2m48s` or more to have it.
 - `doctor` tests the target from the environment `doctor` runs in, which may differ from a scheduler's.
 - Recovery starts at the first check after connectivity returns, so up to one scheduler or daemon interval after a portal is cleared. Reacting to a wake or a network change sooner is a [roadmap item](roadmap.md#priority-reliability-checkpoints).
+
+### A turn that hung through an outage
+
+Unreleased; **fixture-tested only**; BB threads only. A host that sleeps in the middle of a model request leaves the turn active and silent for good: BB still shows it running, it never fails, and nothing ends it. Before, the stall rule queued three nudges behind it, which would all arrive later if the turn ever resumed, and then held with `no progress after 3 nudges`, which did not say what happened.
+
+keepgoing now watches an active turn through an outage. It applies only to loops that track Git progress (`progress.repositories`), and only inside the loop's operating window: without tracking the stall rule never nudges or holds an active turn, and neither does this. It treats the turn as possibly hung while all of these hold:
+
+1. An outage happened while this turn was active: a connectivity check found the network down, or this is the first check after a gap that the [missed-time rule](#time-in-which-no-check-ran) judges missed (the computer slept or the scheduler was down; more than three usual intervals, once the loop has shown three gaps).
+2. It is still the same turn (BB's latest `turn/started` in that thread).
+3. It has logged nothing since the outage began: since the failed check, or, after a gap, since the computer woke, taken as one usual interval before the first check after the gap. So a last log after the last check before the gap counts, as when a lid is closed a minute after it. A turn that has logged since is not watched. It has also logged nothing for `stall_after`, and the stall clock has reached `stall_after`.
+4. It is waiting on the model, not on a tool: every tool item it started (`commandExecution`, `fileRead`, `fileChange`, `toolCall`, `backgroundTask`, `webSearch`, `mcpToolCall`) has completed. An item without an ID or type, an item type keepgoing does not know, or more than 64 open items, makes the bookkeeping uncertain, and the turn is then treated as slow, not hung. Items the model itself produces (`reasoning`, `agentMessage`, `userMessage`) do not count: an open one is where a hung request stops.
+5. Nothing else explains the silence: nothing queued, no background agents, no child running or unverified, no person asked, no provider retry, no Git change.
+
+**What it changes: the nudges are held back.** The stall rule decides exactly as it would without the watch. On every check where it would nudge, the nudge is *held back*: it is recorded as a nudge is (the nudge count goes up, the time of the last wake is set, and connectivity is checked first, exactly as before a nudge), and it is not sent (`nudge held back, not sent: …`). On the other checks the loop records `turn silent since before an outage or the computer sleeping; it may be hung; keepgoing has not stopped it`. Since the nudges are counted, the stall rule's own hold after `max_nudges` nudges comes at the same check as it would have. It carries the stall rule's reason, with how many nudges were held back and why (`no progress after 3 nudges (3 held back, not sent, because the turn looked hung); the turn has been silent since before an outage or the computer sleeping; …`), and the two ways out: `keepgoing stop` then `keepgoing resume`, or retry the turn in BB. At the defaults, with the network back and no nudge sent before, that is 3h30m later: nudges held back at 30m, 1h30m and 2h30m, the hold at 3h30m.
+
+**Telling a held-back nudge from a sent one.**
+- `status` prints `last sent:` from the last time something was actually sent (`lastSentAt` in `state.json`). It adds `last nudge held back: <time> (the turn looked hung; 2 of 3 nudges held back, not sent)` while any are counted. A held-back nudge still sets the time of the last wake (`lastWakeAt`), which keeps the stall rule's spacing.
+- The timeline gives the checks their own causes: `nudge_held` for a held-back nudge, `hung_wait` for a check that waits on the turn, and `stall_limit_held` for the stall rule's hold after nudges that were held back.
+- The panel's hold says `No progress after 3 nudges, all held back because the turn looked hung.`, or how many of them were.
+- The count of held-back nudges (`heldNudges`) is kept with the nudge count. So if the turn logs again and is handed back, the stall rule's hold still says how many of its nudges were held back.
+
+When the wait begins, one `hung_turn` report says when a person will be asked, at about the time the stall rule would hold if every check came on time, or that no time is set if that is more than a year away. It is recorded in `sends.json` before it is sent, like every [one-off report](#a-send-recorded-before-it-is-made), and makes a single attempt. `hung_turn` is **not** in the default event list: a loop receives it only by naming it, or `all`, in `report.events`.
+
+The watch ends when the turn ends (an ordinary wake, or recovery of a failed turn) or Git changes. A watched turn that logs anything again is handed back to the stall rule completely. While something else explains the silence (a tool, a queued message, a child), the stall rule's decisions are its own. Held-back nudges stay counted in each case, as sent ones would have been. A check that cannot read the turn's log decides nothing and keeps the watch as it was. A held-back nudge is not a send: it does not count toward `loop.limits.max_sends` or the no-progress flag's count of messages sent. Unspent sends stay available for later.
+- **Where the stall rule alone reaches `max_sends` first.** By spending sends on those nudges, the stall rule alone can reach the `max_sends` hold before the hold after its nudges. The watch does not; it holds at the nudge hold instead.
+- **Examples,** at the defaults with a 15-minute-to-2-hour outage: with `max_sends: 1` the stall rule alone holds at 2h40m and the watch at 5h30m; with `max_sends: 2`, 3h40m and 5h30m.
+- **The general bound.** The difference is about (`max_nudges` − sends left + 1) × `min_wake_interval`, less the check interval.
+- **Why.** A limit on sends is not what should hold a turn nothing is being sent to.
+
+The no-progress flag is likewise raised later, or not at all, for the same reason. `keepgoing resume` alone, without `stop` or a retry in BB, leaves the same turn hung and silent, and the stall rule holds again when it next would.
+
+A check killed after it held a nudge back, before `state.json` was saved, has not recorded it. The next check holds the same nudge back again, so the stall rule's hold comes one check later than it would have (5h40m instead of 5h30m with checks every 10 minutes). Held-back nudges are not recorded in `sends.json` first, as sends are: nothing is sent, so a repeat sends nothing either.
+
+**Compared with the stall rule alone.** Because the watch only turns the stall rule's nudges into held-back ones, its hold is the stall rule's hold, and it checks connectivity only where the stall rule would. The tests show it by running each journey twice, with the watch on and off. They assert:
+- the same action at every check, except a held-back nudge where the stall rule sends a nudge;
+- the same hold, at the same check;
+- the same connectivity checks, provider probes and `network_wait` reports;
+- the same sends, less the held-back nudges, with nothing sent on a check that holds one back.
+
+The journeys (`TestHungTurnActsAsTheStallRuleExceptForTheNudges` and the tests named below):
+- an outage, the network back, then a second outage;
+- an outage, then one failed check later;
+- a lid close, then a second sleep;
+- checks every 25 minutes with one failed check, with and without fallbacks to probe;
+- checks every 9m59s with one failed check;
+- a tool opening, or a message queued, 2 hours after the network is back;
+- a parent waiting on a child for 6 hours, and through a 2-hour outage;
+- a long tool through an outage; a silent turn 24 hours offline;
+- the scheduler down with the turn logging;
+- a lid close a minute after the last log, and one earlier;
+- a nudge behind one turn starting another that hangs;
+- a turn that logs once during the wait; a turn that logs every 29 minutes.
+
+Stop, pause, the other holds and the loop-wide limits come first, as for every rule; nothing is evaluated while the network is known to be down. Covered by:
+- `TestHungTurnIsWaitedOnThenHeldAtAnyOutageLength`, `TestHungTurnWaitEndsWhenTheTurnResumesOrFails` (20 minutes, 4 hours, 3 days and 3 weeks), `TestHungTurnNeedsEverySign`;
+- `TestHungTurnActsAsTheStallRuleExceptForTheNudges`, `TestHungTurnNeverChecksConnectivityMoreThanTheStallRule`, `TestHungTurnLeavesATurnThatKeptLoggingToTheStallRule`, `TestHungTurnAfterASleepWithNoFailedCheck`, `TestHungTurnPatienceCountsNudgesAlreadySent`, `TestHungTurnThatLogsAgainIsHandedBack`, `TestHungTurnIsSilentOnlyAfterStallAfterWithoutALog`, `TestHungTurnDoesNothingOutsideTheWindow`;
+- `TestHungTurnWatchSurvivesAFailedLogRead`, `TestHungTurnNeedsGitTracking`, `TestHungTurnReportIsRecordedBeforeItIsSent`, `TestHungTurnReportSetsNoFarAwayTime`, `TestHungTurnWaitYieldsToControlsAndTheNetworkGate`, `TestHungTurnInTheEngine`;
+- the scenarios `TestScenarioHungTurnAfterAShortOutageAndASleep` and `TestScenarioHungTurnAfterALidClose`;
+- for the item bookkeeping, built from a real BB 0.48 log's event shapes, `TestTurnActivityFromRealItemShapes`.
+Not verified on a real hung turn.
+
+Limit: with a slow scheduler, a short outage may leave no gap long enough to be judged missed and no failed check; the turn's nudges are then sent, as before.
+
+#### Upgrading and going back
+
+- **Older binaries reject `hung_turn`.** v0.1.5 and earlier, and `main` before this change, refuse a configuration whose `report.events` names `hung_turn` (exit 2, unknown event). Remove it from `report.events` before running an older binary.
+- **Older binaries cannot read the delivery record.** Once a `hung_turn` report has been recorded in `deliveries.json`, an older binary cannot load that file, because of the unknown event label (as for `limit_wait` and `child_error`). The consequences:
+  - `status`, `timeline` and `doctor` show the delivery history as unavailable;
+  - reports are still delivered, but each returns an error;
+  - the history stays frozen;
+  - `network_wait` is reported again at every verification look while deliveries error;
+  - the session-claim `degraded`, `recovered` and stuck reports, which go by that history, count as undelivered and repeat, up to three times each.
+  To recover, move `deliveries.json` aside (the older binary starts a new one), or upgrade again.
+- **Older binaries count the report record as a send.** An older binary that finds an unsettled `report:hung_turn` record in `sends.json` (one whose check could not save its outcome) counts it as a send to the agent. It warns, and sets the time of the last wake, which delays its next nudge by up to `min_wake_interval`.
+- **Older binaries drop the watch.** They do not know `hungTurn`, `heldNudges`, `lastHeldNudgeAt` and `lastSentAt` in `state.json`, or `turnStartSeq`, `openTools` and `toolsUncertain` in `bb-cursor.json`, and drop them the next time they rewrite those files. An older binary run during a wait sends the nudges still due from then on, by the nudge count it finds, which includes the held-back ones. After going forward again, the watch for that turn does not resume, because the outage and the turn's start are no longer on record. The nudge count, held-back nudges included, carries over, so the hold comes when it would have.
+- **Before going back:**
+  - remove `hung_turn` from `report.events`;
+  - check `keepgoing status`: if the reason says the turn has been silent since before an outage, settle the turn first (retry it in BB, or `keepgoing stop` then `keepgoing resume`), or pause the loop until you have;
+  - if a `hung_turn` report was ever recorded, move `deliveries.json` aside, or expect the delivery errors above.
+  Going forward again needs no step.
 
 ### A long time offline
 

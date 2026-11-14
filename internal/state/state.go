@@ -99,6 +99,13 @@ type File struct {
 	LastCheck         *Check    `json:"lastCheck,omitempty"`
 	Reprompts         int       `json:"reprompts,omitempty"`
 	Nudges            int       `json:"nudges,omitempty"` // since progress or the most recent turn end
+	// HeldNudges is how many of Nudges were held back, not sent, because the
+	// turn looked hung, and LastHeldNudgeAt when the latest was. A held-back
+	// nudge sets LastWakeAt as a sent one does, to keep the stall rule's
+	// spacing; LastSentAt is when something was last actually sent.
+	HeldNudges        int       `json:"heldNudges,omitempty"`
+	LastHeldNudgeAt   time.Time `json:"lastHeldNudgeAt,omitempty"`
+	LastSentAt        time.Time `json:"lastSentAt,omitempty"`
 	LastRepromptAt    time.Time `json:"lastRepromptAt,omitempty"`
 	StopRequestedSent bool      `json:"stopSent,omitempty"`
 	// BBPath is the absolute path of the bb executable the latest check
@@ -178,6 +185,9 @@ type File struct {
 	// or by the owning agent, so the count is shown in status.
 	ResumeEpisodes      int       `json:"resumeEpisodes,omitempty"`
 	LastResumeEpisodeAt time.Time `json:"lastResumeEpisodeAt,omitempty"`
+	// HungTurn watches an active turn through a network outage for signs
+	// that it hung. See the supervisor's hungTurn.
+	HungTurn *HungTurn `json:"hungTurn,omitempty"`
 	// TurnRetryNoOps counts consecutive checks in which the provider answered
 	// that a retry was already queued while it reported nothing queued.
 	TurnRetryNoOps int `json:"turnRetryNoOps,omitempty"`
@@ -586,6 +596,20 @@ func Append(stateDir string, e Event) error {
 type Brief struct {
 	Action string `json:"action"`
 	Target string `json:"target"`
+}
+
+// HungTurn is the watch kept on one active turn after an outage. Turn names
+// the turn; OutageAt is when the silence must have begun by (the outage, or
+// after a gap the computer's waking); Since is when every sign of a hung
+// turn first held, zero while they do not; HeldNudges counts the nudges held
+// back for it (each also counted in Nudges, as a sent one is); Reported
+// says its report was sent.
+type HungTurn struct {
+	Turn       string    `json:"turn"`
+	OutageAt   time.Time `json:"outageAt"`
+	Since      time.Time `json:"since,omitempty"`
+	HeldNudges int       `json:"heldNudges,omitempty"`
+	Reported   bool      `json:"reported,omitempty"`
 }
 
 // LaneStop is what a stop covering the lanes did, by count. No thread is
