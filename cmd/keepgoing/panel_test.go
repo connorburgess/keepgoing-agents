@@ -956,12 +956,12 @@ func TestPanelCommandStartsOneServerReusesItAndStops(t *testing.T) {
 		t.Fatalf("status before: %d %s", code, out)
 	}
 	code, out, errs := w.open()
-	if code != exitOK || !strings.Contains(out, "Started the keepgoing panel") {
+	if code != exitOK || !strings.Contains(out, "Started the looptender panel") {
 		t.Fatalf("first open: %d %s %s", code, out, errs)
 	}
 	first := w.record()
 	// The second call reuses it: same process, same port, same instance.
-	if code, out, errs := w.open(); code != exitOK || !strings.HasPrefix(out, "Opened the keepgoing panel") {
+	if code, out, errs := w.open(); code != exitOK || !strings.HasPrefix(out, "Opened the looptender panel") {
 		t.Fatalf("second open: %d %s %s", code, out, errs)
 	}
 	if again := w.record(); again != first {
@@ -1060,7 +1060,7 @@ func TestPanelCommandStartsOneServerReusesItAndStops(t *testing.T) {
 
 	// Stop ends the server and removes its record, socket and launch pages.
 	// Nothing in any loop's files changed at any point.
-	if code, out, errs := w.run("panel", "stop", "--panel-directory", w.dir); code != exitOK || !strings.Contains(out, "Stopped the keepgoing panel") {
+	if code, out, errs := w.run("panel", "stop", "--panel-directory", w.dir); code != exitOK || !strings.Contains(out, "Stopped the looptender panel") {
 		t.Fatalf("stop: %d %s %s", code, out, errs)
 	}
 	if _, ok := panelLive(context.Background(), w.dir); ok || panelServerHeld(w.dir) {

@@ -518,7 +518,7 @@ func panelReadControl(stateDir string) (control.File, string) {
 	lk, err := lock.AcquireNamed(stateDir, lock.Control)
 	if err != nil {
 		if errors.Is(err, lock.ErrHeld) {
-			return f, "keepgoing is in the middle of a check on this loop. Nothing was changed."
+			return f, "looptender is in the middle of a check on this loop. Nothing was changed."
 		}
 		return f, "Its control record could not be read. Nothing was changed."
 	}
@@ -551,14 +551,14 @@ func panelLoopNow(ctx context.Context, reader *dockReader, dir string, entry reg
 // saves with, run on a copy of the record reviewed.
 func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now time.Time) panelPreview {
 	p := panelPreview{Action: action, Title: panelActions[action] + " " + l.Name + "?", Confirm: panelActions[action] + " " + l.Name, Lines: []dockText{},
-		Lost:    "keepgoing could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state before doing anything else.",
+		Lost:    "looptender could not confirm whether " + l.Name + " was " + panelDone[action] + ". Check its state before doing anything else.",
 		Refused: "The panel refused this request before doing anything. Nothing was changed."}
 	add := func(a ...any) { p.Lines = append(p.Lines, txt(a...)) }
 	owned := ctl.Ownership != nil
 	add("Now: " + l.Phrase + ". Last check: " + strings.ToLower(l.LastCheck.Text[:1]) + l.LastCheck.Text[1:] + ".")
 	switch action {
 	case "pause":
-		add("keepgoing sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change.")
+		add("looptender sends it nothing until it is resumed. A check already running finishes. Its route, note, other holds and ownership do not change.")
 	case "stop":
 		add("The loop's next check carries out the stop; this review cannot confirm that the session stopped. Nothing is sent until it is resumed.")
 		add("This stops the conversation only: its lanes, if it has any, keep running.")
@@ -593,7 +593,7 @@ func panelPreviewOf(action string, l panelLoop, ctl control.File, expires, now t
 			add("Supervision is off for this loop, and resume does not turn it on.")
 		}
 		if owned {
-			add("This loop is supervised for a conversation. Resuming here clears the holds that conversation or keepgoing set; it does not answer any question the conversation asked.")
+			add("This loop is supervised for a conversation. Resuming here clears the holds that conversation or looptender set; it does not answer any question the conversation asked.")
 		}
 		if l.CurrentRoute.Availability == "known" {
 			for _, entry := range l.Chain.Entries {
@@ -655,7 +655,7 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		return panelResult{Outcome: "done", Text: text}
 	case r.ControlSave == "confirmed":
 		text := map[string]string{
-			"pause":  "Paused: keepgoing will send nothing; a check already running finishes.",
+			"pause":  "Paused: looptender will send nothing; a check already running finishes.",
 			"stop":   "Stop requested: the next check carries it out.",
 			"resume": "Resumed: holds cleared; the next check decides what to send.",
 		}[action]
@@ -664,9 +664,9 @@ func panelOutcome(action string, r clientHoldReport) panelResult {
 		}
 		return panelResult{Outcome: "done", Text: text}
 	case r.ControlSave == "unconfirmed", has("ticket_consumption_unconfirmed"), has("interrupted_after_consumption"):
-		return panelResult{Outcome: "uncertain", Text: "keepgoing could not confirm whether this loop was " + panelDone[action] + ". Check its state before doing anything else."}
+		return panelResult{Outcome: "uncertain", Text: "looptender could not confirm whether this loop was " + panelDone[action] + ". Check its state before doing anything else."}
 	case has("busy"):
-		return panelResult{Outcome: "refused", Text: "keepgoing is in the middle of a check on this loop. Nothing was changed.", Retry: true}
+		return panelResult{Outcome: "refused", Text: "looptender is in the middle of a check on this loop. Nothing was changed.", Retry: true}
 	case has("observation_changed"), has("ticket_unavailable_or_expired"):
 		return panelResult{Outcome: "review_again", Text: "The loop changed since you reviewed it, or the review expired. Nothing was changed. Review it again.", Retry: true}
 	}

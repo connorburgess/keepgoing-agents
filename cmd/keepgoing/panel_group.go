@@ -108,7 +108,7 @@ func panelGroupReview(ctx context.Context, registryDir string, reader *dockReade
 		it := panelGroupItem{Key: dockKey(e.ID), Name: clip(e.Loop, dockMaxText), ID: e.ID}
 		ctl, why := panelReadControl(e.StateDir)
 		switch {
-		case why != "" && strings.HasPrefix(why, "keepgoing is in the middle"):
+		case why != "" && strings.HasPrefix(why, "looptender is in the middle"):
 			it.why = "busy"
 		case why != "":
 			it.why = "unreadable"
@@ -166,7 +166,7 @@ func panelGroupReview(ctx context.Context, registryDir string, reader *dockReade
 	expires := now.Add(panelHoldFormTTL)
 	p := panelPreview{Action: action, Key: panelGroupKey, Title: panelActions[action] + " all loops?", Lines: []dockText{},
 		Confirm: fmt.Sprintf("%s %d %s", panelActions[action], fits, plural(fits, "Loop", "Loops")), ExpiresAt: expires,
-		Lost:    "keepgoing could not confirm which loops were " + panelDone[action] + ". Check each loop's state before doing anything else.",
+		Lost:    "looptender could not confirm which loops were " + panelDone[action] + ". Check each loop's state before doing anything else.",
 		Refused: "The panel refused this request before doing anything. Nothing was changed."}
 	add := func(a ...any) { p.Lines = append(p.Lines, txt(a...)) }
 	for _, l := range panelGroupItemLines(items, phrase, action) {
@@ -180,7 +180,7 @@ func panelGroupReview(ctx context.Context, registryDir string, reader *dockReade
 			add(l)
 		}
 	} else {
-		add("keepgoing sends each loop it pauses nothing until that loop is resumed. A check already running finishes. Routes, notes, other holds and ownership do not change.")
+		add("looptender sends each loop it pauses nothing until that loop is resumed. A check already running finishes. Routes, notes, other holds and ownership do not change.")
 	}
 	add("If a loop's control record changes before you confirm, that loop is not changed and you are asked to review it again; the others are " + panelDone[action] + ".")
 	add("This review expires ", dockUntil(now, expires), ".")
@@ -224,7 +224,7 @@ func panelGroupItemLine(it panelGroupItem, phrase, action string) string {
 	case it.why == "already":
 		return it.Name + " is already " + panelGroupHeld[action] + "."
 	case it.why == "busy":
-		return it.Name + " will not be " + done + ": keepgoing is in the middle of a check on it."
+		return it.Name + " will not be " + done + ": looptender is in the middle of a check on it."
 	}
 	return it.Name + " will not be " + done + ": its control record could not be read."
 }
@@ -323,7 +323,7 @@ func panelGroupStopReview(items []panelGroupItem) (*stopChoices, []string) {
 		}
 		lines = append(lines, line, "Each loop's lanes are stopped as its own stop would: 3 levels down, 50 threads in all, leaving another loop's lanes to it.")
 	} else {
-		lines = append(lines, "This stops each conversation only: no loop here has lanes keepgoing can stop.")
+		lines = append(lines, "This stops each conversation only: no loop here has lanes looptender can stop.")
 	}
 	if queued > 0 {
 		lines = append(lines, fmt.Sprintf("%d %s queued in lanes that have not started. Stopping the lanes keeps them, and BB may run them; to delete them, stop each loop on its own.", queued, plural(queued, "message is", "messages are")))
@@ -462,7 +462,7 @@ func panelGroupLoopText(name, action string, res panelResult, l panelLoopTo) str
 	case "review_again":
 		return name + ": changed since you reviewed it, so it was not " + panelDone[action] + "; review it again."
 	case "uncertain":
-		return name + ": keepgoing could not confirm whether it was " + panelDone[action] + "; check it before anything else."
+		return name + ": looptender could not confirm whether it was " + panelDone[action] + "; check it before anything else."
 	}
 	return name + ": not " + panelDone[action] + ". " + res.Text
 }

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Which keepgoing build serves the panel, and which build ran each loop's
+// Which looptender build serves the panel, and which build ran each loop's
 // last check, from the label each check records. Two labels are the same
 // build only when they are equal and say which build they are: "dev", the
 // label of a build made without one, says nothing, so two "dev" builds may
@@ -76,29 +76,29 @@ func dockBuildOf(recorded, panel string) dockBuild {
 	b := dockBuild{Recorded: recorded, Panel: panel}
 	switch {
 	case recorded == "":
-		b.Availability, b.Text = "not_recorded", "Which keepgoing build ran its last check is not recorded."
+		b.Availability, b.Text = "not_recorded", "Which looptender build ran its last check is not recorded."
 	case !dockBuildKnown(recorded) && !dockBuildKnown(panel):
-		b.Availability, b.Text = "unknown", "Its last check and this panel both ran a keepgoing build with no version recorded (dev), so whether they are the same build is unknown."
+		b.Availability, b.Text = "unknown", "Its last check and this panel both ran a looptender build with no version recorded (dev), so whether they are the same build is unknown."
 	case !dockBuildKnown(recorded):
-		b.Availability, b.Text = "unknown", "Its last check ran a keepgoing build with no version recorded (dev); this panel is keepgoing "+panel+". Whether they are the same build is unknown."
+		b.Availability, b.Text = "unknown", "Its last check ran a looptender build with no version recorded (dev); this panel is looptender "+panel+". Whether they are the same build is unknown."
 	case !dockBuildKnown(panel):
-		b.Availability, b.Text = "unknown", "Its last check ran keepgoing "+recorded+"; this panel is a build with no version recorded (dev). Whether they are the same build is unknown."
+		b.Availability, b.Text = "unknown", "Its last check ran looptender "+recorded+"; this panel is a build with no version recorded (dev). Whether they are the same build is unknown."
 	case recorded == panel && strings.HasSuffix(panel, "-dirty"):
 		// A dirty label names a commit plus changes that were never committed;
 		// two builds can share it and differ.
-		b.Availability, b.Text = "unknown", "Its last check and this panel both ran keepgoing "+panel+", built with uncommitted changes, so whether they are the same build is unknown."
+		b.Availability, b.Text = "unknown", "Its last check and this panel both ran looptender "+panel+", built with uncommitted changes, so whether they are the same build is unknown."
 	case recorded == panel:
-		b.Availability, b.Text = "same", "Its last check ran this panel's build, keepgoing "+panel+"."
+		b.Availability, b.Text = "same", "Its last check ran this panel's build, looptender "+panel+"."
 	default:
 		b.Availability = "different"
 		if order, ok := dockReleaseOrder(recorded, panel); ok && order != 0 {
 			b.Order = map[int]string{-1: "older", 1: "newer"}[order]
-			b.Text = "Its last check ran keepgoing " + recorded + ", an " + b.Order + " release than this panel's " + panel + "."
+			b.Text = "Its last check ran looptender " + recorded + ", an " + b.Order + " release than this panel's " + panel + "."
 			if b.Order == "newer" {
-				b.Text = "Its last check ran keepgoing " + recorded + ", a newer release than this panel's " + panel + "."
+				b.Text = "Its last check ran looptender " + recorded + ", a newer release than this panel's " + panel + "."
 			}
 		} else {
-			b.Text = "Its last check ran keepgoing " + recorded + "; this panel is keepgoing " + panel + ". They are different builds."
+			b.Text = "Its last check ran looptender " + recorded + "; this panel is looptender " + panel + ". They are different builds."
 		}
 	}
 	return b
@@ -126,7 +126,7 @@ func dockLastBuild(st *statusOut, tl *timelineReport) string {
 func dockPanelVersionText(panel string) string {
 	panel = dockBuildLabel(panel)
 	if !dockBuildKnown(panel) {
-		return "This page is served by a keepgoing build with no version recorded (dev)."
+		return "This page is served by a looptender build with no version recorded (dev)."
 	}
-	return "This page is served by keepgoing " + panel + "."
+	return "This page is served by looptender " + panel + "."
 }

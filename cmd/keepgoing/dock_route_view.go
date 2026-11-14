@@ -65,7 +65,7 @@ type dockDevice struct {
 	HostText string `json:"hostText,omitempty"`
 }
 
-// dockLane is one lane from the last verified listing. keepgoing records a
+// dockLane is one lane from the last verified listing. looptender records a
 // lane's state and a hashed key, not its title, its thread or the route it is
 // on. Title is reserved for a later change that records one privately.
 type dockLane struct {
@@ -424,9 +424,9 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles
 		when += "at an unknown time"
 	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
-	out.Footer = "keepgoing records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
+	out.Footer = "looptender records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
 	if identifiers {
-		out.Footer = "keepgoing records each lane's state and, when BB reports one, its title; not which route it is on"
+		out.Footer = "looptender records each lane's state and, when BB reports one, its title; not which route it is on"
 	}
 	if current {
 		out.Footer += "; they are listed under the loop's current route"
