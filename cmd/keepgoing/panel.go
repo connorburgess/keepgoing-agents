@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -884,6 +885,9 @@ type panelList struct {
 	Unread        int             `json:"unread"`
 	Omitted       int             `json:"omitted"`
 	Loops         []panelListLoop `json:"loops"`
+	// CanAll is which changes can be made to every loop at once
+	// (client review|apply --all): pause, while any loop can be paused.
+	CanAll []string `json:"canAll"`
 	// EarlierBuildPanel: as in panel status.
 	EarlierBuildPanel string `json:"earlierBuildPanel,omitempty"`
 }
@@ -919,7 +923,11 @@ func buildPanelList(r dockReport) panelList {
 			overdue[n.Key] = n.Since
 		}
 	}
+	out.CanAll = []string{}
 	for _, l := range r.Loops {
+		if slices.Contains(l.Can, "pause") && !slices.Contains(out.CanAll, "pause") {
+			out.CanAll = append(out.CanAll, "pause")
+		}
 		row := panelListLoop{Key: l.Key, Name: l.Name, State: l.State, Phrase: l.Phrase, NeedsYou: needs[l.Key], Can: l.Can, OverdueSince: overdue[l.Key]}
 		if np := l.NoProgress; np != nil && np.Availability == "flagged" {
 			row.NoProgress = np.Text

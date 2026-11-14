@@ -368,8 +368,16 @@
   }
 
   // ---- Overview: what needs you, then what else is not routine ----
+  // Pause all: offered while any loop can be paused; the server reviews
+  // every loop and words the review and the outcome.
+  function groupBox(d) {
+    var any = list(d.loops).some(function (l) { return list(l.can).indexOf("pause") >= 0; });
+    return changeBox({ key: "all", can: any ? ["pause"] : [] }, true);
+  }
   function renderHome(d, pane) {
     pane.appendChild(paneHead("Needs you"));
+    var group = groupBox(d);
+    if (group) pane.appendChild(group);
     if (d.registry.availability !== "available") {
       pane.appendChild(el("p", "lede", "Unknown."));
       pane.appendChild(emptyBox("The registry could not be read.", "Nothing is shown rather than guessing. Check it with keepgoing registry list."));
@@ -660,7 +668,8 @@
     b.addEventListener("click", onClick);
     return b;
   }
-  function changeBox(l) {
+  // all: the change to every loop at once (key "all"), on the overview.
+  function changeBox(l, all) {
     var c = state.change && state.change.key === l.key ? state.change : null;
     if (!changesOn() && !c) return null;
     var box = el("section", "panel change");
@@ -690,6 +699,12 @@
       r.tabIndex = -1;
       r.setAttribute("data-focus", "change-result");
       box.appendChild(r);
+      // A change to every loop: each loop's outcome, those not changed first.
+      if (list(c.result.lines).length) {
+        var ul = el("ul", "change-lines");
+        list(c.result.lines).forEach(function (line) { ul.appendChild(el("li", "change-line", line)); });
+        box.appendChild(ul);
+      }
       var again = el("div", "change-buttons");
       if (c.result.retry && changesOn()) again.appendChild(button("Review again", "change-retry", "", function () { prepareChange(l.key, c.action); }));
       again.appendChild(button("Close", "change-close", "", function () { state.change = null; render(false, true); focusOn("act-" + c.action); }));
@@ -704,9 +719,9 @@
     if (!can.length) return c ? box : null;
     var actions = el("div", "change-buttons");
     actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", "Change this loop");
+    actions.setAttribute("aria-label", all ? "Change every loop" : "Change this loop");
     can.forEach(function (a) {
-      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + "…", "act-" + a, "", function () { prepareChange(l.key, a); }));
+      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + (all ? " all…" : "…"), "act-" + a, "", function () { prepareChange(l.key, a); }));
     });
     box.appendChild(actions);
     return box;

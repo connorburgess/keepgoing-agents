@@ -43,6 +43,9 @@ public struct PanelList: Decodable, Equatable {
     public let unread: Int
     public let omitted: Int
     public let loops: [PanelLoop]
+    /// Changes that can be made to every loop at once (`client review|apply
+    /// --all`). Absent from a CLI that cannot.
+    public var canAll: [String]? = nil
 }
 
 /// What `keepgoing panel status --json` says about the panel's background
@@ -128,6 +131,12 @@ public enum MenuCommand: Equatable {
     /// started; it is passed only with `--lanes`, and only for the stop
     /// option that says so.
     case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool, dropQueued: Bool = false)
+    /// Runs `keepgoing client review pause --all --json`, which reads and
+    /// changes nothing; its review is then shown for confirmation.
+    case reviewAll(LoopAction)
+    /// Runs `keepgoing client apply pause --all --expect KEY=VALUE… --json`,
+    /// only from a confirmed review of every loop.
+    case applyAll(LoopAction, expects: [LoopExpect])
     case quit
 }
 
@@ -287,6 +296,10 @@ public enum MenuBuilder {
                                     accessibilityHelp: choices.count > 1 ? "Shows what you can do with this loop." : "Opens this loop in the panel.",
                                     toolTip: short == name ? "" : name, command: choices.count > 1 ? nil : .openLoop(key: loop.key), submenu: choices.count > 1 ? choices : []))
             }
+            if list.canAll?.contains("pause") == true {
+                rows.append(action("Pause All Loops…", .reviewAll(.pause), symbol: "pause.circle",
+                                   help: "Shows which loops pausing every loop changes, then asks you to confirm."))
+            }
             let total = list.loops.count + list.omitted
             // Whenever some loops are not listed here, whether this menu cut
             // them or the CLI did.
@@ -357,6 +370,12 @@ public enum MenuBuilder {
             guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately && !dropQueued), !dropQueued || lanes else { return nil }
             return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : [])
                 + (dropQueued ? ["--drop-queued"] : []) + ["--json"]
+        case .reviewAll(let action): return action == .pause ? ["client", "review", action.rawValue, "--all", "--json"] : nil
+        case .applyAll(let action, let expects):
+            let keys = expects.map(\.key)
+            guard action == .pause, (1...128).contains(expects.count), Set(keys).count == keys.count,
+                  expects.allSatisfy({ Contract.validKey($0.key) && Contract.validExpect($0.expect) }) else { return nil }
+            return ["client", "apply", action.rawValue, "--all"] + expects.flatMap { ["--expect", $0.key + "=" + $0.expect] } + ["--json"]
         case .quit: return nil
         }
     }
