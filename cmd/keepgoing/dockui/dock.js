@@ -120,6 +120,7 @@
     var h = location.hash.replace(/^#\/?/, "");
     var m = /^routes(?:\/(r[0-9a-f]+))?$/.exec(h);
     if (m) return { view: "routes", key: m[1] || "" };
+    if (h === "versions") return { view: "versions" };
     m = /^loop\/([a-z0-9]+)$/.exec(h);
     if (m) return { view: "loop", key: m[1] };
     return { view: "home" };
@@ -319,6 +320,8 @@
     fixed.appendChild(top);
     var rs = d.routesSummary || {};
     fixed.appendChild(pickRow("#/routes", rs.trouble ? "dot-limit" : "dot-calm", "Routes", rs.picker || "", r.view === "routes"));
+    var vs = d.versions || {};
+    fixed.appendChild(pickRow("#/versions", vs.behind ? "dot-limit" : "dot-calm", "Versions", vs.summary || "", r.view === "versions"));
     nav.appendChild(fixed);
 
     var label = el("p", "pick-label", "Loops");
@@ -368,8 +371,19 @@
   }
 
   // ---- Overview: what needs you, then what else is not routine ----
+  // Pause all and stop all: each offered while any loop can have it; the
+  // server reviews every loop and words the review, its options and the
+  // outcome.
+  function groupBox(d) {
+    var can = ["pause", "stop"].filter(function (a) {
+      return list(d.loops).some(function (l) { return list(l.can).indexOf(a) >= 0; });
+    });
+    return changeBox({ key: "all", can: can }, true);
+  }
   function renderHome(d, pane) {
     pane.appendChild(paneHead("Needs you"));
+    var group = groupBox(d);
+    if (group) pane.appendChild(group);
     if (d.registry.availability !== "available") {
       pane.appendChild(el("p", "lede", "Unknown."));
       pane.appendChild(emptyBox("The registry could not be read.", "Nothing is shown rather than guessing. Check it with keepgoing registry list."));
@@ -378,7 +392,7 @@
     var needs = list(d.needsYou);
     if (d.lede) pane.appendChild(el("p", "lede", d.lede));
     if (!list(d.loops).length) {
-      pane.appendChild(emptyBox("No loops are registered yet.", "Register one with keepgoing registry add -c path/to/keepgoing.yaml, and it appears here on the next read."));
+      pane.appendChild(emptyBox("No loops are registered yet.", "Register one with keepgoing registry add -c path/to/looptender.yaml (or keepgoing.yaml), and it appears here on the next read."));
       return;
     }
     if (!needs.length && !d.allClear) {
@@ -457,6 +471,8 @@
       li.appendChild(el("span", "lane-state", x.phrase));
       var what = el("span", "lane-what");
       what.appendChild(el("span", "lane-title", x.title || "Lane " + x.number));
+      // A recorded title is the person's own text: shown with identifiers only.
+      if (!x.title && x.titleEvidence === "withheld") what.appendChild(el("span", "sub", " · title withheld"));
       if (x.loop) {
         what.appendChild(document.createTextNode(" · also a registered loop: "));
         what.appendChild(link("#/loop/" + x.loopKey, x.loop));
@@ -555,11 +571,18 @@
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
     if (l.build && l.build.text) dl.appendChild(fact("Build", l.build.availability === "unknown" || l.build.availability === "not_recorded" ? unknown(l.build.text) : el("span", null, l.build.text)));
+    if (l.buildChange && l.buildChange.text) dl.appendChild(fact("Its file", el("span", l.buildChange.pending ? "c-warn" : null, l.buildChange.text)));
     if (l.noProgress) {
       var np = l.noProgress, pf = frag();
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
       list(np.lines).forEach(function (s) { pf.appendChild(el("div", "sub", s)); });
       dl.appendChild(fact("Progress", pf));
+    }
+    if (l.refusals && (l.refusals.text || l.refusals.question)) {
+      var rf = frag();
+      if (l.refusals.text) rf.appendChild(el("span", null, l.refusals.text));
+      if (l.refusals.question) rf.appendChild(el("div", "sub", "Question: " + l.refusals.question));
+      dl.appendChild(fact("Refusals", rf));
     }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
     checks.appendChild(dl);
@@ -660,7 +683,8 @@
     b.addEventListener("click", onClick);
     return b;
   }
-  function changeBox(l) {
+  // all: the change to every loop at once (key "all"), on the overview.
+  function changeBox(l, all) {
     var c = state.change && state.change.key === l.key ? state.change : null;
     if (!changesOn() && !c) return null;
     var box = el("section", "panel change");
@@ -690,6 +714,12 @@
       r.tabIndex = -1;
       r.setAttribute("data-focus", "change-result");
       box.appendChild(r);
+      // A change to every loop: each loop's outcome, those not changed first.
+      if (list(c.result.lines).length) {
+        var ul = el("ul", "change-lines");
+        list(c.result.lines).forEach(function (line) { ul.appendChild(el("li", "change-line", line)); });
+        box.appendChild(ul);
+      }
       var again = el("div", "change-buttons");
       if (c.result.retry && changesOn()) again.appendChild(button("Review again", "change-retry", "", function () { prepareChange(l.key, c.action); }));
       again.appendChild(button("Close", "change-close", "", function () { state.change = null; render(false, true); focusOn("act-" + c.action); }));
@@ -701,13 +731,16 @@
       return box;
     }
     var can = list(l.can);
-    if (!can.length) return c ? box : null;
+    // The build change, for one loop only, labelled by the server.
+    var bc = !all && l.buildChange && l.buildChange.action ? l.buildChange : null;
+    if (!can.length && !bc) return c ? box : null;
     var actions = el("div", "change-buttons");
     actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", "Change this loop");
+    actions.setAttribute("aria-label", all ? "Change every loop" : "Change this loop");
     can.forEach(function (a) {
-      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + "…", "act-" + a, "", function () { prepareChange(l.key, a); }));
+      if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + (all ? " all…" : "…"), "act-" + a, "", function () { prepareChange(l.key, a); }));
     });
+    if (bc) actions.appendChild(button(bc.label + "…", "act-" + bc.action, "", function () { prepareChange(l.key, bc.action); }));
     box.appendChild(actions);
     return box;
   }
@@ -736,6 +769,55 @@
     p.appendChild(ul);
     if (d.allowancesOmitted) p.appendChild(el("p", "more", d.allowancesOmitted + (d.allowancesOmitted === 1 ? " more account is" : " more accounts are") + " not shown."));
     return p;
+  }
+
+  // ---- Versions: where each build runs ----
+  var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
+  function renderVersions(d, pane) {
+    var v = d.versions || {};
+    pane.appendChild(back());
+    pane.appendChild(paneHead("Versions"));
+    pane.appendChild(el("p", "lede", v.lede || ""));
+    var rows = list(v.rows);
+    if (!rows.length) {
+      pane.appendChild(emptyBox("Nothing to show.", ""));
+      return;
+    }
+    if (v.summary) pane.appendChild(el("p", "route-summary", v.summary));
+    var wrap = panel("Where each build runs", v.clients === "unavailable" ? [el("span", "sub", "the clients' reports could not be read")] : []);
+    var ul = el("ul", "allow-list");
+    rows.forEach(function (x) {
+      var li = el("li", "allow");
+      var head = el("div", "allow-head");
+      var name = el("h3", "allow-name");
+      if (x.key) name.appendChild(link("#/loop/" + x.key, x.title));
+      else name.textContent = x.title;
+      head.appendChild(name);
+      if (x.label) head.appendChild(el("code", "sub", x.label));
+      li.appendChild(head);
+      var body = el("div", "allow-body");
+      var line = el("p", "route-status");
+      line.appendChild(el("span", "dot " + (versionDots[x.availability] || "dot-unknown")));
+      line.appendChild(el("span", null, x.text));
+      body.appendChild(line);
+      if (x.update) body.appendChild(el("p", "allow-next", x.update));
+      if (x.seen) body.appendChild(el("p", "allow-next sub", x.seen));
+      if (x.seenAt) body.appendChild(el("p", "allow-next sub", "Last reported " + fmt(dateYearFmt, x.seenAt) + "."));
+      li.appendChild(body);
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+    var none = list(v.unrecorded);
+    if (none.length) {
+      var p = el("p", "more", "Which build ran the last check is not recorded for " + (none.length === 1 ? "this loop" : "these " + none.length + " loops") + ": ");
+      none.forEach(function (x, i) {
+        if (i) p.appendChild(document.createTextNode(", "));
+        p.appendChild(link("#/loop/" + x.key, x.name));
+      });
+      p.appendChild(document.createTextNode("."));
+      wrap.appendChild(p);
+    }
+    pane.appendChild(wrap);
   }
 
   function renderRoutes(d, pane) {
@@ -860,6 +942,7 @@
       pane.setAttribute("aria-labelledby", "pane-title");
       if (r.view === "loop") renderLoop(d, pane, r.key);
       else if (r.view === "routes") renderRoutes(d, pane);
+      else if (r.view === "versions") renderVersions(d, pane);
       else renderHome(d, pane);
     } catch (err) {
       pane.replaceChildren(emptyBox("This page could not show the reply it was sent.", "Reload the page, or restart keepgoing " + served() + "."));
@@ -915,7 +998,10 @@
     var m = $("changes");
     if (m && state.server && list(state.server.changesText).length) m.textContent = say(state.server.changesText);
     var vt = $("version");
-    if (vt && state.server && state.server.versionText) vt.textContent = state.server.versionText;
+    if (vt && state.server && state.server.versionText) {
+      vt.textContent = "";
+      put(vt, [state.server.versionText + " ", link("#/versions", "Where each build runs")]);
+    }
     var p = $("served");
     if (!p) return;
     p.textContent = "";

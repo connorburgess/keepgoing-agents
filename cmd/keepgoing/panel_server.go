@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // The background panel server. It serves the same page and data endpoint as
@@ -478,6 +479,12 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 		} else {
 			switch req.Op {
 			case "open":
+				rec := record()
+				if rec.Changes && !panelBuildReuseAllowed(rec, req.CallerKind) {
+					reply.Error = "panel build authority differs or is unknown; explicitly stop and restart the panel"
+					break
+				}
+
 				state.touch()
 				if address, file, err := state.mint(req.Key, req.File); err != nil {
 					reply.Error = err.Error()
@@ -632,7 +639,11 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon}
+	reader := &dockReader{ctx: ctx, directory: c.registry, refresh: c.refresh, staleAfter: c.staleAfter, query: inspectDaemon, versions: true, panelDir: c.dir}
+	if c.changes {
+		reader.builds = newBuildSession(c.dir, c.registry)
+		defer reader.builds.close()
+	}
 	if c.offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)
@@ -643,7 +654,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version)}
 	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
 	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
-		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes}
+		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes, BuildAuthority: panelCallerKind()}
 	if c.changes {
 		if handler.changes, err = newPanelChanges(ctx, c.registry, reader, rec.StartedAt, c.now); err != nil {
 			return exitFailed
@@ -666,7 +677,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 	defer func() {
 		// Leave a record another server has since written.
 		if cur, ok := readPanelRecord(dir); ok && cur.Instance == state.instance {
-			_ = os.Remove(filepath.Join(dir, panelRecordName))
+			_ = snapshot.Remove(filepath.Join(dir, panelRecordName))
 		}
 	}()
 	go func() {

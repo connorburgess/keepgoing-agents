@@ -64,7 +64,7 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d: %s", code, errOut)
 	}
-	cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+	cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"ENTIRE task", "complete -c", "await-user -c", "Complete and verify the fictional example task.", commandQuote(filepath.Join(f.destination, "keepgoing.yaml"))} {
+	for _, s := range []string{"ENTIRE task", "complete -c", "await-user -c", "Complete and verify the fictional example task.", commandQuote(filepath.Join(f.destination, config.FileName))} {
 		if !strings.Contains(prompt, s) {
 			t.Errorf("missing prompt instruction %q", s)
 		}
@@ -93,10 +93,10 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	if !strings.Contains(out, "supervision disabled") || strings.Contains(out, "Complete and verify the fictional example task.") {
 		t.Fatal("preview must show disabled state without echoing task")
 	}
-	if !strings.Contains(out, "start --foreground -c "+commandQuote(filepath.Join(f.destination, "keepgoing.yaml"))) || !strings.Contains(out, "--background") {
+	if !strings.Contains(out, "start --foreground -c "+commandQuote(filepath.Join(f.destination, config.FileName))) || !strings.Contains(out, "--background") {
 		t.Fatal("setup must print a start command and background choice")
 	}
-	for _, name := range []string{"", "keepgoing.yaml", "prompt.md"} {
+	for _, name := range []string{"", config.FileName, "prompt.md"} {
 		info, err := os.Stat(filepath.Join(f.destination, name))
 		if err != nil {
 			t.Fatal(err)
@@ -120,7 +120,7 @@ func TestInitCreatesDisabledPrivateSetup(t *testing.T) {
 	// enabling a completed loop must never reach the nonexistent provider CLI.
 	for _, cmd := range []string{"complete", "enable", "tick", "tick"} {
 		var errOut bytes.Buffer
-		if code := run(context.Background(), []string{cmd, "-c", filepath.Join(f.destination, "keepgoing.yaml")}, io.Discard, &errOut); code != 0 {
+		if code := run(context.Background(), []string{cmd, "-c", filepath.Join(f.destination, config.FileName)}, io.Discard, &errOut); code != 0 {
 			t.Fatalf("generated config %s: %d %s", cmd, code, &errOut)
 		}
 	}
@@ -138,7 +138,7 @@ func TestInitWizardAndFlagsProduceSameConfiguration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("wizard: %d %s", code, errOut)
 	}
-	want, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+	want, err := config.Load(filepath.Join(f.destination, config.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestInitWizardAndFlagsProduceSameConfiguration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("flags: %d %s", code, errOut)
 	}
-	got, err := config.Load(filepath.Join(other, "keepgoing.yaml"))
+	got, err := config.Load(filepath.Join(other, config.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestInitOrderedAccountsAndTaskFile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+	cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestInitBBRequiresExplicitExistingTarget(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	cfg, err := config.Load(filepath.Join(f.destination, "keepgoing.yaml"))
+	cfg, err := config.Load(filepath.Join(f.destination, config.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}

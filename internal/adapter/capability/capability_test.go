@@ -234,10 +234,15 @@ func TestOptionalInterfacesMatchTheAdapters(t *testing.T) {
 		if listed := byID("turn_retry").Cells[a.ID].Status == Yes; retries != a.TurnRetrier || retries != listed {
 			t.Errorf("%s: TurnRetrier=%v; the capability table says %v and the turn_retry row says %v", a.ID, retries, a.TurnRetrier, listed)
 		}
+		// And the child_recovery row with whether it can act on a lane at all.
+		_, lanes := impl.(adapter.LaneRecoverer)
+		if listed := byID("child_recovery").Cells[a.ID].Status == Yes; lanes != a.LaneRecoverer || lanes != listed {
+			t.Errorf("%s: LaneRecoverer=%v; the capability table says %v and the child_recovery row says %v", a.ID, lanes, a.LaneRecoverer, listed)
+		}
 		// And the stop_lanes row with whether it can stop lanes at all.
-		_, lanes := impl.(adapter.LaneStopper)
-		if listed := byID("stop_lanes").Cells[a.ID].Status == Yes; lanes != a.LaneStopper || lanes != listed {
-			t.Errorf("%s: LaneStopper=%v; the capability table says %v and the stop_lanes row says %v", a.ID, lanes, a.LaneStopper, listed)
+		_, stops := impl.(adapter.LaneStopper)
+		if listed := byID("stop_lanes").Cells[a.ID].Status == Yes; stops != a.LaneStopper || stops != listed {
+			t.Errorf("%s: LaneStopper=%v; the capability table says %v and the stop_lanes row says %v", a.ID, stops, a.LaneStopper, listed)
 		}
 	}
 	// A process loop can stop only through a configured command.

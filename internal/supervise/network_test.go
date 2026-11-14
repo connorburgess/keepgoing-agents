@@ -283,6 +283,10 @@ func TestWrongCheckTargetIsSetAsideWhenTheProviderAnswers(t *testing.T) {
 		{"probe passes", probe.Result{OK: true}},
 		{"provider refuses: overloaded", probe.Result{ErrorClass: "overloaded"}},
 		{"provider refuses: rate limited", probe.Result{ErrorClass: "rate_limit"}},
+		// A permission or policy decision is the provider's answer too: a
+		// restriction must not be mistaken for an outage.
+		{"provider denies permission", probe.Result{ErrorClass: "restricted"}},
+		{"provider declines the request", probe.Result{ErrorClass: "refused"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, p, check := probeWorld(t, func() probe.Result { return tc.answer })

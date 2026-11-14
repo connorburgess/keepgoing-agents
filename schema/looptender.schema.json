@@ -1,0 +1,1150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/looptender.schema.json",
+  "title": "looptender.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "loop"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "state_dir",
+        "adapter"
+      ],
+      "properties": {
+        "adapter": {
+          "enum": [
+            "bb",
+            "process",
+            "claude",
+            "codex",
+            "cursor",
+            "custom"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "description": "claude-code, codex, or any label; redundancy counts by it"
+        },
+        "group": {
+          "type": "string",
+          "description": "account or quota pool; defaults to provider"
+        },
+        "bb": {
+          "$ref": "#/$defs/bb"
+        },
+        "process": {
+          "$ref": "#/$defs/process"
+        },
+        "claude": {
+          "$ref": "#/$defs/claude"
+        },
+        "codex": {
+          "$ref": "#/$defs/codex"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "state_dir": {
+          "type": "string"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "no_progress_timeout": {"$ref": "#/$defs/duration"},
+            "max_sends": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+            "max_new_threads": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10,
+              "description": "most BB threads this loop may create for handoffs to candidates with bb.new_thread; 0 or absent means 3; never more than 10, and never more than one an hour"
+            },
+            "deadline": {
+              "type": "string",
+              "anyOf": [{"format": "date-time"}, {"const": ""}],
+              "description": "RFC3339 cutoff; the next check persists an awaiting-user hold. Does not cancel running turns."
+            }
+          }
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "prompt_file": {
+          "type": "string"
+        },
+        "prompt_goal": {
+          "type": "boolean",
+          "description": "Explicitly include the latest private goal revision in automatic prompts and handoff briefs. Missing or invalid goals prevent sending."
+        },
+        "handoff_file": {
+          "type": "string"
+        },
+        "progress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repositories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "stall_after": {
+              "$ref": "#/$defs/duration"
+            },
+            "min_wake_interval": {
+              "$ref": "#/$defs/duration"
+            },
+            "max_nudges": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 3,
+              "description": "nudges a stalled session gets before the loop asks a person"
+            },
+            "flag_after_sends": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 6,
+              "description": "sends with no recorded change to the repositories that raise the panel's no-progress flag; 0 is off"
+            },
+            "flag_after_errors": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 4,
+              "description": "checks that found an error or retried the turn, with no recorded change to the repositories, that raise the panel's no-progress flag; 0 is off"
+            }
+          }
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tz",
+            "days"
+          ],
+          "properties": {
+            "tz": {
+              "type": "string"
+            },
+            "days": {
+              "type": "object",
+              "additionalProperties": false,
+              "patternProperties": {
+                "^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            }
+          }
+        },
+        "errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_reprompts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "backoff": {
+              "$ref": "#/$defs/duration"
+            },
+            "failover_on": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "rate_limit",
+                  "auth",
+                  "overloaded",
+                  "network"
+                ]
+              }
+            },
+            "wait_if_reset_within": {
+              "$ref": "#/$defs/duration"
+            },
+            "report_wait_after": {
+              "$ref": "#/$defs/duration",
+              "description": "report once when a limit wait with no possible handoff has a reset further away than this (default 6h)"
+            }
+          }
+        },
+        "fallbacks": {
+          "type": "string",
+          "description": "path to fallbacks.yaml"
+        },
+        "routes": {
+          "type": "string",
+          "enum": [
+            "standard"
+          ],
+          "description": "follow the person's standard route list instead of a fallbacks file of the loop's own"
+        },
+        "routes_allow": {
+          "type": "array",
+          "description": "kinds of standard route this loop opts in to; off by default",
+          "items": {
+            "type": "string",
+            "enum": [
+              "new_conversation"
+            ]
+          }
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url_env": {
+              "type": "string",
+              "default": "LOOPTENDER_WEBHOOK_URL"
+            },
+            "secret_env": {
+              "type": "string",
+              "default": "LOOPTENDER_WEBHOOK_SECRET"
+            },
+            "secret_file": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "scheme": {
+              "enum": [
+                "standard-webhooks",
+                "bearer"
+              ]
+            },
+            "format": {
+              "enum": [
+                "standard",
+                "text"
+              ]
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "all",
+                  "wake",
+                  "nudge",
+                  "reprompt",
+                  "handoff",
+                  "degraded",
+                  "recovered",
+                  "await_user",
+                  "complete",
+                  "stop",
+                  "error",
+                  "probe_failed",
+                  "switch_back",
+                  "limit_wait",
+                  "check_gap",
+                  "hung_turn",
+                  "refusal_streak",
+                  "network_wait",
+                  "child_error",
+                  "child_recovery",
+                  "test"
+                ]
+              }
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "yield": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "busy_command"
+          ],
+          "properties": {
+            "busy_command": {
+              "$ref": "#/$defs/argv"
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "connectivity check made before an error re-prompt, a handoff and fallback probes",
+          "properties": {
+            "check": {
+              "enum": ["on", "off"],
+              "description": "default on"
+            },
+            "url": {
+              "type": "string",
+              "description": "answers an HTTP GET when the network is up; default https://api.github.com/zen"
+            },
+            "command": {
+              "$ref": "#/$defs/argv"
+            },
+            "timeout": {
+              "$ref": "#/$defs/duration"
+            },
+            "verify_after": {
+              "$ref": "#/$defs/duration",
+              "description": "after the check has failed this long, test the provider with one probe and attempt a report, then again after twice as long each time up to a week; default 1h"
+            }
+          }
+        },
+        "tick_timeout": {
+          "$ref": "#/$defs/duration",
+          "description": "a check ends within this plus 90s; default 3m (or fallbacks probe.timeout plus 90s when longer), minimum 2m40s"
+        },
+        "daemon": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interval": {
+              "$ref": "#/$defs/duration"
+            },
+            "control_poll": {
+              "$ref": "#/$defs/duration"
+            }
+          }
+        },
+        "switch_back": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "min_after": {
+              "$ref": "#/$defs/duration"
+            },
+            "retry_every": {
+              "$ref": "#/$defs/duration"
+            }
+          },
+          "description": "return to the primary after a handoff once its limit resets and an exact probe passes"
+        },
+        "refusal": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ask_after": {"type": "integer", "minimum": 0, "maximum": 1000, "description": "consecutive refused turns, with none recovered by a continue, after which the loop asks a person how to proceed; 0 never asks (default 10)"}
+          },
+          "description": "what a streak of refused turns does"
+        },
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "probe the first route on a schedule to collect usage readings of its allowance; each probe is a small paid request"
+            },
+            "windows": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+              },
+              "description": "the provider's usage window keys timing acts on, for example seven_day"
+            },
+            "near_reset": {
+              "$ref": "#/$defs/duration",
+              "description": "how close to a named window's reset counts as near; default 6h"
+            },
+            "probe_every": {
+              "$ref": "#/$defs/duration",
+              "description": "interval between timing probes of the first route; default 12h"
+            },
+            "steps": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              },
+              "description": "route IDs on the first route's allowance, cheapest to strongest: primary and enabled same-group fallbacks from the loop's own file; the standard list excludes that group, so multi-step previews need loop.fallbacks"
+            },
+            "ceiling": {
+              "type": "string",
+              "description": "the strongest step timing may use; the last step by default"
+            },
+            "unused_at_least": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1,
+              "description": "unused share near a reset that makes timing step up; default 0.25"
+            },
+            "down_at": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "description": "projected use at reset that makes timing step down; default 0.95"
+            },
+            "min_on_step": {
+              "$ref": "#/$defs/duration",
+              "description": "least time between timing moves, except the return at a reset; default 2h"
+            }
+          },
+          "description": "usage-aware timing, off by default; collects readings and previews a pure step decision in status; no route changes yet"
+        },
+        "probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "claude",
+                "codex",
+                "command"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "description": "cheap model for scheduled probes"
+            },
+            "command": {
+              "$ref": "#/$defs/argv"
+            },
+            "exit_codes": {
+              "type": "object",
+              "patternProperties": {
+                "^[0-9]+$": {
+                  "enum": [
+                    "none",
+                    "rate_limit",
+                    "auth",
+                    "restricted",
+                    "refused",
+                    "overloaded",
+                    "network",
+                    "unknown"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "cli": {
+              "type": "string"
+            },
+            "workdir": {
+              "type": "string"
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "extra environment for the probe, for example CLAUDE_CONFIG_DIR or CODEX_HOME to check another account's login"
+            }
+          }
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        },
+        "custom": {
+          "$ref": "#/$defs/custom"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "adapter": {
+                "const": "cursor"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cursor"
+            ],
+            "properties": {
+              "fallbacks": {
+                "const": ""
+              },
+              "switch_back": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              },
+              "timing": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration such as 30s, 10m, 4h"
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "bb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thread"
+      ],
+      "properties": {
+        "thread": {
+          "type": "string",
+          "description": "BB thread id"
+        },
+        "new_thread": {
+          "const": false,
+          "description": "fallback candidates only; the primary needs an existing thread"
+        },
+        "project": false,
+        "environment": false,
+        "permission_mode": false,
+        "cli": {
+          "type": "string",
+          "default": "bb"
+        },
+        "model": {
+          "type": "string",
+          "description": "applied with bb thread update before the first message after a handoff"
+        },
+        "reasoning": {
+          "type": "string"
+        },
+        "retry_signal_ttl": {
+          "$ref": "#/$defs/duration",
+          "description": "how long a provider retry notice on an errored thread suppresses error recovery; default 15m, minimum 1m"
+        },
+        "children": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "what keepgoing may do about the thread's lanes (its direct child threads); absent means observe and announce only",
+          "properties": {
+            "retry_errored": {
+              "type": "boolean",
+              "description": "opt in to asking BB to retry a lane's failed turn by reference; default false"
+            },
+            "max_per_check": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "lanes one check may work on; 0 or absent means 5"
+            },
+            "max_per_episode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "lane retries per episode; 0 or absent means 20"
+            }
+          }
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status_command",
+        "resume_command"
+      ],
+      "properties": {
+        "status_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "resume_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "stop_command": {
+          "$ref": "#/$defs/argv"
+        },
+        "exit_codes": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "enum": [
+                "none",
+                "rate_limit",
+                "auth",
+                "restricted",
+                "refused",
+                "overloaded",
+                "network",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "$ref": "#/$defs/duration"
+        }
+      }
+    },
+    "claude": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "claude"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "permission_mode": {
+          "type": "string"
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment overrides for turns and inherited by probes. Values are literal; use absolute account configuration paths."
+        }
+      }
+    },
+    "codex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "codex"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string"
+        },
+        "skip_git_repo_check": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment overrides for turns and inherited by probes. Values are literal; use absolute account configuration paths."
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workdir"
+      ],
+      "properties": {
+        "cli": {
+          "type": "string",
+          "default": "agent"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "fresh_start_versions": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "further Cursor CLI versions confirmed to write their first stream records before submitting a prompt",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9a-f]{7,40}$"
+          }
+        }
+      }
+    },
+    "custom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "workdir",
+        "definition"
+      ],
+      "description": "an agent defined in configuration, run one turn per process; unreleased source",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+          "description": "label for the agent; the provider when none is set"
+        },
+        "workdir": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "description": "this loop's values for the settings the definition accepts"
+        },
+        "definition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "output"
+          ],
+          "properties": {
+            "settings": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,31}$"
+              },
+              "description": "setting names the commands may refer to as {name}"
+            },
+            "start": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            },
+            "resume": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "description": "argv to continue a session; refers to {session}. Needs session and capabilities.exact_resume",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            },
+            "prompt": {
+              "enum": [
+                "stdin",
+                "file"
+              ],
+              "default": "stdin",
+              "description": "how a turn receives its prompt; with file the commands refer to {prompt_file}. A prompt is never an argument"
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format"
+              ],
+              "properties": {
+                "format": {
+                  "enum": [
+                    "json",
+                    "jsonl"
+                  ]
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 16777216,
+                  "default": 1048576,
+                  "description": "larger output is not read"
+                },
+                "select": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field",
+                    "equals"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                      "description": "a code; free text is never compared"
+                    }
+                  },
+                  "description": "read the last object whose field has this value; without it, the last object"
+                }
+              }
+            },
+            "session": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "where the session identity comes from: a field of the output, or a file under the working directory",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "select": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field",
+                    "equals"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                      "description": "a code; free text is never compared"
+                    }
+                  }
+                },
+                "file": {
+                  "type": "string"
+                }
+              }
+            },
+            "finished": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "the turn ended healthy; defaults to exit code 0",
+              "properties": {
+                "exit_codes": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "equals": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                    "description": "a code; free text is never compared"
+                  }
+                }
+              }
+            },
+            "waiting": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "the turn ended waiting on a person; needs capabilities.structured_waiting",
+              "properties": {
+                "exit_codes": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  }
+                },
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "equals": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                    "description": "a code; free text is never compared"
+                  }
+                }
+              }
+            },
+            "errors": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "classify a failed turn; needs capabilities.structured_errors. Anything unmatched is unknown",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "classes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "enum": [
+                      "rate_limit",
+                      "auth",
+                      "restricted",
+                      "refused",
+                      "overloaded",
+                      "network",
+                      "unknown"
+                    ]
+                  },
+                  "description": "the agent's own codes mapped to error classes"
+                },
+                "http_status_field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                },
+                "exit_codes": {
+                  "type": "object",
+                  "patternProperties": {
+                    "^[0-9]+$": {
+                      "enum": [
+                        "rate_limit",
+                        "auth",
+                        "restricted",
+                        "refused",
+                        "overloaded",
+                        "network",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "probe": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "argv"
+              ],
+              "description": "a small real request, judged by the finished and errors rules; lets the agent be a fallback",
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "argv",
+                "blocked"
+              ],
+              "description": "asks the agent whether its account is blocked by a usage limit; run only for an unclassified failure",
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "description": "argv, run without a shell. An item is one argument, or a list of arguments left out together when a setting they refer to as {name} has no value",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "blocked": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "the account is blocked; read from a field",
+                  "properties": {
+                    "exit_codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 255
+                      }
+                    },
+                    "field": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                      "description": "a JSON field, names joined by dots"
+                    },
+                    "equals": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+                        "description": "a code; free text is never compared"
+                      }
+                    }
+                  }
+                },
+                "resets_at_field": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}(\\.[A-Za-z0-9_]{1,64}){0,7}$",
+                  "description": "a JSON field, names joined by dots"
+                }
+              }
+            },
+            "capabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "each must be backed by the rule that lets keepgoing observe it; anything undeclared is unknown",
+              "properties": {
+                "exact_resume": {
+                  "type": "boolean"
+                },
+                "can_be_stopped": {
+                  "type": "boolean"
+                },
+                "structured_errors": {
+                  "type": "boolean"
+                },
+                "structured_waiting": {
+                  "type": "boolean"
+                },
+                "retries_itself": {
+                  "const": false
+                },
+                "fails_over_itself": {
+                  "const": false
+                },
+                "schedules_itself": {
+                  "const": false
+                },
+                "child_work": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

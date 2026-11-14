@@ -12,6 +12,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
+	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/probe"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
@@ -89,11 +90,14 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		e.errf("%v", err)
 		return exitFailed
 	}
+	// The history keeps each result's hashed alias and typed class only.
+	history := incident.Record{Kind: "probe", CheckStartedAt: time.Now().UTC(), Build: version, Outcome: "probes_saved"}
 	for _, c := range selected {
 		ctx, cancel := context.WithCancel(e.ctx)
 		r := probe.Run(ctx, c, plan.Tier, fb.Probe.Timeout.Duration)
 		cancel()
 		reg.Record(c.ID, r)
+		history.Probes.Add(c.ID, string(r.Tier), r.OK, r.ErrorClass)
 		if err := probe.KeepFailure(cfg.Loop.StateDir, c.ID, r); err != nil {
 			e.errf("warning: could not keep failed probe output for %s: %v", c.ID, err)
 		}
@@ -104,6 +108,13 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 	}
 	out := summarize(cfg, reg, time.Now())
 	printFallbacks(e, out, asJSON, cfg.Path())
+	// The results are already saved, so a history failure is reported, not undone.
+	if len(history.Probes.Results) > 0 {
+		if err := incident.Append(cfg.Loop.StateDir, history); err != nil {
+			e.errf("fallbacks check: probe results saved; incident history write failed; diagnostic evidence is incomplete")
+			return exitFailed
+		}
+	}
 	if !out.Redundancy.Meets {
 		return exitFailed
 	}
@@ -124,8 +135,8 @@ func fallbacksList(e env, cfg *config.Config, now time.Time, asJSON bool) int {
 }
 
 func summarize(cfg *config.Config, reg *health.Registry, now time.Time) fallbacksOut {
-	fb := cfg.FallbackSet
 	st, _ := state.Load(cfg.Loop.StateDir)
+	fb := effectiveRoutes(cfg, st)
 	group := cfg.Loop.Group
 	if c, ok := fb.Find(st.Target()); ok {
 		group = c.Group

@@ -1,0 +1,18 @@
+# Supervise any session through three commands. Fictional values throughout.
+version: 1
+loop:
+  name: example-process-loop
+  state_dir: ~/.local/state/agent-loops/example-process-loop
+  adapter: process
+  process:
+    status_command: ["./agent-status.sh"]
+    resume_command: ["./agent-resume.sh"]
+    stop_command: ["./agent-stop.sh"]
+    exit_codes:
+      75: rate_limit
+      77: auth
+    timeout: 20s
+  prompt: |
+    Continue the authorized loop. Honor any newer stop or pause request first.
+  progress:
+    repositories: [~/src/example-app]

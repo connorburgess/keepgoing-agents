@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,6 +26,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"github.com/connorburgess/keepgoing-agents/internal/supervise"
 	"github.com/connorburgess/keepgoing-agents/internal/window"
@@ -45,8 +47,26 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 	for _, w := range sharedLoopWarnings(cfg, findOtherLoops(cfg)) {
 		e.errf("warning: %s", w)
 	}
-	if fb := cfg.FallbackSet; fb != nil {
+	if fb := cfg.FallbackSet; fb != nil && !l.FollowsStandard() {
 		fmt.Fprintf(e.stdout, "ok: %s (%d candidates, min_healthy %d across %s)\n", l.Fallbacks, len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+	}
+	if l.FollowsStandard() {
+		// Never a failure: a following loop is supervised whatever state the
+		// standard list is in.
+		switch fb := cfg.FallbackSet; {
+		case cfg.RouteList.Unreadable:
+			e.errf("warning: %s (%s: %s)", config.StandardRoutesUnreadable, cfg.RouteList.Problem, routesProblemText(cfg.RouteList.Problem))
+			if cfg.RouteList.Invalid != "" {
+				e.errf("  %s", strings.ReplaceAll(cfg.RouteList.Invalid, "\n", "\n  "))
+			}
+		case fb == nil:
+			e.errf("warning: follows the standard route list, but none of its routes applies to this loop; see keepgoing routes list")
+		default:
+			fmt.Fprintf(e.stdout, "ok: follows the standard route list (%d of its routes apply, min_healthy %d across %s)\n", len(fb.Candidates), fb.Redundancy.MinHealthy, fb.Redundancy.Span)
+		}
+		for _, w := range cfg.RouteList.Warnings {
+			e.errf("warning: %s", w)
+		}
 	}
 	if limits := l.Limits.Configured(); len(limits) > 0 {
 		fmt.Fprintf(e.stdout, "bounds: %s\n", strings.Join(limits, ", "))
@@ -117,7 +137,17 @@ func daemonOf(ctx context.Context) supervise.DaemonInfo {
 // scheduler identity, and the daemon running it, when one is.
 func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
 	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
-		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx)}
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage}
+}
+
+// Capture once during process initialization, before a command or check starts.
+var processExecutableImage = state.CaptureExecutableImage()
+
+func checkExecutable() string {
+	if processExecutableImage == nil {
+		return ""
+	}
+	return processExecutableImage.Path
 }
 
 // tickOnce runs one pass under the tick lock.
@@ -206,16 +236,22 @@ func daemon(e env, cfg *config.Config, cfgPath string, dryRun bool, takeOver ...
 func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *ownerLease, monitor *daemoninfo.Server) int {
 	state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "started"})
 	defer state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "daemon", Reason: "stopped"})
+	// stopDone is the control signature of the last saved stop this daemon
+	// saw carried out, so the fast retry below is for a stop still to do.
+	stopDone := ""
+	var configUnavailableSince *time.Time
 	for {
-		// Reload so edits to keepgoing.yaml or fallbacks.yaml apply without
+		// Reload so edits to the configuration or fallbacks file apply without
 		// a restart. A broken edit retains the timing/diagnostic context,
 		// but the source guard suppresses provider work until it is repaired.
+		loaded := false
 		if fresh, err := config.Load(cfgPath); err != nil {
 			e.errf("config reload failed; retaining timing and diagnostics, provider work requires verified sources: %v", err)
 		} else if fresh.Loop.StateDir != cfg.Loop.StateDir {
 			e.errf("config reload changes state_dir; restart the daemon to apply it; retaining timing and diagnostics, skipping provider work")
 		} else {
 			cfg = fresh
+			loaded = true
 		}
 		if e.ctx.Err() != nil {
 			return exitOK
@@ -229,14 +265,33 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		monitor.Update("checking", nil)
 		pass := e
 		pass.ctx = daemonPassContext(e.ctx, monitor)
-		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
+		stop := stopRequested(cfg.Loop.StateDir)
+		var code int
+		if stop && sig != stopDone && !dryRun && cfg.SourcesUnavailable() {
+			// Stop wins even when the configuration can no longer be read:
+			// the stop, and nothing else, is carried out from the last
+			// configuration this daemon read.
+			code = stopFromLastConfig(pass, cfg, lease)
+		} else {
+			code = tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
+		}
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)
 		}
+		if stop && code == exitOK {
+			if saved, err := state.Load(cfg.Loop.StateDir); err == nil && saved.LastCheck != nil && saved.LastCheck.Outcome == "succeeded" {
+				stopDone = sig // the stop check succeeded and was saved
+			}
+		}
+		configUnavailableSince = updateDaemonConfiguration(pass, cfg, loaded, dryRun, lease, configUnavailableSince)
+		monitor.SetConfigUnavailable(configUnavailableSince)
 		// Stop wins: a stop that was skipped (another loop's check held the
 		// session, or another tick held the lock) is tried again at the next
-		// control poll, not after a whole interval.
-		if code == exitSkipped && stopRequested(cfg.Loop.StateDir) {
+		// control poll, not after a whole interval. A stop already carried
+		// out is not: the loop waits as any other.
+		if code == exitSkipped && stop && sig != stopDone {
+			// The pass has ended: a daemon retrying is not one asleep.
+			monitor.Update("waiting", nil)
 			if !sleepContext(e.ctx, cfg.Loop.Daemon.ControlPoll.Duration) {
 				return exitOK
 			}
@@ -276,10 +331,13 @@ func waitForNext(ctx context.Context, cfg *config.Config, sig string, monitor *d
 // Keep timer/control behavior testable independently of subprocess latency.
 func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, monitor *daemoninfo.Server, poll func(context.Context) bool) bool {
 	if controlSignature(cfg.Loop.StateDir) != sig {
+		// A control change during the pass starts the next one now, but
+		// this pass has ended: a daemon that ends no pass reads as asleep.
+		monitor.Update("waiting", nil)
 		return ctx.Err() == nil
 	}
-	deadline := time.Now().Add(cfg.Loop.Daemon.Interval.Duration)
-	monitor.Update("waiting", &deadline)
+	plan := planWait(cfg, time.Now())
+	monitor.Update("waiting", &plan.deadline)
 	t := time.NewTicker(cfg.Loop.Daemon.ControlPoll.Duration)
 	defer t.Stop()
 	for {
@@ -292,14 +350,70 @@ func waitForNextWithPoll(ctx context.Context, cfg *config.Config, sig string, mo
 			if ctx.Err() != nil {
 				return false
 			}
-			if now.After(deadline) || controlSignature(cfg.Loop.StateDir) != sig {
+			if now.After(plan.deadline) || controlSignature(cfg.Loop.StateDir) != sig {
 				return true
+			}
+			if plan.online != nil && !now.Before(plan.nextNetwork) {
+				plan.nextNetwork = now.Add(plan.networkEvery)
+				if networkBack(ctx, cfg, plan.online) {
+					return ctx.Err() == nil // the network is back: check now
+				}
 			}
 			if poll(ctx) || controlSignature(cfg.Loop.StateDir) != sig {
 				return ctx.Err() == nil
 			}
 		}
 	}
+}
+
+// networkRecheck is how often a waiting daemon checks whether the network is
+// back, while its last check found it down.
+var networkRecheck = time.Minute
+
+// connectivity is the loop's connectivity check; replaced in tests.
+var connectivity = supervise.Connectivity
+
+// waitPlan is when a daemon's next pass starts: at the end of its interval,
+// or at the structured reset of a provider limit the last check waited on if
+// that comes first; and, while the last check found the network down, as
+// soon as a connectivity check passes, tried every networkEvery.
+type waitPlan struct {
+	deadline, nextNetwork time.Time
+	networkEvery          time.Duration
+	online                func(context.Context) bool
+}
+
+func planWait(cfg *config.Config, now time.Time) waitPlan {
+	p := waitPlan{deadline: now.Add(cfg.Loop.Daemon.Interval.Duration)}
+	st, err := state.Load(cfg.Loop.StateDir)
+	if err != nil {
+		return p // the next pass reads the records and says what is wrong
+	}
+	if r := st.LimitResetsAt; r.After(now) && r.Before(p.deadline) {
+		p.deadline = r
+	}
+	if !st.NetworkDownSince.IsZero() {
+		if online := connectivity(cfg); online != nil {
+			p.online = online
+			p.networkEvery = max(networkRecheck, cfg.Loop.Daemon.ControlPoll.Duration)
+			p.nextNetwork = now.Add(p.networkEvery)
+		}
+	}
+	return p
+}
+
+// networkBack makes the loop's connectivity check under the tick lock, so it
+// never runs beside a check, and says whether it passed. A held lock is not
+// a pass: a check is under way.
+func networkBack(ctx context.Context, cfg *config.Config, online func(context.Context) bool) bool {
+	l, err := lock.Acquire(cfg.Loop.StateDir)
+	if err != nil {
+		return false
+	}
+	defer l.Release()
+	ctx, cancel := context.WithTimeout(ctx, max(cfg.Loop.NetworkCheckTimeout(), time.Second))
+	defer cancel()
+	return online(ctx)
 }
 
 // Share the tick lock with manual ticks and retargets, and bound the whole
@@ -328,7 +442,7 @@ func controlSignature(stateDir string) string {
 
 func controlSignatureWithOpen(stateDir string, open func(string) (*os.File, error)) string {
 	path := filepath.Join(stateDir, control.FileName)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if err != nil {
 		return "missing"
 	}
@@ -364,10 +478,13 @@ type statusOut struct {
 	SharedWith []string `json:"sharedWith,omitempty"`
 	// SessionClaim describes a check of another loop acting on this loop's
 	// primary session right now, or one that is stuck holding it.
-	SessionClaim      string                   `json:"sessionClaim,omitempty"`
-	PromptSend        promptSendStatus         `json:"promptSend"`
-	LimitWait         limitWaitStatus          `json:"limitWait"`
-	TurnRetry         turnRetryStatus          `json:"turnRetry"`
+	SessionClaim string           `json:"sessionClaim,omitempty"`
+	PromptSend   promptSendStatus `json:"promptSend"`
+	LimitWait    limitWaitStatus  `json:"limitWait"`
+	TurnRetry    turnRetryStatus  `json:"turnRetry"`
+	// Refusals is the refusal gauge in words and counts.
+	Refusals          refusalStatus            `json:"refusals"`
+	Lanes             lanesStatus              `json:"laneRecovery"`
 	ChildErrorReport  childReportStatus        `json:"childErrorReport"`
 	NewThreads        newThreadStatus          `json:"newThreads"`
 	Goal              *control.GoalSummary     `json:"goal,omitempty"`
@@ -377,16 +494,19 @@ type statusOut struct {
 	SendAllowance     *sendAllowanceStatus     `json:"sendAllowance,omitempty"`
 	// SendRecord is set when sends.json, the record every send is made
 	// through, cannot be read: nothing is sent until it is restored.
-	SendRecord      string           `json:"sendRecord,omitempty"`
-	Loop            string           `json:"loop"`
-	Primary         string           `json:"primary"`
-	Target          string           `json:"target"`
-	Control         control.File     `json:"control"`
-	ControlState    string           `json:"controlState"`
-	Deadline        string           `json:"deadline,omitempty"`
-	DeadlineReached bool             `json:"deadlineReached"`
-	WorkBounds      workBoundsStatus `json:"workBounds"`
-	TickBudget      tickBudgetStatus `json:"tickBudget"`
+	SendRecord   string       `json:"sendRecord,omitempty"`
+	Loop         string       `json:"loop"`
+	Primary      string       `json:"primary"`
+	Target       string       `json:"target"`
+	Control      control.File `json:"control"`
+	ControlState string       `json:"controlState"`
+	// Unreadable lists the records status could not read. The rest of the
+	// output is what it could; the command still exits 1.
+	Unreadable      []unreadableRecord `json:"unreadable,omitempty"`
+	Deadline        string             `json:"deadline,omitempty"`
+	DeadlineReached bool               `json:"deadlineReached"`
+	WorkBounds      workBoundsStatus   `json:"workBounds"`
+	TickBudget      tickBudgetStatus   `json:"tickBudget"`
 	// TakeoverBriefs summarizes rejected handoff and switch-back briefs.
 	TakeoverBriefs takeoverBriefsStatus `json:"takeoverBriefs"`
 	Window         string               `json:"window"`
@@ -394,12 +514,13 @@ type statusOut struct {
 	State          state.File           `json:"state"`
 	Redundancy     *health.Summary      `json:"redundancy,omitempty"`
 	Usage          []usageView          `json:"usage"`
-	// Timing is what usage-aware timing does for this loop, and TimingWould
-	// what it would do at the next turn boundary; both absent when off.
+	// Timing and TimingWould describe collection and the next-boundary preview; absent when off.
 	Timing      *config.TimingSummary `json:"timing,omitempty"`
 	TimingWould *timingWould          `json:"timingWould,omitempty"`
-	StateDir    string                `json:"stateDir"`
-	Version     string                `json:"version"`
+	// Routes is set for a loop that follows the standard route list.
+	Routes   *supervise.RouteNote `json:"routes,omitempty"`
+	StateDir string               `json:"stateDir"`
+	Version  string               `json:"version"`
 	// Structured identities for tools that match a loop to a session, such
 	// as an agent workspace showing keepgoing's state beside a thread.
 	PrimaryAgent     agentRef       `json:"primaryAgent"`
@@ -411,6 +532,41 @@ type statusOut struct {
 	Schedule         scheduleStatus `json:"schedule"`
 	TargetSession    *sessionStatus `json:"targetSession,omitempty"`
 	Daemon           daemonStatus   `json:"daemon"`
+
+	// controlUnreadable and stateUnreadable: the record could not be read, so
+	// nothing taken from it is shown. Its fields hold an empty record, which
+	// must not be read as the loop's (a stopped loop would read as not
+	// stopped); MarshalJSON leaves them out.
+	controlUnreadable, stateUnreadable bool
+}
+
+// stateFields are the keys of status --json taken from state.json. They are
+// left out when it cannot be read.
+var stateFields = []string{"state", "targetAgent", "targetSession", "newThreads", "redundancy", "promptSend",
+	"limitWait", "turnRetry", "refusals", "laneRecovery", "childErrorReport", "takeoverBriefs"}
+
+// MarshalJSON is the ordinary encoding, without what an unreadable record
+// would have filled in: "control" when control.json cannot be read, and the
+// stateFields when state.json cannot be. "unreadable" says which.
+func (s statusOut) MarshalJSON() ([]byte, error) {
+	type plain statusOut
+	b, err := json.Marshal(plain(s))
+	if err != nil || (!s.controlUnreadable && !s.stateUnreadable) {
+		return b, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	if s.controlUnreadable {
+		delete(m, "control")
+	}
+	if s.stateUnreadable {
+		for _, k := range stateFields {
+			delete(m, k)
+		}
+	}
+	return json.Marshal(m)
 }
 
 // newThreadStatus reports the BB threads this loop has created for handoffs to
@@ -507,17 +663,38 @@ func refOf(a config.Agent) agentRef {
 
 func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter time.Duration) int {
 	out, err := readStatus(e.ctx, cfg, now, staleAfter, inspectDaemon)
-	if err != nil {
+	if err != nil && len(out.Unreadable) == 0 {
 		e.errf("%v", err)
 		return exitFailed
 	}
+	code := exitOK
+	if err != nil {
+		code = exitFailed
+		for _, u := range out.Unreadable {
+			e.errf("%s could not be read (%s). %s", u.File, u.describe(), u.Remedy)
+		}
+	}
+	defer func() {
+		if code != exitOK && !asJSON {
+			// sends.json is reported as the send record, not in Unreadable,
+			// and alone does not fail status; it is named here when present.
+			names := make([]string, 0, len(out.Unreadable)+1)
+			for _, u := range out.Unreadable {
+				names = append(names, u.File)
+			}
+			if out.SendRecord != "" {
+				names = append(names, "sends.json")
+			}
+			fmt.Fprintf(e.stdout, "unreadable records: %s; the lines above show what could still be read\n", strings.Join(names, ", "))
+		}
+	}()
 	ctl, st := out.Control, out.State
 	out.SharedWith = sharedLoopWarnings(cfg, findOtherLoops(cfg))
 	out.SessionClaim = sessionClaimText(cfg, now)
 	if asJSON {
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(e.stdout, string(b))
-		return exitOK
+		return code
 	}
 	w := e.stdout
 	fmt.Fprintf(w, "loop:      %s\n", out.Loop)
@@ -539,8 +716,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.GoalError != "" {
 		fmt.Fprintf(w, "goal: unavailable (%s)\n", out.GoalError)
 	}
-	printPromptSend(w, out.PromptSend)
-	if n := out.NewThreads; n.Created > 0 || n.Pending {
+	if !out.stateUnreadable {
+		printPromptSend(w, out.PromptSend)
+	}
+	if n := out.NewThreads; !out.stateUnreadable && (n.Created > 0 || n.Pending) {
 		fmt.Fprintf(w, "new threads: keepgoing has used %d of at most %d BB thread creation(s) for handoffs", n.Created, n.Max)
 		if n.Active != nil {
 			fmt.Fprintf(w, "; the active target is one of them, created %s", when(*n.Active))
@@ -550,10 +729,26 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintln(w)
 	}
-	printLimitWait(w, out.LimitWait)
+	if !out.stateUnreadable {
+		printLimitWait(w, out.LimitWait)
+	}
 	fmt.Fprintf(w, "progress flag: %s\n", out.NoProgress.Text)
-	printTurnRetry(w, out.TurnRetry)
-	printChildReport(w, out.ChildErrorReport)
+	if !out.stateUnreadable {
+		printTurnRetry(w, out.TurnRetry)
+	}
+	if out.Refusals.Text != "" && !out.stateUnreadable {
+		fmt.Fprintf(w, "refusals:  %s\n", out.Refusals.Text)
+	}
+	if out.Refusals.Question != "" {
+		fmt.Fprintf(w, "question:  %s\n", out.Refusals.Question)
+	}
+	if !out.stateUnreadable {
+		// Lane recovery is the active target's setting, and the active
+		// target is in state.json: with it unreadable the "state:
+		// unavailable" line below covers this too.
+		printLanes(w, out.Lanes)
+		printChildReport(w, out.ChildErrorReport)
+	}
 	fmt.Fprintf(w, "task:      %s", out.TaskSource)
 	if out.TaskFile != "" {
 		fmt.Fprintf(w, " (%s)", out.TaskFile)
@@ -572,7 +767,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 		fmt.Fprintf(w, "; %s\n", s.Message)
 	}
-	if out.TargetConfigured {
+	if out.stateUnreadable {
+		fmt.Fprintln(w, "state:     unavailable; state.json could not be read, so the active target, the last check and send, the counts and the network it records are not shown")
+	} else if out.TargetConfigured {
 		fmt.Fprintf(w, "account:   quota group %s (identity not verified)\n", out.TargetAgent.Group)
 		if out.TargetAgent.BBThread != "" {
 			fmt.Fprintf(w, "thread:    %s\n", out.TargetAgent.BBThread)
@@ -594,7 +791,13 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if q := ctl.OpenQuestion; q != nil {
 		fmt.Fprintf(w, "open question: the loop was awaiting a person when completion was declared at %s%s\n", when(q.At), noteSuffix(q.Note))
 	}
-	if ctl.Stop && ctl.StopLanesAt != nil {
+	switch {
+	case out.controlUnreadable:
+		// Whether stop --lanes was asked for is in control.json.
+		fmt.Fprintln(w, "lane stop: unavailable (control.json could not be read)")
+	case ctl.Stop && ctl.StopLanesAt != nil && out.stateUnreadable:
+		fmt.Fprintf(w, "lane stop: requested at %s; whether it was carried out is unavailable (state.json could not be read)\n", when(*ctl.StopLanesAt))
+	case ctl.Stop && ctl.StopLanesAt != nil:
 		if l := out.State.LaneStop; l != nil && l.For.Equal(*ctl.StopLanesAt) {
 			fmt.Fprintf(w, "lane stop: at the check of %s, %s\n", when(l.At), describeLaneStop(*l))
 		} else {
@@ -641,7 +844,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	}
 	fmt.Fprintf(w, "activity:  %s (source: %s)\nreason:    %s\n", out.Runtime.State, out.Runtime.Source, out.Runtime.Reason)
 	fmt.Fprintf(w, "history:   %s (stale after %s)\n", out.Runtime.Freshness, out.Runtime.StaleAfter)
-	if c := st.LastCheck; c != nil {
+	if out.stateUnreadable {
+		fmt.Fprintln(w, "decision:  unavailable (state.json could not be read)")
+	} else if c := st.LastCheck; c != nil {
 		fmt.Fprintf(w, "decision:  %s; outcome %s; target %s\n", c.Action, c.Outcome, c.Target)
 		fmt.Fprintf(w, "decision reason: %s\n", c.Reason)
 		fmt.Fprintf(w, "observed:  %s; target %s (historical)\n", c.ObservedState, c.ObservedTarget)
@@ -656,7 +861,11 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			if c.ErroredChildrenPartial {
 				count = "at least " + count + " (child discovery was incomplete)"
 			}
-			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); keepgoing does not retry, message or stop them\n", count)
+			does := "keepgoing does not retry or message them, and stops them only for stop --lanes"
+			if out.Lanes.Enabled {
+				does = "keepgoing does not message them, and stops them only for stop --lanes; lane recovery is on and may ask BB to retry a failed turn (see lane recovery above)"
+			}
+			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); %s\n", count, does)
 		}
 		if c.ChildErrorNoticeStopped {
 			fmt.Fprintf(w, "child notice: not accepted after %d attempts; keepgoing has stopped sending it until another child fails or resume\n", st.ChildErrorNoticeAttempts)
@@ -666,6 +875,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		}
 	} else {
 		fmt.Fprintln(w, "decision:  unavailable; no detailed check record")
+	}
+	if st.StartRefused != nil {
+		fmt.Fprintf(w, "turns:     none can be started, since %s: %s. Nothing is sent or counted while this stands\n", st.StartRefused.Since.Format(time.RFC3339), st.StartRefused.Reason)
 	}
 	switch {
 	case st.NetworkDownSince.IsZero():
@@ -692,17 +904,40 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintf(w, "daemon phase: %s; build %s; dry run %t\n", out.Daemon.Phase, out.Daemon.BinaryComparison, out.Daemon.DryRun)
 	}
 	fmt.Fprintf(w, "next check: %s\n", out.Runtime.NextCheck)
-	fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
-	if out.Schedule.Overdue {
-		fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
+	if out.stateUnreadable {
+		fmt.Fprintln(w, "last check: unavailable (state.json could not be read)")
+		fmt.Fprintln(w, "progress:  unavailable")
+		fmt.Fprintln(w, "last sent: unavailable")
+	} else {
+		fmt.Fprintf(w, "last check: %s\n", when(st.CheckedAt))
+		if out.Schedule.Overdue {
+			fmt.Fprintf(w, "schedule:  %s\n", out.Schedule.Message)
+		}
+		fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
+		// A held-back nudge moves LastWakeAt without sending anything.
+		lastSent := st.LastSentAt
+		if lastSent.IsZero() && st.LastHeldNudgeAt.IsZero() {
+			lastSent = st.LastWakeAt // recorded before lastSentAt existed
+		}
+		fmt.Fprintf(w, "last sent: %s\n", when(lastSent))
 	}
-	fmt.Fprintf(w, "progress:  %s\n", when(st.LastProgressAt))
-	fmt.Fprintf(w, "last sent: %s\n", when(st.LastWakeAt))
+	if st.HeldNudges > 0 {
+		fmt.Fprintf(w, "last nudge held back: %s (the turn looked hung; %d of %d nudges held back, not sent)\n", when(st.LastHeldNudgeAt), st.HeldNudges, st.Nudges)
+	}
 	if st.Reprompts > 0 {
 		fmt.Fprintf(w, "reprompts: %d (last %s)\n", st.Reprompts, when(st.LastRepromptAt))
 	}
 	if st.ResumeEpisodes > 0 {
 		fmt.Fprintf(w, "resumed episodes: %d (last %s); each resume of a held loop starts the re-prompt and nudge counts over\n", st.ResumeEpisodes, when(st.LastResumeEpisodeAt))
+	}
+	if r := out.Routes; r != nil {
+		fmt.Fprintln(w, "routes:    follows the standard route list (keepgoing routes list)")
+		if r.Unreadable {
+			fmt.Fprintf(w, "  %s\n", config.StandardRoutesUnreadable)
+		}
+		if r.CurrentNotInList {
+			fmt.Fprintln(w, "  the current route is no longer in the list; the loop stays on it until the ordinary rules move it")
+		}
 	}
 	if r := out.Redundancy; r != nil {
 		verdict := "handoffs allowed"
@@ -729,20 +964,26 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 		fmt.Fprintln(w, tw.Text)
 	}
 	fmt.Fprintf(w, "state dir: %s\n", out.StateDir)
-	return exitOK
+	return code
 }
 
 // readStatus builds the status report. It reads local records and the existing
 // daemon endpoint through query; it never queries a provider or writes.
 func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAfter time.Duration, query clientDaemonQuery) (statusOut, error) {
 	l := cfg.Loop
+	// An unreadable control or state record does not stop status: it says
+	// which, and what to do, and shows what it can. The error is still
+	// returned, so callers that need both records (the dock) skip the loop.
+	var unreadable []unreadableRecord
 	ctl, err := control.Load(l.StateDir)
 	if err != nil {
-		return statusOut{}, err
+		unreadable = append(unreadable, unreadableControl(l.StateDir, err))
+		ctl = control.File{}
 	}
-	st, err := state.Load(l.StateDir)
-	if err != nil {
-		return statusOut{}, err
+	st, stateErr := state.Load(l.StateDir)
+	if stateErr != nil {
+		unreadable = append(unreadable, unreadableState(l.StateDir, stateErr))
+		st = state.File{}
 	}
 	in, why, err := window.Inside(l.Window, now)
 	if err != nil {
@@ -759,7 +1000,15 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		p.Before, p.After = "", ""
 		ctl.PendingTransfer = &p
 	}
-	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version}
+	out := statusOut{Loop: l.Name, Primary: l.Describe(), Target: st.Target(), Control: ctl, ControlState: ctl.Summary(), Window: why, InWindow: in, State: st, StateDir: l.StateDir, Version: version, Unreadable: unreadable}
+	for _, u := range unreadable {
+		switch u.File {
+		case control.FileName:
+			out.ControlState, out.controlUnreadable = "unavailable", true
+		case state.FileName:
+			out.Target, out.stateUnreadable = "unavailable", true
+		}
+	}
 	if out.State.LaneStop != nil {
 		// Counts only: the lane hashes and listing tries are bookkeeping.
 		c := out.State.LaneStop.Counts()
@@ -782,6 +1031,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		flagState = latest
 	}
 	out.NoProgress = noProgressOf(cfg, flagState, ctl, journal, graph, now)
+	if file := unreadableFile(out); file != "" {
+		// The flag needs both records; computed from an empty one it would
+		// say the loop is off, or that no check has run.
+		out.NoProgress = noProgressView{Availability: "not_available", Reason: "record_unreadable", Text: "unavailable: " + file + " could not be read", Lines: []string{}}
+	}
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
 	} else if g != nil {
@@ -791,6 +1045,11 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PromptSend = describePromptSend(st.LastPromptSend, out.Goal)
 	out.LimitWait = describeLimitWait(st.LimitWaitReport, l, now)
 	out.TurnRetry = describeTurnRetry(st.LastTurnRetry)
+	out.Refusals = describeRefusals(st.Refusals, ctl.Question, now)
+	out.Lanes = describeLanes(st.Lanes, activeBB(cfg, st.Target()))
+	// The lane record is per-lane hashes and their key. Status shows its
+	// counts above and never the record itself.
+	out.State.Lanes = nil
 	out.ChildErrorReport = describeChildReport(st.ChildErrorReport, l)
 	if _, err := state.LoadLedger(l.StateDir); err != nil {
 		out.SendRecord = sendRecordProblem
@@ -840,7 +1099,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	out.PrimaryAgent = refOf(l.Agent)
 	if st.Target() == state.Primary {
 		out.TargetAgent, out.TargetConfigured = refOf(l.Agent), true
-	} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+	} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 		// A fallback that starts a new thread at handoff is a target only
 		// once its thread exists.
 		if a, known := st.CandidateAgent(c); known {
@@ -863,6 +1122,14 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Notifications = report.InspectDeliveries(l.StateDir)
 	out.Runtime = describeRuntime(ctl, st, in, out.TargetConfigured, now, staleAfter, version)
+	for _, u := range unreadable {
+		// What the loop is doing cannot be known without its controls, and
+		// an empty record would read as "disabled".
+		if u.File == control.FileName {
+			out.Runtime.State, out.Runtime.Source = "unavailable", "unavailable"
+			out.Runtime.Reason = "control.json could not be read"
+		}
+	}
 	queryCtx, cancel := context.WithTimeout(ctx, time.Second)
 	out.Daemon = query(queryCtx, l.StateDir, version, false)
 	cancel()
@@ -875,7 +1142,12 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	}
 	out.Usage = []usageView{}
 	out.Timing = cfg.TimingSummary()
-	if fb := cfg.FallbackSet; fb != nil {
+	fb, outsideList := supervise.EffectiveRoutes(cfg, st)
+	if cfg.RouteList.Source == config.RoutesStandard {
+		out.Routes = &supervise.RouteNote{Source: cfg.RouteList.Source, Unreadable: cfg.RouteList.Unreadable, CurrentNotInList: outsideList}
+	}
+	var timingRegistry *health.Registry
+	if fb != nil {
 		reg, err := health.Load(l.StateDir)
 		// Readings exist only for probed targets, so they are listed only when
 		// fallbacks are configured. Unreadable history shows as unavailable.
@@ -893,9 +1165,43 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 		if err != nil {
 			reg = nil
 		}
-		out.TimingWould = timingWouldOf(cfg, st, ctl, reg, now)
+		timingRegistry = reg
 	}
-	return out, nil
+	if !out.stateUnreadable && !out.controlUnreadable {
+		if fb == nil && l.TimingOn() {
+			timingRegistry, _ = health.Load(l.StateDir)
+		}
+		out.TimingWould = timingWouldOf(cfg, st, ctl, timingRegistry, now)
+	}
+	if out.stateUnreadable {
+		// Nothing read from state.json is shown: computed from an empty
+		// record it would describe a new loop on its primary.
+		out.TargetAgent, out.TargetConfigured, out.TargetSession = agentRef{}, false, nil
+		out.Redundancy = nil
+		out.Runtime.State, out.Runtime.Source, out.Runtime.Freshness = "unavailable", "unavailable", "unavailable"
+		out.Runtime.Reason = "state.json could not be read"
+		out.Schedule = scheduleStatus{NotJudged: "state_unreadable"}
+		if out.Routes != nil {
+			out.Routes.CurrentNotInList = false
+		}
+	} else if out.controlUnreadable {
+		// Without its controls the loop's schedule cannot be judged; an empty
+		// record would read as disabled.
+		out.Schedule = scheduleStatus{NotJudged: "control_unreadable"}
+	}
+	return out, unreadableError(out.Unreadable)
+}
+
+// unreadableFile names the unreadable control or state record, or "".
+func unreadableFile(out statusOut) string {
+	var names []string
+	if out.controlUnreadable {
+		names = append(names, control.FileName)
+	}
+	if out.stateUnreadable {
+		names = append(names, state.FileName)
+	}
+	return strings.Join(names, " and ")
 }
 
 func when(t time.Time) string {
@@ -1034,6 +1340,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 			keep := len(takeOver) > 1 && takeOver[1] && f.Stop
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
+			f.Question = nil // a resume ends the open question; the check that follows honours it
 			if !f.Stop {
 				f.StopLanesAt, f.StopLanesDropQueued = nil, false // the stop it belonged to has ended
 			}
@@ -1066,8 +1373,12 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 	}[cmd]
 	newEpisode, openQuestion := false, false
 	var settledBriefs []control.Brief
+	endedQuestion := ""
 	f, err := updateControlAnnotated(cfg.Loop.StateDir, cmd, func(f *control.File) error {
-		newEpisode, openQuestion, settledBriefs = false, false, nil
+		newEpisode, openQuestion, settledBriefs, endedQuestion = false, false, nil, ""
+		if cmd == "resume" && f.Question != nil {
+			endedQuestion = f.Question.ID
+		}
 		caller := os.Getenv("BB_THREAD_ID")
 		transfer := cmd == "enable" && caller != "" && f.Ownership != nil && f.Ownership.ThreadID != caller
 		if cmd == "enable" {
@@ -1109,6 +1420,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQue
 		}
 		return exitFailed
 	}
+	recordQuestionEnded(cfg.Loop.StateDir, endedQuestion)
 	if err := state.Append(cfg.Loop.StateDir, state.Event{Loop: cfg.Loop.Name, Event: "control", Action: cmd, Reason: f.Summary()}); err != nil {
 		e.errf("%v", err)
 		return exitFailed
@@ -1265,6 +1577,12 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 			}
 		}
 	}
+	// The record of a route a following loop is on is saved before the target
+	// is, so a later change to the standard list cannot strand it.
+	if err := supervise.SaveCurrentRoute(cfg, cfg.FallbackSet, id); err != nil {
+		e.errf("retarget: could not save the record of route %s, so the target is unchanged: %v", id, err)
+		return exitFailed
+	}
 	st.ActiveTarget = id
 	st.Reprompts, st.LastRepromptAt, st.StopRequestedSent = 0, time.Time{}, false
 	st.ClearBriefs()      // an operator's retarget starts a new episode
@@ -1288,4 +1606,119 @@ func retarget(e env, cfg *config.Config, id, note string, discardPending bool) i
 		return exitFailed
 	}
 	return exitOK
+}
+
+// unreadableRecord is a record status could not read, and what to do.
+// Problem is a fixed reason, never the error text or the file's content:
+// not_json or wrong_shape when the content does not parse (Offset is then
+// the byte it stopped at), not_a_file when something other than a regular
+// file is in its place, and cannot_open otherwise (permissions, or Windows
+// refusing it for longer than the read retries).
+type unreadableRecord struct {
+	File    string `json:"file"`
+	Problem string `json:"problem"`
+	Offset  *int64 `json:"offset,omitempty"`
+	Remedy  string `json:"remedy"`
+}
+
+// classifyRecord says what is wrong with a record that could not be read,
+// from the error and what is at the path, never from the error's text.
+func classifyRecord(dir, file string, err error) unreadableRecord {
+	r := unreadableRecord{File: file}
+	var syntax *json.SyntaxError
+	var shape *json.UnmarshalTypeError
+	var pathErr *fs.PathError
+	var sysErr *os.SyscallError
+	switch {
+	case errors.As(err, &pathErr) || errors.As(err, &sysErr):
+		// Only an error from the filesystem means the file was not read;
+		// what is at the path says which.
+		r.Problem = "cannot_open"
+		if info, lerr := snapshot.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
+			r.Problem = "not_a_file"
+		}
+	case errors.As(err, &syntax):
+		r.Problem, r.Offset = "not_json", &syntax.Offset
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		r.Problem = "not_json"
+	default:
+		// The bytes were read and did not decode: a field of the wrong type,
+		// such as a time that is not in the RFC 3339 form, or a number or
+		// object where a time belongs.
+		r.Problem = "wrong_shape"
+		if errors.As(err, &shape) {
+			r.Offset = &shape.Offset
+		}
+	}
+	return r
+}
+
+// damaged reports whether the record's content is the problem, so that
+// restoring it from a copy is the remedy. Otherwise the file may be intact.
+func (r unreadableRecord) damaged() bool {
+	return r.Problem == "not_json" || r.Problem == "wrong_shape"
+}
+
+// describe is the reason in words, for the text output.
+func (r unreadableRecord) describe() string {
+	what := map[string]string{
+		"not_json":    "its content is not JSON",
+		"wrong_shape": "its content is JSON of the wrong shape",
+		"not_a_file":  "it is not a regular file",
+		"cannot_open": "it could not be opened",
+	}[r.Problem]
+	if r.Offset != nil {
+		what += fmt.Sprintf(", at byte %d", *r.Offset)
+	}
+	return what
+}
+
+// cannotReadRemedy is the remedy for a record that was not read at all.
+func cannotReadRemedy(r unreadableRecord) string {
+	if r.Problem == "not_a_file" {
+		return "Something other than a regular file, such as a directory, is in its place, and keepgoing reads the record only as a regular file. Find out what put it there before moving or deleting anything: the record itself may be elsewhere, or inside it."
+	}
+	return "The file may be intact: keepgoing could not open it. Fix its permissions so keepgoing can read it; do not move it aside or delete it."
+}
+
+func unreadableControl(dir string, err error) unreadableRecord {
+	r := classifyRecord(dir, control.FileName, err)
+	if !r.damaged() {
+		r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it can be read. " + cannotReadRemedy(r)
+		return r
+	}
+	r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it is repaired. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory. Moving it aside instead makes the loop read as disabled and loses what the record held: a stop or pause (issue it again), a hold for a person, a completion, an open question, a pending transfer and the bbTarget binding, the note and the owner; the next enable, pause or stop writes a new one."
+	return r
+}
+
+func unreadableState(dir string, err error) unreadableRecord {
+	r := classifyRecord(dir, state.FileName, err)
+	if !r.damaged() {
+		r.Remedy = "Checks fail and send nothing until it can be read. " + cannotReadRemedy(r)
+		return r
+	}
+	r.Remedy = "Checks fail and send nothing until it is repaired. Stop the daemon, service or scheduler, then restore state.json from a copy of the state directory. Moving it aside instead makes the next check start a new one, without the re-prompt and nudge counts, the active target, the record of the last check and send, and the new-thread count, the spacing between created threads and the hold on a thread creation whose outcome is unknown."
+	return r
+}
+
+func unreadableError(u []unreadableRecord) error {
+	if len(u) == 0 {
+		return nil
+	}
+	names := make([]string, len(u))
+	for i, r := range u {
+		names[i] = r.File
+	}
+	return fmt.Errorf("unreadable records: %s", strings.Join(names, ", "))
+}
+
+// activeBB is the BB settings of the loop's active target, or nil.
+func activeBB(cfg *config.Config, target string) *config.BB {
+	if target == state.Primary {
+		return cfg.Loop.Agent.BB
+	}
+	if c, ok := currentRoutes(cfg).Find(target); ok {
+		return c.Agent.BB
+	}
+	return nil
 }

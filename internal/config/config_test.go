@@ -70,6 +70,27 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+// A refusal or a restriction is a class an adapter may report, and one a loop
+// can never fail over on: the configuration says why instead of treating it
+// as a misspelled class.
+func TestDeclinedClassesAreReportableButNeverFailoverClasses(t *testing.T) {
+	for _, class := range []string{"restricted", "refused"} {
+		_, err := Parse([]byte(valid + "  errors:\n    failover_on: [rate_limit, " + class + "]\n"))
+		if err == nil || !strings.Contains(err.Error(), "is not a limit and never causes a handoff") {
+			t.Errorf("failover_on %s: %v", class, err)
+		}
+		reported := strings.Replace(strings.Replace(valid, "adapter: bb", "adapter: process", 1),
+			"  bb:\n    thread: thr_example123\n",
+			"  process:\n    status_command: [st]\n    resume_command: [re]\n    exit_codes: {78: "+class+"}\n", 1)
+		if _, err := Parse([]byte(reported)); err != nil {
+			t.Errorf("exit_codes mapped to %s: %v", class, err)
+		}
+		if !ValidErrorClass(class) {
+			t.Errorf("%s is not a reportable class", class)
+		}
+	}
+}
+
 func TestDurationParsing(t *testing.T) {
 	src := valid + "  progress:\n    stall_after: 45m\n    min_wake_interval: 2h\n"
 	cfg, err := Parse([]byte(src))
@@ -290,6 +311,17 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	}
 }
 
+// hung_turn is a known event but not a default one: a loop receives it only
+// by naming it, or all, in report.events.
+func TestHungTurnReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "hung_turn") || contains(DefaultReportEvents, "hung_turn") {
+		t.Fatal("hung_turn must be a known event and not a default one")
+	}
+	if (&Report{Events: DefaultReportEvents}).ReportsEvent("hung_turn") || !(&Report{Events: []string{"hung_turn"}}).ReportsEvent("hung_turn") {
+		t.Fatal("subscription to hung_turn")
+	}
+}
+
 // check_gap is a known event, and opt-in: not in the default list.
 func TestCheckGapReportIsOptIn(t *testing.T) {
 	if !contains(ReportEvents, "check_gap") || contains(DefaultReportEvents, "check_gap") {
@@ -307,5 +339,24 @@ func TestNoProgressFlagThresholds(t *testing.T) {
 	cfg, err = Parse([]byte(valid + "  progress:\n    flag_after_sends: 0\n    flag_after_errors: 1000\n"))
 	if err != nil || cfg.Loop.Progress.SendsFlag() != 0 || cfg.Loop.Progress.ErrorsFlag() != 1000 {
 		t.Fatalf("%v", err)
+	}
+}
+
+// A report with no names of its own reads the current variable names; the
+// sender also reads their earlier names. Names the file gives are kept.
+func TestReportVariableNameDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(valid + "  report: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.URLEnv != "LOOPTENDER_WEBHOOK_URL" || r.SecretEnv != "LOOPTENDER_WEBHOOK_SECRET" {
+		t.Fatalf("defaults: %q %q", r.URLEnv, r.SecretEnv)
+	}
+	cfg, err = Parse([]byte(valid + "  report: {url_env: KEEPGOING_WEBHOOK_URL, secret_env: KG_SECRET}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.URLEnv != "KEEPGOING_WEBHOOK_URL" || r.SecretEnv != "KG_SECRET" {
+		t.Fatalf("configured: %q %q", r.URLEnv, r.SecretEnv)
 	}
 }

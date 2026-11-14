@@ -76,3 +76,28 @@ func TestTrimmingPendingRecordsKeepsBriefs(t *testing.T) {
 		t.Fatalf("%d %v", len(l.Pending), l.Pending[0].Action)
 	}
 }
+
+// A resume that settles an unsettled lane retry counts it for that lane, as
+// a check would, and does not take it for a send to the supervised session.
+func TestSettleIntoEpisodeCountsALaneRetryForItsLane(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	if _, err := Reserve(dir, 0, 0, SendIntent{At: at, Action: LaneRetryAction, Target: Primary, Key: "lanehash"}); err != nil {
+		t.Fatal(err)
+	}
+	f := File{Lanes: &LaneRecovery{Retries: map[string]LaneRetry{"lanehash": {Attempts: 1}}}}
+	if err := SettleIntoEpisode(dir, &f); err != nil {
+		t.Fatal(err)
+	}
+	r := f.Lanes.Retries["lanehash"]
+	if !f.LastWakeAt.IsZero() || f.SendsRecorded != 1 || r.Attempts != 2 || r.DayRetries != 1 || !r.LastAt.Equal(at) || f.Lanes.EpisodeRetries != 1 {
+		t.Fatalf("%v %d %+v %d", f.LastWakeAt, f.SendsRecorded, r, f.Lanes.EpisodeRetries)
+	}
+	// With lane recovery off (no record), it is settled and counts for nothing.
+	dir = t.TempDir()
+	Reserve(dir, 0, 0, SendIntent{At: at, Action: LaneRetryAction, Target: Primary, Key: "lanehash"})
+	var g File
+	if err := SettleIntoEpisode(dir, &g); err != nil || !g.LastWakeAt.IsZero() || g.SendsRecorded != 1 || g.Lanes != nil {
+		t.Fatalf("%v %+v", err, g)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter/runner"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // Tier says why a probe ran.
@@ -89,7 +90,9 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var argv []string
-	env := []string{"KEEPGOING_PROBE_TIER=" + string(tier), "KEEPGOING_PROBE_MODEL=" + model, "KEEPGOING_CANDIDATE=" + c.ID}
+	// Each is set under both of its names, so a probe command written for
+	// either reads it.
+	env := append(append(envvar.ProbeTier.Pairs(string(tier)), envvar.ProbeModel.Pairs(model)...), envvar.Candidate.Pairs(c.ID)...)
 	for k, v := range c.ProbeEnv() {
 		env = append(env, k+"="+v)
 	}
@@ -160,14 +163,16 @@ func Run(ctx context.Context, c config.Candidate, tier Tier, timeout time.Durati
 	if spec.Probe.Usage != nil {
 		res.Usage = newUsage(res.At, spec.Probe.UsageSource, res.UsageIdentity, usageWindows(spec.Probe.Usage(stdout)))
 	}
-	// An agent that reports a usage limit only as prose is asked for its
-	// structured snapshot instead.
-	if l := spec.Limits; l != nil && !res.OK && res.ErrorClass == string(decide.ErrUnknown) {
+	// Read display-only usage after a successful probe too. Unknown failures
+	// still use the structured snapshot for limit classification. The lookup
+	// shares the probe deadline (and Codex bounds it to 20 seconds); a failed
+	// lookup never changes the probe verdict or fabricates a fresh reading.
+	if l := spec.Limits; l != nil && ((!res.OK && res.ErrorClass == string(decide.ErrUnknown)) || (res.OK && l.UsageSource != "")) {
 		limits, err := l.Read(ctx, cli, env)
 		if err == nil && l.UsageSource != "" {
 			res.Usage = newUsage(res.At, l.UsageSource, res.UsageIdentity, CodexUsage(limits))
 		}
-		if err == nil && limits.Blocked {
+		if err == nil && !res.OK && limits.Blocked {
 			res.ErrorClass = string(decide.ErrRateLimit)
 			res.Detail = l.ProbeDetail + limits.ReachedType
 			if !limits.ResetsAt.IsZero() {

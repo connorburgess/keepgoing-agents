@@ -36,12 +36,28 @@ import (
 // ProbeFunc runs one probe.
 type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, timeout time.Duration) probe.Result
 
+// ErrLastConfigNotStop refuses a check from the last configuration a daemon
+// read that is not a stop-only check.
+var ErrLastConfigNotStop = errors.New("only a stop may be carried out from the last configuration read")
+
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// Executable is the absolute path of the file running this check. Each
+	// real check records it privately (state.CheckExecutableName), so a
+	// panel allowed to make changes can offer to replace that file with its
+	// own build. Empty records nothing.
+	Executable      string
+	ExecutableImage *state.ExecutableImage
 	// StopOnly: the check is run by a command that carries out a stop at once
 	// (keepgoing stop --now). It does nothing unless a stop is requested.
 	StopOnly bool
+	// LastConfigReadAt, when set, says this check runs from the last
+	// configuration a daemon read, at that time, because a file it was read
+	// from can no longer be read. Only a stop-only check may: nothing that
+	// observes and sends uses a configuration it cannot verify. The check's
+	// record says so.
+	LastConfigReadAt time.Time
 	// Deadline, when set and sooner than the check's own hard limit, is the
 	// check's hard limit instead: a stop carried out for a caller that has
 	// less time than a check (the page and the menu).
@@ -121,7 +137,9 @@ type Result struct {
 	// ordinary error or stall handling applied: "expired" when it had gone
 	// stale, "declined" when the provider's own retry service had recorded
 	// that it will not retry the failed turn. Empty otherwise.
-	RetrySignal  string     `json:"retrySignal,omitempty"`
+	RetrySignal string `json:"retrySignal,omitempty"`
+	// Routes is set when the loop's route list needs attention.
+	Routes       *RouteNote `json:"routes,omitempty"`
 	At           time.Time  `json:"at"`
 	Loop         string     `json:"loop"`
 	Target       string     `json:"target"`
@@ -137,6 +155,9 @@ type Result struct {
 	// Recovery says how a re-prompt was carried out: turn_retry re-ran the
 	// failed turn by reference with no new text, prompt sent the wake text.
 	Recovery string `json:"recovery,omitempty"`
+	// Lanes is the lane work this check did under bb.children.retry_errored:
+	// counts only. Absent when it did none.
+	Lanes *state.LaneCheck `json:"lanes,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is
 	// a lower bound. ChildErrorNote is set when this check's wake announces
@@ -172,6 +193,17 @@ type Result struct {
 }
 
 type tick struct {
+	// refusalMark is "refused" or "recovered" when this check counted a
+	// refused turn or the recovery that ended a streak, for the journal.
+	refusalMark string
+	// fallbackMark: this check saw a new model fallback after a refusal.
+	fallbackMark  bool
+	limitResetsAt time.Time // the structured reset of the limit this check waits on
+	// routeOutsideList: a loop following the standard list is on a route that
+	// list no longer resolves; the route is kept from its saved record.
+	routeOutsideList bool
+	heldNudge        bool      // this check held back a nudge
+	wakeAtStart      time.Time // LastWakeAt as this check found it
 	// claims are the session claims this check holds, by key. A check holds
 	// its active session's claim from before it first observes it until it
 	// ends, and a fallback's or the primary's before it probes or sends there.
@@ -181,6 +213,8 @@ type tick struct {
 	incidentStateLoaded bool
 	incidentAdapter     string
 	incidentTarget      string
+	incidentReturn      *incident.Return
+	returnSaved         bool
 	incidentObservation incident.Observation
 	incidentControl     *incident.Controls
 	incidentProbes      incident.Probes
@@ -192,6 +226,20 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// lanesRetried is how many of the errored lanes keepgoing has asked BB to
+	// retry and has not given up on, after this check's lane work. The
+	// notice to the session says so.
+	lanesRetried int
+	// laneRecoveryOn: the observed target has bb.children.retry_errored set.
+	laneRecoveryOn bool
+	// lanesInRecovery are the errored lanes keepgoing is recovering or will
+	// recover, under the hashes the child-error notice record uses. It lives
+	// for one check and is never saved.
+	lanesInRecovery map[string]bool
+	// lanesPerEpisode is the active target's episode limit, for the report.
+	lanesPerEpisode int
+	// incidentLanes is this check's lane work, for the incident history.
+	incidentLanes incident.LaneWork
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -205,6 +253,8 @@ type tick struct {
 	// child-error notice and what to record.
 	// newThreadCapped: a handoff needed a new thread and the loop had created
 	// its maximum. newThreadUnresolved: a creation's outcome is unknown.
+	// incidentRouteListChanged: this check read a changed standard list.
+	incidentRouteListChanged bool
 	// incidentNewThread: this check recorded a created thread.
 	newThreadCapped     bool
 	newThreadUnresolved bool
@@ -318,6 +368,9 @@ func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data m
 
 // Tick performs one supervision pass. The caller holds the lock.
 func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error) {
+	if !opts.LastConfigReadAt.IsZero() && !opts.StopOnly {
+		return Result{Loop: cfg.Loop.Name, Action: string(decide.None), Reason: "refused: only a stop may be carried out from the last configuration read"}, ErrLastConfigNotStop
+	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
@@ -339,9 +392,8 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
-	if timeout := cfg.Loop.NetworkCheckTimeout(); opts.Online == nil && timeout > 0 {
-		n := cfg.Loop.Network
-		opts.Online = netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+	if opts.Online == nil {
+		opts.Online = Connectivity(cfg)
 	}
 	if opts.Threads == nil {
 		opts.Threads = bbThreads
@@ -537,24 +589,49 @@ func (t *tick) releaseClaims() {
 // resolve returns the agent for a target id, reverting to primary when a
 // candidate has been removed from the fallbacks file.
 func (t *tick) resolve(target string) (string, config.Agent) {
+	id, agent, _ := t.resolveWhy(target)
+	return id, agent
+}
+
+// resolveWhy is resolve with the reason a fallback could not be used, one of
+// the incident return reasons, or "" when target is usable.
+func (t *tick) resolveWhy(target string) (string, config.Agent, string) {
 	if target == state.Primary {
-		return target, t.loop.Agent
+		return target, t.loop.Agent, ""
 	}
 	c, ok := t.fb.Find(target)
 	if !ok || c.Disabled {
 		t.warn("active target %q is no longer an enabled fallback; returning to primary", target)
-		return state.Primary, t.loop.Agent
+		why := incident.ReturnRemoved
+		if ok {
+			why = incident.ReturnDisabled
+		}
+		return state.Primary, t.loop.Agent, why
 	}
 	if isNewThread(c) {
 		// Its thread is the one created for it at handoff.
 		a, ok := t.st.CandidateAgent(c)
 		if !ok {
 			t.warn("active target %q has no created thread on record; returning to primary", target)
-			return state.Primary, t.loop.Agent
+			return state.Primary, t.loop.Agent, incident.ReturnNoCreatedThread
 		}
-		return c.ID, a
+		return c.ID, a, ""
 	}
-	return c.ID, c.Agent
+	return c.ID, c.Agent, ""
+}
+
+// resolveActive resolves the saved target and, when it can no longer be
+// used, returns the loop to the primary and records why for the history.
+func (t *tick) resolveActive() (string, config.Agent) {
+	saved := t.st.Target()
+	target, agent, why := t.resolveWhy(saved)
+	if target != saved {
+		t.st.ActiveTarget = target
+		if why != "" {
+			t.incidentReturn = &incident.Return{FromKey: incident.TargetKey(saved), Reason: why}
+		}
+	}
+	return target, agent
 }
 
 func (t *tick) label(target string) string {
@@ -580,6 +657,7 @@ func (t *tick) run() error {
 		return err
 	}
 	t.incidentStateLoaded = true
+	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
 	// Whether a check was overdue is judged from the records as they were
 	// before this check, and nothing is sent or reserved for it here: the
@@ -589,10 +667,8 @@ func (t *tick) run() error {
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
-	target, agent := t.resolve(t.st.Target())
-	if target != t.st.Target() {
-		t.st.ActiveTarget = target
-	}
+	t.keepCurrentRoute()
+	target, agent := t.resolveActive()
 	res.Target = target
 	t.incidentTarget = target
 	t.incidentAdapter = agent.Adapter
@@ -694,6 +770,8 @@ func (t *tick) run() error {
 		return t.record(nil)
 	}
 	if moved {
+		// Not resolveActive: a created thread that cannot be used here is
+		// returned from, and recorded, by the next check, as before.
 		target, agent = t.resolve(t.st.Target())
 		res.Target, t.incidentTarget, t.incidentAdapter = target, target, agent.Adapter
 	}
@@ -721,6 +799,7 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	t.noteRouteList()
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
@@ -884,6 +963,9 @@ func (t *tick) run() error {
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
 	}
+	if t.st.Nudges == 0 {
+		t.st.HeldNudges = 0 // held-back nudges are part of the same count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -899,11 +981,31 @@ func (t *tick) run() error {
 		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
-		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
+		Nudges:   t.st.Nudges, HeldNudges: t.st.HeldNudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	// A loop held for a restricted turn runs no check until a person resumes
+	// it. Reaching this point with that same turn still showing therefore
+	// means a person resumed: their request for one try.
+	restricted := obs.State == decide.Error && obs.ErrorClass == decide.ErrRestricted
+	if !restricted || t.st.DeclineHeldTarget != target {
+		t.st.DeclineHeldTarget, t.st.DeclineHeldAt = "", time.Time{}
+	}
+	in.DeclineAcknowledged = restricted && t.st.DeclineHeldTarget == target
+	// A check that gets this far is not held, so a question the loop raised
+	// has been answered or has lost its basis. Withdraw it if it is still
+	// there; the gauge then starts the refusal streak over.
+	if ctl.Question != nil && !t.opts.DryRun {
+		t.withdrawQuestion(ctl.Question.ID)
+	}
+	refusals := t.gaugeRefusals(obs)
+	in.RefusalStreak, in.RefusalAskAfter = refusals.Streak, loop.Refusal.AskAfterCount()
+	if obs.State == decide.Error && obs.ErrorClass == decide.ErrRefused {
+		in.SinceRefusal = refusals.Since(t.now)
+	}
+	in.HungTurn = t.hungTurn(obs, progressed, in)
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -922,6 +1024,18 @@ func (t *tick) run() error {
 	}
 	kept, unannounced := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren),
 		t.st.ChildErrorsAnnounced, !obs.ChildrenUnverified, t.now, loop.Progress.MinWakeInterval.Duration)
+	// Lane recovery runs here, before the decision, so that the decision and
+	// the notice already know which lanes are being recovered. It is gated on
+	// what the engine would decide with every unannounced lane counted, which
+	// differs from the final decision only in whether a notice is due and in
+	// what a dead network changes, and lane work waits for the network itself.
+	in.UnannouncedErroredChildren = len(unannounced)
+	in.ChildErrorNoticeAttempts, in.MaxChildErrorNotices = t.st.ChildErrorNoticeAttempts, loop.Errors.MaxReprompts
+	t.recoverLanes(a, agent, obs, decide.Decide(in), inWindow)
+	// A lane keepgoing is recovering is not announced to the session: there
+	// is nothing for it to do yet. It is announced like any other the moment
+	// it is given up or turns out not to be retryable.
+	unannounced = t.lanesNotInRecovery(unannounced)
 	t.childNoticeKept, t.childNoticeNew = kept, unannounced
 	if !t.opts.DryRun {
 		t.st.ChildErrorsAnnounced = kept
@@ -939,7 +1053,9 @@ func (t *tick) run() error {
 	res.ChildErrorNoticeStopped = len(unannounced) > 0 && in.ChildErrorNoticeAttempts >= in.MaxChildErrorNotices
 	t.decisionInput = in
 	d := t.decide("normal", in)
-	if d.Action == decide.AwaitUser && obs.State == decide.Error && in.Reprompts >= in.MaxReprompts && t.st.UnconfirmedReprompts > 0 {
+	// Not for a refused or restricted turn: its hold has its own reason, which
+	// both says what happened and arms the one re-prompt a resume asks for.
+	if d.Action == decide.AwaitUser && obs.State == decide.Error && !decide.Declined(obs.ErrorClass) && in.Reprompts >= in.MaxReprompts && t.st.UnconfirmedReprompts > 0 {
 		// The cap was reached by attempts some of which were recorded and
 		// then could not be confirmed as sent (the check that made them
 		// could not save what happened). Say so, not that they all failed.
@@ -955,7 +1071,7 @@ func (t *tick) run() error {
 	// switch-back does not trigger a check, but is not sent when this check
 	// has already found the network down.
 	recovering := obs.State == decide.Error || obs.State == decide.Active
-	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
+	needsNetwork := d.HeldNudge || d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
 	sendsAnyway := d.Action == decide.Wake || d.Action == decide.SwitchBack || obs.State == decide.Active
 	if (needsNetwork && t.networkDown()) || (sendsAnyway && t.networkGated) {
 		in.NetworkDown = true
@@ -967,6 +1083,14 @@ func (t *tick) run() error {
 		if d.Action == decide.Handoff || d.Action == decide.SwitchBack {
 			d = decide.Decision{Action: decide.None, Reason: "a person resumed after a brief that may have been delivered; no route is briefed on this check"}
 		}
+	}
+	// A person's resume is worth one re-prompt, on the first check that sees
+	// the declined turn. A check that sees it and does not re-prompt (a
+	// message was queued, the network was down, the window was closed)
+	// spends it all the same, so a queued turn that is declined again holds
+	// again instead of being re-prompted.
+	if in.DeclineAcknowledged && !t.opts.DryRun && !(d.Action == decide.Reprompt && d.Reason == decide.DeclineAcknowledgedReason) {
+		t.st.DeclineHeldTarget, t.st.DeclineHeldAt = "", time.Time{}
 	}
 	handoffAttempted := d.Action == decide.Handoff
 	res.Action, res.Reason = string(d.Action), d.Reason
@@ -1559,7 +1683,7 @@ func (t *tick) switchBackReady(target string) bool {
 	}
 	// retry_every already spaces attempts; the cap ends them.
 	if decide.BriefGate(decide.BriefAttempts{Failed: t.st.SwitchBackRejected}, t.now, t.loop.Errors.MaxReprompts, 0) == decide.BriefCapped {
-		t.warn("switch-back stopped: the primary rejected %d switch-back briefs; staying on %s until resume, retarget or the next handoff", t.st.SwitchBackRejected, target)
+		t.warn("switch-back stopped: the primary rejected switch-back briefs, or the provider refused or restricted its probe (count %d); staying on %s until resume, retarget or the next handoff", t.st.SwitchBackRejected, target)
 		return false
 	}
 	return t.st.LastSwitchBackTry.IsZero() || t.now.Sub(t.st.LastSwitchBackTry) >= sb.RetryEvery.Duration
@@ -1597,6 +1721,14 @@ func (t *tick) switchBack(from string) (bool, error) {
 	t.incidentProbes.Add(state.Primary, string(r.Tier), r.OK, r.ErrorClass)
 	if !r.OK {
 		t.report("probe_failed", fmt.Sprintf("%s: switch-back probe of the primary failed (%s); staying on %s", t.loop.Name, r.ErrorClass, from), map[string]any{"candidate": state.Primary, "probe": r})
+		if decide.Declined(decide.ErrorClass(r.ErrorClass)) && t.st.SwitchBackRejected < t.loop.Errors.MaxReprompts {
+			// The provider refused or restricted the primary. Asking again
+			// every retry_every would press it without end: stop here, as
+			// after the last rejected brief, until a person acts.
+			t.st.SwitchBackRejected = t.loop.Errors.MaxReprompts
+			t.report("switch_back", fmt.Sprintf("%s: switch-back stopped: the provider refused or restricted the primary's probe (%s); staying on %s until resume, retarget or the next handoff", t.loop.Name, r.ErrorClass, from),
+				map[string]any{"from": from, "to": state.Primary, "stopped": true, "declined": r.ErrorClass})
+		}
 		return false, nil
 	}
 	brief, err := handoff.ComposeBrief(t.loop, handoff.Facts{Loop: t.loop.Name, At: t.now, From: t.label(from), To: "primary (" + t.loop.Describe() + ")", SwitchBack: true})
@@ -1659,6 +1791,20 @@ func (t *tick) keepFailure(id string, r probe.Result) {
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
+	if d.HeldNudge {
+		// Recorded exactly as a nudge is, and not sent: the stall rule's
+		// spacing, count and hold then follow as if it had been.
+		c := decide.Attempted(decide.Nudge, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		t.st.HeldNudges++
+		t.st.LastHeldNudgeAt, t.heldNudge = t.now, true
+		if t.st.HungTurn != nil {
+			t.st.HungTurn.HeldNudges++
+		}
+		return nil
+	}
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
 		reserved := false
@@ -1683,12 +1829,16 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		childErrors := decide.ChildErrorNote(t.decisionInput, d)
 		if d.ChildErrorWake {
 			// Notice only: the parent is waiting on other children on purpose.
-			text = prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren)
+			text = prompt.ChildErrorsOnlyRetried(childErrors, t.decisionInput.Obs.ActiveChildren, t.lanesRetried)
 		} else {
-			text = prompt.WithChildErrors(text, childErrors)
+			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
 		if !reserved {
-			if _, err := t.reserveSend(string(d.Action), t.res.Target); err != nil {
+			action := string(d.Action)
+			if d.Reason == decide.RefusedContinueReason {
+				action = refusalContinueAction
+			}
+			if _, err := t.reserveSend(action, t.res.Target); err != nil {
 				return err
 			}
 		}
@@ -1698,13 +1848,33 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
+		var refused adapter.ErrNotStarted
+		if errors.As(err, &refused) {
+			return t.startRefused(refused.Reason)
+		}
 		t.childNoticeSent(childErrors, err)
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
 		// per-episode caps and spacing.
-		c := decide.Attempted(d.Action, decide.Counters{
-			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
-		}, t.now)
+		if d.Reason == decide.DeclineAcknowledgedReason {
+			// The one try a person asked for has been made, whatever it
+			// returned. A turn restricted again holds again.
+			t.st.DeclineHeldTarget, t.st.DeclineHeldAt = "", time.Time{}
+		}
+		before := decide.Counters{Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt}
+		c := decide.Attempted(d.Action, before, t.now)
+		if d.Reason == decide.RefusedContinueReason {
+			// A continue for a refusal has its own spacing and no cap: it does
+			// not spend the re-prompt allowance kept for other errors.
+			c.Reprompts, c.LastRepromptAt = before.Reprompts, before.LastRepromptAt
+			// The spacing runs from the attempt whatever it returned. Only a
+			// continue the adapter accepted makes the next refused turn a new
+			// one, so a failed send does not count the same refusal again.
+			t.st.Refusals.LastContinueAt = t.now
+			if err == nil {
+				t.st.Refusals.Seen, t.st.Refusals.Continued = false, true
+			}
+		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
 		if err != nil {
 			var unsupported adapter.ErrUnsupported
@@ -1716,13 +1886,46 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		t.report(string(d.Action), fmt.Sprintf("%s: %s %s (%s)", loop.Name, d.Action, t.res.Target, d.Reason), nil)
 	case decide.AwaitUser:
+		kind := ""
+		switch d.Reason {
+		case decide.RefusalAskReason:
+			kind = control.QuestionRefused
+		case decide.RestrictedReason:
+			kind = control.QuestionRestricted
+		}
+		var raised, superseded string
 		if _, err := control.Update(loop.StateDir, func(f *control.File) {
 			f.AwaitingUser, f.Note = true, d.Reason
 			// Kept if already set: a later hold for another reason does not
 			// make the spent allowance any less spent.
 			f.EpisodeHold = f.EpisodeHold || d.EpisodeSpent
+			if kind == "" {
+				return
+			}
+			q, err := control.NewQuestion(kind, t.opts.Version, t.res.Target, t.now, t.questionEvidence(kind), *f)
+			if err != nil {
+				t.warn("the question for this hold could not be raised: %v", err)
+				return
+			}
+			if f.Question != nil {
+				superseded = f.Question.ID // one open question per loop
+			}
+			f.Question, raised = q, q.ID
 		}); err != nil {
 			return err
+		}
+		if kind == control.QuestionRefused {
+			t.st.Refusals.Asked = true
+		}
+		if superseded != "" {
+			t.questionRecord("question_withdrawn", superseded)
+		}
+		if raised != "" {
+			t.questionRecord("question_raised", raised)
+		}
+		if d.Reason == decide.RestrictedReason {
+			// Saved only once the hold is: see the check before the decision.
+			t.st.DeclineHeldTarget, t.st.DeclineHeldAt = t.res.Target, t.now
 		}
 		data := map[string]any{"target": t.res.Target}
 		if len(t.awaitingChildren) > 0 {
@@ -1732,7 +1935,15 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if t.deferredInteraction {
 			data["deferredInteraction"] = true
 		}
-		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), data)
+		text := fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason)
+		if kind == control.QuestionRefused {
+			g := t.st.Refusals
+			day, recovered := g.InLastDay(t.now)
+			text = fmt.Sprintf("%s: needs a person: the model or provider has declined %d turns in a row on %s. keepgoing has stopped sending continues and is asking how this loop should proceed. False flags are common: in the last 24 hours %d turns were declined on this loop and %d recovered after a continue. keepgoing resume goes on continuing; keepgoing pause or keepgoing stop ends it.",
+				loop.Name, g.Streak, t.res.Target, day, recovered)
+			data["streak"], data["lastDay"], data["recoveredLastDay"] = g.Streak, day, recovered
+		}
+		t.report("await_user", text, data)
 	case decide.Stop:
 		// Recorded first, like a send, so a supervisor stopped right after it
 		// does not stop the turn again. If the record cannot be saved the stop
@@ -1759,6 +1970,30 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	return nil
 }
 
+// startRefused handles a send the adapter refused before anything could reach
+// the agent, for a reason on this machine that a person has to put right.
+// Nothing was sent, so nothing is spent: the send is given back and no nudge,
+// re-prompt or notice attempt is counted, which also means the refusal cannot
+// use up an episode's re-prompts and end in a hold. It is reported once, when
+// it begins, and stands in the state for status and doctor until a send is
+// accepted. The check itself succeeded: it observed, decided, and was told no.
+func (t *tick) startRefused(reason string) error {
+	// The send's record is the newest one this check reserved, whether here or
+	// for a turn retry that fell back to the prompt.
+	if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends, t.st.SendsRecorded); err != nil {
+		return err
+	}
+	t.res.Recovery = ""
+	t.res.Reason = "nothing was sent: " + reason
+	if t.st.StartRefused != nil && t.st.StartRefused.Reason == reason {
+		return nil
+	}
+	t.st.StartRefused = &state.StartRefused{Since: t.now, Reason: reason}
+	// An existing report type, so no configuration has to learn a new one.
+	t.report("error", fmt.Sprintf("%s: no turn can be started: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target, "cause": "start_refused"})
+	return nil
+}
+
 // childNoticeSent records the result of a send that carried the notice about
 // errored children. childErrors is zero when the send carried none.
 func (t *tick) childNoticeSent(childErrors int, err error) {
@@ -1782,10 +2017,21 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
-	if err != nil {
+	var refused adapter.ErrNotStarted
+	switch {
+	case errors.As(err, &refused):
+		outcome = "not_started" // nothing reached the agent
+	case err != nil:
 		outcome = "adapter_error"
 	}
-	t.graphFinish(attempt, outcome)
+	if outcome != "not_started" {
+		t.st.StartRefused = nil // the adapter is starting turns again
+	}
+	graphOutcome := outcome
+	if outcome == "not_started" {
+		graphOutcome = "adapter_error" // the run graph has no finer word
+	}
+	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
@@ -1801,6 +2047,12 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	t.st.LimitResetsAt = t.limitResetsAt
+	// Something was sent this check when the time of the last wake moved
+	// and it was not for a held-back nudge.
+	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
+		t.st.LastSentAt = t.st.LastWakeAt
+	}
 	t.noteCheckGap()
 	state.NoteScheduleGap(&t.st, t.schedule, t.now)
 	reportGap := t.markCheckGap()
@@ -1833,6 +2085,11 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if at := t.opts.LastConfigReadAt; !at.IsZero() {
+		// The configuration could not be read; this stop came from the last
+		// one the daemon read.
+		t.st.LastCheck.ConfigUnavailable = &state.ConfigUnavailable{LastReadAt: at.UTC()}
+	}
 	// A dry run leaves the identity of the last real check: it is the one
 	// a later gap is about.
 	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
@@ -1844,11 +2101,19 @@ func (t *tick) record(actErr error) error {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
 	t.st.CheckFinishedAt = t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
+	t.saveRouteRecord()
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
 		return errors.Join(actErr, err)
 	}
+	if t.opts.Executable != "" && !t.opts.DryRun {
+		// Best effort: the record only lets a panel offer a replacement.
+		_ = t.opts.ExecutableImage.Record(t.loop.StateDir, t.opts.Version, t.now)
+	}
+	// A return to the primary happened only once it is saved; the history
+	// records it from here, whatever the check's outcome.
+	t.returnSaved = t.incidentReturn != nil
 	// The outcomes are recorded: settle them beside the records too, so an
 	// older binary that rewrites state.json cannot unsettle them. Only a
 	// check that read the records, or made sends of its own, has moved
@@ -1885,11 +2150,17 @@ func (t *tick) record(actErr error) error {
 	if t.res.Handoff != nil {
 		extra["handoff"] = t.res.Handoff
 	}
+	if t.res.Routes != nil {
+		extra["routes"] = t.res.Routes
+	}
 	if len(t.res.Probes) > 0 {
 		extra["probes"] = t.res.Probes
 	}
 	if len(t.res.Warnings) > 0 {
 		extra["warnings"] = t.res.Warnings
+	}
+	if c := t.st.LastCheck.ConfigUnavailable; c != nil {
+		extra["configUnavailable"] = c
 	}
 	if len(extra) > 0 {
 		ev.Extra = extra
@@ -2219,12 +2490,47 @@ func (t *tick) countUnrecordedSends() error {
 			if p.Action == string(decide.Reprompt) {
 				t.st.UnconfirmedReprompts++
 			}
+		case refusalContinueAction:
+			// A continue for a refusal that may have been made: counted in
+			// the gauge, not the re-prompt allowance. It starts the spacing.
+			// Whether it was accepted is unknown, so the refused turn that
+			// still shows is not counted again: where the adapter names turns
+			// a new turn is counted by its name, and otherwise the streak may
+			// read one low until the next continue, never high.
+			g := &t.st.Refusals
+			if p.At.After(g.LastContinueAt) {
+				g.LastContinueAt = p.At
+			}
+			g.Continued = true
+			if p.At.After(t.st.LastWakeAt) {
+				t.st.LastWakeAt = p.At
+			}
 		case "handoff", "switch_back":
 			// Settled by the hold this check raises: a person looks first.
 		case "new_thread":
 			// Settled by its own record in state.json, saved before the
 			// conversation was created (see createThread).
 			agentSend = false
+		case laneRetryAction:
+			// A lane's failed turn, retried by reference: counted for that
+			// lane as a made retry, so it is spaced and capped. It is not a
+			// send to the supervised session. Nothing if lane recovery has
+			// been switched off since.
+			agentSend = false
+			if _, agent := t.resolve(t.st.Target()); agent.BB.RetryErroredLanes() && t.st.Lanes != nil {
+				l := t.st.Lanes
+				r := l.Retries[p.Key]
+				if r.DayStart.IsZero() {
+					r.DayStart = p.At
+				}
+				r.Attempts, r.DayRetries, r.LastAt, r.NoOps = r.Attempts+1, r.DayRetries+1, p.At, 0
+				if l.Retries == nil {
+					l.Retries = map[string]state.LaneRetry{}
+				}
+				l.Retries[p.Key] = r
+				l.EpisodeRetries++
+				t.warn("a lane retry was recorded at %s but that check could not save what happened, so it may have been made; it is counted as made", p.At.Format(time.RFC3339))
+			}
 		case "child_notice":
 			if t.st.ChildErrorNoticeFor != p.Key {
 				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
@@ -2242,10 +2548,22 @@ func (t *tick) countUnrecordedSends() error {
 			agentSend = false
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
+		case "report:hung_turn":
+			if t.st.HungTurn != nil {
+				t.st.HungTurn.Reported = true
+			}
+			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
 			t.st.SwitchBackRejected, agentSend = max(t.st.SwitchBackRejected, t.loop.Errors.MaxReprompts), false
+		case "report:routes-unreadable", "report:routes-readable":
+			t.st.RoutesUnreadable = p.Action == "report:routes-unreadable"
+		}
+		// A report is never a send to the agent, whatever its key, as in
+		// SettleIntoEpisode: a key added later cannot be counted as one.
+		if strings.HasPrefix(p.Action, "report:") {
+			agentSend = false
 		}
 		if agentSend && p.At.After(t.st.LastWakeAt) {
 			t.st.LastWakeAt = p.At
@@ -2451,6 +2769,17 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 // something that needs the network is about to be done. It reports whether
 // that work should wait. Without a configured check, in a dry run, or once a
 // failing check has been shown wrong, it reports false and nothing is gated.
+// Connectivity is the loop's connectivity check, as each check makes it, or
+// nil when none is configured.
+func Connectivity(cfg *config.Config) func(context.Context) bool {
+	timeout := cfg.Loop.NetworkCheckTimeout()
+	if timeout <= 0 {
+		return nil
+	}
+	n := cfg.Loop.Network
+	return netretry.Probe{URL: n.URL, Command: n.Command, Timeout: timeout}.Online
+}
+
 func (t *tick) networkDown() bool {
 	if t.opts.Online == nil || t.opts.DryRun {
 		return false // a dry run makes no request
@@ -2576,7 +2905,7 @@ func (t *tick) verifyOutage() {
 		tested = true
 		t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: probe.Exact, OK: r.OK, ErrorClass: r.ErrorClass, Detail: "connectivity verification"})
 		switch decide.ErrorClass(r.ErrorClass) {
-		case decide.ErrRateLimit, decide.ErrOverloaded:
+		case decide.ErrRateLimit, decide.ErrOverloaded, decide.ErrRestricted, decide.ErrRefused:
 			r.OK = true // the provider answered: the network works
 		}
 		if r.OK {
@@ -2725,7 +3054,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true, checkGapEvent: true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true, hungTurnEvent: true, refusalStreakEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
@@ -2736,7 +3065,7 @@ const maxLateReports = 3
 // using anything up.
 func (t *tick) canReport(typ string) bool {
 	// A report that makes a single attempt would be lost into a dead network.
-	if (typ == limitWaitEvent || typ == childErrorEvent) && t.networkDown() {
+	if (typ == limitWaitEvent || typ == childErrorEvent || typ == laneRecoveryEvent) && t.networkDown() {
 		return false
 	}
 	return t.left() >= minReportTime || (essentialReports[typ] && t.lateReports < maxLateReports)
@@ -2771,11 +3100,13 @@ func (t *tick) reportContext(typ, text string) (context.Context, context.CancelF
 func (t *tick) noteRedundancy(target, group string) health.Summary {
 	summary := health.Evaluate(t.fb, t.reg, t.now, target, group)
 	t.res.Redundancy = &summary
+	// While the standard list is unreadable there are no other routes at all;
+	// that is reported once by noteRouteList, not again as lost redundancy.
 	key := "recovered"
 	if !summary.Meets {
 		key = "degraded"
 	}
-	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && t.reserveReport(key) {
+	if degraded := !summary.Meets; degraded != t.st.Degraded && !t.opts.DryRun && !t.cfg.RouteList.Unreadable && t.reserveReport(key) {
 		t.st.Degraded = degraded
 		if degraded {
 			t.report("degraded", fmt.Sprintf("%s: only %d of the required %d distinct healthy fallbacks; handoffs are refused", t.loop.Name, summary.Distinct, summary.Min), map[string]any{"redundancy": summary})

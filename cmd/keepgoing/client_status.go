@@ -102,6 +102,7 @@ func clientCommand(e env, args []string) int {
 	private := fs.Bool("private", false, "include current private goal title and next-action summary")
 	offline := fs.Bool("offline", false, "skip the local daemon challenge")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "recorded-check freshness threshold")
+	client := fs.String("client", "", "the calling program's NAME@VERSION (bb-plugin, macos-menu), recorded for the panel's Versions view")
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
 			fs.SetOutput(e.stdout)
@@ -116,6 +117,7 @@ func clientCommand(e env, args []string) int {
 		return exitUsage
 	}
 	report := readClientStatus(e.ctx, *directory, *id, *private, *offline, *staleAfter, time.Now().UTC(), inspectDaemon)
+	defer noteClient(*client, "")
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(report) != nil {
 			return exitFailed
@@ -203,7 +205,7 @@ func clientAlias(cfg *config.Config, alias string) string {
 	if alias == state.Primary {
 		return alias
 	}
-	if c, ok := cfg.FallbackSet.Find(alias); ok && !c.Disabled {
+	if c, ok := currentRoutes(cfg).Find(alias); ok && !c.Disabled {
 		return c.ID
 	}
 	return "unavailable"
@@ -261,7 +263,7 @@ func readClientStatus(ctx context.Context, directory, id string, private, offlin
 		if st.Target() == state.Primary {
 			agent = cfg.Loop.Agent
 			configured = true
-		} else if c, ok := cfg.FallbackSet.Find(st.Target()); ok && !c.Disabled {
+		} else if c, ok := effectiveRoutes(cfg, st).Find(st.Target()); ok && !c.Disabled {
 			agent, configured = st.CandidateAgent(c)
 		}
 		if configured {

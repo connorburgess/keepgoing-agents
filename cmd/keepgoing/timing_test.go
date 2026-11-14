@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -129,4 +130,115 @@ func TestStatusSaysWhatTimingWouldDo(t *testing.T) {
 	if _, out, _ := f.run("status", "-now", "2026-11-09T12:00:00Z"); !strings.Contains(out, "timing would, at the next turn boundary: stay: no steps are configured, so timing only collects readings (not acted on yet)\n") {
 		t.Fatalf("no steps: %s", out)
 	}
+}
+
+// Previewing never calls a provider or writes route/control records, including
+// when its inputs disappear and later become readable again.
+func TestTimingPreviewWithUnavailableInputs(t *testing.T) {
+	f := newFixture(t)
+	fbPath := filepath.Join(f.dir, "fallbacks.yaml")
+	fb, _ := os.ReadFile(fbPath)
+	write(t, fbPath, string(fb)+`  - id: example-large
+    adapter: bb
+    provider: claude-code
+    group: claude-account-a
+    bb: {thread: thr_primary, model: example-large}
+`, 0o600)
+	original, _ := os.ReadFile(f.cfg)
+	own := string(original) + timingYAML + "    steps: [primary, example-large]\n"
+	write(t, f.cfg, own, 0o600)
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := probe.UsageIdentity(cfg.Loop.PrimaryCandidate())
+	dir := filepath.Join(f.dir, "state")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "health.json"), `{"candidates":{"primary":{"usage":{"at":"2026-11-09T11:40:00Z","source":"claude_rate_limit_event","identity":"`+id+`","windows":[{"key":"seven_day","used":0.6,"resetsAt":"2026-11-09T14:00:00Z"}]}}}}`, 0o600)
+	standardPath := filepath.Join(t.TempDir(), "routes.yaml")
+	check := func(wantPreview bool, warning string, wantCode int) {
+		t.Helper()
+		before := snapshotRuntime(t, f.dir)
+		standardBefore, beforeErr := os.ReadFile(standardPath)
+		for _, args := range [][]string{{"status", "-now", "2026-11-09T12:00:00Z"}, {"status", "--json", "-now", "2026-11-09T12:00:00Z"}} {
+			code, out, errs := f.run(args...)
+			if code != wantCode || warning != "" && !strings.Contains(out+errs, warning) {
+				t.Fatalf("%v: %d %s %s", args, code, out, errs)
+			}
+			if args[1] == "--json" {
+				var result statusOut
+				if err := json.Unmarshal([]byte(out), &result); err != nil {
+					t.Fatal(err)
+				}
+				if (result.TimingWould != nil) != wantPreview {
+					t.Fatalf("preview: %+v %s", result.TimingWould, out)
+				}
+			} else if strings.Contains(out, "timing would, at the next turn boundary:") != wantPreview {
+				t.Fatalf("preview text: %s", out)
+			}
+		}
+		standardAfter, afterErr := os.ReadFile(standardPath)
+		if string(standardBefore) != string(standardAfter) || (beforeErr == nil) != (afterErr == nil) {
+			t.Fatal("status wrote standard routes")
+		}
+		if after := snapshotRuntime(t, f.dir); !reflect.DeepEqual(before, after) {
+			t.Fatal("status wrote records")
+		}
+		if f.read("calls") != "" || f.read("probes") != "" {
+			t.Fatal("status called a provider")
+		}
+	}
+	check(true, "", exitOK)
+	for _, name := range []string{"control.json", "state.json"} {
+		path := filepath.Join(dir, name)
+		write(t, path, "broken", 0o600)
+		check(false, name+" could not be read", exitFailed)
+		write(t, path, "{}", 0o600)
+		check(true, "", exitOK)
+	}
+	t.Setenv(config.RoutesFileEnv, standardPath)
+	standard := strings.Replace(own, "  fallbacks: fallbacks.yaml", "  routes: standard", 1)
+	write(t, f.cfg, standard, 0o600)
+	// Missing externally followed list, then a readable list without the
+	// referenced step. Neither may become a stay decision or fail config load.
+	check(false, "timing preview unavailable", exitOK)
+	list := `version: 1
+routes:
+  - id: other-route
+    provider: claude-code
+    group: other-allowance
+    model: example-other
+    enter: same_conversation
+`
+	write(t, standardPath, list, 0o600)
+	check(false, "timing preview unavailable", exitOK)
+	// A same-allowance entry is intentionally filtered by main's standard
+	// resolver; U4 must not expand it to make the timing reference work.
+	write(t, standardPath, list+`  - id: example-large
+    provider: claude-code
+    group: claude-account-a
+    model: example-large
+    enter: same_conversation
+`, 0o600)
+	check(false, "timing preview unavailable", exitOK)
+	// A valid primary-only followed configuration may preview. Missing the
+	// list withholds it again; restoring the list restores that preview.
+	write(t, f.cfg, strings.Replace(standard, "steps: [primary, example-large]", "steps: [primary]", 1), 0o600)
+	check(true, "", exitOK)
+	write(t, f.cfg, strings.Replace(standard, "    steps: [primary, example-large]\n", "", 1), 0o600)
+	check(true, "", exitOK)
+	if err := os.Remove(standardPath); err != nil {
+		t.Fatal(err)
+	}
+	check(false, "timing preview unavailable", exitOK)
+	write(t, standardPath, list, 0o600)
+	check(true, "", exitOK)
+	// A valid list with no applicable fallbacks still supports a primary-only
+	// preview; no redundancy authority is inferred from that preview.
+	write(t, standardPath, "version: 1\nroutes: []\n", 0o600)
+	check(true, "", exitOK)
+	write(t, f.cfg, own, 0o600)
+	check(true, "", exitOK)
 }

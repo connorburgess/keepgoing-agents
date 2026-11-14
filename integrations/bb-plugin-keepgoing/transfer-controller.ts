@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { type SetupRecord, type SetupTarget } from "./setup-contract.ts";
+import { targetOf, type SetupRecord, type SetupTarget } from "./setup-contract.ts";
 import { holdsSchema, moveSummarySchema, transferInput, type MoveIntent, type TransferResult } from "./transfer-contract.ts";
 
 export interface TransferDependencies {
@@ -32,8 +32,7 @@ const statusSchema = z.object({
 });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function savedTarget(r: SetupRecord): SetupTarget {
-  const { id, configPath, loop, ...target } = r;
-  return target;
+  return targetOf(r);
 }
 function compatible(a: SetupTarget, b: SetupTarget) {
   return a.threadId !== b.threadId && a.projectId === b.projectId && a.environmentId === b.environmentId && a.hostId === b.hostId && a.project === b.project && a.provider === b.provider;
@@ -50,7 +49,7 @@ export function createTransferController(d: TransferDependencies) {
     await validateTargets(i);
     const r = await d.transfer(i, "preview");
     const p = previewSchema.safeParse(r.data);
-    if (r.code !== 0 || !p.success) throw new PolicyError("Transfer preview is unavailable or blocked. Check diagnostics and the host's keepgoing version; apply/recover support is required.");
+    if (r.code !== 0 || !p.success) throw new PolicyError("Transfer preview is unavailable or blocked. Check diagnostics and the host's looptender version; apply/recover support is required.");
     const matches = (a: z.infer<typeof identity>, t: SetupTarget) => a.thread === t.threadId && a.project === t.projectId && a.environment === t.environmentId && a.host === t.hostId && a.provider === t.provider;
     if (!matches(p.data.from, i.record) || !matches(p.data.to, i.destination) || p.data.configuredProvider !== i.record.provider) throw new PolicyError("The CLI target differs from the registered setup. No move was performed.");
     return p.data;
@@ -96,7 +95,7 @@ export function createTransferController(d: TransferDependencies) {
     const pending = intents.find(i => i.record.id === input.recordId);
     if (pending) {
       if (pending.destination.threadId !== input.threadId || !["inspect", "recover"].includes(input.action)) throw new PolicyError("This setup has a saved move request. Open its destination and check move status before continuing.");
-      if (pending.bin !== await d.binary()) throw new PolicyError("The keepgoing binary setting changed. Restore it before recovering this saved request.");
+      if (pending.bin !== await d.binary()) throw new PolicyError("The looptender binary setting changed. Restore it before recovering this saved request.");
       const result = await inspect(pending);
       if (input.action !== "recover" || result.moved || !result.canRecover) return result;
       await validateTargets(pending);

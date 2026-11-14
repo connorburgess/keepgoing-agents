@@ -32,7 +32,7 @@ type timingWould struct {
 // failover rules or a person chose) apply as they would then.
 func timingWouldOf(cfg *config.Config, st state.File, ctl control.File, reg *health.Registry, now time.Time) *timingWould {
 	l := cfg.Loop
-	if !l.TimingOn() {
+	if !l.TimingOn() || cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "" {
 		return nil
 	}
 	in := timing.Input{Now: now, Timing: *l.Timing, Current: st.Target(), TurnEnded: true,

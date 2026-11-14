@@ -200,7 +200,7 @@ final class MenuTests: XCTestCase {
         status.exposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops."
         let model = MenuBuilder.build(.read(three, at: now), now: now, panel: status)
         XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Open Panel with Controls…", "Quit keepgoing Menu", "---", "Read just now"])
-        XCTAssertEqual(model.rows.first { $0.command == .openPanelWithChanges }?.accessibilityHelp, "Opens the panel so its page can pause, stop and resume loops. Asks first.")
+        XCTAssertEqual(model.rows.first { $0.command == .openPanelWithChanges }?.accessibilityHelp, "Opens the panel so its page can pause, stop and resume loops and offer a separate review to replace a loop’s own build. Asks first.")
     }
 
     func testBadgeAndNeedsLine() {

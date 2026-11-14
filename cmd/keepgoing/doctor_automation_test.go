@@ -106,15 +106,13 @@ func TestDoctorAutomationOfflinePreservesHeldState(t *testing.T) {
 	if err := control.Save(f.state, control.File{Enabled: true, Paused: true, Stop: true, Completed: true, Note: doctorPrivate}); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(f.state, control.FileName)
-	before, _ := os.ReadFile(path)
+	before := f.stateFiles(t)
 	_, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
 		t.Fatal("offline query executed")
 		return nil, nil
 	}, "--offline", "--bb-automation", "auto_example", "--bb-project", "proj_example", "--bb-cli", filepath.Join(f.root, "missing"))
-	after, _ := os.ReadFile(path)
-	files, _ := os.ReadDir(f.state)
-	if r.BBAutomation == nil || r.BBAutomation.State != "offline" || r.NextCheck != unknownNextCheck || !bytes.Equal(before, after) || len(files) != 1 {
+	after := f.stateFiles(t)
+	if r.BBAutomation == nil || r.BBAutomation.State != "offline" || r.NextCheck != unknownNextCheck || !reflect.DeepEqual(before, after) {
 		t.Fatalf("offline query changed state: %+v", r)
 	}
 }

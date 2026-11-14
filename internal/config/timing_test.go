@@ -151,3 +151,61 @@ candidates:
 		}
 	}
 }
+
+// A standard list is external data. Losing a referenced route must not make
+// the loop's own controls unloadable, while malformed timing stays invalid.
+func TestTimingStepsWithChangingStandardRoutes(t *testing.T) {
+	list := standardList
+	path := writeRoutes(t, list)
+	body := bbLoop + "  timing:\n    enabled: true\n    windows: [seven_day]\n    steps: [primary]\n"
+	p := loopFile(t, body)
+	for _, tc := range []struct {
+		name, list string
+		absent     bool
+	}{
+		{"valid", list, false},
+		{"missing", "", true},
+
+		{"restored", list, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.list == "" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tc.list), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (cfg.RouteList.Unreadable || cfg.TimingStepsUnavailable != "") != tc.absent {
+				t.Fatalf("unavailable: %q", cfg.TimingStepsUnavailable)
+			}
+			if tc.absent && len(cfg.TimingSummary().Warnings) < 2 {
+				t.Fatal("missing preview warning")
+			}
+		})
+	}
+	// Standard routes intentionally exclude the primary's quota group, so a
+	// non-primary timing step cannot resolve there. Removing that reference
+	// is a change in external route data, not an unloadable loop.
+	for _, routes := range []string{list, "version: 1\nroutes: []\n"} {
+		if err := os.WriteFile(path, []byte(routes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		steps := strings.Replace(body, "steps: [primary]", "steps: [primary, large-same]", 1)
+		cfg, err := Load(loopFile(t, steps))
+		if err != nil || cfg.TimingStepsUnavailable == "" || len(cfg.RouteList.Warnings) == 0 {
+			t.Fatalf("changed steps: %+v %v", cfg, err)
+		}
+	}
+	// Invalid explicit configuration still fails before resolving any list.
+	for _, extra := range []string{"    steps: [primary, primary]\n", "    down_at: 2\n", "    ceiling: missing\n", "    min_on_step: -1h\n"} {
+		bad := strings.Replace(body, "    steps: [primary]\n", extra, 1)
+		if _, err := Load(loopFile(t, bad)); err == nil {
+			t.Fatalf("invalid timing accepted: %s", extra)
+		}
+	}
+}

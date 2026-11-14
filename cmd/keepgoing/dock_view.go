@@ -74,6 +74,9 @@ type dockReport struct {
 	// them on whose reset has not passed.
 	Allowances        []dockAllowance `json:"allowances"`
 	AllowancesOmitted int             `json:"allowancesOmitted"`
+	// Versions is where each build on this computer runs, against the newest
+	// one seen here. Only the page's endpoint fills it.
+	Versions *dockVersions `json:"versions,omitempty"`
 }
 
 // dockRoutesLine is the count line of the routes view and the picker.
@@ -134,7 +137,8 @@ type dockNeed struct {
 	Since        *time.Time `json:"since,omitempty"`
 	// SinceEvidence is hold_recorded when Since is the time the hold was
 	// saved, or control_changed when only the last control change is known,
-	// which makes WaitedSeconds a lower bound.
+	// or daemon_reported for the first unavailable-configuration diagnostic.
+	// These make WaitedSeconds a lower bound.
 	SinceEvidence string `json:"sinceEvidence,omitempty"`
 	WaitedSeconds *int64 `json:"waitedSeconds,omitempty"`
 	// Waited is how long, in words.
@@ -180,9 +184,18 @@ type dockLoop struct {
 	// NoProgress is the no-progress flag, the same value status shows; nil
 	// when the loop's status could not be read. It is never a need.
 	NoProgress *noProgressView `json:"noProgress,omitempty"`
+	// Refusals is the refusal gauge and any open question about refusals or
+	// a restriction, as status shows them; nil before the first refusal.
+	Refusals *refusalStatus `json:"refusals,omitempty"`
 	// Build is the build that ran the loop's last check, against this
 	// panel's own; listed under "Worth knowing" when they differ.
 	Build dockBuild `json:"build"`
+	// Versions is what else the read found about the builds the loop runs:
+	// its daemon's label and its service's file. The Versions view lists them.
+	Versions dockLoopVersions `json:"versions"`
+	// BuildChange is what may be done about the file that runs its checks;
+	// offered as a button only by a panel started with --allow-changes.
+	BuildChange *dockBuildChange `json:"buildChange,omitempty"`
 	// Can is which changes fit the loop's control flags as read: pause when
 	// not paused, stop when no stop is requested, resume when any hold is
 	// set. Empty when the flags could not be read. A page offers them only
@@ -877,6 +890,19 @@ type dockInput struct {
 	// not read. Hostname is this computer's name, shown only with identifiers.
 	Timeline *timelineReport
 	Hostname string
+	// Daemon is the loop's daemon as this read asked it; ServiceFile is its
+	// service's recorded file against this panel's binary
+	// (dockServiceFiles), empty when no service is recorded or the Versions
+	// view was not asked for.
+	Daemon      daemonStatus
+	ServiceFile string
+	// BuildChange is what a panel allowed to make changes could do about
+	// the file that runs the loop's checks (replace_build.go); nil when the
+	// Versions view was not asked for.
+	BuildChange *dockBuildChange
+	// LaneTitles is the loop's private lane-titles file; nil when missing or
+	// unusable.
+	LaneTitles *state.LaneTitles
 }
 
 // dockHold is the retained history record of an awaiting-user hold starting.
@@ -969,7 +995,9 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	quiet := map[string]bool{"supervising": true, "paused": true, "off": true, "stopped": true, "finished": true, "waiting_for_you": true, "unknown": true}
 	for _, l := range r.Loops {
 		flagged := l.NoProgress != nil && l.NoProgress.Availability == "flagged"
-		otherBuild := l.Build.Availability == "different"
+		daemonBuild := l.Versions.Daemon != "" && dockBuildOf(l.Versions.Daemon, version).Availability == "different"
+		otherFile := l.Versions.Service == "different_file"
+		otherBuild := l.Build.Availability == "different" || daemonBuild || otherFile
 		if quiet[l.State] && l.Away == nil && !flagged && !otherBuild {
 			continue
 		}
@@ -989,11 +1017,23 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 			}
 			t = txt(t, l.NoProgress.Text)
 		}
-		if otherBuild {
+		if l.Build.Availability == "different" {
 			if len(t) > 0 {
 				t = txt(t, " ")
 			}
 			t = txt(t, l.Build.Text)
+		}
+		if daemonBuild {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, "Its daemon runs "+productName+" "+l.Versions.Daemon+"; this panel is "+productName+" "+dockBuildLabel(version)+".")
+		}
+		if otherFile {
+			if len(t) > 0 {
+				t = txt(t, " ")
+			}
+			t = txt(t, "Its service runs a different file from this panel's binary.")
 		}
 		r.Worth = append(r.Worth, dockWorth{Key: l.Key, Loop: l.Name, State: l.State, Text: t})
 	}
@@ -1256,6 +1296,14 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 			}
 		}
 	}
+	if in.Daemon.State == "responsive" && in.Daemon.ConfigUnavailableSince != nil {
+		if snap == nil || snap.Controls == nil || (snap.Controls.Enabled && !snap.Controls.Paused && !snap.Controls.Stop && !snap.Controls.Completed && !snap.Controls.AwaitingUser) {
+			l.State, l.Phrase, l.Detail = "unknown", "Checks stopped", "Its daemon cannot load the configuration file; ordinary checks have stopped."
+		} else {
+			l.Detail += " Its daemon cannot load the configuration file."
+		}
+		need = &dockNeed{Kind: "unreadable", Reason: "Its checks have stopped: the configuration file cannot be loaded.", Action: "Restore a readable, valid configuration file at the daemon's configured path. A saved stop may use the last configuration read.", Since: in.Daemon.ConfigUnavailableSince, SinceEvidence: "daemon_reported"}
+	}
 	if st != nil && st.NewThreads.Pending && need == nil {
 		need = &dockNeed{Kind: "held", Reason: "A new conversation it tried to create for a move to another route could not be confirmed.",
 			Action: "Find that conversation in BB, then settle it with keepgoing retarget."}
@@ -1266,6 +1314,20 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	if snap != nil && snap.Runtime != nil && snap.Runtime.Overdue && need == nil {
 		need = &dockNeed{Kind: "overdue", Reason: "Its checks have stopped: " + snap.Runtime.OverdueMessage + ".",
 			Action: "Find out why no check has run, and start its scheduler again if it stopped; the next check ends this.", Since: snap.Runtime.CheckedAt, SinceEvidence: "last_check"}
+	}
+	// After this panel replaced the file that runs its checks: a check that
+	// failed since, or checks that stopped coming, is said with the
+	// replacement, and its page offers Undo.
+	if bc := in.BuildChange; bc != nil && !bc.updatedAt.IsZero() {
+		when := bc.updatedAt
+		switch {
+		case need != nil && need.Kind == "overdue":
+			need.Reason += " The file that runs its checks was replaced from this panel before they stopped."
+			need.Action = "Look at the loop's page, where the replacement can be undone, and start its scheduler again if it stopped."
+		case need == nil && st != nil && st.State.LastCheck != nil && st.State.LastCheck.At.After(when) && st.State.LastCheck.Outcome == "failed":
+			need = &dockNeed{Kind: "build_replaced", Reason: "Its last check, since the file that runs its checks was replaced from this panel, failed.",
+				Action: "Look at the check on the loop's page; undo the replacement there if the new build is the cause.", Since: &when, SinceEvidence: "last_check"}
+		}
 	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
@@ -1281,14 +1343,22 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		}
 	}
 	use := dockUse(l, st)
-	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers, use.Target != "", now)
+	l.Lanes = dockLaneList(in.Runs, in.RunsKnown, identifiers, use.Target != "", in.LaneTitles, now)
 	l.Chain = dockHandoffChain(in.Chain, use, dockTestingOf(l.State, st, in.Chain), l.Fallbacks, now, identifiers)
 	l.Away = dockAwayOf(st, in.Chain, l.Chain.Entries, in.Timeline, now)
 	l.Build = dockBuildOf(dockLastBuild(st, in.Timeline), version)
+	if in.Daemon.State == "responsive" {
+		l.Versions.Daemon = in.Daemon.version
+	}
+	l.Versions.Service = in.ServiceFile
+	l.BuildChange = in.BuildChange
 	l.PickerState = l.Phrase
 	if st != nil {
 		np := st.NoProgress
 		l.NoProgress = &np
+		if r := st.Refusals; r.Total > 0 || r.Question != "" {
+			l.Refusals = &r
+		}
 		if np.Availability == "flagged" {
 			l.PickerState += " \u00B7 no progress"
 		}
@@ -1455,6 +1525,22 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 		n.Reason, n.Action = "No Git progress within its time limit.", "See why, then resume or mark it finished."
 	case "stall_limit":
 		n.Reason, n.Action = "No progress after repeated nudges.", "See why, then resume or mark it finished."
+	case "refusal_ask":
+		n.Reason, n.Action = "The model or provider declined turn after turn, and a continue did not clear it.", "Look at the conversation, then decide how the loop goes on: keepgoing resume continues, keepgoing pause or stop ends it. Starting a fresh session from here is coming, not yet available."
+		if st != nil && st.Refusals.Streak > 0 {
+			n.Reason = fmt.Sprintf("The model or provider declined %d turns in a row, and a continue did not clear it.", st.Refusals.Streak)
+		}
+	case "restricted":
+		n.Reason, n.Action = "The provider denied permission for this request or account.", "Fix the account's access, then resume for one more try, or pause or stop it."
+	case "stall_limit_held":
+		n.Reason, n.Action = "No progress after nudges that were held back because the turn looked hung.", "Retry the turn in BB, or stop the loop and resume it."
+		if st != nil && st.State.Nudges > 0 {
+			held := "all held back"
+			if st.State.HeldNudges < st.State.Nudges {
+				held = fmt.Sprintf("%d of them held back", st.State.HeldNudges)
+			}
+			n.Reason = fmt.Sprintf("No progress after %d nudges, %s because the turn looked hung.", st.State.Nudges, held)
+		}
 	}
 	if hold != nil && !hold.At.IsZero() {
 		at := hold.At
