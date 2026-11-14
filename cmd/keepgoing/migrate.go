@@ -324,8 +324,9 @@ func (h *migrateHeld) probe(path string) (busy bool, err error) {
 			err  error
 		}
 		done := make(chan result, 1)
+		held := migrateHeldFile // read here: the attempt may outlive this call
 		go func() {
-			b, err := migrateHeldFile(path)
+			b, err := held(path)
 			done <- result{b, err}
 		}()
 		select {
@@ -343,8 +344,9 @@ func (h *migrateHeld) probe(path string) (busy bool, err error) {
 		err error
 	}
 	done := make(chan result, 1)
+	hold := migrateHoldFile // read here: the attempt may outlive this call
 	go func() {
-		l, err := migrateHoldFile(path)
+		l, err := hold(path)
 		done <- result{l, err}
 	}()
 	var l *lock.Lock
@@ -352,6 +354,13 @@ func (h *migrateHeld) probe(path string) (busy bool, err error) {
 	case r := <-done:
 		l, err = r.l, r.err
 	case <-time.After(migrateLockWait):
+		// An attempt that succeeds after all lets its lock go at once. It
+		// touches nothing but its own result.
+		go func() {
+			if r := <-done; r.l != nil {
+				_ = r.l.Release()
+			}
+		}()
 		return true, errLockSlow
 	}
 	switch {
