@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { goalDetails } from "./status-details.ts";
 import { checkSchema, refusalMessage, refusedReportSchema, setupInput, type Refusal, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
-import type { Bounds } from "./new-thread-contract.ts";
+import { planBounds, sameBounds, type Bounds } from "./new-thread-contract.ts";
 
 export interface SetupDependencies {
   target(threadId: string): Promise<SetupTarget>;
@@ -22,6 +22,7 @@ const statusSchema = z.object({
   daemon: z.object({ state: z.string() }).optional(),
 });
 const doctorSchema = z.object({ schemaVersion: z.literal(1), targetAgent: agent, checks: z.array(checkSchema).max(300) });
+const startedReport = z.object({ schemaVersion: z.literal(1), outcome: z.literal("started") });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -69,11 +70,14 @@ export function createSetupController(d: SetupDependencies) {
       await sameTarget(existing);
       // --json only when the preview this setup came from advertised it, and
       // the same binary is configured now. Otherwise start exactly as before.
-      const start = await d.command(bin, existing, "start", existing.startJson === true && existing.startJsonBin === bin ? true : undefined);
+      const json = existing.startJson === true && existing.startJsonBin === bin ? true as const : undefined;
+      const start = await d.command(bin, existing, "start", json);
       const startRefused = start.code !== 0 ? refusedReportSchema.safeParse(start.data) : undefined;
       if (startRefused?.success) { d.changed(); return { ...result, ok: false, canStart: false, started: false, refused: startRefused.data.refusal, message: refusalMessage(startRefused.data.refusal, "start") }; }
       d.changed();
-      return { ...result, canStart: false, ok: start.code === 0, started: start.code === 0, message: start.code === 0 ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
+      // With --json, a start is confirmed by its own report as well as its exit code.
+      const confirmed = start.code === 0 && (!json || startedReport.safeParse(start.data).success);
+      return { ...result, canStart: false, ok: confirmed, started: confirmed, message: confirmed ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
     }
     if (existing) throw new SetupPolicyError("This thread already has a saved setup. Use its diagnostics and controls.");
     await d.guard(input.threadId);
@@ -88,6 +92,9 @@ export function createSetupController(d: SetupDependencies) {
       const previewed = await d.init(bin, target, input.name, task, true, withGoal, bounds);
       if ("refused" in previewed) return { ok: false, refused: previewed.refused, message: refusalMessage(previewed.refused, "init") };
       const { plan } = previewed;
+      // Asked-for loop-wide limits must be exactly what keepgoing reports it
+      // will write. Creation is then bound to this plan, so they cannot change.
+      if (bounds) { const reported = planBounds(plan.limits); if (!reported || !sameBounds(reported, bounds)) throw new SetupPolicyError("Setup did not report the loop-wide limits that were asked for. Nothing was created."); }
       const ticket = randomUUID();
       previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, bounds, bin, plan, expires: Date.now() + 300_000 });
       return { ok: true, ticket, plan, message: "Preview only. Creating this setup leaves supervision disabled; fallbacks and automatic handoffs are off." };

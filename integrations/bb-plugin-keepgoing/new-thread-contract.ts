@@ -57,6 +57,19 @@ const HOURS: Record<(typeof TIMEOUT_CHOICES)[number], number> = { "2h": 2, "6h":
 /** One short phrase for the loop-wide bound, used wherever the bound is stated. */
 export const boundsPhrase = (b: Bounds) => `Stops for you after ${b.maxSends} automatic messages, or ${HOURS[b.noProgressTimeout]} hours without progress (a Git change).`;
 
+/**
+ * The loop-wide bounds a setup plan reports, when they are exactly one of the
+ * choices this control offers; null when either is missing or anything else.
+ */
+export function planBounds(limits: { maxSends?: number; noProgressTimeout?: string }): Bounds | null {
+  const ms = durationMs(limits.noProgressTimeout ?? "");
+  const choice = TIMEOUT_CHOICES.find(c => durationMs(c) === ms);
+  if (ms === null || !choice || !Number.isInteger(limits.maxSends)) return null;
+  const parsed = boundsSchema.safeParse({ maxSends: limits.maxSends, noProgressTimeout: choice });
+  return parsed.success ? parsed.data : null;
+}
+export const sameBounds = (a: Bounds, b: Bounds) => a.maxSends === b.maxSends && a.noProgressTimeout === b.noProgressTimeout;
+
 /** Go prints durations as 24h0m0s; compare them as milliseconds. Returns null when unreadable. */
 export function durationMs(text: string): number | null {
   const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(text.trim());

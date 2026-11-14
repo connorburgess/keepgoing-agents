@@ -15,6 +15,8 @@ function fixture() {
     supervision: "none" as "none" | "supervised" | "unverified", used: 3,
     setups: [] as { action: string; threadId: string; name?: string; task?: string; bounds: unknown }[],
     previewOk: true, createOk: true, canStart: true, start: "started" as "started" | "declined" | "failed", changed: 0,
+    // What the host's plan reports as loop-wide limits: those asked for, unless a test says otherwise.
+    planLimits: undefined as undefined | ((bounds: { maxSends: number; noProgressTimeout: string }) => { maxSends?: number; noProgressTimeout?: string }),
     during: undefined as undefined | ((action: string) => Promise<void> | void),
   };
   const d: NewThreadDependencies = {
@@ -25,7 +27,8 @@ function fixture() {
       w.setups.push({ action: input.action, threadId: input.threadId, name: input.name, task: input.task, bounds });
       await w.during?.(input.action);
       const name = w.setups.find(s => s.action === "preview" && s.threadId === input.threadId)?.name ?? "example";
-      const plan = { loop: name, project: "/projects/Example App", configPath: `/private/${name}/keepgoing.yaml`, stateDir: `/private/${name}/state`, threadId: input.threadId, provider: "example-provider", limits };
+      const reported = w.planLimits ? w.planLimits(bounds) : { maxSends: bounds.maxSends, noProgressTimeout: `${parseInt(bounds.noProgressTimeout)}h0m0s` };
+      const plan = { loop: name, project: "/projects/Example App", configPath: `/private/${name}/keepgoing.yaml`, stateDir: `/private/${name}/state`, threadId: input.threadId, provider: "example-provider", limits: { ...limits, ...reported } };
       const record = { id: "record", loop: name, configPath: plan.configPath, threadId: input.threadId, environmentId: "env_example", projectId: "proj_a", hostId: "host_example", project: plan.project, provider: plan.provider };
       if (input.action === "preview") return w.previewOk ? { ok: true, message: "Preview only.", ticket: `ticket-${w.setups.length}`, plan } : { ok: false, message: "Setup could not complete." };
       if (input.action === "create") return w.createOk ? { ok: true, message: "Review the diagnostics.", record, canStart: w.canStart } : { ok: false, message: "Setup result changed." };
@@ -43,10 +46,11 @@ function fixture() {
   };
   const dispatch = (intent: string, over: Partial<Dispatch> = {}): Dispatch => ({
     data: marker(intent), threadId: "thr_new", projectId: "proj_a", threadCreatedAt: w.now, attempt: "start-turn", initiator: "user",
-    senderThreadId: null, parentThreadId: null, sourceThreadId: null, queued: 0, text: TASK, ...over,
+    senderThreadId: null, parentThreadId: null, sourceThreadId: null, queued: 0, text: TASK, threadStatus: "pending", ...over,
   });
   const plain = (over: Partial<Dispatch> = {}): Dispatch => dispatch("", { data: null, text: "", ...over });
-  const outcome = async (threadId = "thr_new") => (await c.call({ action: "outcome", threadId })).outcome!;
+  // Reading asks for a pass without waiting for it; wait for passes, then read.
+  const outcome = async (threadId = "thr_new") => { await c.call({ action: "outcome", threadId }); await c.whenIdle(); return (await c.call({ action: "outcome", threadId })).outcome!; };
   return { w, c, d, arm, dispatch, plain, outcome };
 }
 
@@ -168,7 +172,7 @@ test("a send BB did not deliver never leads to supervision", async () => {
   assert.equal(after.c.held().taskBytes, 0);
   await after.c.advance("thr_new"); const o = await after.outcome();
   assert.equal(after.w.setups.length, 0, "no setup and no start after a withdrawn send");
-  assert.equal(o.state, "failed"); assert.match(o.message, /was not sent/);
+  assert.equal(o.state, "failed"); assert.match(o.message, /may not have been sent/);
 
   // Withdrawn while the preview was running: nothing is created.
   const during = fixture(); during.w.mode = "automatic";
@@ -375,4 +379,89 @@ test("bounds outside the closed list are refused before anything is recorded", a
   const noMode = await f.c.call({ action: "arm", draftKey: "d", projectId: "p", bounds: DEFAULT_BOUNDS } as never);
   assert.equal(noMode.ok, false, "a request that does not say what the person was shown is refused");
   assert.equal(f.c.held().requests, 0);
+});
+
+test("the limits a thread shows are the ones keepgoing's plan reports, and a plan without the asked-for limits is refused", async () => {
+  for (const [name, reported] of [
+    ["no limits at all", () => ({})],
+    ["a send limit only", (b: { maxSends: number }) => ({ maxSends: b.maxSends })],
+    ["a different send limit", () => ({ maxSends: 400, noProgressTimeout: "24h0m0s" })],
+    ["a different timeout", (b: { maxSends: number }) => ({ maxSends: b.maxSends, noProgressTimeout: "2h0m0s" })],
+    ["a timeout the control does not offer", (b: { maxSends: number }) => ({ maxSends: b.maxSends, noProgressTimeout: "24h0m1s" })],
+  ] as const) {
+    const f = fixture(); f.w.mode = "automatic"; f.w.planLimits = reported as never;
+    f.c.dispatched(f.dispatch(await f.arm())); await f.c.advance("thr_new");
+    const o = await f.outcome();
+    assert.equal(o.state, "failed", name); assert.match(o.message, /did not report the loop-wide limits/, name);
+    assert.deepEqual(f.w.setups.map(s => s.action), ["preview"], `${name}: nothing created or started`);
+    assert.equal(o.bounds, undefined, `${name}: no limits are claimed`);
+  }
+  // Equal limits printed another way are the same limits, and the thread shows them.
+  const f = fixture(); f.w.planLimits = (b) => ({ maxSends: b.maxSends, noProgressTimeout: "1440m" });
+  f.c.dispatched(f.dispatch(await f.arm())); await f.c.advance("thr_new");
+  const o = await f.outcome();
+  assert.equal(o.state, "ready"); assert.deepEqual(o.bounds, DEFAULT_BOUNDS);
+});
+
+test("an unmarked message ends the request only while the thread is still pending", async () => {
+  // A: the first turn started (the marked message was delivered), then a quick
+  // follow-up started the next turn before setup ran: setup still runs.
+  const a = fixture(); a.w.ready = null;
+  a.c.dispatched(a.dispatch(await a.arm()));
+  a.c.dispatched(a.plain({ threadStatus: "idle" }));
+  a.c.dispatched(a.plain({ threadStatus: "active", attempt: "join-turn" }));
+  a.w.ready = { project: "/projects/Example App" };
+  await a.c.advance("thr_new");
+  assert.equal((await a.outcome()).state, "ready"); assert.deepEqual(a.w.setups.map(s => s.action), ["preview", "create"]);
+
+  // B: a message that does end the request while setup is running stops the
+  // pass at its next step: nothing is created, or what was created is not started.
+  for (const at of ["preview", "create"] as const) {
+    const b = fixture(); b.w.mode = "automatic";
+    b.c.dispatched(b.dispatch(await b.arm()));
+    b.w.during = action => { if (action === at) b.c.dispatched(b.plain()); };
+    await b.c.advance("thr_new");
+    const o = await b.outcome();
+    assert.ok(!b.w.setups.some(s => s.action === "start"), `${at}: never started`);
+    if (at === "preview") { assert.equal(o.state, "failed"); assert.ok(!b.w.setups.some(s => s.action === "create")); }
+    else { assert.equal(o.state, "ready"); assert.equal(o.startedAutomatically, false); assert.match(o.message, /left switched off, because the request was withdrawn/); }
+  }
+  // The same for a send the browser withdraws between creation and start.
+  const c = fixture(); c.w.mode = "automatic";
+  const intent = await c.arm();
+  c.c.dispatched(c.dispatch(intent));
+  c.w.during = async action => { if (action === "create") await c.c.call({ action: "cancel", intent }); };
+  await c.c.advance("thr_new");
+  assert.ok(!c.w.setups.some(s => s.action === "start"));
+  assert.match((await c.outcome()).message, /may not have been sent/);
+});
+
+test("a refusal at creation shows keepgoing's words only, with no path and no clean-up advice", async () => {
+  const f = fixture();
+  const setup = f.d.setup;
+  f.d.setup = async (input, bounds) => input.action === "create"
+    ? (f.w.setups.push({ action: "create", threadId: input.threadId, bounds }), { ok: false, refused: { code: "second_loop_on_session", otherLoop: "other-loop" }, message: "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created." })
+    : setup(input, bounds);
+  f.c.dispatched(f.dispatch(await f.arm())); await f.c.advance("thr_new");
+  const o = await f.outcome();
+  assert.equal(o.state, "failed");
+  assert.equal(o.message, "keepgoing refused to set up this loop: loop other-loop already supervises this thread's session, and two loops on one session would both prompt it. Nothing was created.");
+  assert.equal(o.configPath, undefined); assert.ok(!/may exist|delete its directory/.test(o.message));
+});
+
+test("reading one thread's outcome does not wait for another thread's setup", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  f.w.during = async action => { if (action === "preview") await held; };
+  f.c.dispatched(f.dispatch(await f.arm("draft-a"), { threadId: "thr_slow" }));
+  void f.c.advance("thr_slow");
+  await new Promise(r => setTimeout(r, 5));
+  const started = Date.now();
+  const r = await f.c.call({ action: "outcome", threadId: "thr_other" });
+  assert.equal(r.outcome?.state, "none"); assert.ok(Date.now() - started < 50, "the read did not wait");
+  const slow = await f.c.call({ action: "outcome", threadId: "thr_slow" });
+  assert.equal(slow.outcome?.state, "waiting", "a thread's own read answers at once too");
+  release(); await f.c.whenIdle();
+  assert.equal((await f.outcome("thr_slow")).state, "ready");
 });

@@ -16,7 +16,7 @@
 // held in memory only until setup has been asked to create the loop, and
 // reaches keepgoing through the existing setup flow, on stdin.
 import type { SetupResult } from "./setup-contract.ts";
-import { boundsPhrase, loopName, markerSchema, newThreadInput, stricter, type Bounds, type NewThreadInput, type NewThreadResult, type Outcome, type StartMode } from "./new-thread-contract.ts";
+import { boundsPhrase, loopName, markerSchema, newThreadInput, planBounds, sameBounds, stricter, type Bounds, type NewThreadInput, type NewThreadResult, type Outcome, type StartMode } from "./new-thread-contract.ts";
 
 export const INTENT_TTL_MS = 120_000;
 export const JOB_WAIT_MS = 600_000;
@@ -29,6 +29,8 @@ export interface Dispatch {
   threadId: string; projectId: string; threadCreatedAt: number;
   attempt: string; initiator: string; senderThreadId: string | null; parentThreadId: string | null; sourceThreadId: string | null;
   queued: number; text: string;
+  /** The thread's status as BB reports it in the hook: "pending" until its first turn starts. */
+  threadStatus: string;
 }
 type SetupCall = { action: "preview" | "create" | "start"; threadId: string; name?: string; task?: string; ticket?: string; withGoal?: boolean };
 export interface NewThreadDependencies {
@@ -52,11 +54,16 @@ export interface NewThreadDependencies {
   changed(): void;
 }
 interface Intent { id: string; draftKey: string; projectId: string; bounds: Bounds; mode: StartMode; createdAt: number; expires: number; threadId?: string }
-interface Job { threadId: string; task: string; bounds: Bounds; mode: StartMode; expires: number; outcome: Outcome }
+interface Job {
+  threadId: string; task: string; bounds: Bounds; mode: StartMode; expires: number; outcome: Outcome;
+  /** Set when the request was ended from outside a setup pass: nothing more may be done for it. */
+  withdrawn?: string;
+}
 
 const NOT_READY = "This thread's first turn did not start in time, so keepgoing set nothing up. Use Supervise this thread to set it up here.";
 const NOT_MATCHED = "keepgoing could not confirm that this thread is the one Send and keep going was pressed for, so nothing was created or started. Use Supervise this thread to set it up here.";
-const NOT_SENT = "The message was not sent, so keepgoing set nothing up and started nothing.";
+const NOT_SENT = "The message may not have been sent, so keepgoing set nothing up and started nothing.";
+const LIMITS = "Setup did not report the loop-wide limits that were asked for, so keepgoing did not create it. Nothing was created or started.";
 const FULL = (c: { used: number; max: number }) => `This plugin already holds ${c.used} of ${c.max} setups, which is the most it can hold, and it has no way to remove one yet. Keep going cannot create another.`;
 
 export function createNewThreadController(d: NewThreadDependencies) {
@@ -65,6 +72,17 @@ export function createNewThreadController(d: NewThreadDependencies) {
   let queue: Promise<unknown> = Promise.resolve();
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => { const next = queue.then(fn, fn); queue = next.catch(() => {}); return next; };
   const fail = (job: Job, message: string, extra: Partial<Outcome> = {}) => { job.task = ""; job.outcome = { state: "failed", message, ...extra }; };
+  // Ends a request from outside a setup pass. A pass that is running sees the
+  // mark at its next step and does nothing more.
+  const withdraw = (job: Job, message: string) => { job.withdrawn = message; fail(job, message); d.changed(); };
+  // Setup passes run one at a time per thread; threads do not wait for each other.
+  const chains = new Map<string, Promise<void>>();
+  const queue_ = (threadId: string): Promise<void> => {
+    const next = (chains.get(threadId) ?? Promise.resolve()).then(() => advance(threadId)).catch(() => {});
+    chains.set(threadId, next);
+    void next.then(() => { if (chains.get(threadId) === next) chains.delete(threadId); });
+    return next;
+  };
   const prune = () => {
     const now = d.now();
     for (const [key, i] of intents) if (i.expires < now) intents.delete(key);
@@ -98,10 +116,17 @@ export function createNewThreadController(d: NewThreadDependencies) {
       const preview = await d.setup({ action: "preview", threadId, name: loopName(ready.project, d.id()), task, withGoal: true }, job.bounds);
       if (!preview.ok || !preview.ticket || !preview.plan) { fail(job, preview.message || "Setup could not be previewed. Nothing was created."); return; }
       // The request may have been withdrawn while the preview ran.
-      if (jobs.get(threadId) !== job || job.outcome.state !== "waiting") return;
+      if (jobs.get(threadId) !== job || job.withdrawn) return;
+      // The limits the setup will actually have, from keepgoing's own plan.
+      // They must be exactly the ones asked for; what the thread shows later
+      // comes from here, not from the request.
+      const planned = planBounds(preview.plan.limits);
+      if (!planned || !sameBounds(planned, job.bounds)) { fail(job, LIMITS); return; }
       attempted = { loop: preview.plan.loop, configPath: preview.plan.configPath };
       const created = await d.setup({ action: "create", threadId, ticket: preview.ticket, task, withGoal: true }, job.bounds);
       job.task = "";
+      // keepgoing refused before writing anything: its words, nothing more.
+      if (created.refused) { fail(job, created.message); return; }
       if (!created.ok || !created.record) {
         // Creation was asked for and not confirmed: something may exist on the
         // host. Say what and where, so it is not left behind unseen.
@@ -110,7 +135,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
       }
       const l = preview.plan.limits;
       job.outcome = {
-        state: "ready", loop: created.record.loop, bounds: job.bounds,
+        state: "ready", loop: created.record.loop, bounds: planned,
         cadence: `Checks every ${l.interval}. Nudges a stalled turn after ${l.stallAfter}, at most ${l.maxNudges} times. Re-prompts an error at most ${l.maxReprompts} times, ${l.backoff} apart. No fallbacks.`,
         message: created.canStart ? "Created from this thread's first message. It is switched off until you start it." : `Created from this thread's first message and left switched off: ${created.message}`,
         startedAutomatically: false,
@@ -119,7 +144,13 @@ export function createNewThreadController(d: NewThreadDependencies) {
       // was pressed, it is still the setting now, and setup's own diagnostics
       // allow a start. One attempt: anything uncertain leaves the setup for
       // the person to review and start, with the reason.
-      if (job.mode === "automatic" && created.canStart && await d.mode() === "automatic" && jobs.get(threadId) === job) {
+      if (job.withdrawn) {
+        // Withdrawn while the setup was being created: it exists, and it stays
+        // switched off.
+        job.outcome = { ...job.outcome, message: `Created from this thread's first message and left switched off, because the request was withdrawn while it was being set up: ${job.withdrawn}` };
+        return;
+      }
+      if (job.mode === "automatic" && created.canStart && await d.mode() === "automatic" && jobs.get(threadId) === job && !job.withdrawn) {
         const started = await d.setup({ action: "start", threadId }, job.bounds);
         // `ok` alone is not a start: setup answers ok without starting when
         // its re-check declines. Only a confirmed start is reported as one.
@@ -137,7 +168,9 @@ export function createNewThreadController(d: NewThreadDependencies) {
   const handle = async (input: NewThreadInput): Promise<NewThreadResult> => {
     prune();
     if (input.action === "outcome") {
-      await advance(input.threadId);
+      // Reading never waits for a setup, this thread's or another's: it asks
+      // for a pass and answers with what is known now.
+      void queue_(input.threadId);
       return { ok: true, message: "", outcome: jobs.get(input.threadId)?.outcome ?? { state: "none", message: "" } };
     }
     if (input.action === "cancel") {
@@ -148,7 +181,12 @@ export function createNewThreadController(d: NewThreadDependencies) {
       const intent = intents.get(input.intent);
       if (intent && !intent.threadId) intents.delete(input.intent);
       const job = intent?.threadId ? jobs.get(intent.threadId) : undefined;
-      if (job?.outcome.state === "waiting") { fail(job, NOT_SENT); d.changed(); }
+      if (job && !job.withdrawn && !job.outcome.startedAutomatically) {
+        if (job.outcome.state === "waiting") withdraw(job, NOT_SENT);
+        // A pass between creating the setup and starting it sees the mark and
+        // does not start.
+        else job.withdrawn = NOT_SENT;
+      }
       return { ok: true, message: "Keep going is off." };
     }
     const reason = await d.unavailable();
@@ -190,7 +228,10 @@ export function createNewThreadController(d: NewThreadDependencies) {
           // BB delivered. A drained re-attempt of the marked message arrives
           // with its queued rows, and a message joining a running turn means
           // the first turn started; neither ends the request.
-          if (job?.outcome.state === "waiting" && x.attempt === "start-turn" && x.queued === 0) fail(job, NOT_MATCHED);
+          // Only while the thread is still pending: once its first turn has
+          // started, the marked message was delivered, and a follow-up is
+          // just a follow-up.
+          if (job && !job.withdrawn && job.outcome.state === "waiting" && x.threadStatus === "pending" && x.attempt === "start-turn" && x.queued === 0) withdraw(job, NOT_MATCHED);
           return;
         }
         const parsed = markerSchema.safeParse(x.data);
@@ -208,7 +249,9 @@ export function createNewThreadController(d: NewThreadDependencies) {
       } catch { /* never fail a send */ }
     },
     /** A thread reached a state in which its first turn may have started. */
-    advance: (threadId: string): Promise<void> => serialize(() => advance(threadId)).catch(() => {}),
+    advance: (threadId: string): Promise<void> => queue_(threadId),
+    /** Resolves when no setup pass is running or waiting. For tests and shutdown. */
+    whenIdle: async (): Promise<void> => { while (chains.size) await Promise.all([...chains.values()]); },
     /** The thread is gone: forget the request and its task text. */
     forget(threadId: string): void { jobs.delete(threadId); },
     /** Counts only, for diagnostics and tests: how much is held in memory. */

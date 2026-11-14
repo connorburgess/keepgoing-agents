@@ -25,7 +25,7 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
   const agent = { adapter: "bb", provider: "example-provider", bbThread: thread.id };
   const state = { loop: "release-notes-for-2-4", target: "primary", controlState: "disabled", control: {}, window: "open", state: {}, primaryAgent: agent, targetAgent: agent, daemon: { state: "not_recorded" } };
   const hostCalls: { method: string; input: unknown }[] = [];
-  const flags = { failStart: false };
+  const flags = { failStart: false, dropLimits: false };
   const { bb, harness } = createFakePluginHost({
     pluginId: "keepgoing", settings: { keepgoingPath: options.program === "missing" ? join(dir, "absent") : program, configs: "", ...(options.mode ? { newThreadStart: options.mode } : {}) },
     sdk: { threads: { get: async () => thread }, environments: { get: async () => environment }, hosts: { get: async () => host } },
@@ -34,7 +34,7 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
       if (method === "init") {
         const p = hostContract.init.input.parse(input);
         return { plan: { withGoal: true, loop: p.name, project: p.target.project, configPath: "/private/release-notes/keepgoing.yaml", stateDir: "/private/release-notes/state", threadId: p.target.threadId, provider: p.target.provider,
-          limits: { interval: "5m0s", wakeEvery: "1h0m0s", stallAfter: "30m0s", backoff: "10m0s", maxNudges: 3, maxReprompts: 3, maxSends: p.bounds?.maxSends, noProgressTimeout: p.bounds ? "24h0m0s" : undefined } } };
+          limits: { interval: "5m0s", wakeEvery: "1h0m0s", stallAfter: "30m0s", backoff: "10m0s", maxNudges: 3, maxReprompts: 3, ...(flags.dropLimits || !p.bounds ? {} : { maxSends: p.bounds.maxSends, noProgressTimeout: `${parseInt(p.bounds.noProgressTimeout)}h0m0s` }) } } };
       }
       const p = hostContract.command.input.parse(input);
       if (p.operation === "start" && flags.failStart) return { code: 1, data: null };
@@ -58,7 +58,15 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
     } })
     : bb;
   await plugin(api);
-  const rpc = async (input: unknown) => newThreadResult.parse(await harness.behavior.callRpc("newThread", input));
+  const rpcOnce = async (input: unknown) => newThreadResult.parse(await harness.behavior.callRpc("newThread", input));
+  // An outcome read asks for a setup pass without waiting for it: read, let
+  // the pass finish, and read again.
+  const rpc = async (input: unknown) => {
+    const first = await rpcOnce(input);
+    if ((input as { action?: string }).action !== "outcome") return first;
+    await settle();
+    return rpcOnce(input);
+  };
   const hook = (over: Parameters<typeof makeMessageDispatchHookContext>[0] = {}) => {
     const handler = harness.inspection.registrations.hooks["message.dispatch"]; assert.ok(handler, "the dispatch hook is registered");
     return handler(makeMessageDispatchHookContext({ thread, input: { text: TASK }, attempt: "start-turn", initiator: "user", senderThreadId: null, ...over }));
@@ -73,7 +81,7 @@ async function world(options: { mode?: "manual" | "automatic"; storedMode?: unkn
   // BB starts the thread's first turn: the message was delivered.
   const turnStarts = async () => { thread.status = "active"; await harness.behavior.emitThreadEvent("thread.active", { thread }); await settle(); };
   const done = async () => { await harness.lifecycle.dispose(); await rm(dir, { recursive: true, force: true }); };
-  return { bb, harness, thread, environment, hostCalls, rpc, hook, settle, done, state, turnStarts, set failStart(v: boolean) { flags.failStart = v; } };
+  return { bb, harness, thread, environment, hostCalls, rpc, hook, settle, done, state, turnStarts, set failStart(v: boolean) { flags.failStart = v; }, set dropLimits(v: boolean) { flags.dropLimits = v; } };
 }
 
 test("review-first mode: a marked first message creates one bounded, switched-off setup for its thread once the environment is ready", async () => {
@@ -207,7 +215,7 @@ test("a send BB rejected after the hook ran creates and starts nothing, even onc
     await w.turnStarts();
     assert.equal(w.hostCalls.length, 0);
     const outcome = (await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome!;
-    assert.equal(outcome.state, "failed"); assert.match(outcome.message, /was not sent/);
+    assert.equal(outcome.state, "failed"); assert.match(outcome.message, /may not have been sent/);
   } finally { await w.done(); }
   // The browser is gone, so nothing withdraws the request, and the person
   // later sends a different first message by hand: that ends it too.
@@ -268,4 +276,40 @@ test("without BB's dispatch hook only the New thread control is lost: status and
       assert.equal((await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome?.state, "none");
     } finally { await w.done(); }
   }
+});
+
+test("the hook always answers proceed synchronously, whatever context it is handed", async () => {
+  const w = await world();
+  try {
+    const handler = w.harness.inspection.registrations.hooks["message.dispatch"]!;
+    const hostile = [
+      {},
+      { thread: null },
+      { thread: { id: "thr_new" } },
+      { experimental_submission: { pluginId: "keepgoing", data: marker("x") } },
+      new Proxy({}, { get() { throw new Error("PRIVATE context error"); } }),
+    ];
+    for (const ctx of hostile) {
+      const r = handler(ctx as never);
+      assert.ok(!(r instanceof Promise), "never a Promise: a send must not wait on this plugin");
+      assert.deepEqual(r, { action: "proceed" });
+    }
+    assert.equal(w.hostCalls.length, 0);
+    assert.ok(!JSON.stringify(w.harness.inspection.logEntries).includes("PRIVATE"));
+  } finally { await w.done(); }
+});
+
+test("a host plan without the asked-for limits creates and starts nothing, and claims no limits", async () => {
+  const w = await world();
+  try {
+    w.environment.status = "ready"; w.dropLimits = true;
+    const armed = await w.rpc({ action: "arm", draftKey: "draft-example", projectId: "proj_example", bounds: DEFAULT_BOUNDS, shownMode: "automatic" });
+    await w.hook({ experimental_submission: { pluginId: "keepgoing", data: marker(armed.intent!) } });
+    await w.turnStarts();
+    const inits = w.hostCalls.filter(c => c.method === "init").map(c => hostContract.init.input.parse(c.input));
+    assert.deepEqual(inits.map(i => i.dryRun), [true], "only the preview ran");
+    assert.ok(!w.hostCalls.some(c => c.method === "command" && hostContract.command.input.parse(c.input).operation === "start"));
+    const outcome = (await w.rpc({ action: "outcome", threadId: "thr_new" })).outcome!;
+    assert.equal(outcome.state, "failed"); assert.match(outcome.message, /did not report the loop-wide limits/); assert.equal(outcome.bounds, undefined);
+  } finally { await w.done(); }
 });

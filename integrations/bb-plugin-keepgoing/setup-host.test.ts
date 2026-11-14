@@ -187,6 +187,8 @@ test("built CLI creates the goal through the host contract without running BB", 
     await assert.rejects(access(destination));
     const created = planned(await setupOnHost({ ...input, dryRun: false }, undefined, run));
     assert.deepEqual(created.plan, preview.plan);
+    // This build advertises that its start accepts --json.
+    assert.equal(preview.plan.startJson, true); assert.equal(created.plan.startJson, true);
     // The real CLI accepts the bounds flags, reports them, and writes them.
     assert.equal(created.plan.limits.maxSends, 40); assert.equal(created.plan.limits.noProgressTimeout, "24h0m0s");
     const config = await readFile(join(destination, "keepgoing.yaml"), "utf8");

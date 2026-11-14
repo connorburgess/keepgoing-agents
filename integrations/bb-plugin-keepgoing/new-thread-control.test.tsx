@@ -169,7 +169,7 @@ test("a refused request sends nothing; a send that fails withdraws the request a
   try {
     fireEvent.click(failed.ui.getByRole("switch"));
     fireEvent.click(await failed.ui.findByRole("button", { name: "Send and keep going" }));
-    assert.equal((await failed.ui.findByRole("alert")).textContent, "Choose a model first.");
+    assert.equal((await failed.ui.findByRole("alert")).textContent, "Choose a model first. The message may not have been sent; Keep going was withdrawn for it.");
     assert.deepEqual(failed.calls.map(c => c.action), ["check", "arm", "cancel"]);
     assert.deepEqual(failed.calls[2], { action: "cancel", intent: "intent-2" });
     assert.equal(failed.ui.getByRole("switch").getAttribute("aria-checked"), "true", "the person can correct the draft and send again");

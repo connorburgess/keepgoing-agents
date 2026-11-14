@@ -45,7 +45,12 @@ test("loop-wide bounds given at preview are passed to every init and cannot be d
   const f = fixture();
   const seen: unknown[] = [];
   const init = f.d.init;
-  f.d.init = async (bin, target, name, task, dry, goal, bounds) => { seen.push(bounds); return init(bin, target, name, task, dry, goal, bounds); };
+  // The CLI reports the limits it was asked for, as it does.
+  f.d.init = async (bin, target, name, task, dry, goal, bounds) => {
+    seen.push(bounds);
+    const r = await init(bin, target, name, task, dry, goal, bounds);
+    return bounds && "plan" in r ? { plan: { ...r.plan, limits: { ...r.plan.limits, maxSends: bounds.maxSends, noProgressTimeout: `${parseInt(bounds.noProgressTimeout)}h0m0s` } } } : r;
+  };
   const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };
   const call = (action: "preview" | "create", ticket?: string, b?: typeof bounds) => f.controller.call({ action, threadId: "thr_example", name: "example-loop", task: "Fictional private task", ticket }, b);
   const dropped = await call("preview", undefined, bounds);
@@ -195,4 +200,12 @@ test("start gets --json only when the preview it was created from advertised it,
     await f.controller.call({ action: "start", threadId: "thr_example" });
     assert.deepEqual(seen, [tc.json ? true : undefined], tc.name);
   }
+});
+
+test("a preview whose plan does not report the asked-for limits is refused before anything is created", async () => {
+  const f = fixture();
+  const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };
+  const p = await f.controller.call({ action: "preview", threadId: "thr_example", name: "example-loop", task: "Fictional private task" }, bounds);
+  assert.equal(p.ok, false); assert.match(p.message, /did not report the loop-wide limits/); assert.equal(p.ticket, undefined);
+  assert.equal(f.records().length, 0); assert.ok(!f.calls.includes("create"));
 });

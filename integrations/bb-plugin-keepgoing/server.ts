@@ -329,6 +329,7 @@ export default async function plugin(bb: BbPluginApi) {
           threadId: ctx.thread.id, projectId: ctx.thread.projectId, threadCreatedAt: ctx.thread.createdAt,
           attempt: ctx.attempt, initiator: ctx.initiator, senderThreadId: ctx.senderThreadId, parentThreadId: ctx.thread.parentThreadId, sourceThreadId: ctx.thread.sourceThreadId,
           queued: ctx.queuedMessages.length, text: s && s.pluginId === bb.pluginId ? ctx.input.text : "",
+          threadStatus: ctx.thread.status,
         });
       } catch { /* a send is never delayed or failed by this plugin */ }
       return { action: "proceed" };

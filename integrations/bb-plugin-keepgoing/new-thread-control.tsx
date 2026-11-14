@@ -92,7 +92,8 @@ export function KeepGoingBanner({ composer, call }: { composer: ComposerHandle; 
       } catch (failure) {
         // The message did not go; the request must not outlive it.
         await call({ action: "cancel", intent: armed.intent }).catch(() => {});
-        setError(failure instanceof Error && failure.message ? failure.message : "The message was not sent.");
+        // BB may already have delivered it: say what is known, not more.
+        setError(failure instanceof Error && failure.message ? `${failure.message} The message may not have been sent; Keep going was withdrawn for it.` : "The message may not have been sent; Keep going was withdrawn for it.");
       }
     } catch { setError("Keep going could not be confirmed. The message was not sent."); }
     finally { setBusy(false); }
