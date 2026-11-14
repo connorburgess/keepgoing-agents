@@ -274,7 +274,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
-	if !configDefault(e, "config", f.cfgPath) {
+	if !configDefault(e, "config", fs, f.cfgPath) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*f.cfgPath)

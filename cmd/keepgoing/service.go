@@ -80,7 +80,7 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 	if *statePath != "" {
 		dir = *statePath
 	} else {
-		if !configDefault(e, "service", cfgPath) {
+		if !configDefault(e, "service", fs, cfgPath) {
 			return exitUsage
 		}
 		path, err = filepath.Abs(*cfgPath)

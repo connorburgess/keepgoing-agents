@@ -92,8 +92,12 @@ func doctor(e env, args []string, run doctorRun) int {
 	r := doctorReport{SchemaVersion: 1, Version: version, CheckedAt: time.Now().UTC(), StaleAfter: stale.String(), NextCheck: unknownNextCheck, Checks: []doctorCheck{}}
 	var cfg *config.Config
 	var err error
-	if *path == "" {
-		*path, err = config.DefaultPath()
+	*path, err = configPath(fs, *path)
+	if errors.Is(err, errEmptyConfig) {
+		r.add("config", "error", "-c was given an empty path, so no configuration was read.", "Name the configuration file, or leave -c out to use the one in this directory.")
+		doctorVariables(&r)
+		doctorUserDirectory(&r, userdir.Look())
+		return printDoctor(e, r, *asJSON)
 	}
 	if err == nil {
 		cfg, err = config.Load(*path)

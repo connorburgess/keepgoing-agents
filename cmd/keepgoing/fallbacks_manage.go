@@ -134,7 +134,7 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		e.errf("fallbacks %s: refused, nothing written.\n  %v", sub, err)
 		return code
 	}
-	if !configDefault(e, "fallbacks "+sub, cfgPath) {
+	if !configDefault(e, "fallbacks "+sub, fs, cfgPath) {
 		return exitUsage
 	}
 	if info, err := os.Lstat(*cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {

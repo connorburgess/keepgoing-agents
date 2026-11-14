@@ -23,8 +23,9 @@ const DefaultHelp = "default ./" + FileName + ", or ./" + LegacyFileName + " whe
 
 // DefaultPath is the configuration a command reads when it is given no -c:
 // looptender.yaml in the working directory, or keepgoing.yaml when only that
-// is there. When both are there and are one file (one a link to the other,
-// symbolic or hard), that file is meant, by its current name. When both are
+// is there. When both are there and are one file (one a link to the other),
+// that file is meant, by the name that is not a symbolic link (the current
+// name when neither or both are). When both are
 // there as two files it is ErrDefaultAmbiguous. When neither is, it is
 // looptender.yaml, so the error a command then gives names the file a new
 // loop would have. It reads the directory only.
@@ -35,6 +36,12 @@ func DefaultPath() (string, error) {
 		a, aerr := os.Stat(FileName)
 		b, berr := os.Stat(LegacyFileName)
 		if aerr == nil && berr == nil && os.SameFile(a, b) {
+			// One file under both names: read it by the name that is the
+			// file itself, not the link to it, so commands that edit it in
+			// place, and refuse a link, work without -c.
+			if isLink(FileName) && !isLink(LegacyFileName) {
+				return LegacyFileName, nil
+			}
 			return FileName, nil
 		}
 		return "", ErrDefaultAmbiguous
@@ -47,4 +54,9 @@ func DefaultPath() (string, error) {
 func present(name string) bool {
 	_, err := os.Lstat(name)
 	return err == nil
+}
+
+func isLink(name string) bool {
+	info, err := os.Lstat(name)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
 }

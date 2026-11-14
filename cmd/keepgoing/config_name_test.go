@@ -125,31 +125,78 @@ func TestEveryCommandRefusesAnAmbiguousDefault(t *testing.T) {
 	}
 }
 
-// One file under both names, as someone links them so a release from before
-// the rename and this one both find it without -c: it is one
-// configuration, read by its current name.
+// One file under both names is one configuration, read by the name that is
+// the file itself. keepgoing.yaml as a link to a real looptender.yaml is the
+// arrangement the guide recommends; the other way round is read as
+// keepgoing.yaml, so commands that edit the file in place and refuse a link
+// work without -c.
 func TestALinkedConfigurationIsOneConfiguration(t *testing.T) {
-	for _, kind := range []string{"symbolic", "hard"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct{ name, real, link, read string }{
+		{"keepgoing.yaml links to looptender.yaml", config.FileName, config.LegacyFileName, config.FileName},
+		{"looptender.yaml links to keepgoing.yaml", config.LegacyFileName, config.FileName, config.LegacyFileName},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(dir)
-			if err := os.WriteFile(config.LegacyFileName, []byte(configNameLoop), 0o600); err != nil {
+			if err := os.WriteFile(tc.real, []byte(configNameLoop), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			link := os.Symlink
-			if kind == "hard" {
-				link = os.Link
-			}
-			if err := link(config.LegacyFileName, config.FileName); err != nil {
-				t.Skipf("no %s links here: %v", kind, err)
+			if err := os.Symlink(tc.real, tc.link); err != nil {
+				t.Skipf("no links here: %v", err)
 			}
 			var out, errOut bytes.Buffer
-			if code := run(context.Background(), []string{"validate"}, &out, &errOut); code != exitOK || !strings.Contains(out.String()+errOut.String(), "ok: "+config.FileName) {
-				t.Fatalf("%d %s %s", code, out.String(), errOut.String())
+			if code := run(context.Background(), []string{"validate"}, &out, &errOut); code != exitOK || !strings.Contains(out.String()+errOut.String(), "ok: "+tc.read) {
+				t.Fatalf("validate: %d %s %s", code, out.String(), errOut.String())
+			}
+			// An editing command with no -c is not told it was given a link.
+			out.Reset()
+			errOut.Reset()
+			run(context.Background(), []string{"fallbacks", "handoff", "on", "--dry-run"}, &out, &errOut)
+			if strings.Contains(errOut.String(), "symbolic link") {
+				t.Fatalf("fallbacks handoff: %s", errOut.String())
 			}
 		})
+	}
+}
+
+// -c given an empty value, as from an unset shell variable, is not "no -c":
+// it is refused, with exit 2 and its own sentence, and nothing is read or
+// written, even with a loop's configuration in the working directory.
+func TestAnEmptyConfigPathIsRefused(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	if err := os.WriteFile(config.FileName, []byte(configNameLoop), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const why = "-c was given an empty path"
+	for _, args := range [][]string{{"tick", "-c", ""}, {"tick", "--dry-run", "-c", ""}, {"enable", "-c", ""}, {"stop", "-c", ""}, {"pause", "-c", ""}, {"status", "-c", ""}, {"validate", "-c="}, {"start", "-c", ""}, {"runs", "-c", ""}, {"goal", "show", "-c", ""}} {
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), args, &out, &errOut)
+		if code != exitUsage || !strings.Contains(errOut.String(), why) {
+			t.Errorf("%v: %d %s %s", args, code, out.String(), errOut.String())
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "state")); err == nil {
+		t.Fatal("a command wrote the loop's state")
+	}
+	var out bytes.Buffer
+	run(context.Background(), []string{"doctor", "--json", "-c", ""}, &out, &bytes.Buffer{})
+	var v struct {
+		Checks []doctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil || len(v.Checks) == 0 || v.Checks[0].ID != "config" || !strings.Contains(v.Checks[0].Message, why) {
+		t.Fatalf("doctor: %v %s", err, out.String())
+	}
+	var js bytes.Buffer
+	run(context.Background(), []string{"start", "--background", "--json", "-c", ""}, &js, &bytes.Buffer{})
+	var started startJSON
+	if err := json.Unmarshal(js.Bytes(), &started); err != nil || started.Reason != "empty_config_path" {
+		t.Fatalf("start --json: %v %s", err, js.String())
 	}
 }

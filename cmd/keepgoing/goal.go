@@ -40,7 +40,7 @@ func goalCommand(e env, args []string) int {
 		e.errf("goal: invalid flags; create/revise need --file, revise also needs --id and --revision; --private is only for show")
 		return exitUsage
 	}
-	if !configDefault(e, "goal", path) {
+	if !configDefault(e, "goal", fs, path) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*path)

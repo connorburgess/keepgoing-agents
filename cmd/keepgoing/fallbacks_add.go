@@ -226,7 +226,7 @@ func fallbacksAdd(e env, args []string, input io.Reader, lookPath func(string) (
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
 	// Relative paths in a config resolve against the directory it was opened
 	// from, so a symlinked path would describe a different loop than its target.
-	if !configDefault(e, "fallbacks add", &o.cfgPath) {
+	if !configDefault(e, "fallbacks add", fs, &o.cfgPath) {
 		return exitUsage
 	}
 	if info, err := os.Lstat(o.cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {

@@ -179,7 +179,7 @@ func timelineCommand(e env, args []string) int {
 		return exitUsage
 	}
 	if *dir == "" {
-		if !configDefault(e, "timeline", path) {
+		if !configDefault(e, "timeline", fs, path) {
 			return exitUsage
 		}
 		cfg, err := config.Load(*path)

@@ -324,7 +324,7 @@ func runsCommand(e env, args []string) int {
 		}
 		name := ""
 		if *dir == "" {
-			if !configDefault(e, "runs", path) {
+			if !configDefault(e, "runs", fs, path) {
 				return exitUsage
 			}
 			cfg, err := config.Load(*path)

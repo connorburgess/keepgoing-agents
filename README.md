@@ -77,7 +77,7 @@ keepgoing init
 3. Run the exact `doctor` command printed by setup. Review its warnings and unavailable checks; credential presence does not establish usable quota.
 4. Run the printed `start --foreground` command to enable and supervise the loop. Use `--background` to detach instead. Background mode installs no service and does not restart after a crash or reboot.
 
-Use the generated config path for subsequent commands. For example, replacing this fictional path with yours:
+Use the generated config path for subsequent commands. A build from `main` names it `looptender.yaml`; a released CLI (v0.2.0 and earlier, which Homebrew and `go install` give today) writes `keepgoing.yaml`, which every build reads the same way. For example, replacing this fictional path with yours:
 
 ```sh
 keepgoing status -c /private/example-loop/looptender.yaml

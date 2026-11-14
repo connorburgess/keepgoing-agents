@@ -83,7 +83,7 @@ func transferCommand(e env, args []string, run doctorRun) int {
 		e.errf("transfer: provide a valid --thread and a timeout greater than zero and at most 30s; no positional arguments")
 		return exitUsage
 	}
-	if !configDefault(e, "transfer", path) {
+	if !configDefault(e, "transfer", fs, path) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*path)

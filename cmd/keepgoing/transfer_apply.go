@@ -99,7 +99,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 		}
 		return exitFailed
 	}
-	if !configDefault(e, "transfer", path) {
+	if !configDefault(e, "transfer", fs, path) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*path)

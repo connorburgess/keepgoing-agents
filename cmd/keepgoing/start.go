@@ -45,11 +45,18 @@ func startCommand(e env, args []string, ready startReady) int {
 		e.errf("start: --json is supported with --background only")
 		return exitUsage
 	}
-	if !configDefault(e, "start", path) {
+	if resolved, err := configPath(fs, *path); err != nil {
+		e.errf("start: %v", err)
 		if *asJSON {
-			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "failed", ExitCode: exitUsage, Reason: "ambiguous_default_config"})
+			reason := "ambiguous_default_config"
+			if errors.Is(err, errEmptyConfig) {
+				reason = "empty_config_path"
+			}
+			_ = json.NewEncoder(e.stdout).Encode(startJSON{SchemaVersion: 1, Outcome: "failed", ExitCode: exitUsage, Reason: reason})
 		}
 		return exitUsage
+	} else {
+		*path = resolved
 	}
 	if *asJSON {
 		// Every outcome is one object on stdout; people still get stderr.
@@ -75,7 +82,8 @@ type startJSON struct {
 	ExitCode      int    `json:"exitCode,omitempty"`
 	// Reason is set for a failure before any configuration was read:
 	// ambiguous_default_config when -c was not given and both
-	// looptender.yaml and keepgoing.yaml are in the working directory.
+	// looptender.yaml and keepgoing.yaml are in the working directory as two
+	// files, and empty_config_path when -c was given an empty value.
 	Reason string `json:"reason,omitempty"`
 }
 
