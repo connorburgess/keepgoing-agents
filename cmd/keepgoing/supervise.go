@@ -647,9 +647,9 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 			if c.ErroredChildrenPartial {
 				count = "at least " + count + " (child discovery was incomplete)"
 			}
-			does := "keepgoing does not retry, message or stop them"
+			does := "keepgoing does not retry or message them, and stops them only for stop --lanes"
 			if out.Lanes.Enabled {
-				does = "keepgoing does not message or stop them; lane recovery is on and may ask BB to retry a failed turn (see lane recovery above)"
+				does = "keepgoing does not message them, and stops them only for stop --lanes; lane recovery is on and may ask BB to retry a failed turn (see lane recovery above)"
 			}
 			fmt.Fprintf(w, "children:  %s direct child thread(s) in error at that check (historical); %s\n", count, does)
 		}

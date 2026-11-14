@@ -205,9 +205,6 @@ type tick struct {
 	// recover, under the hashes the child-error notice record uses. It lives
 	// for one check and is never saved.
 	lanesInRecovery map[string]bool
-	// hostKillsNoted is how many host-killed provider commands this check
-	// has already warned about.
-	hostKillsNoted int
 	// lanesPerEpisode is the active target's episode limit, for the report.
 	lanesPerEpisode int
 	// incidentLanes is this check's lane work, for the incident history.
@@ -730,7 +727,6 @@ func (t *tick) run() error {
 	}
 	t.observedTarget = target
 	obs, err := t.observe(a)
-	t.noteHostKills(a)
 	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput
@@ -1155,7 +1151,6 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	t.observedTarget = target
 	obs, err := t.observe(a)
-	t.noteHostKills(a)
 	t.graphChildren(agent.Adapter, target, obs, err != nil)
 	t.incidentObservation = incident.Observed(obs, agent.Adapter, err != nil)
 	t.awaitingInput = obs.AwaitingInput

@@ -66,7 +66,7 @@ func WithChildErrorsRetried(m Message, n, retried int) Message {
 // keepgoing is recovering and which are left to the session.
 func retriedSentence(n, retried int) string {
 	return fmt.Sprintf("keepgoing is recovering %d of them itself: it asks BB to retry their failed turn, by reference and without sending a message, "+
-		"and it will tell you if it gives one up. It does not name them, has not messaged or stopped any child and has not read their content. "+
+		"and it will tell you if it gives one up. It does not name them, has not messaged any child and has not read their content. "+
 		"The other %d are yours: decide whether to retry or replace that work. "+
 		"Before you retry or replace any child, check its current state, so that work keepgoing has restarted is not started twice.", retried, max(0, n-retried))
 }

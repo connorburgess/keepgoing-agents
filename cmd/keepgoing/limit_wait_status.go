@@ -167,5 +167,5 @@ func printLanes(w io.Writer, s lanesStatus) {
 	for _, reason := range reasons {
 		fmt.Fprintf(w, "  left alone: %d (%s)\n", c.NotRetried[reason], reason)
 	}
-	fmt.Fprintf(w, "  %d of at most %d retries used for this failure; %d lane(s) have a retry record, %d of them given up. A retry re-runs the lane's failed turn by reference; no lane is messaged, stopped or created, and whether a retried turn succeeded is unverified\n", s.EpisodeRetries, s.EpisodeLimit, s.Tracked, s.GivenUp)
+	fmt.Fprintf(w, "  %d of at most %d retries used for this failure; %d lane(s) have a retry record, %d of them given up. A retry re-runs the lane's failed turn by reference; lane recovery messages, stops and creates no lane, and whether a retried turn succeeded is unverified\n", s.EpisodeRetries, s.EpisodeLimit, s.Tracked, s.GivenUp)
 }

@@ -9,6 +9,7 @@
 - **Unknown is conservative.** An unknown state means no action. An unknown error class means bounded re-prompts and then a person, never a handoff.
 - **Confirmed before relied on.** A fallback receives the loop only after passing an exact-target probe in the same tick, and only while the redundancy rule is met.
 - **Stop and pause win.** Once the loaded configuration is verified, a stop is handled before anything else on every tick, even while the loop is paused, disabled, completed, or awaiting a person, and even when the fingerprint or health files cannot be read. Paused, disabled, completed, or awaiting-user without a stop means the provider is not even queried and no probe runs.
+- **Lanes are acted on in two cases only.** A lane (a direct child conversation of the supervised BB thread) is retried only when the loop opted in with `bb.children.retry_errored`: BB is asked to retry the failed turn of a lane a check saw working, by reference, within per-check, per-lane, per-day and per-episode bounds. A lane is stopped only when a person asks with `stop --lanes`. Another loop's lane is left to that loop in both. keepgoing never messages, creates or moves a lane, and reads only typed fields of a lane's event log, never message text.
 - **Missing control means disabled.** A tick must never wake an agent nobody asked for.
 - **Pure decisions.** The decision engine is a function from inputs to one action, with a table test per rule. Side effects live in adapters and the tick orchestrator.
 

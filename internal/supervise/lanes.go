@@ -21,7 +21,7 @@ import (
 const laneRecoveryEvent = "child_recovery"
 
 // laneRetryAction is the run-graph action of a lane retry.
-const laneRetryAction = "child_retry"
+const laneRetryAction = state.LaneRetryAction
 
 const (
 	// laneMargin: a lane is not started with less than this left in the
@@ -44,8 +44,16 @@ const (
 // with, so it is announced like any other errored child.
 var laneWontAct = map[string]bool{
 	string(decide.LaneRateLimited): true, string(decide.LaneAuth): true, string(decide.LaneUnverified): true,
-	string(decide.LaneWaitingPerson): true,
+	string(decide.LaneWaitingPerson): true, laneOtherLoop: true, laneOwnershipUnknown: true,
 }
+
+// A lane another loop supervises, or holds the session claim of, is that
+// loop's to recover or stop; one whose ownership cannot be established is
+// treated the same. Neither is ever retried here.
+const (
+	laneOtherLoop        = "other_loop"
+	laneOwnershipUnknown = "ownership_unconfirmed"
+)
 
 // laneSendReserve is how many sends of loop.limits.max_sends lane retries
 // never touch: a whole recovery of the supervised session (its re-prompts)
@@ -137,7 +145,6 @@ func (t *tick) recoverLanes(a adapter.Adapter, agent config.Agent, obs decide.Ob
 			t.reportLanes(rec, retried, errored)
 		}
 		endLaneEpisode(rec) // after this check's give-ups and their report
-		t.noteHostKills(a)
 	}()
 
 	// Seen working: remembered until a complete listing no longer shows the lane.
@@ -302,20 +309,6 @@ func (t *tick) lanesMaySend() bool {
 	return err == nil && limit-used > t.laneSendReserve()
 }
 
-// noteHostKills says so when the host ended a provider command of this check
-// with a signal the adapter did not send. Whatever that command was reading
-// was already treated as unverified; this is why.
-func (t *tick) noteHostKills(a adapter.Adapter) {
-	k, ok := a.(adapter.KillReporter)
-	if !ok {
-		return
-	}
-	if n := k.HostKills(); n > t.hostKillsNoted {
-		t.warn("%d provider command(s) of this check were killed by the host, not by keepgoing's time limit; what they were reading was treated as unverified. A machine that is out of memory or overloaded does this", n-t.hostKillsNoted)
-		t.hostKillsNoted = n
-	}
-}
-
 // tryLane inspects one lane and, if every fact allows it, asks the provider
 // to retry its failed turn. It reports false when lane work must stop for
 // this check.
@@ -324,11 +317,28 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 	defer cancel()
 	r := rec.Retries[hash]
 	defer func() { rec.Retries[hash] = r }()
+	// Another loop's lane is that loop's: retrying it could undo that loop's
+	// stop or pause. The same check a stop of the lanes uses.
+	switch other, unknown := t.otherLoopLane(id); {
+	case unknown:
+		r.Outcome, r.LookedAt = laneOwnershipUnknown, t.now
+		check.NotRetried[laneOwnershipUnknown]++
+		return true
+	case other:
+		r.Outcome, r.LookedAt = laneOtherLoop, t.now
+		check.NotRetried[laneOtherLoop]++
+		return true
+	}
 	verdict := decide.LaneVerdictFor(lr.InspectLane(ctx, id))
 	if verdict != decide.LaneRetry {
 		r.Outcome, r.LookedAt = string(verdict), t.now
 		check.NotRetried[string(verdict)]++
 		return true
+	}
+	if !t.lanesStillAllowed() {
+		// A stop, pause or hold saved while the lane was being looked at.
+		check.Waiting = "control"
+		return false
 	}
 	// Recorded before it is made, under the lane's keyed hash: a check that
 	// cannot save what happened leaves the record, and the next check counts
@@ -451,7 +461,7 @@ func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[str
 		t.warn("report %s: not sent because the lane record could not be saved", laneRecoveryEvent)
 		return
 	}
-	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited and %d because they need a login. keepgoing asked BB to retry %d on this check. It has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
+	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited and %d because they need a login. keepgoing asked BB to retry %d on this check. Lane recovery has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
 		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, retried)
 	ctx, cancel, ok := t.reportContext(laneRecoveryEvent, text)
 	if !ok {

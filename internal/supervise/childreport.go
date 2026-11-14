@@ -47,15 +47,9 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	// min_wake_interval, so a child flapping between error and a provider
 	// retry is one failure, not a report per flap.
 	kept, unreported := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren), covered, complete, t.now, t.loop.Progress.MinWakeInterval.Duration)
-	if len(kept) == 0 {
-		// Every covered child has been forgotten, so the episode is over,
-		// whether or not a check ran in between to see it. A child failing on
-		// this same check starts a new one: report 1, with the whole cap.
-		reports = 0
-		if len(unreported) == 0 {
-			t.st.ChildErrorReport = nil
-			return
-		}
+	if len(kept) == 0 && len(unreported) == 0 {
+		t.st.ChildErrorReport = nil // every covered child recovered: the episode is over
+		return
 	}
 	subscribed := t.loop.Report.ReportsEvent(childErrorEvent)
 	outcome := decide.ChildErrorReport(len(unreported), reports, childErrorMaxReports, subscribed)
@@ -105,9 +99,9 @@ func (t *tick) reportChildErrors(target string, obs decide.Observation) {
 	if !complete {
 		listing = "The child listing was incomplete, so both counts are lower bounds."
 	}
-	does := "keepgoing does not retry, message or stop child threads"
+	does := "keepgoing does not retry or message child threads, and stops one only when a person asks with stop --lanes"
 	if t.laneRecoveryOn {
-		does = "keepgoing does not message or stop child threads; under bb.children.retry_errored it asks BB to retry the failed turn of one it saw working, a bounded number of times"
+		does = "keepgoing does not message child threads, and stops one only when a person asks with stop --lanes; under bb.children.retry_errored it asks BB to retry the failed turn of one it saw working, a bounded number of times"
 	}
 	text := fmt.Sprintf("%s: %d direct child thread(s) of the supervised thread are in error and %d are still running. %s %s; whether that work is retried or replaced is up to the supervised session or a person.",
 		t.loop.Name, rec.Errored, rec.Running, listing, does)

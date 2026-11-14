@@ -155,16 +155,6 @@ func play(world, name string, args []string) int {
 
 func run(world string, args []string) int {
 	appendLine(filepath.Join(world, "calls.jsonl"), args)
-	// kill.next names a bb subcommand ("show", "log", ...). The next such
-	// call dies as if the host had killed it, once: what an overloaded or
-	// out-of-memory machine does to a real bb.
-	if b, err := os.ReadFile(filepath.Join(world, "kill.next")); err == nil && len(args) > 1 && strings.TrimSpace(string(b)) == args[1] {
-		os.Remove(filepath.Join(world, "kill.next"))
-		if p, err := os.FindProcess(os.Getpid()); err == nil {
-			p.Kill()
-		}
-		select {} // until the signal lands
-	}
 	// BB's optional retry plugin: its last decision for a thread, from
 	// <thread>.retry-decision, and its pending retries, from <thread>.retries.
 	if len(args) >= 3 && args[0] == "provider-retry" {

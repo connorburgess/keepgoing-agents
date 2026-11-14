@@ -382,8 +382,6 @@ Incident schema 9 adds two fields to a control record's `controlChange`: `caller
 
 Incident schema 10 adds `lanes` on tick records: the counts `retried`, `givenUp` and `deferred` of that check's [lane recovery](operations.md#lane-recovery) work, all zero for a loop without `bb.children.retry_errored` and for records loaded from an older journal. A check that did lane work is never folded into its neighbours and is kept in the `condition` tier. The timeline JSON is schema 6: it adds the `child_retry` kind and `summary.lastChildRetry`. A build older than this change refuses a schema 10 journal.
 
-**A provider command killed by the host.** Unreleased source. When a `bb` command of a check is ended by a signal keepgoing did not send (the operating system does this to a process on a machine that is out of memory or badly overloaded), the read it was making is treated as unverified, as before, and the check now also carries a warning: `N provider command(s) of this check were killed by the host, not by keepgoing's time limit; what they were reading was treated as unverified`. A check that waits with `provider retry state unverified` or `child status unverified` and has this warning was not looking at a provider problem.
-
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 
 ### Collapsed and pruned history

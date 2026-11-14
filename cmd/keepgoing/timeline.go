@@ -692,7 +692,7 @@ func describeIncident(r incident.Record) string {
 		if o.ChildrenUnverified {
 			count = "at least " + count + " (child discovery was incomplete)"
 		}
-		text += fmt.Sprintf("; %s direct child thread(s) in error (keepgoing does not message or stop children, and retries one only under bb.children.retry_errored)", count)
+		text += fmt.Sprintf("; %s direct child thread(s) in error (keepgoing does not message children; it retries one only under bb.children.retry_errored, and stops one only for stop --lanes)", count)
 	}
 	text += fmt.Sprintf("; action %s; outcome %s; cause %s; controls %s -> %s", r.Action, r.Outcome, r.Cause, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter))
 	if r.TargetKeyAfter != "unavailable" {
@@ -744,7 +744,7 @@ func describeIncident(r incident.Record) string {
 		text += "; TURN RETRY: the provider refused the retry or its result could not be read, so nothing was sent"
 	}
 	if l := r.Lanes; l != (incident.LaneWork{}) {
-		text += fmt.Sprintf("; LANES: asked BB to retry the failed turn of %d lane(s) by reference, gave up on %d, put off %d for lack of time; no lane was messaged, stopped or created", l.Retried, l.GivenUp, l.Deferred)
+		text += fmt.Sprintf("; LANES: asked BB to retry the failed turn of %d lane(s) by reference, gave up on %d, put off %d for lack of time; lane recovery messaged, stopped and created no lane", l.Retried, l.GivenUp, l.Deferred)
 	}
 	switch r.LimitWaitReport {
 	case "requested":

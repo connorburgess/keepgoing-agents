@@ -121,7 +121,7 @@ func TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn(t *testing.T) {
 	code, out, errs := f.run("status")
 	if code != exitOK || !strings.Contains(out, "lane recovery: on; last lane work at the check of ") || !strings.Contains(out, "asked BB to retry 1 lane(s), gave up on 0") ||
 		!strings.Contains(out, "left alone: 1 (rate_limit)") || !strings.Contains(out, "1 of at most 20 retries used for this failure") ||
-		!strings.Contains(out, "keepgoing does not message or stop them; lane recovery is on") || strings.Contains(out+errs, private) || strings.Contains(out+errs, "thr_child") {
+		!strings.Contains(out, "keepgoing does not message them, and stops them only for stop --lanes; lane recovery is on") || strings.Contains(out+errs, private) || strings.Contains(out+errs, "thr_child") {
 		t.Fatalf("status %d\n%s%s", code, out, errs)
 	}
 	code, out, errs = f.run("status", "--json")

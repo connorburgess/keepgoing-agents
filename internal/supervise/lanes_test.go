@@ -17,6 +17,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/rungraph"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -1024,4 +1025,98 @@ func TestRecordedLaneRetryCountsForNothingOnceSwitchedOff(t *testing.T) {
 	if strings.Contains(strings.Join(res.Warnings, "\n"), "a lane retry was recorded at") {
 		t.Fatalf("%v", res.Warnings)
 	}
+}
+
+// 1. Another loop's lane, by its session record or by its live claim, is
+// that loop's: it is never retried here, and it is counted.
+func TestAnotherLoopsLaneIsNeverRetried(t *testing.T) {
+	for name, plant := range map[string]func(t *testing.T, w *laneWorld, id string) func(){
+		"recorded for another loop": func(t *testing.T, w *laneWorld, id string) func() {
+			other := t.TempDir()
+			if err := session.Note(w.sessions, session.Identity{Kind: "bb", ID: id}, session.Supervisor{Loop: "other-loop", Config: filepath.Join(other, "keepgoing.yaml"), StateDir: filepath.Join(other, "state"), SeenAt: t0}, time.Second); err != nil {
+				t.Fatal(err)
+			}
+			return func() {}
+		},
+		"claimed by another loop's live check": func(t *testing.T, w *laneWorld, id string) func() {
+			c, err := session.Take(w.sessions, session.Identity{Kind: "bb", ID: id}, session.Holder{Loop: "other-loop", PID: 1, Since: t0, Until: t0.Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return c.Release
+		},
+	} {
+		w := newLaneWorld(t)
+		ids := laneIDs(2)
+		w.working(t, t0, ids...)
+		w.failed(ids...)
+		release := plant(t, w, ids[0])
+		res := w.tick(t, t0.Add(time.Minute))
+		release()
+		if strings.Join(w.a.retried, ",") != ids[1] || res.Lanes.NotRetried["other_loop"] != 1 {
+			t.Fatalf("%s: retried %v, %+v", name, w.a.retried, res.Lanes)
+		}
+		for _, id := range w.a.inspected {
+			if id == ids[0] {
+				t.Fatalf("%s: another loop's lane was inspected", name)
+			}
+		}
+	}
+}
+
+// 2. A stop that covers the lanes forgets what lane recovery knew of them.
+// After a resume, a lane still in error is not retried until a check has
+// seen it working again.
+func TestStopWithLanesThenResumeDoesNotRestartALane(t *testing.T) {
+	w := newLaneWorld(t)
+	id := laneIDs(1)
+	w.working(t, t0, id...)
+	w.failed(id...)
+	w.tick(t, t0.Add(time.Minute))
+	if len(w.a.retried) != 1 {
+		t.Fatalf("%v", w.a.retried)
+	}
+	at := t0.Add(2 * time.Minute)
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Stop, f.StopLanesAt = true, &at }); err != nil {
+		t.Fatal(err)
+	}
+	w.tick(t, t0.Add(3*time.Minute))
+	if w.lanes(t) != nil {
+		t.Fatalf("lane records kept through a stop of the lanes: %+v", w.lanes(t))
+	}
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Stop, f.StopLanesAt = false, nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []int{20, 40, 60} {
+		w.tick(t, t0.Add(time.Duration(m)*time.Minute))
+	}
+	if len(w.a.retried) != 1 {
+		t.Fatalf("a lane was restarted after the stop: %v", w.a.retried)
+	}
+	// Seen working again, then failing: recoverable as before.
+	w.working(t, t0.Add(70*time.Minute), id...)
+	w.failed(id...)
+	w.tick(t, t0.Add(71*time.Minute))
+	if len(w.a.retried) != 2 {
+		t.Fatalf("%v", w.a.retried)
+	}
+}
+
+// 3. A stop saved while a lane is being inspected ends lane work before
+// that lane's retry.
+func TestStopSavedDuringInspectionStopsThatRetry(t *testing.T) {
+	w := newLaneWorld(t)
+	id := laneIDs(1)
+	w.working(t, t0, id...)
+	w.failed(id...)
+	w.a.onInspect = func() {
+		if _, err := control.Update(w.dir, func(f *control.File) { f.Stop = true }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := w.tick(t, t0.Add(time.Minute))
+	if len(w.a.retried) != 0 || len(w.a.inspected) != 1 || res.Lanes == nil || res.Lanes.Waiting != "control" {
+		t.Fatalf("retried %v, %+v", w.a.retried, res.Lanes)
+	}
+	sendsUsed(t, w.world, 0)
 }
