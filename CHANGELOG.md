@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Rebranded native macOS menu labels, accessibility text, local error/notification wording and bundle display name to looptender, preserving its command protocol and application identity. Source build only; replacing a running menu remains a separate action.
+
 - Move the source module to `github.com/looptender/looptender` and its main package to `cmd/looptender`. This source change follows the GitHub repository transfer. Existing released versions retain their original module and command paths; new-path `@latest` needs a release that declares that path. Archive filenames and installed compatibility names are handled separately.
 - The panel and dock display looptender in their header, browser titles, opening and expired-link pages, and status explanations. Command names remain `keepgoing panel` and `keepgoing dock`.
 

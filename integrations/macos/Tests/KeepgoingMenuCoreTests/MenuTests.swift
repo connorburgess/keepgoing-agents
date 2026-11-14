@@ -28,19 +28,19 @@ final class MenuTests: XCTestCase {
     func testThreeLoopsGiveTheAgreedLayout() {
         let model = MenuBuilder.build(.read(three, at: now.addingTimeInterval(-130)), now: now)
         XCTAssertEqual(text(model), [
-            "Open keepgoing Panel",
+            "Open looptender Panel",
             "1 loop needs you",
             "---",
             "example-api | Waiting for you",
             "example-docs | Supervising",
             "example-site | Paused",
             "---",
-            "Quit keepgoing Menu",
+            "Quit looptender Menu",
             "---",
             "Read 2 min ago",
         ])
         XCTAssertEqual(model.badge, "1")
-        XCTAssertEqual(model.iconAccessibilityLabel, "keepgoing, 1 loop needs you")
+        XCTAssertEqual(model.iconAccessibilityLabel, "looptender, 1 loop needs you")
         XCTAssertEqual(model.rows.map(\.command), [
             .openPanel, .openPanel, nil,
             .openLoop(key: "l000000000001"), .openLoop(key: "l000000000002"), .openLoop(key: "l000000000003"),
@@ -50,8 +50,8 @@ final class MenuTests: XCTestCase {
         let api = model.rows[3]
         XCTAssertEqual(api.accessibilityLabel, "example-api, Waiting for you")
         XCTAssertEqual(api.accessibilityHelp, "Opens this loop in the panel.")
-        XCTAssertEqual(model.rows[0].accessibilityLabel, "Open keepgoing Panel")
-        XCTAssertEqual(model.rows[0].accessibilityHelp, "Opens the keepgoing panel in your browser.")
+        XCTAssertEqual(model.rows[0].accessibilityLabel, "Open looptender Panel")
+        XCTAssertEqual(model.rows[0].accessibilityHelp, "Opens the looptender panel in your browser.")
     }
 
     // Nothing that looks like a menu item is unclickable, except the one
@@ -82,7 +82,7 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(rows(nil), rows(stopped))
         XCTAssertFalse(rows(nil).contains { $0.contains("Stop") })
         let model = MenuBuilder.build(.read(three, at: now), now: now, panel: PanelStatus(schemaVersion: 1, running: true, idleRemainingSeconds: 1380))
-        XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Stop the Panel Page", "Quit keepgoing Menu", "---", "Read just now"])
+        XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Stop the Panel Page", "Quit looptender Menu", "---", "Read just now"])
         let stop = model.rows.first { $0.command == .stopPanel }!
         XCTAssertEqual(stop.detail, "stops by itself in 23 min")
         XCTAssertEqual(stop.accessibilityLabel, "Stop the Panel Page, stops by itself in 23 min")
@@ -199,14 +199,14 @@ final class MenuTests: XCTestCase {
         var status = PanelStatus(schemaVersion: 1, running: false, idleRemainingSeconds: nil)
         status.exposure = "While changes are allowed, anyone who can use this browser window can pause, stop and resume loops."
         let model = MenuBuilder.build(.read(three, at: now), now: now, panel: status)
-        XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Open Panel with Controls…", "Quit keepgoing Menu", "---", "Read just now"])
+        XCTAssertEqual(Array(text(model).suffix(5)), ["---", "Open Panel with Controls…", "Quit looptender Menu", "---", "Read just now"])
         XCTAssertEqual(model.rows.first { $0.command == .openPanelWithChanges }?.accessibilityHelp, "Opens the panel so its page can pause, stop and resume loops and offer a separate review to replace a loop’s own build. Asks first.")
     }
 
     func testBadgeAndNeedsLine() {
         func model(_ needs: Int, _ unread: Int) -> MenuModel { MenuBuilder.build(.read(list([], needsYou: needs, unread: unread), at: now), now: now) }
         XCTAssertEqual(model(0, 0).badge, "")
-        XCTAssertEqual(model(0, 0).iconAccessibilityLabel, "keepgoing")
+        XCTAssertEqual(model(0, 0).iconAccessibilityLabel, "looptender")
         XCTAssertFalse(text(model(0, 0)).contains { $0.contains("need") })
         XCTAssertEqual(text(model(3, 0))[1], "3 loops need you")
         XCTAssertEqual(text(model(1, 1))[1], "1 loop can't be read")
@@ -222,9 +222,9 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(badge(list(three.loops)), "")
         XCTAssertEqual(badge(list([])), "", "no loops registered, read completely, is all clear")
         XCTAssertEqual(badge(list([], registry: "unavailable")), "?")
-        XCTAssertEqual(MenuBuilder.build(.read(list([], registry: "unavailable"), at: now), now: now).iconAccessibilityLabel, "keepgoing, the list of loops can't be read")
+        XCTAssertEqual(MenuBuilder.build(.read(list([], registry: "unavailable"), at: now), now: now).iconAccessibilityLabel, "looptender, the list of loops can't be read")
         XCTAssertEqual(badge(list(three.loops, complete: false)), "?")
-        XCTAssertEqual(MenuBuilder.build(.read(list(three.loops, complete: false), at: now), now: now).iconAccessibilityLabel, "keepgoing, not every loop was read")
+        XCTAssertEqual(MenuBuilder.build(.read(list(three.loops, complete: false), at: now), now: now).iconAccessibilityLabel, "looptender, not every loop was read")
         XCTAssertEqual(badge(PanelList(schemaVersion: 1, registry: "available", complete: true, allClear: false, needsYou: 0, unread: 0, omitted: 3, loops: three.loops)), "?",
                        "a list that leaves loops out cannot say all clear unless the CLI does")
         XCTAssertEqual(badge(list(three.loops, needsYou: 2, complete: false)), "2", "a count is shown whenever there is one")
@@ -235,7 +235,7 @@ final class MenuTests: XCTestCase {
         }
         for reading in [MenuReading.unsupported, .unavailable] {
             XCTAssertEqual(MenuBuilder.build(reading, now: now).badge, "?")
-            XCTAssertEqual(MenuBuilder.build(reading, now: now).iconAccessibilityLabel, "keepgoing, can't be read")
+            XCTAssertEqual(MenuBuilder.build(reading, now: now).iconAccessibilityLabel, "looptender, can't be read")
         }
     }
 
@@ -255,8 +255,8 @@ final class MenuTests: XCTestCase {
         // Loops the CLI left out are reachable through one row, not a sentence.
         XCTAssertEqual(last(.read(list(three.loops, omitted: 4), at: now)), "Read just now")
         XCTAssertTrue(MenuBuilder.build(.read(list(three.loops, omitted: 4), at: now), now: now).rows.contains { $0.title == "All 7 Loops in the Panel" && $0.command == .openPanel })
-        XCTAssertEqual(last(.unsupported), "The menu and keepgoing are different versions. Use the panel.")
-        XCTAssertEqual(last(.unavailable), "Can't reach keepgoing. Run keepgoing doctor.")
+        XCTAssertEqual(last(.unsupported), "The menu and looptender are different versions. Use the panel.")
+        XCTAssertEqual(last(.unavailable), "Can't reach looptender. Run keepgoing doctor.")
         XCTAssertEqual(last(.read(three, at: now), refreshing: true), "Reading…")
         XCTAssertEqual(last(.read(three, at: now), notice: "The panel could not be opened. Run keepgoing panel in a terminal."), "The panel could not be opened. Run keepgoing panel in a terminal.")
         // While a read is under way the last read's rows stay in place.
