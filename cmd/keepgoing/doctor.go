@@ -93,6 +93,9 @@ func doctor(e env, args []string, run doctorRun) int {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		r.add("config", "error", "Configuration or fallbacks could not be read or validated.", "Check the selected config path and YAML against the configuration guide. Raw parser errors are withheld to protect values.")
+		// What belongs to the user and to no loop is reported all the same.
+		doctorVariables(&r)
+		doctorUserDirectory(&r, userdir.Look())
 		return printDoctor(e, r, *asJSON)
 	}
 	r.Loop = cfg.Loop.Name
@@ -753,17 +756,34 @@ func doctorVariables(r *doctorReport) {
 }
 
 // doctorUserDirectory says which name the tool's per-user directories go by
-// on this computer, and warns when directories of both names exist: only the
-// earlier name's are read then, and what is in the others is not seen.
+// on this computer and why, and warns when the tool's own files exist under
+// the other name as well: those are not read. It never suggests removing
+// anything: a directory of either name can also hold a loop's own files.
 func doctorUserDirectory(r *doctorReport, f userdir.Found) {
 	const holds = "the loop registry, the standard route list, session claims and the panel's files"
+	const guide = "See \"Per-user directories\" in docs/configuration.md."
+	list := func(paths []string) string { return strings.Join(paths, ", ") }
 	switch {
-	case len(f.Ignored) > 0:
-		r.add("user.directory", "warning", "Directories of both names exist. Those named "+userdir.LegacyName+" are used ("+strings.Join(f.Used, ", ")+"); nothing in "+strings.Join(f.Ignored, ", ")+" is read. They hold "+holds+".",
-			"If "+strings.Join(f.Ignored, " and ")+" holds nothing you need, remove it. Do not rename either while a loop is being checked.")
+	case f.Name == userdir.LegacyName && len(f.Unread) > 0:
+		r.add("user.directory", "warning", "Per-user files ("+holds+") are read from directories named "+userdir.LegacyName+", the tool's earlier name ("+doctorUsed(f)+"). These, kept under the name "+userdir.Name+", are not read while that is so: "+list(f.Unread)+". A loop registered only there is not listed, and a route list there is not followed. Session claims are honoured under both names, so no session is acted on twice.",
+			"Nothing is removed or moved for you, and nothing here needs removing. "+guide)
 	case f.Name == userdir.LegacyName:
-		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because this computer already has one ("+strings.Join(f.Used, ", ")+"). Nothing is moved; a computer without one uses "+userdir.Name+".", "")
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because "+doctorUsed(f)+". Nothing is moved; a computer without them uses "+userdir.Name+".", "")
 	default:
 		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.Name+" under the user configuration and state directories.", "")
 	}
+}
+
+// doctorUsed says what makes the earlier name the one in use: the tool's
+// files that are there, or a place that could not be looked at.
+func doctorUsed(f userdir.Found) string {
+	switch {
+	case len(f.Used) > 0 && len(f.Unknown) > 0:
+		return "this computer already has them there: " + strings.Join(f.Used, ", ") + "; and " + strings.Join(f.Unknown, ", ") + " could not be inspected"
+	case len(f.Used) > 0:
+		return "this computer already has them there: " + strings.Join(f.Used, ", ")
+	case len(f.Unknown) > 0:
+		return strings.Join(f.Unknown, ", ") + " could not be inspected, which counts as the earlier name"
+	}
+	return "an entry of that name was found"
 }

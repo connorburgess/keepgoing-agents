@@ -62,6 +62,10 @@ func mkdir(t *testing.T, elem ...string) string {
 // both on macOS, two on Linux and on Windows. The decision is the same
 // function of what is in them. The places here are stand-ins with each
 // platform's shape; TestThisPlatform reads the real ones.
+//
+// Only the tool's own entries decide. A directory named keepgoing that
+// holds a loop's state or configuration, as the guides used to suggest,
+// decides nothing.
 func TestNameInEachLayout(t *testing.T) {
 	layouts := []struct {
 		platform      string
@@ -71,54 +75,82 @@ func TestNameInEachLayout(t *testing.T) {
 		{"Linux", []string{".config"}, []string{".local", "state"}},
 		{"Windows", []string{"AppData", "Roaming"}, []string{"AppData", "Local"}},
 	}
+	type place struct{ config, state string }
 	cases := []struct {
-		name                      string
-		inConfig, inState         []string // directory names to create
-		fileInConfig, linkInState bool     // the earlier name as a file, or as a link
-		want                      string
+		name  string
+		setup func(t *testing.T, p place)
+		want  string
 	}{
-		{name: "nothing there: a new install", want: Name},
-		{name: "the earlier name under the configuration directory", inConfig: []string{LegacyName}, want: LegacyName},
-		{name: "the earlier name under the state directory only", inState: []string{LegacyName}, want: LegacyName},
-		{name: "the current name only", inConfig: []string{Name}, inState: []string{Name}, want: Name},
-		{name: "both names: the earlier one is kept", inConfig: []string{LegacyName, Name}, want: LegacyName},
-		{name: "the current name in one place, the earlier in the other", inConfig: []string{Name}, inState: []string{LegacyName}, want: LegacyName},
-		{name: "the earlier name as a file", fileInConfig: true, want: LegacyName},
-		{name: "the earlier name as a link", linkInState: true, want: LegacyName},
+		{"nothing there: a new install", func(*testing.T, place) {}, Name},
+		{"the earlier registry under the configuration directory", func(t *testing.T, p place) { mkdir(t, p.config, LegacyName, "registry") }, LegacyName},
+		{"earlier session claims under the state directory only", func(t *testing.T, p place) { mkdir(t, p.state, LegacyName, "sessions") }, LegacyName},
+		{"the earlier panel directory only", func(t *testing.T, p place) { mkdir(t, p.state, LegacyName, "panel") }, LegacyName},
+		{"an earlier route list only", func(t *testing.T, p place) {
+			mkdir(t, p.config, LegacyName)
+			if err := os.WriteFile(filepath.Join(p.config, LegacyName, "routes.yaml"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, LegacyName},
+		{"a loop that init put in the earlier directory", func(t *testing.T, p place) { mkdir(t, p.config, LegacyName, "loops", "example-loop") }, LegacyName},
+		{"only a loop's state_dir in a directory of the earlier name", func(t *testing.T, p place) {
+			mkdir(t, p.state, LegacyName, "example-loop")
+		}, Name},
+		{"only a loop's configuration in a directory of the earlier name", func(t *testing.T, p place) {
+			mkdir(t, p.config, LegacyName, "example-loop")
+			if err := os.WriteFile(filepath.Join(p.config, LegacyName, "example.env"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, Name},
+		{"an empty directory of the earlier name", func(t *testing.T, p place) { mkdir(t, p.config, LegacyName) }, Name},
+		{"a file of the earlier name", func(t *testing.T, p place) {
+			if err := os.WriteFile(filepath.Join(p.config, LegacyName), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, Name},
+		{"the current name only", func(t *testing.T, p place) {
+			mkdir(t, p.config, Name, "registry")
+			mkdir(t, p.state, Name, "sessions")
+		}, Name},
+		{"the current name, and a loop's state_dir under the earlier one", func(t *testing.T, p place) {
+			mkdir(t, p.state, Name, "sessions")
+			mkdir(t, p.state, LegacyName, "example-loop")
+		}, Name},
+		{"the tool's entries under both names: the earlier one is kept", func(t *testing.T, p place) {
+			mkdir(t, p.config, Name, "registry")
+			mkdir(t, p.config, LegacyName, "registry")
+		}, LegacyName},
+		{"the current name in one place, the earlier in the other", func(t *testing.T, p place) {
+			mkdir(t, p.config, Name, "registry")
+			mkdir(t, p.state, LegacyName, "sessions")
+		}, LegacyName},
+		{"the earlier name as a link to a directory with the tool's entries", func(t *testing.T, p place) {
+			if err := os.Symlink(filepath.Dir(mkdir(t, filepath.Dir(p.config), "elsewhere", "registry")), filepath.Join(p.state, LegacyName)); err != nil {
+				t.Skip("links are not available here")
+			}
+		}, LegacyName},
+		{"the earlier name as a link to a directory without them", func(t *testing.T, p place) {
+			if err := os.Symlink(mkdir(t, filepath.Dir(p.config), "elsewhere"), filepath.Join(p.state, LegacyName)); err != nil {
+				t.Skip("links are not available here")
+			}
+		}, Name},
 	}
 	for _, l := range layouts {
 		for _, tc := range cases {
 			t.Run(l.platform+"/"+tc.name, func(t *testing.T) {
 				root := t.TempDir()
-				config := mkdir(t, append([]string{root}, l.config...)...)
-				state := mkdir(t, append([]string{root}, l.state...)...)
-				for _, n := range tc.inConfig {
-					mkdir(t, config, n)
-				}
-				for _, n := range tc.inState {
-					mkdir(t, state, n)
-				}
-				if tc.fileInConfig {
-					if err := os.WriteFile(filepath.Join(config, LegacyName), nil, 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if tc.linkInState {
-					if err := os.Symlink(mkdir(t, root, "elsewhere"), filepath.Join(state, LegacyName)); err != nil {
-						t.Skip("links are not available here")
-					}
-				}
-				before := entries(t, config, state)
-				if got := NameIn(config, state); got != tc.want {
+				p := place{mkdir(t, append([]string{root, "home"}, l.config...)...), mkdir(t, append([]string{root, "home"}, l.state...)...)}
+				tc.setup(t, p)
+				before := entries(t, p.config, p.state)
+				if got := NameIn(p.config, p.state); got != tc.want {
 					t.Fatalf("NameIn = %q, want %q", got, tc.want)
 				}
 				// The order the places are given in does not matter, and a
 				// place that could not be determined is skipped.
-				if got := NameIn(state, "", config); got != tc.want {
+				if got := NameIn(p.state, "", p.config); got != tc.want {
 					t.Fatalf("NameIn, other order = %q, want %q", got, tc.want)
 				}
 				// Deciding creates and removes nothing.
-				if after := entries(t, config, state); !reflect.DeepEqual(before, after) {
+				if after := entries(t, p.config, p.state); !reflect.DeepEqual(before, after) {
 					t.Fatalf("deciding changed the places: %v, then %v", before, after)
 				}
 			})
@@ -127,20 +159,37 @@ func TestNameInEachLayout(t *testing.T) {
 	if got := NameIn("", ""); got != Name {
 		t.Fatalf("no place at all = %q", got)
 	}
+	// Every entry the tool keeps decides, each on its own.
+	for _, entry := range Entries {
+		base := t.TempDir()
+		mkdir(t, base, LegacyName, entry)
+		if got := NameIn(base); got != LegacyName {
+			t.Fatalf("%s alone: NameIn = %q", entry, got)
+		}
+	}
 }
 
-// A place that cannot be inspected counts as holding the earlier name.
+// A place that cannot be inspected counts as holding the earlier name,
+// whether it is the place itself or the directory of the earlier name in it.
 func TestNameInAPlaceThatCannotBeInspected(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a directory this user cannot search")
 	}
-	base := mkdir(t, t.TempDir(), "closed")
-	if err := os.Chmod(base, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(base, 0o700) })
-	if got := NameIn(base); got != LegacyName {
-		t.Fatalf("NameIn = %q, want %q", got, LegacyName)
+	for _, closed := range []string{"the place", "the earlier directory"} {
+		t.Run(closed, func(t *testing.T) {
+			base := mkdir(t, t.TempDir(), "place")
+			shut := base
+			if closed == "the earlier directory" {
+				shut = mkdir(t, base, LegacyName)
+			}
+			if err := os.Chmod(shut, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(shut, 0o700) })
+			if got := NameIn(base); got != LegacyName {
+				t.Fatalf("NameIn = %q, want %q", got, LegacyName)
+			}
+		})
 	}
 }
 
@@ -174,7 +223,7 @@ func TestThisPlatform(t *testing.T) {
 	if err != nil || p != filepath.Join(state, Name, "sessions") {
 		t.Fatalf("State = %q %v", p, err)
 	}
-	if f := Look(); f.Name != Name || len(f.Used) != 0 || len(f.Ignored) != 0 {
+	if f := Look(); f.Name != Name || len(f.Used) != 0 || len(f.Unread) != 0 || len(f.Unknown) != 0 {
 		t.Fatalf("Look = %+v", f)
 	}
 	for _, base := range []string{config, state} {
@@ -183,16 +232,19 @@ func TestThisPlatform(t *testing.T) {
 		}
 	}
 
-	// Its own directory, once made, is the one in use.
+	// Its own claims, once made, are the ones in use. A loop's state_dir in
+	// a directory of the earlier name beside them changes nothing, and is
+	// not reported as anything of the tool's.
 	current := mkdir(t, state, Name, "sessions")
-	if f := Look(); f.Name != Name || !reflect.DeepEqual(f.Used, []string{filepath.Dir(current)}) || len(f.Ignored) != 0 {
+	mkdir(t, state, LegacyName, "example-loop")
+	if f := Look(); f.Name != Name || !reflect.DeepEqual(f.Used, []string{current}) || len(f.Unread) != 0 {
 		t.Fatalf("Look = %+v", f)
 	}
 
-	// A directory under the earlier name, in the state directory alone,
-	// moves both places to the earlier name, and the current-name directory
-	// is reported as not read.
-	earlier := mkdir(t, state, LegacyName)
+	// The tool's own claims under the earlier name, in the state directory
+	// alone, move both places to the earlier name, and the claims under the
+	// current name are reported as not read.
+	earlier := mkdir(t, state, LegacyName, "sessions")
 	if got := DirName(); got != LegacyName {
 		t.Fatalf("DirName = %q", got)
 	}
@@ -203,7 +255,7 @@ func TestThisPlatform(t *testing.T) {
 		t.Fatalf("State = %q", p)
 	}
 	f := Look()
-	if f.Name != LegacyName || !reflect.DeepEqual(f.Used, []string{earlier}) || !reflect.DeepEqual(f.Ignored, []string{filepath.Dir(current)}) {
+	if f.Name != LegacyName || !reflect.DeepEqual(f.Used, []string{earlier}) || !reflect.DeepEqual(f.Unread, []string{current}) || len(f.Unknown) != 0 {
 		t.Fatalf("Look = %+v", f)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -275,11 +276,12 @@ func TestDirIsPrivate(t *testing.T) {
 	}
 }
 
-// A computer that already has the tool's directory under its earlier name
-// keeps its claims there, wherever that directory is: a build from before
-// the rename, and every other loop, take their claims in the same place.
+// A computer where the tool already keeps files under its earlier name
+// keeps its claims there, wherever those files are: a build from before the
+// rename, and every other loop, take their claims in the same place. A
+// loop's own state in a directory of that name is not such a file.
 func TestDirKeepsTheEarlierDirectory(t *testing.T) {
-	for _, where := range []string{"state", "config"} {
+	for _, where := range []string{"state", "config", "only a loop's state_dir"} {
 		t.Run(where, func(t *testing.T) {
 			t.Setenv(DirEnv, "")
 			t.Setenv("KEEPGOING_SESSION_DIR", "")
@@ -298,16 +300,24 @@ func TestDirKeepsTheEarlierDirectory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			earlier := filepath.Join(map[string]string{"state": state, "config": config}[where], "keepgoing")
+			earlier := map[string]string{
+				"state":                   filepath.Join(state, "keepgoing", "panel"),
+				"config":                  filepath.Join(config, "keepgoing", "registry"),
+				"only a loop's state_dir": filepath.Join(state, "keepgoing", "example-loop"),
+			}[where]
 			if err := os.MkdirAll(earlier, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			want, unwanted := "keepgoing", "looptender"
+			if where == "only a loop's state_dir" {
+				want, unwanted = "looptender", filepath.Join("keepgoing", "sessions")
+			}
 			dir, _, err := Dir(true)
-			if want := filepath.Join(state, "keepgoing", "sessions"); err != nil || dir != want {
+			if want := filepath.Join(state, want, "sessions"); err != nil || dir != want {
 				t.Fatalf("%s %v, want %s", dir, err, want)
 			}
-			if _, err := os.Lstat(filepath.Join(state, "looptender")); err == nil {
-				t.Fatal("a looptender directory was made beside the earlier one")
+			if _, err := os.Lstat(filepath.Join(state, unwanted)); err == nil {
+				t.Fatalf("%s was made as well", unwanted)
 			}
 		})
 	}
@@ -437,5 +447,114 @@ func TestDirReadsTheEarlierName(t *testing.T) {
 	}
 	if strings.Contains(unsafe.Error(), old) || strings.Contains(unsafe.Fix(), "remove ") || !strings.Contains(unsafe.Fix(), "unset one of them") {
 		t.Fatalf("error %q, fix %q", unsafe.Error(), unsafe.Fix())
+	}
+}
+
+// The default claim directory has two possible names, and two commands can
+// for a moment disagree on which is in use. A claim held under either name
+// stops a claim of the same session under the other, and the records of who
+// supervises a session are read from both. A directory a person chose has
+// no other name.
+func TestClaimsAndRecordsAreHonouredUnderBothNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(DirEnv, "")
+	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	state, err := userdir.StateHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, earlier := filepath.Join(state, "looptender", "sessions"), filepath.Join(state, "keepgoing", "sessions")
+	id := Identity{Kind: "bb", ID: "thr_example"}
+	me := func(loop string) Holder {
+		return Holder{Loop: loop, PID: os.Getpid(), Since: time.Now(), Until: time.Now().Add(time.Hour)}
+	}
+
+	// One name only: nothing else to look at.
+	if err := os.MkdirAll(current, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := Sibling(current); got != "" {
+		t.Fatalf("Sibling with one name = %q", got)
+	}
+	a, err := Take(current, id, me("example-loop-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Note(current, id, Supervisor{Loop: "example-loop-a", Config: filepath.Join(home, "a", "keepgoing.yaml"), StateDir: filepath.Join(home, "a", "state"), SeenAt: time.Now()}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// The other name appears.
+	if err := os.MkdirAll(earlier, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if Sibling(current) != earlier || Sibling(earlier) != current {
+		t.Fatalf("Sibling = %q, %q", Sibling(current), Sibling(earlier))
+	}
+	// A claim of the same session under it is refused, naming the holder.
+	var claimed *ClaimedError
+	if _, err := Take(earlier, id, me("example-loop-c")); !errors.As(err, &claimed) || claimed.Holder == nil || claimed.Holder.Loop != "example-loop-a" {
+		t.Fatalf("a claim under the other name was taken: %v", err)
+	}
+	// The refused claim left nothing held: another session is free, and
+	// so is this one once the first claim ends.
+	other, err := Take(earlier, Identity{Kind: "bb", ID: "thr_other"}, me("example-loop-c"))
+	if err != nil {
+		t.Fatalf("another session: %v", err)
+	}
+	other.Release()
+	// The records are read from both.
+	if err := Note(earlier, id, Supervisor{Loop: "example-loop-c", Config: filepath.Join(home, "c", "keepgoing.yaml"), StateDir: filepath.Join(home, "c", "state"), SeenAt: time.Now()}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{current, earlier} {
+		names := func(list []Supervisor) string {
+			var out []string
+			for _, s := range list {
+				out = append(out, s.Loop)
+			}
+			sort.Strings(out)
+			return strings.Join(out, ",")
+		}
+		if got := names(Known(dir, id)); got != "example-loop-a,example-loop-c" {
+			t.Fatalf("Known(%s) = %s", dir, got)
+		}
+		recorded, err := Recorded(dir, id)
+		if err != nil || names(recorded) != "example-loop-a,example-loop-c" {
+			t.Fatalf("Recorded(%s) = %s %v", dir, names(recorded), err)
+		}
+		if got := names(All(dir, 8)); got != "example-loop-a,example-loop-c" {
+			t.Fatalf("All(%s) = %s", dir, got)
+		}
+	}
+	// Each record file holds only what was written there.
+	if list := known(earlier, id); len(list) != 1 || list[0].Loop != "example-loop-c" {
+		t.Fatalf("the record under the earlier name: %+v", list)
+	}
+
+	a.Release()
+	c, err := Take(earlier, id, me("example-loop-c"))
+	if err != nil {
+		t.Fatalf("after the first claim ended: %v", err)
+	}
+	// And the other way round.
+	if _, err := Take(current, id, me("example-loop-a")); !errors.As(err, &claimed) || claimed.Holder == nil || claimed.Holder.Loop != "example-loop-c" {
+		t.Fatalf("a claim under the current name was taken while the earlier one is held: %v", err)
+	}
+	c.Release()
+
+	// A directory a person chose has no other name.
+	chosen := filepath.Join(home, "chosen")
+	if err := os.MkdirAll(chosen, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := Sibling(chosen); got != "" {
+		t.Fatalf("Sibling of a chosen directory = %q", got)
 	}
 }

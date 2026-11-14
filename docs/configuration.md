@@ -8,7 +8,7 @@ Use [`keepgoing init`](setup.md) to generate a disabled configuration outside th
 version: 1
 loop:
   name: example-loop
-  state_dir: ~/.local/state/keepgoing/example-loop
+  state_dir: ~/.local/state/agent-loops/example-loop
   adapter: bb                     # bb | process | claude | codex | cursor, custom (v0.2.0)
   provider: claude-code           # optional for the primary; used in reports
   group: claude-example-account   # quota pool; same-group fallbacks are skipped on a limit
@@ -19,7 +19,7 @@ loop:
   window: {tz: UTC, days: {Mon: ["08:00", "23:00"]}}
   errors: {max_reprompts: 3, backoff: 10m, failover_on: [rate_limit], wait_if_reset_within: 30m, report_wait_after: 6h}
   fallbacks: fallbacks.yaml
-  report: {secret_file: ~/.config/keepgoing/example.env}
+  report: {secret_file: ~/.config/agent-loops/example.env}
   yield: {busy_command: ["./busy-check.sh"]}
   daemon: {interval: 5m, control_poll: 2s}
 ```
@@ -393,23 +393,34 @@ Some files belong to you and to no single loop. They are kept in one directory u
 | Windows | `%AppData%` | `%LOCALAPPDATA%` |
 | Holds | `registry/` (the [loop registry](local-clients.md)), `routes.yaml` (the [standard route list](routes.md)), `loops/<name>` (where [`init`](setup.md) puts a new loop) | `sessions/` ([session claims](operations.md#one-loop-per-session)), `panel/` (the [panel](dock.md)'s runtime files) |
 
-**What the directory is called.** On a computer that has never run the tool it is `looptender`: `~/.config/looptender` and `~/.local/state/looptender` on Linux. On a computer that already has a directory named `keepgoing`, the tool's earlier name, under either place, the name `keepgoing` is kept for both, and nothing is moved or copied. An existing setup keeps every file where it is, and a release from before the rename still finds them.
+**What the directory is called.** On a computer that has never run the tool it is `looptender`: `~/.config/looptender` and `~/.local/state/looptender` on Linux. On a computer where the tool already keeps files of this kind in a directory named `keepgoing`, its earlier name, the name `keepgoing` is kept for both places, and nothing is moved or copied. An existing setup keeps every file where it is, and a release from before the rename still finds them.
 
-The rule, exactly:
+**What decides the name, and what does not.**
 
-- If anything named `keepgoing` is under the configuration directory or the state directory, both directories are named `keepgoing`. One is enough: session claims under `~/.local/state/keepgoing` keep the registry under `~/.config/keepgoing`.
+- *Decides:* one of the tool's own entries in a directory named `keepgoing` under the configuration directory or the state directory: `registry/`, `routes.yaml`, `loops/`, `sessions/` or `panel/`. One is enough, in either place: session claims in `~/.local/state/keepgoing/sessions` keep the registry in `~/.config/keepgoing/registry`. A place that cannot be inspected counts as having one.
+- *Does not decide:* anything else in a directory named `keepgoing`. A loop's `state_dir`, its configuration file, a secrets file or a log that you keep in `~/.local/state/keepgoing/…` or `~/.config/keepgoing/…` changes nothing, whether it was there before or appears later. Nor does a directory named `looptender`.
 - Otherwise both are named `looptender`.
-- A `looptender` directory does not change this. When both names exist, the `keepgoing` ones are used and the `looptender` ones are not read; `doctor` warns (`user.directory`) and names them.
-- Every command decides afresh, from what is on disk, and never remembers the answer. So every loop on the computer agrees on where the session claims are at every moment, which is what stops two loops acting on one conversation.
 
-`doctor` always says which name is in use (`user.directory`).
+When the tool's own entries exist under both names, the `keepgoing` ones are used. The `looptender` ones are then not read: a loop registered only there is not listed, and a route list there is not followed. `doctor` warns (`user.directory`) and names them. Nothing is removed for you, and either directory may also hold a loop's own files, so do not delete one to tidy up.
+
+**When two commands can disagree, and what still holds.** Every command decides afresh from what is on disk and remembers nothing. Usually they all decide the same. They can differ in two cases:
+
+- around the moment an entry of the earlier name first appears on a computer that was using `looptender`, which happens when a release from before the rename is run there (its `panel status`, which the menu calls, is enough);
+- on Linux, when two commands are given different places: the decision reads both the configuration directory and the state directory, so a service started without the `XDG_CONFIG_HOME` its user's shell has can decide differently until an entry under the state directory settles it.
+
+What holds through both: **a session is never acted on by two loops at once.** Before a check acts on a session it takes that session's claim under the name it decided on, and then looks for a live claim on the same session under the other name. If there is one, the check gives way and sends nothing, exactly as when the claim is under the same name. The records of which loops supervise a session are read under both names too, so `enable` and `start` still refuse a second loop on a session, and `status` still names the holder.
+
+What does not hold through a change of name: the registry and the standard route list are read under the name in use only, as above, and a panel server keeps the directory it was started in (the panel commands find it under either name and do not start a second one).
+
+`doctor` says which name is in use and why (`user.directory`), with or without a readable configuration.
 
 The rule covers only these default places. A loop's own files are wherever its configuration puts them (`state_dir`, the path given to `-c`), services and registry entries record full paths, and `--directory`, `--panel-directory` and the [environment variables](#environment-variables) name a place outright. None of those is affected by the name, and none of them is moved.
 
 **Going back to v0.2.0 or earlier.** Those releases know only `keepgoing`.
 
-- On a computer where `keepgoing` directories are in use, there is nothing to do.
-- On a computer that started with this release and uses `looptender`, an earlier release does not find the registry, the standard route list or the session claims. Loops still run, because their configuration and state paths are explicit. Before running an earlier release, either rename each `looptender` directory to `keepgoing` while no loop is being checked and no panel is running (this release then uses `keepgoing` too), or set `KEEPGOING_SESSION_DIR`, `KEEPGOING_REGISTRY_DIR` and `KEEPGOING_ROUTES_FILE` to the `looptender` places. If you run the earlier release without doing either, it creates `keepgoing` directories, and from then on this release uses those: `doctor` reports both.
+- On a computer where the `keepgoing` directories are in use, there is nothing to do.
+- On a computer that uses `looptender`, an earlier release does not find the registry, the standard route list or the session claims, and it creates `keepgoing` ones as soon as it runs (its panel, which the menu polls, and `init` do so even if you only meant to look). Loops still run, because their configuration and state paths are explicit. Before running an earlier release, stop the daemons and the panel, wait for any check to end, and rename each `looptender` directory to `keepgoing`. If a `keepgoing` directory is already there, holding a loop's own files, move the contents of `looptender` into it instead. This release then uses `keepgoing` too, so both find the same files.
+- Setting `KEEPGOING_SESSION_DIR`, `KEEPGOING_REGISTRY_DIR` and `KEEPGOING_ROUTES_FILE` is not a way back: they do not cover the panel's directory or `init`, and services and the menu do not inherit variables from your shell.
 
 ## Tick output
 

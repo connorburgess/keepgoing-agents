@@ -176,3 +176,32 @@ func registryDirectory(path string) (string, error) {
 	}
 	return dir, nil
 }
+
+// registriesUnderBothNames returns the registry commands use and, when that
+// is the default one, the registry under the tool's other directory name if
+// it exists. The second is only ever read, to find loops: see userdir for
+// when the name in use can change.
+func registriesUnderBothNames() []string {
+	dir, err := registryDirectory("")
+	if err != nil {
+		return nil
+	}
+	dirs := []string{dir}
+	if named, _, err := envvar.RegistryDir.Path(); err != nil || named != "" {
+		return dirs // a registry a person chose has no other name
+	}
+	base, err := userdir.ConfigHome()
+	if err != nil {
+		return dirs
+	}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		other, err := canonicalFuturePath(filepath.Join(base, name, "registry"))
+		if err != nil || other == dir {
+			continue
+		}
+		if info, err := os.Lstat(other); err == nil && info.IsDir() && registry.CheckDirectory(other) == nil {
+			dirs = append(dirs, other)
+		}
+	}
+	return dirs
+}

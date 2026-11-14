@@ -134,8 +134,34 @@ func panelDirectory(path string) (string, error) {
 			return "", bad
 		}
 		path = filepath.Join(base, panelDirName(), "panel")
+		// A panel server keeps the directory it was started in. If the name
+		// in use has changed since (see userdir), a server may be running
+		// under the other name: every panel command then uses that server's
+		// directory, and none starts a second one beside it.
+		if other := panelRunningUnderOtherName(base); other != "" {
+			path = other
+		}
 	}
 	return panelPrivateDirectory(path, bad)
+}
+
+// panelRunningUnderOtherName returns the panel directory under the tool's
+// other directory name when a panel server is running there and none is
+// running under the name in use. It creates nothing.
+func panelRunningUnderOtherName(base string) string {
+	name, other := panelDirName(), userdir.LegacyName
+	if name == userdir.LegacyName {
+		other = userdir.Name
+	}
+	running := func(dir string) bool {
+		held, err := lock.Held(dir, panelServerLock)
+		return err == nil && held
+	}
+	candidate := filepath.Join(base, other, "panel")
+	if running(candidate) && !running(filepath.Join(base, name, "panel")) {
+		return candidate
+	}
+	return ""
 }
 
 // panelLegacyNotice is what a read-only command says when it finds a server

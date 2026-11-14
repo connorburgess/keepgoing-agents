@@ -4,11 +4,12 @@
 // session claims and the panel's runtime files under the state directory.
 //
 // Those files live in one directory under each. On a computer that has
-// never run the tool it is named looptender. On a computer that already has
-// a directory named keepgoing, the tool's earlier name, under either place,
-// that name is kept for both, and nothing is moved: a build from before the
-// rename still finds its files, and every command on the computer agrees on
-// where the session claims are.
+// never run the tool it is named looptender. On a computer where the tool
+// already keeps such files in a directory named keepgoing, its earlier name,
+// under either place, that name is kept for both, and nothing is moved: a
+// build from before the rename still finds its files there. What a person
+// keeps in a directory of that name, such as a loop's own state, does not
+// decide the name.
 package userdir
 
 import (
@@ -63,25 +64,67 @@ func StateHome() (string, error) {
 	return filepath.Join(home, ".local", "state"), nil
 }
 
+// Entries are the names of what the tool itself keeps in its directory: the
+// loop registry, the standard route list and the default home of new loops
+// under the configuration directory, and the session claims and the panel's
+// runtime files under the state directory. On macOS the two are one place.
+var Entries = []string{"registry", "routes.yaml", "loops", "sessions", "panel"}
+
 // NameIn decides the directory's name from the places it could be in: the
-// earlier name when an entry of that name is under any of them, otherwise
-// the current one. An empty base is a place that could not be determined
-// and is skipped. A place that cannot be inspected counts as holding the
-// earlier name: the choice that leaves an existing setup where it is.
+// earlier name when one of the tool's own entries (Entries) is in a
+// directory of that name under any of them, otherwise the current one.
 //
-// The decision is made afresh by every command and never remembered, so
-// every process on the computer makes the same one at the same moment. A
-// directory under the current name does not change it.
+// Only the tool's own entries count. A directory named keepgoing that holds
+// something else, such as a loop's state_dir or configuration that a person
+// put there, decides nothing: otherwise the first check of such a loop on a
+// new install would change where every other command looks.
+//
+// An empty base is a place that could not be determined and is skipped. A
+// place that cannot be inspected counts as holding the earlier name: the
+// choice that leaves an existing setup where it is.
+//
+// The decision is made afresh by every command and never remembered. Two
+// commands can still decide differently: around the moment an entry of the
+// earlier name first appears (a build from before the rename ran), and when
+// they are given different places (on Linux, a service started without the
+// XDG_CONFIG_HOME its user's shell has). The session claims are kept safe
+// through that by the claim itself, which looks under both names; see
+// session.Take.
 func NameIn(bases ...string) string {
 	for _, base := range bases {
-		if base == "" {
-			continue
-		}
-		if _, err := os.Lstat(filepath.Join(base, LegacyName)); err == nil || !errors.Is(err, os.ErrNotExist) {
+		if found, unknown := earlierEntry(base); found != "" || unknown {
 			return LegacyName
 		}
 	}
 	return Name
+}
+
+// earlierEntry returns one of the tool's own entries under the earlier name
+// in base, or unknown when the place cannot be inspected.
+func earlierEntry(base string) (found string, unknown bool) {
+	if base == "" {
+		return "", false
+	}
+	dir := filepath.Join(base, LegacyName)
+	info, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "", false
+	case err != nil:
+		return "", true
+	case !info.IsDir() && info.Mode()&os.ModeSymlink == 0:
+		return "", false // a file of that name is not the tool's directory
+	}
+	for _, name := range Entries {
+		_, err := os.Lstat(filepath.Join(dir, name))
+		switch {
+		case err == nil:
+			return filepath.Join(dir, name), false
+		case !errors.Is(err, os.ErrNotExist):
+			return "", true
+		}
+	}
+	return "", false
 }
 
 // DirName is NameIn for this user's configuration and state directories.
@@ -114,28 +157,36 @@ func State(elem ...string) (string, error) {
 // Found is what is on disk under the user's directories, for doctor.
 type Found struct {
 	Name    string   // the name in use: DirName
-	Used    []string // the directories of that name that exist
-	Ignored []string // directories of the current name that exist while the earlier name is in use
+	Used    []string // the tool's entries under that name that exist
+	Unread  []string // the tool's entries under the other name, which are not read while Name is in use
+	Unknown []string // places that could not be inspected, which is why the earlier name is in use
 }
 
-// Look reports the name in use and which of the tool's directories exist.
-// It reads directory entries only and changes nothing.
+// Look reports the name in use and which of the tool's own entries exist
+// under each name. It reads directory entries only and changes nothing.
 func Look() Found {
 	config, _ := ConfigHome()
 	state, _ := StateHome()
 	f := Found{Name: NameIn(config, state)}
+	other := LegacyName
+	if f.Name == LegacyName {
+		other = Name
+	}
 	seen := map[string]bool{}
 	for _, base := range []string{config, state} {
 		if base == "" || seen[base] {
 			continue
 		}
 		seen[base] = true
-		if p := filepath.Join(base, f.Name); exists(p) {
-			f.Used = append(f.Used, p)
+		if _, unknown := earlierEntry(base); unknown {
+			f.Unknown = append(f.Unknown, base)
 		}
-		if f.Name == LegacyName {
-			if p := filepath.Join(base, Name); exists(p) {
-				f.Ignored = append(f.Ignored, p)
+		for _, name := range Entries {
+			if p := filepath.Join(base, f.Name, name); exists(p) {
+				f.Used = append(f.Used, p)
+			}
+			if p := filepath.Join(base, other, name); exists(p) {
+				f.Unread = append(f.Unread, p)
 			}
 		}
 	}

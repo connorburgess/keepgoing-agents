@@ -576,7 +576,14 @@ func TestStandardRoutesPathDefault(t *testing.T) {
 	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "looptender", RoutesFileName) {
 		t.Fatalf("a new install: %q %v", p, err)
 	}
-	if err := os.MkdirAll(filepath.Join(base, "keepgoing"), 0o700); err != nil {
+	// A loop's own files in a directory of the earlier name decide nothing.
+	if err := os.MkdirAll(filepath.Join(base, "keepgoing", "example-loop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "looptender", RoutesFileName) {
+		t.Fatalf("a loop's files under the earlier name: %q %v", p, err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "keepgoing", "registry"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if p, err := StandardRoutesPath(); err != nil || p != filepath.Join(base, "keepgoing", RoutesFileName) {
