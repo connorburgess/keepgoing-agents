@@ -349,9 +349,37 @@
             "probe_every": {
               "$ref": "#/$defs/duration",
               "description": "interval between timing probes of the first route; default 12h"
+            },
+            "steps": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              },
+              "description": "route IDs on the first route's allowance, cheapest to strongest: primary and fallbacks in its group"
+            },
+            "ceiling": {
+              "type": "string",
+              "description": "the strongest step timing may use; the last step by default"
+            },
+            "unused_at_least": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1,
+              "description": "unused share near a reset that makes timing step up; default 0.25"
+            },
+            "down_at": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "description": "projected use at reset that makes timing step down; default 0.95"
+            },
+            "min_on_step": {
+              "$ref": "#/$defs/duration",
+              "description": "least time between timing moves, except the return at a reset; default 2h"
             }
           },
-          "description": "usage-aware timing, off by default; until the step decision exists it only collects readings and never changes routes"
+          "description": "usage-aware timing, off by default; it collects readings and says what it would do, and does not change routes yet"
         },
         "probe": {
           "type": "object",
