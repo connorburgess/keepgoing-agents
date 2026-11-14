@@ -639,7 +639,8 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		}
 	}
 	page := newDockServer(port, state, reader)
-	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second))}
+	page.served = dockServed{SchemaVersion: 1, ServedBy: "panel", IdleSeconds: max(1, int(c.idle/time.Second)),
+		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version)}
 	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
 	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
 		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes}
