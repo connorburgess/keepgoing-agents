@@ -19,7 +19,7 @@
 cmd/keepgoing               CLI: start, service, tick, daemon, status, timeline, goal, registry, client status/pause/stop/prepare-resume/resume/review/apply, dock, panel, transfer, control, fallbacks, report, ci-wait, net-retry
 internal/config             keepgoing.yaml and fallbacks.yaml: loading, defaults, validation
 internal/envvar             the environment variables' two names: LOOPTENDER_X, and the earlier KEEPGOING_X
-internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists
+internal/userdir            the per-user directories and their name: looptender, or keepgoing where one already exists; the explicit move between them
 internal/prompt             opt-in current-goal context for wake and handoff messages
 internal/decide             the pure decision engine
 internal/supervise          one tick: observe, probe, decide, act, record
@@ -164,7 +164,7 @@ Runtime records live in `state_dir`, outside any repository. Managed service def
 | `deliveries.json`, `delivery.lock` | report diagnostic writer | bounded typed delivery evidence (64 records/128 KiB); separate short lock; never send/replay authority |
 | `daemon-endpoint.json` | daemon | private loopback endpoint and random verification key; removed on clean exit, stale records do not prove liveness |
 | `service-launchd.json`, `service-systemd.json` | service commands | private backend-specific plan/recovery record; no task text or credentials |
-| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit |
+| `tick.lock`, `daemon.lock`, `control.lock`, `service.lock` | the tool | advisory locks, released by the OS on exit . Every lock file the tool keeps in a loop's state directory or under the per-user directories (these, `turn.lock`, `graph.lock`, `incident.lock`, `delivery.lock`, the registry's, the route list's, the panel's two and the session claims) is listed by name in `migrateLockNames` in `cmd/keepgoing/migrate.go`; a new one must be added there, or `migrate` neither looks at it nor holds it while the directories move |
 | `targets/<id>/` | the tool | headless turn files (`run.json` with private stop key, `turn.lock` held by the live turn wrapper, `turn.started` naming the turn whose wrapper took the lock, `turn.finishing` while a wrapper publishes its exit code, stop request/acknowledgement, prompt, stdout, stderr, exit code, session id) the BB log cursor (`bb-cursor.json`), and, from internal fixtures only, create-once ACP interaction-hold records (`acp-prompt-reserved.json`, `acp-needs-user.json`, `acp-hold-adopted.json`) |
 
 ## Ownership and control writes

@@ -283,10 +283,16 @@ func TestLookWhenTheTwoNamesAreOneDirectory(t *testing.T) {
 					t.Skip("links are not available here")
 				}
 			}
-			// The tool's entries are reached under the earlier name either
-			// way, so that is the name in use; both lead to the same files.
+			// Where the earlier name is a link to the current one, as
+			// keepgoing migrate leaves it, the current name is in use; the
+			// other way round, the tool's entries are under the earlier name.
+			// Either way both lead to the same files.
+			want := LegacyName
+			if link == LegacyName {
+				want = Name
+			}
 			f := Look()
-			if f.Name != LegacyName || len(f.Unread) != 0 || !reflect.DeepEqual(f.Linked, places) || len(f.Unknown) != 0 {
+			if f.Name != want || len(f.Unread) != 0 || !reflect.DeepEqual(f.Linked, places) || len(f.Unknown) != 0 {
 				t.Fatalf("Look = %+v", f)
 			}
 			p, err := Config("registry")
