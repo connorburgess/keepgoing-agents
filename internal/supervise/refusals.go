@@ -1,6 +1,8 @@
 package supervise
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
 	"github.com/connorburgess/keepgoing-agents/internal/incident"
+	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
 // refusalStreakEvent is the report sent when a streak of refused turns
@@ -15,17 +18,31 @@ import (
 // loop keeps continuing, unless refusal.ask_after holds it for a person.
 const refusalStreakEvent = "refusal_streak"
 
-// gaugeRefusals keeps the refusal gauge. A refused turn is counted once, on
-// the first check that sees it; the continue sent for it makes the next
-// refused turn a new one. A turn that ends without a refusal ends the streak,
-// and is counted as recovered when a continue came before it. A streak that
-// raised a decision starts over once the decision has been answered.
-func (t *tick) gaugeRefusals(obs decide.Observation) {
+// refusalContinueAction is the send record of a continue for a refusal. It
+// has its own name so that a check killed after the send and before saving
+// state settles it into the gauge, not into the re-prompt allowance.
+const refusalContinueAction = "refusal_continue"
+
+// gaugeRefusals keeps the refusal gauge and returns it as the decision should
+// see it. A refused turn is counted once: by its name where the adapter names
+// turns, and otherwise on the first check that sees it, until a continue for
+// it is accepted. A turn that finishes without an error ends the streak, and
+// is counted as recovered when a continue came before it; a turn that ends in
+// another error does not. A move to another target ends the streak without a
+// recovery, and a streak that raised a question starts over once it has been
+// answered. A dry run computes the same gauge, to preview the decision, and
+// saves and reports nothing.
+func (t *tick) gaugeRefusals(obs decide.Observation) state.RefusalGauge {
 	t.refusalMark, t.fallbackMark = "", false
-	if t.opts.DryRun {
-		return
+	gauge := t.st.Refusals
+	g := &gauge
+	// A clock that went back must not stall the continues.
+	if g.LastAt.After(t.now) {
+		g.LastAt = t.now
 	}
-	g := &t.st.Refusals
+	if g.LastContinueAt.After(t.now) {
+		g.LastContinueAt = t.now
+	}
 	// A model fallback after a refusal is noted once and changes nothing. The
 	// first sight of a target's log sets the baseline without a note, so an
 	// old fallback is not reported as new.
@@ -39,27 +56,49 @@ func (t *tick) gaugeRefusals(obs decide.Observation) {
 	} else if g.FallbackTarget != t.res.Target {
 		g.FallbackSeq, g.FallbackTarget = 0, t.res.Target
 	}
+	if g.Target != t.res.Target {
+		g.Target, g.Streak, g.StreakSince, g.Seen, g.Continued, g.TurnKey = t.res.Target, 0, time.Time{}, false, false, ""
+	}
 	if g.Asked {
 		g.Asked, g.Streak, g.StreakSince, g.Seen, g.Continued = false, 0, time.Time{}, false, false
 	}
 	refused := obs.State == decide.Error && obs.ErrorClass == decide.ErrRefused
+	turn := refusedTurnKey(obs.ErrorTurn)
+	report := 0
 	switch {
-	case refused && !g.Seen:
+	case refused && (turn != "" && turn != g.TurnKey || turn == "" && !g.Seen):
 		streak := g.Refused(t.now)
+		g.TurnKey = turn
 		t.refusalMark = "refused"
-		if streak == 3 || (streak >= 10 && streak%10 == 0) {
-			t.reportRefusalStreak(streak)
+		// The check that asks says so in its own report, and sends no other.
+		ask := t.loop.Refusal.AskAfterCount()
+		if (ask == 0 || streak < ask) && (streak == 3 || (streak >= 10 && streak%10 == 0)) {
+			report = streak
 		}
-	case !refused && g.Streak > 0 && turnEnded(obs):
-		if g.Ended(t.now, obs.State == decide.Idle) {
+	case !refused && g.Streak > 0 && !obs.Gone && obs.State == decide.Idle:
+		if g.Ended(t.now, true) {
 			t.refusalMark = "recovered"
 		}
 	}
+	if t.opts.DryRun {
+		t.refusalMark, t.fallbackMark = "", false
+		return gauge
+	}
+	t.st.Refusals = gauge
+	if report > 0 {
+		t.reportRefusalStreak(report)
+	}
+	return gauge
 }
 
-// turnEnded: the session's latest turn has finished, one way or another.
-func turnEnded(obs decide.Observation) bool {
-	return !obs.Gone && (obs.State == decide.Idle || obs.State == decide.Error)
+// refusedTurnKey is the hash kept of a turn's name, or "" when the adapter
+// does not name it.
+func refusedTurnKey(name string) string {
+	if name == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("refused-turn\x00" + name))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (t *tick) reportRefusalStreak(streak int) {
@@ -72,7 +111,7 @@ func (t *tick) reportRefusalStreak(streak int) {
 	if n := t.loop.Refusal.AskAfterCount(); n > 0 && streak < n {
 		ask = fmt.Sprintf(" At %d in a row it stops and asks you how to proceed.", n)
 	}
-	t.report(refusalStreakEvent, fmt.Sprintf("%s: the model or provider has declined %d turns in a row on %s. keepgoing keeps sending a plain continue in the same session, spaced up to 10 minutes apart, and never moves the work to another model, account or conversation. False flags are common and a continue usually clears them: in the last 24 hours %d turns were declined and %d recovered after a continue.%s To stop the continues, run keepgoing pause or keepgoing stop for this loop.",
+	t.report(refusalStreakEvent, fmt.Sprintf("%s: the model or provider has declined %d turns in a row on %s. keepgoing keeps sending a plain continue in the same session, spaced up to 10 minutes apart, and never moves the work to another model, account or conversation. False flags are common, and a continue often clears them: in the last 24 hours %d turns were declined on this loop and %d recovered after a continue.%s To stop the continues, run keepgoing pause or keepgoing stop for this loop.",
 		t.loop.Name, streak, t.res.Target, day, recovered, ask),
 		map[string]any{"target": t.res.Target, "streak": streak, "longestStreak": g.LongestStreak, "total": g.Total, "recovered": g.Recovered, "lastDay": day, "recoveredLastDay": recovered})
 }

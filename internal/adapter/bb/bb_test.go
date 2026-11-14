@@ -153,6 +153,20 @@ func TestObserveForbiddenIsRestricted(t *testing.T) {
 
 // BB's typed category for a provider's policy block, which its Codex provider
 // reports for cyberPolicy and misalignmentPolicyViolation, is a refusal.
+// An errored turn is named by its thread and the sequence of its start, so
+// the supervisor counts a refused turn once however many checks see it.
+func TestObserveNamesTheErroredTurn(t *testing.T) {
+	a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+providerError("policy", nil, "cyberPolicy", nil)+"]", false)
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRefused || obs.ErrorTurn != "thr_example123/bb-turn-1" {
+		t.Fatalf("%+v", obs)
+	}
+	a, _ = newFake(`{"thread":{"status":"idle"}}`, "["+turnStarted+"]", false)
+	if obs, _ := a.Observe(context.Background()); obs.ErrorTurn != "" {
+		t.Fatalf("an idle thread: %+v", obs)
+	}
+}
+
 func TestObservePolicyBlockIsRefused(t *testing.T) {
 	for _, event := range []string{
 		providerError("policy", nil, "cyberPolicy", nil),
@@ -194,7 +208,7 @@ func TestObserveModelFallbackAfterARefusal(t *testing.T) {
 
 // A refusal or restriction stays for the rest of its turn: a later error
 // event does not replace it, so it cannot become a limit that hands off. A
-// refusal outranks a restriction, a new turn clears both, and so does the
+// restriction outranks a refusal, a new turn clears both, and so does the
 // model answering again.
 func TestRefusalOrRestrictionIsStickyForTheTurn(t *testing.T) {
 	refusal := providerError("policy", nil, "cyberPolicy", nil)
@@ -213,8 +227,8 @@ func TestRefusalOrRestrictionIsStickyForTheTurn(t *testing.T) {
 		{"refusal, then a failed event", []string{refusal, failed}, decide.ErrRefused},
 		{"restriction, then a rate limit", []string{forbidden, limit}, decide.ErrRestricted},
 		{"restriction, then a system error", []string{forbidden, systemErr}, decide.ErrRestricted},
-		{"restriction, then a refusal", []string{forbidden, refusal}, decide.ErrRefused},
-		{"refusal, then a restriction", []string{refusal, forbidden}, decide.ErrRefused},
+		{"restriction, then a refusal", []string{forbidden, refusal}, decide.ErrRestricted},
+		{"refusal, then a restriction", []string{refusal, forbidden}, decide.ErrRestricted},
 		{"a rate limit, then a refusal", []string{limit, refusal}, decide.ErrRefused},
 		{"a rate limit, then a restriction", []string{limit, forbidden}, decide.ErrRestricted},
 		{"refusal, then a new turn with a rate limit", []string{refusal, turnStarted, limit}, decide.ErrRateLimit},

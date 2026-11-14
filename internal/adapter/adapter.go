@@ -232,21 +232,23 @@ func Classify(codes ...string) decide.ErrorClass {
 }
 
 // Prefer chooses among the classes several fields of one error gave, by the
-// same rule: a refusal wins, then a restriction, then the first known class.
+// same rule: a restriction wins, then a refusal, then the first known class.
+// A restriction is an account-level denial and holds at once; a refusal is
+// continued, so a denial that also carries a policy signal must not be.
 func Prefer(classes ...decide.ErrorClass) decide.ErrorClass {
-	first, restricted := decide.ErrUnknown, false
+	first, refused := decide.ErrUnknown, false
 	for _, cl := range classes {
 		switch {
-		case cl == decide.ErrRefused:
-			return cl
 		case cl == decide.ErrRestricted:
-			restricted = true
+			return cl
+		case cl == decide.ErrRefused:
+			refused = true
 		case first == decide.ErrUnknown && cl != "" && cl != decide.ErrNone:
 			first = cl
 		}
 	}
-	if restricted {
-		return decide.ErrRestricted
+	if refused {
+		return decide.ErrRefused
 	}
 	return first
 }

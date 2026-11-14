@@ -56,8 +56,12 @@ type Observation struct {
 	// when there is none. It is diagnostic: the supervisor notes a new one in
 	// the timeline, and it never changes Decide policy.
 	ModelFallback int64
-	State         State
-	ErrorClass    ErrorClass
+	// ErrorTurn names the turn an error ended, when the adapter can tell; a
+	// new turn has a new name. It counts a refused turn once however many
+	// checks see it, and never changes any other rule.
+	ErrorTurn  string
+	State      State
+	ErrorClass ErrorClass
 	// Turn is what the adapter knows of the running turn, from structured
 	// events. Nil means nothing is known. TurnUnknown: the session is
 	// active but its turn could not be read this time (the log read
@@ -157,8 +161,10 @@ type Input struct {
 	// restricted, and a person has since resumed it.
 	DeclineAcknowledged bool
 	// RefusalStreak counts consecutive refused turns of this session,
-	// including the current one. SinceRefusal is the time since the current
-	// refusal was first seen.
+	// including the current one; above 0, a refusal on this route is
+	// unrecovered and nothing moves the work. SinceRefusal is the time since
+	// the current refusal was first seen or a continue for it was last
+	// attempted, whichever is later.
 	RefusalStreak int
 	SinceRefusal  time.Duration
 	// RefusalAskAfter is the streak at which a person is asked instead; 0
@@ -240,6 +246,9 @@ const (
 	WaitResetSoon        LimitWait = "limit_wait"              // the reset is within wait_if_reset_within
 	WaitNoFallback       LimitWait = "limit_no_fallback"       // failover is eligible but no fallback is confirmed
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
+	// WaitRefusalUnrecovered: a refusal on this route has not been followed
+	// by a turn that ended without one, so nothing may move the work.
+	WaitRefusalUnrecovered LimitWait = "limit_refusal_unrecovered"
 )
 
 // TurnActivity is what an adapter knows of an active session's current
@@ -602,6 +611,18 @@ func decideError(in Input) Decision {
 			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
 		}
 		return Decision{Action: AwaitUser, Reason: RestrictedReason}
+	}
+	// While a refusal on this route is unrecovered (the owner's decision),
+	// nothing moves the work for any reason: a later limit or other error
+	// would otherwise hand the declined work to another account. A limit
+	// with a reported reset is waited out; anything else gets the ordinary
+	// in-place rules. Once a turn on this route ends without a refusal, the
+	// streak ends and the normal rules return.
+	if in.RefusalStreak > 0 {
+		if f.ResetIn > 0 && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
+			return limitWait(WaitRefusalUnrecovered, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; no handoff while a refusal on this route is unrecovered")
+		}
+		f.Eligible = false
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {

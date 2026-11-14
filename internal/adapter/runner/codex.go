@@ -123,8 +123,9 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 			}
 			// A later event's class replaces an earlier one, as before, except
 			// that nothing replaces a refusal or restriction: in any field of
-			// any event of the turn, it outranks every other class.
-			if cl := adapter.Classify(codes...); cl != decide.ErrUnknown && (decide.Declined(cl) || !decide.Declined(out.Class)) {
+			// any event of the turn, it outranks every other class, and a
+			// restriction outranks a refusal.
+			if cl := adapter.Classify(codes...); cl != decide.ErrUnknown && (!decide.Declined(out.Class) || cl != out.Class && adapter.Prefer(out.Class, cl) == cl) {
 				out.Class = cl
 				out.Evidence = evidence.Clean(detail)
 			}

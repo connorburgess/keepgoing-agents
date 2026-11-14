@@ -1,6 +1,8 @@
 package supervise
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -194,8 +196,14 @@ func TestRefusalStreakReportsAndTheQuestion(t *testing.T) {
 	if res.Action != "await_user" || res.Reason != decide.RefusalAskReason || len(p.sent) != 9 {
 		t.Fatalf("at ask_after: %+v sent=%d", res, len(p.sent))
 	}
-	if count(w.reportTypes(), "refusal_streak") != 2 {
-		t.Fatalf("the report at 10: %s", w.reportTypes())
+	// The check that asks sends one message, which says it has stopped and
+	// is asking; never a streak report that says it keeps continuing.
+	if count(w.reportTypes(), "refusal_streak") != 1 {
+		t.Fatalf("a streak report on the asking check: %s", w.reportTypes())
+	}
+	asked := w.reports[len(w.reports)-1]
+	if asked.Type != "await_user" || !strings.Contains(asked.Text, "has stopped sending continues and is asking") || strings.Contains(asked.Text, "keeps sending") || asked.Data["streak"] != 10 {
+		t.Fatalf("%+v", asked)
 	}
 	c, _ := control.Load(w.dir)
 	q := c.Question
@@ -452,5 +460,149 @@ func TestModelFallbackAfterARefusalIsNotedOnce(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("noted %d times", n)
+	}
+}
+
+// A continue the adapter did not accept does not make the same refused turn
+// a new one: four failed sends after one refusal leave the streak at 1. The
+// spacing still runs from each attempt, so a failing send is not repeated on
+// every check.
+func TestAFailedContinueDoesNotCountTheRefusalAgain(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	p.sendErr = errors.New("example send failure")
+	at := t0
+	runTick(t, w, at)
+	for i := 1; i <= 4; i++ {
+		at = at.Add(10 * time.Minute)
+		Tick(context.Background(), w.cfg, w.opts(at)) // the send fails; the check reports it
+		if len(p.sent) != i {
+			t.Fatalf("attempt %d: sent %d", i, len(p.sent))
+		}
+		if res := runTick(t, w, at.Add(30*time.Second)); res.Action != "none" || len(p.sent) != i {
+			t.Fatalf("attempt %d repeated at once: %+v", i, res)
+		}
+	}
+	st, _ := state.Load(w.dir)
+	if st.Refusals.Streak != 1 || st.Refusals.Total != 1 {
+		t.Fatalf("one refused turn counted as %+v", st.Refusals)
+	}
+}
+
+// Where the adapter names the errored turn, the name decides: the same
+// refused turn seen again after an accepted continue (the new turn has not
+// started yet) is not counted again, and a turn with a new name is.
+func TestARefusedTurnIsCountedOnceByItsName(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	p.obs.ErrorTurn = "thr_example/bb-turn-4"
+	runTick(t, w, t0)
+	runTick(t, w, t0.Add(time.Minute)) // continue, accepted
+	runTick(t, w, t0.Add(2*time.Minute))
+	if st, _ := state.Load(w.dir); st.Refusals.Streak != 1 {
+		t.Fatalf("the same turn counted again: %+v", st.Refusals)
+	}
+	p.obs.ErrorTurn = "thr_example/bb-turn-9"
+	runTick(t, w, t0.Add(3*time.Minute))
+	if st, _ := state.Load(w.dir); st.Refusals.Streak != 2 || st.Refusals.TurnKey == "" || strings.Contains(st.Refusals.TurnKey, "thr_example") {
+		t.Fatalf("a new turn: %+v", st.Refusals)
+	}
+}
+
+// A check killed after recording a continue and before saving state leaves
+// only the send record. The next check counts it as a continue made, in the
+// gauge: it spends no re-prompt allowance, starts the spacing, and does not
+// count the refusal again.
+func TestAContinueRecordedByAKilledCheckIsSettledIntoTheGauge(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	runTick(t, w, t0) // the refusal is counted; the continue waits 1 minute
+	at := t0.Add(time.Minute)
+	unsaved(t, w, at, "refusal_continue", state.Primary)
+	// The same refused turn is still showing. Without the record it would be
+	// continued again at once.
+	if res := runTick(t, w, at.Add(30*time.Second)); res.Action != "none" || res.Reason != decide.RefusalWaitReason || len(p.sent) != 0 {
+		t.Fatalf("after the kill: %+v sent=%d", res, len(p.sent))
+	}
+	st, _ := state.Load(w.dir)
+	if st.Reprompts != 0 || st.UnconfirmedReprompts != 0 || !st.Refusals.LastContinueAt.Equal(at) || !st.Refusals.Continued || st.Refusals.Streak != 1 || st.Refusals.Total != 1 {
+		t.Fatalf("settled as %+v reprompts=%d unconfirmed=%d", st.Refusals, st.Reprompts, st.UnconfirmedReprompts)
+	}
+	// The spacing ran from the recorded continue: the next one goes a
+	// minute after it, and is then a continue the gauge knows was made.
+	if res := runTick(t, w, at.Add(time.Minute)); res.Action != "reprompt" || len(p.sent) != 1 {
+		t.Fatalf("the next continue: %+v", res)
+	}
+	runTick(t, w, at.Add(2*time.Minute))
+	if st, _ := state.Load(w.dir); st.Refusals.Streak != 2 {
+		t.Fatalf("%+v", st.Refusals)
+	}
+}
+
+// Refused, then a rate limit on the same route: the declined work is not
+// handed to another account. The limit is waited out in place; once a turn
+// on that route finishes without a refusal, the ordinary rules return.
+func TestARefusalThenALimitNeverMovesTheWork(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	runTick(t, w, t0)
+	runTick(t, w, t0.Add(time.Minute)) // the continue
+	p.obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, ResetsAt: t0.Add(5 * time.Hour)}
+	for i, at := range []time.Time{t0.Add(5 * time.Minute), t0.Add(time.Hour), t0.Add(3 * time.Hour)} {
+		res := runTick(t, w, at)
+		if res.Action != "none" || res.Handoff != nil || res.Target != "primary" || res.Reason != "limit resets in "+t0.Add(5*time.Hour).Sub(at).Round(time.Minute).String()+"; no handoff while a refusal on this route is unrecovered" {
+			t.Fatalf("check %d: %+v", i, res)
+		}
+	}
+	touched(t, w)
+	if st, _ := state.Load(w.dir); st.Refusals.Streak != 1 || st.Refusals.Recovered != 0 {
+		t.Fatalf("a limit ended the streak: %+v", st.Refusals)
+	}
+	// The limit lifts and a turn finishes: recovered, and the rules are the
+	// ordinary ones again.
+	p.obs = decide.Observation{State: decide.Idle}
+	runTick(t, w, t0.Add(6*time.Hour))
+	if st, _ := state.Load(w.dir); st.Refusals.Streak != 0 || st.Refusals.Recovered != 1 {
+		t.Fatalf("after a finished turn: %+v", st.Refusals)
+	}
+}
+
+// A dry run previews what the real check would do, here the first wait, and
+// saves nothing.
+func TestADryRunPreviewsTheRefusalWait(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	o := w.opts(t0)
+	o.DryRun = true
+	res, err := Tick(context.Background(), w.cfg, o)
+	if err != nil || res.Action != "none" || res.Reason != decide.RefusalWaitReason || len(p.sent) != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if st, _ := state.Load(w.dir); st.Refusals.Total != 0 {
+		t.Fatalf("a dry run saved the gauge: %+v", st.Refusals)
+	}
+}
+
+// A refusal recorded in the future, after the clock went back, is treated as
+// now: the continue waits its spacing from now, and does not stall.
+func TestAClockThatWentBackDoesNotStallTheContinue(t *testing.T) {
+	w, p := declinedWorld(t, decide.ErrRefused)
+	runTick(t, w, t0.Add(48*time.Hour)) // counted with the clock ahead
+	if res := runTick(t, w, t0); res.Action != "none" || res.Reason != decide.RefusalWaitReason {
+		t.Fatalf("%+v", res)
+	}
+	if res := runTick(t, w, t0.Add(time.Minute)); res.Action != "reprompt" || len(p.sent) != 1 {
+		t.Fatalf("stalled: %+v", res)
+	}
+}
+
+// A move to another target ends the streak without counting a recovery.
+func TestAMoveEndsTheStreakWithoutARecovery(t *testing.T) {
+	w, _ := declinedWorld(t, decide.ErrRefused)
+	runTick(t, w, t0)
+	st, _ := state.Load(w.dir)
+	st.Refusals.Target = "claude-other" // as if the streak belonged to another target
+	if err := state.Save(w.dir, st); err != nil {
+		t.Fatal(err)
+	}
+	runTick(t, w, t0.Add(time.Minute))
+	st, _ = state.Load(w.dir)
+	if st.Refusals.Recovered != 0 || st.Refusals.Streak != 1 || st.Refusals.Target != "primary" || st.Refusals.Total != 2 {
+		t.Fatalf("%+v", st.Refusals)
 	}
 }

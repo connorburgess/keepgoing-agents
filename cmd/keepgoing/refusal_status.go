@@ -26,6 +26,10 @@ type refusalStatus struct {
 	QuestionKind string `json:"questionKind,omitempty"`
 }
 
+// comingOption marks answers the question records but no command can carry
+// out yet; they are shown, never offered as available.
+var comingOption = map[string]bool{"fresh_session": true}
+
 func describeRefusals(g state.RefusalGauge, q *control.Question, now time.Time) refusalStatus {
 	day, recovered := g.InLastDay(now)
 	r := refusalStatus{LastDay: day, RecoveredLastDay: recovered, Total: g.Total, Recovered: g.Recovered, Streak: g.Streak, LongestStreak: g.LongestStreak}
@@ -40,7 +44,11 @@ func describeRefusals(g state.RefusalGauge, q *control.Question, now time.Time) 
 		r.QuestionKind = q.Kind
 		ids := make([]string, 0, len(q.Options))
 		for _, o := range q.Options {
-			ids = append(ids, o.ID)
+			id := o.ID
+			if comingOption[o.ID] {
+				id += " (coming, not yet available)"
+			}
+			ids = append(ids, id)
 		}
 		what := "the model or provider declined turn after turn"
 		if q.Kind == control.QuestionRestricted {

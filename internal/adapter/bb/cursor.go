@@ -389,8 +389,8 @@ func (a *Adapter) saveCursor(c Cursor) bool {
 // setError records a later error of the current turn. A refusal or a
 // restriction stays for the rest of the turn: a later error event, such as a
 // rate limit the provider reports after declining, does not replace it, so a
-// declined turn cannot be read as a limit and handed off. A refusal also
-// outranks a restriction. A new turn clears it, and so does the model
+// declined turn cannot be read as a limit and handed off. A restriction also
+// outranks a refusal. A new turn clears it, and so does the model
 // answering again in this turn (see the recovery events above).
 func (c *Cursor) setError(sig *errorSignal) {
 	if c.Error != nil && adapter.Prefer(c.Error.Class, sig.Class) == c.Error.Class && decide.Declined(c.Error.Class) && c.Error.Class != sig.Class {

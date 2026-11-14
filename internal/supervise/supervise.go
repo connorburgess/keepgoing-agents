@@ -955,10 +955,10 @@ func (t *tick) run() error {
 	if ctl.Question != nil && !t.opts.DryRun {
 		t.withdrawQuestion(ctl.Question.ID)
 	}
-	t.gaugeRefusals(obs)
-	in.RefusalStreak, in.RefusalAskAfter = t.st.Refusals.Streak, loop.Refusal.AskAfterCount()
+	refusals := t.gaugeRefusals(obs)
+	in.RefusalStreak, in.RefusalAskAfter = refusals.Streak, loop.Refusal.AskAfterCount()
 	if obs.State == decide.Error && obs.ErrorClass == decide.ErrRefused {
-		in.SinceRefusal = t.now.Sub(t.st.Refusals.LastAt)
+		in.SinceRefusal = refusals.Since(t.now)
 	}
 	in.HungTurn = t.hungTurn(obs, progressed, in)
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
@@ -1789,7 +1789,11 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
 		if !reserved {
-			if _, err := t.reserveSend(string(d.Action), t.res.Target); err != nil {
+			action := string(d.Action)
+			if d.Reason == decide.RefusedContinueReason {
+				action = refusalContinueAction
+			}
+			if _, err := t.reserveSend(action, t.res.Target); err != nil {
 				return err
 			}
 		}
@@ -1818,7 +1822,13 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			// A continue for a refusal has its own spacing and no cap: it does
 			// not spend the re-prompt allowance kept for other errors.
 			c.Reprompts, c.LastRepromptAt = before.Reprompts, before.LastRepromptAt
-			t.st.Refusals.Seen, t.st.Refusals.Continued = false, true
+			// The spacing runs from the attempt whatever it returned. Only a
+			// continue the adapter accepted makes the next refused turn a new
+			// one, so a failed send does not count the same refusal again.
+			t.st.Refusals.LastContinueAt = t.now
+			if err == nil {
+				t.st.Refusals.Seen, t.st.Refusals.Continued = false, true
+			}
 		}
 		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
 		if err != nil {
@@ -1880,7 +1890,15 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		if t.deferredInteraction {
 			data["deferredInteraction"] = true
 		}
-		t.report("await_user", fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason), data)
+		text := fmt.Sprintf("%s: needs a person: %s", loop.Name, d.Reason)
+		if kind == control.QuestionRefused {
+			g := t.st.Refusals
+			day, recovered := g.InLastDay(t.now)
+			text = fmt.Sprintf("%s: needs a person: the model or provider has declined %d turns in a row on %s. keepgoing has stopped sending continues and is asking how this loop should proceed. False flags are common: in the last 24 hours %d turns were declined on this loop and %d recovered after a continue. keepgoing resume goes on continuing; keepgoing pause or keepgoing stop ends it.",
+				loop.Name, g.Streak, t.res.Target, day, recovered)
+			data["streak"], data["lastDay"], data["recoveredLastDay"] = g.Streak, day, recovered
+		}
+		t.report("await_user", text, data)
 	case decide.Stop:
 		// Recorded first, like a send, so a supervisor stopped right after it
 		// does not stop the turn again. If the record cannot be saved the stop
@@ -2411,6 +2429,21 @@ func (t *tick) countUnrecordedSends() error {
 			t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
 			if p.Action == string(decide.Reprompt) {
 				t.st.UnconfirmedReprompts++
+			}
+		case refusalContinueAction:
+			// A continue for a refusal that may have been made: counted in
+			// the gauge, not the re-prompt allowance. It starts the spacing.
+			// Whether it was accepted is unknown, so the refused turn that
+			// still shows is not counted again: where the adapter names turns
+			// a new turn is counted by its name, and otherwise the streak may
+			// read one low until the next continue, never high.
+			g := &t.st.Refusals
+			if p.At.After(g.LastContinueAt) {
+				g.LastContinueAt = p.At
+			}
+			g.Continued = true
+			if p.At.After(t.st.LastWakeAt) {
+				t.st.LastWakeAt = p.At
 			}
 		case "handoff", "switch_back":
 			// Settled by the hold this check raises: a person looks first.

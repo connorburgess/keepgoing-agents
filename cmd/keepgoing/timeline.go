@@ -322,7 +322,7 @@ func (f timelineFilter) matches(e timelineEntry) bool {
 }
 
 func timelineLimitWait(cause string) bool {
-	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled"
+	return cause == "limit_wait" || cause == "limit_no_fallback" || cause == "limit_failover_disabled" || cause == "limit_refusal_unrecovered"
 }
 
 // timelineKinds labels a record from its typed fields. A dry run decided an

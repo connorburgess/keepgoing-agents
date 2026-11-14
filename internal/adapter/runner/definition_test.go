@@ -308,7 +308,7 @@ func TestDefinitionDeclaredRefusalsAndRestrictions(t *testing.T) {
 		{"a declared refusal with a rate-limit status", turn(exampleResult("failed", `,"error":{"code":"content_blocked","status":429}`), 1), decide.ErrRefused},
 		{"a declared limit with a refusing exit code", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded"}`), 79), decide.ErrRefused},
 		{"a declared limit with a restricting exit code", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded","status":429}`), 78), decide.ErrRestricted},
-		{"a refusal outranks a restriction", turn(exampleResult("failed", `,"error":{"code":"content_blocked","status":403}`), 78), decide.ErrRefused},
+		{"a restriction outranks a refusal", turn(exampleResult("failed", `,"error":{"code":"content_blocked","status":403}`), 78), decide.ErrRestricted},
 		{"an exit code alone", turn(``, 78), decide.ErrRestricted},
 		{"a declared limit alone is still a limit", turn(exampleResult("failed", `,"error":{"code":"quota_exceeded"}`), 1), decide.ErrRateLimit},
 		{"prose about a refusal is not one", turn(exampleResult("failed", `,"message":"content_blocked: I cannot help with that"`), 1), decide.ErrUnknown},
@@ -326,7 +326,6 @@ func TestDeclinedTurnIsNotFinished(t *testing.T) {
 	spec, _ := exampleSpec(t, func(c *config.Custom) {
 		c.Definition.Finished = config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"ok"}}
 		c.Definition.Errors.Classes["content_blocked"] = "refused"
-		c.Definition.Errors.ExitCodes[0] = "restricted"
 	})
 	turn := func(out string) Status {
 		return Status{Phase: Finished, ExitCode: 0, ExitCodeKnown: true, Stdout: []byte(out)}
@@ -334,6 +333,10 @@ func TestDeclinedTurnIsNotFinished(t *testing.T) {
 	if r := spec.Read(turn(exampleResult("ok", `,"error":{"code":"content_blocked"}`))); r.Completed || r.Class != decide.ErrRefused {
 		t.Errorf("a finished turn with a declared refusal: %+v", r)
 	}
+	spec, _ = exampleSpec(t, func(c *config.Custom) {
+		c.Definition.Finished = config.Match{ExitCodes: []int{0}, Field: "status", Equals: []string{"ok"}}
+		c.Definition.Errors.ExitCodes[0] = "restricted"
+	})
 	if r := spec.Read(turn(exampleResult("ok", ""))); r.Completed || r.Class != decide.ErrRestricted {
 		t.Errorf("a finished turn with a restricting exit code: %+v", r)
 	}

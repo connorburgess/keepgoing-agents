@@ -59,7 +59,7 @@ func TestRefusalStatusWording(t *testing.T) {
 		t.Fatalf("a loop with no refusals: %+v", r)
 	}
 	q := &control.Question{Version: 1, Kind: control.QuestionRefused, RaisedAt: now, Options: control.QuestionOptions(control.QuestionRefused)}
-	if r := describeRefusals(g, q, now); r.QuestionKind != "refused" || !strings.Contains(r.Question, "Answers: continue, fresh_session, pause.") {
+	if r := describeRefusals(g, q, now); r.QuestionKind != "refused" || !strings.Contains(r.Question, "Answers: continue, fresh_session (coming, not yet available), pause.") {
 		t.Fatalf("%+v", r)
 	}
 }

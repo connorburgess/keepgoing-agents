@@ -332,6 +332,11 @@ func TestDecodedFieldsAreAnAllowlist(t *testing.T) {
 	if len(unexpected) > 0 || len(unused) > 0 {
 		t.Fatalf("the BB adapter decodes fields %v that are not in the allowlist, and the allowlist names %v that it does not decode. A field that can hold message text, a title or tool output must never be added.", unexpected, unused)
 	}
+	// The one exemption above holds only while fallbackReason is a single
+	// bool: swapping in a type that can carry the field's text fails here.
+	if k := reflect.TypeFor[fallbackReason]().Kind(); k != reflect.Bool {
+		t.Fatalf("fallbackReason is a %s; it must stay a bool", k)
+	}
 	for _, text := range []string{"text", "message", "content", "delta", "input", "output", "title", "detail", "prompt", "body", "summary", "reason", "command", "response"} {
 		if got[text] {
 			t.Errorf("the BB adapter decodes %q", text)

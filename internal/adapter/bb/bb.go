@@ -163,6 +163,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 	}
 	if obs.State == decide.Error {
 		obs.ErrorClass = sig.class
+		if sig.ok && sig.turnStartSeq > 0 {
+			// The log sequence number is per thread: the thread is part of it.
+			obs.ErrorTurn = fmt.Sprintf("%s/bb-turn-%d", a.cfg.Thread, sig.turnStartSeq)
+		}
 	}
 	// A blocked subscription window on an idle thread means the next turn
 	// would fail; treat it as a rate-limit error so it is handled the same way.

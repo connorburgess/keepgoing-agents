@@ -1462,7 +1462,7 @@ func dockHoldNeed(st *statusOut, hold *dockHold, identifiers bool) *dockNeed {
 	case "stall_limit":
 		n.Reason, n.Action = "No progress after repeated nudges.", "See why, then resume or mark it finished."
 	case "refusal_ask":
-		n.Reason, n.Action = "The model or provider declined turn after turn, and a continue did not clear it.", "Look at the conversation, then decide how the loop goes on: continue, start a fresh session, or pause."
+		n.Reason, n.Action = "The model or provider declined turn after turn, and a continue did not clear it.", "Look at the conversation, then decide how the loop goes on: keepgoing resume continues, keepgoing pause or stop ends it. Starting a fresh session from here is coming, not yet available."
 		if st != nil && st.Refusals.Streak > 0 {
 			n.Reason = fmt.Sprintf("The model or provider declined %d turns in a row, and a continue did not clear it.", st.Refusals.Streak)
 		}

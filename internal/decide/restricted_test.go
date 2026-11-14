@@ -151,3 +151,35 @@ func TestDeclineAcknowledgementIsNarrow(t *testing.T) {
 		}
 	}
 }
+
+// While a refusal on this route is unrecovered, no error moves the work: a
+// limit with a reported reset is waited out in place, and any other error
+// gets the in-place rules. With no refusal outstanding the same inputs hand
+// off as before.
+func TestNothingMovesWhileARefusalIsUnrecovered(t *testing.T) {
+	m := time.Minute
+	for _, tc := range []struct {
+		name   string
+		class  ErrorClass
+		fo     Failover
+		streak int
+		action Action
+		wait   LimitWait
+	}{
+		{"limit, fallback available", ErrRateLimit, Failover{Eligible: true, Available: true}, 1, Reprompt, ""},
+		{"limit with a reset, fallback available", ErrRateLimit, Failover{Eligible: true, Available: true, ResetIn: 3 * time.Hour, WaitIfResetWithin: 30 * m}, 2, None, WaitRefusalUnrecovered},
+		{"limit with a reset soon", ErrRateLimit, Failover{Eligible: true, Available: true, ResetIn: 5 * m, WaitIfResetWithin: 30 * m}, 1, None, WaitRefusalUnrecovered},
+		{"limit with a reset, no fallback", ErrRateLimit, Failover{Eligible: true, ResetIn: 3 * time.Hour}, 1, None, WaitRefusalUnrecovered},
+		{"overloaded, fallback available", ErrOverloaded, Failover{Eligible: true, Available: true}, 1, Reprompt, ""},
+		{"auth, fallback available", ErrAuth, Failover{Eligible: true, Available: true}, 1, AwaitUser, ""},
+		{"recovered: limit hands off again", ErrRateLimit, Failover{Eligible: true, Available: true}, 0, Handoff, ""},
+		{"recovered: limit with a reset hands off again", ErrRateLimit, Failover{Eligible: true, Available: true, ResetIn: 3 * time.Hour, WaitIfResetWithin: 30 * m}, 0, Handoff, ""},
+	} {
+		in := base()
+		in.Obs.State, in.Obs.ErrorClass = Error, tc.class
+		in.Failover, in.RefusalStreak = tc.fo, tc.streak
+		if d := Decide(in); d.Action != tc.action || d.LimitWait != tc.wait {
+			t.Errorf("%s: got %s %q (%q)", tc.name, d.Action, d.LimitWait, d.Reason)
+		}
+	}
+}

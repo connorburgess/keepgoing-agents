@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -772,6 +773,17 @@ type RefusalGauge struct {
 	// refusal the target's log showed, so each is noted in the timeline once.
 	FallbackSeq    int64  `json:"fallbackSeq,omitempty"`
 	FallbackTarget string `json:"fallbackTarget,omitempty"`
+	// Target is the target the streak belongs to: a move to another target
+	// ends it without counting a recovery.
+	Target string `json:"target,omitempty"`
+	// TurnKey is a hash of the latest counted refused turn's name, where the
+	// adapter names its turns, so a turn is counted once however many checks
+	// see it. Adapters that do not name turns use Seen.
+	TurnKey string `json:"turnKey,omitempty"`
+	// LastContinueAt is when a continue for the latest refusal was last
+	// attempted, whatever it returned. The spacing runs from it too, so a
+	// failed continue is not repeated on every check.
+	LastContinueAt time.Time `json:"lastContinueAt,omitzero"`
 }
 
 // RefusalWindow is how far back the recent figures reach, and maxRecent how
@@ -803,7 +815,7 @@ func (g *RefusalGauge) Refused(now time.Time) int {
 	}
 	g.LongestStreak = max(g.LongestStreak, g.Streak)
 	g.LastAt, g.Seen, g.Continued = now, true, false
-	g.Recent = keepRecent(append(g.Recent, now), now)
+	g.Recent = keepRecent(append(slices.Clone(g.Recent), now), now)
 	g.RecentRecovered = keepRecent(g.RecentRecovered, now)
 	return g.Streak
 }
@@ -814,10 +826,20 @@ func (g *RefusalGauge) Ended(now time.Time, finished bool) bool {
 	recovered := finished && g.Continued
 	if recovered {
 		g.Recovered++
-		g.RecentRecovered = keepRecent(append(g.RecentRecovered, now), now)
+		g.RecentRecovered = keepRecent(append(slices.Clone(g.RecentRecovered), now), now)
 	}
 	g.Streak, g.StreakSince, g.Seen, g.Continued = 0, time.Time{}, false, false
 	return recovered
+}
+
+// Since is how long ago the latest refusal was first seen or a continue for
+// it was last attempted, whichever is later.
+func (g RefusalGauge) Since(now time.Time) time.Duration {
+	ref := g.LastAt
+	if g.LastContinueAt.After(ref) {
+		ref = g.LastContinueAt
+	}
+	return now.Sub(ref)
 }
 
 // InLastDay returns the refusals and recoveries of the last 24 hours.
