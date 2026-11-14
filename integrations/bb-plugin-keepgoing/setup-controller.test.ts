@@ -202,6 +202,27 @@ test("start gets --json only when the preview it was created from advertised it,
   }
 });
 
+test("with --json a start is confirmed only by its own report, not by its exit code alone", async () => {
+  for (const tc of [
+    { name: "report says started", data: { schemaVersion: 1, outcome: "started" }, started: true },
+    { name: "exit 0 with no report", data: null, started: false },
+    { name: "exit 0 with another outcome", data: { schemaVersion: 1, outcome: "refused" }, started: false },
+  ]) {
+    const f = fixture();
+    const init = f.d.init;
+    f.d.init = async (...args) => {
+      const r = await init(...args);
+      return "plan" in r ? { plan: { ...r.plan, startJson: true as const } } : r;
+    };
+    const command = f.d.command;
+    f.d.command = async (bin, record, op, json) => op === "start" ? (f.calls.push("start"), { code: 0, data: tc.data }) : command(bin, record, op, json);
+    const p = await f.preview(); await f.create(p.ticket);
+    const r = await f.controller.call({ action: "start", threadId: "thr_example" });
+    assert.equal(r.started === true, tc.started, tc.name); assert.equal(r.ok, tc.started, tc.name);
+    if (!tc.started) assert.match(r.message, /could not be confirmed/, tc.name);
+  }
+});
+
 test("a preview whose plan does not report the asked-for limits is refused before anything is created", async () => {
   const f = fixture();
   const bounds = { maxSends: 40, noProgressTimeout: "24h" as const };

@@ -424,7 +424,7 @@ test("an unmarked message ends the request only while the thread is still pendin
     const o = await b.outcome();
     assert.ok(!b.w.setups.some(s => s.action === "start"), `${at}: never started`);
     if (at === "preview") { assert.equal(o.state, "failed"); assert.ok(!b.w.setups.some(s => s.action === "create")); }
-    else { assert.equal(o.state, "ready"); assert.equal(o.startedAutomatically, false); assert.match(o.message, /left switched off, because the request was withdrawn/); }
+    else { assert.equal(o.state, "ready"); assert.equal(o.startedAutomatically, false); assert.equal(o.message, "Created from this thread's first message, then the request was withdrawn while it was being set up, so it was left switched off and not started. Start it here if you still want it."); }
   }
   // The same for a send the browser withdraws between creation and start.
   const c = fixture(); c.w.mode = "automatic";
@@ -433,7 +433,19 @@ test("an unmarked message ends the request only while the thread is still pendin
   c.w.during = async action => { if (action === "create") await c.c.call({ action: "cancel", intent }); };
   await c.c.advance("thr_new");
   assert.ok(!c.w.setups.some(s => s.action === "start"));
-  assert.match((await c.outcome()).message, /may not have been sent/);
+  assert.match((await c.outcome()).message, /then the request was withdrawn while it was being set up, so it was left switched off and not started/);
+
+  // D: withdrawn while the pass reads whether the thread is ready, and the
+  // thread turns out ready: nothing is previewed, and the thread shows the
+  // withdrawal's reason, not a complaint about the task.
+  const r = fixture();
+  const rIntent = await r.arm();
+  r.c.dispatched(r.dispatch(rIntent));
+  r.d.ready = async () => { await r.c.call({ action: "cancel", intent: rIntent }); return { project: "/projects/Example App" }; };
+  await r.c.advance("thr_new");
+  const ro = await r.outcome();
+  assert.equal(r.w.setups.length, 0);
+  assert.equal(ro.state, "failed"); assert.match(ro.message, /may not have been sent/); assert.doesNotMatch(ro.message, /Enter a task/);
 });
 
 test("a refusal at creation shows keepgoing's words only, with no path and no clean-up advice", async () => {

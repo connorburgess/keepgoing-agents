@@ -105,6 +105,8 @@ export function createNewThreadController(d: NewThreadDependencies) {
     let ready: Awaited<ReturnType<NewThreadDependencies["ready"]>>;
     try { ready = await d.ready(threadId); } catch { ready = null; }
     if (!ready) return;
+    // The request may have been withdrawn while the thread was read.
+    if (jobs.get(threadId) !== job || job.withdrawn) return;
     if ("reason" in ready) { fail(job, ready.reason); d.changed(); return; }
     const task = job.task;
     let attempted: { loop: string; configPath: string } | undefined;
@@ -147,7 +149,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
       if (job.withdrawn) {
         // Withdrawn while the setup was being created: it exists, and it stays
         // switched off.
-        job.outcome = { ...job.outcome, message: `Created from this thread's first message and left switched off, because the request was withdrawn while it was being set up: ${job.withdrawn}` };
+        job.outcome = { ...job.outcome, message: "Created from this thread's first message, then the request was withdrawn while it was being set up, so it was left switched off and not started. Start it here if you still want it." };
         return;
       }
       if (job.mode === "automatic" && created.canStart && await d.mode() === "automatic" && jobs.get(threadId) === job && !job.withdrawn) {
@@ -245,7 +247,7 @@ export function createNewThreadController(d: NewThreadDependencies) {
         const exact = x.projectId === intent.projectId && x.attempt === "start-turn" && x.initiator === "user" && x.senderThreadId === null && x.parentThreadId === null && x.sourceThreadId === null && x.queued === 0 && x.threadCreatedAt >= intent.createdAt;
         if (!exact) return explain(x.threadId, NOT_MATCHED);
         if (!x.text.trim() || Buffer.byteLength(x.text) > 262144) return explain(x.threadId, "The first message has no text looptender can use as a task, or is larger than 256 KiB. Nothing was created. Use Supervise this thread to enter a task.");
-        jobs.set(x.threadId, { threadId: x.threadId, task: x.text, bounds: intent.bounds, mode: intent.mode, expires: d.now() + JOB_WAIT_MS, outcome: { state: "waiting", message: "keepgoing is waiting for this thread's first turn to start, then sets it up from the first message." } });
+        jobs.set(x.threadId, { threadId: x.threadId, task: x.text, bounds: intent.bounds, mode: intent.mode, expires: d.now() + JOB_WAIT_MS, outcome: { state: "waiting", message: "looptender is waiting for this thread's first turn to start, then sets it up from the first message." } });
       } catch { /* never fail a send */ }
     },
     /** A thread reached a state in which its first turn may have started. */

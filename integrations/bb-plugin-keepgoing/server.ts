@@ -293,19 +293,19 @@ export default async function plugin(bb: BbPluginApi) {
       if (!hookAvailable) return "This version of BB does not offer the hook Keep going needs to learn which thread a message created, so it is unavailable here. Supervise this thread still works on an existing thread.";
       const { bin } = await configured();
       const result = await run(bin, ["version"]);
-      return result.code === 0 ? null : "The keepgoing program was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";
+      return result.code === 0 ? null : "The looptender program (installed as keepgoing up to v0.2.0) was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";
     },
     ready: async threadId => {
       try {
         const signal = AbortSignal.timeout(10_000);
         const t = await bb.sdk.threads.get({ threadId, signal });
-        if (t.archivedAt !== null || t.deletedAt !== null) return { reason: "This thread was archived or deleted before keepgoing could set it up. Nothing was created." };
+        if (t.archivedAt !== null || t.deletedAt !== null) return { reason: "This thread was archived or deleted before looptender could set it up. Nothing was created." };
         // A thread still pending has not started its first turn: BB has not
         // delivered the message, and may never.
         if (t.status === "pending" || !t.environmentId) return null;
         const e = await bb.sdk.environments.get({ environmentId: t.environmentId, signal });
         if (e.status !== "ready") return null;
-        if (!e.isGitRepo || !e.path) return { reason: "This thread does not work in a Git repository, which keepgoing needs to tell whether work is progressing. Nothing was created." };
+        if (!e.isGitRepo || !e.path) return { reason: "This thread does not work in a Git repository, which looptender needs to tell whether work is progressing. Nothing was created." };
         const target = await resolveTarget(threadId);
         return { project: target.project };
       } catch { return null; }
