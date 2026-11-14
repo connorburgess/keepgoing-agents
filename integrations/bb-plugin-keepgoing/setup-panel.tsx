@@ -39,7 +39,7 @@ export function SetupPanel({ threadId, call, onChanged }: { threadId: string; ca
       <label>Loop name<input aria-label="Loop name" value={name} disabled={busy} onChange={e => { setName(e.target.value); edit(); }} style={{ display: "block", width: "100%" }} /></label>
       <label>Task and completion criteria<textarea aria-label="Task and completion criteria" value={task} disabled={busy} maxLength={262144} rows={5} onChange={e => { setTask(e.target.value); edit(); }} style={{ display: "block", width: "100%" }} /></label>
       <label><input type="checkbox" aria-label="Record a goal for this task" checked={withGoal} disabled={busy} onChange={e => { setWithGoal(e.target.checked); edit(); }} /> Record a goal for this task</label>
-      <span>{withGoal ? "Use the loop name as the initial goal title. Save the task once in a private file and share current goal references in future prompts. Requires an updated keepgoing CLI; v0.1.4 does not support this setup option." : "Copy the task into wake instructions without creating a goal record."}</span>
+      <span>{withGoal ? "Use the loop name as the initial goal title. Save the task once in a private file and share current goal references in future prompts. Requires an updated looptender CLI; v0.1.4 does not support this setup option." : "Copy the task into wake instructions without creating a goal record."}</span>
       <span>One existing thread, with its current model and login. No fallbacks. Creating the setup leaves supervision disabled.</span>
       <button type="button" disabled={busy || !task.trim() || !name} onClick={() => void act("preview")}>Preview setup</button>
     </>}
