@@ -90,6 +90,29 @@ func validate(e env, cfg *config.Config, path string, takeOver ...bool) int {
 // daemonKey carries what is known of the daemon running a pass.
 type daemonKey struct{}
 
+// daemonPassContext hands a pass what its daemon knows of itself: when it
+// started and when its last completed pass began and ended.
+func daemonPassContext(ctx context.Context, monitor *daemoninfo.Server) context.Context {
+	started := monitor.StartedAt()
+	if started.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, daemonKey{}, supervise.DaemonInfo{StartedAt: started, LastPassAt: monitor.LastPassAt(), LastPassStartedAt: monitor.LastPassStartedAt()})
+}
+
+// daemonOf is what a pass's context says of its daemon; zero outside one.
+func daemonOf(ctx context.Context) supervise.DaemonInfo {
+	d, _ := ctx.Value(daemonKey{}).(supervise.DaemonInfo)
+	return d
+}
+
+// tickOptions are a check's options from the command's context: the
+// scheduler identity, and the daemon running it, when one is.
+func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
+	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx)}
+}
+
 // tickOnce runs one pass under the tick lock.
 func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, leases ...*ownerLease) int {
 	l, err := lock.Acquire(cfg.Loop.StateDir)
@@ -112,10 +135,7 @@ func tickOnce(e env, cfg *config.Config, now time.Time, dryRun, fixedNow bool, l
 		e.errf("%v; no tick performed; reload and retry", err)
 		return exitSkipped
 	}
-	opts := supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx), RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil}
-	if d, ok := e.ctx.Value(daemonKey{}).(supervise.DaemonInfo); ok {
-		opts.Daemon = d
-	}
+	opts := tickOptions(e, cfg, dryRun)
 	if fixedNow {
 		opts.Now = now
 	}
@@ -201,9 +221,7 @@ func daemonLoop(e env, cfg *config.Config, cfgPath string, dryRun bool, lease *o
 		sig := controlSignature(cfg.Loop.StateDir)
 		monitor.Update("checking", nil)
 		pass := e
-		if started := monitor.StartedAt(); !started.IsZero() {
-			pass.ctx = context.WithValue(e.ctx, daemonKey{}, supervise.DaemonInfo{StartedAt: started, LastPassAt: monitor.LastPassAt()})
-		}
+		pass.ctx = daemonPassContext(e.ctx, monitor)
 		code := tickOnce(pass, cfg, time.Time{}, dryRun, false, lease)
 		if err := checkOwnership(cfg.Loop.StateDir, lease); err != nil {
 			return ownershipError(e, err)

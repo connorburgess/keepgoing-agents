@@ -51,6 +51,9 @@ func describeSchedule(l *config.Loop, st state.File, ctl control.File, d *daemon
 		if d.LastPassAt != nil {
 			info.LastPassAt = *d.LastPassAt
 		}
+		if d.LastPassStartedAt != nil {
+			info.LastPassStartedAt = *d.LastPassStartedAt
+		}
 		if d.NextCheckAt != nil {
 			info.NextCheckAt = *d.NextCheckAt
 		}

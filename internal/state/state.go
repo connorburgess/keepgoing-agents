@@ -55,7 +55,10 @@ type File struct {
 	CheckFinishedAt time.Time       `json:"checkFinishedAt,omitempty"`
 	StartedBy       *Routine        `json:"startedBy,omitempty"`
 	ScheduleGaps    []time.Duration `json:"scheduleGapsNs,omitempty"`
-	CheckGapPending *Gap            `json:"checkGapPending,omitempty"`
+	// ScheduleWindowID names the operating window ScheduleGaps were
+	// recorded under; empty for none.
+	ScheduleWindowID string `json:"scheduleWindow,omitempty"`
+	CheckGapPending  *Gap   `json:"checkGapPending,omitempty"`
 	// ActiveSince is the earliest moment the stall clock may count from: when
 	// the target was seen active again after an error or an outage, or the
 	// last Git change moved forward by time in which no check ran. Zero means

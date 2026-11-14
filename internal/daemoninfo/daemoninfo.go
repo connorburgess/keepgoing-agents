@@ -43,10 +43,12 @@ type Snapshot struct {
 	ObservedAt   time.Time  `json:"observedAt"`
 	Phase        string     `json:"phase"`
 	NextCheckAt  *time.Time `json:"nextCheckAt,omitempty"`
-	// LastPassAt is when the daemon's latest pass ended, whether or not it
-	// recorded a check.
-	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
-	DryRun     bool       `json:"dryRun"`
+	// LastPassAt is when the daemon's latest completed pass ended, and
+	// LastPassStartedAt when it began, whether or not it recorded a check.
+	// A pass that began after a check finished is not that check's pass.
+	LastPassAt        *time.Time `json:"lastPassAt,omitempty"`
+	LastPassStartedAt *time.Time `json:"lastPassStartedAt,omitempty"`
+	DryRun            bool       `json:"dryRun"`
 }
 
 type response struct {
@@ -62,6 +64,7 @@ type Server struct {
 	endpoint endpoint
 	done     chan struct{}
 	mu       sync.Mutex
+	passAt   time.Time // when the pass under way began
 	snapshot Snapshot
 }
 
@@ -128,15 +131,37 @@ func (s *Server) LastPassAt() time.Time {
 	return *s.snapshot.LastPassAt
 }
 
+// LastPassStartedAt is when this daemon's latest completed pass began; zero
+// before the first or for a nil server.
+func (s *Server) LastPassStartedAt() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.snapshot.LastPassStartedAt == nil {
+		return time.Time{}
+	}
+	return *s.snapshot.LastPassStartedAt
+}
+
 func (s *Server) Update(phase string, next *time.Time) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snapshot.Phase == "checking" && phase == "waiting" {
-		ended := time.Now().UTC()
+	now := time.Now().UTC()
+	switch {
+	case phase == "checking":
+		s.passAt = now // a pass begins
+	case s.snapshot.Phase == "checking" && phase == "waiting":
+		ended := now
 		s.snapshot.LastPassAt = &ended // a pass has just ended
+		if !s.passAt.IsZero() {
+			began := s.passAt
+			s.snapshot.LastPassStartedAt = &began
+		}
 	}
 	s.snapshot.Phase, s.snapshot.NextCheckAt = phase, nil
 	if next != nil {

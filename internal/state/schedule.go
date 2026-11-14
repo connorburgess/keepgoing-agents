@@ -43,7 +43,10 @@ type ScheduleInput struct {
 	ControlChangedAt time.Time
 	// InWindow is how much of [from, to) lies inside the loop's operating
 	// window; nil when it has none. Time outside the window does not count.
+	// WindowID names the window: gaps recorded under another one say
+	// nothing about this one, and are set aside.
 	InWindow func(from, to time.Time) time.Duration
+	WindowID string
 	// DaemonStartedAt is when a daemon running this loop now started, when
 	// that was verified; zero otherwise. A daemon that started before the
 	// last check and is still running means the computer slept, unless
@@ -52,6 +55,12 @@ type ScheduleInput struct {
 	// from a daemon that does not say when its last pass ended, a next check
 	// it set for after one (DaemonNextCheckAt).
 	DaemonStartedAt, DaemonLastPassAt, DaemonNextCheckAt time.Time
+	// DaemonLastPassStartedAt is when the daemon's latest completed pass
+	// began. One that began after the last check finished, and is not that
+	// check, recorded nothing: checks are running but not recorded. It needs
+	// no allowance for work after a check is saved, and does not depend on
+	// when the daemon started.
+	DaemonLastPassStartedAt time.Time
 	// TurnedAwayAt is the latest check that exited without running because
 	// an earlier check still held the tick lock; zero if none is recorded.
 	TurnedAwayAt time.Time
@@ -107,7 +116,11 @@ type Gap struct {
 
 // ScheduleOf applies the overdue rule.
 func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
-	s := Schedule{LastCheckAt: f.CheckedAt, From: f.CheckedAt, StartedBy: f.StartedBy, GapsSeen: len(f.ScheduleGaps)}
+	gaps := f.ScheduleGaps
+	if f.ScheduleWindowID != in.WindowID {
+		gaps = nil // recorded under another window
+	}
+	s := Schedule{LastCheckAt: f.CheckedAt, From: f.CheckedAt, StartedBy: f.StartedBy, GapsSeen: len(gaps)}
 	// A change stamped later than now is a clock that moved: ignored.
 	if in.ControlChangedAt.After(s.From) && !in.ControlChangedAt.After(now) {
 		s.From = in.ControlChangedAt
@@ -127,7 +140,7 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 	if s.GapsSeen < CadenceMinGaps {
 		s.Basis, s.Threshold = "fallback", max(FallbackOverdue, OverdueFactor*in.DaemonInterval)
 	} else {
-		s.Basis, s.Usual = "usual", max(in.DaemonInterval, usualGap(f.ScheduleGaps))
+		s.Basis, s.Usual = "usual", max(in.DaemonInterval, usualGap(gaps))
 		s.Threshold = max(MinOverdue, OverdueFactor*s.Usual)
 	}
 	// Evidence of being awake is dated against when the last check
@@ -140,13 +153,17 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 	after := func(at time.Time) bool { return at.After(finished.Add(passSlack)) && !at.After(now) }
 	s.Blocked = after(in.TurnedAwayAt)
 	daemon := !in.DaemonStartedAt.IsZero() && !in.DaemonStartedAt.After(f.CheckedAt)
-	if daemon {
-		passed := after(in.DaemonLastPassAt)
-		if in.DaemonLastPassAt.IsZero() && !in.DaemonNextCheckAt.IsZero() && in.DaemonInterval > 0 {
-			passed = after(in.DaemonNextCheckAt.Add(-in.DaemonInterval))
-		}
-		s.NotRecorded = passed && !s.Blocked
+	switch {
+	case !in.DaemonLastPassStartedAt.IsZero():
+		// A completed pass that began after the last check finished: from
+		// any daemon, including one restarted since that check.
+		s.NotRecorded = in.DaemonLastPassStartedAt.After(finished) && !in.DaemonLastPassStartedAt.After(now)
+	case daemon && !in.DaemonLastPassAt.IsZero():
+		s.NotRecorded = after(in.DaemonLastPassAt) // a daemon that gives only when its pass ended
+	case daemon && !in.DaemonNextCheckAt.IsZero() && in.DaemonInterval > 0:
+		s.NotRecorded = after(in.DaemonNextCheckAt.Add(-in.DaemonInterval)) // nor that
 	}
+	s.NotRecorded = s.NotRecorded && !s.Blocked
 	s.Slept = daemon && !s.Blocked && !s.NotRecorded
 	s.Overdue = !s.Slept && s.For > s.Threshold
 	return s
@@ -156,6 +173,9 @@ func ScheduleOf(f File, in ScheduleInput, now time.Time) Schedule {
 // later control change) to this one, when it lies wholly inside the
 // operating window. It is called by each check before it records itself.
 func NoteScheduleGap(f *File, in ScheduleInput, now time.Time) {
+	if f.ScheduleWindowID != in.WindowID {
+		f.ScheduleGaps, f.ScheduleWindowID = nil, in.WindowID // the window changed: start again
+	}
 	if f.CheckedAt.IsZero() || !now.After(f.CheckedAt) {
 		return
 	}

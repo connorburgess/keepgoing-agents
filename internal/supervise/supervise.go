@@ -3,6 +3,8 @@ package supervise
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1886,11 +1888,23 @@ func (t *tick) scheduleInput(ctl control.File) state.ScheduleInput {
 	return ScheduleInput(&t.loop, ctl, t.opts.Daemon)
 }
 
+// windowID names an operating window by its contents, so a changed window
+// is told from the old one.
+func windowID(w *config.Window) string {
+	days := make([]string, 0, len(w.Days))
+	for d, span := range w.Days {
+		days = append(days, d+"="+strings.Join(span, "-"))
+	}
+	slices.Sort(days)
+	sum := sha256.Sum256([]byte(w.TZ + "|" + strings.Join(days, ",")))
+	return hex.EncodeToString(sum[:8])
+}
+
 // DaemonInfo is what is known of a daemon verified to be running a loop:
 // when it started, when its last pass ended and the next check it set.
 // Zero values are unknown.
 type DaemonInfo struct {
-	StartedAt, LastPassAt, NextCheckAt time.Time
+	StartedAt, LastPassAt, LastPassStartedAt, NextCheckAt time.Time
 }
 
 // ScheduleInput is what the overdue rule needs besides state.json, for the
@@ -1899,9 +1913,10 @@ type DaemonInfo struct {
 func ScheduleInput(loop *config.Loop, ctl control.File, d DaemonInfo) state.ScheduleInput {
 	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
 		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, StopRequested: ctl.Stop, ControlChangedAt: ctl.UpdatedAt,
-		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonNextCheckAt: d.NextCheckAt,
+		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonLastPassStartedAt: d.LastPassStartedAt, DaemonNextCheckAt: d.NextCheckAt,
 		TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}
 	if w := loop.Window; w != nil {
+		in.WindowID = windowID(w)
 		in.InWindow = func(from, to time.Time) time.Duration {
 			if d, err := window.Overlap(w, from, to); err == nil {
 				return d

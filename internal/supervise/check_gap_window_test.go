@@ -117,6 +117,11 @@ func TestEvidenceOfBeingAwake(t *testing.T) {
 		{"the same daemon, a pass since that did not record", state.ScheduleInput{DaemonStartedAt: daemon, DaemonLastPassAt: t0.Add(3 * time.Hour)}, false, false, true},
 		{"an older daemon whose next check was set after a pass", state.ScheduleInput{DaemonStartedAt: daemon, DaemonInterval: 10 * time.Minute, DaemonNextCheckAt: t0.Add(3*time.Hour + 10*time.Minute)}, false, false, true},
 		{"an older daemon whose next check passed in its sleep", state.ScheduleInput{DaemonStartedAt: daemon, DaemonInterval: 10 * time.Minute, DaemonNextCheckAt: t0.Add(12 * time.Minute)}, true, false, false},
+		// When the daemon's last completed pass began: no allowance needed
+		// for reports that ran on after the save.
+		{"its own pass, ending 90s after the check was saved", state.ScheduleInput{DaemonStartedAt: daemon, DaemonLastPassStartedAt: t0.Add(-time.Second), DaemonLastPassAt: t0.Add(2*time.Minute + 90*time.Second)}, true, false, false},
+		{"a pass that began after the check finished", state.ScheduleInput{DaemonStartedAt: daemon, DaemonLastPassStartedAt: t0.Add(3 * time.Minute), DaemonLastPassAt: t0.Add(3*time.Minute + time.Second)}, false, false, true},
+		{"a daemon started since, its passes recording nothing", state.ScheduleInput{DaemonStartedAt: t0.Add(time.Hour), DaemonLastPassStartedAt: t0.Add(3 * time.Hour)}, false, false, true},
 	} {
 		in := tc.in
 		in.Enabled = true
@@ -164,6 +169,9 @@ func TestCheckGapText(t *testing.T) {
 	t.Run("in a window: of its working hours", func(t *testing.T) {
 		got := text(t, func(w *world, _ *Options) {
 			w.cfg.Loop.Window = &config.Window{TZ: "UTC", Days: map[string][]string{"Mon": {"00:00", "23:59"}, "Tue": {"00:00", "23:59"}, "Wed": {"00:00", "23:59"}, "Thu": {"00:00", "23:59"}, "Fri": {"00:00", "23:59"}, "Sat": {"00:00", "23:59"}, "Sun": {"00:00", "23:59"}}}
+			st, _ := state.Load(w.dir)
+			st.ScheduleWindowID = windowID(w.cfg.Loop.Window) // the gaps were seen under this window
+			state.Save(w.dir, st)
 		})
 		if !strings.Contains(got, " of its working hours, where checks normally run every 10m") {
 			t.Fatalf("%q", got)
@@ -192,4 +200,75 @@ func TestErrorReportGoesBeforeCheckGap(t *testing.T) {
 		t.Fatalf("reports %s", got)
 	}
 	_ = fmt.Sprint
+}
+
+// Changing the operating window starts the gap record again: gaps seen
+// under the old window say nothing about the new one. A scheduler that runs
+// every 10 minutes from 09:00 to 17:00 on weekdays, on a loop whose window
+// moves from 09:00-17:00 to 13:00-21:00 on Tuesday at 18:00: that evening
+// it is not called overdue, as it would be against the 10-minute interval
+// learned under the old window.
+func TestChangingTheWindowStartsTheGapRecordAgain(t *testing.T) {
+	weekdays := func(from, to string) *config.Window {
+		days := map[string][]string{}
+		for _, d := range []string{"Mon", "Tue", "Wed", "Thu", "Fri"} {
+			days[d] = []string{from, to}
+		}
+		return &config.Window{TZ: "UTC", Days: days}
+	}
+	loop := config.Loop{StateDir: t.TempDir(), Daemon: config.Daemon{Interval: config.Duration{Duration: 5 * time.Minute}}, Window: weekdays("09:00", "17:00")}
+	monday := time.Date(2030, 1, 7, 0, 0, 0, 0, time.UTC)
+	changed := monday.Add(24*time.Hour + 18*time.Hour) // Tuesday 18:00
+	var f state.File
+	wednesday := monday.AddDate(0, 0, 2).Add(9*time.Hour + 5*time.Minute)
+	for at := monday; at.Before(wednesday); at = at.Add(5 * time.Minute) {
+		if !at.Before(changed) {
+			loop.Window = weekdays("13:00", "21:00")
+		}
+		in := ScheduleInput(&loop, control.File{Enabled: true}, DaemonInfo{})
+		if s := state.ScheduleOf(f, in, at); s.Overdue && !at.Before(changed) && at.Before(changed.Add(3*time.Hour)) {
+			t.Fatalf("overdue at %s, after the window changed: %+v", at.Format("Mon 15:04"), s)
+		}
+		minute := at.Hour()*60 + at.Minute()
+		if minute >= 9*60 && minute < 17*60 && at.Minute()%10 == 0 { // the scheduler's hours
+			state.NoteScheduleGap(&f, in, at)
+			f.CheckedAt = at
+		}
+	}
+	// The first check under the new window (Wednesday 09:00, its gap across
+	// the night not recorded) set the old window's gaps aside.
+	if len(f.ScheduleGaps) != 0 || f.ScheduleWindowID != windowID(weekdays("13:00", "21:00")) {
+		t.Fatalf("gaps %v under %q", f.ScheduleGaps, f.ScheduleWindowID)
+	}
+}
+
+// Each check records when it finished, through Tick, so a check turned away
+// while it ran is not taken for one turned away by a hung check after it.
+func TestTickRecordsWhenTheCheckFinished(t *testing.T) {
+	w := newWorld(t, true, false)
+	w.primary(decide.Observation{State: decide.Active})
+	wall := time.Date(2030, 6, 1, 0, 0, 0, 0, time.UTC)
+	opts := w.opts(t0)
+	calls := 0
+	opts.Clock = func() time.Time { // the check takes three minutes
+		calls++
+		if calls == 1 {
+			return wall
+		}
+		return wall.Add(3 * time.Minute)
+	}
+	if _, err := Tick(t.Context(), w.cfg, opts); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(w.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.CheckFinishedAt.Equal(t0.Add(3 * time.Minute)) {
+		t.Fatalf("finished %v, want %v", st.CheckFinishedAt, t0.Add(3*time.Minute))
+	}
+	in := state.ScheduleInput{Enabled: true, TurnedAwayAt: t0.Add(90 * time.Second)} // while it ran
+	if s := state.ScheduleOf(st, in, t0.Add(4*time.Hour)); s.Blocked {
+		t.Fatalf("a check turned away while the last one ran was taken for a hung check: %+v", s)
+	}
 }
