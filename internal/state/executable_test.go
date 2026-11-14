@@ -52,3 +52,37 @@ func TestCheckExecutableIdentityAndStrictLoader(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutingImageRejectsInPlaceMutation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "image")
+	if e := os.WriteFile(path, []byte("old-image"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	f, e := os.Open(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer f.Close()
+	info, _ := f.Stat()
+	id, _ := IdentityOf(info)
+	sum, e := executableDigest(f)
+	if e != nil {
+		t.Fatal(e)
+	}
+	image := &ExecutableImage{Path: path, Identity: id, file: f, sha: sum}
+	// Keep the size and timestamps identical: the startup hash also refuses
+	// in-place edits that do not show up in the metadata binding.
+	if e = os.WriteFile(path, []byte("new-image"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Chtimes(path, info.ModTime(), info.ModTime()); e != nil {
+		t.Fatal(e)
+	}
+	if e = image.Record(dir, "v0.2.1", time.Now()); e == nil {
+		t.Fatal("mutated executing image recorded")
+	}
+	if rec, e := LoadCheckExecutable(dir); e != nil || rec != nil {
+		t.Fatalf("recorded mutation: %+v %v", rec, e)
+	}
+}

@@ -15,15 +15,20 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // A session owns the startup executable handle for the lifetime of one panel.
 // The path is display-only: no replacement ever reopens it.
 type buildSession struct {
 	dir, registry, path, label, sha string
-	source                          *os.File
-	err                             error
-	agent, daemonHeld               bool
+	source                          interface {
+		io.ReaderAt
+		Stat() (os.FileInfo, error)
+		Close() error
+	}
+	err               error
+	agent, daemonHeld bool
 }
 
 func newBuildSession(dir, registry string) *buildSession {
@@ -32,11 +37,20 @@ func newBuildSession(dir, registry string) *buildSession {
 	if b.err != nil {
 		return b
 	}
-	b.source, b.err = os.Open(b.path)
+	if b.path == checkExecutable() {
+		b.source, b.err = processExecutableImage.OpenReader()
+	} else {
+		b.source, b.err = os.Open(b.path)
+	}
 	if b.err != nil {
 		return b
 	}
-	data, e := io.ReadAll(io.LimitReader(b.source, serviceBinaryLimit+1))
+	info, e := b.source.Stat()
+	var data []byte
+	if e == nil && info.Size() > 0 && info.Size() <= serviceBinaryLimit {
+		data = make([]byte, info.Size())
+		_, e = b.source.ReadAt(data, 0)
+	}
 	if e != nil || len(data) == 0 || int64(len(data)) > serviceBinaryLimit {
 		b.err = errors.New("startup executable unreadable")
 		b.close()
@@ -169,3 +183,40 @@ func buildSchemasMatch(backup, current string) error {
 	}
 	return nil
 }
+
+// Include custom and default registries, including both on-disk tool names.
+// Resolve and validate every candidate; an unreadable relevant registry is a
+// refusal rather than evidence that no sibling exists.
+func buildRelevantRegistries(custom string) ([]string, error) {
+	var dirs []string
+	seen := map[string]bool{}
+	add := func(path string) error {
+		dir, e := registryDirectory(path)
+		if e != nil {
+			return e
+		}
+		if !seen[dir] {
+			seen[dir] = true
+			dirs = append(dirs, dir)
+		}
+		return nil
+	}
+	if e := add(custom); e != nil {
+		return nil, e
+	}
+	if e := add(""); e != nil {
+		return nil, e
+	}
+	base, e := buildUserConfigHome()
+	if e != nil {
+		return nil, e
+	}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		if e = add(filepath.Join(base, name, "registry")); e != nil {
+			return nil, e
+		}
+	}
+	return dirs, nil
+}
+
+var buildUserConfigHome = userdir.ConfigHome

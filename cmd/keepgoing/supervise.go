@@ -136,18 +136,17 @@ func daemonOf(ctx context.Context) supervise.DaemonInfo {
 // scheduler identity, and the daemon running it, when one is.
 func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
 	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
-		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable()}
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage}
 }
 
-// checkExecutable is the path of the file running this process, as the
-// system reports it (not resolved further, so a symlink stays visible), or
-// empty when it cannot be known.
+// Capture once during process initialization, before a command or check starts.
+var processExecutableImage = state.CaptureExecutableImage()
+
 func checkExecutable() string {
-	p, err := os.Executable()
-	if err != nil || !filepath.IsAbs(p) {
+	if processExecutableImage == nil {
 		return ""
 	}
-	return p
+	return processExecutableImage.Path
 }
 
 // tickOnce runs one pass under the tick lock.

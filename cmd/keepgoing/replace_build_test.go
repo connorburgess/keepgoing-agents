@@ -35,7 +35,8 @@ func newBuildWorld(t *testing.T, dirName string) *buildWorld {
 	f.run("enable")
 	w := &buildWorld{f: f, t0: time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)}
 	stateDir := filepath.Join(f.dir, "state")
-	w.entry = registry.Entry{ID: "loop_0123456789abcdef0123456789abcdef", Loop: "example-docs", ConfigPath: f.cfg, StateDir: stateDir}
+	stateDir, _ = canonicalFuturePath(stateDir)
+	w.entry = registry.Entry{ID: "loop_0123456789abcdef0123456789abcdef", Loop: "example-loop", ConfigPath: f.cfg, StateDir: stateDir}
 	bin := filepath.Join(f.dir, dirName)
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)

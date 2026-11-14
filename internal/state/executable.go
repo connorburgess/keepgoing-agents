@@ -68,7 +68,7 @@ func CleanPath(p string) bool {
 // SaveCheckExecutable records the file that ran a check, looked at without
 // following a final symlink. It writes only when the path, label or identity
 // differs from the record, so an unchanged file costs no write.
-func SaveCheckExecutable(dir, path, label string, at time.Time) error {
+func SaveCheckExecutable(dir, path, label string, at time.Time, expected ...FileIdentity) error {
 	if !CleanPath(path) || len(label) > 256 {
 		return ErrCheckExecutable
 	}
@@ -77,7 +77,7 @@ func SaveCheckExecutable(dir, path, label string, at time.Time) error {
 		return ErrCheckExecutable
 	}
 	id, ok := IdentityOf(info)
-	if !ok {
+	if !ok || (len(expected) > 0 && id != expected[0]) {
 		return ErrCheckExecutable
 	}
 	if cur, err := LoadCheckExecutable(dir); err == nil && cur != nil && cur.Path == path && cur.Label == label && cur.Identity == id {

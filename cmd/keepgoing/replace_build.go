@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
@@ -60,7 +59,12 @@ var panelBuildActions = map[string]string{buildReplaceAction: "Replace the build
 
 // Stand-ins for tests: this panel's own file, and the file system's owner check.
 var (
-	buildSource      = os.Executable
+	buildSource = func() (string, error) {
+		if checkExecutable() == "" {
+			return "", errors.New("startup image unavailable")
+		}
+		return checkExecutable(), nil
+	}
 	buildOS          = runtime.GOOS
 	buildOwnedByUser = fileOwnedByUser
 )
@@ -185,6 +189,10 @@ func (b *buildSession) assess(entry registry.Entry, daemon daemonStatus, now tim
 		c.Text = "Build changes are unavailable to a panel started by an agent."
 		return c, rec
 	}
+	if _, ok := clientConfig(entry); !ok {
+		c.Text = "The configuration no longer matches this registered loop and state directory."
+		return c, rec
+	}
 	if b.err != nil {
 		c.Text = "This panel's running executable could not be opened and hashed at startup; build changes are unavailable."
 		return c, rec
@@ -283,18 +291,24 @@ func (b *buildSession) fileRefusal(entry registry.Entry, path string, daemon dae
 	if pm := buildPackageTree(target); pm != "" {
 		return "The file belongs to " + pm + "; update it with that tool."
 	}
-	{
-		dir, e := registryDirectory(b.registry)
-		if e != nil {
-			return "The registered loops could not be checked."
-		}
+	dirs, e := buildRelevantRegistries(b.registry)
+	if e != nil {
+		return "The relevant registered loops could not be checked."
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, dir := range dirs {
 		all, e := registry.Load(dir)
 		if e != nil {
-			return "The registered loops could not be checked."
+			return "The relevant registered loops could not be checked."
 		}
-		var names []string
 		for _, other := range all.Entries {
-			if other.ID == entry.ID {
+			key := other.ID + "\x00" + other.ConfigPath + "\x00" + other.StateDir
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if other.ID == entry.ID && other.ConfigPath == entry.ConfigPath && other.StateDir == entry.StateDir {
 				continue
 			}
 			rec, e := state.LoadCheckExecutable(other.StateDir)
@@ -305,11 +319,12 @@ func (b *buildSession) fileRefusal(entry registry.Entry, path string, daemon dae
 				names = append(names, other.Loop)
 			}
 		}
-		if len(names) > 0 {
-			sort.Strings(names)
-			return "Other registered loops name the same file: " + strings.Join(names, ", ") + ". Replace their shared installation by hand."
-		}
 	}
+	if len(names) > 0 {
+		sort.Strings(names)
+		return "Other registered loops name the same file: " + strings.Join(names, ", ") + ". Replace their shared installation by hand."
+	}
+
 	held, e := false, error(nil)
 	if !b.daemonHeld {
 		held, e = lock.Held(entry.StateDir, lock.Daemon)
@@ -406,9 +421,9 @@ func (b *buildSession) apply(ctx context.Context, entry registry.Entry, action, 
 	if !check() {
 		return panelResult{Outcome: "review_again", Text: "The loop or file is no longer as reviewed. Nothing was changed. Review again.", Retry: true}
 	}
-	if action == buildReplaceAction {
-		if _, e := config.Load(entry.ConfigPath); e != nil {
-			return panelResult{Outcome: "refused", Text: "Its configuration does not load with this build. Nothing was changed."}
+	{
+		if _, ok := clientConfig(entry); !ok {
+			return panelResult{Outcome: "refused", Text: "Its configuration does not match this registered loop and state directory. Nothing was changed."}
 		}
 	}
 	lk, e := buildWaitForChecks(ctx, entry.StateDir)
@@ -430,9 +445,9 @@ func (b *buildSession) apply(ctx context.Context, entry registry.Entry, action, 
 	if why != "" {
 		return panelResult{Outcome: "refused", Text: why}
 	}
-	if action == buildReplaceAction {
-		if _, e := config.Load(entry.ConfigPath); e != nil {
-			return panelResult{Outcome: "refused", Text: "Its configuration changed or does not load. Nothing was changed."}
+	{
+		if _, ok := clientConfig(entry); !ok {
+			return panelResult{Outcome: "refused", Text: "Its configuration changed or no longer matches the registered loop and state directory. Nothing was changed."}
 		}
 	}
 

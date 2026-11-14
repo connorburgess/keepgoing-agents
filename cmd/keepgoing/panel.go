@@ -82,7 +82,8 @@ type panelRecord struct {
 	Version  string `json:"version"`
 	// Changes: started with --allow-changes. Since StartedAt, as the mode
 	// never changes while the server runs.
-	Changes bool `json:"changes,omitempty"`
+	Changes        bool   `json:"changes,omitempty"`
+	BuildAuthority string `json:"buildAuthority,omitempty"`
 }
 
 var (
@@ -357,7 +358,8 @@ func writePanelRecord(dir string, rec panelRecord) error {
 
 // panelRequest is one message on the private socket.
 type panelRequest struct {
-	Op string `json:"op"` // open, status or stop
+	CallerKind string `json:"callerKind,omitempty"`
+	Op         string `json:"op"` // open, status or stop
 	// Key is the page key of the loop to open; empty opens the overview.
 	Key string `json:"key,omitempty"`
 	// File asks for the opening as a private file to hand to a browser
@@ -611,7 +613,11 @@ func panelRemoveLeftovers(dir string) {
 // reply is still only ever a loopback opening address for the server's own
 // port, or the name of a launch page inside the private directory.
 func panelRequestOpening(ctx context.Context, dir string, rec panelRecord, key string, asFile bool) (string, error) {
-	reply, err := panelControl(ctx, dir, panelRequest{Op: "open", Key: key, File: asFile})
+	if rec.Changes && !panelBuildReuseAllowed(rec, panelCallerKind()) {
+		return "", errors.New("panel build authority differs or is unknown; explicitly stop and restart the panel")
+	}
+
+	reply, err := panelControl(ctx, dir, panelRequest{Op: "open", Key: key, File: asFile, CallerKind: panelCallerKind()})
 	if err != nil {
 		return "", err
 	}
@@ -728,6 +734,13 @@ func panelCommand(e env, args []string) int {
 		return exitUsage
 	}
 	if *panelDir == "" {
+		if legacy, running := panelLegacyRunning(); running {
+			presence, old := panelFind(e.ctx, legacy)
+			if presence != panelRunning || ((old.Changes || *changes) && !panelBuildReuseAllowed(old, panelCallerKind())) {
+				e.errf("panel: legacy panel build authority differs or is unknown; explicitly stop the panel before restarting it")
+				return exitFailed
+			}
+		}
 		if legacy, stopped := panelRetireLegacy(); stopped {
 			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
 		}
@@ -748,6 +761,10 @@ func panelCommand(e env, args []string) int {
 	_ = lk.Release()
 	if err != nil {
 		e.errf("panel: %v", err)
+		return exitFailed
+	}
+	if rec.Changes && !panelBuildReuseAllowed(rec, panelCallerKind()) {
+		e.errf("panel: build authority differs from this caller or is unknown; stop the panel explicitly and restart it from the intended person or agent")
 		return exitFailed
 	}
 	if !started {
@@ -1115,4 +1132,16 @@ func panelListCommand(e env, args []string) int {
 		return exitFailed
 	}
 	return exitOK
+}
+
+// This class is captured in the running process record and carried by each
+// socket opening. Missing/old authority never grants a build-capable opening.
+func panelCallerKind() string {
+	if os.Getenv("BB_THREAD_ID") != "" {
+		return "agent"
+	}
+	return "person"
+}
+func panelBuildReuseAllowed(rec panelRecord, caller string) bool {
+	return (caller == "person" || caller == "agent") && rec.BuildAuthority == caller
 }

@@ -478,6 +478,12 @@ func panelControlServe(l net.Listener, state *panelState, record func() panelRec
 		} else {
 			switch req.Op {
 			case "open":
+				rec := record()
+				if rec.Changes && !panelBuildReuseAllowed(rec, req.CallerKind) {
+					reply.Error = "panel build authority differs or is unknown; explicitly stop and restart the panel"
+					break
+				}
+
 				state.touch()
 				if address, file, err := state.mint(req.Key, req.File); err != nil {
 					reply.Error = err.Error()
@@ -647,7 +653,7 @@ func runPanelServer(parent context.Context, c panelServerConfig) int {
 		Version: dockBuildLabel(version), VersionText: dockPanelVersionText(version)}
 	handler := &panelHandler{state: state, guard: newDockGuard(port), page: page}
 	rec := panelRecord{SchemaVersion: 1, PID: os.Getpid(), Port: port, StartedAt: c.now().UTC().Truncate(time.Second), IdleSeconds: int(c.idle / time.Second),
-		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes}
+		Instance: state.instance, Registry: registryDir, Version: version, Changes: c.changes, BuildAuthority: panelCallerKind()}
 	if c.changes {
 		if handler.changes, err = newPanelChanges(ctx, c.registry, reader, rec.StartedAt, c.now); err != nil {
 			return exitFailed
