@@ -1,10 +1,10 @@
 # Fallbacks
 
-`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (unreleased source).
+`fallbacks.yaml` is the maintained list of agents the loop may move to when its current agent cannot continue. Point the loop at it with `loop.fallbacks`. A loop can instead follow one list kept for all of a person's loops; see [the standard route list](routes.md) (v0.2.0).
 
 ## Add a fallback with guided setup
 
-Unreleased source; v0.1.5 does not include this command. For an existing loop:
+Released in v0.2.0; v0.1.5 does not include this command. For an existing loop:
 
 ```sh
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml
@@ -39,7 +39,7 @@ keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactiv
   --model example-model --reasoning high --dry-run
 ```
 
-A thread has one provider, so to continue on another provider without preparing a thread by hand, let the handoff start one (unreleased source). Nothing is created when you add the fallback:
+A thread has one provider, so to continue on another provider without preparing a thread by hand, let the handoff start one (v0.2.0). Nothing is created when you add the fallback:
 
 ```sh
 keepgoing fallbacks add -c /private/example-loop/keepgoing.yaml --non-interactive \
@@ -106,7 +106,7 @@ Not covered yet: detecting accounts or logins, listing models for headless CLIs,
 
 ## Change or remove a fallback
 
-Unreleased source; v0.1.5 does not include these commands. They need a loop that already has fallbacks.
+Released in v0.2.0; v0.1.5 does not include these commands. They need a loop that already has fallbacks.
 
 ```sh
 keepgoing fallbacks handoff on  -c /private/example-loop/keepgoing.yaml   # or: off
@@ -160,9 +160,9 @@ candidates:
 
 A BB candidate may name the same thread as the primary with a different `model`. The handoff then switches the thread's model with `bb thread update` before sending the brief.
 
-In unreleased source a BB candidate may instead set `bb: {new_thread: true, ...}` and name no thread. See [hand off to a new conversation](#hand-off-to-a-new-conversation).
+In v0.2.0 a BB candidate may instead set `bb: {new_thread: true, ...}` and name no thread. See [hand off to a new conversation](#hand-off-to-a-new-conversation).
 
-Also in unreleased source, a candidate may be an [agent defined in configuration](configuration.md#an-agent-defined-in-configuration) (`adapter: custom`). It needs a `probe` in its definition, or a `command` probe, and is written by hand: guided setup does not create it.
+Also in v0.2.0, a candidate may be an [agent defined in configuration](configuration.md#an-agent-defined-in-configuration) (`adapter: custom`). It needs a `probe` in its definition, or a `command` probe, and is written by hand: guided setup does not create it.
 
 ## Probes
 
@@ -170,7 +170,7 @@ A probe is one tiny real request: "Reply with exactly: OK", with no tools, one t
 
 | Kind | What runs | Healthy when |
 | --- | --- | --- |
-| `claude` | `claude -p` with JSON output (`stream-json` in unreleased source), no session persistence, restricted tools | exit 0 and the result is not an error |
+| `claude` | `claude -p` with JSON output (`stream-json` in v0.2.0), no session persistence, restricted tools | exit 0 and the result is not an error |
 | `codex` | `codex exec --json --ephemeral` in a read-only sandbox | exit 0 and a `turn.completed` event. On failure without a recognized code, the Codex app-server's `account/rateLimits/read` decides whether it was a usage limit, and when it resets. |
 | `command` | your `probe.command` | exit 0, unless stdout says `{"ok": false}` |
 
@@ -195,13 +195,13 @@ There are three tiers:
 - **Exact probes** run right before a handoff, against the candidate's real target model. A candidate that fails is skipped and the next one is tried.
 - **Manual probes** run with `keepgoing fallbacks check`. Add `--id` for one candidate or `--exact` to use the target model. Manual probes do not count toward the daily cap. The command exits 1 when the redundancy rule is not met, so a scheduler can alert on it. It holds the tick lock while it runs, and it ignores pause and the time window. Naming a disabled candidate with `--id` probes it anyway.
 
-Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there. Unreleased source also keeps one [usage reading](#usage-readings) per candidate when a probe carries one.
+Every result is kept in `health.json` with its time, tier, model, latency, exit code, error class, and a short detail code. Model output is never stored there. v0.2.0 also keeps one [usage reading](#usage-readings) per candidate when a probe carries one.
 
-A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In unreleased source the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
+A failed probe also saves its raw output to `probe-failures/<candidate>/` in the state directory. Captures are owner-only, capped at 64 KB, and only the newest five per candidate are kept. In v0.2.0 the cap keeps the end of the output, where a stream's result or error event is, instead of the beginning. With the `stream-json` Claude probe a capture holds the event stream instead of a single result object, without the CLI's `system`/`init` message: that message describes the local installation and is omitted whole, so its contents were not inspected. They exist so an error shape keepgoing does not yet recognise, such as a provider's usage-limit event, can be mapped into a structured class later. keepgoing never reads them to make a decision. A candidate is healthy while its last probe passed within `probe.ttl`.
 
 ## Usage readings
 
-Unreleased source records how much of an account's quota a provider says is used, when a probe that already runs happens to carry that information. It is a display value only. No decision reads it: health, redundancy, handoff and switch-back behave exactly as before, and a candidate shown at 100% that passes its probe is still healthy. Switching at a threshold is [planned](roadmap.md#quota-monitoring-planned), not implemented.
+v0.2.0 records how much of an account's quota a provider says is used, when a probe that already runs happens to carry that information. It is a display value only. No decision reads it: health, redundancy, handoff and switch-back behave exactly as before, and a candidate shown at 100% that passes its probe is still healthy. Switching at a threshold is [planned](roadmap.md#quota-monitoring-planned), not implemented.
 
 | Probe kind | Source | When a reading is recorded |
 | --- | --- | --- |
@@ -239,7 +239,7 @@ Verification uses fictional fixtures only: malformed, partial, multi-event and a
 
 ### Reading history and projection
 
-Unreleased source also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
+v0.2.0 also keeps every reading a candidate's probes carried, so that the use of a window can be projected to its reset. Like the latest reading, this is a display value only. No decision reads it, and no probe or provider call is added for it. It is the first part of the planned [usage-aware timing](roadmap.md#usage-aware-timing-planned) (U1 and U2).
 
 **History.** `health.json` keeps `usageHistory` per candidate: the account identity, and for each window instance the readings taken during it, each a time and a used fraction. A window instance is a window key with its reported reset time. A reset time that moves by more than five minutes starts a new instance, and a window reported without a reset time has no instance and is not kept.
 
@@ -323,7 +323,7 @@ Remove `--dry-run` to execute. The command prints the plan to stderr before prob
 | `probe.daily_cap` | 6 |
 | `probe.timeout` | `90s` |
 
-Scheduled probes run one after another inside the tick. Through v0.1.5 a long list of slow probes makes that tick long; in unreleased source each starts only when its whole timeout fits the [check time budget](operations.md#check-time-budget), and one that does not fit is skipped and stays due. The daemon still notices a stop or pause written during the tick and acts on it right after.
+Scheduled probes run one after another inside the tick. Through v0.1.5 a long list of slow probes makes that tick long; in v0.2.0 each starts only when its whole timeout fits the [check time budget](operations.md#check-time-budget), and one that does not fit is skipped and stays due. The daemon still notices a stop or pause written during the tick and acts on it right after.
 
 ## Redundancy
 
@@ -341,7 +341,7 @@ A handoff is allowed only when the healthy, eligible candidates cover at least `
 
 Below the minimum, keepgoing warns, refuses handoffs, reports `degraded` once, and keeps supervising the current agent under the ordinary error rules. It reports `recovered` when the rule is met again.
 
-A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, keepgoing probes the handoff's target exactly and hands off without first refreshing the others (unreleased; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
+A candidate is healthy while its last probe passed within `probe.ttl`. That holds whether or not its next scheduled probe is due: a due probe is a refresh, not a precondition. So when a handoff is due and the rule is met on results inside their ttl, keepgoing probes the handoff's target exactly and hands off without first refreshing the others (v0.2.0; before, the due scheduled probes ran first, and a candidate found down by one could turn the handoff into a refusal). The candidate that receives the loop is always confirmed by an exact probe in the same check; the others count toward the rule on evidence up to `probe.ttl` old. Shorten `probe.ttl` if that is too old for you.
 
 ## Multiple subscriptions
 
@@ -381,13 +381,13 @@ A handoff happens only when all of these hold:
 3. The redundancy rule is met.
 4. A candidate passes its exact probe in the same tick.
 
-The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows. In unreleased source, when the conversation being left had child conversations still working, either brief also carries one fixed sentence with their number, saying they are not supervised or moved; see [BB child awareness](operations.md#bb-child-awareness).
+The candidate then receives a brief and becomes the active target. If `loop.handoff_file` exists, its text is sent as is. Otherwise keepgoing generates a brief that names the loop, what happened, and the repositories. The brief asks the agent to honor stop and pause first, inspect current state, and recover work without duplicating it. The goal from the loop's prompt follows. In v0.2.0, when the conversation being left had child conversations still working, either brief also carries one fixed sentence with their number, saying they are not supervised or moved; see [BB child awareness](operations.md#bb-child-awareness).
 
-In unreleased source, a candidate that passes its exact probe but then rejects the takeover (its adapter cannot be built, its model cannot be applied, or the brief send fails) is skipped for `errors.backoff`, and for the rest of the error episode after `errors.max_reprompts` rejections. Other candidates keep their own counts. See [rejected takeover briefs](operations.md#rejected-takeover-briefs).
+In v0.2.0, a candidate that passes its exact probe but then rejects the takeover (its adapter cannot be built, its model cannot be applied, or the brief send fails) is skipped for `errors.backoff`, and for the rest of the error episode after `errors.max_reprompts` rejections. Other candidates keep their own counts. See [rejected takeover briefs](operations.md#rejected-takeover-briefs).
 
 ## Hand off to a new conversation
 
-Unreleased source; **offline fixtures with a fake `bb` only, nothing live**. A BB fallback normally names a thread that already exists, and a BB thread cannot change provider. So moving from, say, a Codex primary to Claude inside BB needed a thread someone had created beforehand. A candidate can now say "start a new thread on this provider and model" instead:
+Released in v0.2.0; **offline fixtures with a fake `bb` only, nothing live**. A BB fallback normally names a thread that already exists, and a BB thread cannot change provider. So moving from, say, a Codex primary to Claude inside BB needed a thread someone had created beforehand. A candidate can now say "start a new thread on this provider and model" instead:
 
 ```yaml
 candidates:
@@ -460,7 +460,7 @@ The new thread's first prompt therefore ends with fixed wording: it does not own
 - `retarget <id>` to a new-thread candidate works only once a thread exists for it; `retarget` never creates one.
 - Once a created thread is recorded, a build from before this change does not know the candidate's thread and refuses the run graph's new source value. Do not run an older build against the same state directory.
 
-With failover disabled (`errors.failover_on: []`), a rate-limit error with a structured future reset waits without spending recovery retries. Ordinary checks continue observing the target, so an earlier structured recovery can take effect on the next check. Once the reset passes, a still-errored target uses bounded recovery. Without a known reset, bounded recovery applies immediately. This correction is available in v0.1.4 and later. Existing awaiting-user holds require explicit `resume`; stop, pause, completion and configured loop-wide bounds retain precedence. This does not add account polling or schedule an extra check at the reset timestamp. In unreleased source, a wait whose reset is further away than `errors.report_wait_after` (default `6h`) sends one `limit_wait` report without holding the loop; see [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). `timeline --kind limit_wait` shows the waiting checks.
+With failover disabled (`errors.failover_on: []`), a rate-limit error with a structured future reset waits without spending recovery retries. Ordinary checks continue observing the target, so an earlier structured recovery can take effect on the next check. Once the reset passes, a still-errored target uses bounded recovery. Without a known reset, bounded recovery applies immediately. This correction is available in v0.1.4 and later. Existing awaiting-user holds require explicit `resume`; stop, pause, completion and configured loop-wide bounds retain precedence. This does not add account polling or schedule an extra check at the reset timestamp. In v0.2.0, a wait whose reset is further away than `errors.report_wait_after` (default `6h`) sends one `limit_wait` report without holding the loop; see [a long limit wait](operations.md#a-long-limit-wait-with-no-way-out). `timeline --kind limit_wait` shows the waiting checks.
 
 ## Switching back
 
