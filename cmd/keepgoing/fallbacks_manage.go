@@ -79,9 +79,9 @@ type fallbackEditReport struct {
 const fallbackManageUsage = `Change an existing loop's fallbacks without editing YAML.
 
 Usage:
-  keepgoing fallbacks handoff on|off -c keepgoing.yaml    turn automatic handoff for rate limits on or off
-  keepgoing fallbacks remove ID -c keepgoing.yaml         take a fallback out of the loop
-  keepgoing fallbacks move ID --to N -c keepgoing.yaml    change its place in the handoff order
+  keepgoing fallbacks handoff on|off -c looptender.yaml    turn automatic handoff for rate limits on or off
+  keepgoing fallbacks remove ID -c looptender.yaml         take a fallback out of the loop
+  keepgoing fallbacks move ID --to N -c looptender.yaml    change its place in the handoff order
 
 Each command previews the result and writes only after you answer yes, or
 with --yes. --dry-run previews only. Nothing is run: no agent, model or check.
@@ -101,7 +101,7 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		fmt.Fprint(e.stderr, fallbackManageUsage)
 		fs.PrintDefaults()
 	}
-	cfgPath := fs.String("c", "keepgoing.yaml", "path to the loop's config file")
+	cfgPath := fs.String("c", "", configFlagHelp("path to the loop's config file"))
 	yes := fs.Bool("yes", false, "write without asking")
 	dryRun := fs.Bool("dry-run", false, "preview only; write nothing")
 	asJSON := fs.Bool("json", false, "print a versioned result; requires --yes or --dry-run")
@@ -114,9 +114,9 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 	}
 	positional = append(positional, fs.Args()...)
 	usage := map[string]string{
-		"handoff": "usage: keepgoing fallbacks handoff on|off [-c keepgoing.yaml]",
-		"remove":  "usage: keepgoing fallbacks remove ID [-c keepgoing.yaml]",
-		"move":    "usage: keepgoing fallbacks move ID --to N [-c keepgoing.yaml]",
+		"handoff": "usage: keepgoing fallbacks handoff on|off [-c looptender.yaml]",
+		"remove":  "usage: keepgoing fallbacks remove ID [-c looptender.yaml]",
+		"move":    "usage: keepgoing fallbacks move ID --to N [-c looptender.yaml]",
 	}[sub]
 	if len(positional) != 1 || (sub == "handoff" && positional[0] != "on" && positional[0] != "off") {
 		e.errf("%s", usage)
@@ -134,8 +134,11 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		e.errf("fallbacks %s: refused, nothing written.\n  %v", sub, err)
 		return code
 	}
+	if !configDefault(e, "fallbacks "+sub, fs, cfgPath) {
+		return exitUsage
+	}
 	if info, err := os.Lstat(*cfgPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return refuse(exitUsage, errors.New("The config path is a symbolic link. Pass the real keepgoing.yaml instead."))
+		return refuse(exitUsage, errors.New("The config path is a symbolic link. Pass the real configuration file instead."))
 	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -283,7 +286,7 @@ func planFallbackHandoff(cfg *config.Config, on bool) (*fallbackEdit, error) {
 	}
 	next, err := config.Parse(p.configYAML)
 	if err != nil || strings.Join(next.Loop.Errors.FailoverOn, ",") != strings.Join(p.failoverOn, ",") {
-		return nil, errors.New("Could not update keepgoing.yaml safely; edit it by hand.")
+		return nil, errors.New("Could not update the configuration file safely; edit it by hand.")
 	}
 	return p, nil
 }
@@ -544,7 +547,7 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 	}
 	if p.configYAML != nil {
 		if err := fallbackAddReplace(p.cfgPath, p.configYAML); err != nil {
-			return exitFailed, errors.New("could not update keepgoing.yaml; nothing written")
+			return exitFailed, errors.New("could not update the configuration file; nothing written")
 		}
 	}
 	if p.kind == "fallback_remove" {

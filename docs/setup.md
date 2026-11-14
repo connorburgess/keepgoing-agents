@@ -14,7 +14,7 @@ Published v0.1.5 detects `codex`, `claude`, and `bb` on `PATH`. v0.2.0 also disc
 
 The wizard shows the target, project, account directory when explicitly selected, quota groups, fallback order, operating limits, and future probe behavior. It does not run providers, test authentication, create accounts, alter permissions, enable supervision, or install a scheduler.
 
-It writes `keepgoing.yaml`, `prompt.md`, and, if needed, `fallbacks.yaml` into a **new** directory beneath the OS user configuration directory:
+It writes `looptender.yaml` (releases up to v0.2.0 wrote `keepgoing.yaml`, which is still read), `prompt.md`, and, if needed, `fallbacks.yaml` into a **new** directory beneath the OS user configuration directory:
 
 - macOS: `~/Library/Application Support/looptender/loops/<name>`
 - Linux: `$XDG_CONFIG_HOME/looptender/loops/<name>` or `~/.config/looptender/loops/<name>`
@@ -152,7 +152,7 @@ keepgoing init --non-interactive \
   --project /projects/example-app --task-file /private/example-task.md
 ```
 
-**Following your standard route list instead.** If you keep a [standard route list](routes.md), the wizard asks `Follow your standard route list for handoffs? N of its M routes apply to this loop. (yes/no) [yes]` for a `bb`, `claude` or `codex` loop, before the fallback questions, and only when at least one route applies; yes skips them, and the loop gets `routes: standard` with handoff on for rate limits. A script follows the list only with `--routes standard`, never because a list exists; `--routes standard` and `--fallback` exclude each other, and `--routes standard` is refused while no usable list is written or the list has no routes (`routes: []`). The JSON `limits.failoverOn` is what is written: `[rate_limit]` for a following loop, even while no route applies yet. The JSON result says `routes: "standard"` and lists the routes that apply to the loop now as its `fallbacks`. Probes follow the list's policy, not `--probe-daily-cap`.
+**Following your standard route list instead.** If you keep a [standard route list](routes.md), the wizard asks `Follow your standard route list for handoffs? N of its M switched-on routes apply to this loop. (yes/no) [yes]` for a `bb`, `claude` or `codex` loop, before the fallback questions, and only when at least one route applies; yes skips them, and the loop gets `routes: standard` with handoff on for rate limits. A script follows the list only with `--routes standard`, never because a list exists; `--routes standard` and `--fallback` exclude each other, and `--routes standard` is refused while no usable list is written or the list has no routes (`routes: []`). The JSON `limits.failoverOn` is what is written: `[rate_limit]` for a following loop, even while no route applies yet. The JSON result says `routes: "standard"` and lists the routes that apply to the loop now as its `fallbacks`. Probes follow the list's policy, not `--probe-daily-cap`.
 
 To add a fallback to a loop that already exists, v0.2.0 provides the guided [`keepgoing fallbacks add`](fallbacks.md#add-a-fallback-with-guided-setup).
 

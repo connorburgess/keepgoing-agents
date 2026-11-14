@@ -36,6 +36,10 @@ import (
 // ProbeFunc runs one probe.
 type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, timeout time.Duration) probe.Result
 
+// ErrLastConfigNotStop refuses a check from the last configuration a daemon
+// read that is not a stop-only check.
+var ErrLastConfigNotStop = errors.New("only a stop may be carried out from the last configuration read")
+
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
@@ -48,6 +52,12 @@ type Options struct {
 	// StopOnly: the check is run by a command that carries out a stop at once
 	// (keepgoing stop --now). It does nothing unless a stop is requested.
 	StopOnly bool
+	// LastConfigReadAt, when set, says this check runs from the last
+	// configuration a daemon read, at that time, because a file it was read
+	// from can no longer be read. Only a stop-only check may: nothing that
+	// observes and sends uses a configuration it cannot verify. The check's
+	// record says so.
+	LastConfigReadAt time.Time
 	// Deadline, when set and sooner than the check's own hard limit, is the
 	// check's hard limit instead: a stop carried out for a caller that has
 	// less time than a check (the page and the menu).
@@ -358,6 +368,9 @@ func (t *tick) reportOnce(slot **state.OnceReport, key, typ, text string, data m
 
 // Tick performs one supervision pass. The caller holds the lock.
 func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error) {
+	if !opts.LastConfigReadAt.IsZero() && !opts.StopOnly {
+		return Result{Loop: cfg.Loop.Name, Action: string(decide.None), Reason: "refused: only a stop may be carried out from the last configuration read"}, ErrLastConfigNotStop
+	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
@@ -2072,6 +2085,11 @@ func (t *tick) record(actErr error) error {
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	if at := t.opts.LastConfigReadAt; !at.IsZero() {
+		// The configuration could not be read; this stop came from the last
+		// one the daemon read.
+		t.st.LastCheck.ConfigUnavailable = &state.ConfigUnavailable{LastReadAt: at.UTC()}
+	}
 	// A dry run leaves the identity of the last real check: it is the one
 	// a later gap is about.
 	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
@@ -2140,6 +2158,9 @@ func (t *tick) record(actErr error) error {
 	}
 	if len(t.res.Warnings) > 0 {
 		extra["warnings"] = t.res.Warnings
+	}
+	if c := t.st.LastCheck.ConfigUnavailable; c != nil {
+		extra["configUnavailable"] = c
 	}
 	if len(extra) > 0 {
 		ev.Extra = extra

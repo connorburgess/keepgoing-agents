@@ -178,7 +178,7 @@ keepgoing runs --registry-id loop_0123456789abcdef0123456789abcdef
 keepgoing runs --all                              # every registered loop with its current run
 ```
 
-Use exactly one selector; the default is `-c keepgoing.yaml`. `--directory` names a private registry directory for `--registry-id` and `--all`. Two registered loops can share a name: their registry references keep them apart, and each shows only its own records. With a registry selector the report also says whether the graph has recorded that reference (`recorded`) or not (`not_recorded`); see [where identity lives](#where-identity-lives).
+Use exactly one selector; the default is `-c looptender.yaml`, or `keepgoing.yaml` when only that is in the working directory ([configuration](configuration.md)). `--directory` names a private registry directory for `--registry-id` and `--all`. Two registered loops can share a name: their registry references keep them apart, and each shows only its own records. With a registry selector the report also says whether the graph has recorded that reference (`recorded`) or not (`not_recorded`); see [where identity lives](#where-identity-lives).
 
 A registry selector checks the binding first, as registered status does: the registered configuration must still load and still name the same loop and runtime directory. If it does not, the entry shows `binding: unavailable`, nothing is read from the registered directory, and the command exits 1. A lookup through such an entry answers `unavailable`.
 

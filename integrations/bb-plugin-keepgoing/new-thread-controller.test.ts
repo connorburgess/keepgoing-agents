@@ -18,6 +18,9 @@ function fixture() {
     // What the host's plan reports as loop-wide limits: those asked for, unless a test says otherwise.
     planLimits: undefined as undefined | ((bounds: { maxSends: number; noProgressTimeout: string }) => { maxSends?: number; noProgressTimeout?: string }),
     during: undefined as undefined | ((action: string) => Promise<void> | void),
+    // The name the CLI gives the configuration file: keepgoing.yaml up to
+    // v0.2.0, looptender.yaml after.
+    configName: "keepgoing.yaml",
   };
   const d: NewThreadDependencies = {
     now: () => w.now, id: () => `k${++w.ids}f9-example`, mode: async () => w.mode, unavailable: async () => w.unavailable,
@@ -28,7 +31,7 @@ function fixture() {
       await w.during?.(input.action);
       const name = w.setups.find(s => s.action === "preview" && s.threadId === input.threadId)?.name ?? "example";
       const reported = w.planLimits ? w.planLimits(bounds) : { maxSends: bounds.maxSends, noProgressTimeout: `${parseInt(bounds.noProgressTimeout)}h0m0s` };
-      const plan = { loop: name, project: "/projects/Example App", configPath: `/private/${name}/keepgoing.yaml`, stateDir: `/private/${name}/state`, threadId: input.threadId, provider: "example-provider", limits: { ...limits, ...reported } };
+      const plan = { loop: name, project: "/projects/Example App", configPath: `/private/${name}/${w.configName}`, stateDir: `/private/${name}/state`, threadId: input.threadId, provider: "example-provider", limits: { ...limits, ...reported } };
       const record = { id: "record", loop: name, configPath: plan.configPath, threadId: input.threadId, environmentId: "env_example", projectId: "proj_a", hostId: "host_example", project: plan.project, provider: plan.provider };
       if (input.action === "preview") return w.previewOk ? { ok: true, message: "Preview only.", ticket: `ticket-${w.setups.length}`, plan } : { ok: false, message: "Setup could not complete." };
       if (input.action === "create") return w.createOk ? { ok: true, message: "Review the diagnostics.", record, canStart: w.canStart } : { ok: false, message: "Setup result changed." };
@@ -476,4 +479,18 @@ test("reading one thread's outcome does not wait for another thread's setup", as
   assert.equal(slow.outcome?.state, "waiting", "a thread's own read answers at once too");
   release(); await f.c.whenIdle();
   assert.equal((await f.outcome("thr_slow")).state, "ready");
+});
+
+test("new thread setup works with a CLI that names the configuration looptender.yaml, as with one that names it keepgoing.yaml", async () => {
+  for (const name of ["looptender.yaml", "keepgoing.yaml"]) {
+    const f = fixture(); f.w.configName = name; f.w.createOk = false;
+    f.c.dispatched(f.dispatch(await f.arm())); await f.c.advance("thr_new");
+    // A creation that could not be confirmed names the file it may have left, under the CLI's own name.
+    const failed = await f.outcome();
+    assert.equal(failed.state, "failed"); assert.equal(failed.configPath, `/private/${failed.loop}/${name}`);
+    const ok = fixture(); ok.w.configName = name;
+    ok.c.dispatched(ok.dispatch(await ok.arm())); await ok.c.advance("thr_new");
+    assert.deepEqual(ok.w.setups.map(s => s.action), ["preview", "create"]);
+    assert.equal((await ok.outcome()).state, "ready", name);
+  }
 });

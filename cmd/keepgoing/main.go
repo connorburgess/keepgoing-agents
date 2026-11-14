@@ -34,13 +34,13 @@ const usage = `keepgoing keeps a coding-agent loop going.
 Usage:
   keepgoing <command> [flags]
 
-Supervision (read -c keepgoing.yaml, default ./keepgoing.yaml):
+Supervision (read -c FILE; default ./looptender.yaml, or ./keepgoing.yaml when only that is there):
   tick                     Run one pass and exit (cron, launchd, CI, BB automations)
   start                    Validate, enable, and run (--foreground or --background)
   service install|remove|status  Manage a macOS/Linux user service
   daemon                   Run passes on an interval; control changes act within seconds
   status                   Show control, active target, window, and fallback health
-  validate                 Check keepgoing.yaml and its fallbacks file
+  validate                 Check the configuration file and its fallbacks file
   doctor                   Diagnose setup and recent checks without model calls
   runs                     Show recorded runs, sends and chat/session references offline; follow one with --id (text or --json)
   timeline                 Explain retained incident history offline; filter with --kind, --target, --since, --until (text or --json)
@@ -199,7 +199,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := cliFlags{
-		cfgPath:     fs.String("c", "keepgoing.yaml", "path to the config file"),
+		cfgPath:     fs.String("c", "", configFlagHelp("path to the config file")),
 		asJSON:      fs.Bool("json", false, "print machine-readable JSON"),
 		dryRun:      fs.Bool("dry-run", false, "tick/daemon: record decisions only; fallbacks check/report test: preview only"),
 		now:         fs.String("now", "", "RFC 3339 time to use instead of the clock"),
@@ -274,6 +274,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
+	if !configDefault(e, "config", fs, f.cfgPath) {
+		return exitUsage
+	}
 	cfg, err := config.Load(*f.cfgPath)
 	if err != nil {
 		e.errf("config: %v", err)
@@ -318,7 +321,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
 		if len(positional) != 1 {
-			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")
+			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c looptender.yaml]")
 			return exitUsage
 		}
 		return retarget(e, cfg, positional[0], *f.note, *f.discard)

@@ -64,7 +64,7 @@ candidates:
 }
 
 func TestCursorSchemaIsPrimaryOnly(t *testing.T) {
-	kg := load(t, "../../schema/keepgoing.schema.json")
+	kg := load(t, "../../schema/looptender.schema.json")
 	props := node(kg.props()["loop"].(map[string]any)).props()
 	found := false
 	for _, v := range props["adapter"].(map[string]any)["enum"].([]any) {

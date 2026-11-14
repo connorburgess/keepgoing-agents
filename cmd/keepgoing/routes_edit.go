@@ -60,6 +60,10 @@ type routeChangeOut struct {
 	Warnings []string          `json:"warnings"`
 	Reason   string            `json:"reason,omitempty"` // why nothing changed
 	Refusal  *routeRefusal     `json:"refusal,omitempty"`
+	// FailoverOn is set when the change also sets errors.failover_on. Only
+	// guided fallbacks add asks for that, and it has no JSON form, so the
+	// field is for the text preview only.
+	FailoverOn *failoverChange `json:"-"`
 }
 
 type routeChangeLoop struct {
@@ -82,6 +86,12 @@ type routeChangeLoop struct {
 	BelowMinHealthy bool `json:"belowMinHealthy"`
 }
 
+// failoverChange is errors.failover_on before and after a change.
+type failoverChange struct {
+	Before []string `json:"before"`
+	After  []string `json:"after"`
+}
+
 // routeRefusal says why nothing was written, by a fixed code.
 type routeRefusal struct {
 	Code string `json:"code"`
@@ -100,6 +110,7 @@ type routeChangeRequest struct {
 	at       int          // add: the 1-based place, 0 for last
 	route    config.Route // add
 	like     string       // add: the LOOP:ID the route was copied from
+	handoff  bool         // follow-standard: also turn handoff on for rate limits, if it is off
 	loop     string       // a registered loop's own list; "" for the standard list
 	expect   string
 	caller   string // BB_THREAD_ID; "" for a person
@@ -111,7 +122,7 @@ type routeChangeRequest struct {
 const routesEditUsage = `Show, change or check route lists without editing YAML.
 
 Usage:
-  keepgoing routes list [--json] [--loop NAME | -c keepgoing.yaml]
+  keepgoing routes list [--json] [--loop NAME | -c looptender.yaml]
   keepgoing routes add --id ID --provider P --model M --group G --enter E [options] [--at N]
   keepgoing routes add --like LOOP:ID [--id ID] [options] [--at N]
   keepgoing routes move ID --to N [--loop NAME]
@@ -185,7 +196,7 @@ func routesEdit(e env, op string, args []string, input io.Reader) int {
 		e.errf("%s", usage)
 		return exitUsage
 	case op == "add" && *loopName != "":
-		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add -c keepgoing.yaml")
+		e.errf("routes add --loop: add to a loop's own list with keepgoing fallbacks add -c looptender.yaml")
 		return exitUsage
 	case op != "move" && set["to"]:
 		e.errf("routes %s: --to applies only to routes move", op)

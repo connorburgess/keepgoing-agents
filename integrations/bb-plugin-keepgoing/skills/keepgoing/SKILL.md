@@ -5,7 +5,7 @@ description: Show or control the looptender (formerly keepgoing) loops that supe
 
 # looptender in BB
 
-keepgoing is being renamed to looptender. The plugin's labels in BB say looptender ("looptender: enabled"); the commands below, the `keepgoing` executable and `keepgoing.yaml` keep their names for now.
+keepgoing is being renamed to looptender. The plugin's labels in BB say looptender ("looptender: enabled"); the commands below and the `keepgoing` executable keep their names for now.
 
 keepgoing supervises agent loops: it wakes an idle thread, nudges a stalled one, and hands off to a confirmed fallback on a usage limit. This plugin shows its state in each supervised thread's context card and exposes these commands:
 

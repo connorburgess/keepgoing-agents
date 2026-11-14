@@ -92,7 +92,8 @@ def main():
                     "Preview created a loop or did not report a preview.")
             created = json.loads(run(setup, stdin=task))
             require(created["outcome"] == "created", "Setup did not report creation.")
-            config = destination / "keepgoing.yaml"
+            config = Path(created["configPath"])
+            require(config.name == "looptender.yaml", "Setup did not write looptender.yaml.")
             goal_path = destination / "state" / "goal.json"
             if with_goal:
                 require("record" not in preview["goal"], "Preview allocated a goal identity.")

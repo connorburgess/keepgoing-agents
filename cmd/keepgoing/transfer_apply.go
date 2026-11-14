@@ -24,6 +24,13 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 	if err := cfg.CheckSources(); err != nil {
 		return err
 	}
+	return checkTransferRecord(cfg, allowStop)
+}
+
+// checkTransferRecord is checkTransferSources without the check that the
+// configuration's files are unchanged: the control record, the pending
+// transfer rule and the transferred BB target.
+func checkTransferRecord(cfg *config.Config, allowStop bool) error {
 	if info, err := os.Lstat(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("control.json must not be a symlink; use the original state directory")
 	}
@@ -72,7 +79,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	cmd := args[0]
 	fs := flag.NewFlagSet("transfer "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
 	from := fs.String("from", "", "expected current BB primary (apply)")
 	to := fs.String("thread", "", "new existing BB primary (apply)")
 	id := fs.String("id", "", "pending transfer identity (recover)")
@@ -98,6 +105,9 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 			return exitSkipped
 		}
 		return exitFailed
+	}
+	if !configDefault(e, "transfer", fs, path) {
+		return exitUsage
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {

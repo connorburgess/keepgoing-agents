@@ -392,7 +392,7 @@
     var needs = list(d.needsYou);
     if (d.lede) pane.appendChild(el("p", "lede", d.lede));
     if (!list(d.loops).length) {
-      pane.appendChild(emptyBox("No loops are registered yet.", "Register one with keepgoing registry add -c path/to/keepgoing.yaml, and it appears here on the next read."));
+      pane.appendChild(emptyBox("No loops are registered yet.", "Register one with keepgoing registry add -c path/to/looptender.yaml (or keepgoing.yaml), and it appears here on the next read."));
       return;
     }
     if (!needs.length && !d.allClear) {
