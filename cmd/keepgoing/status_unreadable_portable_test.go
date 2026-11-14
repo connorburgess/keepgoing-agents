@@ -41,6 +41,11 @@ func unreadableStatus(t *testing.T, file, how string) (statusOut, map[string]jso
 		err = os.WriteFile(path, []byte("{\"enabled\": tr"), 0o600)
 	case "wrong_shape":
 		err = os.WriteFile(path, []byte(`{"enabled":"yes","reprompts":"two"}`), 0o600)
+	case "time_string", "time_number", "time_object":
+		// A hand edit of a time: not RFC 3339, or not a string at all.
+		field := map[string]string{control.FileName: "updatedAt", state.FileName: "checkedAt"}[file]
+		value := map[string]string{"time_string": `"2026-11-14 11:40:00"`, "time_number": `1763120400`, "time_object": `{"at":1}`}[how]
+		err = os.WriteFile(path, []byte(`{"`+field+`":`+value+`}`), 0o600)
 	case "not_a_file":
 		if err = os.Remove(path); err == nil {
 			err = os.Mkdir(path, 0o700)
@@ -69,19 +74,26 @@ func unreadableStatus(t *testing.T, file, how string) (statusOut, map[string]jso
 // damaged, and never "move it aside" when the file may be intact.
 func TestStatusClassifiesAnUnreadableRecord(t *testing.T) {
 	for _, file := range []string{control.FileName, state.FileName} {
-		for _, how := range []string{"not_json", "wrong_shape", "not_a_file"} {
+		for _, how := range []string{"not_json", "wrong_shape", "time_string", "time_number", "time_object", "not_a_file"} {
 			t.Run(file+"/"+how, func(t *testing.T) {
 				out, _ := unreadableStatus(t, file, how)
 				u := out.Unreadable[0]
-				if u.Problem != how {
-					t.Fatalf("problem %q, want %q", u.Problem, how)
+				want := how
+				if strings.HasPrefix(how, "time_") {
+					want = "wrong_shape" // the bytes were read; a field did not decode
 				}
-				if (u.Offset != nil) != (how != "not_a_file") {
+				if u.Problem != want {
+					t.Fatalf("problem %q, want %q", u.Problem, want)
+				}
+				if how == "not_json" && u.Offset == nil || how == "not_a_file" && u.Offset != nil {
 					t.Errorf("offset %v for %s", u.Offset, how)
 				}
 				damaged := how != "not_a_file"
-				if strings.Contains(u.Remedy, "restore "+file+" from a copy") != damaged || strings.Contains(u.Remedy, "do not move it aside") == damaged {
+				if strings.Contains(u.Remedy, "restore "+file+" from a copy") != damaged || strings.Contains(u.Remedy, "permissions") {
 					t.Errorf("remedy for %s: %s", how, u.Remedy)
+				}
+				if !damaged && !strings.Contains(u.Remedy, "such as a directory, is in its place") {
+					t.Errorf("remedy for a directory: %s", u.Remedy)
 				}
 			})
 		}
@@ -91,7 +103,7 @@ func TestStatusClassifiesAnUnreadableRecord(t *testing.T) {
 // What the damaged-content remedies must warn about moving the record aside.
 func TestStatusRemedySaysWhatMovingARecordAsideLoses(t *testing.T) {
 	out, _ := unreadableStatus(t, control.FileName, "not_json")
-	for _, want := range []string{"a stop or pause (issue it again)", "a pending transfer", "the bbTarget binding", "read as disabled"} {
+	for _, want := range []string{"a stop or pause (issue it again)", "a hold for a person", "a completion", "an open question", "a pending transfer", "the bbTarget binding", "read as disabled"} {
 		if !strings.Contains(out.Unreadable[0].Remedy, want) {
 			t.Errorf("control.json remedy does not say %q: %s", want, out.Unreadable[0].Remedy)
 		}
@@ -112,6 +124,9 @@ func TestStatusJSONLeavesOutAnUnreadableRecord(t *testing.T) {
 	out, m := unreadableStatus(t, control.FileName, "not_json")
 	if _, ok := m["control"]; ok {
 		t.Errorf("control is shown for an unreadable control.json: %s", m["control"])
+	}
+	if out.NoProgress.Lines == nil {
+		t.Error("noProgress.lines is null; every other path gives []")
 	}
 	if out.ControlState != "unavailable" || out.Schedule.NotJudged != "control_unreadable" || out.NoProgress.Reason != "record_unreadable" {
 		t.Errorf("controlState %q, schedule %+v, noProgress %+v", out.ControlState, out.Schedule, out.NoProgress)

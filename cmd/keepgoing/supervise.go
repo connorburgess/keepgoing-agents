@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -701,11 +702,10 @@ func status(e env, cfg *config.Config, now time.Time, asJSON bool, staleAfter ti
 	if out.Refusals.Question != "" {
 		fmt.Fprintf(w, "question:  %s\n", out.Refusals.Question)
 	}
-	if out.stateUnreadable {
-		if out.Lanes.Enabled {
-			fmt.Fprintln(w, "lane recovery: on; what it has done is unavailable (state.json could not be read)")
-		}
-	} else {
+	if !out.stateUnreadable {
+		// Lane recovery is the active target's setting, and the active
+		// target is in state.json: with it unreadable the "state:
+		// unavailable" line below covers this too.
 		printLanes(w, out.Lanes)
 		printChildReport(w, out.ChildErrorReport)
 	}
@@ -991,7 +991,7 @@ func readStatus(ctx context.Context, cfg *config.Config, now time.Time, staleAft
 	if file := unreadableFile(out); file != "" {
 		// The flag needs both records; computed from an empty one it would
 		// say the loop is off, or that no check has run.
-		out.NoProgress = noProgressView{Availability: "not_available", Reason: "record_unreadable", Text: "unavailable: " + file + " could not be read"}
+		out.NoProgress = noProgressView{Availability: "not_available", Reason: "record_unreadable", Text: "unavailable: " + file + " could not be read", Lines: []string{}}
 	}
 	if g, err := control.LoadGoal(l.StateDir); err != nil {
 		out.GoalError = err.Error()
@@ -1570,19 +1570,30 @@ type unreadableRecord struct {
 // classifyRecord says what is wrong with a record that could not be read,
 // from the error and what is at the path, never from the error's text.
 func classifyRecord(dir, file string, err error) unreadableRecord {
-	r := unreadableRecord{File: file, Problem: "cannot_open"}
+	r := unreadableRecord{File: file}
 	var syntax *json.SyntaxError
 	var shape *json.UnmarshalTypeError
+	var pathErr *fs.PathError
+	var sysErr *os.SyscallError
 	switch {
+	case errors.As(err, &pathErr) || errors.As(err, &sysErr):
+		// Only an error from the filesystem means the file was not read;
+		// what is at the path says which.
+		r.Problem = "cannot_open"
+		if info, lerr := os.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
+			r.Problem = "not_a_file"
+		}
 	case errors.As(err, &syntax):
 		r.Problem, r.Offset = "not_json", &syntax.Offset
-	case errors.As(err, &shape):
-		r.Problem, r.Offset = "wrong_shape", &shape.Offset
 	case errors.Is(err, io.ErrUnexpectedEOF):
 		r.Problem = "not_json"
 	default:
-		if info, lerr := os.Lstat(filepath.Join(dir, file)); lerr == nil && !info.Mode().IsRegular() {
-			r.Problem = "not_a_file"
+		// The bytes were read and did not decode: a field of the wrong type,
+		// such as a time that is not in the RFC 3339 form, or a number or
+		// object where a time belongs.
+		r.Problem = "wrong_shape"
+		if errors.As(err, &shape) {
+			r.Offset = &shape.Offset
 		}
 	}
 	return r
@@ -1608,22 +1619,28 @@ func (r unreadableRecord) describe() string {
 	return what
 }
 
-const recordMayBeIntact = "The file may be intact: keepgoing could not open it as a regular file. Fix its permissions, or what is in its place, so keepgoing can read it; do not move it aside or delete it."
+// cannotReadRemedy is the remedy for a record that was not read at all.
+func cannotReadRemedy(r unreadableRecord) string {
+	if r.Problem == "not_a_file" {
+		return "Something other than a regular file, such as a directory, is in its place, and keepgoing reads the record only as a regular file. Find out what put it there before moving or deleting anything: the record itself may be elsewhere, or inside it."
+	}
+	return "The file may be intact: keepgoing could not open it. Fix its permissions so keepgoing can read it; do not move it aside or delete it."
+}
 
 func unreadableControl(dir string, err error) unreadableRecord {
 	r := classifyRecord(dir, control.FileName, err)
 	if !r.damaged() {
-		r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it can be read. " + recordMayBeIntact
+		r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it can be read. " + cannotReadRemedy(r)
 		return r
 	}
-	r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it is repaired. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory. Moving it aside instead makes the loop read as disabled and loses what the record held: a stop or pause (issue it again), a pending transfer and the bbTarget binding, the note and the owner; the next enable, pause or stop writes a new one."
+	r.Remedy = "Checks send nothing, and pause, stop and resume cannot be saved, until it is repaired. Stop the daemon, service or scheduler, then restore control.json from a copy of the state directory. Moving it aside instead makes the loop read as disabled and loses what the record held: a stop or pause (issue it again), a hold for a person, a completion, an open question, a pending transfer and the bbTarget binding, the note and the owner; the next enable, pause or stop writes a new one."
 	return r
 }
 
 func unreadableState(dir string, err error) unreadableRecord {
 	r := classifyRecord(dir, state.FileName, err)
 	if !r.damaged() {
-		r.Remedy = "Checks fail and send nothing until it can be read. " + recordMayBeIntact
+		r.Remedy = "Checks fail and send nothing until it can be read. " + cannotReadRemedy(r)
 		return r
 	}
 	r.Remedy = "Checks fail and send nothing until it is repaired. Stop the daemon, service or scheduler, then restore state.json from a copy of the state directory. Moving it aside instead makes the next check start a new one, without the re-prompt and nudge counts, the active target, the record of the last check and send, and the new-thread count, the spacing between created threads and the hold on a thread creation whose outcome is unknown."
