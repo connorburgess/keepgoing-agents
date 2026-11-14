@@ -241,8 +241,9 @@ func TestTimingStepUpFailureAndCap(t *testing.T) {
 	}
 }
 
-// A return to primary is never capped: it is tried at every turn boundary,
-// its first failure is reported once, and its success once.
+// A return to primary is never capped: it is tried at every turn boundary;
+// its first failure is reported, then once more at max_reprompts failures,
+// and its success once.
 func TestTimingReturnIsRetriedNotCapped(t *testing.T) {
 	w := stepsWorld(t)
 	p := w.primary(decide.Observation{State: decide.Idle})
@@ -258,8 +259,8 @@ func TestTimingReturnIsRetriedNotCapped(t *testing.T) {
 			t.Fatalf("check %d: %+v", i, res.Timing)
 		}
 	}
-	if n := countReports(w, "timing"); n != 1 {
-		t.Fatalf("%d timing reports for the failures: %s", n, w.reportTypes())
+	if n := countReports(w, "timing"); n != 2 || !strings.Contains(w.reports[2].Text, "still on example-large after 2 failed moves to primary; timing keeps trying at each turn boundary") {
+		t.Fatalf("%d timing reports for the failures: %s %+v", n, w.reportTypes(), w.reports)
 	}
 	if st := loadState(t, w); st.Timing.Capped || st.Timing.Failures != 4 || st.Target() != "example-large" {
 		t.Fatalf("%+v", st.Timing)
@@ -267,22 +268,28 @@ func TestTimingReturnIsRetriedNotCapped(t *testing.T) {
 	p.activateErr = nil
 	res := runTick(t, w, t0.Add(50*time.Minute))
 	st := loadState(t, w)
-	if res.Timing.Outcome != "applied" || st.Target() != state.Primary || countReports(w, "timing") != 2 || st.Timing.Failures != 0 ||
+	if res.Timing.Outcome != "applied" || st.Target() != state.Primary || countReports(w, "timing") != 3 || st.Timing.Failures != 0 ||
 		!strings.Contains(w.reports[len(w.reports)-1].Text+w.reports[len(w.reports)-2].Text, "returned to primary") {
 		t.Fatalf("%+v %+v %s", res.Timing, st.Timing, w.reportTypes())
 	}
 }
 
 // A step recorded and not settled (the check ended between recording it and
-// settling it) is settled by the next check: the route on record is applied
-// again, then timing decides afresh.
+// settling it) is settled by a later check, between turns only: while a turn
+// runs the record is kept; once the session is idle the route on record is
+// applied again, then timing decides afresh.
 func TestTimingUnsettledIntentIsSettled(t *testing.T) {
 	w := stepsWorld(t)
 	p := w.primary(decide.Observation{State: decide.Active})
 	editState(t, w, func(s *state.File) {
 		s.Timing = &state.TimingRecord{Pending: &state.TimingMove{At: t0.Add(-10 * time.Minute), From: state.Primary, To: "example-large", Action: "up"}}
 	})
-	res := runTick(t, w, t0)
+	runTick(t, w, t0)
+	if st := loadState(t, w); p.activated != 0 || st.Timing.Pending == nil {
+		t.Fatalf("repaired during a turn: activated %d, %+v", p.activated, st.Timing)
+	}
+	p.obs = decide.Observation{State: decide.Idle}
+	res := runTick(t, w, t0.Add(10*time.Minute))
 	st := loadState(t, w)
 	if p.activated != 1 || st.Timing.Pending != nil || st.Target() != state.Primary || !strings.Contains(strings.Join(res.Warnings, "\n"), "recorded and not settled") {
 		t.Fatalf("activated %d, %+v, %v", p.activated, st.Timing, res.Warnings)
@@ -523,5 +530,160 @@ func TestTimingHandoffFromAStepRecordsTheReset(t *testing.T) {
 	runTick(t, w, t0.Add(10*time.Minute))
 	if st := loadState(t, w); st.TargetSetBy != state.SetByHandoff || !st.PrimaryResetsAt.Equal(resets) {
 		t.Fatalf("%s by %s, primary resets %s", st.Target(), st.TargetSetBy, st.PrimaryResetsAt)
+	}
+}
+
+// With timing off, a handoff records the first route's reset exactly as
+// before timing existed: a handoff from a fallback in the first route's
+// group leaves the recorded reset as it was, whether or not the provider
+// reported one.
+func TestTimingOffHandoffRecordsTheResetAsBefore(t *testing.T) {
+	for _, reported := range []bool{true, false} {
+		w := newWorld(t, true, true)
+		w.cfg.Loop.SwitchBack = config.SwitchBack{Enabled: true, MinAfter: config.Duration{Duration: 30 * time.Minute}, RetryEvery: config.Duration{Duration: 30 * time.Minute}}
+		w.primary(decide.Observation{State: decide.Idle})
+		r1, r2 := t0.Add(3*time.Hour), t0.Add(5*time.Hour)
+		if err := state.Save(w.dir, state.File{ActiveTarget: "same-account", LastHandoffAt: t0.Add(-time.Hour), PrimaryResetsAt: r1}); err != nil {
+			t.Fatal(err)
+		}
+		reg := &health.Registry{Candidates: map[string]*health.Entry{}}
+		for _, id := range []string{"claude-other", "codex-main"} {
+			reg.Record(id, probe.Result{At: t0.Add(-time.Hour), Tier: probe.Scheduled, OK: true})
+		}
+		if err := reg.Save(w.dir); err != nil {
+			t.Fatal(err)
+		}
+		w.probeOK = map[string]bool{"claude-other": true, "codex-main": true}
+		obs := decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit}
+		if reported {
+			obs.ResetsAt = r2
+		}
+		w.adapters["same-account"] = &fakeAdapter{name: "same-account", obs: obs}
+		runTick(t, w, t0)
+		st := loadState(t, w)
+		if st.Target() == "same-account" || st.TargetSetBy != state.SetByHandoff || !st.PrimaryResetsAt.Equal(r1) {
+			t.Fatalf("reported %v: on %s by %s, primary resets %s, want %s as before", reported, st.Target(), st.TargetSetBy, st.PrimaryResetsAt, r1)
+		}
+	}
+}
+
+// One step up per window instance, end to end: up, timing turned off so the
+// loop returns, timing on again before the same reset: no second step up.
+func TestTimingOnceStepUpPerInstanceEndToEnd(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	resets := t0.Add(5 * time.Hour)
+	reading := func(at time.Time) {
+		id := probe.UsageIdentity(w.cfg.Loop.PrimaryCandidate())
+		seedHealth(t, w, func(e *health.Entry) {
+			e.Usage = &probe.Usage{At: at, Source: probe.UsageSourceClaude, Identity: id, Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.6, ResetsAt: &resets}}}
+		})
+	}
+	w.cfg.Loop.Timing.NearReset = config.Duration{Duration: 6 * time.Hour}
+	reading(t0.Add(-10 * time.Minute))
+	runTick(t, w, t0)
+	if st := loadState(t, w); st.Target() != "example-large" || st.Timing.LastUp == nil {
+		t.Fatalf("no step up: %+v", st.Timing)
+	}
+	w.adapters["example-large"].obs = decide.Observation{State: decide.Idle}
+	w.cfg.Loop.Timing.Enabled = false
+	runTick(t, w, t0.Add(61*time.Minute))
+	if st := loadState(t, w); st.Target() != state.Primary || st.Timing.LastUp == nil {
+		t.Fatalf("no return, or the step up forgotten: %+v", st.Timing)
+	}
+	w.cfg.Loop.Timing.Enabled = true
+	at := t0.Add(3*time.Hour + 5*time.Minute)
+	reading(at.Add(-10 * time.Minute))
+	before := w.adapters["example-large"].activated
+	res := runTick(t, w, at)
+	if res.Timing == nil || res.Timing.Reason != "already_stepped_up" || w.adapters["example-large"].activated != before {
+		t.Fatalf("second step up for the same instance: %+v", res.Timing)
+	}
+}
+
+// A step up that keeps failing while each reading reports the same reset a
+// second later (within the tolerance for one window instance) is capped
+// after max_reprompts failures and reported once.
+func TestTimingStepUpCapWithResetJitter(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	w.adapters["example-large"] = &fakeAdapter{name: "example-large", activateErr: errors.New("fictional bb failure")}
+	resets := t0.Add(2 * time.Hour)
+	id := probe.UsageIdentity(w.cfg.Loop.PrimaryCandidate())
+	for i := 0; i < 5; i++ {
+		now := t0.Add(time.Duration(i) * 10 * time.Minute)
+		r := resets.Add(time.Duration(i) * time.Second)
+		seedHealth(t, w, func(e *health.Entry) {
+			e.Usage = &probe.Usage{At: now.Add(-time.Minute), Source: probe.UsageSourceClaude, Identity: id, Windows: []probe.UsageWindow{{Key: "seven_day", Used: 0.6, ResetsAt: &r}}}
+		})
+		runTick(t, w, now)
+	}
+	st := loadState(t, w)
+	if st.Timing.GaveUp == nil || countReports(w, "timing") != 1 || st.Timing.Failures != 2 {
+		t.Fatalf("gave up %+v, failures %d, reports %s", st.Timing.GaveUp, st.Timing.Failures, w.reportTypes())
+	}
+}
+
+// A step up given up stays given up for its window instance whatever moves
+// are made in between.
+func TestTimingGaveUpKeptAcrossOtherMoves(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	w.adapters["example-large"] = &fakeAdapter{name: "example-large", obs: decide.Observation{State: decide.Idle}}
+	gave := &state.TimingMove{To: "example-large", Action: "up", Window: "seven_day", ResetsAt: t0.Add(30 * time.Hour)}
+	editState(t, w, func(s *state.File) {
+		s.ActiveTarget, s.TargetSetBy = "example-large", state.SetByTiming
+		s.Timing = &state.TimingRecord{GaveUp: gave, Capped: true, Failures: 2, FailedTo: "example-large", FailedAction: "up",
+			LastMove: &state.TimingMove{At: t0.Add(-3 * time.Hour), From: state.Primary, To: "example-large", Action: "up", Window: "seven_day", ResetsAt: t0.Add(-time.Minute)}}
+	})
+	runTick(t, w, t0) // returns at the reset
+	st := loadState(t, w)
+	if st.Target() != state.Primary || st.Timing.GaveUp == nil || !st.Timing.GaveUp.ResetsAt.Equal(gave.ResetsAt) {
+		t.Fatalf("the return erased the step up given up: %+v", st.Timing)
+	}
+}
+
+// A wake the engine sends only to tell the session a child failed is not a
+// turn boundary for timing.
+func TestTimingNotOnAChildErrorWake(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle, ActiveChildren: 1, ErroredChildren: []string{"child:example"}})
+	nearReset(t, w, t0)
+	res := runTick(t, w, t0)
+	if !res.ChildErrorNote {
+		t.Fatalf("not a child-error wake: %s %q", res.Action, res.Reason)
+	}
+	if large := w.adapters["example-large"]; large != nil && large.activated > 0 {
+		t.Fatalf("stepped on a child-error wake: %+v", res.Timing)
+	}
+}
+
+// The repair runs only when its 30 seconds are free, and never on a dry run.
+func TestTimingRepairBudgetAndDryRun(t *testing.T) {
+	pending := func(t *testing.T, w *world) {
+		editState(t, w, func(s *state.File) {
+			s.Timing = &state.TimingRecord{Pending: &state.TimingMove{At: t0.Add(-10 * time.Minute), From: state.Primary, To: "example-large", Action: "up"}}
+			s.ReapplyRoute = true
+		})
+	}
+	w := stepsWorld(t)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	pending(t, w)
+	opts := w.opts(t0)
+	opts.DryRun = true
+	if _, err := Tick(t.Context(), w.cfg, opts); err != nil {
+		t.Fatal(err)
+	}
+	if st := loadState(t, w); p.activated != 0 || st.Timing.Pending == nil || !st.ReapplyRoute {
+		t.Fatalf("dry run: activated %d, %+v", p.activated, st)
+	}
+
+	w = stepsWorld(t)
+	p = w.primary(decide.Observation{State: decide.Idle})
+	pending(t, w)
+	w.cfg.Loop.TickTimeout = config.Duration{Duration: time.Second}
+	res := runTick(t, w, t0)
+	if st := loadState(t, w); p.activated != 0 || st.Timing.Pending == nil || !strings.Contains(strings.Join(res.Warnings, "\n"), "no time left in this check to set it") {
+		t.Fatalf("no time: activated %d, %+v, %v", p.activated, st.Timing, res.Warnings)
 	}
 }

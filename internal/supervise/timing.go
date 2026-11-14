@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
+	"github.com/connorburgess/keepgoing-agents/internal/allowance"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
@@ -34,11 +35,17 @@ const LeftConfiguration = "left_configuration"
 // settled (the check that recorded it ended, or its activation failed), or
 // the loop was moved to the first route because its route left the
 // configuration. It runs in a check that acts: after stop, pause and the
-// other holds, and with the session claimed. A model change is idempotent.
-func (t *tick) reapplyRoute(target string) {
+// other holds, with the session claimed and observed idle with nothing
+// waiting for it, and with its time free. A model change is idempotent.
+func (t *tick) reapplyRoute(target string, obs decide.Observation) {
 	tr := t.st.Timing
 	pending := tr != nil && tr.Pending != nil
 	if (!pending && !t.st.ReapplyRoute) || t.opts.DryRun {
+		return
+	}
+	// Between turns only: not while a turn runs or anything waits for the
+	// session (an interaction, queued messages, lanes, background jobs).
+	if obs.State != decide.Idle || obs.AwaitingInput || obs.DeferredInteraction || obs.Queued > 0 || obs.ActiveChildren > 0 || obs.Background > 0 {
 		return
 	}
 	if t.left() < repairRouteTime {
@@ -61,7 +68,7 @@ func (t *tick) reapplyRoute(target string) {
 		tr.Pending = nil
 	}
 	if t.st.ReapplyRoute {
-		t.warn("the thread's model and effort were set to %s's: the route the loop was on left the configuration", target)
+		t.warn("the route the loop was on is no longer configured; the thread was set to %s's model and effort", target)
 		t.st.ReapplyRoute = false
 	}
 }
@@ -196,6 +203,7 @@ func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingN
 	if move.Action == timing.Up {
 		tr.LastUp = &move
 	}
+	// A step up timing gave up on stays given up until its window resets.
 	tr.Failures, tr.FailedTo, tr.FailedAction, tr.FailedWindow, tr.FailedResetsAt, tr.Capped, tr.FailReported = 0, "", "", "", time.Time{}, false, false
 	t.st.ActiveTarget, t.st.TargetSetBy, t.st.ReapplyRoute = move.To, state.SetByTiming, false
 	if move.Reason == LeftConfiguration {
@@ -219,7 +227,7 @@ func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingN
 // boundary, and its first failure is reported once.
 func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) {
 	l, tr := t.loop, t.timingRecord()
-	if tr.FailedTo != move.To || tr.FailedAction != move.Action || !tr.FailedResetsAt.Equal(move.ResetsAt) {
+	if tr.FailedTo != move.To || tr.FailedAction != move.Action || !sameInstance(tr.FailedResetsAt, move.ResetsAt) {
 		tr.FailedTo, tr.FailedAction, tr.FailedWindow, tr.FailedResetsAt, tr.Failures, tr.Capped, tr.FailReported = move.To, move.Action, move.Window, move.ResetsAt, 0, false, false
 	}
 	tr.Failures++
@@ -229,6 +237,8 @@ func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) 
 	switch {
 	case move.Action == timing.Up && tr.Failures >= l.Errors.MaxReprompts:
 		tr.Capped = true
+		gave := move
+		tr.GaveUp = &gave
 		note.Outcome = "capped"
 		data["outcome"] = "capped"
 		t.report("timing", fmt.Sprintf("%s: timing could not step up to %s %d times for this %s window and stops trying until it resets; staying on %s", l.Name, move.To, tr.Failures, move.Window, move.From), data)
@@ -236,7 +246,17 @@ func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) 
 		tr.FailReported = true
 		data["outcome"] = "failed"
 		t.report("timing", fmt.Sprintf("%s: timing could not move from %s to %s (%v); it tries again at each turn boundary", l.Name, move.From, move.To, err), data)
+	case move.Action != timing.Up && tr.Failures == l.Errors.MaxReprompts:
+		data["outcome"] = "still_failing"
+		t.report("timing", fmt.Sprintf("%s: still on %s after %d failed moves to %s; timing keeps trying at each turn boundary", l.Name, move.From, tr.Failures, move.To), data)
 	}
+}
+
+// sameInstance: two reset times of one window instance, allowing for the
+// rounding a provider's reported reset has between readings.
+func sameInstance(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d <= allowance.SameReset && d >= -allowance.SameReset
 }
 
 func (t *tick) timingRecord() *state.TimingRecord {

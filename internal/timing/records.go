@@ -44,9 +44,7 @@ func FromRecords(cfg *config.Config, st state.File, reg *health.Registry, now ti
 		if r := tr.Retarget; r != nil {
 			in.Retarget = &Retarget{At: r.At, ResetsAt: r.ResetsAt}
 		}
-		if tr.Capped {
-			in.GaveUp = &Move{To: tr.FailedTo, Action: tr.FailedAction, Window: tr.FailedWindow, ResetsAt: tr.FailedResetsAt}
-		}
+		in.GaveUp = move(tr.GaveUp)
 	}
 	if in.Retarget == nil && in.Current != First && st.TargetSetBy == state.SetByRetarget {
 		// A retarget with no record of its own: timing waits as for one made

@@ -662,6 +662,9 @@ type TimingRecord struct {
 	FailedResetsAt time.Time `json:"failedResetsAt,omitempty"`
 	Capped         bool      `json:"capped,omitempty"`
 	FailReported   bool      `json:"failReported,omitempty"`
+	// GaveUp is the step up timing stopped trying, kept until its window
+	// instance resets, whatever moves are made in between.
+	GaveUp *TimingMove `json:"gaveUp,omitempty"`
 }
 
 // TimingMove is one step: from and to route IDs, up, down or back, the

@@ -715,9 +715,6 @@ func (t *tick) run() error {
 	if err := t.claimActive(agent); err != nil {
 		return err
 	}
-	// Past the holds and with the session claimed: a thread that may not be
-	// on the route on record is set to it.
-	t.reapplyRoute(target)
 	a, err := t.newAdapter(agent, loop.StateDir, target)
 	if err != nil {
 		res.State, res.Window, res.Reason = "not observed", "not checked", "could not build the target's adapter; no action taken"
@@ -736,6 +733,9 @@ func (t *tick) run() error {
 		return t.record(err)
 	}
 	res.State = string(obs.State)
+	// Past the holds, with the session claimed and observed: a thread that
+	// may not be on the route on record is set to it, between turns only.
+	t.reapplyRoute(target, obs)
 	t.sessionRecovered = obs.State == decide.Active || obs.State == decide.Idle
 	if obs.State == decide.Error {
 		res.ErrorClass = string(obs.ErrorClass)
@@ -1010,10 +1010,12 @@ func (t *tick) run() error {
 			actErr = t.act(a, d)
 		}
 	} else if d.Action == decide.Handoff {
+		setBy := t.st.TargetSetBy // what put the loop on the route it leaves
 		moved, err := t.handoff(target, agent, obs, summary)
-		// Switch-back waits for the first route's limit. A route on the first
-		// route's allowance (a timing step) hit that same limit.
-		if moved && err == nil && !t.opts.DryRun && (target == state.Primary || agent.Group == loop.Group) {
+		// Switch-back waits for the first route's limit. A step timing chose
+		// is on the first route's allowance, so its limit is that limit; any
+		// other route's handoff leaves the recorded reset as it was.
+		if moved && err == nil && !t.opts.DryRun && (target == state.Primary || setBy == state.SetByTiming) {
 			t.st.PrimaryResetsAt = obs.ResetsAt
 		}
 		if err != nil {
