@@ -180,6 +180,7 @@ func subject(t *testing.T, kind string) Subject {
 	root := t.TempDir()
 	r := &rig{dir: filepath.Join(root, "stand-in"), stateDir: filepath.Join(root, "state")}
 	project, home, temp := filepath.Join(root, "project"), filepath.Join(root, "home"), filepath.Join(root, "tmp")
+	trackFixtureWrappers(t, project)
 	for _, dir := range []string{r.dir, r.stateDir, project, home, temp} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
