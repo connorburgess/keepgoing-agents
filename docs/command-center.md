@@ -16,7 +16,7 @@ flowchart LR
     KG["keepgoing daemon or scheduler<br/>decisions, holds, bounds, fallbacks"]
     ST[("private state<br/>outside any checkout")]
     LOGIN["agent CLIs and their logins<br/>(never copied by keepgoing)"]
-    DOCK["dock: read-only local page on loopback (unreleased)<br/>menu-bar item (read-only preview)"]
+    DOCK["dock: read-only local page on loopback (unreleased)<br/>menu-bar item (preview: pause, stop, resume)"]
     KG --- ST
     KG --> LOGIN
     DOCK -->|reads| ST
@@ -42,7 +42,7 @@ flowchart LR
 Solid lines exist on `main`; dashed lines are planned or analysis.
 
 - **Command center.** The process that checks loops (`keepgoing daemon`, `start`, a managed LaunchAgent or systemd user unit, or an external scheduler running `tick`) plus its private state directory. It runs the agents' own CLIs with the logins already on that machine; `keepgoing` never logs in, creates accounts or copies credentials ([README](../README.md#fallbacks-several-subscriptions-accounts-or-models)). This is how keepgoing works today.
-- **Dock.** Where a person looks and acts. Today that is the CLI (`status`, `timeline`, `runs`, `pause`, `resume`, `stop`), the [registered client commands](local-clients.md) and an unreleased, read-only [macOS menu preview](../integrations/macos/README.md). In unreleased source, `keepgoing dock` serves a read-only page for every registered loop, the [keepgoing panel](dock.md): bound to `127.0.0.1`, with a per-run token in the address, refusing any `Host` other than its own loopback address and port, any foreign `Origin` and every method but `GET` and `HEAD`. It has no write endpoint and is tested with fixtures only. The other listener keepgoing has is the daemon's [diagnostic endpoint](diagnostics.md#live-daemon-diagnostics), also bound to `127.0.0.1`, answering a challenge with a private key.
+- **Dock.** Where a person looks and acts. Today that is the CLI (`status`, `timeline`, `runs`, `pause`, `resume`, `stop`), the [registered client commands](local-clients.md) and an unreleased [macOS menu preview](../integrations/macos/README.md), which can pause, stop and resume a loop after a native confirmation showing the panel's review. In unreleased source, `keepgoing dock` serves a read-only page for every registered loop, the [keepgoing panel](dock.md): bound to `127.0.0.1`, with a per-run token in the address, refusing any `Host` other than its own loopback address and port, any foreign `Origin` and every method but `GET` and `HEAD`. It has no write endpoint and is tested with fixtures only. The other listener keepgoing has is the daemon's [diagnostic endpoint](diagnostics.md#live-daemon-diagnostics), also bound to `127.0.0.1`, answering a challenge with a private key.
 - **Remote reach.** How a person who is elsewhere learns what happened and, later, acts. Today: [signed webhook reports](configuration.md#report-yield-daemon) for handoff, holds, limit waits, child errors, completion, stop and errors, using the Standard Webhooks HMAC scheme. Nothing comes back: there is no inbound control path. Options for a remote view and for replies are set out [below](#reaching-the-dock-from-elsewhere).
 - **Targets.** What the command center supervises. Today: BB threads, headless Claude Code and Codex, the generic process adapter and, in unreleased source, the Cursor CLI runner and agents defined in configuration ([capability matrix](adapters.md#matrix)). Cloud sessions and small-device targets are planned in the [runner kit](roadmap.md#runner-kit-one-contract-for-every-command-line-agent).
 

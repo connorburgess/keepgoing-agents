@@ -1,6 +1,6 @@
 # Local client discovery
 
-The optional menu-bar companion needs an explicit list of loops to display. With v0.1.4, `keepgoing registry add|list|remove` provides that first prerequisite. The CLI contract is offline-tested; publication does not establish live acceptance. Read-only `client status` and explicit restrictive `client pause|stop` commands are implemented below. The prepared-resume flow below also supports explicit hold clearing. An unreleased [read-only native menu preview](../integrations/macos/README.md) consumes this contract. Unreleased [`keepgoing dock`](dock.md) serves a read-only page, the keepgoing panel, for every registered loop. Unreleased `keepgoing panel --allow-changes` lets that page [pause, stop and resume](dock.md#changes-from-the-page-keepgoing-panel---allow-changes) a loop through these same commands' functions, recorded as from the panel. Automatic setup registration remains planned.
+The optional menu-bar companion needs an explicit list of loops to display. With v0.1.4, `keepgoing registry add|list|remove` provides that first prerequisite. The CLI contract is offline-tested; publication does not establish live acceptance. Read-only `client status` and explicit restrictive `client pause|stop` commands are implemented below. The prepared-resume flow below also supports explicit hold clearing. An unreleased [native menu preview](../integrations/macos/README.md) consumes this contract, and pauses, stops and resumes a loop through [`client review` and `client apply`](#reviewed-pause-stop-and-resume-client-review-client-apply). Unreleased [`keepgoing dock`](dock.md) serves a read-only page, the keepgoing panel, for every registered loop. Unreleased `keepgoing panel --allow-changes` lets that page [pause, stop and resume](dock.md#changes-from-the-page-keepgoing-panel---allow-changes) a loop through these same commands' functions, recorded as from the panel. Automatic setup registration remains planned.
 
 Registration stores a reference only. It never enables, resumes, stops or transfers supervision; queries a provider; creates a thread; changes a scheduler; or reads a task file. Headless and process configurations need no BB installation to register. The registry is separate from the BB plugin's private setup list; neither imports or replaces the other.
 
@@ -118,4 +118,37 @@ Preparation and resume return schema-1 envelopes with the same `registrationId`,
 
 The ticket file contains a schema version, random ID, private binding digest, issuance/expiry and consumption flag, with atomic replacement and mode 0600 on Unix. Reads reject nonregular, oversized (over 4 KiB), malformed and unsupported records; Unix also refuses group/other mode bits on the runtime directory or ticket. Windows relies on inherited access controls. A corrupt ticket must be inspected/restored privately; preparation will not silently overwrite it. One slot bounds retained state; expired/consumed records are replaced only by another explicit preparation. These are cooperative local checks, not authentication against someone who can edit files or environment variables. External file replacements, changes that revert to identical evidence, old binaries and power-loss durability remain outside the guarantee.
 
-Released in v0.1.4. Offline fixtures cover changed config/fallbacks/target/owner/caller/control/state/goals, supersession, expiry and clock rollback, busy locks, interrupted consumption, lost output, diagnostic failure, privacy and process targets without installed BB/providers. Simulated interruption verifies the consume-before-save boundary; it is not a live crash/agent walkthrough. The read-only native preview does not yet expose these controls. Optional init registration/installation, signing/distribution, live UI and provider verification remain planned.
+Released in v0.1.4. Offline fixtures cover changed config/fallbacks/target/owner/caller/control/state/goals, supersession, expiry and clock rollback, busy locks, interrupted consumption, lost output, diagnostic failure, privacy and process targets without installed BB/providers. Simulated interruption verifies the consume-before-save boundary; it is not a live crash/agent walkthrough. The native menu preview resumes through `client apply resume` (below), which runs this same preparation and resume. Optional init registration/installation, signing/distribution, live UI and provider verification remain planned.
+
+## Reviewed pause, stop and resume (`client review`, `client apply`)
+
+Unreleased; fixtures and the menu's contract smoke only.
+
+```sh
+keepgoing client review stop --loop l0123456789ab --json
+keepgoing client apply stop --loop l0123456789ab --expect <the review's expect value> --json
+```
+
+These are the [panel's](dock.md#changes-from-the-page-keepgoing-panel---allow-changes) pause, stop and resume for a local program that shows its own confirmation, such as the [macOS menu](../integrations/macos/README.md). Both take the loop by the page key `panel list --json` gives (`--loop`), never a registration ID or path, and act as the BB thread in `BB_THREAD_ID`, or as no thread outside BB, exactly as the ordinary commands do: pause and stop are anyone's, and a resume of a loop another conversation owns is refused, as `keepgoing resume` and `client prepare-resume` refuse it. The menu runs them with no `BB_THREAD_ID`, as a person at a terminal outside BB.
+
+- **`client review pause|stop|resume`** changes no record. It reads the loop the way the page does and prints the page's own review, built by the same code, as plain sentences with each time in this computer's zone, named (`06:45 +07`): `preview` with `action`, `key`, `title`, `lines`, `confirm` (the confirming button's words), `expect`, `expiresAt`, and what to say when the confirmation's reply is lost (`lost`), refused (`refused`) or too late (`expired`). It reads the control record under its lock, which may create the loop's private state directory (mode `0700`) and the empty `control.lock` in it, as the page's review does. A loop that cannot be reviewed now gives `result` instead, in the page's words, and exit 1. Without `--json` it prints the review and the `client apply` line that confirms it, with `--directory` when one was given.
+- **The expect value** is one review for one action on one loop: `r1.<expiry>.<record digest>.<check>`, where the check covers the loop's key, the action, the expiry and the digest. `client apply` refuses it, as `review_again`, for another loop or another action, once the review has expired (2 minutes, 5 for a resume), and when the loop's control record is no longer the one reviewed. The last is checked inside the control lock, and for a resume before its ticket is prepared, so a stale review never replaces a resume another client prepared. It is not a secret: whoever can run `client apply` can read the record and change the loop anyway.
+- **`client apply pause|stop|resume --expect V`** makes the change through the same functions as the page's confirmation. A resume prepares and uses its own ticket in the one command, as the page's does. The reply is `result` with `outcome` (`done`, `refused`, `review_again` or `uncertain`), `text` in the page's words, and `retry` when a new review may be offered. Exit 0 when done, 75 when a check holds the loop, 1 otherwise. Nothing is retried; an `uncertain` outcome means look at the loop before anything else.
+- The history records these as ordinary `pause`, `stop` and `resume`, as `client pause|stop` and `client resume` do, not as from the panel.
+- `client review --help` and `client apply --help` print the usage and exit 0.
+
+`panel list --json` says which changes fit each loop's control flags, as the page offers them (`can`: `pause` when not paused, `stop` when no stop is requested, `resume` when any hold is set). Today a stop stops the conversation only, at the loop's next check, and the review says so.
+
+**Stop options (planned, for `stop --lanes` and `--immediately`).** When the CLI can stop a loop's lanes and stop at once, `client review stop` adds a `stop` object to `preview`, and a program offers one button per option, in the CLI's words, never its own:
+
+```json
+"stop": {
+  "immediately": true,
+  "options": [
+    {"label": "Stop the Conversation", "lanes": false},
+    {"label": "Stop It and Its 3 Lanes", "lanes": true}
+  ]
+}
+```
+
+`immediately` says that `client apply stop` takes `--immediately`, and is passed with every option; an option with `lanes: true` also passes `--lanes`. There are one to four options, each with a label, and no two with the same `lanes`. A review with no `stop` object (today's) offers the one stop, which waits for the next check. The macOS menu already reads this shape and offers it only when it is there.
