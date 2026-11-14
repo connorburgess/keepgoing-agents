@@ -7,13 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -119,7 +122,7 @@ func TestStopNowLeavesTheStopToARunningCheck(t *testing.T) {
 	if took := time.Since(start); took > stopNowWait+3*time.Second {
 		t.Fatalf("waited %s", took)
 	}
-	if code != exitOK || !strings.Contains(out, "the stop is left to the checks") || len(stopCalls(f)) != 0 {
+	if code != exitOK || !strings.Contains(out, "stop saved and left to the loop's checks: a check of example-loop was running") || len(stopCalls(f)) != 0 {
 		t.Fatalf("%d\n%s %v", code, out, stopCalls(f))
 	}
 	f.tick()
@@ -156,9 +159,9 @@ func TestClientStopLanesNowJSON(t *testing.T) {
 	// it; the stop is still carried out in the command and recorded.
 	out.Reset()
 	errs.Reset()
-	run(context.Background(), []string{"client", "stop", "--lanes", "--now", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
+	code := run(context.Background(), []string{"client", "stop", "--lanes", "--now", "--id", entry.ID, "--directory", dir, "--json"}, &out, &errs)
 	r = clientHoldReport{}
-	if json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "now" || r.Lanes == nil || !r.Lanes.Requested || r.Lanes.Result == nil {
+	if code != exitOK || json.Unmarshal(out.Bytes(), &r) != nil || r.CarriedOut != "now" || r.Lanes == nil || !r.Lanes.Requested || r.Lanes.Result == nil || len(r.Issues) != 0 {
 		t.Fatal(out.String(), errs.String())
 	}
 	if ctl, _ := control.Load(entry.StateDir); ctl.StopLanesAt == nil || !ctl.Stop {
@@ -180,5 +183,59 @@ func TestClientStopLanesNowJSON(t *testing.T) {
 	out.Reset()
 	if code := run(context.Background(), []string{"client", "pause", "--lanes", "--id", entry.ID, "--directory", dir}, &out, &errs); code != exitUsage {
 		t.Fatal(code)
+	}
+}
+
+// S2. A resume that lands between the stop's save and the check lock leaves
+// the stop-only check nothing to do: it must not run a full check (an idle
+// session would be woken), and it needs no owner.
+func TestStopNowAfterAResumeDoesNothing(t *testing.T) {
+	f := laneFixture(t)
+	write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"idle"}}`, 0o600)
+	f.run("stop", "--lanes")
+	f.run("resume")
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BB_THREAD_ID", "thr_not_the_owner")
+	r, err := stopNow(context.Background(), cfg, stopNowWait, "")
+	if err != nil || r.CarriedOut != "now" || r.Action != "none" || r.Reason != "stop no longer requested; nothing done" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if calls := f.read("calls"); strings.Contains(calls, "thread tell") || strings.Contains(calls, "thread stop") || strings.Contains(calls, "thread show") {
+		t.Fatalf("the check did more than nothing:\n%s", calls)
+	}
+}
+
+// Another loop's live check holds the session: the stop is left to the
+// checks, said in words, and the command exits 0, as a running check does.
+// An observation failure is carried out and recorded, and exits 0 too.
+func TestStopNowOutcomesAndExitCodes(t *testing.T) {
+	f := laneFixture(t)
+	claim, err := session.Take(os.Getenv(session.DirEnv), session.Identity{Kind: "bb", ID: "thr_primary"}, session.Holder{Loop: "other-loop", PID: 1, Since: time.Now(), Until: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := f.run("stop", "--lanes", "--now")
+	claim.Release()
+	if code != exitOK || !strings.Contains(out, "stop saved and left to the loop's checks: another loop's check is acting on this session") || strings.Contains(out, "carried out now") || len(stopCalls(f)) != 0 {
+		t.Fatalf("%d\n%s%s", code, out, errs)
+	}
+	g := laneFixture(t)
+	write(t, filepath.Join(g.bbDir, "thr_primary.show"), `not json`, 0o600)
+	code, out, errs = g.run("stop", "--lanes", "--now")
+	if code != exitOK || !strings.Contains(out, "stop carried out now:") || !strings.Contains(out, "lanes: 2 stopped") {
+		t.Fatalf("%d\n%s%s", code, out, errs)
+	}
+	// From inside a BB thread the command says, before anything is stopped,
+	// that a thread of its own is stopped last.
+	h := laneFixture(t)
+	t.Setenv("BB_THREAD_ID", "thr_child_a")
+	if _, out, _ := h.run("stop", "--lanes", "--now"); !strings.Contains(out, "this command runs in BB thread thr_child_a; if the stop covers it, it is stopped last") {
+		t.Fatalf("%s", out)
+	}
+	if got := strings.Join(stopCalls(h), ","); got != "thr_primary,thr_child_b1,thr_child_a" {
+		t.Fatalf("stopped %s", got)
 	}
 }

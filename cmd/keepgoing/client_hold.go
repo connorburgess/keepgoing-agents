@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"time"
 
@@ -31,6 +32,8 @@ type clientHoldReport struct {
 	CarriedOut string       `json:"carriedOut,omitempty"`
 	// LeftBecause says why a stop asked to run now was left to a check.
 	LeftBecause string `json:"leftBecause,omitempty"`
+	// Warnings are the stop check's, for a stop carried out now.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // clientLanes is the lanes part of a client stop.
@@ -41,8 +44,11 @@ type clientLanes struct {
 }
 
 // holdOptions are the stop's options: cover the lanes, carry it out now.
+// CallerThread is the BB thread the command runs in, for a stop carried out
+// now; the panel and the menu leave it empty, acting as no BB thread.
 type holdOptions struct {
-	Lanes, Now bool
+	Lanes, Now   bool
+	CallerThread string
 }
 
 func clientHoldCommand(e env, args []string) int {
@@ -69,6 +75,9 @@ func clientHoldCommand(e env, args []string) int {
 		e.errf("client: provide a registration ID; no positional arguments")
 		return exitUsage
 	}
+	if opts.Now {
+		opts.CallerThread = os.Getenv("BB_THREAD_ID")
+	}
 	r, code := applyClientHoldWith(e.ctx, *directory, *id, args[0], "", "", opts)
 	if *asJSON {
 		if json.NewEncoder(e.stdout).Encode(r) != nil {
@@ -85,8 +94,13 @@ func clientHoldCommand(e env, args []string) int {
 			if r.Lanes != nil && r.Lanes.Result != nil {
 				fmt.Fprintln(e.stdout, describeLaneStop(*r.Lanes.Result))
 			}
+		case r.ControlSave == "confirmed" && r.LeftBecause != "":
+			fmt.Fprintf(e.stdout, "Stop saved and left to the loop's checks: %s.\n", r.LeftBecause)
 		case r.ControlSave == "confirmed":
 			fmt.Fprintln(e.stdout, "Hold saved; provider action is not confirmed. Inspect status before another action.")
+		}
+		for _, w := range r.Warnings {
+			fmt.Fprintf(e.stdout, "warning: %s\n", w)
 		}
 	}
 	return code
@@ -208,12 +222,12 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 	if operation == "stop" && opts.Now && stopCfg != nil && r.ControlSave == "confirmed" {
 		// Outside the registry entry's lock: the stop check takes the loop's
 		// own check lock, and may wait a few seconds for it.
-		now, err := stopNow(ctx, stopCfg, stopNowWait)
-		r.CarriedOut, r.LeftBecause = now.CarriedOut, now.Why
+		now, err := stopNow(ctx, stopCfg, stopNowWait, opts.CallerThread)
+		r.CarriedOut, r.LeftBecause, r.Warnings = now.CarriedOut, now.Why, now.Warnings
 		if r.Lanes != nil {
 			r.Lanes.Result = now.Lanes
 		}
-		if err != nil {
+		if now.failed(err) {
 			r.Issues = append(r.Issues, "stop_now_failed")
 		}
 	}

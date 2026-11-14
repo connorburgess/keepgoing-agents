@@ -33,12 +33,15 @@ type laneTree struct {
 	noCancel  bool            // the provider cannot cancel one
 	listed    []string
 	laneStops []string
+	order     []string       // the supervised thread's stop ("parent") and each lane's, in order
+	stopFails error          // the supervised thread's own stop fails with this
+	listFails map[string]int // a listing of this parent fails this many more times
 	cancels   []string
 	onCall    func()
 }
 
 func newLaneTree(f *fakeAdapter) *laneTree {
-	return &laneTree{fakeAdapter: f, kids: map[string][]adapter.LaneInfo{}, stopErr: map[string]error{}, pending: map[string]bool{}}
+	return &laneTree{fakeAdapter: f, kids: map[string][]adapter.LaneInfo{}, stopErr: map[string]error{}, pending: map[string]bool{}, listFails: map[string]int{}}
 }
 
 func (l *laneTree) add(parent, id, status string, queued int) {
@@ -47,10 +50,22 @@ func (l *laneTree) add(parent, id, status string, queued int) {
 
 func (l *laneTree) LaneRoot() string { return laneRoot }
 
+func (l *laneTree) Stop(ctx context.Context) error {
+	l.order = append(l.order, "parent")
+	if l.stopFails != nil {
+		return l.stopFails
+	}
+	return l.fakeAdapter.Stop(ctx)
+}
+
 func (l *laneTree) LaneChildren(_ context.Context, parent string, max int) ([]adapter.LaneInfo, int, error) {
 	l.listed = append(l.listed, parent)
 	if l.onCall != nil {
 		l.onCall()
+	}
+	if l.listFails[parent] > 0 {
+		l.listFails[parent]--
+		return nil, 0, &adapter.LaneStopError{Class: "timeout", Err: fmt.Errorf("bb thread list: stopped at its time limit")}
 	}
 	all := l.kids[parent]
 	if len(all) > max {
@@ -61,6 +76,7 @@ func (l *laneTree) LaneChildren(_ context.Context, parent string, max int) ([]ad
 
 func (l *laneTree) StopLane(_ context.Context, id string) error {
 	l.laneStops = append(l.laneStops, id)
+	l.order = append(l.order, id)
 	if l.onCall != nil {
 		l.onCall()
 	}
@@ -93,6 +109,8 @@ type laneStopWorld struct {
 	tree   *laneTree
 	clock  func() time.Time
 	dryRun bool
+	caller string
+	others bool // other targets get their own fake adapters
 }
 
 // newLaneStopWorld is a loop whose supervised thread is working and has lanes.
@@ -120,13 +138,19 @@ func (w *laneStopWorld) askStop(t *testing.T, lanes bool, at time.Time) {
 func (w *laneStopWorld) tick(t *testing.T, at time.Time) Result {
 	t.Helper()
 	opts := w.opts(at)
-	opts.NewAdapter = func(config.Agent, string, string) (adapter.Adapter, error) { return w.tree, nil }
-	opts.DryRun = w.dryRun
+	inner := opts.NewAdapter
+	opts.NewAdapter = func(a config.Agent, dir, target string) (adapter.Adapter, error) {
+		if w.others && target != state.Primary {
+			return inner(a, dir, target)
+		}
+		return w.tree, nil
+	}
+	opts.DryRun, opts.CallerThread = w.dryRun, w.caller
 	if w.clock != nil {
 		opts.Clock = w.clock
 	}
 	res, err := Tick(context.Background(), w.cfg, opts)
-	if err != nil {
+	if err != nil && !res.Recorded {
 		t.Fatalf("tick: %v", err)
 	}
 	return res
@@ -226,11 +250,15 @@ func TestStopWithLanesStopsTheRunningLanesOnce(t *testing.T) {
 			t.Fatalf("looked below %s", p)
 		}
 	}
-	l := res.LaneStop
-	want := state.LaneStop{For: t0, At: t0.Add(time.Minute), Outcome: "done", ParentStopped: true, Stopped: 3, AlreadyIdle: 2, OtherLoop: 1,
+	l := *res.LaneStop
+	if len(l.StoppedLanes) != 3 {
+		t.Fatalf("%+v", l)
+	}
+	l.StoppedLanes = nil
+	want := state.LaneStop{For: t0, At: t0.Add(time.Minute), Outcome: "done", Parent: "stopped", Stopped: 3, AlreadyIdle: 2, OtherLoop: 1,
 		Failed: map[string]int{"unverified": 1, "unknown_status": 1}, RetriesCancelled: 1, Reported: true}
-	if fmt.Sprintf("%+v", *l) != fmt.Sprintf("%+v", want) {
-		t.Fatalf("%+v\nwant %+v", *l, want)
+	if fmt.Sprintf("%+v", l) != fmt.Sprintf("%+v", want) {
+		t.Fatalf("%+v\nwant %+v", l, want)
 	}
 	// One stop report, for the thread and its lanes together, by count.
 	reports := w.stopReports()
@@ -239,7 +267,7 @@ func TestStopWithLanesStopsTheRunningLanesOnce(t *testing.T) {
 	}
 	e := reports[0]
 	lanes, _ := e.Data["lanes"].(map[string]any)
-	if e.Data["parentStopped"] != true || lanes["stopped"] != 3 || lanes["alreadyIdle"] != 2 || lanes["otherLoop"] != 1 || lanes["notChecked"] != 0 {
+	if e.Data["parent"] != "stopped" || lanes["stopped"] != 3 || lanes["alreadyIdle"] != 2 || lanes["otherLoop"] != 1 || lanes["notChecked"] != 0 {
 		t.Fatalf("%+v", e.Data)
 	}
 	if !strings.Contains(e.Text, "stopped primary; lanes: 3 stopped, 2 already idle, 1 left to another loop, 2 failed, 0 not checked") || strings.Contains(e.Text, "thr_lane") {
@@ -304,8 +332,8 @@ func TestStopWithLanesWinsOverHolds(t *testing.T) {
 		if r := w.stopReports(); len(r) != 1 || res.LaneStop == nil || res.LaneStop.Outcome != "done" {
 			t.Errorf("%s: %d reports, %+v", name, len(r), res.LaneStop)
 		}
-		if parent := w.tree.obs.State == decide.Active; res.LaneStop.ParentStopped != parent {
-			t.Errorf("%s: parentStopped %v", name, res.LaneStop.ParentStopped)
+		if want := map[bool]string{true: "stopped", false: "not_running"}[w.tree.obs.State == decide.Active]; res.LaneStop.Parent != want {
+			t.Errorf("%s: parent %q", name, res.LaneStop.Parent)
 		}
 	}
 	w := newLaneStopWorld(t)
@@ -524,7 +552,7 @@ func TestLanesAskedForAfterAPlainStop(t *testing.T) {
 	w.tick(t, t0.Add(time.Minute))
 	w.askStop(t, true, t0.Add(2*time.Minute))
 	res := w.tick(t, t0.Add(3*time.Minute))
-	if w.tree.stopped != 1 || res.LaneStop.Stopped != 3 || res.LaneStop.ParentStopped {
+	if w.tree.stopped != 1 || res.LaneStop.Stopped != 3 || res.LaneStop.Parent != "stopped_earlier" {
 		t.Fatalf("session stops %d, %+v", w.tree.stopped, res.LaneStop)
 	}
 	r := w.stopReports()

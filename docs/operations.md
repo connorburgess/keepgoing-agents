@@ -719,21 +719,29 @@ keepgoing client stop --lanes --now --id loop_0123456789abcdef0123456789abcdef -
 
 | A verified thread that is | What the stop does |
 | --- | --- |
-| active, starting or pending | stops it with `bb thread stop`, the command the supervised thread's own stop uses |
+| active or starting | stops it with `bb thread stop`, the command the supervised thread's own stop uses |
 | in error with a message queued (a retry waiting its turn) | cancels a waiting provider retry with `bb provider-retry cancel <thread> --json`, then stops it. A queued row that is not a provider retry (a retry asked for by keepgoing or a person) is not cancelled, and the report counts it |
-| idle, stopping, or in error with nothing queued | nothing: an idle lane needs no stop. Its children are still looked at |
+| idle, pending, stopping, or in error with nothing queued | nothing: a lane that is not working needs no stop. Its children are still looked at. `pending` has the meaning child discovery gives it: a known state in which the thread is not working, which may be waiting on a person |
 | supervised by another keepgoing loop | nothing, and nothing below it is looked at: that loop's own stop is the way to stop it. "Another loop's" means another loop's session record names it, or another loop's check holds its session claim now ([one loop per session](#one-loop-per-session)) |
+| one whose ownership cannot be established (the session directory cannot be used, or the lane's session record cannot be read, is too large or is of another schema) | nothing, and nothing below it: it might be another loop's. Counted as failed, `ownership_unconfirmed` |
 | not verifiable, or in a status this build does not know | nothing; counted as failed (`unverified`, `unknown_status`) |
+| gone: not found, archived, deleted, or now another thread's child | left out, as child discovery leaves it out. It uses none of the fifty and is not counted |
 
-A lane is sent nothing but a stop: no message, no retry. Stop wins: lanes are stopped whether the loop is paused, held, completed or disabled, and whether or not the supervised thread itself was running. A dry run looks at nothing and says so.
+Another loop's BB fallback thread is in no session record until that loop has been on it, so a lane that is such a fallback, and has never been active as one, is not recognised as another loop's.
+
+A lane is sent nothing but a stop, after a `bb provider-retry cancel` when a provider retry waits in it: no message, no retry. Stop wins: lanes are stopped whether the loop is paused, held, completed or disabled, and whether or not the supervised thread itself was running. A dry run looks at nothing and says so.
 
 **Past the bounds.** Nothing past three levels or fifty threads is stopped. The threads there are counted as not checked; the count says "at least" when some were never listed, which is so below anything past a bound. Running `stop --lanes` again after the first lanes are stopped reaches no further: the bounds are counted from the supervised thread each time.
 
 **Recorded first.** Each lane stop is recorded in `sends.json` before it is made, as `stop:lane` under a hash of the lane's ID keyed with a secret kept in the loop's own state (`lanes.key`), and under the request. No lane ID is stored. A check killed in the middle of the stop is followed by one that reads those records ([a send recorded before it is made](#a-send-recorded-before-it-is-made)): a recorded lane that is no longer running was stopped, is counted as stopped and is not stopped again; one still running was not, and is stopped now. A stop made just before the kill that BB has not yet shown as stopping would be made a second time; a second stop is harmless. If a record cannot be saved the stop is still made, as for the supervised thread: not stopping when asked is the worse failure. Lane stops do not count against `loop.limits.max_sends`.
 
-**Time.** The walk uses the check's own time budget. With less than ten seconds left it ends, the check says so, and the next check goes on with the same request; the report waits for the end.
+**Time.** The walk uses the check's own time budget, checked before each lane. With less than ten seconds left it ends, the check says so, and the next check goes on with the same request; the report waits for the end. The lanes the earlier check stopped are kept with the request (`laneStop` in `state.json`, under their keyed hashes) and counted once, and a lane whose stop failed is not tried again.
 
-**One report.** When the walk is finished one `stop` report is sent, for the supervised thread and its lanes together, recorded before it is sent so that it is sent once: whether the supervised thread was stopped, and the lanes stopped, already idle, left to another loop, failed (by error class, for example `thread_host_offline` or `timeout`), and not checked, with queued retries cancelled and not cancelled. It names no thread. A lane stop that fails is reported and not retried by later checks; running `stop --lanes` again makes a new request, which walks the lanes again. The check's JSON has the same counts as `laneStop`, and `state.json` keeps the latest as `laneStop`.
+**A listing that cannot be read.** A listing at any level that fails or times out (BB briefly offline, `bb` not found) does not use up the request. The check says so and the next check tries again, up to three checks. If it still cannot be read then, the report counts it under `listingsUnread`, and what is below it is not checked. Only that case is tried again: one lane's failed stop is not.
+
+**From inside a lane.** If the command that carries the stop out runs in a thread the stop covers (`BB_THREAD_ID` is the supervised thread or one of its lanes), that thread is stopped last, after every other target, and the command says so before it stops anything. If BB ending that thread ends the command too, everything else has already been stopped.
+
+**One report.** When the walk is finished one `stop` report is sent, for the supervised thread and its lanes together, recorded before it is sent so that it is sent once: what is known of the supervised thread itself (`parent`: `stopped`, `stop_failed`, `stopped_earlier` by an earlier check for this stop, `not_running`, or `not_observed` when the check could not observe it), and the lanes stopped, already idle, left to another loop, failed (by error class, for example `thread_host_offline` or `timeout`), and not checked, with queued retries cancelled and not cancelled. It names no thread. A lane stop that fails is reported and not retried by later checks; running `stop --lanes` again makes a new request, which walks the lanes again. The check's JSON has the same counts as `laneStop`, and `state.json` keeps the latest as `laneStop`.
 
 **Other adapters.** Headless agents, defined agents and process loops have no child conversations keepgoing can see. A stop with `--lanes` stops the session as before, and its output and report say lanes are not applicable.
 
@@ -743,7 +751,11 @@ A lane is sent nothing but a stop: no message, no retry. Stop wins: lanes are st
 
 If another check holds the lock, the command waits at most five seconds for it. If it is still running then, the stop is left to the checks, and the command says so: a check that read `control.json` before the stop was saved does not carry it out; the next one does, and a daemon starts that one at its next control poll. For `stop`, `--now` takes no value; the time override that `tick` takes with `--now <time>` does not apply.
 
-Loop ownership follows the rules of `keepgoing stop`: anyone who may ask for a stop may have it carried out, and a different BB thread does not need to take the loop over. The check does nothing a stop does not. The panel and the menu act as no BB thread.
+Loop ownership follows the rules of `keepgoing stop`: anyone who may ask for a stop may have it carried out, and a different BB thread does not need to take the loop over. The check does only what the next check would do for the saved stop; if a resume has lifted the stop, it records a check that did nothing and leaves the counts of failed checks as they were. The panel and the menu act as no BB thread.
+
+The command exits 0 when the stop was carried out and recorded, even if the check could not observe the target, and when it was left to a running check or to another loop's live check on the session; it exits 1 when the stop was saved but could neither be carried out nor left to a check (the configuration changed on disk, the lock could not be taken, or the check could not be recorded). `keepgoing stop` and `keepgoing client stop` agree on this. The stop check's warnings are printed.
+
+**Rollback.** A build without this change reads an unsettled `stop:lane` or `report:stop_lanes` record as a send to the agent: it warns with the lane's hash and moves the time of the last send. It also drops `laneStop` from `state.json`, so going forward again with the stop still in force walks the lanes again and sends a second stop report. `control.json`'s `stopLanesAt` is ignored by it.
 
 ## One loop per session
 

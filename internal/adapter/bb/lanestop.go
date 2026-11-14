@@ -23,7 +23,9 @@ const laneListMax = 200
 // LaneChildren implements adapter.LaneStopper. It lists parent's direct
 // children, hidden ones included, and verifies at most max of them with
 // `thread show`: the thread must name itself and parent and be neither
-// archived nor deleted. A child that fails that is returned unverified.
+// archived nor deleted. A thread that is gone (not found, archived, deleted,
+// or now under another parent) is left out and uses none of max, as child
+// discovery leaves it out. One that cannot be read is returned unverified.
 func (a *Adapter) LaneChildren(ctx context.Context, parent string, max int) ([]adapter.LaneInfo, int, error) {
 	if !childIDPattern.MatchString(parent) {
 		return nil, 0, errors.New("bb: not a thread ID")
@@ -49,23 +51,27 @@ func (a *Adapter) LaneChildren(ctx context.Context, parent string, max int) ([]a
 			notChecked++
 			continue
 		}
-		kids = append(kids, a.showLane(ctx, l.ID, parent))
+		info, gone := a.showLane(ctx, l.ID, parent)
+		if !gone {
+			kids = append(kids, info)
+		}
 	}
 	return kids, notChecked, nil
 }
 
-// showLane re-reads one listed child.
-func (a *Adapter) showLane(ctx context.Context, id, parent string) adapter.LaneInfo {
-	info := adapter.LaneInfo{ID: id}
+// showLane re-reads one listed child. gone: it no longer exists, is
+// archived or deleted, or is now another thread's child.
+func (a *Adapter) showLane(ctx context.Context, id, parent string) (info adapter.LaneInfo, gone bool) {
+	info = adapter.LaneInfo{ID: id}
 	if !childIDPattern.MatchString(id) {
-		return info
+		return info, false
 	}
 	out, err := a.run(ctx, "", "thread", "show", id, "--json")
-	if err != nil || ctx.Err() != nil {
-		return info
+	if code, bad := envelopeError(out); bad {
+		return info, code == "thread_not_found"
 	}
-	if _, bad := envelopeError(out); bad {
-		return info
+	if err != nil || ctx.Err() != nil {
+		return info, false
 	}
 	var resp struct {
 		Thread *struct {
@@ -78,15 +84,18 @@ func (a *Adapter) showLane(ctx context.Context, id, parent string) adapter.LaneI
 		} `json:"thread"`
 	}
 	if json.Unmarshal(out, &resp) != nil || resp.Thread == nil || resp.Thread.ID != id {
-		return info
+		return info, false
 	}
 	t := resp.Thread
 	var p *string
-	if len(t.Parent) == 0 || json.Unmarshal(t.Parent, &p) != nil || p == nil || *p != parent || t.ArchivedAt != nil || t.DeletedAt != nil {
-		return info
+	if len(t.Parent) == 0 || json.Unmarshal(t.Parent, &p) != nil {
+		return info, false
+	}
+	if p == nil || *p != parent || t.ArchivedAt != nil || t.DeletedAt != nil {
+		return info, true
 	}
 	info.Verified, info.Status, info.Queued = true, t.Status, max(0, t.Queued)
-	return info
+	return info, false
 }
 
 // StopLane implements adapter.LaneStopper with `bb thread stop`, the command

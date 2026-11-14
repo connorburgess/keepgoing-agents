@@ -182,7 +182,7 @@ func SettleIntoEpisode(dir string, f *File) error {
 		if p.Action == "handoff" || p.Action == "switch_back" {
 			break
 		}
-		agentSend := p.Action != "stop" && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
+		agentSend := p.Action != "stop" && !strings.HasPrefix(p.Action, "stop:") && p.Action != "new_thread" && !strings.HasPrefix(p.Action, "report:")
 		if agentSend && p.At.After(f.LastWakeAt) {
 			f.LastWakeAt = p.At
 		}

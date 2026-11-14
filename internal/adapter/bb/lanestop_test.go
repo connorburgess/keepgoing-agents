@@ -57,7 +57,9 @@ func TestLaneChildrenVerifiesEachChild(t *testing.T) {
 	for _, k := range kids {
 		got = append(got, fmt.Sprintf("%s:%v:%s:%d", k.ID, k.Verified, k.Status, k.Queued))
 	}
-	want := "thr_lane_a:true:active:0 thr_lane_b:false::0 thr_lane_c:true:error:1 thr_lane_d:false::0 thr_lane_e:false::0 not a thread:false::0"
+	// Gone threads (under another parent, archived, not found) are left out,
+	// as child discovery leaves them out; one that cannot be read is not.
+	want := "thr_lane_a:true:active:0 thr_lane_c:true:error:1 not a thread:false::0"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("%s", strings.Join(got, " "))
 	}
@@ -144,5 +146,32 @@ func TestStopLaneAndCancelLaneRetry(t *testing.T) {
 		if !strings.HasPrefix(c, "thread stop ") && !strings.HasPrefix(c, "provider-retry cancel ") {
 			t.Fatalf("ran %q", c)
 		}
+	}
+}
+
+// S4. Finished lanes that have since been archived, deleted or moved use none
+// of the bound, so an active lane listed after fifty of them is still found.
+func TestGoneLanesUseNoneOfTheBound(t *testing.T) {
+	answers := map[string]string{}
+	var list []string
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("thr_done_%02d", i)
+		list = append(list, fmt.Sprintf(`{"id":%q}`, id))
+		switch i % 3 {
+		case 0:
+			answers["thread show "+id+" --json"] = show(id, "thr_example123", "idle", `,"archivedAt":1700000000000`)
+		case 1:
+			answers["thread show "+id+" --json"] = show(id, "thr_example123", "idle", `,"deletedAt":1700000000000`)
+		default:
+			answers["thread show "+id+" --json"] = `{"ok":false,"error":{"code":"thread_not_found"}}`
+		}
+	}
+	list = append(list, `{"id":"thr_lane_live"}`)
+	answers["thread list --parent-thread thr_example123 --include-hidden --json"] = "[" + strings.Join(list, ",") + "]"
+	answers["thread show thr_lane_live --json"] = show("thr_lane_live", "thr_example123", "active", "")
+	a, _ := fakeLanes(t, answers)
+	kids, notChecked, err := a.LaneChildren(context.Background(), "thr_example123", 50)
+	if err != nil || notChecked != 0 || len(kids) != 1 || kids[0].ID != "thr_lane_live" || !kids[0].Verified {
+		t.Fatalf("%v %d %+v", err, notChecked, kids)
 	}
 }

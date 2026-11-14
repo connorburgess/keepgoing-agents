@@ -498,11 +498,12 @@ type LaneStop struct {
 	// incomplete (the check ran out of time; the next one goes on), or
 	// not_applicable (the adapter has no lanes).
 	Outcome string `json:"outcome"`
-	// ParentStopped: this request's check also stopped the supervised
-	// conversation itself.
-	ParentStopped bool `json:"parentStopped,omitempty"`
-	Stopped       int  `json:"stopped"`
-	AlreadyIdle   int  `json:"alreadyIdle"`
+	// Parent is what is known of the supervised conversation itself:
+	// stopped (by this request's checks), stop_failed, stopped_earlier (by
+	// an earlier check for this stop), not_running, or not_observed.
+	Parent      string `json:"parent"`
+	Stopped     int    `json:"stopped"`
+	AlreadyIdle int    `json:"alreadyIdle"`
 	// OtherLoop counts lanes another loop supervises, left to that loop.
 	OtherLoop int `json:"otherLoop"`
 	// Failed counts lanes not stopped, by error class.
@@ -513,10 +514,24 @@ type LaneStop struct {
 	NotCheckedAtLeast bool `json:"notCheckedAtLeast,omitempty"`
 	// RetriesCancelled counts provider retries cancelled in lanes in error;
 	// QueuedNotCancelled counts lanes whose queued retry could not be.
-	RetriesCancelled   int  `json:"retriesCancelled,omitempty"`
-	QueuedNotCancelled int  `json:"queuedNotCancelled,omitempty"`
-	Reported           bool `json:"reported,omitempty"`
+	RetriesCancelled   int `json:"retriesCancelled,omitempty"`
+	QueuedNotCancelled int `json:"queuedNotCancelled,omitempty"`
+	// ListingsUnread counts listings that could not be read in any of
+	// LaneStopListingTries checks; what is below them was not checked.
+	ListingsUnread int  `json:"listingsUnread,omitempty"`
+	Reported       bool `json:"reported,omitempty"`
+	// Carried between the checks of one request, under the loop's keyed
+	// lane hashes: the lanes stopped and those whose stop failed (by class),
+	// so a pass that goes on counts them once and never retries a failed
+	// stop; and how many checks found a listing they could not read.
+	StoppedLanes []string          `json:"stoppedLanes,omitempty"`
+	FailedLanes  map[string]string `json:"failedLanes,omitempty"`
+	ListingTries int               `json:"listingTries,omitempty"`
 }
+
+// LaneStopListingTries is how many checks try a listing that cannot be read
+// before the stop reports what is below it as not checked.
+const LaneStopListingTries = 3
 
 // LaneKeyName is the private key that names lanes in sends.json.
 const LaneKeyName = "lanes.key"

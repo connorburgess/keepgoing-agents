@@ -21,7 +21,10 @@ type LaneNode struct {
 	// and is neither archived nor deleted.
 	Verified bool
 	// Status is BB's thread status: active, starting, pending, idle, error,
-	// stopping, or anything else this build does not know.
+	// stopping, or anything else this build does not know. active and
+	// starting are running and are stopped. pending is not: child discovery
+	// treats it as a known state in which a thread is not working, which may
+	// be waiting on a person, and a stop uses the same meaning.
 	Status string
 	// Queued counts messages waiting to run in the thread. For a thread in
 	// error that is a retry waiting its turn: BB's provider retry, or one
@@ -30,6 +33,10 @@ type LaneNode struct {
 	// OtherLoop: another keepgoing loop supervises this thread or holds its
 	// session claim. That loop's own stop is the way to stop it.
 	OtherLoop bool
+	// OwnershipUnknown: whether another loop supervises it could not be
+	// established (its session record could not be read). Nothing is done
+	// to it or below it.
+	OwnershipUnknown bool
 	// StopRecorded: an earlier check recorded a stop of this thread and
 	// could not save whether it was made.
 	StopRecorded bool
@@ -51,6 +58,9 @@ const (
 	LaneStopStoppedEarlier LaneStopAction = "stopped_earlier"
 	// LaneStopOtherLoop: another loop's lane; left to that loop.
 	LaneStopOtherLoop LaneStopAction = "other_loop"
+	// LaneStopOwnershipUnknown: whether it is another loop's could not be
+	// established; nothing is done to it or below it.
+	LaneStopOwnershipUnknown LaneStopAction = "ownership_unconfirmed"
 	// LaneStopUnverified: it could not be verified; nothing is done to it.
 	LaneStopUnverified LaneStopAction = "unverified"
 	// LaneStopUnknown: its status is one this build does not know; nothing
@@ -65,16 +75,18 @@ func LaneStopFor(n LaneNode) LaneStopAction {
 	switch {
 	case !n.Verified:
 		return LaneStopUnverified
+	case n.OwnershipUnknown:
+		return LaneStopOwnershipUnknown
 	case n.OtherLoop:
 		return LaneStopOtherLoop
 	}
 	running := false
 	switch n.Status {
-	case "active", "starting", "pending":
+	case "active", "starting":
 		running = true
 	case "error":
 		running = n.Queued > 0
-	case "idle", "stopping":
+	case "idle", "pending", "stopping":
 	default:
 		return LaneStopUnknown
 	}
@@ -95,7 +107,7 @@ func LaneStopFor(n LaneNode) LaneStopAction {
 // stops, nor below one that could not be verified.
 func LaneStopDescend(a LaneStopAction) bool {
 	switch a {
-	case LaneStopOtherLoop, LaneStopUnverified:
+	case LaneStopOtherLoop, LaneStopOwnershipUnknown, LaneStopUnverified:
 		return false
 	}
 	return true
