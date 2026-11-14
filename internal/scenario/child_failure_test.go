@@ -137,9 +137,8 @@ func TestScenarioChildFailureNoticeAndReport(t *testing.T) {
 		sentContains(s, scenarioTask), sentContains(s, "[keepgoing:child-errors count=1]"),
 	))
 	// No check ran while A was healthy, as when the host sleeps. The failure
-	// is reported as new, but numbered inside the episode that should have
-	// ended, so it also uses up that episode's cap of three reports.
-	w.Known(s, Waits(WaitChildEpisode), "a failure after a long recovery starts a new episode: report 1", childReport(s, "reported", 1))
+	// starts a new episode, with report 1 and its own cap of three reports.
+	w.Check(s, "a failure after a long recovery starts a new episode: report 1", childReport(s, "reported", 1))
 
 	// The loop is paused. A third child fails during the pause: nothing is
 	// observed, sent or reported while the pause holds.
@@ -165,7 +164,7 @@ func TestScenarioChildFailureNoticeAndReport(t *testing.T) {
 		action(s, "wake"), reported(s, "keepgoing.child_error"), childErrors(s, 2), holds(s),
 		sentContains(s, scenarioTask), sentContains(s, "[keepgoing:child-errors count=2]"),
 	))
-	w.Known(s, Waits(WaitChildEpisode), "the failure during the pause is the new episode's second report", childReport(s, "reported", 2))
+	w.Check(s, "the failure during the pause is the new episode's second report", childReport(s, "reported", 2))
 	if len(s.Sent) == 1 {
 		m := s.Sent[0].Message
 		w.Check(s, "the notice follows the task and names no child", all(
@@ -191,13 +190,6 @@ func TestScenarioChildFailureNoticeAndReport(t *testing.T) {
 	}
 	w.Check(s, "three reports in the whole journey", check(fmt.Sprint(reports) == "[keepgoing.child_error keepgoing.child_error keepgoing.child_error]", "reported %v", reports))
 }
-
-// WaitChildEpisode: a child that recovered for over an hour and fails again
-// is a new failure, and the documentation says the earlier episode has then
-// ended. When no check ran while the child was healthy, the new failure is
-// reported but numbered inside the old episode and counted against its cap
-// of three reports. Reported from this scenario; not assigned yet.
-const WaitChildEpisode Waiting = "child report episode when checks were missed, unassigned"
 
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
