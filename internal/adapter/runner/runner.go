@@ -376,6 +376,14 @@ var renameFile = os.Rename
 
 func (d Dir) aside(name string) string { return d.path(name + ".old") }
 
+// agentHeld are the files a turn's agent is given: its standard input and
+// output. Only these may be left in place when they are in use.
+var agentHeld = map[string]bool{"prompt": true, "stdout": true, "stderr": true}
+
+// fileInUse reports whether a move failed only because another process has
+// the file open. Tests replace it.
+var fileInUse = openElsewhere
+
 // setAside moves the previous turn's files out of the way, all of them or
 // none. A stale exit code would make the new turn read as finished before it
 // ran, and an exit code removed while another file stayed would make a
@@ -390,6 +398,14 @@ func (d Dir) setAside() ([]string, error) {
 			continue
 		}
 		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		// The prompt and the output files are handed to the agent. An agent
+		// that outlived its wrapper can still hold them open, and on Windows
+		// an open file cannot be moved. Those stay where they are and the new
+		// turn overwrites them, as it always did. Nothing that decides how a
+		// turn reads (its exit code, keys and markers) is ever left.
+		if agentHeld[name] && fileInUse(err) {
 			continue
 		}
 		err = errors.New("runner: the previous turn's files could not be cleared" + errnoText(err))

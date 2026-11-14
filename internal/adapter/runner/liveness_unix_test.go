@@ -406,3 +406,53 @@ func TestAStartThatFailsLaterPutsThePreviousTurnBack(t *testing.T) {
 		}
 	}
 }
+
+// On Windows an agent that outlived its wrapper can still hold its prompt and
+// output files open, and an open file cannot be moved. Those are left where
+// they are and overwritten by the new turn, as before; the exit code still
+// has to move, and any other file that will not move still refuses.
+func TestFilesAnAgentStillHoldsAreLeftInPlace(t *testing.T) {
+	d := Dir(filepath.Join(t.TempDir(), "target"))
+	if err := d.Start([]string{fakeCLI(t, "echo first; exit 7")}, filepath.Dir(string(d)), "first prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, d, Finished)
+	errInUse := errors.New("fictional: open in another process")
+	held := func(names ...string) {
+		renameFile = func(from, to string) error {
+			for _, n := range names {
+				if filepath.Base(from) == n {
+					return errInUse
+				}
+			}
+			return os.Rename(from, to)
+		}
+	}
+	fileInUse = func(err error) bool { return errors.Is(err, errInUse) }
+	t.Cleanup(func() { renameFile, fileInUse = os.Rename, openElsewhere })
+
+	// Held prompt and output: the start goes ahead and the new turn's
+	// output replaces the old.
+	held("stdout", "stderr", "prompt")
+	if err := d.Start([]string{fakeCLI(t, "echo second; exit 0")}, filepath.Dir(string(d)), "second prompt", nil); err != nil {
+		t.Fatalf("a start with the output files in use was refused: %v", err)
+	}
+	renameFile = os.Rename
+	if st := waitPhase(t, d, Finished); st.ExitCode != 0 || string(st.Stdout) != "second\n" {
+		t.Fatalf("%+v", st)
+	}
+	// A held exit code, or any other file that will not move, still refuses
+	// with the previous turn as it was.
+	for _, name := range []string{"exit", "turn.started"} {
+		held(name)
+		err := d.Start([]string{fakeCLI(t, "exit 0")}, filepath.Dir(string(d)), "third prompt", nil)
+		renameFile = os.Rename
+		var none notSpawned
+		if !errors.As(err, &none) {
+			t.Fatalf("%s in use: Start returned %v", name, err)
+		}
+		if st, err := d.Status(); err != nil || st.Phase != Finished || st.ExitCode != 0 || string(st.Stdout) != "second\n" {
+			t.Fatalf("%s in use: the earlier turn reads as %+v %v", name, st, err)
+		}
+	}
+}
