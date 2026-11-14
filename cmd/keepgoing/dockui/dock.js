@@ -617,12 +617,20 @@
         else { focusOn("change-result"); announce(state.change.result.text); }
       });
   }
-  function confirmChange() {
+  // A stop's review may offer options (stop the lanes too, carry it out at
+  // once). Each is one button, in the server's words; the body says which.
+  function confirmChange(option) {
     var c = state.change, p = c && c.preview;
     if (!p || c.busy) return;
     state.change = { key: c.key, action: c.action, preview: p, busy: true };
     render(false, true);
-    post("api/v1/loops/" + c.key + "/confirm", p.form, { action: p.action })
+    var body = { action: p.action };
+    if (option && p.stop) {
+      if (option.lanes) body.lanes = true;
+      if (option.lanes && option.dropQueued) body.dropQueued = true;
+      if (p.stop.immediately) body.immediately = true;
+    }
+    post("api/v1/loops/" + c.key + "/confirm", p.form, body)
       .then(function (d) { state.change = { key: c.key, action: c.action, result: d.result }; })
       // A refusal (4xx) comes before anything is done. Anything else, or no
       // reply: whether it was saved is not known, and it is not sent again.
@@ -666,7 +674,14 @@
       list(p.lines).forEach(function (line) { box.appendChild(el("p", "change-line", say(line))); });
       var row = el("div", "change-buttons");
       row.appendChild(button("Cancel", "change-cancel", "", cancelChange, c.busy));
-      row.appendChild(button(c.busy ? "Saving…" : p.confirm, "change-confirm", "is-primary", confirmChange, c.busy));
+      var options = p.stop ? list(p.stop.options) : [];
+      if (options.length) {
+        options.forEach(function (o, i) {
+          row.appendChild(button(c.busy ? "Saving…" : o.label, i ? "change-confirm-" + i : "change-confirm", i === options.length - 1 ? "is-primary" : "", function () { confirmChange(o); }, c.busy));
+        });
+      } else {
+        row.appendChild(button(c.busy ? "Saving…" : p.confirm, "change-confirm", "is-primary", function () { confirmChange(null); }, c.busy));
+      }
       box.appendChild(row);
       return box;
     }
