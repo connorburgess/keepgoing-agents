@@ -28,6 +28,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // Phase is what the runner knows about the latest turn.
@@ -147,7 +148,7 @@ var errNoWrapper = errors.New("runner: the turn wrapper did not start")
 // record reads run.json.
 func (d Dir) record() (Record, error) {
 	var rec Record
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if err != nil {
 		return rec, err
 	}
@@ -155,7 +156,9 @@ func (d Dir) record() (Record, error) {
 }
 
 // saveRecord replaces run.json whole, so a reader never sees part of one and
-// a failed write leaves the previous record.
+// a failed write leaves the previous record. On Windows its narrow record
+// marker keeps a transient replacement miss unavailable rather than NeverRun;
+// delete-sharing readers and snapshot replacement can overlap.
 func (d Dir) saveRecord(rec Record) error {
 	b, _ := json.Marshal(rec)
 	tmp := d.path("run.json.tmp")
@@ -163,7 +166,7 @@ func (d Dir) saveRecord(rec Record) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, d.path("run.json")); err != nil {
+	if err := snapshot.Replace(tmp, d.path("run.json")); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -257,7 +260,7 @@ func (d Dir) Status() (Status, error) { return d.statusWithOutputLimit(0) }
 // contract. Zero preserves the legacy adapters' output behavior.
 func (d Dir) statusWithOutputLimit(limit int64) (Status, error) {
 	var st Status
-	b, err := os.ReadFile(d.path("run.json"))
+	b, err := snapshot.ReadRecord(d.path("run.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		st.Phase = NeverRun
 		return st, nil
