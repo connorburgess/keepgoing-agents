@@ -137,6 +137,8 @@ public enum MenuCommand: Equatable {
     /// Runs `keepgoing client apply pause --all --expect KEY=VALUE… --json`,
     /// only from a confirmed review of every loop.
     case applyAll(LoopAction, expects: [LoopExpect])
+    /// Turns Open at Login on or off. Runs no keepgoing command.
+    case toggleLogin
     case quit
 }
 
@@ -158,6 +160,8 @@ public struct MenuRow: Equatable {
     public let command: MenuCommand?
     /// A loop's choices, shown as its submenu.
     public var submenu: [MenuRow] = []
+    /// Shown with a check mark: Open at Login while it is on.
+    public var checked = false
     public var isEnabled: Bool { command != nil || !submenu.isEmpty }
 }
 
@@ -249,7 +253,8 @@ public enum MenuBuilder {
     /// in place and the status line says a read is under way. `panel` is the
     /// panel server's status when it was read; the row that stops it is there
     /// only while it is running.
-    public static func build(_ reading: MenuReading, now: Date, notice: String? = nil, refreshing: Bool = false, panel: PanelStatus? = nil) -> MenuModel {
+    /// `login` is whether the menu opens at login; nil leaves the row out.
+    public static func build(_ reading: MenuReading, now: Date, notice: String? = nil, refreshing: Bool = false, panel: PanelStatus? = nil, login: LoginStatus? = nil) -> MenuModel {
         // The first row is always there and always tries, whatever was read.
         var rows = [action("Open keepgoing Panel", .openPanel, symbol: "macwindow", help: "Opens the keepgoing panel in your browser.")]
         var badge = ""
@@ -328,10 +333,31 @@ public enum MenuBuilder {
             // stopping a loop; what happens to the loops is in the help.
             rows.append(action("Stop the Panel Page", .stopPanel, symbol: "xmark.circle", help: "Stops the panel's background process. Your loops keep running.", detail: stopsIn(panel.idleRemainingSeconds)))
         }
+        if let login {
+            rows.append(loginRow(login))
+        }
         rows.append(action("Quit keepgoing Menu", .quit, symbol: "power", help: "Quits this menu. Supervision keeps running."))
         rows.append(separator)
         rows.append(status(notice ?? (refreshing ? "Reading…" : line)))
         return MenuModel(rows: rows, badge: badge, iconAccessibilityLabel: iconLabel)
+    }
+
+    /// Open at Login: checked while it is on. A bare executable cannot open
+    /// at login; choosing the row then says it needs the app bundle.
+    static func loginRow(_ status: LoginStatus) -> MenuRow {
+        var row: MenuRow
+        switch status {
+        case .needsApp:
+            row = action("Open at Login", .toggleLogin, symbol: "arrow.up.forward.app", help: "Needs the menu built as an app. Choosing it says how.", detail: "needs the app")
+        case .needsApproval:
+            row = action("Open at Login", .toggleLogin, symbol: "arrow.up.forward.app", help: "Allow keepgoing Menu in System Settings, Login Items, or choose this to turn it off.", detail: "allow in System Settings")
+        case .on:
+            row = action("Open at Login", .toggleLogin, symbol: "arrow.up.forward.app", help: "Opens this menu when you log in. Choose it to turn that off.")
+        case .off:
+            row = action("Open at Login", .toggleLogin, symbol: "arrow.up.forward.app", help: "Opens this menu when you log in, with the same keepgoing and directories. Off until you choose it.")
+        }
+        row.checked = status == .on || status == .needsApproval
+        return row
     }
 
     /// A loop's submenu: open it in the panel and, when the CLI says which
@@ -376,7 +402,7 @@ public enum MenuBuilder {
             guard action == .pause, (1...128).contains(expects.count), Set(keys).count == keys.count,
                   expects.allSatisfy({ Contract.validKey($0.key) && Contract.validExpect($0.expect) }) else { return nil }
             return ["client", "apply", action.rawValue, "--all"] + expects.flatMap { ["--expect", $0.key + "=" + $0.expect] } + ["--json"]
-        case .quit: return nil
+        case .toggleLogin, .quit: return nil
         }
     }
 

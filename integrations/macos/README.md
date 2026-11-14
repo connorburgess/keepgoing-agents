@@ -13,7 +13,7 @@ swift build --package-path integrations/macos
 integrations/macos/.build/debug/KeepgoingMenu --executable /path/to/keepgoing
 ```
 
-For a non-default registry, pass `--directory /private/example-registry` to the CLI registration and `--registry-directory /private/example-registry` to the menu executable. Executable and directory arguments must be absolute. The preview does not discover binaries, scan for loops, register loops, retain configuration, or start at login. Quitting the menu leaves supervision alone.
+For a non-default registry, pass `--directory /private/example-registry` to the CLI registration and `--registry-directory /private/example-registry` to the menu executable. Executable and directory arguments must be absolute. The preview does not discover binaries, scan for loops or register loops. It starts at login only if you tick **Open at Login** in the app built by `make-app.sh` (below), and keeps nothing on disk except what that choice saves. Quitting the menu leaves supervision alone.
 
 ## What the menu shows
 
@@ -69,11 +69,23 @@ The script builds `integrations/macos/.build/KeepgoingMenu.app` (bundle identifi
 - **One per gap.** A loop is told about once for each gap, named by the loop and the time of its last check (`overdueSince` in `panel list --json`). When checks run and then stop again, that is a new gap and a new notification. More than three new gaps in one read are one notification.
 - **What it says.** The loop's name and when it was last checked, and that the computer may have slept or its scheduler stopped. A loop that is paused, waiting for a person or complete is never overdue, so it is never notified about. No identifiers, reasons or notes: `panel list` carries none.
 - **When.** After the reads the menu already makes: when it starts, when it is opened, and once a minute. In Low Power Mode there is no timed read, so a notification waits until the menu is opened.
-- **Kept in memory only.** The preview keeps nothing on disk, so quitting and starting it again during a gap that is still open posts that gap once more.
+- **Kept in memory only.** The preview keeps no notification state on disk, so quitting and starting it again during a gap that is still open posts that gap once more.
 - **Turning it off.** Start the menu with `--no-notifications`, or turn notifications off for keepgoing Menu in System Settings. Run as a bare executable (`.build/debug/KeepgoingMenu`), the menu never asks for or posts notifications and says so once on standard error.
-- **Removing it.** Quit the menu and delete the bundle: `rm -rf integrations/macos/.build/KeepgoingMenu.app`. System Settings may still list keepgoing Menu under Notifications.
+- **Removing it.** Untick **Open at Login** first if it is on (below), then quit the menu and delete the bundle: `rm -rf integrations/macos/.build/KeepgoingMenu.app`. System Settings may still list keepgoing Menu under Notifications.
 
 Covered by `NoticesTests` (the one-per-gap rule, its text and decoding) and `TestPanelListGivesTheLastCheckOfAnOverdueLoop`. Not verified: a notification shown on a real screen.
+
+## Open at Login
+
+**Open at Login**, just above Quit, makes the menu open when you log in to this Mac. It is off until you tick it, and nothing is registered or saved before then.
+
+- **Needs the app.** macOS opens only an app bundle at login. In the app built by `make-app.sh`, the row is a check mark. Run as a bare executable (`.build/debug/KeepgoingMenu`), the row says "needs the app", and choosing it explains how to build the app; it registers nothing.
+- **Ticking it** registers the app as a login item with `SMAppService.mainApp`, and saves the arguments the menu was started with (`--executable` and, when given, `--registry-directory`, `--panel-directory` and `--no-notifications`) in the app's own preferences (`local.keepgoing.menu-preview`, key `loginArguments`). This is the only thing the preview keeps on disk. macOS starts a login item with no arguments, so at login the menu uses the saved ones. It does so only while Open at Login is on, and only if they still pass the same checks as typed ones (absolute paths, known options). A start with arguments always uses its own. If macOS asks you to allow it first, the row says "allow in System Settings", and the item opens at login once you turn on keepgoing Menu in System Settings, General, Login Items.
+- **Unticking it** unregisters the login item and deletes the saved arguments. If macOS refuses a change, nothing is saved, and the menu says to use System Settings.
+- **Removing it by hand**, for example after deleting the app: open System Settings, General, Login Items, and remove or turn off keepgoing Menu. Then delete the saved arguments with `defaults delete local.keepgoing.menu-preview loginArguments`. `make-app.sh` never registers anything; rebuilding the app does not turn Open at Login on.
+- **What it does not do.** It starts no supervisor and changes no loop: at login it is the same menu, reading the same keepgoing. Quitting the menu does not untick it.
+
+Covered by `LoginTests` with a fake login service and a fake store: off by default; ticking saves exactly the start's arguments and registers; unticking unregisters and deletes them; a bare executable registers nothing; a refused change keeps nothing; approval in System Settings; and a start with no arguments using the saved ones only while on. Not verified: a real login item. The tests never call `SMAppService`, and it has not been ticked on a real Mac, at login or across a restart.
 
 ## Bounds and failures
 
@@ -116,7 +128,7 @@ integrations/macos/.build/debug/KeepgoingMenu --executable /path/to/keepgoing --
 
 This draws the menu-bar item and each row with the fonts, symbols and colours the menu uses. It is a drawing of the rows, not a capture of the screen.
 
-Native build and the real-CLI fixture smoke pass locally. Automated evidence does not establish how the open menu or its confirmations look or read on a real screen (no confirmation was opened and answered by a person; the AppKit code that shows them is built but not run by any test), VoiceOver behavior, Spaces/full-screen behavior, live provider compatibility or secure distribution. No installed loop was used for these fixture checks. Start at login, app-bundle signing/notarization and distribution remain planned. The existing CLI controls remain available separately; the preview does not add another supervisor.
+Native build and the real-CLI fixture smoke pass locally. Automated evidence does not establish how the open menu or its confirmations look or read on a real screen (no confirmation was opened and answered by a person; the AppKit code that shows them is built but not run by any test), VoiceOver behavior, Spaces/full-screen behavior, live provider compatibility or secure distribution. No installed loop was used for these fixture checks. App-bundle signing/notarization and distribution remain planned; Open at Login is built but has not been ticked on a real Mac. The existing CLI controls remain available separately; the preview does not add another supervisor.
 
 ## License
 

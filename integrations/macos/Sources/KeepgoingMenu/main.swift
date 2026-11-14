@@ -1,32 +1,12 @@
 import AppKit
 import KeepgoingMenuCore
+import ServiceManagement
 
-// Development entry point: no installation, persistence, startup registration or
-// automatic executable discovery. The user explicitly chooses a trusted CLI.
-let args = Array(CommandLine.arguments.dropFirst())
-let options = ["--executable", "--registry-directory", "--panel-directory", "--render-menu"]
-var values: [String: String] = [:]
-var dark = false
-var notifications = true
-var index = 0
-var valid = true
-while index < args.count {
-    let name = args[index]
-    if name == "--dark", !dark {
-        dark = true
-        index += 1
-    } else if name == "--no-notifications", notifications {
-        notifications = false
-        index += 1
-    } else if options.contains(name), values[name] == nil, args.indices.contains(index + 1), args[index + 1].hasPrefix("/") {
-        values[name] = args[index + 1]
-        index += 2
-    } else {
-        valid = false
-        break
-    }
-}
-guard valid, let path = values["--executable"] else {
+// Development entry point: no installation or automatic executable
+// discovery. The user explicitly chooses a trusted CLI. The one thing kept on
+// disk is what Open at Login saves when a person ticks it (Login.swift).
+let login = LoginItem(service: AppLoginService(), store: AppLoginStore())
+guard let launch = login.launch(Array(CommandLine.arguments.dropFirst())) else {
     fputs("Usage: KeepgoingMenu --executable /absolute/path/to/keepgoing [--registry-directory /absolute/path] [--panel-directory /absolute/path] [--no-notifications]\n       KeepgoingMenu ... --render-menu /absolute/path.png [--dark]   draw the menu's rows to a picture and quit\n", stderr)
     exit(2)
 }
@@ -81,7 +61,11 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var menuOpen = false
     var notice: String?
     var loading = false
-    init(client: LocalClient, notifier: Notifier, renderPath: String?, renderDark: Bool) {
+    let login: LoginItem
+    let launch: LaunchOptions
+    init(client: LocalClient, notifier: Notifier, renderPath: String?, renderDark: Bool, login: LoginItem, launch: LaunchOptions) {
+        self.login = login
+        self.launch = launch
         self.client = client
         self.notifier = notifier
         self.renderPath = renderPath
@@ -210,7 +194,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// are updated in place when they are the same rows, and otherwise the
     /// rebuild waits until nothing is highlighted or the menu has closed.
     func render() {
-        let model = MenuBuilder.build(reading, now: Date(), notice: notice, refreshing: loading, panel: panel)
+        let model = MenuBuilder.build(reading, now: Date(), notice: notice, refreshing: loading, panel: panel, login: login.status)
         if let button = item.button {
             button.title = model.badge.isEmpty ? "" : " " + model.badge
             button.setAccessibilityLabel(model.iconAccessibilityLabel)
@@ -247,6 +231,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         entry.action = row.command == nil ? nil : #selector(choose(_:))
         entry.target = self
         entry.isEnabled = row.isEnabled
+        entry.state = row.checked ? .on : .off
         if row.symbol.isEmpty {
             entry.image = nil
         } else if let image = NSImage(systemSymbolName: row.symbol, accessibilityDescription: nil) {
@@ -293,6 +278,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         case .openPanelWithChanges:
             openWithControls()
+            return
+        case .toggleLogin:
+            toggleLogin()
             return
         default:
             break
@@ -404,6 +392,24 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Open at Login, as the person chose it. Nothing is registered or saved
+    /// until they choose it; choosing it again removes both.
+    func toggleLogin() {
+        switch login.toggle(launch) {
+        case .needsApp:
+            tell("Open at Login needs the app", "macOS opens only an app bundle at login. Build one with integrations/macos/scripts/make-app.sh and start the menu from it; then choose Open at Login again.")
+        case .turnedOn:
+            notice = "Opens at login, with the same keepgoing and directories."
+        case .needsApproval:
+            tell("Allow keepgoing Menu to open at login", "macOS asks you to allow it first: open System Settings, General, Login Items, and turn on keepgoing Menu. Choose Open at Login again to turn it off.")
+        case .turnedOff:
+            notice = "No longer opens at login."
+        case .failed:
+            tell("Open at Login could not be changed", "macOS refused the change, so nothing was saved. You can turn keepgoing Menu on or off in System Settings, General, Login Items.")
+        }
+        render()
+    }
+
     /// Opens the panel so its page can make changes. Starting one, or
     /// restarting a read-only one, is asked first, with the footer's own
     /// statement of who can then make changes. Whether the panel runs, and in
@@ -500,8 +506,35 @@ final class Command: NSObject {
 }
 
 let app = NSApplication.shared
-let delegate = MenuApp(client: LocalClient(executable: URL(fileURLWithPath: path), directory: values["--registry-directory"], panelDirectory: values["--panel-directory"]),
-                       notifier: Notifier(enabled: notifications && values["--render-menu"] == nil), renderPath: values["--render-menu"], renderDark: dark)
+let delegate = MenuApp(client: LocalClient(executable: URL(fileURLWithPath: launch.executable), directory: launch.registryDirectory, panelDirectory: launch.panelDirectory),
+                       notifier: Notifier(enabled: launch.notifications && launch.renderMenu == nil), renderPath: launch.renderMenu, renderDark: launch.dark,
+                       login: login, launch: launch)
 app.setActivationPolicy(.accessory)
 app.delegate = delegate
 app.run()
+
+/// The login item: this app bundle, through SMAppService. A bare executable
+/// is never registered.
+struct AppLoginService: LoginService {
+    var bundled: Bool { Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil }
+    var status: LoginStatus {
+        guard bundled else { return .needsApp }
+        switch SMAppService.mainApp.status {
+        case .enabled: return .on
+        case .requiresApproval: return .needsApproval
+        default: return .off
+        }
+    }
+    func register() throws { try SMAppService.mainApp.register() }
+    func unregister() throws { try SMAppService.mainApp.unregister() }
+}
+
+/// The arguments a login launch is given, in this app's own preferences
+/// (`defaults read local.keepgoing.menu-preview`). Written only when Open at
+/// Login is ticked; deleted when it is unticked.
+struct AppLoginStore: LoginStore {
+    static let key = "loginArguments"
+    func save(_ arguments: [String]) { UserDefaults.standard.set(arguments, forKey: AppLoginStore.key) }
+    func load() -> [String]? { UserDefaults.standard.stringArray(forKey: AppLoginStore.key) }
+    func clear() { UserDefaults.standard.removeObject(forKey: AppLoginStore.key) }
+}

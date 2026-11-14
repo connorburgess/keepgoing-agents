@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds KeepgoingMenu.app inside this package's .build directory, so the
-# menu runs from an app bundle and can post notifications. It never installs,
-# registers or opens the app: it only writes .build/KeepgoingMenu.app.
+# menu runs from an app bundle and can post notifications and, if a person
+# ticks Open at Login in it, open at login. It never installs, registers or
+# opens the app: it only writes .build/KeepgoingMenu.app.
 # Remove it with: rm -rf integrations/macos/.build/KeepgoingMenu.app
 set -eu
 package=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
