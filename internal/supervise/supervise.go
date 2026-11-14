@@ -1748,6 +1748,10 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
+		var refused adapter.ErrNotStarted
+		if errors.As(err, &refused) {
+			return t.startRefused(refused.Reason)
+		}
 		t.childNoticeSent(childErrors, err)
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
@@ -1809,6 +1813,30 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	return nil
 }
 
+// startRefused handles a send the adapter refused before anything could reach
+// the agent, for a reason on this machine that a person has to put right.
+// Nothing was sent, so nothing is spent: the send is given back and no nudge,
+// re-prompt or notice attempt is counted, which also means the refusal cannot
+// use up an episode's re-prompts and end in a hold. It is reported once, when
+// it begins, and stands in the state for status and doctor until a send is
+// accepted. The check itself succeeded: it observed, decided, and was told no.
+func (t *tick) startRefused(reason string) error {
+	// The send's record is the newest one this check reserved, whether here or
+	// for a turn retry that fell back to the prompt.
+	if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends, t.st.SendsRecorded); err != nil {
+		return err
+	}
+	t.res.Recovery = ""
+	t.res.Reason = "nothing was sent: " + reason
+	if t.st.StartRefused != nil && t.st.StartRefused.Reason == reason {
+		return nil
+	}
+	t.st.StartRefused = &state.StartRefused{Since: t.now, Reason: reason}
+	// An existing report type, so no configuration has to learn a new one.
+	t.report("error", fmt.Sprintf("%s: no turn can be started: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target, "cause": "start_refused"})
+	return nil
+}
+
 // childNoticeSent records the result of a send that carried the notice about
 // errored children. childErrors is zero when the send carried none.
 func (t *tick) childNoticeSent(childErrors int, err error) {
@@ -1832,10 +1860,21 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
-	if err != nil {
+	var refused adapter.ErrNotStarted
+	switch {
+	case errors.As(err, &refused):
+		outcome = "not_started" // nothing reached the agent
+	case err != nil:
 		outcome = "adapter_error"
 	}
-	t.graphFinish(attempt, outcome)
+	if outcome != "not_started" {
+		t.st.StartRefused = nil // the adapter is starting turns again
+	}
+	graphOutcome := outcome
+	if outcome == "not_started" {
+		graphOutcome = "adapter_error" // the run graph has no finer word
+	}
+	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
