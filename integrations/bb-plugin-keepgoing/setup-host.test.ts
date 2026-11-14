@@ -35,7 +35,8 @@ test("host setup uses stdin, fixed flags and verified CLI output", async () => {
     reply.schemaVersion = 1;
     for (const name of ["looptender.yaml", "keepgoing.yaml"]) {
       reply.configPath = join(root, "outside", name);
-      assert.equal((await setupOnHost(input, undefined, run)).plan.configPath, reply.configPath);
+      const r = await setupOnHost(input, undefined, run);
+      assert.ok("plan" in r); assert.equal(r.plan.configPath, reply.configPath);
     }
     reply.configPath = join(root, "outside", "other.yaml");
     await assert.rejects(setupOnHost(input, undefined, run));
@@ -200,7 +201,10 @@ test("built CLI creates the goal through the host contract without running BB", 
     assert.equal(preview.plan.startJson, true); assert.equal(created.plan.startJson, true);
     // The real CLI accepts the bounds flags, reports them, and writes them.
     assert.equal(created.plan.limits.maxSends, 40); assert.equal(created.plan.limits.noProgressTimeout, "24h0m0s");
-    const config = await readFile(join(destination, "keepgoing.yaml"), "utf8");
+    // The file the CLI reports it wrote: looptender.yaml from a build after
+    // v0.2.0, keepgoing.yaml from one before.
+    assert.equal(created.plan.configPath, join(destination, "looptender.yaml"));
+    const config = await readFile(created.plan.configPath, "utf8");
     assert.match(config, /max_sends: 40/); assert.match(config, /no_progress_timeout: 24h/);
     const goal = JSON.parse(await readFile(join(destination, "state", "goal.json"), "utf8"));
     assert.equal(goal.revisions[0].spec.title, "goal-contract");

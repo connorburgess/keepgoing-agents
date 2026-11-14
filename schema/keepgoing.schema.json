@@ -1,7 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/looptender/looptender/schema/keepgoing.schema.json",
   "title": "keepgoing.yaml",
-  "description": "The earlier name of looptender.schema.json, kept so editor settings that name it keep working. It describes the same file: a loop's configuration, looptender.yaml or keepgoing.yaml.",
+  "description": "The earlier name of looptender.schema.json, kept so editor settings that name it keep working. It describes the same file: a loop's configuration, looptender.yaml or keepgoing.yaml. It has no $id, so the reference below is resolved beside wherever this file was read.",
   "$ref": "looptender.schema.json"
 }

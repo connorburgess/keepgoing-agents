@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/looptender/looptender/schema/routes.schema.json",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/routes.schema.json",
   "title": "looptender standard route list",
   "type": "object",
   "additionalProperties": false,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/looptender/looptender/schema/looptender.schema.json",
+  "$id": "https://github.com/connorburgess/keepgoing-agents/schema/looptender.schema.json",
   "title": "looptender.yaml",
   "type": "object",
   "additionalProperties": false,
