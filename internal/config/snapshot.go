@@ -95,14 +95,25 @@ func (c *Config) ReadAt() time.Time { return c.readAt }
 // not readable. A file that can be read but has changed is not unavailable:
 // it says what the loop should do now. A source that was absent when the
 // configuration was read, and a configuration parsed from memory, are never
-// unavailable.
+// unavailable. All readable sources must still match their saved snapshots;
+// a mixed missing/changed configuration never qualifies.
 func (c *Config) SourcesUnavailable() bool {
+	unavailable := false
 	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
-		if s.path != "" && !s.absent && sourceUnreadable(s.path) {
-			return true
+		if s.path == "" {
+			continue
+		}
+		if sourceUnreadable(s.path) {
+			unavailable = unavailable || !s.absent
+			continue
+		}
+		// A readable source must still be the one we loaded. In particular,
+		// another missing source cannot authorize a changed target or invalid edit.
+		if s.absent || !s.matches() {
+			return false
 		}
 	}
-	return false
+	return unavailable
 }
 
 // Path is the absolute path Load read this configuration from; empty for a

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
@@ -322,5 +323,45 @@ func TestAFailedStopFromTheLastConfigurationIsRetried(t *testing.T) {
 	}
 	if !strings.Contains(string(log), `"outcome":"failed"`) {
 		t.Fatalf("failed stop was not recorded: %s", log)
+	}
+}
+
+// Model a restore after the daemon's preliminary eligibility check but before
+// stopFromLastConfig takes the tick lock. No timing or live writer is needed.
+func TestLastConfigurationStopRechecksRestoredSourcesUnderLock(t *testing.T) {
+	for _, restored := range []string{"unchanged", "changed"} {
+		t.Run(restored, func(t *testing.T) {
+			f := newFixture(t)
+			if code, _, errs := f.run("stop"); code != 0 {
+				t.Fatal(errs)
+			}
+			write(t, filepath.Join(f.bbDir, "thr_primary.show"), `{"thread":{"status":"active"}}`, 0o600)
+			cfg, err := config.Load(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(f.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(f.cfg); err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.SourcesUnavailable() {
+				t.Fatal("initial eligibility check did not see missing source")
+			}
+			if restored == "changed" {
+				raw = []byte(strings.Replace(string(raw), "thr_primary", "thr_replacement", 1))
+			}
+			write(t, f.cfg, string(raw), 0o600)
+			var out, errb safeBuffer
+			code := stopFromLastConfig(env{ctx: context.Background(), stdout: &out, stderr: &errb}, cfg, nil)
+			if code != exitSkipped || !strings.Contains(errb.String(), "no stop performed; reload and retry") {
+				t.Fatalf("%d %s", code, errb.String())
+			}
+			if strings.Contains(f.read("calls"), "thread stop") {
+				t.Fatal("stopped from configuration restored after the preliminary check")
+			}
+		})
 	}
 }

@@ -56,3 +56,41 @@ func TestSourcesUnavailable(t *testing.T) {
 		t.Fatal("a configuration from memory has unavailable sources or a read time")
 	}
 }
+
+func TestUnavailableSourcesRefuseReadableChanges(t *testing.T) {
+	dir := t.TempDir()
+	primary, fallback := filepath.Join(dir, "keepgoing.yaml"), filepath.Join(dir, "fallbacks.yaml")
+	original := valid + "  fallbacks: fallbacks.yaml\n"
+	put := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(primary, original)
+	put(fallback, validFallbacks)
+	c, err := Load(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(fallback); err != nil {
+		t.Fatal(err)
+	}
+	if !c.SourcesUnavailable() {
+		t.Fatal("unchanged primary and missing fallback should qualify")
+	}
+	for _, body := range []string{original + "# readable change\n", "version: [broken\n", string(bytes.Repeat([]byte("x"), (1<<20)+1))} {
+		put(primary, body)
+		if c.SourcesUnavailable() {
+			t.Fatal("missing fallback authorized a changed readable primary")
+		}
+	}
+	put(primary, original)
+	if !c.SourcesUnavailable() {
+		t.Fatal("restored unchanged primary should qualify while fallback is missing")
+	}
+	put(fallback, validFallbacks)
+	if c.SourcesUnavailable() {
+		t.Fatal("all sources restored: last configuration no longer eligible")
+	}
+}

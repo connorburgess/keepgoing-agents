@@ -41,6 +41,12 @@ func stopFromLastConfig(e env, cfg *config.Config, lease *ownerLease) int {
 		e.errf("the stop cannot reach bb from the last configuration read; no stop performed")
 		return exitSkipped
 	}
+	// Eligibility may have changed while this pass waited for the tick lock.
+	// Recheck here, under that lock, before any last-configuration check.
+	if !cfg.SourcesUnavailable() {
+		e.errf("configuration sources are readable or changed; no stop performed; reload and retry")
+		return exitSkipped
+	}
 	readAt := cfg.ReadAt()
 	if readAt.IsZero() {
 		readAt = time.Now() // not from a file; never the daemon's case
