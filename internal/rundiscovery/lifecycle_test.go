@@ -305,3 +305,24 @@ func TestTurnRetryIsAReprompAttemptOnly(t *testing.T) {
 		t.Error("a queued re-prompt was accepted")
 	}
 }
+
+// A lane's failed turn retried by reference is its own action: always the
+// turn_retry mode, never with a goal.
+func TestChildRetryAttemptHasNoPromptAndNoGoal(t *testing.T) {
+	a := intent()
+	a.Goal = GoalRef{}
+	a.Action, a.Mode = "child_retry", "turn_retry"
+	if !a.Valid() {
+		t.Fatal("a lane retry was refused")
+	}
+	for _, mode := range []string{"auto", "queue", ""} {
+		a.Mode = mode
+		if a.Valid() {
+			t.Errorf("a lane retry accepted mode %q", mode)
+		}
+	}
+	a.Mode, a.Goal = "turn_retry", GoalRef{ID: "goal_0123456789abcdef0123456789abcdef", Revision: 1}
+	if a.Valid() {
+		t.Error("a lane retry accepted a goal")
+	}
+}
