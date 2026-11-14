@@ -31,12 +31,12 @@ type adapterCheckReport struct {
 
 func adapterCommand(e env, args []string) int {
 	if len(args) == 0 || args[0] != "check" {
-		e.errf("usage: keepgoing adapter check [-c keepgoing.yaml] [--target primary|ID] [--list] [--json] [--limit 30s]")
+		e.errf("usage: keepgoing adapter check [-c FILE] [--target primary|ID] [--list] [--json] [--limit 30s]")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("adapter check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Never echo parser or config values.
-	path := fs.String("c", "keepgoing.yaml", "path to the config file")
+	path := fs.String("c", "", configFlagHelp("path to the config file"))
 	target := fs.String("target", state.Primary, "primary, or the id of a fallback candidate")
 	list := fs.Bool("list", false, "print every contract without reading a configuration")
 	asJSON := fs.Bool("json", false, "print the versioned report")
@@ -59,6 +59,9 @@ func adapterCommand(e env, args []string) int {
 		r.Results = conformance.Cases()
 		return printAdapterCheck(e, r, *asJSON, true)
 	}
+	if !configDefault(e, "adapter check", fs, path) {
+		return exitUsage
+	}
 	cfg, err := config.Load(*path)
 	if err != nil {
 		e.errf("adapter check: configuration unavailable or invalid; run validate for details")
@@ -75,6 +78,10 @@ func adapterCommand(e env, args []string) int {
 	}
 	if reason := notReadOnly(agent.Adapter); reason != "" {
 		e.errf("adapter check: not run for the %s adapter: %s Nothing was read, started or written. Its contract is checked in the test suite; see adapter check --list.", agent.Adapter, reason)
+		return exitUsage
+	}
+	if err := cfg.CheckSources(); err != nil {
+		e.errf("adapter check: configuration changed or is unavailable; reload and retry")
 		return exitUsage
 	}
 	r.Adapter, r.Target = agent.Adapter, *target

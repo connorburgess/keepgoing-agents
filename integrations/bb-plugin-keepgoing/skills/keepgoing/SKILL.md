@@ -1,9 +1,11 @@
 ---
 name: keepgoing
-description: Show or control the keepgoing loops that supervise BB threads, with bb keepgoing status, pause, resume, and stop.
+description: Show or control the looptender (formerly keepgoing) loops that supervise BB threads, with bb keepgoing status, pause, resume, and stop.
 ---
 
-# keepgoing in BB
+# looptender in BB
+
+keepgoing is being renamed to looptender. The plugin's labels in BB say looptender ("looptender: enabled"); the commands below and the `keepgoing` executable keep their names for now.
 
 keepgoing supervises agent loops: it wakes an idle thread, nudges a stalled one, and hands off to a confirmed fallback on a usage limit. This plugin shows its state in each supervised thread's context card and exposes these commands:
 
@@ -21,6 +23,8 @@ The context banner/card offers "Supervise this thread": enter a task, preview th
 A failed or lost creation response may leave a disabled directory. Inspect the displayed config path on its host instead of automatically retrying creation. A failed start response requires refreshed status before retrying. Other timers are not detected or changed. Task text goes through stdin and is never logged or stored in plugin settings. Existing holds and ownership remain in keepgoing; resume is explicit. Full account/model validation is not implemented. The UI workflow is fixture-tested; live remote-host and install-to-completion verification remain outstanding.
 
 When you are the agent in a supervised thread and nothing on your task list can move without the person, prefer the loop's own command, `keepgoing await-user -c <config> --note "..."`. It pings the person and holds the loop until they resume it.
+
+On BB's New thread screen (unreleased, not live-verified) the composer has a **Keep going** switch. With it on, **Send and keep going** sends the first message as the task and, once the thread exists, creates a setup for that thread with a loop-wide limit (40 automatic messages or 24 hours without a Git change unless changed under Details) and starts supervision once. If the start is uncertain the setup stays switched off and the thread shows the reason and a **Start keeping this going** button; the plugin never retries a start. The loop is named after the project with a random suffix, never after the message. A plain Enter sends without supervision and turns the switch off. A send BB rejects never leads to supervision. The plugin holds at most 32 setups and cannot remove one yet. The plugin setting "Keep going from the New thread screen" can be set to review first, which always leaves the start to that button. The plugin never creates or messages a thread, and attaches supervision only to the thread BB reports for that exact send.
 
 The context panel also offers **Move supervision here** for plugin-created loops in the same BB environment/provider. Select a loop, preview both targets/holds/owner, then explicitly choose **Move and keep held**. This authorizes ownership transfer through the host CLI; it never resumes automatically or changes a timer. It requires a post-v0.1.3 transfer build and updated plugin bundles. Manually configured loops use the CLI transfer commands; import remains unavailable.
 

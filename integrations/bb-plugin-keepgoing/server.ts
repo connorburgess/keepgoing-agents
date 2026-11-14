@@ -6,10 +6,14 @@ import { execFile } from "node:child_process";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract } from "./host-contract.ts";
-import { recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
+import { targetOf, statusFollowsStandard, recordSchema, setupInput, setupResult, targetSchema } from "./setup-contract.ts";
 import { createTransferController } from "./transfer-controller.ts";
 import { transferInput, transferResult, moveIntentSchema } from "./transfer-contract.ts";
-import { createSetupController } from "./setup-controller.ts";
+import { createSetupController, MAX_SETUPS } from "./setup-controller.ts";
+import { createNewThreadController } from "./new-thread-controller.ts";
+import { newThreadInput, newThreadResult, startModeSchema, type Bounds } from "./new-thread-contract.ts";
+import { randomUUID } from "node:crypto";
+import { withClientFlag } from "./client-flag.ts";
 
 /** The subset of `keepgoing status --json` this plugin reads. */
 const agentRef = z.object({ adapter: z.string(), bbThread: z.string().optional(), provider: z.string().optional(), model: z.string().optional() });
@@ -61,6 +65,7 @@ const actionSchema = z.enum(["pause", "resume", "stop"]);
 export const rpcContract = defineRpcContract({
   transfer: { input: transferInput, output: transferResult },
   setup: { input: setupInput, output: setupResult },
+  newThread: { input: newThreadInput, output: newThreadResult },
   forThread: {
     input: z.object({ threadId: z.string().min(1).max(200) }),
     output: z.object({ loops: z.array(loopSchema), errors: z.array(z.string()) }),
@@ -73,11 +78,13 @@ export const rpcContract = defineRpcContract({
 
 const CHANGED = "changed";
 
-function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: 15_000, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+      const e = error as { code?: unknown; killed?: boolean; signal?: unknown } | null;
+      const timedOut = !!e && e.killed === true;
+      const code = e ? (typeof e.code === "number" ? e.code : 1) : 0;
+      resolve({ code, stdout: String(stdout), stderr: String(stderr), timedOut });
     });
   });
 }
@@ -86,16 +93,27 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     keepgoingPath: {
       type: "string",
-      label: "keepgoing binary",
-      description: "Absolute path to the keepgoing executable. A bare name is looked up on the BB server's PATH.",
+      // The key and the default keep the tool's earlier name: the key is
+      // stored with the setting, and releases up to v0.2.0 install the
+      // executable as keepgoing.
+      label: "looptender binary",
+      description: "Absolute path to the looptender executable, which releases up to v0.2.0 install as keepgoing. A bare name is looked up on the BB server's PATH.",
       default: "keepgoing",
     },
     configs: {
       type: "string",
       label: "Loop configs",
-      description: "One keepgoing.yaml path per line. Only these loops are shown and controlled.",
+      description: "One loop configuration file (looptender.yaml or keepgoing.yaml) per line. Only these loops are shown and controlled.",
       experimental_multiline: true,
       default: "",
+    },
+    newThreadStart: {
+      type: "select",
+      label: "Keep going from the New thread screen",
+      description: "What happens after a thread is created with Send and keep going. Start automatically: supervision starts once the thread exists; if anything about the start is uncertain, the setup is left switched off with the reason. Review first: a switched-off setup is created and you start it from the thread. Both create the loop with a loop-wide limit.",
+      options: ["automatic", "manual"],
+      experimental_optionLabels: { automatic: "Start automatically", manual: "Review first; I start it" },
+      default: "automatic",
     },
   });
 
@@ -117,8 +135,8 @@ export default async function plugin(bb: BbPluginApi) {
   const intents = async () => z.array(moveIntentSchema).max(32).parse(await bb.storage.kv.get("moves.v1") ?? []);
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const records = async () => z.array(recordSchema).max(32).parse(await bb.storage.kv.get("setups.v1") ?? []);
-  const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop") =>
-    host.call("command", { bin, record, operation }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
+  const hostCommand = (bin: string, record: z.infer<typeof recordSchema>, operation: "status" | "doctor" | "start" | "pause" | "resume" | "stop", json?: true) =>
+    host.call("command", { bin, record, operation, ...(json ? { json } : {}) }, { hostId: record.hostId, signal: AbortSignal.timeout(30_000) });
   const resolveTarget = async (threadId: string) => {
     const signal = AbortSignal.timeout(10_000);
     const t = await bb.sdk.threads.get({ threadId, signal });
@@ -131,18 +149,18 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const status = async (bin: string, configPath: string) => {
-    const result = await run(bin, ["status", "--json", "-c", configPath]);
-    if (result.code !== 0) throw new Error(`${configPath}: keepgoing status exited ${result.code}`);
+    const result = await withClientFlag(bin, (extra) => run(bin, ["status", "--json", ...extra, "-c", configPath]), (r) => ({ code: r.code, emptyStdout: r.stdout === "", timedOut: r.timedOut }));
+    if (result.code !== 0) throw new Error(`${configPath}: looptender status exited ${result.code}`);
     let raw: unknown;
     try {
       raw = JSON.parse(result.stdout);
     } catch {
-      throw new Error(`${configPath}: keepgoing status did not print JSON`);
+      throw new Error(`${configPath}: looptender status did not print JSON`);
     }
     const parsed = statusSchema.safeParse(raw);
     if (!parsed.success) {
       const old = typeof raw === "object" && raw !== null && !("primaryAgent" in raw);
-      throw new Error(old ? `${configPath}: this keepgoing is too old for the plugin; it needs a build with primaryAgent in status --json (after 0.1.0)` : `${configPath}: unexpected keepgoing status JSON`);
+      throw new Error(old ? `${configPath}: this looptender is too old for the plugin; it needs a build with primaryAgent in status --json (after 0.1.0)` : `${configPath}: unexpected looptender status JSON`);
     }
     return parsed.data;
   };
@@ -211,14 +229,15 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         if (action === "resume") {
           const current = await resolveTarget(record.threadId);
-          const { id, configPath: ignored, loop, ...saved } = record;
           const status = await hostCommand(bin, record, "status");
           const parsed = statusSchema.safeParse(status.data);
-          if (JSON.stringify(current) !== JSON.stringify(saved) || status.code !== 0 || !parsed.success || parsed.data.target !== "primary" || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
+          // A loop that follows the standard route list may be on one of its
+          // routes: this thread on another model. Its agents still match.
+          if (JSON.stringify(current) !== JSON.stringify(targetOf(record)) || status.code !== 0 || !parsed.success || (parsed.data.target !== "primary" && !statusFollowsStandard(status.data)) || parsed.data.primaryAgent.bbThread !== record.threadId || parsed.data.targetAgent.bbThread !== record.threadId || parsed.data.primaryAgent.provider !== record.provider || parsed.data.targetAgent.provider !== record.provider) throw new Error("Target changed");
         }
         const result = await hostCommand(bin, record, action);
         bb.realtime.publish(CHANGED, { at: Date.now() });
-        return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `keepgoing ${action} failed; inspect host status` };
+        return { ok: result.code === 0, message: result.code === 0 ? `${action} done` : `looptender ${action} failed; inspect host status` };
       } catch { return { ok: false, message: "Host control unavailable or target changed. No transfer was performed." }; }
     }
     if (!paths.includes(configPath)) return { ok: false, message: "That loop is not in the plugin's configured list." };
@@ -226,7 +245,7 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish(CHANGED, { at: Date.now() });
     return result.code === 0
       ? { ok: true, message: result.stdout.trim() || `${action} done` }
-      : { ok: false, message: `keepgoing ${action} exited ${result.code}` };
+      : { ok: false, message: `looptender ${action} exited ${result.code}` };
   };
 
   const setup = createSetupController({
@@ -238,7 +257,8 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await allLoops(threadId);
       if (result.loops.length || result.errors.length) throw new Error("Existing or unverified supervision");
     },
-    init: (bin, target, name, task, dryRun, withGoal) => host.call("init", { bin, target, name, task, dryRun, withGoal }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    init: (bin, target, name, task, dryRun, withGoal, bounds, followStandard) => host.call("init", { bin, target, name, task, dryRun, withGoal, ...(bounds ? { bounds } : {}), ...(followStandard ? { followStandard: true as const } : {}) }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) }),
+    standardRoutes: async (bin, target) => (await host.call("standardRoutes", { bin, target }, { hostId: target.hostId, signal: AbortSignal.timeout(30_000) })).available,
     command: hostCommand,
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
@@ -259,20 +279,90 @@ export default async function plugin(bb: BbPluginApi) {
     transfer: (intent, operation, recoveryId) => host.call("transfer", { bin: intent.bin, record: intent.record, destination: intent.destination, operation, ...(recoveryId ? { recoveryId } : {}) }, { hostId: intent.record.hostId, signal: AbortSignal.timeout(30_000) }),
     changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
   });
-  bb.onDispose(() => { setup.dispose(); transfer.dispose(); });
+  // Browser setup requests never carry loop-wide limits; the New thread flow
+  // supplies them from its own closed list.
+  const setupCall = (input: z.infer<typeof setupInput>, bounds?: Bounds) => serialize(async () => {
+    if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
+    return setup.call(input, bounds);
+  });
+  let hookAvailable = false;
+  const newThread = createNewThreadController({
+    now: () => Date.now(),
+    id: () => randomUUID(),
+    // An unreadable setting falls back to the mode that starts nothing.
+    mode: async () => {
+      try { return startModeSchema.catch("manual").parse((await settings.get()).newThreadStart); }
+      catch { return "manual"; }
+    },
+    unavailable: async () => {
+      if (!hookAvailable) return "This version of BB does not offer the hook Keep going needs to learn which thread a message created, so it is unavailable here. Supervise this thread still works on an existing thread.";
+      const { bin } = await configured();
+      const result = await run(bin, ["version"]);
+      return result.code === 0 ? null : "The looptender program (installed as keepgoing up to v0.2.0) was not found or did not run. Install it, or set its path in this plugin's settings, then check again.";
+    },
+    ready: async threadId => {
+      try {
+        const signal = AbortSignal.timeout(10_000);
+        const t = await bb.sdk.threads.get({ threadId, signal });
+        if (t.archivedAt !== null || t.deletedAt !== null) return { reason: "This thread was archived or deleted before looptender could set it up. Nothing was created." };
+        // A thread still pending has not started its first turn: BB has not
+        // delivered the message, and may never.
+        if (t.status === "pending" || !t.environmentId) return null;
+        const e = await bb.sdk.environments.get({ environmentId: t.environmentId, signal });
+        if (e.status !== "ready") return null;
+        if (!e.isGitRepo || !e.path) return { reason: "This thread does not work in a Git repository, which looptender needs to tell whether work is progressing. Nothing was created." };
+        const target = await resolveTarget(threadId);
+        return { project: target.project };
+      } catch { return null; }
+    },
+    capacity: async () => ({ used: (await records()).length, max: MAX_SETUPS }),
+    supervision: async threadId => {
+      const result = await allLoops(threadId);
+      return result.errors.length ? "unverified" : result.loops.length ? "supervised" : "none";
+    },
+    setup: (input, bounds) => setupCall(input, bounds),
+    changed: () => bb.realtime.publish(CHANGED, { at: Date.now() }),
+  });
+  // The dispatch hook is how BB reports which thread a marked message
+  // created. It never waits for anything and always lets the send proceed.
+  // The hook is an experimental BB API: if this BB does not have it, or
+  // refuses the registration, only the New thread control is lost. Status,
+  // Pause, Stop and setup on existing threads do not depend on it.
+  try {
+    bb.experimental_hooks.on("message.dispatch", ctx => {
+      try {
+        const s = ctx.experimental_submission;
+        newThread.dispatched({
+          data: s && s.pluginId === bb.pluginId ? s.data : null,
+          threadId: ctx.thread.id, projectId: ctx.thread.projectId, threadCreatedAt: ctx.thread.createdAt,
+          attempt: ctx.attempt, initiator: ctx.initiator, senderThreadId: ctx.senderThreadId, parentThreadId: ctx.thread.parentThreadId, sourceThreadId: ctx.thread.sourceThreadId,
+          queued: ctx.queuedMessages.length, text: s && s.pluginId === bb.pluginId ? ctx.input.text : "",
+          threadStatus: ctx.thread.status,
+        });
+      } catch { /* a send is never delayed or failed by this plugin */ }
+      return { action: "proceed" };
+    });
+    hookAvailable = true;
+  } catch { hookAvailable = false; }
+  // Setup waits for the first turn: a running or finished turn is what shows
+  // that BB delivered the message.
+  bb.events.on("thread.active", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.idle", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.failed", ({ thread }) => { void newThread.advance(thread.id); });
+  bb.events.on("thread.archived", ({ thread }) => { newThread.forget(thread.id); });
+  bb.events.on("thread.deleted", ({ thread }) => { newThread.forget(thread.id); });
+  bb.onDispose(() => { setup.dispose(); transfer.dispose(); newThread.dispose(); });
   bb.rpc.register(rpcContract, {
     transfer: input => serialize(() => transfer.call(input)),
-    setup: input => serialize(async () => {
-      if (input.action === "start" && (await intents()).some(i => i.record.threadId === input.threadId || i.destination.threadId === input.threadId)) return { ok: false, canStart: false, message: "A saved move requires inspection before starting supervision." };
-      return setup.call(input);
-    }),
+    setup: input => setupCall(input),
+    newThread: input => newThread.call(input),
     forThread: ({ threadId }) => allLoops(threadId),
     control: ({ configPath, action, managedId, expectedThreadId }) => action === "resume" ? serialize(() => control(configPath, action, managedId, expectedThreadId)) : control(configPath, action, managedId, expectedThreadId),
   });
 
   bb.cli.register({
     name: "keepgoing",
-    summary: "Show and control the keepgoing loops this plugin is configured for",
+    summary: "Show and control the looptender loops this plugin is configured for",
     commands: [
       { name: "status", summary: "List configured loops with their control state and target", usage: "bb keepgoing status" },
       { name: "pause", summary: "Pause a loop by name", usage: "bb keepgoing pause <loop>" },

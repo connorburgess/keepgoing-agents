@@ -266,7 +266,7 @@ func TestCustomExecutablesResolveAgainstTheConfigurationFile(t *testing.T) {
 // What a definition makes move work to a fallback, in words. Only mappings
 // to a class the loop fails over on are listed.
 func TestCustomFailoverMappingsAreSaidInWords(t *testing.T) {
-	text := strings.Replace(customLoop, "        classes: {quota_exceeded: rate_limit}\n", "        classes: {quota_exceeded: rate_limit, refusal: rate_limit, unauthorized: auth, busy: overloaded}\n        http_status_field: error.status\n        exit_codes: {1: rate_limit, 4: auth, 75: network}\n", 1)
+	text := strings.Replace(customLoop, "        classes: {quota_exceeded: rate_limit}\n", "        classes: {quota_exceeded: rate_limit, unauthorized: auth, busy: overloaded, refusal: refused, permission_denied: restricted}\n        http_status_field: error.status\n        exit_codes: {1: rate_limit, 4: auth, 75: network}\n", 1)
 	cfg, err := Parse([]byte(text))
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +276,6 @@ func TestCustomFailoverMappingsAreSaidInWords(t *testing.T) {
 	want := []string{
 		"exit code 1 is treated as a rate limit and will move work to a fallback",
 		`a result whose error.code is "quota_exceeded" is treated as a rate limit and will move work to a fallback`,
-		`a result whose error.code is "refusal" is treated as a rate limit and will move work to a fallback`,
 		"an HTTP status of 429 in error.status is treated as a rate limit and will move work to a fallback",
 		"an unclassified failure for which the limits command reports blocked as true is treated as a rate limit and will move work to a fallback",
 	}
@@ -284,13 +283,56 @@ func TestCustomFailoverMappingsAreSaidInWords(t *testing.T) {
 		t.Fatalf("got:\n%s", strings.Join(got, "\n"))
 	}
 	all := strings.Join(c.FailoverMappings([]string{"rate_limit", "auth", "overloaded", "network"}), "\n")
-	for _, more := range []string{"exit code 4 is treated as an authentication failure", "exit code 75 is treated as a network failure", `"unauthorized" is treated as an authentication failure`, `"busy" is treated as an overloaded provider`, "401 or 403", "503 or 529"} {
+	for _, more := range []string{"exit code 4 is treated as an authentication failure", "exit code 75 is treated as a network failure", `"unauthorized" is treated as an authentication failure`, `"busy" is treated as an overloaded provider`, "an HTTP status of 401 in", "503 or 529"} {
 		if !strings.Contains(all, more) {
 			t.Errorf("missing %q in:\n%s", more, all)
 		}
 	}
+	// A restriction or a refusal never moves work, so no line says it will,
+	// and HTTP 403 is no longer listed beside 401.
+	for _, never := range []string{"refusal", "permission_denied", "403", "restricted", "refused"} {
+		if strings.Contains(all, never) {
+			t.Errorf("%q appears among the mappings that move work:\n%s", never, all)
+		}
+	}
 	if got := c.FailoverMappings(nil); len(got) != 0 {
 		t.Fatalf("nothing fails over, but: %v", got)
+	}
+}
+
+// A definition may declare its agent's refusal and restriction codes, and
+// map exit codes to those classes. What it may not do is relabel a code
+// keepgoing itself reads as a refusal or restriction as a class a loop can
+// fail over on: that would turn a provider's decision into a handoff.
+func TestCustomDefinitionCannotRelabelARefusalAsALimit(t *testing.T) {
+	const base = "        classes: {quota_exceeded: rate_limit}\n"
+	with := func(classes string) error {
+		_, err := Parse([]byte(strings.Replace(customLoop, base, "        classes: "+classes+"\n", 1)))
+		return err
+	}
+	for _, code := range []string{"refusal", "refused", "policy", "cyberPolicy", "misalignmentPolicyViolation", "permission_denied", "permission_error", "forbidden", "restricted", "oauth_org_not_allowed", "403"} {
+		for _, class := range []string{"rate_limit", "auth", "overloaded", "network"} {
+			err := with("{quota_exceeded: rate_limit, \"" + code + "\": " + class + "}")
+			if err == nil || !strings.Contains(err.Error(), "is a restriction or a refusal, not a limit") {
+				t.Errorf("%s mapped to %s: %v", code, class, err)
+			}
+		}
+		for _, class := range []string{"restricted", "refused", "unknown"} {
+			if err := with("{quota_exceeded: rate_limit, \"" + code + "\": " + class + "}"); err != nil {
+				t.Errorf("%s mapped to %s was refused: %v", code, class, err)
+			}
+		}
+	}
+	// The agent's own names for a refusal are its to declare.
+	if err := with("{quota_exceeded: rate_limit, content_blocked: refused, account_suspended: restricted}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse([]byte(strings.Replace(customLoop, base, base+"        exit_codes: {78: restricted, 79: refused}\n", 1))); err != nil {
+		t.Fatal(err)
+	}
+	// And a loop still cannot list either class to fail over on.
+	if _, err := Parse([]byte(customLoop + "  errors:\n    failover_on: [refused]\n")); err == nil || !strings.Contains(err.Error(), "never causes a handoff") {
+		t.Fatalf("failover_on refused: %v", err)
 	}
 }
 

@@ -1,6 +1,6 @@
 # Antigravity integration foundation
 
-**Internal, unreleased, offline fixtures only.** Keepgoing has no registered Antigravity adapter or guided-setup choice. This foundation adds a headless prompt encoder/lifecycle parser, an internal ACP permission gate and stream exchange, a saved interaction hold, and a [detached runner](#detached-runner) that joins them. The runner is not reachable from configuration, the adapter factory or setup, so no production code path starts an agent, reads credentials, attaches to an IDE chat, or changes permissions.
+**Internal, v0.2.0, offline fixtures only.** Keepgoing has no registered Antigravity adapter or guided-setup choice. This foundation adds a headless prompt encoder/lifecycle parser, an internal ACP permission gate and stream exchange, a saved interaction hold, and a [detached runner](#detached-runner) that joins them. The runner is not reachable from configuration, the adapter factory or setup, so no production code path starts an agent, reads credentials, attaches to an IDE chat, or changes permissions.
 
 **Supported-version evidence: none; Antigravity is not installed where this was built.** No `agy` executable, ACP server command, flag, version or platform has been examined or run. Every test uses a stand-in executable with fictional data.
 

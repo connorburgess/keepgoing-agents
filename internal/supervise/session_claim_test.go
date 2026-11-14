@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -142,7 +143,7 @@ func TestAnUnsafeClaimDirectoryActsOnNothing(t *testing.T) {
 	opts := w.opts(t0)
 	opts.SessionDir = "" // the default, which is planted
 	res, err := Tick(context.Background(), w.cfg, opts)
-	if err == nil || errors.Is(err, lock.ErrHeld) || !strings.Contains(err.Error(), planted) || !strings.Contains(err.Error(), "KEEPGOING_SESSION_DIR") {
+	if err == nil || errors.Is(err, lock.ErrHeld) || !strings.Contains(err.Error(), planted) || !strings.Contains(err.Error(), session.DirEnv) {
 		t.Fatalf("%+v %v", res, err)
 	}
 	if res.Reason != "session claim unsafe; no action taken" || p.observed != 0 || len(p.sent) != 0 {
@@ -468,5 +469,28 @@ func TestBriefStopWaitsForALiveClaimAndRetries(t *testing.T) {
 	runTick(t, w, t0.Add(2*time.Minute))
 	if fallbacks["claude-other"].stopped != 1 || p.stopped != 2 {
 		t.Fatalf("stops repeated after the request was done: primary %d, fallback %d", p.stopped, fallbacks["claude-other"].stopped)
+	}
+}
+
+// The claim directory named twice, differently, by the variable's current
+// and earlier names: the check acts on nothing and fails, naming both
+// variables and what to do. Choosing either would hide the other's claims.
+func TestAClaimDirectoryNamedTwiceActsOnNothing(t *testing.T) {
+	w := newWorld(t, true, false)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	const earlier = "KEEPGOING_SESSION_DIR"
+	t.Setenv(session.DirEnv, filepath.Join(t.TempDir(), "sessions"))
+	t.Setenv(earlier, filepath.Join(t.TempDir(), "sessions"))
+	opts := w.opts(t0)
+	opts.SessionDir = "" // the default, which the variables name
+	res, err := Tick(context.Background(), w.cfg, opts)
+	if err == nil || errors.Is(err, lock.ErrHeld) || !strings.Contains(err.Error(), session.DirEnv) || !strings.Contains(err.Error(), earlier) || !strings.Contains(err.Error(), "unset one of them") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if res.Reason != "session claim unsafe; no action taken" || p.observed != 0 || len(p.sent) != 0 {
+		t.Fatalf("acted: %+v, observed %d", res, p.observed)
+	}
+	if st, _ := state.Load(w.dir); st.LastCheck == nil || st.LastCheck.Outcome != "failed" {
+		t.Fatalf("not recorded as a failed check: %+v", st.LastCheck)
 	}
 }

@@ -44,6 +44,7 @@ const (
 	LaneWaitingPerson LaneVerdict = "waiting_on_person" // a prompt or question is pending, or could not be ruled out
 	LaneRateLimited   LaneVerdict = "rate_limit"        // a retry runs into the same limit
 	LaneAuth          LaneVerdict = "auth"              // needs a person
+	LaneDeclined      LaneVerdict = "declined"          // the provider restricted it: needs a person, never retried
 	LaneRetrying      LaneVerdict = "provider_retrying" // the provider is retrying it
 	LaneUnknown       LaneVerdict = "unknown"           // the failure could not be read
 )
@@ -67,11 +68,16 @@ func LaneVerdictFor(f LaneFacts) LaneVerdict {
 		return LaneRateLimited
 	case f.Class == ErrAuth:
 		return LaneAuth
+	case f.Class == ErrRestricted:
+		return LaneDeclined
 	case f.Retrying:
 		return LaneRetrying
 	}
 	switch f.Class {
-	case ErrNetwork, ErrOverloaded, ErrUnknown, ErrNone, "":
+	// A refused lane is retried like these, within the same per-lane and
+	// per-day caps: a refusal is often a false flag that another attempt
+	// clears. It never moves to another route.
+	case ErrNetwork, ErrOverloaded, ErrUnknown, ErrNone, "", ErrRefused:
 		return LaneRetry
 	}
 	return LaneUnknown

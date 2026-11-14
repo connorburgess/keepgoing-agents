@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 type registrySummary struct {
@@ -38,7 +40,7 @@ func registryCommand(e env, args []string) int {
 	}
 	fs := flag.NewFlagSet("registry "+op, flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	directory := fs.String("directory", "", "private registry directory (default: user config/keepgoing/registry)")
+	directory := fs.String("directory", "", "private registry directory (default: the registry in the user configuration directory)")
 	cfgPath := fs.String("c", "", "add: existing loop config")
 	id := fs.String("id", "", "remove: registration ID")
 	private := fs.Bool("private", false, "list: include private config and runtime paths")
@@ -137,20 +139,25 @@ func registryCommand(e env, args []string) int {
 
 // registryDirEnv names a private registry to use when no --directory is
 // given. It is how tests keep every command away from the person's own
-// registry; it changes nothing else.
-const registryDirEnv = "KEEPGOING_REGISTRY_DIR"
+// registry; it changes nothing else. The variable's earlier name,
+// KEEPGOING_REGISTRY_DIR, is still read; see envvar.
+const registryDirEnv = envvar.Prefix + string(envvar.RegistryDir)
 
 func registryDirectory(path string) (string, error) {
 	bad := errors.New("registry directory must be a private path outside Git checkouts")
 	if path == "" {
-		path = os.Getenv(registryDirEnv)
+		// The two names set to different directories are refused: a command
+		// that honoured one would not see the loops registered in the other.
+		var err error
+		if path, _, err = envvar.RegistryDir.Path(); err != nil {
+			return "", err
+		}
 	}
 	if path == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
+		var err error
+		if path, err = userdir.Config("registry"); err != nil {
 			return "", bad
 		}
-		path = filepath.Join(base, "keepgoing", "registry")
 	}
 	dir, err := canonicalFuturePath(path)
 	if err != nil {
@@ -168,4 +175,33 @@ func registryDirectory(path string) (string, error) {
 		return "", bad
 	}
 	return dir, nil
+}
+
+// registriesUnderBothNames returns the registry commands use and, when that
+// is the default one, the registry under the tool's other directory name if
+// it exists. The second is only ever read, to find loops: see userdir for
+// when the name in use can change.
+func registriesUnderBothNames() []string {
+	dir, err := registryDirectory("")
+	if err != nil {
+		return nil
+	}
+	dirs := []string{dir}
+	if named, _, err := envvar.RegistryDir.Path(); err != nil || named != "" {
+		return dirs // a registry a person chose has no other name
+	}
+	base, err := userdir.ConfigHome()
+	if err != nil {
+		return dirs
+	}
+	for _, name := range []string{userdir.Name, userdir.LegacyName} {
+		other, err := canonicalFuturePath(filepath.Join(base, name, "registry"))
+		if err != nil || other == dir {
+			continue
+		}
+		if info, err := os.Lstat(other); err == nil && info.IsDir() && registry.CheckDirectory(other) == nil {
+			dirs = append(dirs, other)
+		}
+	}
+	return dirs
 }

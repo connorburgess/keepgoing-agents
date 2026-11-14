@@ -12,7 +12,9 @@ final class ClientTests: XCTestCase {
         try ("#!/bin/sh\n[ -z \"${KEEPGOING_TESTEXEC_WARM:-}\" ] || exit 0\n" + body).write(to: binary, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
         try Self.runOnce(binary)
-        return (binary, LocalClient(executable: binary, directory: dir.appendingPathComponent("registry with spaces").path))
+        // No menu version: the test runner's own bundle has one, which would
+        // add --client to every list. Tests of --client pass one explicitly.
+        return (binary, LocalClient(executable: binary, directory: dir.appendingPathComponent("registry with spaces").path, menuVersion: nil))
     }
     /// Runs a new executable once before a test depends on it. macOS checks a
     /// file the first time it is run, and on a busy machine can refuse it: the
@@ -53,10 +55,73 @@ final class ClientTests: XCTestCase {
             XCTAssertEqual(args.contains("--private"), privateText)
         }
     }
+    /// The menu reports its version with --client on the read it makes every
+    /// minute, panel list. An older CLI that refuses the flag (exit 2, no
+    /// output) is asked again without it, and remembered only when that
+    /// succeeds. Any other failure is not taken for a refusal.
+    func testPanelListReportsTheMenuVersionAndFallsBackOnlyForARefusal() throws {
+        let reply = "{\"schemaVersion\":1,\"readAt\":\"2030-01-01T12:00:00Z\",\"registry\":\"available\",\"complete\":true,\"allClear\":true,\"needsYou\":0,\"unread\":0,\"omitted\":0,\"loops\":[]}"
+        func calls(_ binary: URL) throws -> [String] {
+            try String(contentsOfFile: binary.path + ".calls", encoding: .utf8).split(separator: "\n").map(String.init)
+        }
+        // A CLI that knows the flag: one call, with it.
+        let (binary, base) = try fixture("printf '%s\\n' \"$@\" >> \"$0.calls\"\nprintf '%s' '\(reply)'\n")
+        let client = LocalClient(executable: base.executable, directory: base.directory, menuVersion: "0.1.0")
+        _ = try client.panelList()
+        var seen = try calls(binary)
+        XCTAssertEqual(Array(seen.prefix(5)), ["panel", "list", "--json", "--client", "macos-menu@0.1.0"])
+        // An older CLI: a usage error with no output for the flag, then the
+        // same read without it succeeds, and the flag is not tried again.
+        let older = "printf '%s\\n' \"$@\" >> \"$0.calls\"\ncase \" $* \" in *\" --client \"*) exit 2;; esac\nprintf '%s' '\(reply)'\n"
+        let (oldBinary, oldBase) = try fixture(older)
+        let oldClient = LocalClient(executable: oldBase.executable, directory: oldBase.directory, menuVersion: "0.1.0")
+        _ = try oldClient.panelList()
+        _ = try oldClient.panelList()
+        seen = try calls(oldBinary)
+        XCTAssertEqual(seen.filter { $0 == "--client" }.count, 1, "the flag is tried once, then never again")
+        XCTAssertEqual(seen.filter { $0 == "list" }.count, 3)
+        // A CLI that fails for another reason: exit 2 with no output, and the
+        // read without the flag fails too. Nothing is remembered.
+        let broken = "printf '%s\\n' \"$@\" >> \"$0.calls\"\nexit 2\n"
+        let (brokenBinary, brokenBase) = try fixture(broken)
+        let brokenClient = LocalClient(executable: brokenBase.executable, directory: brokenBase.directory, menuVersion: "0.1.0")
+        XCTAssertThrowsError(try brokenClient.panelList())
+        XCTAssertThrowsError(try brokenClient.panelList())
+        XCTAssertEqual(try calls(brokenBinary).filter { $0 == "--client" }.count, 2, "a failure that is not a refusal is not remembered")
+        // Exit 1 is not a refusal: no second call.
+        let failing = "printf '%s\\n' \"$@\" >> \"$0.calls\"\nexit 1\n"
+        let (failBinary, failBase) = try fixture(failing)
+        XCTAssertThrowsError(try LocalClient(executable: failBase.executable, directory: failBase.directory, menuVersion: "0.1.0").panelList())
+        XCTAssertEqual(try calls(failBinary).filter { $0 == "list" }.count, 1)
+        // Without an app bundle version nothing is reported.
+        let plain = LocalClient(executable: base.executable, directory: base.directory, menuVersion: nil)
+        _ = try plain.panelList()
+        seen = try calls(binary)
+        XCTAssertEqual(seen.last.map { $0.hasSuffix("registry with spaces") }, true)
+        XCTAssertEqual(seen.filter { $0 == "--client" }.count, 1)
+    }
+    /// A CLI replaced in place is a different identity, so it is asked with
+    /// the flag again.
+    func testAnExecutableIsKnownByPathSizeAndTime() throws {
+        let (binary, _) = try fixture("exit 0\n")
+        let first = LocalClient.executableIdentity(binary)
+        try ("#!/bin/sh\nexit 0\n# a longer replacement\n").write(to: binary, atomically: true, encoding: .utf8)
+        XCTAssertNotNil(first)
+        XCTAssertNotEqual(first, LocalClient.executableIdentity(binary))
+        // A symlink is known by the file it points to.
+        let link = binary.deletingLastPathComponent().appendingPathComponent("keepgoing-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: binary)
+        XCTAssertEqual(LocalClient.executableIdentity(link), LocalClient.executableIdentity(binary))
+    }
+    func testOnlyAPlainVersionIsReported() {
+        for good in ["0.1.0", "1.2.3-beta.1", "2026.11+local"] { XCTAssertTrue(LocalClient.validVersion(good), good) }
+        for bad in ["", "-1", "0.1.0 ; rm", "v\u{0007}", String(repeating: "1", count: 33), "0.1.0\n"] { XCTAssertFalse(LocalClient.validVersion(bad), bad) }
+        XCTAssertNil(LocalClient(executable: URL(fileURLWithPath: "/bin/sh"), menuVersion: "bad version").menuVersion)
+    }
     func testPanelCommandsPassOnlyFixedArgumentsAndAValidatedKey() throws {
         let reply = "{\"schemaVersion\":1,\"readAt\":\"2030-01-01T12:00:00Z\",\"registry\":\"available\",\"complete\":true,\"allClear\":true,\"needsYou\":0,\"unread\":0,\"omitted\":0,\"loops\":[]}"
         let (binary, base) = try fixture("printf '%s\\n' \"$@\" > \"$0.args\"\nprintf '%s' '\(reply)'\n")
-        let client = LocalClient(executable: base.executable, directory: base.directory, panelDirectory: "/private/example panel")
+        let client = LocalClient(executable: base.executable, directory: base.directory, panelDirectory: "/private/example panel", menuVersion: nil)
         func args() throws -> [String] { try String(contentsOfFile: binary.path + ".args", encoding: .utf8).split(separator: "\n").map(String.init) }
         XCTAssertEqual(try client.panelList().loops, [])
         XCTAssertEqual(Array(try args().prefix(4)), ["panel", "list", "--json", "--directory"])

@@ -34,7 +34,7 @@ func (e *BBTransferEdit) AfterDigest() string {
 // merged mappings, multiple documents and non-regular config files are refused.
 func (c *Config) PrepareBBTransfer(thread string) (*BBTransferEdit, error) {
 	bad := errors.New("configuration cannot be safely rewritten for transfer")
-	if c.source.path == "" || c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.FallbackSet != nil || c.source.size > 1<<20 || c.CheckSources() != nil {
+	if c.source.path == "" || c.Loop.Adapter != "bb" || c.Loop.BB == nil || c.Loop.HasRouteList() || c.source.size > 1<<20 || c.CheckSources() != nil {
 		return nil, bad
 	}
 	info, err := os.Lstat(c.source.path)

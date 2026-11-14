@@ -1,0 +1,5 @@
+# Paths that scripts/check-contributions.sh lets through although the file is
+# larger than 1 MB or begins like a compiled executable. One path per line,
+# from the repository root, exactly as git lists it. Say why in a comment.
+#
+# Empty: when this check was added (November 2026) nothing on main needed it.

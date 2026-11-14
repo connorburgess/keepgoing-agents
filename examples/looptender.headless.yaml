@@ -1,10 +1,10 @@
-# yaml-language-server: $schema=../schema/keepgoing.schema.json
+# yaml-language-server: $schema=../schema/looptender.schema.json
 # keepgoing runs Claude Code headless itself, one turn at a time, resuming
 # the same session. Useful on a server or in CI. Fictional values.
 version: 1
 loop:
   name: example-headless-loop
-  state_dir: ~/.local/state/keepgoing/example-headless-loop
+  state_dir: ~/.local/state/agent-loops/example-headless-loop
   adapter: claude
   claude:
     workdir: ~/src/example-app

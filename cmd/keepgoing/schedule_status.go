@@ -16,7 +16,9 @@ import (
 type scheduleStatus struct {
 	Overdue bool `json:"overdue"`
 	Judging bool `json:"judging"`
-	// NotJudged says why it is not: disabled, held or never_checked.
+	// NotJudged says why it is not: disabled, held or never_checked, or
+	// control_unreadable or state_unreadable when status could not read the
+	// record the judgement needs.
 	NotJudged string `json:"notJudged,omitempty"`
 	// Basis is usual (its usual interval is known) or fallback (fewer than
 	// three gaps between checks seen; called stopped only after a day).

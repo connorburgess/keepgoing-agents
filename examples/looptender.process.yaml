@@ -2,7 +2,7 @@
 version: 1
 loop:
   name: example-process-loop
-  state_dir: ~/.local/state/keepgoing/example-process-loop
+  state_dir: ~/.local/state/agent-loops/example-process-loop
   adapter: process
   process:
     status_command: ["./agent-status.sh"]

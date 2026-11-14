@@ -7,7 +7,7 @@ final class GroupTests: XCTestCase {
     func key(_ i: Int) -> String { String(format: "l%012x", i) }
 
     /// A review of `loops` loops, the first `fitting` of which it pauses.
-    func reviewJSON(loops: Int, fitting: Int, action: String = "pause") -> Data {
+    func reviewJSON(loops: Int, fitting: Int, action: String = "pause", stop: [String: Any]? = nil) -> Data {
         var lines: [String] = []
         for i in 0..<min(loops, 8) { lines.append(i < fitting ? "example-\(i) (Supervising) will be paused." : "example-\(i) is already paused.") }
         if loops > 8 { lines.append("And \(loops - 8) more.") }
@@ -19,9 +19,10 @@ final class GroupTests: XCTestCase {
             if i < fitting { l["expect"] = expect(i) }
             return l
         }
-        let group: [String: Any] = ["action": action, "title": "Pause all loops?", "lines": lines, "confirm": "Pause \(fitting) Loops",
+        var group: [String: Any] = ["action": action, "title": "Pause all loops?", "lines": lines, "confirm": "Pause \(fitting) Loops",
                                     "expiresAt": "2030-01-01T12:02:00Z", "lost": "fictional lost", "refused": "fictional refused",
                                     "expired": "fictional expired", "loops": entries]
+        if let stop { group["stop"] = stop }
         return try! JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "group": group])
     }
     func review(loops: Int, fitting: Int) throws -> GroupReview {
@@ -74,7 +75,8 @@ final class GroupTests: XCTestCase {
 
     func testArgumentsForEveryLoopAreExact() {
         XCTAssertEqual(MenuBuilder.arguments(.reviewAll(.pause)), ["client", "review", "pause", "--all", "--json"])
-        XCTAssertNil(MenuBuilder.arguments(.reviewAll(.stop)), "only pause, for now")
+        XCTAssertEqual(MenuBuilder.arguments(.reviewAll(.stop)), ["client", "review", "stop", "--all", "--json"])
+        XCTAssertNil(MenuBuilder.arguments(.reviewAll(.resume)), "not offered for every loop")
         let two = [LoopExpect(key: key(1), expect: expect(1)), LoopExpect(key: key(2), expect: expect(2))]
         XCTAssertEqual(MenuBuilder.arguments(.applyAll(.pause, expects: two)),
                        ["client", "apply", "pause", "--all", "--expect", key(1) + "=" + expect(1), "--expect", key(2) + "=" + expect(2), "--json"])
@@ -83,6 +85,11 @@ final class GroupTests: XCTestCase {
             XCTAssertNil(MenuBuilder.arguments(.applyAll(.pause, expects: bad)), "\(bad.count)")
         }
         XCTAssertNil(MenuBuilder.arguments(.applyAll(.resume, expects: two)))
+        // --lanes for a stop alone.
+        XCTAssertEqual(MenuBuilder.arguments(.applyAll(.stop, expects: two, lanes: true)),
+                       ["client", "apply", "stop", "--all", "--expect", key(1) + "=" + expect(1), "--expect", key(2) + "=" + expect(2), "--lanes", "--json"])
+        XCTAssertEqual(MenuBuilder.arguments(.applyAll(.stop, expects: two))?.contains("--lanes"), false)
+        XCTAssertNil(MenuBuilder.arguments(.applyAll(.pause, expects: two, lanes: true)))
     }
 
     func testTheRowIsOfferedOnlyWhenTheCLISaysSo() {
@@ -126,5 +133,40 @@ final class GroupTests: XCTestCase {
         XCTAssertEqual(client.applyAll(command, review: r), ChangeResult(outcome: "uncertain", text: "fictional lost"))
         // Only an apply to every loop is run as one.
         XCTAssertEqual(client.applyAll(.reviewAll(.pause), review: r).outcome, "refused")
+    }
+
+    // Stop all: one button per option of the whole, in keepgoing's words,
+    // destructive; --lanes only for the option that says so; an option that
+    // would delete queued messages is never offered for every loop.
+    func testStopAllOffersTheGroupsOptions() throws {
+        let stop: [String: Any] = ["immediately": true, "options": [
+            ["label": "Stop the Conversations", "lanes": false], ["label": "Stop Them and Their Lanes", "lanes": true],
+            ["label": "Stop Them, Their Lanes and Their Queued Messages", "lanes": true, "dropQueued": true],
+        ]]
+        guard case .review(let r) = try Contract.groupReview(reviewJSON(loops: 3, fitting: 3, action: "stop", stop: stop), exit: 0, action: .stop) else {
+            return XCTFail("not a review")
+        }
+        let c = ConfirmationBuilder.build(r)
+        XCTAssertEqual(c.buttons.map(\.title), ["Cancel", "Stop the Conversations", "Stop Them and Their Lanes"])
+        XCTAssertEqual(c.buttons.map(\.destructive), [false, true, true])
+        XCTAssertNil(c.defaultButton.command)
+        XCTAssertEqual(c.buttons[1].command, .applyAll(.stop, expects: r.targets, lanes: false))
+        XCTAssertEqual(c.buttons[2].command, .applyAll(.stop, expects: r.targets, lanes: true))
+        XCTAssertEqual(MenuBuilder.arguments(c.buttons[2].command!)?.last(where: { $0.hasPrefix("--") && $0 != "--expect" && $0 != "--all" }), "--json")
+        XCTAssertTrue(MenuBuilder.arguments(c.buttons[2].command!)!.contains("--lanes"))
+        XCTAssertFalse(MenuBuilder.arguments(c.buttons[1].command!)!.contains("--lanes"))
+        // No options: the one stop, destructive.
+        guard case .review(let plain) = try Contract.groupReview(reviewJSON(loops: 2, fitting: 2, action: "stop"), exit: 0, action: .stop) else { return XCTFail() }
+        let p = ConfirmationBuilder.build(plain)
+        XCTAssertEqual(p.buttons.map(\.destructive), [false, true])
+        XCTAssertEqual(p.buttons[1].command, .applyAll(.stop, expects: plain.targets))
+        // The row, only when keepgoing says stop can be made to every loop.
+        let loop = PanelLoop(key: key(1), name: "example-api", state: "supervising", phrase: "Supervising", needsYou: false, can: ["pause", "stop"])
+        var list = PanelList(schemaVersion: 1, registry: "available", complete: true, allClear: true, needsYou: 0, unread: 0, omitted: 0, loops: [loop])
+        list.canAll = ["pause", "stop"]
+        let rows = MenuBuilder.build(.read(list, at: now), now: now).rows
+        XCTAssertEqual(rows.first { $0.command == .reviewAll(.stop) }?.title, "Stop All Loops…")
+        list.canAll = ["pause"]
+        XCTAssertFalse(MenuBuilder.build(.read(list, at: now), now: now).rows.contains { $0.command == .reviewAll(.stop) })
     }
 }

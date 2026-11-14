@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // ExitNetworkGone is returned when the network never came back in time.
@@ -113,11 +115,12 @@ func exitCode(err error) int {
 	return 127
 }
 
-// DefaultOnline checks connectivity. KEEPGOING_NET_PROBE, when set, is a
+// DefaultOnline checks connectivity. LOOPTENDER_NET_PROBE, when set, is a
 // command line run by the platform's shell whose exit 0 means online; otherwise an HTTP GET to
-// KEEPGOING_NET_PROBE_URL (default https://api.github.com/zen) must answer.
+// LOOPTENDER_NET_PROBE_URL (default https://api.github.com/zen) must answer.
+// Both are also read under their earlier, KEEPGOING_ names.
 func DefaultOnline(ctx context.Context) bool {
-	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
+	if probe := envvar.NetProbe.Get(); probe != "" {
 		return shell(ctx, probe).Run() == nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -130,10 +133,10 @@ const DefaultURL = "https://api.github.com/zen"
 
 // defaultOnline is DefaultOnline under the caller's own time limit.
 func defaultOnline(ctx context.Context) bool {
-	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
+	if probe := envvar.NetProbe.Get(); probe != "" {
 		return shell(ctx, probe).Run() == nil
 	}
-	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
+	url := envvar.NetProbeURL.Get()
 	if url == "" {
 		url = DefaultURL
 	}
@@ -143,7 +146,7 @@ func defaultOnline(ctx context.Context) bool {
 // Probe is a connectivity check with explicit settings. Command, when set,
 // is an argv whose exit 0 means online. Otherwise URL must answer an HTTP
 // GET; any response counts, a transport error does not. With neither set it
-// is DefaultOnline, which honours the KEEPGOING_NET_PROBE variables.
+// is DefaultOnline, which honours the LOOPTENDER_NET_PROBE variables.
 type Probe struct {
 	URL     string
 	Command []string
@@ -185,13 +188,13 @@ func (p Probe) Check(ctx context.Context) Finding {
 	case p.URL != "":
 		return fetch(ctx, p.URL)
 	}
-	if probe := os.Getenv("KEEPGOING_NET_PROBE"); probe != "" {
+	if probe := envvar.NetProbe.Get(); probe != "" {
 		if shell(ctx, probe).Run() != nil {
 			return CommandFailed
 		}
 		return Reached
 	}
-	url := os.Getenv("KEEPGOING_NET_PROBE_URL")
+	url := envvar.NetProbeURL.Get()
 	if url == "" {
 		url = DefaultURL
 	}

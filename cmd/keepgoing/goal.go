@@ -24,7 +24,7 @@ func goalCommand(e env, args []string) int {
 	}
 	fs := flag.NewFlagSet("goal "+cmd, flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
 	file := fs.String("file", "", "private JSON goal specification (create/revise)")
 	id := fs.String("id", "", "expected goal identity (revise)")
 	revision := fs.Uint64("revision", 0, "expected current revision (revise)")
@@ -38,6 +38,9 @@ func goalCommand(e env, args []string) int {
 	}
 	if fs.NArg() != 0 || (cmd == "show" && (*file != "" || *id != "" || *revision != 0)) || (cmd != "show" && (*file == "" || *private)) || (cmd == "create" && (*id != "" || *revision != 0)) || (cmd == "revise" && (*id == "" || *revision == 0)) {
 		e.errf("goal: invalid flags; create/revise need --file, revise also needs --id and --revision; --private is only for show")
+		return exitUsage
+	}
+	if !configDefault(e, "goal", fs, path) {
 		return exitUsage
 	}
 	cfg, err := config.Load(*path)

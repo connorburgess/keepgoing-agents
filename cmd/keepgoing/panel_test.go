@@ -440,7 +440,7 @@ func TestPanelFilesHoldNoSecretAndArePrivate(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, panelRecordName))
 	var fields map[string]any
-	if json.Unmarshal(b, &fields) != nil || len(fields) != 8 {
+	if json.Unmarshal(b, &fields) != nil || len(fields) != 9 || fields["buildAuthority"] != "person" {
 		t.Fatalf("record fields: %s", b)
 	}
 	if _, ok := panelLive(context.Background(), t.TempDir()); ok {
@@ -837,7 +837,7 @@ func newPanelProcessWorld(t *testing.T) *panelProcessWorld {
 	short := panelShortDir(t)
 	w.dir = filepath.Join(short, "panel")
 	w.opened = filepath.Join(short, "opened")
-	w.env = append(os.Environ(), panelOpenerEnv+"="+launcher, panelOpenedEnv+"="+w.opened)
+	w.env = append(os.Environ(), "HOME="+filepath.Join(w.root, "home"), panelOpenerEnv+"="+launcher, panelOpenedEnv+"="+w.opened)
 	t.Cleanup(func() { w.run("panel", "stop", "--panel-directory", w.dir) })
 	return w
 }
@@ -1609,11 +1609,11 @@ func panelTwoLocations(t *testing.T) (registryDir, legacy, current string) {
 
 // panelServeAt runs a panel server in dir, as a build would have, and waits
 // for it to answer. The channel gets its exit code.
-func panelServeAt(t *testing.T, dir, registryDir string) chan int {
+func panelServeAt(t *testing.T, dir, registryDir string, changes ...bool) chan int {
 	t.Helper()
 	done := make(chan int, 1)
 	go func() {
-		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, now: time.Now})
+		done <- runPanelServer(context.Background(), panelServerConfig{dir: dir, registry: registryDir, idle: time.Hour, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, offline: true, changes: len(changes) > 0 && changes[0], now: time.Now})
 	}()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		if _, ok := panelLive(context.Background(), dir); ok {

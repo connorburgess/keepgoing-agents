@@ -23,7 +23,7 @@ When all authorized work is finished, the agent runs `keepgoing complete --note 
 version: 1
 loop:
   name: example-chat
-  state_dir: ~/.local/state/keepgoing/example-chat
+  state_dir: ~/.local/state/agent-loops/example-chat
   adapter: bb
   provider: claude-code
   group: claude-example-account
@@ -34,7 +34,7 @@ loop:
     stall_after: 45m
   fallbacks: fallbacks.yaml
   report:
-    secret_file: ~/.config/keepgoing/example-chat.env
+    secret_file: ~/.config/agent-loops/example-chat.env
     events: [handoff, degraded, recovered, await_user, stop, error]
 ```
 

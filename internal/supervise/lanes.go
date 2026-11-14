@@ -43,7 +43,7 @@ const (
 // get past on its own. A lane left for one of them is the session's to deal
 // with, so it is announced like any other errored child.
 var laneWontAct = map[string]bool{
-	string(decide.LaneRateLimited): true, string(decide.LaneAuth): true, string(decide.LaneUnverified): true,
+	string(decide.LaneRateLimited): true, string(decide.LaneAuth): true, string(decide.LaneDeclined): true, string(decide.LaneUnverified): true,
 	string(decide.LaneWaitingPerson): true, laneOtherLoop: true, laneOwnershipUnknown: true,
 }
 
@@ -404,17 +404,18 @@ func (t *tick) tryLane(lr adapter.LaneRecoverer, rec *state.LaneRecovery, check 
 }
 
 // reportLanes tells the owner, once per lane, that lanes were given up or
-// were left alone because their failure is a rate limit or an auth error.
+// were left alone because their failure is a rate limit, an auth error, or a
+// restriction by the provider.
 // Counts only. The record is saved before the single attempt, like the other
 // reports that say a person may be needed.
 func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[string]bool) {
 	var fresh []string
-	givenUp, rateLimited, auth := 0, 0, 0
+	givenUp, rateLimited, auth, declined := 0, 0, 0, 0
 	for h, r := range rec.Retries {
 		if !errored[h] {
 			continue
 		}
-		class := r.Outcome == string(decide.LaneRateLimited) || r.Outcome == string(decide.LaneAuth)
+		class := r.Outcome == string(decide.LaneRateLimited) || r.Outcome == string(decide.LaneAuth) || r.Outcome == string(decide.LaneDeclined)
 		if !r.GivenUp && !class {
 			continue
 		}
@@ -423,6 +424,8 @@ func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[str
 			givenUp++
 		case r.Outcome == string(decide.LaneRateLimited):
 			rateLimited++
+		case r.Outcome == string(decide.LaneDeclined):
+			declined++
 		default:
 			auth++
 		}
@@ -461,15 +464,15 @@ func (t *tick) reportLanes(rec *state.LaneRecovery, retried int, errored map[str
 		t.warn("report %s: not sent because the lane record could not be saved", laneRecoveryEvent)
 		return
 	}
-	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited and %d because they need a login. keepgoing asked BB to retry %d on this check. Lane recovery has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
-		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, retried)
+	text := fmt.Sprintf("%s: lane recovery. %d direct child thread(s) of the supervised thread were given up (a lane gets at most %d retries, and one failure at most %d across all lanes); %d were not retried because they are rate limited, %d because they need a login and %d because the provider restricted them. keepgoing asked BB to retry %d on this check. Lane recovery has not messaged, stopped or created any child thread; whether that work is retried or replaced is up to the supervised session or a person.",
+		t.loop.Name, givenUp, t.loop.Errors.MaxReprompts, t.lanesPerEpisode, rateLimited, auth, declined, retried)
 	ctx, cancel, ok := t.reportContext(laneRecoveryEvent, text)
 	if !ok {
 		return
 	}
 	defer cancel()
 	err = t.opts.Reporter.Report(ctx, report.Event{Type: laneRecoveryEvent, Loop: t.loop.Name, Text: text, At: t.now,
-		Data: map[string]any{"givenUp": givenUp, "rateLimited": rateLimited, "authFailed": auth, "retried": retried, "report": rec.Reports}})
+		Data: map[string]any{"givenUp": givenUp, "rateLimited": rateLimited, "authFailed": auth, "declined": declined, "retried": retried, "report": rec.Reports}})
 	if err != nil {
 		t.warn("report %s: %v", laneRecoveryEvent, err) // one attempt, not retried
 	}

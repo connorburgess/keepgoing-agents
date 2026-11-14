@@ -253,7 +253,9 @@ var classWords = map[string]string{"rate_limit": "a rate limit", "auth": "an aut
 // the agent's own output to an error class the loop fails over on. Each is a
 // declaration that such a result is a real provider limit: it moves work to
 // a fallback. A refusal, a policy block or an account restriction must not
-// be mapped; left unmapped it is unknown, which never moves work.
+// be mapped to such a class: map it to restricted or refused, which hold for
+// a person and can never be failed over on, or leave it unmapped, which is
+// unknown and never moves work either.
 func (c Custom) FailoverMappings(failoverOn []string) []string {
 	moves := func(class string) bool { return class != "" && contains(failoverOn, class) }
 	const then = " and will move work to a fallback"
@@ -276,7 +278,7 @@ func (c Custom) FailoverMappings(failoverOn []string) []string {
 			}
 		}
 		if e.HTTPStatusField != "" {
-			for _, status := range []struct{ codes, class string }{{"429", "rate_limit"}, {"401 or 403", "auth"}, {"503 or 529", "overloaded"}} {
+			for _, status := range []struct{ codes, class string }{{"429", "rate_limit"}, {"401", "auth"}, {"503 or 529", "overloaded"}} {
 				if moves(status.class) {
 					out = append(out, fmt.Sprintf("an HTTP status of %s in %s is treated as %s%s", status.codes, e.HTTPStatusField, classWords[status.class], then))
 				}
@@ -469,6 +471,12 @@ func (c Custom) validate(add func(format string, args ...any)) {
 			}
 			if class := e.Classes[code]; !customClass(class) {
 				add("custom.definition.errors.classes[%s]: unknown error class %q (use one of %s)", code, class, strings.Join(ErrorClasses, ", "))
+			}
+			// A code keepgoing itself reads as a restriction or a refusal is
+			// one whatever the definition calls it. Mapping it to a class a
+			// loop may fail over on would be a way around the provider.
+			if declined := DeclinedCode(code); declined != "" && customClass(e.Classes[code]) && !DeclinedClass(e.Classes[code]) && e.Classes[code] != "unknown" {
+				add("custom.definition.errors.classes[%s]: %q is a restriction or a refusal, not a limit; it cannot be mapped to %s (use %s, or leave it unmapped)", code, code, e.Classes[code], declined)
 			}
 		}
 		if e.HTTPStatusField != "" && !customField.MatchString(e.HTTPStatusField) {

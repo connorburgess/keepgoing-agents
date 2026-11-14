@@ -17,7 +17,7 @@ test("card shows completion and evidence; failed refresh labels retained data an
     forThread: () => { if (phase === "lost") throw new Error("PRIVATE RPC ERROR"); return { loops: [loop], errors: [] }; },
   } });
   try {
-    const label = await ui.findByText("keepgoing: completed");
+    const label = await ui.findByText("looptender: completed");
     const title = label.closest("[title]")?.getAttribute("title") ?? ui.container.querySelector("[title]")?.getAttribute("title") ?? "";
     assert.match(title, /Goal: goal_0123456789abcdef0123456789abcdef.*revision 2/);
     assert.match(title, /Task completion: declared; not independently verified/);
@@ -52,7 +52,7 @@ test("banner names a different target and expands historical evidence with expli
   const summary = renderSlot({ component: segment.summary }, props, { rpc });
   const details = renderSlot({ component: segment.details! }, props, { rpc });
   try {
-    await summary.findByRole("button", { name: "keepgoing: watching thr_example" });
+    await summary.findByRole("button", { name: "looptender: watching thr_example" });
     await details.findByText(/Current target: thr_example.*not this thread/);
     assert.ok(details.getByText(/Task completion: declared; not independently verified/));
     assert.ok(details.getByText(/Goal: goal_0123456789abcdef0123456789abcdef.*revision 2/));

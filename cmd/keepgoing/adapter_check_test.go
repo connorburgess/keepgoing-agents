@@ -248,3 +248,36 @@ func TestAdapterCheckArgumentsAndContractList(t *testing.T) {
 		}
 	}
 }
+
+func TestAdapterCheckUsesCurrentConfigNameRules(t *testing.T) {
+	for _, name := range []string{"looptender.yaml", "keepgoing.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, dir, trap := checkLoop(t, `{"state":"idle"}`, nil)
+			if name != filepath.Base(cfg) {
+				if err := os.Rename(cfg, filepath.Join(dir, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(dir)
+			if code, _, raw := adapterCheck(t); code != exitOK {
+				t.Fatalf("%d %s", code, raw)
+			}
+			if err := os.Remove(trap); err != nil {
+				t.Fatal(err)
+			}
+			other := "looptender.yaml"
+			if name == other {
+				other = "keepgoing.yaml"
+			}
+			put(t, filepath.Join(dir, other), "version: 1\n")
+			for _, args := range [][]string{nil, {"-c", ""}} {
+				if code, _, raw := adapterCheck(t, args...); code != exitUsage {
+					t.Fatalf("%v: %d %s", args, code, raw)
+				}
+			}
+			if _, err := os.Stat(trap); !os.IsNotExist(err) {
+				t.Fatalf("ambiguous or empty path started a status command: %v", err)
+			}
+		})
+	}
+}

@@ -262,7 +262,7 @@ public enum ConfirmationBuilder {
         guard let exposure = status.exposure, !Contract.text(exposure).isEmpty else { return nil }
         if status.running && status.changesAllowed == true { return nil }
         let restart = status.running
-        let what = "The panel's page will be able to pause, stop and resume loops, each after a review. " + Contract.text(exposure) + " Stop the Panel Page turns them off."
+        let what = "The panel's page will be able to pause, stop and resume loops, and offer a separate review to replace a loop’s own build. " + Contract.text(exposure) + " Stop the Panel Page turns them off."
         return Confirmation(
             messageText: restart ? "Restart the panel with controls?" : "Open the panel with controls?",
             informativeText: restart ? "The read-only panel that is running is stopped first; a page open on it stops working. " + what : what,

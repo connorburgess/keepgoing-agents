@@ -76,6 +76,21 @@ func updateControlFromAnnotated(dir, operation, origin string, fn func(*control.
 	return f, nil
 }
 
+// recordQuestionEnded adds the history record for an open question that a
+// resume ended, with the question's ID only. A resume is a person's answer
+// to go on; how the loop goes on is decided by the check that follows.
+func recordQuestionEnded(dir, id string) {
+	if id == "" {
+		return
+	}
+	now := time.Now().UTC()
+	r := incident.Record{Kind: "control", CheckStartedAt: now, Build: version, ControlChange: &incident.ControlChange{Operation: "question_withdrawn", QuestionID: id, SaveObservedAt: now, Caller: "unavailable"}}
+	if c, err := control.Load(dir); err == nil {
+		r.ControlBefore, r.ControlAfter = incident.Gate(c.Gate()), incident.Gate(c.Gate())
+	}
+	_ = incident.Append(dir, r) // diagnostic only; the resume is already saved
+}
+
 func ownerIdentity(f control.File) (string, uint64) {
 	if f.Ownership == nil {
 		return "", 0

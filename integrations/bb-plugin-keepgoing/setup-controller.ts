@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { goalDetails } from "./status-details.ts";
-import { checkSchema, setupInput, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
+import { checkSchema, refusalMessage, refusedReportSchema, setupInput, targetOf, statusFollowsStandard, type Refusal, type SetupTarget, type SetupPlan, type SetupRecord, type SetupResult } from "./setup-contract.ts";
+import { planBounds, sameBounds, type Bounds } from "./new-thread-contract.ts";
 
 export interface SetupDependencies {
   target(threadId: string): Promise<SetupTarget>;
@@ -9,23 +10,29 @@ export interface SetupDependencies {
   records(): Promise<SetupRecord[]>;
   save(records: SetupRecord[]): Promise<void>;
   guard(threadId: string): Promise<void>;
-  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean): Promise<{ plan: SetupPlan }>;
-  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start"): Promise<{ code: number; data: unknown }>;
+  init(bin: string, target: SetupTarget, name: string, task: string, dryRun: boolean, withGoal: boolean, bounds?: Bounds, followStandard?: boolean): Promise<{ plan: SetupPlan } | { refused: Refusal } | { noRoutes: true }>;
+  // Whether the host's looptender has a standard route list with routes.
+  standardRoutes(bin: string, target: SetupTarget): Promise<boolean>;
+  command(bin: string, record: SetupRecord, operation: "status" | "doctor" | "start", json?: true): Promise<{ code: number; data: unknown }>;
   changed(): void;
 }
 const agent = z.object({ adapter: z.literal("bb"), bbThread: z.string(), provider: z.string() });
 const statusSchema = z.object({
-  target: z.literal("primary"), primaryAgent: agent, targetAgent: agent, controlState: z.string(),
+  target: z.string(), primaryAgent: agent, targetAgent: agent, controlState: z.string(),
   goal: z.unknown().optional(), goalError: z.unknown().optional(),
   redundancy: z.unknown().optional(),
   daemon: z.object({ state: z.string() }).optional(),
 });
 const doctorSchema = z.object({ schemaVersion: z.literal(1), targetAgent: agent, checks: z.array(checkSchema).max(300) });
+const startedReport = z.object({ schemaVersion: z.literal(1), outcome: z.literal("started") });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** The most setups the plugin keeps a reference to. There is no removal yet. */
+export const MAX_SETUPS = 32;
+
 export function createSetupController(d: SetupDependencies) {
-  const previews = new Map<string, { target: SetupTarget; name: string; taskHash: string; withGoal: boolean; bin: string; plan: SetupPlan; expires: number }>();
+  const previews = new Map<string, { target: SetupTarget; name: string; taskHash: string; withGoal: boolean; followStandard: boolean; bounds?: Bounds; bin: string; plan: SetupPlan; expires: number }>();
   let queue: Promise<unknown> = Promise.resolve();
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = queue.then(fn, fn);
@@ -34,15 +41,24 @@ export function createSetupController(d: SetupDependencies) {
   };
   const sameTarget = async (r: SetupRecord) => {
     const now = await d.target(r.threadId);
-    const { id: _id, configPath: _path, loop: _loop, ...saved } = r;
-    if (!equal(now, saved)) throw new SetupPolicyError("The thread's environment or provider changed. Setup does not transfer an existing loop.");
+    if (!equal(now, targetOf(r))) throw new SetupPolicyError("The thread's environment or provider changed. Setup does not transfer an existing loop.");
   };
-  const inspect = async (bin: string, r: SetupRecord): Promise<SetupResult> => {
+  const inspect = async (bin: string, saved: SetupRecord): Promise<SetupResult> => {
+    let r = saved;
     await sameTarget(r);
     const status = await d.command(bin, r, "status");
     const s = statusSchema.safeParse(status.data);
     const matches = (a: z.infer<typeof agent>) => a.bbThread === r.threadId && a.provider === r.provider;
-    if (status.code !== 0 || !s.success || s.data.redundancy !== undefined || !matches(s.data.primaryAgent) || !matches(s.data.targetAgent)) throw new SetupPolicyError("The saved loop target could not be verified. No start or transfer was performed.");
+    // Only a loop that follows the standard route list has other routes, and
+    // can be on one of them: its routes are this thread on another model, so
+    // the target agent is still this thread. Status says which it is, so a
+    // flag an older plugin build dropped from the record is restored here.
+    const follows = statusFollowsStandard(status.data);
+    if (status.code !== 0 || !s.success || (!follows && (s.data.redundancy !== undefined || s.data.target !== "primary")) || !matches(s.data.primaryAgent) || !matches(s.data.targetAgent)) throw new SetupPolicyError("The saved loop target could not be verified. No start or transfer was performed.");
+    if (follows && r.followsStandard !== true) {
+      const restored = { ...r, followsStandard: true as const };
+      try { await d.save((await d.records()).map(x => x.id === r.id ? restored : x)); r = restored; } catch { /* shown as following; saved next time */ }
+    }
     const result = await d.command(bin, r, "doctor");
     const report = doctorSchema.safeParse(result.data);
     if (!report.success || !matches(report.data.targetAgent)) return { ok: true, record: r, canStart: false, message: "Setup is saved, but diagnostics could not verify this target. Check host access and retry diagnostics." };
@@ -51,7 +67,7 @@ export function createSetupController(d: SetupDependencies) {
     const canStart = goal.goalState !== "unavailable" && result.code === 0 && checks.some(c => c.id === "agent.primary.target" && c.status === "ok") && !checks.some(c => c.status === "error") && ["disabled", "enabled"].includes(s.data.controlState) && s.data.daemon?.state !== "responsive";
     return { ok: true, record: r, ...goal, checks, canStart, message: canStart ? "Review the diagnostics, then start background supervision when ready." : "Setup is saved. Existing holds, a responding daemon, or diagnostic failures prevent another start here." };
   };
-  const handle = async (raw: z.infer<typeof setupInput>): Promise<SetupResult> => {
+  const handle = async (raw: z.infer<typeof setupInput>, bounds?: Bounds): Promise<SetupResult> => {
     const input = setupInput.parse(raw);
     const bin = await d.binary();
     const records = await d.records();
@@ -63,34 +79,57 @@ export function createSetupController(d: SetupDependencies) {
       catch { return { ok: false, record: existing, canStart: false, message: "The saved target could not be verified. Refresh diagnostics after checking the host and configuration; no transfer was performed." }; }
       if (input.action === "inspect" || !result.canStart) return result;
       await sameTarget(existing);
-      const start = await d.command(bin, existing, "start");
+      // --json only when the preview this setup came from advertised it, and
+      // the same binary is configured now. Otherwise start exactly as before.
+      const json = existing.startJson === true && existing.startJsonBin === bin ? true as const : undefined;
+      const start = await d.command(bin, existing, "start", json);
+      const startRefused = start.code !== 0 ? refusedReportSchema.safeParse(start.data) : undefined;
+      if (startRefused?.success) { d.changed(); return { ...result, ok: false, canStart: false, started: false, refused: startRefused.data.refusal, message: refusalMessage(startRefused.data.refusal, "start") }; }
       d.changed();
-      return { ...result, canStart: false, ok: start.code === 0, message: start.code === 0 ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
+      // With --json, a start is confirmed by its own report as well as its exit code.
+      const confirmed = start.code === 0 && (!json || startedReport.safeParse(start.data).success);
+      return { ...result, canStart: false, ok: confirmed, started: confirmed, message: confirmed ? "Background supervision started. Existing timers were not changed." : "Start could not be confirmed. Check loop status before retrying; no holds were cleared." };
     }
     if (existing) throw new SetupPolicyError("This thread already has a saved setup. Use its diagnostics and controls.");
     await d.guard(input.threadId);
     const target = await d.target(input.threadId);
     const task = input.task ?? "";
     const withGoal = input.withGoal ?? false;
+    const followStandard = input.followStandard ?? false;
     if (!task.trim() || Buffer.byteLength(task) > 262144) throw new SetupPolicyError("Enter a task of at most 256 KiB.");
     if (input.action === "preview") {
       if (!input.name) throw new SetupPolicyError("Enter a loop name using lowercase letters, digits, and hyphens.");
       for (const [key, p] of previews) if (p.expires < Date.now()) previews.delete(key);
       if (previews.size >= 64) throw new SetupPolicyError("Too many pending previews. Wait five minutes and retry.");
-      const { plan } = await d.init(bin, target, input.name, task, true, withGoal);
+      const previewed = await d.init(bin, target, input.name, task, true, withGoal, bounds, followStandard);
+      if ("noRoutes" in previewed) return { ok: false, message: "None of your standard route list's routes applies to this thread, so this setup cannot follow it. Clear the choice to set it up without other routes." };
+      if ("refused" in previewed) return { ok: false, refused: previewed.refused, message: refusalMessage(previewed.refused, "init") };
+      const { plan } = previewed;
+      // Asked-for loop-wide limits must be exactly what keepgoing reports it
+      // will write. Creation is then bound to this plan, so they cannot change.
+      if (bounds) { const reported = planBounds(plan.limits); if (!reported || !sameBounds(reported, bounds)) throw new SetupPolicyError("Setup did not report the loop-wide limits that were asked for. Nothing was created."); }
       const ticket = randomUUID();
-      previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, bin, plan, expires: Date.now() + 300_000 });
-      return { ok: true, ticket, plan, message: "Preview only. Creating this setup leaves supervision disabled; fallbacks and automatic handoffs are off." };
+      // Following the list must come back as exactly that, with the routes
+      // to show; not following must come back with none.
+      if (followStandard !== (plan.routes !== undefined)) throw new SetupPolicyError("Setup did not report the route choice that was asked for. Nothing was created.");
+      previews.set(ticket, { target, name: input.name, taskHash: digest(task), withGoal, followStandard, bounds, bin, plan, expires: Date.now() + 300_000 });
+      return { ok: true, ticket, plan, message: followStandard ? "Preview only. Creating this setup leaves supervision disabled. It follows your standard route list and hands off to it on a rate limit." : "Preview only. Creating this setup leaves supervision disabled; fallbacks and automatic handoffs are off." };
     }
     const preview = previews.get(input.ticket ?? "");
     previews.delete(input.ticket ?? ""); // one attempt, including failure; never replay a creation
-    if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, target, or binary changed. Preview again.");
-    if (records.length >= 32) throw new SetupPolicyError("The plugin already has 32 saved setups; manage existing loops before adding another.");
-    const fresh = await d.init(bin, target, preview.name, task, true, withGoal);
+    if (!preview || preview.expires < Date.now() || preview.bin !== bin || preview.withGoal !== withGoal || preview.followStandard !== followStandard || !equal(preview.bounds, bounds) || preview.taskHash !== digest(task) || !equal(preview.target, target)) throw new SetupPolicyError("The preview expired or its task, goal choice, route choice, target, or binary changed. Preview again.");
+    if (records.length >= MAX_SETUPS) throw new SetupPolicyError(`The plugin already has ${MAX_SETUPS} saved setups; manage existing loops before adding another.`);
+    const fresh = await d.init(bin, target, preview.name, task, true, withGoal, bounds, followStandard);
+    if ("noRoutes" in fresh) throw new SetupPolicyError("The resolved setup changed. Preview again before creating it.");
+    if ("refused" in fresh) return { ok: false, refused: fresh.refused, message: refusalMessage(fresh.refused, "init") };
     if (!equal(fresh.plan, preview.plan)) throw new SetupPolicyError("The resolved setup changed. Preview again before creating it.");
-    const created = await d.init(bin, target, preview.name, task, false, withGoal);
+    const created = await d.init(bin, target, preview.name, task, false, withGoal, bounds, followStandard);
+    if ("noRoutes" in created) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
+    // Refused at creation, after a preview that passed: keepgoing checks
+    // before it writes anything, so nothing was created.
+    if ("refused" in created) return { ok: false, refused: created.refused, message: refusalMessage(created.refused, "init") };
     if (!equal(created.plan, preview.plan)) throw new SetupPolicyError("Setup result changed. A disabled configuration may exist; inspect the destination before retrying.");
-    const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop };
+    const record = { ...target, id: randomUUID(), configPath: created.plan.configPath, loop: created.plan.loop, ...(created.plan.startJson === true ? { startJson: true as const, startJsonBin: bin } : {}), ...(created.plan.routes ? { followsStandard: true as const } : {}) };
     try { await d.save([...records, record]); }
     catch { return { ok: false, record, message: "A disabled setup was created, but the plugin could not save its reference. Keep the displayed config path for recovery; do not recreate or start it automatically." }; }
     d.changed();
@@ -100,14 +139,28 @@ export function createSetupController(d: SetupDependencies) {
   return {
     // Serialize mutations and previews so concurrent clients cannot create two
     // loops for one thread or overwrite the stored record list.
-    call: (input: z.infer<typeof setupInput>): Promise<SetupResult> => serialize(async () => {
-      try { return await handle(input); }
-      catch (error) {
-        // Dependency/SDK errors can contain paths, command arguments, or task
-        // input. Only our fixed policy messages are returned by safe wrappers.
-        return { ok: false, message: error instanceof SetupPolicyError ? error.message : "Setup could not complete. Refresh diagnostics or preview again; check the host and keepgoing version." + (input.withGoal ? " Goal creation needs init --with-goal support (after v0.1.4); update it or turn off that choice and preview again." : "") + " No automatic retry or transfer was performed." };
+    // `bounds` are loop-wide limits chosen by a server-side caller. They are
+    // not part of the browser's input, and a preview made with one set
+    // cannot be created with another.
+    call: async (input: z.infer<typeof setupInput>, bounds?: Bounds): Promise<SetupResult> => {
+      const result = await serialize(async (): Promise<SetupResult> => {
+        try { return await handle(input, bounds); }
+        catch (error) {
+          // Dependency/SDK errors can contain paths, command arguments, or task
+          // input. Only our fixed policy messages are returned by safe wrappers.
+          return { ok: false, message: error instanceof SetupPolicyError ? error.message : "Setup could not complete. Refresh diagnostics or preview again; check the host and looptender version." + (input.withGoal ? " Goal creation needs init --with-goal support (after v0.1.4); update it or turn off that choice and preview again." : "") + " No automatic retry or transfer was performed." };
+        }
+      });
+      // A thread with no setup yet: ask whether the standard route list can
+      // be offered, outside the queue, so it never holds up Resume or a move.
+      // Offered only when the host's CLI says a route applies to this thread;
+      // any failure to tell means setup is offered exactly as before.
+      if (input.action === "inspect" && result.ok && !result.record) {
+        try { if (await d.standardRoutes(await d.binary(), await d.target(input.threadId))) return { ...result, standardRoutes: true }; }
+        catch { /* not offered */ }
       }
-    }),
+      return result;
+    },
     dispose: () => previews.clear(),
   };
 }

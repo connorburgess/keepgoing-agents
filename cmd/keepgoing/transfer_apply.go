@@ -15,6 +15,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
@@ -24,7 +25,14 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 	if err := cfg.CheckSources(); err != nil {
 		return err
 	}
-	if info, err := os.Lstat(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	return checkTransferRecord(cfg, allowStop)
+}
+
+// checkTransferRecord is checkTransferSources without the check that the
+// configuration's files are unchanged: the control record, the pending
+// transfer rule and the transferred BB target.
+func checkTransferRecord(cfg *config.Config, allowStop bool) error {
+	if info, err := snapshot.LstatRecord(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("control.json must not be a symlink; use the original state directory")
 	}
 	var ctl control.File
@@ -32,7 +40,7 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 		return errors.New("control state unavailable")
 	}
 	if p := ctl.PendingTransfer; p != nil {
-		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.FallbackSet != nil {
+		if !p.Valid() || !ctl.AwaitingUser || cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 			return errors.New("transfer recovery record unavailable or inconsistent")
 		}
 		digest := cfg.SourceDigest()
@@ -72,7 +80,7 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 	cmd := args[0]
 	fs := flag.NewFlagSet("transfer "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	path := fs.String("c", "keepgoing.yaml", "configuration path")
+	path := fs.String("c", "", configFlagHelp("configuration path"))
 	from := fs.String("from", "", "expected current BB primary (apply)")
 	to := fs.String("thread", "", "new existing BB primary (apply)")
 	id := fs.String("id", "", "pending transfer identity (recover)")
@@ -99,12 +107,15 @@ func transferApply(e env, args []string, run doctorRun, afterStep func(string) e
 		}
 		return exitFailed
 	}
+	if !configDefault(e, "transfer", fs, path) {
+		return exitUsage
+	}
 	cfg, err := config.Load(*path)
 	if err != nil {
 		e.errf("transfer: configuration unavailable; inspect it privately")
 		return exitUsage
 	}
-	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.FallbackSet != nil {
+	if cfg.Loop.Adapter != "bb" || cfg.Loop.BB == nil || cfg.Loop.HasRouteList() {
 		return fail(errors.New("apply/recover support only a single BB primary without fallbacks"))
 	}
 	if err := transferPrivatePaths(*path, cfg); err != nil {
@@ -328,14 +339,14 @@ func resetTransferState(dir string) error {
 		}
 	}
 	path := filepath.Join(target, "bb-cursor.json")
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil || !info.Mode().IsRegular() {
 		return errors.New("primary cursor unavailable")
 	}
-	if os.Remove(path) != nil {
+	if snapshot.Remove(path) != nil {
 		return errors.New("could not clear primary cursor")
 	}
 	return nil

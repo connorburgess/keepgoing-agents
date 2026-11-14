@@ -48,6 +48,29 @@ func (f *doctorFixture) save(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// stateFiles records every fixture file, including Windows publication markers.
+// Fail on unexpected directories or unreadable data rather than comparing a
+// partial snapshot that could hide an offline doctor's mutation.
+func (f *doctorFixture) stateFiles(t *testing.T) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(f.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			t.Fatalf("unexpected runtime entry: %s", entry.Name())
+		}
+		data, err := os.ReadFile(filepath.Join(f.state, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[entry.Name()] = string(data)
+	}
+	return files
+}
 func (f *doctorFixture) run(t *testing.T, invoke doctorRun, extra ...string) (int, doctorReport, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer

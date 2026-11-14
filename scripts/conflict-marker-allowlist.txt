@@ -1,0 +1,5 @@
+# Paths that scripts/check-contributions.sh lets through although a line
+# begins "<<<<<<< " or ">>>>>>> " or is exactly "=======". One path per line,
+# from the repository root, exactly as git lists it. Say why in a comment.
+#
+# Empty: when this check was added (November 2026) no file on main needed it.

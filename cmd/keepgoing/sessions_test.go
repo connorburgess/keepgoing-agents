@@ -130,7 +130,7 @@ func TestRegisteredLoopsAreFoundAndStartAndInitRefuse(t *testing.T) {
 	}
 	// Registered and enabled before this build kept session records: the
 	// registry finds it.
-	if err := os.RemoveAll(os.Getenv("KEEPGOING_SESSION_DIR")); err != nil {
+	if err := os.RemoveAll(os.Getenv(session.DirEnv)); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, errs := runWith("registry", "add", "-c", f.cfg); code != exitOK {
@@ -216,7 +216,7 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 	for _, c := range r.Checks {
 		found[c.ID] = c.Message
 	}
-	if !strings.Contains(found["registry.directory"], os.Getenv(registryDirEnv)) || !strings.Contains(found["session.directory"], os.Getenv("KEEPGOING_SESSION_DIR")) {
+	if !strings.Contains(found["registry.directory"], os.Getenv(registryDirEnv)) || !strings.Contains(found["session.directory"], os.Getenv(session.DirEnv)) {
 		t.Fatalf("%v", found)
 	}
 	// Each cause is named as it is, with its own fix.
@@ -242,17 +242,17 @@ func TestDoctorNamesTheRegistryAndClaimDirectoriesWhenMoved(t *testing.T) {
 		}
 	}
 	// No user state directory: checks run unprotected.
-	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	t.Setenv(session.DirEnv, "")
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
-	check("HOME and XDG_STATE_HOME are not set", "set HOME, or KEEPGOING_SESSION_DIR")
+	check("HOME and XDG_STATE_HOME are not set", "set HOME, or "+session.DirEnv)
 	// Something planted at the path: not "set HOME".
 	planted := filepath.Join(f.dir, "planted")
 	write(t, planted, "", 0o600)
-	t.Setenv("KEEPGOING_SESSION_DIR", planted)
+	t.Setenv(session.DirEnv, planted)
 	check(planted+" is not a directory", "remove "+planted)
 	t.Setenv(registryDirEnv, "")
-	t.Setenv("KEEPGOING_SESSION_DIR", "")
+	t.Setenv(session.DirEnv, "")
 	t.Setenv("HOME", f.dir)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(f.dir, "state-home"))
 	out.Reset()

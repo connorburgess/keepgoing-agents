@@ -121,6 +121,146 @@ func TestObserveStructuredRateLimit(t *testing.T) {
 	}
 }
 
+// A forbidden provider error is the provider's decision about the account or
+// the work. It is its own class, so it can never be treated as a login to
+// fail over from.
+func TestObserveForbiddenIsRestricted(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		want  decide.ErrorClass
+	}{
+		// The shapes BB's bundled Claude Code provider (BB 0.48.1) produces:
+		// it gives HTTP 401 and 403 the same category, "unauthorized", and
+		// the code "unknown" when it classified from the status alone. Read
+		// from BB's provider code, not captured from a live thread.
+		{providerError("unauthorized", 403, "unknown", nil), decide.ErrRestricted},
+		{providerError("unauthorized", 403, "authentication_failed", nil), decide.ErrRestricted},
+		{providerError("unauthorized", nil, "oauth_org_not_allowed", nil), decide.ErrRestricted},
+		{providerError("unauthorized", 401, "unknown", nil), decide.ErrAuth},
+		{providerError("unauthorized", 401, "authentication_failed", nil), decide.ErrAuth},
+		{providerError("unauthorized", nil, "authentication_failed", nil), decide.ErrAuth},
+		{providerError("unknown", nil, "permission_denied", nil), decide.ErrRestricted},
+		// A restriction outranks a limit reported beside it.
+		{providerError("rate-limit", 403, "rate_limit_event", nil), decide.ErrRestricted},
+	} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+tc.event+"]", false)
+		obs, _ := a.Observe(context.Background())
+		if obs.State != decide.Error || obs.ErrorClass != tc.want {
+			t.Errorf("%s: %+v, want %s", tc.event, obs, tc.want)
+		}
+	}
+}
+
+// BB's typed category for a provider's policy block, which its Codex provider
+// reports for cyberPolicy and misalignmentPolicyViolation, is a refusal.
+// An errored turn is named by its thread and the sequence of its start, so
+// the supervisor counts a refused turn once however many checks see it.
+func TestObserveNamesTheErroredTurn(t *testing.T) {
+	a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+providerError("policy", nil, "cyberPolicy", nil)+"]", false)
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRefused || obs.ErrorTurn != "thr_example123/bb-turn-1" {
+		t.Fatalf("%+v", obs)
+	}
+	a, _ = newFake(`{"thread":{"status":"idle"}}`, "["+turnStarted+"]", false)
+	if obs, _ := a.Observe(context.Background()); obs.ErrorTurn != "" {
+		t.Fatalf("an idle thread: %+v", obs)
+	}
+}
+
+func TestObservePolicyBlockIsRefused(t *testing.T) {
+	for _, event := range []string{
+		providerError("policy", nil, "cyberPolicy", nil),
+		providerError("policy", nil, "misalignmentPolicyViolation", nil),
+		providerError("policy", nil, "", nil),
+		providerError("policy", 429, "rate_limit_event", nil),
+	} {
+		a, _ := newFake(`{"thread":{"status":"error"}}`, "["+turnStarted+","+event+"]", false)
+		obs, _ := a.Observe(context.Background())
+		if obs.State != decide.Error || obs.ErrorClass != decide.ErrRefused {
+			t.Errorf("%s: %+v", event, obs)
+		}
+	}
+}
+
+// BB records provider/modelFallback when the provider answered with another
+// model. Only a fallback after a refusal is reported, by its position in the
+// log, and it changes nothing else about the observation.
+func TestObserveModelFallbackAfterARefusal(t *testing.T) {
+	fallback := func(reason string) string {
+		return `{"type":"provider/modelFallback","data":{"providerThreadId":"p1","originalModel":"model-a","fallbackModel":"model-b","reason":"` + reason + `","message":"PRIVATE_TEXT"}}`
+	}
+	for _, tc := range []struct {
+		name string
+		log  string
+		want int64
+	}{
+		{"after a refusal", "[" + turnStarted + "," + fallback("refusal") + "]", 2},
+		{"for another reason", "[" + turnStarted + "," + fallback("provider") + "]", 0},
+		{"none", "[" + turnStarted + "]", 0},
+	} {
+		a, _ := newFake(`{"thread":{"status":"idle"}}`, tc.log, false)
+		obs, _ := a.Observe(context.Background())
+		if obs.ModelFallback != tc.want || obs.State != decide.Idle || obs.ErrorClass != decide.ErrNone {
+			t.Errorf("%s: %+v", tc.name, obs)
+		}
+	}
+}
+
+// A refusal or restriction stays for the rest of its turn: a later error
+// event does not replace it, so it cannot become a limit that hands off. A
+// restriction outranks a refusal, a new turn clears both, and so does the
+// model answering again.
+func TestRefusalOrRestrictionIsStickyForTheTurn(t *testing.T) {
+	refusal := providerError("policy", nil, "cyberPolicy", nil)
+	forbidden := providerError("unauthorized", 403, "unknown", nil)
+	limit := providerError("rate-limit", 429, "rate_limit_event", false)
+	systemErr := `{"type":"system/error","data":{"code":"rate_limit_error"}}`
+	failed := `{"type":"turn/failed","data":{"code":"overloaded_error"}}`
+	answer := `{"type":"item/agentMessage/delta","data":{"providerThreadId":"p1","itemId":"item_example"}}`
+	for _, tc := range []struct {
+		name   string
+		events []string
+		want   decide.ErrorClass
+	}{
+		{"refusal, then a rate limit that will not be retried", []string{refusal, limit}, decide.ErrRefused},
+		{"refusal, then a system error", []string{refusal, systemErr}, decide.ErrRefused},
+		{"refusal, then a failed event", []string{refusal, failed}, decide.ErrRefused},
+		{"restriction, then a rate limit", []string{forbidden, limit}, decide.ErrRestricted},
+		{"restriction, then a system error", []string{forbidden, systemErr}, decide.ErrRestricted},
+		{"restriction, then a refusal", []string{forbidden, refusal}, decide.ErrRestricted},
+		{"refusal, then a restriction", []string{refusal, forbidden}, decide.ErrRestricted},
+		{"a rate limit, then a refusal", []string{limit, refusal}, decide.ErrRefused},
+		{"a rate limit, then a restriction", []string{limit, forbidden}, decide.ErrRestricted},
+		{"refusal, then a new turn with a rate limit", []string{refusal, turnStarted, limit}, decide.ErrRateLimit},
+		{"refusal, then the model answers", []string{refusal, answer}, decide.ErrNone},
+		{"a rate limit, then a system error (unchanged: the later error decides)", []string{limit, systemErr}, decide.ErrRateLimit},
+	} {
+		log := "[" + turnStarted + "," + strings.Join(tc.events, ",") + "]"
+		a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+		obs, _ := a.Observe(context.Background())
+		got := obs.ErrorClass
+		if tc.want == decide.ErrNone && got == decide.ErrUnknown {
+			got = decide.ErrNone // no error left: the thread status alone says error
+		}
+		if got != tc.want {
+			t.Errorf("%s: %s, want %s (%+v)", tc.name, obs.ErrorClass, tc.want, obs)
+		}
+	}
+}
+
+// A summary saved by an earlier build keeps the class it derived then. One
+// that cached a forbidden error as auth is derived again from the log.
+func TestSummaryFromAnEarlierBuildIsDerivedAgain(t *testing.T) {
+	log := "[" + turnStarted + "," + providerError("unauthorized", 403, "unknown", nil) + "]"
+	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)
+	stale := Cursor{Thread: "thr_example123", RetrySchema: 1, LastSeq: 2, Error: &errorSignal{Class: decide.ErrAuth, Seq: 2}}
+	a.mem = &stale
+	obs, _ := a.Observe(context.Background())
+	if obs.ErrorClass != decide.ErrRestricted {
+		t.Fatalf("a cached auth class survived the upgrade: %+v", obs)
+	}
+}
+
 func TestObserveStreamDisconnectIsNetworkAndRetrying(t *testing.T) {
 	log := "[" + turnStarted + "," + providerError("stream-disconnected", nil, "responseStreamDisconnected", true) + "]"
 	a, _ := newFake(`{"thread":{"status":"error"}}`, log, false)

@@ -342,12 +342,9 @@ func TestFaultDamagedRecord(t *testing.T) {
 	}
 	cases := []expect{
 		{file: "control.json", tickExit: 1, named: "control.json", known: map[string][]Waiting{
-			statusNamesIt:   Waits(WaitStatusUnreadable),
 			pauseStillWorks: Waits(WaitStopDamagedControl),
 		}},
-		{file: "state.json", tickExit: 1, named: "state.json", pauseWorks: true, known: map[string][]Waiting{
-			statusNamesIt: Waits(WaitStatusUnreadable),
-		}},
+		{file: "state.json", tickExit: 1, named: "state.json", pauseWorks: true},
 		{file: "sends.json", tickExit: 0, named: "sends.json", statusWorks: true, pauseWorks: true},
 		{file: "progress.json", tickExit: 0, named: "progress.json", statusWorks: true, pauseWorks: true},
 		{file: "health.json", tickExit: 0, named: "health.json", statusWorks: true, pauseWorks: true},
@@ -461,11 +458,6 @@ func (w *World) sendsSince() int {
 	readLines(w.t, filepath.Join(w.world, "sends.jsonl"), &sends)
 	return len(sends) - w.sendsSeen
 }
-
-// WaitStatusUnreadable: status stops at the first record it cannot read and
-// prints only the parse error. It should name the file, say what to do, and
-// print what it can. This lane (T3) takes it next.
-const WaitStatusUnreadable Waiting = "status names an unreadable record, test-suites lane"
 
 // WaitStopDamagedControl: with control.json unreadable, pause and stop fail
 // too, so nothing a person can run from keepgoing holds the loop. Checks send

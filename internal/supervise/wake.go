@@ -50,7 +50,8 @@ func PollWake(ctx context.Context, cfg *config.Config, newAdapter factory.Func) 
 	}
 	agent := cfg.Loop.Agent
 	if st.Target() != state.Primary {
-		c, ok := cfg.FallbackSet.Find(st.Target())
+		fb, _ := EffectiveRoutes(cfg, st)
+		c, ok := fb.Find(st.Target())
 		if !ok || c.Disabled {
 			return false // Let the next ordinary tick resolve removed targets.
 		}

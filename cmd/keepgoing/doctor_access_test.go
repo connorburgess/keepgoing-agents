@@ -123,16 +123,14 @@ func TestDoctorAccessOfflinePreservesHoldAndFiles(t *testing.T) {
 	if err := control.Save(f.state, control.File{Enabled: true, Paused: true, Stop: true, Completed: true, Note: doctorPrivate}); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(f.state, control.FileName)
-	before, _ := os.ReadFile(path)
+	before := f.stateFiles(t)
 	_, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
 		t.Fatal("offline access check ran a command")
 		return nil, nil
 	}, "--offline")
 	doctorCheckByID(t, r, "state.write_access")
-	after, _ := os.ReadFile(path)
-	entries, err := os.ReadDir(f.state)
-	if !reflect.DeepEqual(before, after) || err != nil || len(entries) != 1 || entries[0].Name() != control.FileName {
+	after := f.stateFiles(t)
+	if !reflect.DeepEqual(before, after) {
 		t.Fatal("doctor changed held runtime state")
 	}
 }

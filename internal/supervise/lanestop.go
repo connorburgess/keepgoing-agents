@@ -545,6 +545,7 @@ func CountLanes(ctx context.Context, cfg *config.Config, opts Options) LaneCount
 		return LaneCount{}
 	}
 	t.st = st
+	t.fb, _ = EffectiveRoutes(cfg, st)
 	target, agent := t.resolve(st.Target())
 	agent, reachable := stopAgent(agent, st)
 	if !reachable {

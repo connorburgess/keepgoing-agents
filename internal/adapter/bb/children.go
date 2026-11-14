@@ -14,14 +14,15 @@ var childIDPattern = regexp.MustCompile(`^thr_[A-Za-z0-9_-]{1,128}$`)
 // spawned, or re-parented. Incomplete discovery must not authorize a wake.
 //
 // errored lists verified direct children whose status is error. They are not
-// running work. Only the status field decides this; no child log, message or
-// title is read.
+// running work. Only the status field decides this. Only a child's title is
+// read, for display; no log or message is read, and no decision uses the
+// title.
 //
 // healthy lists verified direct children with a known status other than error.
 // It lets a caller tell a child that is verifiably no longer in error from one
 // an incomplete listing simply did not show.
 func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, awaiting, errored, healthy []string) {
-	a.activeChildIDs = nil
+	a.activeChildIDs, a.childTitles = nil, map[string]string{}
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	out, err := a.run(ctx, "", "thread", "list", "--parent-thread", a.cfg.Thread, "--include-hidden", "--json")
@@ -67,6 +68,7 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 				ID         string          `json:"id"`
 				Parent     json.RawMessage `json:"parentThreadId"`
 				Status     string          `json:"status"`
+				Title      *string         `json:"title"`
 				ArchivedAt *int64          `json:"archivedAt"`
 				DeletedAt  *int64          `json:"deletedAt"`
 			} `json:"thread"`
@@ -87,6 +89,9 @@ func (a *Adapter) childWork(ctx context.Context) (active int, unverified bool, a
 		}
 		if parent == nil || *parent != a.cfg.Thread || t.ArchivedAt != nil || t.DeletedAt != nil {
 			continue
+		}
+		if t.Title != nil {
+			a.childTitles[child.ID] = *t.Title
 		}
 		switch t.Status {
 		case "active":

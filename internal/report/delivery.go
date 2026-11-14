@@ -62,14 +62,14 @@ func eventName(s string) string {
 // Missing history means no recorded evidence, not successful delivery.
 func LoadDeliveries(dir string) (DeliveryHistory, error) {
 	path := filepath.Join(dir, DeliveryFile)
-	info, err := os.Lstat(path)
+	info, err := snapshot.LstatRecord(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return DeliveryHistory{SchemaVersion: 1, NextSequence: 1, Records: []Delivery{}}, nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxDeliveryBytes {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}
-	f, err := snapshot.Open(path)
+	f, err := snapshot.OpenRecord(path)
 	if err != nil {
 		return DeliveryHistory{}, ErrDeliveryHistory
 	}

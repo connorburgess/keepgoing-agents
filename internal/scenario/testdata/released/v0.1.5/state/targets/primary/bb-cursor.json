@@ -1,0 +1,1 @@
+{"retrySchema":1,"thread":"thr_example_primary","lastSeq":2,"turnSeq":1,"error":{"evidence":{"source":"bb_provider_error","category":"unavailable","code":"unavailable","httpStatus":null,"exitCode":null},"seq":2,"class":"unknown","retryKnown":true},"resetsAt":"0001-01-01T00:00:00Z"}

@@ -1,13 +1,17 @@
-# keepgoing for BB
+# looptender for BB
+
+**keepgoing is being renamed to looptender.** From plugin v0.3.1 (on `main`, not yet in a release) BB shows this plugin as looptender, and its labels and messages say looptender. Everything you type is unchanged for now: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting and the `keepgoing` executable. Guided setup with a CLI from after v0.2.0 creates `looptender.yaml` in place of `keepgoing.yaml` (the plugin accepts either; existing loops keep their file). Updating keeps the plugin's settings, secrets and schedules, because BB keeps them under the plugin id. The rest of this page still says keepgoing where it means the tool or something you type.
 
 A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
+The plugin reports its version with `--client bb-plugin@VERSION` when it reads a loop's status, so the keepgoing panel's Versions view can say which plugin and which keepgoing build it runs. The version is a constant in `client-flag.ts`, kept equal to `package.json` by a test. A keepgoing too old to know the flag answers with a usage error. The plugin then asks again without it, and stops sending it to that executable only if that second call succeeds. It sends the flag again once the executable changes: a different path, size or modification time, as after an upgrade. A plugin reload also resets this.
+
 ## Install
 
-Use **CLI v0.1.5 + plugin v0.2.0** for goal-aware setup. Verify that the [v0.1.5 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) are available before using this pinned installation command:
+Use **CLI v0.2.0 + plugin v0.3.0** (its labels say keepgoing). Verify that the [v0.2.0 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) are available before using this pinned installation command:
 
 ```sh
-bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.1.5 --plugin keepgoing
+bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.2.0 --plugin keepgoing
 bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
 ```
 
@@ -24,7 +28,7 @@ bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
 bb plugin config keepgoing set configs "/absolute/path/to/keepgoing.yaml"
 ```
 
-`configs` takes one existing server-local `keepgoing.yaml` path per line. Those loops and setups created through the UI are shown and controlled. UI-created setups are registered separately with their host and configuration path in private plugin storage. A path sent from the browser is checked against this list, so the plugin never runs keepgoing against an arbitrary file. The plugin needs a keepgoing build whose `status --json` includes `primaryAgent` and `targetAgent`, which is any build after 0.1.0.
+`configs` takes one existing server-local configuration file path per line (`looptender.yaml`, or `keepgoing.yaml` from releases up to v0.2.0). Those loops and setups created through the UI are shown and controlled. UI-created setups are registered separately with their host and configuration path in private plugin storage. A path sent from the browser is checked against this list, so the plugin never runs keepgoing against an arbitrary file. The plugin needs a keepgoing build whose `status --json` includes `primaryAgent` and `targetAgent`, which is any build after 0.1.0.
 
 ## Supervise this thread
 
@@ -32,6 +36,10 @@ This flow is implemented on `main` and requires a keepgoing build containing `in
 
 1. Open **Supervise this thread** in the context banner, or its button in the context card. Enter a loop name and task with completion criteria. The **Record a goal for this task** checkbox starts selected; it uses the loop name as the initial title and shares current goal references in later prompts. Goal setup needs CLI v0.1.5 with `init --with-goal`; update the selected host binary or explicitly deselect the choice for the existing task-only flow. The plugin never silently falls back or upgrades the CLI.
 2. Choose **Preview setup**. The server resolves the existing thread, provider, ready Git checkout, and connected host from BB metadata. Review the displayed project, target, configuration path, and operating limits. The initial UI uses one agent and default limits with no fallbacks; advanced setup remains available through the CLI.
+
+   **Follow my standard route list for handoffs** appears, unchecked, only when the host's looptender reports a usable [standard route list](../../docs/routes.md) with a route that could apply to this thread: a switched-on same-conversation route on the thread's provider, on another usage limit (`routes list --json`, asked outside the setup queue so it never holds up Resume or a move). An older CLI that has no such command, or v0.2.0, which cannot follow the list, gets setup exactly as before. A build between the commands that change the list and `init --routes standard` lists routes but refuses the flag; the checked preview then fails closed. If the preview finds that no route applies after all, it says so plainly. Checked, the preview runs `init --routes standard` and names each route that applies to this loop, by id, model and usage limit, never by path or login, and says that handoff on a rate limit is turned on. Creation must report the same routes as the preview, and the saved setup notes that it follows the list. A following setup stays inspectable and controllable after it hands off to one of its routes, which is this thread on another model: diagnostics, Resume and moves accept it, and Pause and Stop never check the target. Unreleased; the New thread screen's **Keep going** switch stays single-agent.
+
+   **Going back to an older plugin build.** A build without this change drops the record's note that a setup follows the list, and then refuses to verify that setup once it has handed off or reports its routes; use the CLI for it there. This build restores the note from the loop's own status the next time it inspects it.
 3. Choose **Create disabled setup**. The host runs the shared `init` command, with task text on stdin. For goal setup, one private `task.md` snapshot is referenced by goal revision 1 while `prompt.md` holds stable wake instructions. Configuration and prompt files go into the CLI's new private setup directory outside the checkout. No agent, probe, scheduler, or account is started or created.
 4. Review the shared doctor results. **Start background supervision** appears only when the saved target matches, BB identity diagnostics pass without errors, no control hold prevents start, and no responding daemon was found. Clicking it calls the existing `start --background` command on the recorded host. It enables supervision with the thread's ownership identity; it does not take over another owner or clear holds. Subsequent ticks may prompt the agent normally.
 
@@ -39,7 +47,7 @@ The **Setup** control / expanded banner can refresh diagnostics later. Pause/res
 
 The setup service never spawns, forks, re-parents, sends to, or changes the provider/model of a BB thread. Preview tickets expire after five minutes or plugin reload, are bound to the task hash, goal choice, target metadata, binary selection and resolved plan, and permit one creation attempt. Task text is not persisted in plugin storage, logged, or put in subprocess arguments; it remains in private `task.md` for goal setup or `prompt.md` for task-only setup after creation. Task input is limited to 256 KiB in the UI flow. Paths and target references in private plugin storage are operational metadata.
 
-Existing configured supervision or a failed status lookup blocks creating another loop through this flow. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
+Existing configured supervision or a failed status lookup blocks creating another loop through this flow. When keepgoing itself refuses a second loop on the same session and reports that in a structured form, **Supervise this thread** shows its reason with the other loop's name; it never offers to override it. This only covers loops known to the plugin, not arbitrary timers/configurations elsewhere. Setup does not detect or replace an external timer. Do not start a second supervisor for a loop already run by another schedule.
 
 ### Recovery and verification limits
 
@@ -51,11 +59,56 @@ Existing configured supervision or a failed status lookup blocks creating anothe
 
 Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller tests, DOM interaction tests, typechecking, and plugin bundle builds. Tests cover host routing, preview changes/replay/concurrency, holds, failed diagnostics, reload, privacy, and the separate preview/create/start clicks. No live BB thread, remote host deployment, paid request, account handoff, or end-to-end install-to-completion walkthrough was exercised. The existing conversation timer was not changed.
 
+## Keep going from the New thread screen
+
+Unreleased source, tested only with BB's SDK test hosts and stand-ins. It has not been run in a real BB, so nothing below is live-verified. It uses BB plugin APIs that BB marks experimental (`composer.submit`'s `experimental_data`, `bb.experimental_hooks` and its `experimental_submission`); they can change between BB versions.
+
+The New thread composer gets a **Keep going** switch in its action row, and a **Keep going…** row in the menu beside Send for the compact layout, where BB draws no action row. Turning it on shows a banner that says what will happen and holds one button, **Send and keep going**. That button is the send that asks for supervision. A plain Enter sends the message without supervision and turns the switch off; the new thread then shows the ordinary **Supervise this thread** offer.
+
+What happens after **Send and keep going**:
+
+1. The plugin asks its server for a single-use request (valid for two minutes, one per draft) and sends the message through BB's own composer with that request attached. BB creates the thread and delivers the message as usual.
+2. BB hands the request back to the plugin's `message.dispatch` hook together with the thread it created. That is the only link the plugin accepts. It never guesses from project, time or text. If the request is unknown, expired, already used, or does not describe a person's first message on a thread created after the button was pressed, nothing is created, and the thread says so.
+3. Setup waits until the thread's first turn has started, which is what shows that BB delivered the message, and until its environment and host are ready. Then the plugin runs the same setup as **Supervise this thread**: preview, then create. The first message is the task, recorded as the loop's goal and passed on stdin. Later wakes point the agent at that saved task (`task.md`); the first message is not sent again.
+4. Supervision starts, once, when setup's own diagnostics allow it. Pressing **Send and keep going** is the consent to that start. The thread's banner or card then shows `looptender: keeping this going`, the loop's limit, and **Pause** and **Stop**. A start is reported only when the start command confirmed it.
+
+If anything about the start is uncertain, the setup is left switched off and the thread shows `looptender: ready, not started`, the reason, and one button, **Start keeping this going**. That covers diagnostics that report an error, a start that could not be confirmed, and a hold or a responding supervisor already present. A start is never tried a second time by the plugin.
+
+**The loop's name** is the project directory's name and a short random suffix, such as `example-app-k3f9`. It is never taken from the message or from the thread's title, which BB makes from the message: a loop name reaches command arguments, plugin storage and a directory name, and task text must not. The plugin has no rename; the name is the `name` in the loop's `keepgoing.yaml`.
+
+**A loop-wide limit, always.** Every loop created this way stops for a person after 40 automatic messages, or after 24 hours without progress, which keepgoing measures as a Git change. The numbers are defined once, in `new-thread-contract.ts`, and both can be changed under **Details** in the banner before sending (1 to 1000 messages; 2, 6, 12, 24 or 72 hours). Edited limits apply to that send only. The limits the thread shows afterwards are the ones keepgoing's own setup plan reports, not the request; if that plan does not carry exactly the limits asked for, nothing is created or started.
+
+**The setting** *Keep going from the New thread screen* has two values. *Start automatically* is the default and is described above. *Review first; I start it* always creates the setup switched off and leaves the start to the button on the thread. The mode the banner showed when the button was pressed is the most that happens: if the setting has since become stricter, the stricter one applies, and a stored value the plugin cannot read is treated as review-first.
+
+**A send BB did not deliver never leads to supervision.** If BB's send fails, the control withdraws the request and says the message may not have been sent (BB may already have delivered it); a request withdrawn while setup is running stops at its next step, so nothing more is created, and a setup already created is not started. Setup does not run before the thread's first turn has started; a different message starting that turn while the thread is still pending ends the request (a follow-up after the first turn has started does not); and a request whose thread never starts expires after ten minutes, with its task text.
+
+When it cannot go ahead, it says why and does nothing else:
+
+- The keepgoing program does not run on the BB server: the switch stays off and the banner explains. This check runs on the BB server, not on the host a new thread will use; a host without keepgoing is reported on the thread, after creation.
+- This BB does not offer the dispatch hook, or refuses it: the control is unavailable with that reason. Status, Pause, Stop and **Supervise this thread** on existing threads do not depend on the hook and keep working.
+- The plugin already holds 32 setups: the switch stays off and says so. Details shows the count before that. The plugin cannot remove a setup yet (see the limits below).
+- Another loop already supervises the thread, or that could not be checked: nothing is created or started.
+- The thread does not work in a Git repository: nothing is created.
+- The message has no text, or more than 256 KiB.
+- keepgoing itself refuses, for example because another loop already supervises the thread's session: the thread shows keepgoing's reason in plain words with the other loop's name, and nothing else from the CLI. The plugin offers no way to override the refusal. keepgoing reports the refusal on stdout as `{"schemaVersion":1,"outcome":"refused","refusal":{"code":"second_loop_on_session","otherLoop":"<name>"}}` from `init --json` and `start --json` (v0.2.0 and later); an older keepgoing reports it only as text, and the plugin then shows its ordinary "could not complete" message. For `start`, the plugin passes `--json` only when the setup preview that created the loop advertised `startJson: true`, and only while the same keepgoing binary is configured; otherwise it starts the loop exactly as before. With `--json` a start counts as confirmed only when keepgoing's own report says `started`. The plugin never tries a flag to find out whether it works.
+- Creation was asked for and could not be confirmed: the thread names the loop and shows its configuration path, because a switched-off setup may exist on the host. Check it there with `keepgoing status -c <path>`; to discard it, delete its directory. It is never started and never created again automatically.
+
+Limits of this flow:
+
+- The plugin never creates, sends to, re-parents or changes a thread. BB creates the thread; the plugin only learns of it.
+- The task text is held in the plugin server's memory from the send until setup has been asked to create the loop (at most ten minutes), and is never written to plugin storage, logged, or put in subprocess arguments. Reloading the plugin in that window drops the request; the thread then shows the ordinary offer.
+- The plugin's dispatch hook runs for every message BB dispatches and always answers "proceed". It reads the text only of a message that carries its own request. It does not delay, queue or reject a send.
+- No removal of setups. The plugin keeps at most 32 references and each **Send and keep going** uses one. keepgoing has no command that removes a loop, so the plugin cannot offer one for a switched-off, never-started setup; what is needed is a CLI command that removes such a loop's private directory, and a plugin action that calls it and drops the reference. There is no supported way to free a slot by hand: the references are in the plugin's private storage, which BB does not offer for editing, deleting a loop's directory does not free its slot, and `bb plugin remove` would also delete the plugin's settings. If the slots run out, stop using **Send and keep going** and set loops up with the CLI, which has no such limit.
+- There is no keyboard shortcut for **Send and keep going**.
+- The limits and the cadence shown on the thread after creation are kept in memory; after a plugin reload the thread shows the ordinary status row and **Setup** panel instead.
+
+Not verified: the fakes do not prove that BB delivers experimental_submission for a New thread send, or that createdAt shares the server clock; every break traced fails closed, silently if BB drops experimental_data. Nothing here was run in a real BB.
+
 ## Move supervision here
 
-Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 is distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 and later are distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
 
-1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
+1. Open the destination thread’s looptender banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
 3. Click **Move and keep held**. This explicitly authorizes destination ownership takeover. The CLI preserves existing holds, goals and work accounting, adds awaiting-user, resets thread observations and fences stale configs/daemons. It does not cancel the old thread’s running turn, send work, create/re-parent a thread or change a timer.
 4. Once status verifies the held destination, the plugin updates its saved reference. Review **Setup** diagnostics. **Resume** is a separate explicit action that clears holds; it does not start a missing daemon. A Resume click from a stale view of the source thread is refused. A disabled loop uses its separate start action after holds are resolved. Never resume a completed task or a task still waiting on a person.
@@ -76,16 +129,16 @@ Verification uses SDK fake-host/host-entry tests, controller failure fixtures an
 
 BB shows thread context in one of two places. The plugin uses whichever one is showing:
 
-- **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
-- **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The keepgoing row sits in the card's lower group.
+- **The context banner above the message box.** This is the default. A `looptender: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
+- **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The looptender row sits in the card's lower group.
 
-The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup-unreleased). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
+The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
 
 Both read:
 
-- `keepgoing: enabled`: the loop is enabled and this thread is its current target. This label alone does not prove a supervisor is running.
-- `keepgoing: watching <thread or target>`: the current target is elsewhere.
-- `keepgoing: paused`, `stop requested`, `awaiting user`, `completed`, or `disabled`: the loop's control state.
+- `looptender: enabled`: the loop is enabled and this thread is its current target. This label alone does not prove a supervisor is running.
+- `looptender: watching <thread or target>`: the current target is elsewhere.
+- `looptender: paused`, `stop requested`, `awaiting user`, `completed`, or `disabled`: the loop's control state.
 
 The expanded banner and card hover show the actual target thread (or adapter for non-BB targets), whether this is that thread, declared completion even under another hold, runtime evidence source/freshness, last recorded action/outcome/target/time, and the existing note/send/fallback summary. A completion declaration is not independently verified task success. Failed and dry-run actions remain labeled; missing history and zero timestamps are unavailable, never proof that nothing was sent.
 

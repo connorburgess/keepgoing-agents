@@ -4,7 +4,7 @@ Reviewed 2026-11-12 against keepgoing main at `91f42dd` and BB 0.48.1's locally 
 
 Implementation status was refreshed at `8c3e941`: [PR #89](https://github.com/connorburgess/keepgoing-agents/pull/89) added opt-in current-goal prompt transport, and [PR #91](https://github.com/connorburgess/keepgoing-agents/pull/91) made setup task snapshots explicit. These are partial F2 progress with offline fixtures, not release or live verification. Per-send revision provenance and a unified source view remain unfinished.
 
-The aim is useful, testable improvements, not blanket feature parity. Keepgoing owns whether an existing loop continues, waits, stops or uses an authorized fallback. The agent host owns tools, chat, editor and turn execution. A timer may invoke keepgoing without making supervision decisions. Provider-internal retries must be observed to avoid duplicate work. Keepgoing must not re-parent threads, spawn one except for an opted-in handoff to a new conversation (`bb.new_thread`, unreleased source), interpret transcripts as status, or become a general planner.
+The aim is useful, testable improvements, not blanket feature parity. Keepgoing owns whether an existing loop continues, waits, stops or uses an authorized fallback. The agent host owns tools, chat, editor and turn execution. A timer may invoke keepgoing without making supervision decisions. Provider-internal retries must be observed to avoid duplicate work. Keepgoing must not re-parent threads, spawn one except for an opted-in handoff to a new conversation (`bb.new_thread`, v0.2.0), interpret transcripts as status, or become a general planner.
 
 ## What is worth learning from
 

@@ -16,6 +16,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/adapter"
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/decide"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/evidence"
 )
 
@@ -85,9 +86,10 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 }
 
 // Send implements adapter.Adapter. The prompt arrives on stdin and the mode
-// in KEEPGOING_MODE.
+// in LOOPTENDER_MODE, and in KEEPGOING_MODE for commands written before the
+// rename.
 func (a *Adapter) Send(ctx context.Context, prompt string, mode adapter.Mode) error {
-	_, code, err := a.run(ctx, a.cfg.ResumeCommand, prompt, map[string]string{"KEEPGOING_MODE": string(mode)})
+	_, code, err := a.run(ctx, a.cfg.ResumeCommand, prompt, envvar.Mode.Both(nil, string(mode)))
 	if err != nil {
 		return fmt.Errorf("resume command (exit %d): %w", code, err)
 	}

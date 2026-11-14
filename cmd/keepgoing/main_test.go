@@ -209,7 +209,7 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	if v["action"] != "wake" || !strings.Contains(f.read("thr_primary.told"), "Continue the fictional loop.") {
 		t.Fatalf("wake: %v", v)
 	}
-	if probes := f.read("probes"); strings.Count(probes, "\n") != 2 || !strings.Contains(probes, "--model claude-haiku-5-5") {
+	if probes := f.read("probes"); strings.Count(probes, "\n") != 3 || strings.Count(probes, "codex exec ") != 1 || strings.Count(probes, "codex app-server") != 1 || !strings.Contains(probes, "--model claude-haiku-5-5") {
 		t.Fatalf("scheduled probes: %q", probes)
 	}
 
@@ -385,7 +385,7 @@ esac
 	if code != 0 || !strings.Contains(out.String(), "Build and test: success") {
 		t.Errorf("ci-wait: %d %s", code, out.String())
 	}
-	t.Setenv("KEEPGOING_NET_PROBE", "true") // online: a real failure is returned at once
+	t.Setenv("LOOPTENDER_NET_PROBE", "true") // online: a real failure is returned at once
 	if code := run(context.Background(), []string{"net-retry", "--", "/bin/sh", "-c", "exit 4"}, io.Discard, io.Discard); code != 4 {
 		t.Errorf("net-retry exit = %d", code)
 	}

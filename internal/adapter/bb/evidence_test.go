@@ -43,7 +43,7 @@ func TestErrorEvidenceUnknownTokensAndLegacySummary(t *testing.T) {
 	if strings.Contains(string(b), "SECRET_") {
 		t.Fatal("cursor retained raw codes")
 	}
-	legacy := Cursor{Thread: "thr_example123", RetrySchema: 1, LastSeq: 2, Error: &errorSignal{Class: decide.ErrNetwork, WillRetry: true, RetryKnown: true}}
+	legacy := Cursor{Thread: "thr_example123", RetrySchema: summarySchema, LastSeq: 2, Error: &errorSignal{Class: decide.ErrNetwork, WillRetry: true, RetryKnown: true}}
 	b, _ = json.Marshal(legacy)
 	if err := os.WriteFile(filepath.Join(dir, "bb-cursor.json"), b, 0600); err != nil {
 		t.Fatal(err)

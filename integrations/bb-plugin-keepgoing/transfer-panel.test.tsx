@@ -82,7 +82,7 @@ test("context card keeps an in-flight move panel mounted while realtime adds the
     phase = "lost-status"; await ui.behavior.emitRealtime("changed", {});
     await ui.findByRole("alert");
     phase = "pending"; await ui.behavior.emitRealtime("changed", {});
-    await ui.findByText("keepgoing: move requires inspection");
+    await ui.findByText("looptender: move requires inspection");
     release();
     await ui.findByText("Move confirmed and held");
     await ui.findByText("Destination diagnostics refreshed");

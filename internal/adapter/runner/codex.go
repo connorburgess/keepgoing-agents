@@ -121,12 +121,13 @@ func ParseCodexEvents(stdout []byte) CodexOutcome {
 			if out.Class == decide.ErrUnknown {
 				out.Evidence = evidence.Clean(detail)
 			}
-			for _, code := range codes {
-				if cl := adapter.ClassifyCode(code); cl != decide.ErrUnknown {
-					out.Class = cl
-					out.Evidence = evidence.Clean(detail)
-					break
-				}
+			// A later event's class replaces an earlier one, as before, except
+			// that nothing replaces a refusal or restriction: in any field of
+			// any event of the turn, it outranks every other class, and a
+			// restriction outranks a refusal.
+			if cl := adapter.Classify(codes...); cl != decide.ErrUnknown && (!decide.Declined(out.Class) || cl != out.Class && adapter.Prefer(out.Class, cl) == cl) {
+				out.Class = cl
+				out.Evidence = evidence.Clean(detail)
 			}
 		}
 	}

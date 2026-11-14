@@ -99,8 +99,28 @@ func compare(t *testing.T, where string, typ reflect.Type, n, root node) {
 }
 
 func TestSchemasMatchConfigTypes(t *testing.T) {
-	kg := load(t, "../../schema/keepgoing.schema.json")
+	kg := load(t, "../../schema/looptender.schema.json")
 	compare(t, "keepgoing", reflect.TypeOf(Config{}), kg, kg)
 	fb := load(t, "../../schema/fallbacks.schema.json")
 	compare(t, "fallbacks", reflect.TypeOf(Fallbacks{}), fb, fb)
+	rt := load(t, "../../schema/routes.schema.json")
+	compare(t, "routes", reflect.TypeOf(Routes{}), rt, rt)
+}
+
+// The schema's earlier file name is kept as an alias of the current one,
+// so editor settings that name it keep working. The alias has no $id: its
+// reference is resolved beside wherever the file was read, never at an
+// address of its own. The other schemas keep their $id on the current
+// repository until it moves.
+func TestTheEarlierSchemaNameIsAnAlias(t *testing.T) {
+	alias := load(t, "../../schema/keepgoing.schema.json")
+	if alias["$ref"] != "looptender.schema.json" || alias["$id"] != nil || len(alias) != 4 {
+		t.Fatalf("%v", alias)
+	}
+	for _, name := range []string{"looptender", "fallbacks", "routes"} {
+		s := load(t, "../../schema/"+name+".schema.json")
+		if want := "https://github.com/connorburgess/keepgoing-agents/schema/" + name + ".schema.json"; s["$id"] != want {
+			t.Errorf("%s: $id %v, want %s", name, s["$id"], want)
+		}
+	}
 }

@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 )
 
 // The launch page is an .html file, and the application a computer opens
@@ -78,7 +80,7 @@ var panelDesktopID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.desktop$`)
 // panelBrowser returns a function that builds the command to show a page in
 // the default web browser, or an error saying why no browser is known.
 func panelBrowser(ctx context.Context) (func(page string) []string, error) {
-	if custom := os.Getenv(panelOpenerEnv); custom != "" {
+	if custom := envvar.PanelOpener.Get(); custom != "" {
 		return func(page string) []string { return []string{custom, page} }, nil
 	}
 	switch panelPlatform {

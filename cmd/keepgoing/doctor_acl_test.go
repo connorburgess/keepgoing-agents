@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -66,8 +65,7 @@ func TestDoctorACLWorksOfflineWithoutChangingHeldState(t *testing.T) {
 	if err := control.Save(f.state, control.File{Enabled: true, Paused: true, Stop: true, Completed: true, Note: doctorPrivate}); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(f.state, control.FileName)
-	before, _ := os.ReadFile(p)
+	before := f.stateFiles(t)
 	_, r, _ := f.run(t, func(context.Context, string, []string, map[string]string, string) ([]byte, error) {
 		t.Fatal("offline ACL inspection executed a command")
 		return nil, nil
@@ -75,9 +73,8 @@ func TestDoctorACLWorksOfflineWithoutChangingHeldState(t *testing.T) {
 	for _, id := range []string{"config.permissions.acl", "state.directory.acl", "state.control.json.acl"} {
 		doctorCheckByID(t, r, id)
 	}
-	after, _ := os.ReadFile(p)
-	entries, err := os.ReadDir(f.state)
-	if string(before) != string(after) || err != nil || len(entries) != 1 {
+	after := f.stateFiles(t)
+	if !reflect.DeepEqual(before, after) {
 		t.Fatal("ACL inspection modified runtime state")
 	}
 }

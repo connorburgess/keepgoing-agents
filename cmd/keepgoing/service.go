@@ -50,7 +50,7 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 	}
 	fs := flag.NewFlagSet("service "+op, flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	cfgPath := fs.String("c", "keepgoing.yaml", "path to config")
+	cfgPath := fs.String("c", "", configFlagHelp("path to config"))
 	statePath := fs.String("state-dir", "", "remove/status: locate the recorded service even when config is broken")
 	dry := fs.Bool("dry-run", false, "preview local changes without contacting the service manager or writing files")
 	asJSON := fs.Bool("json", false, "print structured service status")
@@ -80,6 +80,9 @@ func serviceCommand(e env, args []string, h serviceHost) int {
 	if *statePath != "" {
 		dir = *statePath
 	} else {
+		if !configDefault(e, "service", fs, cfgPath) {
+			return exitUsage
+		}
 		path, err = filepath.Abs(*cfgPath)
 		if err == nil {
 			cfg, err = config.Load(path)

@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -122,10 +123,30 @@ type File struct {
 	// did, by count. It is about the request in control.json's stopLanesAt.
 	LaneStop *LaneStop `json:"laneStop,omitempty"`
 
-	ActiveTarget  string    `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
-	LastHandoffAt time.Time `json:"lastHandoffAt,omitempty"`
-	Handoffs      int       `json:"handoffs,omitempty"`
-	Degraded      bool      `json:"degraded,omitempty"`
+	ActiveTarget string `json:"activeTarget,omitempty"` // "" or "primary" means the loop's own agent
+	// ReapplyRoute: the loop was moved to ActiveTarget without its model and
+	// effort being set on the thread (its route left the configuration). The
+	// next check that acts sets them.
+	ReapplyRoute bool `json:"reapplyRoute,omitempty"`
+	// TargetSetBy says what put the loop on ActiveTarget: handoff,
+	// new_thread, switch_back, retarget, timing or configuration. Empty in
+	// state written before it existed. Usage-aware timing never moves a loop
+	// off a route a handoff chose, and switch-back never returns from a route
+	// timing chose.
+	TargetSetBy string `json:"targetSetBy,omitempty"`
+	// Timing is usage-aware timing's record: its last move, a move recorded
+	// before it was made, and a person's retarget it waits on.
+	Timing        *TimingRecord `json:"timing,omitempty"`
+	LastHandoffAt time.Time     `json:"lastHandoffAt,omitempty"`
+	Handoffs      int           `json:"handoffs,omitempty"`
+	Degraded      bool          `json:"degraded,omitempty"`
+	// RoutesUnreadable is true while a loop that follows the standard route
+	// list cannot read it, so that beginning and ending are each reported once.
+	RoutesUnreadable        bool                     `json:"routesUnreadable,omitempty"`
+	DaemonConfigUnavailable *DaemonConfigUnavailable `json:"daemonConfigUnavailable,omitempty"`
+	// RoutesDigest identifies the standard list this loop last read, so a
+	// change to it is noted once in the loop's timeline.
+	RoutesDigest string `json:"routesDigest,omitempty"`
 	// ClaimUnavailable is set while checks run without a session claim
 	// because there is no user state directory to keep claims in; its start
 	// and end are reported once each.
@@ -144,6 +165,15 @@ type File struct {
 	// briefs while the loop stays on its current fallback.
 	HandoffBriefs      map[string]BriefRecord `json:"handoffBriefs,omitempty"`
 	SwitchBackRejected int                    `json:"switchBackRejected,omitempty"`
+	// DeclineHeldTarget is the target whose restricted turn the loop was
+	// last held for. While that turn is still what the target shows, a check
+	// that runs at all means a person resumed the loop, which is their
+	// request for one more try. Cleared when a check sees that turn.
+	DeclineHeldTarget string    `json:"declineHeldTarget,omitempty"`
+	DeclineHeldAt     time.Time `json:"declineHeldAt,omitempty"`
+	// Refusals is the gauge of refused turns: how often the model or
+	// provider declined a turn, and how often a plain continue cleared it.
+	Refusals RefusalGauge `json:"refusals,omitzero"`
 	// ChildErrorsAnnounced covers the errored children the session has been
 	// told about, by hash, never by ID. A child is dropped once it has stayed
 	// out of error for min_wake_interval; the record is bounded.
@@ -162,6 +192,10 @@ type File struct {
 	// LimitWaitReport is set while a long limit wait is in progress, so its
 	// single report is not repeated by later checks or after a restart.
 	LimitWaitReport *LimitWaitReport `json:"limitWaitReport,omitempty"`
+	// LimitResetsAt is the structured reset of the provider limit the last
+	// check waited on, when it waited on one with a reset still ahead; zero
+	// otherwise. A daemon checks again at it.
+	LimitResetsAt time.Time `json:"limitResetsAt,omitempty"`
 	// LastTurnRetry is the last recovery made by retrying a failed turn.
 	LastTurnRetry *TurnRetry `json:"lastTurnRetry,omitempty"`
 	// Lanes is the record of lane recovery (bb.children.retry_errored). It
@@ -488,6 +522,16 @@ type Check struct {
 	Reason                  string `json:"reason"`
 	Outcome                 string `json:"outcome"` // succeeded, failed, or dry_run
 	DryRun                  bool   `json:"dryRun,omitempty"`
+	// ConfigUnavailable is set on a stop carried out from the last
+	// configuration a daemon read, because a file it was read from could no
+	// longer be read.
+	ConfigUnavailable *ConfigUnavailable `json:"configUnavailable,omitempty"`
+}
+
+// ConfigUnavailable says a check ran from the last configuration read, at
+// LastReadAt, because a file it was read from could no longer be read.
+type ConfigUnavailable struct {
+	LastReadAt time.Time `json:"lastReadAt"`
 }
 
 // Target returns the active target id, defaulting to primary.
@@ -503,7 +547,7 @@ func Load(stateDir string) (File, error) {
 	var f File
 	// Status readers poll this file while a daemon replaces it. Open it so a
 	// reader never makes the writer's replacement fail (Windows).
-	r, err := snapshot.Open(filepath.Join(stateDir, FileName))
+	r, err := snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return f, nil
 	}
@@ -691,7 +735,7 @@ const LaneKeyName = "lanes.key"
 // different name in every loop. It is written before it is first used.
 func LaneKey(dir string) ([]byte, error) {
 	path := filepath.Join(dir, LaneKeyName)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := snapshot.ReadRecord(path); err == nil {
 		if key, err := hex.DecodeString(strings.TrimSpace(string(b))); err == nil && len(key) == 32 {
 			return key, nil
 		}
@@ -716,9 +760,182 @@ func LaneHash(key []byte, id string) string {
 	return hex.EncodeToString(mac.Sum(nil)[:12])
 }
 
+// What put a loop on its current route, as TargetSetBy records it.
+const (
+	SetByHandoff       = "handoff"
+	SetByNewThread     = "new_thread"
+	SetBySwitchBack    = "switch_back"
+	SetByRetarget      = "retarget"
+	SetByTiming        = "timing"
+	SetByConfiguration = "configuration"
+)
+
+// TimingRecord is usage-aware timing's state.
+type TimingRecord struct {
+	// LastMove is the last step timing made. It is kept after a handoff, so
+	// timing does not step up twice for one window instance.
+	LastMove *TimingMove `json:"lastMove,omitempty"`
+	// LastUp is the last step up, kept apart from LastMove so a step back in
+	// between does not allow a second step up for one window instance.
+	LastUp *TimingMove `json:"lastUp,omitempty"`
+	// Pending is a step recorded before the thread was changed and not yet
+	// settled. The next check makes the thread match ActiveTarget again.
+	Pending *TimingMove `json:"pending,omitempty"`
+	// Retarget is a person's retarget timing waits on, until ResetsAt.
+	Retarget *TimingRetarget `json:"retarget,omitempty"`
+	// Failures counts failed activations of FailedTo (FailedAction up, down
+	// or back) for the window instance resetting at FailedResetsAt. Only a
+	// step up is capped: Capped is set once its failures reach the cap. A
+	// return or a step down is tried at every turn boundary; FailReported is
+	// set once its first failure was reported.
+	Failures       int       `json:"failures,omitempty"`
+	FailedTo       string    `json:"failedTo,omitempty"`
+	FailedAction   string    `json:"failedAction,omitempty"`
+	FailedWindow   string    `json:"failedWindow,omitempty"`
+	FailedResetsAt time.Time `json:"failedResetsAt,omitempty"`
+	Capped         bool      `json:"capped,omitempty"`
+	FailReported   bool      `json:"failReported,omitempty"`
+	// GaveUp is the step up timing stopped trying, kept until its window
+	// instance resets, whatever moves are made in between.
+	GaveUp *TimingMove `json:"gaveUp,omitempty"`
+}
+
+// TimingMove is one step: from and to route IDs, up, down or back, the
+// rule and reason that decided it, and the window instance it was for.
+type TimingMove struct {
+	At       time.Time `json:"at"`
+	From     string    `json:"from"`
+	To       string    `json:"to"`
+	Action   string    `json:"action"`
+	Rule     string    `json:"rule"`
+	Reason   string    `json:"reason"`
+	Window   string    `json:"window,omitempty"`
+	ResetsAt time.Time `json:"resetsAt,omitempty"`
+	Text     string    `json:"text,omitempty"`
+}
+
+// TimingRetarget is a person's retarget: when, and the reset of the named
+// window current then, if known.
+type TimingRetarget struct {
+	At       time.Time  `json:"at"`
+	ResetsAt *time.Time `json:"resetsAt,omitempty"`
+}
+
 // StartRefused is a standing refusal to start turns. Reason is one of the
 // adapter's fixed texts, never agent output.
 type StartRefused struct {
 	Since  time.Time `json:"since"`
 	Reason string    `json:"reason"`
+}
+
+// RefusalGauge counts refused turns of a loop's session. Counts and times
+// only: no text, no thread or turn identity.
+type RefusalGauge struct {
+	// Total and Recovered count every refused turn, and every one after which
+	// a continue was followed by a turn that ended without a refusal.
+	Total     int `json:"total,omitempty"`
+	Recovered int `json:"recovered,omitempty"`
+	// Streak counts consecutive refused turns, the current one included;
+	// LongestStreak is the longest there has been. LastAt is when the latest
+	// refused turn was first seen.
+	Streak        int       `json:"streak,omitempty"`
+	StreakSince   time.Time `json:"streakSince,omitzero"`
+	LongestStreak int       `json:"longestStreak,omitempty"`
+	LastAt        time.Time `json:"lastAt,omitzero"`
+	// Seen: the refused turn the session shows now has been counted.
+	// Continued: a continue was sent for the latest refusal, and its outcome
+	// has not been seen yet.
+	Seen      bool `json:"seen,omitempty"`
+	Continued bool `json:"continued,omitempty"`
+	// Asked: the streak raised a question for a person. A check that runs
+	// afterwards means the hold has ended, and the streak starts over.
+	Asked bool `json:"asked,omitempty"`
+	// Recent and RecentRecovered are the times of refusals and recoveries in
+	// the last day, for the 24-hour figures.
+	Recent          []time.Time `json:"recent,omitempty"`
+	RecentRecovered []time.Time `json:"recentRecovered,omitempty"`
+	// FallbackSeq and FallbackTarget are the latest model fallback after a
+	// refusal the target's log showed, so each is noted in the timeline once.
+	FallbackSeq    int64  `json:"fallbackSeq,omitempty"`
+	FallbackTarget string `json:"fallbackTarget,omitempty"`
+	// Target is the target the streak belongs to: a move to another target
+	// ends it without counting a recovery.
+	Target string `json:"target,omitempty"`
+	// TurnKey is a hash of the latest counted refused turn's name, where the
+	// adapter names its turns, so a turn is counted once however many checks
+	// see it. Adapters that do not name turns use Seen.
+	TurnKey string `json:"turnKey,omitempty"`
+	// LastContinueAt is when a continue for the latest refusal was last
+	// attempted, whatever it returned. The spacing runs from it too, so a
+	// failed continue is not repeated on every check.
+	LastContinueAt time.Time `json:"lastContinueAt,omitzero"`
+}
+
+// RefusalWindow is how far back the recent figures reach, and maxRecent how
+// many times each list keeps.
+const (
+	RefusalWindow = 24 * time.Hour
+	maxRecent     = 500
+)
+
+func keepRecent(times []time.Time, now time.Time) []time.Time {
+	out := times[:0:0]
+	for _, t := range times {
+		if now.Sub(t) < RefusalWindow && !t.After(now.Add(time.Minute)) {
+			out = append(out, t)
+		}
+	}
+	if len(out) > maxRecent {
+		out = out[len(out)-maxRecent:]
+	}
+	return out
+}
+
+// Refused counts a newly seen refused turn and returns the streak.
+func (g *RefusalGauge) Refused(now time.Time) int {
+	g.Total++
+	g.Streak++
+	if g.Streak == 1 {
+		g.StreakSince = now
+	}
+	g.LongestStreak = max(g.LongestStreak, g.Streak)
+	g.LastAt, g.Seen, g.Continued = now, true, false
+	g.Recent = keepRecent(append(slices.Clone(g.Recent), now), now)
+	g.RecentRecovered = keepRecent(g.RecentRecovered, now)
+	return g.Streak
+}
+
+// Ended ends a streak because a turn ended without a refusal. It returns
+// true when that turn followed a continue for a refusal: a recovery.
+func (g *RefusalGauge) Ended(now time.Time, finished bool) bool {
+	recovered := finished && g.Continued
+	if recovered {
+		g.Recovered++
+		g.RecentRecovered = keepRecent(append(slices.Clone(g.RecentRecovered), now), now)
+	}
+	g.Streak, g.StreakSince, g.Seen, g.Continued = 0, time.Time{}, false, false
+	return recovered
+}
+
+// Since is how long ago the latest refusal was first seen or a continue for
+// it was last attempted, whichever is later.
+func (g RefusalGauge) Since(now time.Time) time.Duration {
+	ref := g.LastAt
+	if g.LastContinueAt.After(ref) {
+		ref = g.LastContinueAt
+	}
+	return now.Sub(ref)
+}
+
+// InLastDay returns the refusals and recoveries of the last 24 hours.
+func (g RefusalGauge) InLastDay(now time.Time) (refused, recovered int) {
+	return len(keepRecent(g.Recent, now)), len(keepRecent(g.RecentRecovered, now))
+}
+
+// DaemonConfigUnavailable is one episode in which a running daemon lost a
+// configuration source. ReportAttempted is saved before a single delivery.
+// Only a successful reload clears it; no configuration contents are kept.
+type DaemonConfigUnavailable struct {
+	Since           time.Time `json:"since"`
+	ReportAttempted bool      `json:"reportAttempted"`
 }

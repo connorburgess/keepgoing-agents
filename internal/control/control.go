@@ -55,7 +55,10 @@ type File struct {
 	// task was declared complete, with its note. Completion ends the hold,
 	// but what a person was being asked is kept until a resume.
 	OpenQuestion *OpenQuestion `json:"openQuestion,omitempty"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
+	// Question is the one open question the loop holds for until a person
+	// answers it. See question.go.
+	Question  *Question `json:"question,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Brief is a brief to another conversation: Action is handoff or
@@ -99,7 +102,7 @@ func Load(stateDir string) (File, error) {
 // opened file remains the old snapshot after replacement; in-place external
 // writes are not isolated. Missing files return an error (unlike Load).
 func OpenSnapshot(stateDir string) (*os.File, error) {
-	return snapshot.Open(filepath.Join(stateDir, FileName))
+	return snapshot.OpenRecord(filepath.Join(stateDir, FileName))
 }
 
 // Save writes the control file atomically.
@@ -162,10 +165,14 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 		return File{}, err
 	}
 	defer l.Release()
-	if err := CheckControlPath(stateDir); err != nil {
+	missing, err := checkControlPath(stateDir)
+	if err != nil {
 		return File{}, err
 	}
-	f, err := Load(stateDir)
+	var f File
+	if !missing {
+		f, err = Load(stateDir)
+	}
 	if err != nil {
 		return f, err
 	}
@@ -178,17 +185,22 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	_, err := checkControlPath(stateDir)
+	return err
+}
+
+func checkControlPath(stateDir string) (bool, error) {
+	info, err := snapshot.LstatRecord(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("control.json must not be a symlink; use the original state directory")
+		return false, errors.New("control.json must not be a symlink; use the original state directory")
 	}
-	return nil
+	return false, nil
 }
 
 // writeAtomic syncs before publishing, as the send ledger does: a hold must not
