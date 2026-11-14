@@ -32,9 +32,16 @@ type ErrorClass string
 
 // Error classes.
 const (
-	ErrNone       ErrorClass = "none"
-	ErrRateLimit  ErrorClass = "rate_limit"
-	ErrAuth       ErrorClass = "auth"
+	ErrNone      ErrorClass = "none"
+	ErrRateLimit ErrorClass = "rate_limit"
+	ErrAuth      ErrorClass = "auth"
+	// ErrRestricted is a provider denying permission for the request or the
+	// account: forbidden, permission denied, an organisation not allowed.
+	// ErrRefused is the model or the provider declining the turn itself: a
+	// refusal, a policy block. Neither is a limit. Both hold for a person
+	// and can never cause a move to another route.
+	ErrRestricted ErrorClass = "restricted"
+	ErrRefused    ErrorClass = "refused"
 	ErrOverloaded ErrorClass = "overloaded"
 	ErrNetwork    ErrorClass = "network"
 	ErrUnknown    ErrorClass = "unknown"
@@ -43,7 +50,16 @@ const (
 // Observation is what an adapter saw.
 type Observation struct {
 	// Evidence is diagnostic metadata and never changes Decide policy.
-	Evidence   evidence.Detail
+	Evidence evidence.Detail
+	// ModelFallback is the position, in the session's own log, of the latest
+	// record that the provider fell back to another model after a refusal; 0
+	// when there is none. It is diagnostic: the supervisor notes a new one in
+	// the timeline, and it never changes Decide policy.
+	ModelFallback int64
+	// ErrorTurn names the turn an error ended, when the adapter can tell; a
+	// new turn has a new name. It counts a refused turn once however many
+	// checks see it, and never changes any other rule.
+	ErrorTurn  string
 	State      State
 	ErrorClass ErrorClass
 	// Turn is what the adapter knows of the running turn, from structured
@@ -144,6 +160,19 @@ type Input struct {
 	// the primary's limit has had time to reset. The tick still confirms the
 	// primary with an exact probe before moving.
 	SwitchBackReady bool
+	// DeclineAcknowledged: the loop was held because this session's turn was
+	// restricted, and a person has since resumed it.
+	DeclineAcknowledged bool
+	// RefusalStreak counts consecutive refused turns of this session,
+	// including the current one; above 0, a refusal on this route is
+	// unrecovered and nothing moves the work. SinceRefusal is the time since
+	// the current refusal was first seen or a continue for it was last
+	// attempted, whichever is later.
+	RefusalStreak int
+	SinceRefusal  time.Duration
+	// RefusalAskAfter is the streak at which a person is asked instead; 0
+	// never asks.
+	RefusalAskAfter int
 
 	// UnannouncedErroredChildren counts errored children the session has not
 	// been told about. Children it was told about that are still in error do
@@ -220,6 +249,9 @@ const (
 	WaitResetSoon        LimitWait = "limit_wait"              // the reset is within wait_if_reset_within
 	WaitNoFallback       LimitWait = "limit_no_fallback"       // failover is eligible but no fallback is confirmed
 	WaitFailoverDisabled LimitWait = "limit_failover_disabled" // the error class is not configured to fail over
+	// WaitRefusalUnrecovered: a refusal on this route has not been followed
+	// by a turn that ended without one, so nothing may move the work.
+	WaitRefusalUnrecovered LimitWait = "limit_refusal_unrecovered"
 )
 
 // TurnActivity is what an adapter knows of an active session's current
@@ -509,6 +541,40 @@ func addSat(a, b time.Duration) time.Duration {
 	return a + b
 }
 
+// Declined reports whether an error class is a provider's or a model's
+// decision about the request, as opposed to a limit or a fault.
+func Declined(c ErrorClass) bool { return c == ErrRestricted || c == ErrRefused }
+
+// The fixed reasons for a session whose error is such a decision. They never
+// carry provider text.
+const (
+	RestrictedReason = "provider denied permission for this request or account; not a limit, so no handoff"
+	// RefusedContinueReason is the plain continue sent to a refused turn.
+	RefusedContinueReason = "the model or provider declined this turn; continuing in the same session"
+	// RefusalWaitReason is a check that waits before that continue.
+	RefusalWaitReason = "the model or provider declined this turn; waiting before continuing"
+	// RefusalAskReason is the hold a long streak of refusals raises.
+	RefusalAskReason = "refusal streak: how should this loop proceed?"
+	// DeclineAcknowledgedReason is the one re-prompt a person asks for by
+	// resuming a loop held for either reason.
+	DeclineAcknowledgedReason = "resumed by a person after a restriction; one re-prompt"
+)
+
+// RefusalSpacing is how long a refused turn waits before its continue: 1m
+// for the first refusal of a streak, 2m for the second, 5m for the third,
+// then 10m. There is no cap on the number of continues.
+func RefusalSpacing(streak int) time.Duration {
+	switch {
+	case streak <= 1:
+		return time.Minute
+	case streak == 2:
+		return 2 * time.Minute
+	case streak == 3:
+		return 5 * time.Minute
+	}
+	return 10 * time.Minute
+}
+
 // decideError bounds recovery from an errored session. A handoff happens
 // only for an error class the loop is configured to fail over on, and only
 // when a confirmed fallback is available. Unknown errors never hand off.
@@ -522,6 +588,44 @@ func decideError(in Input) Decision {
 	// and a hold raised because of it would outlast the outage.
 	if in.NetworkDown {
 		return none(NetworkDownReason)
+	}
+	// Ahead of the handoff rule. A refusal is often a false flag that a plain
+	// continue in the same session clears (the owner's decision), so it is
+	// answered with one, spaced by the streak and with no per-episode cap.
+	// It never moves: no handoff, no other model, no other route. Loop-wide
+	// limits and every control still come first.
+	if o.ErrorClass == ErrRefused {
+		// After AskAfter refusals in a row with none recovered, a person
+		// decides how the loop goes on; until then it holds.
+		if in.RefusalAskAfter > 0 && in.RefusalStreak >= in.RefusalAskAfter {
+			return Decision{Action: AwaitUser, Reason: RefusalAskReason}
+		}
+		if wait := RefusalSpacing(in.RefusalStreak); in.SinceRefusal < wait {
+			return none(RefusalWaitReason)
+		}
+		return Decision{Action: Reprompt, Reason: RefusedContinueReason}
+	}
+	// A restriction is the provider denying permission for the request or
+	// the account: prompting again cannot change that, and moving would be a
+	// way around it. It holds for a person, whose resume asks for exactly
+	// one more try, outside the re-prompt cap and its backoff.
+	if o.ErrorClass == ErrRestricted {
+		if in.DeclineAcknowledged {
+			return Decision{Action: Reprompt, Reason: DeclineAcknowledgedReason}
+		}
+		return Decision{Action: AwaitUser, Reason: RestrictedReason}
+	}
+	// While a refusal on this route is unrecovered (the owner's decision),
+	// nothing moves the work for any reason: a later limit or other error
+	// would otherwise hand the declined work to another account. A limit
+	// with a reported reset is waited out; anything else gets the ordinary
+	// in-place rules. Once a turn on this route ends without a refusal, the
+	// streak ends and the normal rules return.
+	if in.RefusalStreak > 0 {
+		if f.ResetIn > 0 && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
+			return limitWait(WaitRefusalUnrecovered, "limit resets in "+f.ResetIn.Round(time.Minute).String()+"; no handoff while a refusal on this route is unrecovered")
+		}
+		f.Eligible = false
 	}
 	if f.Eligible && o.ErrorClass != ErrUnknown && o.ErrorClass != ErrNone && o.ErrorClass != "" {
 		if f.ResetIn > 0 && f.ResetIn <= f.WaitIfResetWithin {
@@ -605,8 +709,8 @@ const (
 // RecoverBy chooses the method for a re-prompt decision. A turn retry is used
 // only for a session in error whose class a retry can plausibly fix: network,
 // overloaded or unknown. A rate limit is not cured by running the same turn
-// again and an auth error needs a person, so those keep the existing prompt
-// path (auth is held before it gets here). Anything that is not a re-prompt
+// again and an auth error or a restriction needs a person, so those keep the
+// existing prompt path (both are held before they get here). Anything that is not a re-prompt
 // of an errored session on a provider that can retry is a prompt.
 func RecoverBy(d Decision, obs Observation, canRetryTurn bool) Recovery {
 	if d.Action != Reprompt || !canRetryTurn || obs.State != Error {

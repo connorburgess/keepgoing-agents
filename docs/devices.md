@@ -40,7 +40,7 @@ Nine rules hold the model together. The threat model below names them by number.
 5. **Bounds carry over and never reset.** Limits already used cross with the loop; a loop that arrives is bounded even if the origin's bounds were missing.
 6. **Each device's stop is local.** Anything remote may add a hold. Nothing remote may clear a hold set on the device.
 7. **A relay carries and cannot read.** A device in the relay role holds no logins, runs no agents and owns no loops, and its key signs nothing that another device acts on. A request from an agent to its provider goes directly from the device that holds the login, never through a relay.
-8. **A refusal or restriction never causes a hop.** It holds for a person, on the device where it happened.
+8. **A refusal or restriction never causes a hop.** It stays on the device where it happened: a restriction holds for a person there, and a refused turn is continued in the same session there until a long streak asks a person.
 9. **Enrolled by a person, by name, and recorded.** A device joins the fleet, in whatever role, only by a person's action on the machine itself. Every enrollment, offer, take and revocation is recorded.
 
 ## Four questions, answered plainly
