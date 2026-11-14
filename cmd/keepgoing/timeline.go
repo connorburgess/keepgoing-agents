@@ -651,6 +651,13 @@ func describeIncident(r incident.Record) string {
 		}
 		return fmt.Sprintf("session reset %s: a target's saved session was forgotten on purpose, so its next turn starts a new conversation; controls %s unchanged; recorded build %s", who, timelineGate(r.ControlBefore), r.Build)
 	}
+	if r.Kind == "control" && r.ControlChange != nil && (r.ControlChange.Operation == sessionAdoptByThread || r.ControlChange.Operation == sessionAdoptByTerminal) {
+		who := "from a terminal or scheduler (no BB thread identity)"
+		if r.ControlChange.Operation == sessionAdoptByThread {
+			who = "by a BB thread (the loop's owner where it has one; identity withheld)"
+		}
+		return fmt.Sprintf("session adopted %s: a Claude Code conversation keepgoing did not start was handed to a target, and its next turn resumes it; controls %s unchanged; recorded build %s", who, timelineGate(r.ControlBefore), r.Build)
+	}
 	if r.Kind == "control" && r.ControlChange != nil {
 		text := fmt.Sprintf("control %s saved: %s -> %s; recorded build %s; this is not provider or delivery evidence", r.ControlChange.Operation, timelineGate(r.ControlBefore), timelineGate(r.ControlAfter), r.Build)
 		if r.ControlChange.OwnershipChanged {

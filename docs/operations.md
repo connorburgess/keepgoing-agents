@@ -357,6 +357,25 @@ It refuses, and changes nothing:
 
 The reset is recorded. `runs.jsonl` gets a `session_reset` event with the target, whether a session was saved, the `--note` text, and who ran it: `by` is `thread` with the BB thread ID, or `terminal` when no thread identity was present. `timeline` shows it in words (`session reset by a BB thread` or `session reset from a terminal or scheduler`) without any identity or session identifier, and keeps it among the records of who had the loop. A build older than this change shows that record's operation as `unavailable`. `--json` prints a `session_reset` object with `target`, `hadSession`, `by` and the holds still in force.
 
+### Handing a Claude Code conversation to a loop
+
+Unreleased source; fixture-tested with stand-in CLIs only.
+
+```sh
+keepgoing session adopt 00000000-0000-4000-8000-000000000000 -c /private/example-loop/keepgoing.yaml
+```
+
+Claude Code documents a handover from its IDE extension to its command line: "The extension and CLI share the same conversation history. To continue an extension conversation in the CLI, run `claude --resume`." `session adopt` hands such a conversation to a headless Claude Code loop instead: the next check resumes it with `--resume`, and the loop continues it from then on.
+
+**Close the conversation in the IDE first.** keepgoing cannot check that. Claude Code's documentation warns: "Using it in two places at once can mix up its messages."
+
+- It applies to a headless Claude Code target only (`--target NAME`; default the active one). Codex, Cursor and agents defined in configuration document no handover keepgoing supports; BB and process targets keep no session.
+- It checks only the identifier's shape (a UUID). It never reads the conversation, and whether the conversation exists is unknown until a turn resumes it.
+- It refuses, changing nothing, while a turn or a check is running, while a stop is pending, from a BB thread that does not own the loop, and when the target already continues a conversation of its own, saved or reported by its latest turn: run `keepgoing session reset` first if you mean to leave it.
+- It sends nothing and clears no hold. It is recorded like a reset: `runs.jsonl` gets a `session_adopt` event with who ran it, and `timeline` says "session adopted" without the identifier.
+
+Kiro and Devin Desktop document similar handovers to their own command lines; keepgoing does not support them.
+
 ## Situations that need a person
 
 - **The agent is waiting on a person.** A pending interaction is reported once as `await_user`, and nothing is sent until it is answered. `keepgoing await-user --note` reports at once and holds the loop until `keepgoing resume`.

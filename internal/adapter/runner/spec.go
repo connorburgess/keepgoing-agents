@@ -392,6 +392,45 @@ func (h *Headless) ResetSession() (had bool, err error) {
 	return h.dir.resetSession(st)
 }
 
+// AdoptSession saves a session that keepgoing did not start, so that the
+// next turn resumes it. It is for a person's deliberate decision only. It
+// refuses while a turn is running, and when a session is already saved (the
+// loop's own conversation is never replaced: reset it first). The latest
+// finished turn cannot overwrite the adopted session. The identifier's shape
+// is the caller's to check; nothing is read from the conversation.
+func (h *Headless) AdoptSession(id string) error {
+	st, unread, err := h.status()
+	if err != nil {
+		return err
+	}
+	if st.Phase == Running {
+		return ErrTurnRunning
+	}
+	// The loop's own conversation: saved, or reported by the latest turn
+	// and not yet saved because no check has observed it since.
+	if h.dir.Session() != "" {
+		return ErrSessionSaved
+	}
+	if st.Phase == Finished && !unread && !h.dir.sessionWasReset(st.Record) && h.spec.Read(st).Session != "" {
+		return ErrSessionSaved
+	}
+	// The same marker a reset writes: the turn that ran before stays the
+	// latest one until the next send, and must not save its own session over
+	// the adopted one.
+	if _, err := h.dir.resetSession(st); err != nil {
+		return err
+	}
+	return h.dir.SaveSession(id)
+}
+
+// ErrSessionSaved refuses to replace a saved session.
+var ErrSessionSaved = errors.New("a session is already saved for this target")
+
+// ValidClaudeSession reports whether id has the shape of a Claude Code
+// session identifier (a UUID). It says nothing about whether such a
+// conversation exists.
+func ValidClaudeSession(id string) bool { return sessionIDPattern.MatchString(id) }
+
 // ErrTurnRunning refuses a change that would pull a session out from under a
 // turn that is using it.
 var ErrTurnRunning = errors.New("a turn is running")

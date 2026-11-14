@@ -69,6 +69,8 @@ Control:
   await-user               Mark the loop as waiting for a person
   session reset            Forget a headless target's saved session, so its next turn starts
                            a new conversation on purpose (--target NAME; default the active one)
+  session adopt ID         Hand a Claude Code conversation (for example one closed in the IDE
+                           extension) to a headless Claude Code target; the next turn resumes it
   retarget <id|primary>    Point the loop at a fallback or back at the primary
                            (--discard-pending-thread: give up on an unsettled BB thread creation)
 
@@ -189,7 +191,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		exact:      fs.Bool("exact", false, "fallbacks check: probe the target model, not the cheap one"),
 		discard:    fs.Bool("discard-pending-thread", false, "retarget: give up on a BB thread creation whose outcome is unknown, after checking BB for the thread yourself"),
 		takeOver:   fs.Bool("take-over", false, "enable/daemon: explicitly transfer loop ownership; validate: preview transfer eligibility"),
-		target:     fs.String("target", "", "session reset: the target whose saved session is forgotten (default: the active target)"),
+		target:     fs.String("target", "", "session reset, session adopt: the target (default: the active target)"),
 		routine:    fs.String("routine", "", "enable/resume/tick: scheduler identity to record with the run, as source/routine[/invocation]"),
 		staleAfter: fs.Duration("stale-after", defaultStaleAfter, "status: age at which recorded history is stale"),
 	}
@@ -205,8 +207,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		e.errf("--discard-pending-thread is only supported by retarget")
 		return exitUsage
 	}
-	if *f.target != "" && cmd != "session reset" {
-		e.errf("--target is only supported by session reset")
+	if *f.target != "" && cmd != "session reset" && cmd != "session adopt" {
+		e.errf("--target is only supported by session reset and session adopt")
 		return exitUsage
 	}
 	if *f.takeOver && *f.dryRun && cmd == "daemon" {
@@ -267,6 +269,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return sessionReset(e, cfg, *f.target, *f.note, *f.asJSON)
+	case "session adopt":
+		if len(positional) != 1 {
+			e.errf("usage: keepgoing session adopt SESSION_ID [--target NAME] [-c keepgoing.yaml]")
+			return exitUsage
+		}
+		return sessionAdopt(e, cfg, *f.target, positional[0], *f.note, *f.asJSON)
 	case "retarget":
 		if len(positional) != 1 {
 			e.errf("usage: keepgoing retarget <candidate-id|primary> [--discard-pending-thread] [-c keepgoing.yaml]")

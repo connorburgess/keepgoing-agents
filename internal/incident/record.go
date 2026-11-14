@@ -176,7 +176,8 @@ func tierOf(r Record) string {
 	case "control":
 		c := r.ControlChange
 		if !sameControls(r.ControlBefore, r.ControlAfter) || (c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish" ||
-			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal")) {
+			c.Operation == "session_reset_by_thread" || c.Operation == "session_reset_by_terminal" ||
+			c.Operation == "session_adopt_by_thread" || c.Operation == "session_adopt_by_terminal")) {
 			// A session reset changes which conversation has the loop.
 			return TierKey
 		}
@@ -443,7 +444,7 @@ func clean(r Record) Record {
 			Action: "none", Cause: "other", Outcome: "control_saved"}
 		if r.ControlChange != nil {
 			c := *r.ControlChange
-			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "session_reset_by_thread", "session_reset_by_terminal")
+			c.Operation = oneOf(c.Operation, "unavailable", "enable", "disable", "pause", "resume", "stop", "complete", "await-user", "start", "daemon_takeover", "transfer_begin", "transfer_finish", "session_reset_by_thread", "session_reset_by_terminal", "session_adopt_by_thread", "session_adopt_by_terminal")
 			r.ControlChange = &c
 		}
 	} else {

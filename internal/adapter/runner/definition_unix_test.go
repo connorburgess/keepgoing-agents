@@ -485,3 +485,50 @@ func TestSessionResetStartsANewConversationOnPurpose(t *testing.T) {
 	}
 	running.Stop(ctx)
 }
+
+// A conversation keepgoing did not start is adopted: the next turn resumes
+// it, the turn that ran before cannot overwrite it, and nothing replaces a
+// conversation the loop already continues.
+func TestAdoptSessionResumesAConversationKeepgoingDidNotStart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cli := fakeCLI(t, `printf '%s\n' "$@" > "$PWD/args"; cat > /dev/null; echo '`+claudeOK+`'`)
+	c := NewClaude(config.Claude{CLI: cli, Workdir: dir}, filepath.Join(dir, "target"))
+	const adopted = "00000000-0000-4000-8000-0000000000bb"
+	if err := c.AdoptSession(adopted); err != nil {
+		t.Fatalf("never run: %v", err)
+	}
+	if err := c.Send(ctx, "go", adapter.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	waitPhase(t, c.dir, Finished)
+	if args, _ := os.ReadFile(filepath.Join(dir, "args")); !strings.Contains(string(args), "--resume\n"+adopted) {
+		t.Fatalf("the adopted conversation was not resumed: %q", args)
+	}
+	// The loop now continues a conversation: adopting would replace it,
+	// whether or not a check has saved it yet.
+	if err := c.AdoptSession("00000000-0000-4000-8000-0000000000cc"); !errors.Is(err, ErrSessionSaved) {
+		t.Fatalf("before the turn was observed: %v", err)
+	}
+	c.Observe(ctx)
+	if err := c.AdoptSession("00000000-0000-4000-8000-0000000000cc"); !errors.Is(err, ErrSessionSaved) {
+		t.Fatalf("after: %v", err)
+	}
+	// After a reset, the turn that reported the old session cannot bring it
+	// back over the adopted one.
+	if _, err := c.ResetSession(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AdoptSession(adopted); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		c.Observe(ctx)
+		if got := c.dir.Session(); got != adopted {
+			t.Fatalf("observe %d replaced the adopted session with %q", i, got)
+		}
+	}
+	if !ValidClaudeSession(adopted) || ValidClaudeSession("--resume") || ValidClaudeSession("my parser conversation") {
+		t.Fatal("ValidClaudeSession")
+	}
+}
