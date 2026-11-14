@@ -30,6 +30,10 @@ type Adapter struct {
 	// activeChildIDs is the verified active children of the last childWork
 	// call, kept beside its count for the run graph.
 	activeChildIDs []string
+	// lanes is the lane log summaries, loaded once per adapter.
+	lanes map[string]laneSummary
+	// laneKey is the secret that salts lane hashes in bb-lanes.json.
+	laneKey []byte
 	// cliPath is the absolute path of the bb executable this adapter last
 	// started: where the system found the configured command.
 	cliPath string
@@ -139,7 +143,7 @@ func (a *Adapter) Observe(ctx context.Context) (decide.Observation, error) {
 		// A fresh notice on an errored thread is still dropped at once when
 		// BB's retry plugin says it will not retry this failure. Nothing is
 		// running on an errored thread, so no later notice can revive it.
-		if obs.Retrying && obs.State == decide.Error && decide.RetryNoticeDead(a.retryService(ctx, sig.turnStartedMs)) {
+		if obs.Retrying && obs.State == decide.Error && decide.RetryNoticeDead(a.retryService(ctx, a.cfg.Thread, sig.turnStartedMs)) {
 			obs.Retrying, obs.RetryExpired, obs.RetryDeclined = false, true, true
 		}
 		if sig.ok && sig.hasError {
@@ -340,7 +344,12 @@ const retryReason = "keepgoing: recover the failed turn"
 // Any other code, delivery or shape is an error: the caller must not treat an
 // unreadable result as permission to send a prompt.
 func (a *Adapter) RetryFailedTurn(ctx context.Context) (adapter.TurnRetry, error) {
-	out, runErr := a.run(ctx, "", "thread", "retry", a.cfg.Thread, "--reason", retryReason, "--json")
+	return a.retryThread(ctx, a.cfg.Thread)
+}
+
+// retryThread runs `bb thread retry` for one thread and reads its result.
+func (a *Adapter) retryThread(ctx context.Context, thread string) (adapter.TurnRetry, error) {
+	out, runErr := a.run(ctx, "", "thread", "retry", thread, "--reason", retryReason, "--json")
 	var res struct {
 		OK       *bool  `json:"ok"`
 		Delivery string `json:"delivery"`

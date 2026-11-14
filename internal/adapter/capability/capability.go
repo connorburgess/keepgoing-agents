@@ -64,6 +64,10 @@ type Adapter struct {
 	// TurnRetrier says the adapter can ask its provider to re-run a failed
 	// turn by reference (adapter.TurnRetrier).
 	TurnRetrier bool
+	// LaneRecoverer says the adapter can inspect a lane (a direct child
+	// conversation) and ask its provider to retry that lane's failed turn by
+	// reference (adapter.LaneRecoverer).
+	LaneRecoverer bool
 	// LaneStopper says the adapter can find and stop the conversation's
 	// lanes for keepgoing stop --lanes (adapter.LaneStopper).
 	LaneStopper bool
@@ -81,8 +85,8 @@ type Behaviour struct {
 
 // Adapters in column order.
 var Adapters = []Adapter{
-	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneStopper: true, SessionEvidence: true,
-		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/wake.go"},
+	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
+		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
 			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
@@ -219,6 +223,11 @@ var Matrix = []Behaviour{
 		Cells: merge(map[string]Cell{
 			"bb": {Yes, Fixture, "Running on one live loop; a notice has not been captured there.", []Ref{t("internal/adapter/bb/children_test.go", "TestChildWorkListsErroredChildren"), d("docs/operations.md")}},
 		}, same(Cell{NA, None, "No child conversations.", nil}, headless...), same(Cell{NA, None, "No child identities are reported.", nil}, "process"))},
+	{ID: "child_recovery", Title: "Lane recovery: retry a failed child's turn", What: "Ask the provider to retry the failed turn of a lane (a direct child conversation) that was seen working and then failed with a connection, overload or unknown error.",
+		Cells: merge(map[string]Cell{
+			"bb": {Yes, Fixture, "Opt-in with `bb.children.retry_errored`, off by default. Runs `bb thread retry` on the lane, by reference and with no message, at most 5 lanes a check, 3 attempts a lane 10 minutes apart and 20 retries a failure (all configurable). To tell what failed, the typed fields of the lane's event log are read (event type, error category and codes, will-retry flag); message text is never decoded or stored. Lane recovery never messages, stops, creates or moves a lane (only an explicit `stop --lanes` stops one), leaves another loop's lane alone, and one waiting on a person, rate limited or needing a login is left alone. No live lane has been retried by keepgoing.",
+				[]Ref{t("internal/adapter/bb/lanes_test.go", "TestInspectLaneEstablishesEachFact"), t("internal/adapter/bb/lanes_test.go", "TestLaneMessageTextIsNeverDecodedOrStored"), t("internal/supervise/lanes_test.go", "TestLaneRetriesAreBoundedPerCheckPerLaneAndReportedOnce"), t("internal/supervise/lanes_test.go", "TestLanesWaitOutAnOutageOfAnyLength"), t("cmd/keepgoing/lane_recovery_test.go", "TestEndToEndFailedLaneIsRetriedByReferenceWhenOptedIn"), t("internal/scenario/outage_test.go", "TestScenarioOutage"), d("docs/operations.md#lane-recovery")}},
+		}, same(Cell{Missing, None, "No child conversations to recover.", nil}, headless...), same(Cell{Missing, None, "No child identities are reported.", nil}, "process"))},
 	{ID: "handoff_source", Title: "Handoff away from it", What: "When it is the active target and hits a configured error class, move the loop to a confirmed fallback.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "A rate-limited primary handed off on a live loop.", []Ref{d(runsLive), t(superTest, "TestHandoffToFirstCandidatePassingExactProbe")}},
@@ -325,6 +334,7 @@ var customCells = map[string]Cell{
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
 	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"child_recovery":   {Missing, None, "A defined agent reports no child conversations to recover.", nil},
 	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
 	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
 }
