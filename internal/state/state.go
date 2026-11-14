@@ -531,12 +531,16 @@ type LaneStop struct {
 	// ListingsUnread counts listings that could not be read in any of
 	// LaneStopListingTries checks; what is below them was not checked.
 	ListingsUnread int `json:"listingsUnread,omitempty"`
-	// Dequeued counts lanes that had not started (pending) or were idle,
-	// whose queued messages were deleted so that they do not start.
-	// NotStarted counts pending lanes with nothing queued to delete: BB may
-	// still run their first message, and they are to be stopped in BB.
-	Dequeued   int `json:"dequeued,omitempty"`
-	NotStarted int `json:"notStarted,omitempty"`
+	// NotStarted counts lanes that had not started (pending) or were idle
+	// with messages queued, and were left alone: QueuedKept messages are
+	// still queued in them, and BB may run them. Dequeued counts such lanes
+	// whose messages were deleted because the request asked for it
+	// (--drop-queued); QueuedDeleted counts those messages, whose text was
+	// not kept.
+	NotStarted    int `json:"notStarted,omitempty"`
+	QueuedKept    int `json:"queuedKept,omitempty"`
+	Dequeued      int `json:"dequeued,omitempty"`
+	QueuedDeleted int `json:"queuedDeleted,omitempty"`
 	// IncompleteBecause, with Outcome incomplete: "time" (the check's time
 	// ran out) or "listing" (a listing could not be read).
 	IncompleteBecause string `json:"incompleteBecause,omitempty"`

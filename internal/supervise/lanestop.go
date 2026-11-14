@@ -154,6 +154,7 @@ func (t *tick) stopLanes(a adapter.Adapter) {
 				failed(h, laneErrorClass(err))
 			case n > 0:
 				rec.Dequeued++
+				rec.QueuedDeleted += n
 				add(&rec.DequeuedLanes, h)
 			case k.Status == "pending":
 				// Nothing queued to delete, and no session to stop: BB may
@@ -247,7 +248,7 @@ walk:
 				seen[k.ID] = true
 				budget--
 				h := name(k.ID)
-				n := decide.LaneNode{Verified: k.Verified, Status: k.Status, Queued: k.Queued, StopRecorded: h != "" && t.laneStopsRecorded[h]}
+				n := decide.LaneNode{Verified: k.Verified, Status: k.Status, Queued: k.Queued, StopRecorded: h != "" && t.laneStopsRecorded[h], DropQueued: t.stopLanesDropQueued}
 				if k.Verified {
 					n.OtherLoop, n.OwnershipUnknown = t.otherLoopLane(k.ID)
 				}
@@ -275,6 +276,11 @@ walk:
 						rec.OtherLoop++
 					case decide.LaneStopIdle:
 						rec.AlreadyIdle++
+					case decide.LaneStopKeepQueued:
+						// Not touched: deleting what someone wrote needs its
+						// own consent (--drop-queued).
+						rec.NotStarted++
+						rec.QueuedKept += k.Queued
 					case decide.LaneStopStoppedEarlier:
 						rec.Stopped++
 						add(&rec.StoppedLanes, h)
@@ -472,11 +478,11 @@ func (t *tick) reportLaneStop(rec *state.LaneStop) {
 		}
 		text = fmt.Sprintf("%s: %s; lanes: %d stopped, %d already idle, %d left to another loop, %d failed, %s not checked (past %d levels or %d threads)",
 			t.loop.Name, parent, rec.Stopped, rec.AlreadyIdle, rec.OtherLoop, failed, notChecked, decide.LaneStopMaxDepth, decide.LaneStopMaxThreads)
-		if rec.Dequeued > 0 {
-			text += fmt.Sprintf("; %d not started had their queued messages deleted", rec.Dequeued)
-		}
 		if rec.NotStarted > 0 {
-			text += fmt.Sprintf("; %d not started, with nothing queued to delete: BB may still run its first message, so stop them in BB", rec.NotStarted)
+			text += fmt.Sprintf("; %d not started: %d queued message(s) kept; BB may run them", rec.NotStarted, rec.QueuedKept)
+		}
+		if rec.Dequeued > 0 {
+			text += fmt.Sprintf("; %d queued message(s) deleted from %d lane(s), as asked; their text was not kept", rec.QueuedDeleted, rec.Dequeued)
 		}
 		if len(classes) > 0 {
 			text += " [" + strings.Join(classes, ", ") + "]"
@@ -490,7 +496,7 @@ func (t *tick) reportLaneStop(rec *state.LaneStop) {
 	}
 	lanes := map[string]any{"outcome": rec.Outcome, "stopped": rec.Stopped, "alreadyIdle": rec.AlreadyIdle, "otherLoop": rec.OtherLoop,
 		"failed": rec.Failed, "notChecked": rec.NotChecked, "notCheckedAtLeast": rec.NotCheckedAtLeast,
-		"retriesCancelled": rec.RetriesCancelled, "queuedNotCancelled": rec.QueuedNotCancelled, "dequeued": rec.Dequeued, "notStarted": rec.NotStarted}
+		"retriesCancelled": rec.RetriesCancelled, "queuedNotCancelled": rec.QueuedNotCancelled, "dequeued": rec.Dequeued, "queuedDeleted": rec.QueuedDeleted, "notStarted": rec.NotStarted, "queuedKept": rec.QueuedKept}
 	lanes["listingsUnread"] = rec.ListingsUnread
 	t.report("stop", text, map[string]any{"target": t.res.Target, "parent": rec.Parent, "lanes": lanes})
 }
@@ -509,6 +515,9 @@ type LaneCount struct {
 	// Unreachable: bb could not be found from this process, configured or as
 	// the latest check recorded it. Nothing was counted.
 	Unreachable bool
+	// Queued counts the messages queued in lanes that have not started, or
+	// are idle: those a stop with --drop-queued would delete.
+	Queued int
 }
 
 // CountLanes walks the loop's lanes as a stop with --lanes would, with the
@@ -576,6 +585,9 @@ func CountLanes(ctx context.Context, cfg *config.Config, opts Options) LaneCount
 				action := decide.LaneStopFor(n)
 				if action == decide.LaneStopRunning || action == decide.LaneStopQueued {
 					out.Running++
+				}
+				if action == decide.LaneStopKeepQueued {
+					out.Queued += k.Queued
 				}
 				if decide.LaneStopDescend(action) {
 					next = append(next, k.ID)

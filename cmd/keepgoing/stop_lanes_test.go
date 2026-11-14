@@ -292,13 +292,22 @@ func TestClientReviewAndApplyStopWithLanes(t *testing.T) {
 		t.Fatalf("%d %+v %s", code, reply, errs)
 	}
 	got, _ := json.Marshal(p.Stop)
-	if string(got) != `{"lanes":2,"immediately":true,"options":[{"label":"Stop the Conversation","lanes":false},{"label":"Stop It and Its 2 Lanes","lanes":true}]}` {
+	if string(got) != `{"lanes":2,"queued":0,"immediately":true,"options":[{"label":"Stop the Conversation","lanes":false},{"label":"Stop It and Its 2 Lanes","lanes":true}]}` {
 		t.Fatalf("%s", got)
 	}
 	for _, l := range p.Lines {
 		if len(l) > clientReviewMenuCap {
 			t.Fatalf("a line the menu would cut: %q", l)
 		}
+	}
+	// The review's own stop lines are replaced in place, and the time it
+	// expires stays the last line, as the menu reads it.
+	all := strings.Join(p.Lines, "\n")
+	if strings.Contains(all, stopOnlyLine) || strings.Contains(all, stopNextCheckLine) || !strings.Contains(all, "The stop is carried out when you confirm") || !strings.Contains(all, "2 of its lanes are running now.") {
+		t.Fatalf("%s", all)
+	}
+	if last := p.Lines[len(p.Lines)-1]; !strings.HasPrefix(last, "This review expires") {
+		t.Fatalf("last line %q", last)
 	}
 	if strings.Contains(f.read("calls"), "thread stop") {
 		t.Fatal("the review stopped something")
@@ -489,6 +498,84 @@ func TestClientStopWarningsAreCodes(t *testing.T) {
 	for _, k := range []string{"stoppedLanes", "failedLanes", "dequeuedLanes", "listingTries"} {
 		if strings.Contains(out.String(), k) {
 			t.Fatalf("bookkeeping %s in %s", k, out.String())
+		}
+	}
+}
+
+// A lane that has not started, with messages queued: the review offers a
+// third option that deletes them, and only then; the stop without it keeps
+// them; with --drop-queued the lane's queue, and only the lane's, is deleted.
+func TestQueuedMessagesInLanesNeedTheirOwnOption(t *testing.T) {
+	f := laneFixture(t)
+	write(t, filepath.Join(f.bbDir, "thr_child_b.show"), `{"thread":{"id":"thr_child_b","parentThreadId":"thr_primary","status":"pending","queuedMessageCount":2}}`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_child_b.queue"), `[{"id":"qm_example1","threadId":"thr_child_b"},{"id":"qm_example2","threadId":"thr_child_b"}]`, 0o600)
+	write(t, filepath.Join(f.bbDir, "thr_primary.queue"), `[{"id":"qm_example9","threadId":"thr_primary"}]`, 0o600)
+	reg, key := laneRegistry(t, f)
+	code, reply, errs := runClientReview(t, "review", "stop", "--loop", key, "--directory", reg, "--json")
+	p := reply.Preview
+	if code != exitOK || p == nil || p.Stop == nil {
+		t.Fatalf("%d %+v %s", code, reply, errs)
+	}
+	got, _ := json.Marshal(p.Stop)
+	if string(got) != `{"lanes":2,"queued":2,"immediately":true,"options":[{"label":"Stop the Conversation","lanes":false},{"label":"Stop It and Its 2 Lanes","lanes":true},{"label":"Stop It, Its Lanes and Their 2 Queued Messages","lanes":true,"dropQueued":true}]}` {
+		t.Fatalf("%s", got)
+	}
+	if !strings.Contains(strings.Join(p.Lines, "\n"), "What was written in them is not kept anywhere.") {
+		t.Fatalf("%v", p.Lines)
+	}
+	// The option chosen is the one with the queue deleted.
+	code, reply, _ = runClientReview(t, "apply", "stop", "--loop", key, "--expect", p.Expect, "--lanes", "--drop-queued", "--immediately", "--directory", reg, "--json")
+	if code != exitOK || reply.Result == nil || !strings.Contains(reply.Result.Text, "2 queued message(s) deleted from 1 lane(s), their text not kept") {
+		t.Fatalf("%d %+v", code, reply.Result)
+	}
+	calls := f.read("calls")
+	if strings.Count(calls, "thread queue delete thr_child_b ") != 2 || strings.Contains(calls, "thread queue list thr_primary") || strings.Contains(calls, "thread queue delete thr_primary") {
+		t.Fatalf("calls:\n%s", calls)
+	}
+	// Without --drop-queued the queue is kept and counted.
+	g := laneFixture(t)
+	write(t, filepath.Join(g.bbDir, "thr_child_b.show"), `{"thread":{"id":"thr_child_b","parentThreadId":"thr_primary","status":"pending","queuedMessageCount":2}}`, 0o600)
+	code, out, _ := g.run("stop", "--lanes", "--immediately")
+	if code != exitOK || strings.Contains(g.read("calls"), "thread queue") || !strings.Contains(out, "1 not started: 2 queued message(s) kept; BB may run them") {
+		t.Fatalf("%d\n%s\n%s", code, out, g.read("calls"))
+	}
+	// --drop-queued needs --lanes, everywhere.
+	if code, _, errs := g.run("stop", "--drop-queued"); code != exitUsage || !strings.Contains(errs, "only supported with --lanes") {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if code, _, _ := runClientReview(t, "apply", "stop", "--loop", key, "--expect", p.Expect, "--drop-queued", "--directory", reg, "--json"); code != exitUsage {
+		t.Fatal(code)
+	}
+}
+
+// The page refuses a confirmation that asks to delete queued messages unless
+// its review offered that option; the request body takes dropQueued only
+// with lanes.
+func TestPanelRefusesDropQueuedNotOffered(t *testing.T) {
+	f := laneFixture(t)
+	reg, key := laneRegistry(t, f)
+	reader := &dockReader{ctx: context.Background(), directory: reg, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, query: inspectDaemon}
+	c, err := newPanelChanges(context.Background(), reg, reader, time.Now(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.prepare("session-a", key, "stop")
+	if p.Preview == nil || p.Preview.Stop == nil || len(p.Preview.Stop.Options) != 2 {
+		t.Fatalf("%+v", p.Preview)
+	}
+	if r := c.confirm("session-a", key, "stop", p.Preview.Form, holdOptions{Lanes: true, Now: true, DropQueued: true}); r.Result == nil || r.Result.Outcome != "review_again" {
+		t.Fatalf("%+v", r.Result)
+	}
+	if ctl, _ := control.Load(filepath.Join(f.dir, "state")); ctl.Stop {
+		t.Fatal("a refused confirmation saved the stop")
+	}
+	for body, ok := range map[string]bool{
+		`{"action":"stop","lanes":true,"dropQueued":true,"immediately":true}`: true,
+		`{"action":"stop","dropQueued":true}`:                                 false,
+		`{"action":"pause","lanes":true,"dropQueued":true}`:                   false,
+	} {
+		if _, got := panelReadAction(strings.NewReader(body)); got != ok {
+			t.Errorf("%s: %v", body, got)
 		}
 	}
 }

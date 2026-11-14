@@ -627,6 +627,7 @@
     var body = { action: p.action };
     if (option && p.stop) {
       if (option.lanes) body.lanes = true;
+      if (option.lanes && option.dropQueued) body.dropQueued = true;
       if (p.stop.immediately) body.immediately = true;
     }
     post("api/v1/loops/" + c.key + "/confirm", p.form, body)

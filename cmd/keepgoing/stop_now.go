@@ -134,11 +134,14 @@ func stopNow(ctx context.Context, cfg *config.Config, wait time.Duration, caller
 }
 
 // stopCmd is keepgoing stop: save the request, then with now carry it out.
-func stopCmd(e env, cfg *config.Config, note string, lanes, now bool) int {
-	code := controlCmdLanes(e, cfg, "stop", note, lanes)
+func stopCmd(e env, cfg *config.Config, note string, lanes, dropQueued, now bool) int {
+	code := controlCmdLanes(e, cfg, "stop", note, lanes, dropQueued)
 	if code != exitOK || !now {
 		if code == exitOK && lanes {
 			fmt.Fprintln(e.stdout, "the next check carries out the stop, and stops the lanes")
+			if dropQueued {
+				fmt.Fprintln(e.stdout, "it also deletes the messages queued in lanes that have not started; their text is not kept")
+			}
 		}
 		return code
 	}
@@ -222,11 +225,11 @@ func describeLaneStop(l state.LaneStop) string {
 	if l.ListingsUnread > 0 {
 		s += fmt.Sprintf("; %d listing(s) could not be read, so nothing below them was checked", l.ListingsUnread)
 	}
-	if l.Dequeued > 0 {
-		s += fmt.Sprintf("; %d not started had their queued messages deleted", l.Dequeued)
-	}
 	if l.NotStarted > 0 {
-		s += fmt.Sprintf("; %d not started with nothing queued: BB may still run their first message, so stop them in BB", l.NotStarted)
+		s += fmt.Sprintf("; %d not started: %d queued message(s) kept; BB may run them", l.NotStarted, l.QueuedKept)
+	}
+	if l.Dequeued > 0 {
+		s += fmt.Sprintf("; %d queued message(s) deleted from %d lane(s), their text not kept", l.QueuedDeleted, l.Dequeued)
 	}
 	switch {
 	case l.Outcome != "incomplete":

@@ -50,6 +50,7 @@ type clientLanes struct {
 // now; the panel and the menu leave it empty, acting as no BB thread.
 type holdOptions struct {
 	Lanes, Now   bool
+	DropQueued   bool // with Lanes: delete the messages queued in lanes that have not started
 	CallerThread string
 }
 
@@ -63,6 +64,7 @@ func clientHoldCommand(e env, args []string) int {
 	if args[0] == "stop" {
 		fs.BoolVar(&opts.Lanes, "lanes", false, "also stop the lanes: the conversations the supervised one started, and theirs")
 		fs.BoolVar(&opts.Now, "immediately", false, "carry the stop out in this command instead of leaving it to the next check")
+		fs.BoolVar(&opts.DropQueued, "drop-queued", false, "with --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -73,7 +75,7 @@ func clientHoldCommand(e env, args []string) int {
 		e.errf("client: invalid hold arguments; see client pause --help or client stop --help")
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !clientRegistrationID.MatchString(*id) {
+	if fs.NArg() != 0 || !clientRegistrationID.MatchString(*id) || (opts.DropQueued && !opts.Lanes) {
 		e.errf("client: provide a registration ID; no positional arguments")
 		return exitUsage
 	}
@@ -132,6 +134,9 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 	if operation != "stop" {
 		opts = holdOptions{}
 	}
+	if !opts.Lanes {
+		opts.DropQueued = false
+	}
 	var stopCfg *config.Config
 	r := clientHoldReport{SchemaVersion: 1, RegistrationID: id, Operation: operation, ControlSave: "not_attempted", Issues: []string{}}
 	reject := errors.New("client hold rejected")
@@ -186,7 +191,7 @@ func applyClientHoldWith(ctx context.Context, directory, id, operation, origin, 
 				f.Stop = true
 				if opts.Lanes {
 					at := time.Now().UTC()
-					f.StopLanesAt = &at
+					f.StopLanesAt, f.StopLanesDropQueued = &at, opts.DropQueued
 				}
 			}
 			r.ControlSave = "unconfirmed" // A save error/lost reply is not permission to replay.

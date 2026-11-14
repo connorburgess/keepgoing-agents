@@ -120,6 +120,7 @@ type panelChangeRequest struct {
 	Action      string `json:"action"`
 	Lanes       bool   `json:"lanes,omitempty"`
 	Immediately bool   `json:"immediately,omitempty"`
+	DropQueued  bool   `json:"dropQueued,omitempty"`
 }
 
 func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
@@ -148,15 +149,18 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 				return req, false
 			}
 			req.Action = s
-		case "lanes", "immediately":
+		case "lanes", "immediately", "dropQueued":
 			b, ok := v.(bool)
 			if !ok {
 				return req, false
 			}
-			if key == "lanes" {
+			switch key {
+			case "lanes":
 				req.Lanes = b
-			} else {
+			case "immediately":
 				req.Immediately = b
+			default:
+				req.DropQueued = b
 			}
 		default:
 			return req, false
@@ -168,7 +172,7 @@ func panelReadAction(body io.Reader) (panelChangeRequest, bool) {
 	if _, err := d.Token(); err != io.EOF {
 		return req, false
 	}
-	if req.Action != "stop" && (req.Lanes || req.Immediately) {
+	if (req.Action != "stop" && (req.Lanes || req.Immediately || req.DropQueued)) || (req.DropQueued && !req.Lanes) {
 		return req, false
 	}
 	return req, panelActions[req.Action] != ""
@@ -224,7 +228,7 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 		return
 	}
 	req, ok := panelReadAction(http.MaxBytesReader(w, r.Body, panelMaxBody))
-	if !ok || (step == "prepare" && (req.Lanes || req.Immediately)) {
+	if !ok || (step == "prepare" && (req.Lanes || req.Immediately || req.DropQueued)) {
 		http.Error(w, "refused", http.StatusBadRequest)
 		return
 	}
@@ -239,7 +243,7 @@ func (c *panelChanges) serve(w http.ResponseWriter, r *http.Request, rest, sessi
 		}
 		reply = c.prepare(session, key, action)
 	} else {
-		reply = c.confirm(session, key, action, value, holdOptions{Lanes: req.Lanes, Now: req.Immediately})
+		reply = c.confirm(session, key, action, value, holdOptions{Lanes: req.Lanes, Now: req.Immediately, DropQueued: req.DropQueued})
 	}
 	reply.SchemaVersion = 1
 	w.Header().Set("Content-Type", "application/json")

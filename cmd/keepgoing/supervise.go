@@ -934,12 +934,13 @@ func controlCaller(f control.File) string {
 }
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
-	return controlCmdLanes(e, cfg, cmd, note, false, takeOver...)
+	return controlCmdLanes(e, cfg, cmd, note, false, false, takeOver...)
 }
 
 // controlCmdLanes is controlCmd, where for stop lanes asks for the stop to
-// cover the lanes as well.
-func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes bool, takeOver ...bool) int {
+// cover the lanes as well, and dropQueued (with lanes) for the messages
+// queued in lanes that have not started to be deleted.
+func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes, dropQueued bool, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
 		acquire := lock.Acquire
 		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
@@ -972,7 +973,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes bool, ta
 			f.Paused, f.Stop, f.AwaitingUser, f.Completed = false, keep, false, false
 			f.EpisodeHold, f.OpenQuestion, f.BriefHold = false, nil, nil
 			if !f.Stop {
-				f.StopLanesAt = nil // the stop it belonged to has ended
+				f.StopLanesAt, f.StopLanesDropQueued = nil, false // the stop it belonged to has ended
 			}
 		},
 		"stop": func(f *control.File) {
@@ -981,7 +982,7 @@ func controlCmdLanes(e env, cfg *config.Config, cmd, note string, lanes bool, ta
 				// A new request each time, so asking again walks the lanes
 				// again.
 				at := time.Now().UTC()
-				f.StopLanesAt = &at
+				f.StopLanesAt, f.StopLanesDropQueued = &at, dropQueued
 			}
 		},
 		"complete": func(f *control.File) {

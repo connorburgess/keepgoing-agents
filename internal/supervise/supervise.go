@@ -236,6 +236,7 @@ type tick struct {
 	// check recorded a stop of, for this request, without saving whether it
 	// was made; laneStopReportRecorded says its report was recorded so.
 	stopLanesFor           time.Time
+	stopLanesDropQueued    bool
 	laneStopsRecorded      map[string]bool
 	laneStopReportRecorded bool
 	// parentStopped: this check stopped the supervised conversation.
@@ -559,6 +560,7 @@ func (t *tick) run() error {
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
 	if ctl.Stop && ctl.StopLanesAt != nil {
 		t.stopLanesFor = ctl.StopLanesAt.UTC()
+		t.stopLanesDropQueued = ctl.StopLanesDropQueued
 	}
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {

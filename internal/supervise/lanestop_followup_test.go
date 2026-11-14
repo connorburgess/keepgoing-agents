@@ -14,19 +14,48 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 )
 
-// 1. A lane that has not started (pending) has no session to stop, and an
-// idle lane with a message queued would start it: their queued messages are
-// deleted, each recorded first. A pending lane with nothing queued is
-// counted as not started, to be stopped in BB.
-func TestNotStartedLanesHaveTheirQueuesDeleted(t *testing.T) {
-	w := newLaneStopWorld(t)
+// notStartedLanes plants lanes that have not started or are idle with
+// messages queued, beside one that is working.
+func notStartedLanes(w *laneStopWorld) {
 	w.tree.add(laneRoot, "thr_lane_p", "pending", 1)
 	w.tree.queued["thr_lane_p"] = 1
 	w.tree.add(laneRoot, "thr_lane_q", "pending", 0)
 	w.tree.add(laneRoot, "thr_lane_i", "idle", 2)
 	w.tree.queued["thr_lane_i"] = 2
 	w.tree.add(laneRoot, "thr_lane_a", "active", 0)
+	w.tree.queued[laneRoot] = 5 // the supervised thread's own queue
+}
+
+// 1. By default a stop with lanes does not touch a lane that has not started
+// or is idle with messages queued: deleting what someone wrote needs its own
+// consent. The report counts them and the messages kept.
+func TestNotStartedLanesAreLeftAloneByDefault(t *testing.T) {
+	w := newLaneStopWorld(t)
+	notStartedLanes(w)
 	w.askStop(t, true, t0)
+	res := w.tick(t, t0.Add(time.Minute))
+	if len(w.tree.dequeued) != 0 || strings.Join(w.tree.laneStops, ",") != "thr_lane_a" {
+		t.Fatalf("dequeued %v, stopped %v", w.tree.dequeued, w.tree.laneStops)
+	}
+	if l := res.LaneStop; l.NotStarted != 3 || l.QueuedKept != 3 || l.Dequeued != 0 || l.QueuedDeleted != 0 || l.Stopped != 1 {
+		t.Fatalf("%+v", l)
+	}
+	if r := w.stopReports(); len(r) != 1 || !strings.Contains(r[0].Text, "3 not started: 3 queued message(s) kept; BB may run them") || strings.Contains(r[0].Text, "deleted") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// With --drop-queued the messages queued in those lanes are deleted, each
+// lane recorded first, never the supervised thread's own queue, and the
+// report says how many were deleted from how many lanes and that their text
+// was not kept.
+func TestDropQueuedDeletesOnlyTheLanesQueues(t *testing.T) {
+	w := newLaneStopWorld(t)
+	notStartedLanes(w)
+	at := t0.UTC()
+	if _, err := control.Update(w.dir, func(f *control.File) { f.Stop, f.StopLanesAt, f.StopLanesDropQueued = true, &at, true }); err != nil {
+		t.Fatal(err)
+	}
 	recorded := 0
 	laneStopHook = func(id string) {
 		key, _ := state.LaneKey(w.dir)
@@ -44,15 +73,18 @@ func TestNotStartedLanesHaveTheirQueuesDeleted(t *testing.T) {
 	if got := strings.Join(w.tree.dequeued, ","); got != "thr_lane_p,thr_lane_q,thr_lane_i" {
 		t.Fatalf("dequeued %s", got)
 	}
-	if got := strings.Join(w.tree.laneStops, ","); got != "thr_lane_a" || recorded != 4 {
-		t.Fatalf("stopped %s, %d recorded", got, recorded)
+	for _, id := range w.tree.dequeued {
+		if id == laneRoot {
+			t.Fatal("the supervised thread's own queue was touched")
+		}
 	}
-	l := res.LaneStop
-	if l.Dequeued != 2 || l.NotStarted != 1 || l.Stopped != 1 || l.AlreadyIdle != 0 {
+	if w.tree.queued[laneRoot] != 5 || recorded != 4 {
+		t.Fatalf("root queue %d, %d recorded", w.tree.queued[laneRoot], recorded)
+	}
+	if l := res.LaneStop; l.Dequeued != 2 || l.QueuedDeleted != 3 || l.NotStarted != 1 || l.Stopped != 1 {
 		t.Fatalf("%+v", l)
 	}
-	r := w.stopReports()
-	if len(r) != 1 || !strings.Contains(r[0].Text, "2 not started had their queued messages deleted") || !strings.Contains(r[0].Text, "1 not started, with nothing queued to delete: BB may still run its first message, so stop them in BB") {
+	if r := w.stopReports(); len(r) != 1 || !strings.Contains(r[0].Text, "3 queued message(s) deleted from 2 lane(s), as asked; their text was not kept") {
 		t.Fatalf("%+v", r)
 	}
 }

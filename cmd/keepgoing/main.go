@@ -201,6 +201,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		allowShare:  fs.Bool("allow-second-loop", false, "enable: turn this loop on even though another enabled loop supervises the same session"),
 		lanes:       fs.Bool("lanes", false, "stop: also stop the lanes, the conversations the supervised one started and theirs"),
 		immediately: fs.Bool("immediately", false, "stop: carry the stop out in this command instead of leaving it to the next check"),
+		dropQueued:  fs.Bool("drop-queued", false, "stop --lanes: also delete the messages queued in lanes that have not started or are idle; their text is not kept"),
 	}
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
@@ -210,8 +211,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		e.errf("--take-over is only supported by enable, daemon, and validate")
 		return exitUsage
 	}
-	if (*f.lanes || *f.immediately) && cmd != "stop" {
-		e.errf("--lanes and --immediately are only supported by stop")
+	if (*f.lanes || *f.immediately || *f.dropQueued) && cmd != "stop" {
+		e.errf("--lanes, --immediately and --drop-queued are only supported by stop")
+		return exitUsage
+	}
+	if *f.dropQueued && !*f.lanes {
+		e.errf("--drop-queued is only supported with --lanes")
 		return exitUsage
 	}
 	if *f.keepStop && cmd != "resume" {
@@ -288,7 +293,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	case "stop":
-		return stopCmd(e, cfg, *f.note, *f.lanes, *f.immediately)
+		return stopCmd(e, cfg, *f.note, *f.lanes, *f.dropQueued, *f.immediately)
 	case "disable", "pause", "resume", "await-user", "complete":
 		return controlCmd(e, cfg, cmd, *f.note, *f.takeOver, *f.keepStop)
 	case "retarget":
@@ -317,7 +322,7 @@ type cliFlags struct {
 	cfgPath, now, note, id, routine *string
 	asJSON, dryRun, exact, takeOver *bool
 	discard, allowShare, keepStop   *bool
-	lanes, immediately              *bool
+	lanes, immediately, dropQueued  *bool
 }
 
 // splitPositional lets a positional argument come before the flags, as in

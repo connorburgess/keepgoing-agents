@@ -96,7 +96,7 @@ type clientReviewPreview struct {
 }
 
 const (
-	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes] [--immediately] [--directory private-registry] [--json]"
+	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes [--drop-queued]] [--immediately] [--directory private-registry] [--json]"
 	clientReviewExpired = "This review expired. Nothing was changed. Review it again."
 	clientReviewOther   = "This review is for another loop or another change. Nothing was changed. Review it again."
 	clientReviewOwned   = "This loop is supervised for another conversation, so it can be resumed only from that conversation or from outside BB. Nothing was changed."
@@ -112,6 +112,7 @@ func clientReviewCommand(e env, args []string) int {
 	asJSON := fs.Bool("json", false, "print JSON")
 	lanes := fs.Bool("lanes", false, "apply stop: also stop the lanes")
 	immediately := fs.Bool("immediately", false, "apply stop: carry the stop out in this command")
+	dropQueued := fs.Bool("drop-queued", false, "apply stop, with --lanes: also delete the messages queued in lanes that have not started; their text is not kept")
 	help := func() int {
 		fmt.Fprintln(e.stdout, clientReviewUsage)
 		fs.SetOutput(e.stdout)
@@ -134,7 +135,7 @@ func clientReviewCommand(e env, args []string) int {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || (command == "review" && *expect != "") || (command == "apply" && !clientExpectPattern.MatchString(*expect)) ||
-		((*lanes || *immediately) && (command != "apply" || action != "stop")) {
+		((*lanes || *immediately || *dropQueued) && (command != "apply" || action != "stop")) || (*dropQueued && !*lanes) {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
@@ -148,7 +149,7 @@ func clientReviewCommand(e env, args []string) int {
 	if command == "review" {
 		reply, code = clientReview(e.ctx, *directory, *key, action, now, time.Local)
 	} else {
-		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now, holdOptions{Lanes: *lanes, Now: *immediately})
+		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now, holdOptions{Lanes: *lanes, Now: *immediately, DropQueued: *dropQueued})
 	}
 	reply.SchemaVersion = 1
 	if *asJSON {
@@ -168,9 +169,15 @@ func clientReviewCommand(e env, args []string) int {
 		}
 		if p.Stop != nil {
 			for _, o := range p.Stop.Options {
-				flags := " --immediately"
+				flags := ""
 				if o.Lanes {
-					flags = " --lanes --immediately"
+					flags += " --lanes"
+				}
+				if o.DropQueued {
+					flags += " --drop-queued"
+				}
+				if p.Stop.Immediately {
+					flags += " --immediately"
 				}
 				fmt.Fprintf(e.stdout, "%s: keepgoing client apply %s --loop %s --expect %s%s%s\n", o.Label, p.Action, p.Key, p.Expect, flags, dir)
 			}

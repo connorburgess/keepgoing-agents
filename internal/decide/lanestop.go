@@ -24,9 +24,10 @@ type LaneNode struct {
 	// stopping, or anything else this build does not know. active and
 	// starting have a session running or starting, and are stopped. pending
 	// has no session yet: no message has cleared dispatch, and `bb thread
-	// stop` has no transition from it, so its queued messages are deleted
-	// instead. (Child discovery counts neither starting nor pending as active
-	// work; the supervised thread's own stop does stop a pending one.)
+	// stop` has no transition from it. It is left alone, its queued messages
+	// kept, unless the request explicitly asks for them to be deleted
+	// (DropQueued). (Child discovery counts neither starting nor pending as
+	// active work; the supervised thread's own stop does stop a pending one.)
 	Status string
 	// Queued counts messages waiting to run in the thread. For a thread in
 	// error that is a retry waiting its turn: BB's provider retry, or one
@@ -39,6 +40,10 @@ type LaneNode struct {
 	// established (its session record could not be read). Nothing is done
 	// to it or below it.
 	OwnershipUnknown bool
+	// DropQueued: the request explicitly asks for the messages queued in
+	// lanes that have not started, or are idle, to be deleted. Their text is
+	// not kept, so this is never implied by a stop with lanes.
+	DropQueued bool
 	// StopRecorded: an earlier check recorded a stop of this thread and
 	// could not save whether it was made.
 	StopRecorded bool
@@ -54,9 +59,14 @@ const (
 	// provider's retry where the provider can, then stop it.
 	LaneStopQueued LaneStopAction = "stop_queued"
 	// LaneStopDequeue: it has not started (pending), or it is idle with a
-	// message queued. Nothing runs to stop; delete what is queued, so it
-	// does not start.
+	// message queued, and the request asks for queued messages to be
+	// deleted. Nothing runs to stop; delete what is queued, so it does not
+	// start.
 	LaneStopDequeue LaneStopAction = "dequeue"
+	// LaneStopKeepQueued: the same lane, when the request does not ask for
+	// that. It is left alone, and its queued messages are kept; BB may run
+	// them.
+	LaneStopKeepQueued LaneStopAction = "not_started"
 	// LaneStopIdle: nothing is running; nothing is done to it.
 	LaneStopIdle LaneStopAction = "already_idle"
 	// LaneStopStoppedEarlier: an earlier check recorded its stop and it is no
@@ -101,6 +111,9 @@ func LaneStopFor(n LaneNode) LaneStopAction {
 		return LaneStopUnknown
 	}
 	if queued {
+		if !n.DropQueued {
+			return LaneStopKeepQueued
+		}
 		// A killed check's record does not change this: what is still
 		// queued is deleted.
 		return LaneStopDequeue
