@@ -448,7 +448,7 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	}
 	if cfg := validated[entry.ID]; cfg != nil {
 		in.Chain = &dockChainInput{Primary: cfg.Loop.PrimaryCandidate(), FailoverOn: cfg.Loop.Errors.FailoverOn, SwitchBack: cfg.Loop.SwitchBack.Enabled}
-		if fb := cfg.FallbackSet; fb != nil {
+		if fb := currentRoutes(cfg); fb != nil {
 			in.Chain.Candidates = fb.Candidates
 			if !fb.Probe.Disabled {
 				in.Chain.ProbeEvery = fb.Probe.Every.Duration
