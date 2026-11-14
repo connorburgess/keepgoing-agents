@@ -466,7 +466,7 @@ func validRecord(r Record) bool {
 	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter) || r.TargetKey == r.TargetKeyAfter) {
 		return false
 	}
-	if r.Kind == "route_change" && (r.RouteChange == nil || !keyPattern.MatchString(r.RouteChange.TargetKey)) {
+	if r.Kind == "route_change" && (r.RouteChange == nil || (!keyPattern.MatchString(r.RouteChange.TargetKey) && r.RouteChange.TargetKey != "unavailable")) {
 		return false
 	}
 	// A manual probe record holds at least one captured result.

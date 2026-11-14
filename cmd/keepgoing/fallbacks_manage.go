@@ -18,7 +18,6 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/health"
-	"github.com/connorburgess/keepgoing-agents/internal/incident"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
 	"gopkg.in/yaml.v3"
@@ -153,10 +152,8 @@ func fallbacksManage(e env, sub string, args []string, input io.Reader) int {
 		return refuse(exitUsage, errors.New("The loop's fallbacks file is a symbolic link or not a regular file.\n  Point loop.fallbacks at the real file instead."))
 	}
 	// Advisory: the same checks run again under the tick lock before writing.
-	if sub != "handoff" {
-		if ref := ownListAuthority(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID")); ref != nil {
-			return refuse(exitUsage, errors.New(ref.Text))
-		}
+	if ref := ownListAuthority(cfg.Loop.StateDir, os.Getenv("BB_THREAD_ID")); ref != nil {
+		return refuse(exitUsage, errors.New(ref.Text))
 	}
 	if code, err := fallbackAddAllowed(cfg); err != nil {
 		return refuse(code, err)
@@ -519,7 +516,7 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 	if code, err := fallbackAddAllowed(p.cfg); err != nil {
 		return code, fmt.Errorf("%w; nothing written", err)
 	}
-	listChange := p.kind == "fallback_move" || p.kind == "fallback_remove" || p.kind == "fallback_toggle"
+	listChange := p.kind == "fallback_move" || p.kind == "fallback_remove" || p.kind == "fallback_toggle" || p.kind == "fallback_handoff"
 	caller := os.Getenv("BB_THREAD_ID")
 	if listChange {
 		if ref := ownListAuthority(p.cfg.Loop.StateDir, caller); ref != nil {
@@ -560,15 +557,19 @@ func writeFallbackEdit(p *fallbackEdit) (int, error) {
 	}
 	if listChange && !p.cleanupOnly {
 		op := strings.TrimPrefix(p.kind, "fallback_")
-		if op == "toggle" {
+		switch op {
+		case "toggle":
 			op = "on"
 			if p.order[p.from-1].Disabled {
 				op = "off"
 			}
+		case "handoff":
+			op = "handoff_off"
+			if len(p.failoverOn) > 0 {
+				op = "handoff_on"
+			}
 		}
-		rec := incident.Record{Kind: "route_change", CheckStartedAt: time.Now().UTC(), Build: version,
-			RouteChange: &incident.RouteChange{Operation: op, TargetKey: incident.TargetKey(p.subject), Caller: ownListCaller(caller)}}
-		p.historyFailed = incident.Append(p.cfg.Loop.StateDir, rec) != nil
+		p.historyFailed = recordRouteChange(p.cfg.Loop.StateDir, op, p.subject, caller) != nil
 	}
 	return exitOK, nil
 }

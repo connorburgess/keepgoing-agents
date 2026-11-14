@@ -84,10 +84,11 @@ type loopRoutesView struct {
 	Skipped    []skippedRoute  `json:"skipped"`
 	Redundancy *health.Summary `json:"redundancy,omitempty"`
 	Warnings   []string        `json:"warnings"`
-	// Can lists the changes this caller may make to the loop's own list with
-	// routes --loop: move, remove, off and on. When it is empty, CanReason
-	// says why: follows_standard, no_list, not_owner, ownership_unknown or
-	// configuration_unavailable.
+	// Can lists the changes this caller may make to the loop with routes
+	// --loop: move, remove, off and on for its own list, follow_standard for
+	// a loop that could follow the standard list, and own for one that
+	// does. When it is empty, CanReason says why: no_list, not_owner,
+	// ownership_unknown or configuration_unavailable.
 	Can       []string `json:"can"`
 	CanReason string   `json:"canReason,omitempty"`
 }
@@ -130,10 +131,12 @@ func routesCommand(e env, args []string) int {
 			return routesEditCommand(e, args[0], args[1:])
 		case "check":
 			return routesCheckCommand(e, args[1:])
+		case "follow-standard", "own":
+			return routesFollowCommand(e, args[0], args[1:])
 		}
 	}
 	if len(args) == 0 || args[0] != "list" {
-		e.errf("routes needs a subcommand: list, add, move, remove, off, on or check")
+		e.errf("routes needs a subcommand: list, add, move, remove, off, on, check, follow-standard or own")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("routes list", flag.ContinueOnError)
@@ -294,14 +297,6 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 		return view
 	}
 	l := cfg.Loop
-	switch {
-	case l.FollowsStandard():
-		view.CanReason = "follows_standard"
-	case cfg.FallbackSet == nil:
-		view.CanReason = "no_list"
-	default:
-		view.Can, view.CanReason = ownListCan(l.StateDir)
-	}
 	view.Loop = l.Name
 	if cfg.RouteList.Source != "" {
 		view.List = cfg.RouteList.Source
@@ -320,6 +315,7 @@ func loopRoutes(ref routeLoopRef, now time.Time) loopRoutesView {
 	}
 	st, _ := state.Load(l.StateDir)
 	view.Current = st.Target()
+	view.Can, view.CanReason = loopCan(cfg, view.Current)
 	view.First = &loopRouteRow{ID: state.Primary, Provider: l.Provider, Model: l.Agent.Model(), Effort: agentEffort(l.Agent), Group: l.Group, Enter: "first", Source: "loop", Current: view.Current == state.Primary, Healthy: true}
 	fb, outside := supervise.EffectiveRoutes(cfg, st)
 	if fb == nil {
@@ -455,10 +451,40 @@ func followsStandardRefusal(sub string) string {
 	return "This loop follows the standard route list. Change that list instead with keepgoing routes add, move, remove, off or on."
 }
 
+// loopCan is what this caller may do to a loop with routes --loop, offering
+// only what would work now: follow_standard for a bb, claude or codex loop
+// on its first route while a standard list with routes exists, and own for
+// a following loop whose list can be read and gives it routes.
+func loopCan(cfg *config.Config, current string) ([]string, string) {
+	l := cfg.Loop
+	can, reason := ownListCan(l.StateDir)
+	if reason != "" {
+		return can, reason
+	}
+	_, written := standardRoutesWritten()
+	followable := (l.Adapter == "bb" || l.Adapter == "claude" || l.Adapter == "codex") && current == state.Primary && written
+	switch {
+	case l.FollowsStandard() && cfg.RouteList.Unreadable:
+		return []string{}, "list_unreadable"
+	case l.FollowsStandard() && cfg.FallbackSet == nil:
+		return []string{}, "no_route_applies"
+	case l.FollowsStandard():
+		return []string{"own"}, ""
+	case cfg.FallbackSet == nil && followable:
+		return []string{"follow_standard"}, ""
+	case cfg.FallbackSet == nil:
+		return []string{}, "no_list"
+	case followable:
+		return append(can, "follow_standard"), ""
+	}
+	return can, ""
+}
+
 // ownListCan is what this caller may change in a loop's own list: all of it
 // for the loop's owner, or a person outside BB, and nothing for another
-// thread, or for any thread when the loop has no recorded owner. It only
-// reads; the write checks again under the lock.
+// thread, or for any thread when the loop has no recorded owner;
+// loopRoutes narrows it by what the loop has. It only reads; the write
+// checks again under the lock.
 func ownListCan(stateDir string) ([]string, string) {
 	f, err := control.Load(stateDir)
 	if err != nil {
