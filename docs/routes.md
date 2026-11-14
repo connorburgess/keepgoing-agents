@@ -1,6 +1,6 @@
 # The standard route list
 
-**Unreleased source.** A route is a model on an account at an effort level ([glossary](glossary.md)). A loop's routes are its first route (`loop.adapter` and its block) followed by an ordered list of others. That list is either the loop's own [`fallbacks.yaml`](fallbacks.md) or, with `routes: standard`, the person's **standard route list**: one ordered list kept once per user, which every loop that follows it resolves for itself.
+**v0.2.0.** A route is a model on an account at an effort level ([glossary](glossary.md)). A loop's routes are its first route (`loop.adapter` and its block) followed by an ordered list of others. That list is either the loop's own [`fallbacks.yaml`](fallbacks.md) or, with `routes: standard`, the person's **standard route list**: one ordered list kept once per user, which every loop that follows it resolves for itself.
 
 What exists in this build: the list's file format, how a loop follows it, what happens when the list cannot be read or a route is removed while in use, and the read side (`keepgoing routes list`). The commands that edit the list, and `routes follow-standard` and `routes own`, are not built yet; until they are, the file is written by hand and a loop follows it by a one-line edit.
 

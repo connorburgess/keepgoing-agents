@@ -55,9 +55,9 @@ function useLoop(threadId: string) {
 }
 
 function label(loop: LoopView): string {
-  if (loop.controlState === "enabled" && loop.details?.schedule?.overdue) return "keepgoing: checks have stopped";
-  if (loop.controlState === "enabled") return loop.supervising ? "keepgoing: enabled" : `keepgoing: watching ${loop.details?.targetThread ?? loop.target}`;
-  return `keepgoing: ${loop.controlState}`;
+  if (loop.controlState === "enabled" && loop.details?.schedule?.overdue) return "looptender: checks have stopped";
+  if (loop.controlState === "enabled") return loop.supervising ? "looptender: enabled" : `looptender: watching ${loop.details?.targetThread ?? loop.target}`;
+  return `looptender: ${loop.controlState}`;
 }
 
 function describe(loop: LoopView): string[] {
@@ -133,9 +133,9 @@ function CardRow({ threadId }: { threadId: string }) {
   const [open, setOpen] = useState(false);
   return <div>
     {failed && <StatusWarning refresh={refresh} />}
-    {!loaded ? <ContextRow icon="Repeat" label="keepgoing: checking status" /> : !loop ? <ContextRow icon="Repeat" label="keepgoing" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
+    {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loop ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
       icon="Repeat"
-      label={failed ? "keepgoing: status unavailable (previous snapshot)" : label(loop)}
+      label={failed ? "looptender: status unavailable (previous snapshot)" : label(loop)}
       title={describe(loop).join("\n")}
       trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
       action={<>{!failed && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}{!failed && loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
@@ -149,7 +149,7 @@ function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; i
   return (
     <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
       style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {failed ? "keepgoing: status unavailable" : !loaded ? "keepgoing: checking status" : loop ? label(loop) : "Supervise this thread"}
+      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : loop ? label(loop) : "Supervise this thread"}
     </button>
   );
 }
@@ -176,7 +176,7 @@ export default definePluginApp((app) => {
   });
   app.slots.experimental_threadContextSegment({
     id: "keepgoing",
-    title: "keepgoing",
+    title: "looptender",
     group: "6_keepgoing",
     summary: BannerSummary,
     details: BannerDetails,

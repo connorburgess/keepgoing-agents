@@ -2,9 +2,70 @@
 
 ## Unreleased
 
-- **New installs keep their per-user files under `looptender/`; existing installs stay where they are.** The second step of the rename. The loop registry, the standard route list and `init`'s default home for a new loop (under the user configuration directory), and the session claims and the panel's runtime files (under the user state directory), are in a directory named `looptender` on a computer that has never run the tool. On a computer that already has a directory named `keepgoing` under either place, that name is kept for both and nothing is moved or copied, so an existing setup and a release from before the rename keep finding every file, and every loop on the computer shares one set of session claims. A `looptender` directory does not change that: when both names exist the `keepgoing` ones are used, the `looptender` ones are not read, and `doctor` warns. `doctor` always says which name is in use (new check `user.directory`). Loops' own files, services, registry entries, `--directory`, `--panel-directory` and the environment variables are unaffected. **Going back:** on a computer using `keepgoing` directories there is nothing to do; one that started on `looptender` must rename the directories or set three variables first, as [per-user directories](docs/configuration.md#per-user-directories) says. Fixtures for the macOS, Linux and Windows layouts.
+- **The BB plugin says looptender.** keepgoing is being renamed to looptender, and the plugin (v0.3.1) is the first part to show it: BB lists it as looptender, and its labels and messages read `looptender: enabled`, `looptender: watching …`, `looptender: checks have stopped` and so on. Nothing you type changes: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting, the `keepgoing` executable and `keepgoing.yaml` keep their names, so updating keeps the plugin's settings, secrets and schedules. It still runs whichever executable the setting names. Plugin unit tests only; not yet reinstalled into a running BB.
 
-- **Environment variables are also read as `LOOPTENDER_…`.** The first step of renaming the tool to looptender. Every `KEEPGOING_X` variable now has the name `LOOPTENDER_X` as well, and the earlier names keep working: nothing in an existing setup needs to change. This covers `SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`, `PANEL_OPENER`, `NET_PROBE`, `NET_PROBE_URL`, and the default report names `WEBHOOK_URL` and `WEBHOOK_SECRET` (the default `report.url_env` and `report.secret_env` are now the `LOOPTENDER_` names, read first, then the `KEEPGOING_` ones; names you configured are read as written). Resume and probe commands receive `MODE`, `PROBE_TIER`, `PROBE_MODEL` and `CANDIDATE` under both names. When both names of one variable are set to different values, the `LOOPTENDER_` one is used and `doctor` warns, except for the three that name a place (`SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`): those are refused until one is unset, because commands that each honoured one would work in different places. A check then acts on nothing (a requested stop still goes ahead), registry commands refuse, and the standard route list reads as unusable with the new reason `named_twice`. `doctor` lists the earlier names in use and never prints a value. Messages now name the `LOOPTENDER_` variables. **Going back:** v0.2.0 and earlier read only the `KEEPGOING_` names. Unit and fixture tests only; the whole-binary scenarios and the release smoke keep setting the earlier names. See [environment variables](docs/configuration.md#environment-variables).
+- **Environment variables are also read as `LOOPTENDER_…`.** The next step of renaming the tool to looptender. Every `KEEPGOING_X` variable now has the name `LOOPTENDER_X` as well, and the earlier names keep working: nothing in an existing setup needs to change. This covers `SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`, `PANEL_OPENER`, `NET_PROBE`, `NET_PROBE_URL`, and the default report names `WEBHOOK_URL` and `WEBHOOK_SECRET` (the default `report.url_env` and `report.secret_env` are now the `LOOPTENDER_` names, read first, then the `KEEPGOING_` ones; names you configured are read as written). Resume and probe commands receive `MODE`, `PROBE_TIER`, `PROBE_MODEL` and `CANDIDATE` under both names. When both names of one variable are set to different values, the `LOOPTENDER_` one is used and `doctor` warns, except for the three that name a place (`SESSION_DIR`, `REGISTRY_DIR`, `ROUTES_FILE`): those are refused until one is unset, because commands that each honoured one would work in different places. A check then acts on nothing (a requested stop still goes ahead), registry commands refuse, and the standard route list reads as unusable with the new reason `named_twice`. `doctor` lists the earlier names in use and never prints a value. Messages now name the `LOOPTENDER_` variables. **Going back:** v0.2.0 and earlier read only the `KEEPGOING_` names. Unit and fixture tests only; the whole-binary scenarios and the release smoke keep setting the earlier names. See [environment variables](docs/configuration.md#environment-variables).
+
+- **New installs keep their per-user files under `looptender/`; existing installs stay where they are.** The next step of the rename. The loop registry, the standard route list and `init`'s default home for a new loop (under the user configuration directory), and the session claims and the panel's runtime files (under the user state directory), are in a directory named `looptender` on a computer that has never run the tool. On a computer that already has a directory named `keepgoing` under either place, that name is kept for both and nothing is moved or copied, so an existing setup and a release from before the rename keep finding every file, and every loop on the computer shares one set of session claims. A `looptender` directory does not change that: when both names exist the `keepgoing` ones are used, the `looptender` ones are not read, and `doctor` warns. `doctor` always says which name is in use (new check `user.directory`). Loops' own files, services, registry entries, `--directory`, `--panel-directory` and the environment variables are unaffected. **Going back:** on a computer using `keepgoing` directories there is nothing to do; one that started on `looptender` must rename the directories or set three variables first, as [per-user directories](docs/configuration.md#per-user-directories) says. Fixtures for the macOS, Linux and Windows layouts.
+
+## 0.2.0 (2026-11-14)
+
+**The first release under the [Sustainable Use License 1.0](LICENSE).** v0.1.5 and every earlier release stay Apache-2.0 ([#179](https://github.com/connorburgess/keepgoing-agents/pull/179), [LICENSING.md](LICENSING.md)). The [release notes](docs/releases/v0.2.0.md) are the reader's version of this section, and explain why this is 0.2.0 and not 0.1.6. In short:
+- the licence changes;
+- several behaviours change on upgrade;
+- v0.1.5 cannot read the records this version writes without the steps below.
+
+The BB plugin is released from the same tag as **0.3.0**. Its loop card says when checks have stopped, and it is under the same licence.
+
+**What is new.**
+- **Recovery that does not spend into a dead network:** a connectivity check before every recovery step.
+- **BB recovery:** a failed BB turn retried by reference, and stale or declined retry notices no longer waited on.
+- **Hung turns:** a turn that hung through an outage or a sleep has its nudges held back.
+- **Stopped schedulers and children:** a stopped scheduler is noticed; failed child threads are reported; failed lanes are recovered (opt-in); `stop --lanes`.
+- **Daemon timing:** the daemon checks again within a minute of the network returning, and at a limit's reported reset.
+- **Bounds:** one loop per session; every automatic send recorded before it is made; a hard time limit per check; the no-progress flag.
+- **The panel** (`keepgoing panel`, `dock`, with controls behind `--allow-changes`) and a rebuilt macOS menu preview, both with pause all and stop all.
+- **New commands:** `keepgoing runs`; a navigable `timeline`; usage readings; a standard route list kept once per user (`routes: standard`, `keepgoing routes list`; read-only in this release).
+- **Agents and fallbacks:** agents defined in configuration (`adapter: custom`); a primary-only Cursor adapter; handoff into a new BB conversation; `fallbacks` editing commands.
+
+**Behaviour changes.**
+- keepgoing makes one outbound request of its own (`GET https://api.github.com/zen`, no identifier) before a recovery step; `loop.network` changes or turns it off.
+- Sends are recorded before they are made.
+- `resume` of a loop held on a spent cap starts a new episode.
+- Three corrections to BB retry notices.
+- `no_progress_timeout` and the stall clock skip time in which nothing could run.
+- Time windows follow the local clock across daylight-saving changes.
+- `tick` exits 0 whenever the check was recorded.
+- `enable --take-over` waits up to 5 seconds for the lock.
+- The panel's runtime files move to the user state directory.
+- Windows needs 10 version 1709 or newer.
+
+**Upgrade.**
+1. Copy each loop's state directory.
+2. Replace the executable.
+3. Restart each daemon or service.
+
+No configuration change is needed. A `client prepare-resume` ticket made before the upgrade is refused after it; prepare it again. External schedulers such as BB automations keep working; the daemon's faster re-checks apply only under `start` or a service.
+
+**Going back to v0.1.5.** A loop that ran on 0.2.0 needs these steps first, each detailed in the [release notes](docs/releases/v0.2.0.md#going-back-to-v015):
+- restore or remove `incidents.json` (schema 9);
+- move aside a `deliveries.json` that records a new event;
+- remove settings and report events v0.1.5 does not know (it reads the configuration strictly);
+- do not run it against a run graph that records a new conversation.
+
+It drops the newer fields of `state.json`, `control.json` and `bb-cursor.json`.
+
+**Evidence.** The new reliability behaviour is implemented and fixture-tested only, and the [live outage check](docs/testing.md#live-check-a-long-time-offline) has not been run. Live so far:
+- one Cursor walkthrough on macOS (first turn, exact resume, stop);
+- the earlier BB, daemon, probe and report checks listed in [integrations](docs/integrations.md).
+
+### Detail
+
+- The release smoke check (`scripts/smoke-release.py`) runs in a home of its own, so running it no longer leaves session claims in the caller's state directory (#223).
+
+- Pull-request checks refuse a change that adds git conflict markers (#224).
+
+- `docs/devices.md` revises the proposed first-version defaults for moving loops between devices. It is a design document; nothing in it is implemented (#218).
 
 - **The daemon checks again as soon as it can tell recovery is possible.** Under `keepgoing start` or a service, while the last check found the network down, the daemon makes the same connectivity check at most once a minute and starts the next check when it passes, instead of waiting out `daemon.interval`. A check that waits on a provider limit records the limit's structured reset (`limitResetsAt` in `state.json`), and the daemon runs the next check at that reset when it comes before the end of the interval. Nothing is sent from the wait. External schedulers, including BB automations, are unchanged. See [network outages](docs/operations.md#network-outages).
 

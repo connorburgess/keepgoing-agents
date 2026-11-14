@@ -1,6 +1,6 @@
 # Keepgoing menu preview
 
-An optional native macOS menu-bar item that opens the [keepgoing panel](../../docs/dock.md) and lists explicitly registered local loops. It can pause, stop and resume a loop, each only after a native confirmation that shows the panel's own review. This is an unreleased **development preview**, built separately from the Go executable. It uses AppKit's native status item and menus. It is not installed by Homebrew or `keepgoing init`.
+An optional native macOS menu-bar item that opens the [keepgoing panel](../../docs/dock.md) and lists explicitly registered local loops. It can pause, stop and resume a loop, each only after a native confirmation that shows the panel's own review. This is a v0.2.0 **development preview**, built separately from the Go executable. It uses AppKit's native status item and menus. It is not installed by Homebrew or `keepgoing init`.
 
 ## Build and open explicitly
 

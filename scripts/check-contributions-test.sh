@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Table test for the file rules of scripts/check-contributions.sh: a change
 # may not add or change a file that is larger than 1 MB or begins like a
-# compiled executable, unless its path is allowlisted. Run from the
+# compiled executable, or a text file with git conflict markers, unless its
+# path is allowlisted. Run from the
 # repository root. It works in a scratch repository and touches nothing here.
 set -u
 root=$(pwd)
@@ -14,6 +15,7 @@ repo="$tmp/repo"
 mkdir -p "$repo/scripts"
 cp "$root/scripts/check-contributions.sh" "$repo/scripts/"
 printf '# test allowlist\nfixtures/allowed.bin\n' > "$repo/scripts/contribution-file-allowlist.txt"
+printf '# test allowlist\nfixtures/merge-example.txt\n' > "$repo/scripts/conflict-marker-allowlist.txt"
 cd "$repo" || exit 2
 git init -q
 git config user.name "Example Author"
@@ -97,6 +99,26 @@ bytes 1048577 > docs/big.txt
 printf '\x7fELF rest' > bin/elf
 expect "two offenders are both named" 1 "bin/elf (9 bytes)"
 
+# Conflict markers: lines a merge committed unresolved leaves behind.
+printf 'intro\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\nend\n' > docs/merged.md
+expect "an unresolved merge fails, naming the lines" 1 "docs/merged.md has git conflict markers at line 2,4,6"
+printf 'a\n<<<<<<< HEAD\nb\n' > docs/start.md
+expect "an opening marker alone fails" 1 "docs/start.md has git conflict markers at line 2"
+printf 'a\n>>>>>>> feature\n' > docs/end.md
+expect "a closing marker alone fails" 1 "docs/end.md has git conflict markers at line 2"
+printf 'a\n=======\nb\n' > docs/divider.md
+expect "a divider line alone fails" 1 "docs/divider.md has git conflict markers at line 2"
+printf 'Title\n========\n\nOther\n===\n' > docs/headings.md
+expect "a heading underline of another length passes" 0 ""
+printf 'text <<<<<<< HEAD inside a line\n  =======\n<<<<<<<HEAD\n>>>>>>>\n' > docs/mentions.md
+expect "markers inside a line, indented, or without the space pass" 0 ""
+printf '\x00binary\n<<<<<<< HEAD\n=======\n>>>>>>> x\n' > fixtures/blob.bin
+expect "a binary file is not read for markers" 0 ""
+printf '<<<<<<< HEAD\nexample\n=======\nexample\n>>>>>>> branch\n' > fixtures/merge-example.txt
+expect "an allowlisted file with markers passes" 0 ""
+printf '<<<<<<< HEAD\n' > fixtures/merge-example.txt.orig
+expect "the marker allowlist is exact" 1 "fixtures/merge-example.txt.orig has git conflict markers"
+
 # A file that becomes too large when changed.
 echo "small" > docs/grows.txt
 git add -A && git commit -q -s -m "test: small file on the base" && base=$(git rev-parse HEAD)
@@ -112,11 +134,14 @@ expect "a large file the change does not touch passes" 0 ""
 git rm -q docs/already-there.bin
 expect "deleting a large file passes" 0 ""
 
-# The whole-tree scan finds it.
+# The whole-tree scan finds it, and conflict markers too.
+printf 'a\n=======\nb\n' > docs/scanned.md
+git add -A && git commit -q -s -m "test: markers for the scan"
 out=$(scripts/check-contributions.sh --scan-tree HEAD 2>&1); code=$?
-if [ "$code" != 1 ] || ! grep -qF "docs/already-there.bin (1048577 bytes) is larger than 1 MB" <<<"$out"; then
+if [ "$code" != 1 ] || ! grep -qF "docs/already-there.bin (1048577 bytes) is larger than 1 MB" <<<"$out" || ! grep -qF "docs/scanned.md has git conflict markers at line 2" <<<"$out"; then
 	echo "FAIL: --scan-tree: exit $code: $out"; fail=1
 fi
+git reset -q --hard HEAD~1
 
 # The older rules still hold beside the new one.
 echo "unsigned" > docs/unsigned.md

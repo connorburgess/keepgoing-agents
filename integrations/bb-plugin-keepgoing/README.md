@@ -1,13 +1,15 @@
-# keepgoing for BB
+# looptender for BB
+
+**keepgoing is being renamed to looptender.** From plugin v0.3.1 (on `main`, not yet in a release) BB shows this plugin as looptender, and its labels and messages say looptender. Everything you type is unchanged for now: the plugin id (`keepgoing`), the `bb keepgoing` command, the `keepgoingPath` setting, the `keepgoing` executable and `keepgoing.yaml`. Updating keeps the plugin's settings, secrets and schedules, because BB keeps them under the plugin id. The rest of this page still says keepgoing where it means the tool or something you type.
 
 A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
 ## Install
 
-Use **CLI v0.1.5 + plugin v0.2.0** for goal-aware setup. Verify that the [v0.1.5 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.1.5) are available before using this pinned installation command:
+Use **CLI v0.2.0 + plugin v0.3.0** (its labels say keepgoing). Verify that the [v0.2.0 tag and release](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) are available before using this pinned installation command:
 
 ```sh
-bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.1.5 --plugin keepgoing
+bb plugin install git:https://github.com/connorburgess/keepgoing-agents.git@v0.2.0 --plugin keepgoing
 bb plugin config keepgoing set keepgoingPath /absolute/path/to/keepgoing
 ```
 
@@ -53,9 +55,9 @@ Verification uses SDK fake-host/RPC tests, local subprocess fixtures, controller
 
 ## Move supervision here
 
-Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 is distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
+Implemented on `main` after v0.1.3 and fixture-tested. The transfer CLI is released in v0.1.4; plugin v0.2.0 and later are distributed through the separate tagged Git installation above. Both the plugin and the host CLI need the transfer build; rebuild the plugin’s app/host bundles before installing an update. Older CLIs are rejected when the preview does not advertise apply support.
 
-1. Open the destination thread’s keepgoing banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
+1. Open the destination thread’s looptender banner or **Supervise this thread** / **Setup** card panel. Under **Move supervision here**, choose an existing plugin-created loop in the same project, environment, host, workspace and provider.
 2. Click **Preview move**. Review the old/new threads, provider, current owner, all control flags and any goal ID/revision. Model/account identity remains unverified. Five-minute tickets are single-use and expire on reload; changed target metadata, controls, goal or configured labels require a new preview.
 3. Click **Move and keep held**. This explicitly authorizes destination ownership takeover. The CLI preserves existing holds, goals and work accounting, adds awaiting-user, resets thread observations and fences stale configs/daemons. It does not cancel the old thread’s running turn, send work, create/re-parent a thread or change a timer.
 4. Once status verifies the held destination, the plugin updates its saved reference. Review **Setup** diagnostics. **Resume** is a separate explicit action that clears holds; it does not start a missing daemon. A Resume click from a stale view of the source thread is refused. A disabled loop uses its separate start action after holds are resolved. Never resume a completed task or a task still waiting on a person.
@@ -76,16 +78,16 @@ Verification uses SDK fake-host/host-entry tests, controller failure fixtures an
 
 BB shows thread context in one of two places. The plugin uses whichever one is showing:
 
-- **The context banner above the message box.** This is the default. A `keepgoing: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
-- **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The keepgoing row sits in the card's lower group.
+- **The context banner above the message box.** This is the default. A `looptender: …` item sits at the right of the banner. Click it to expand the loop diagnostics and a Pause or Resume button.
+- **The thread context card** at the top right of a thread page. This shows when BB's thread context card experiment is on. The looptender row sits in the card's lower group.
 
-The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup-unreleased). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
+The rebuilt plugin also shows recorded goal identity/revision in setup diagnostics and expanded status. Goal titles, task text and references are withheld; metadata is not verified completion. Missing fields say “not reported” (no record or an older CLI), malformed records are unavailable, and unavailable goal metadata prevents a new start through setup. Editing the goal choice invalidates its preview. The original task source and edits to referenced files are not revision-tracked; see [goal setup](../../docs/setup.md#optional-goal-during-setup). This flow and display are fixture-tested; live deployment and first-loop verification remain open.
 
 Both read:
 
-- `keepgoing: enabled`: the loop is enabled and this thread is its current target. This label alone does not prove a supervisor is running.
-- `keepgoing: watching <thread or target>`: the current target is elsewhere.
-- `keepgoing: paused`, `stop requested`, `awaiting user`, `completed`, or `disabled`: the loop's control state.
+- `looptender: enabled`: the loop is enabled and this thread is its current target. This label alone does not prove a supervisor is running.
+- `looptender: watching <thread or target>`: the current target is elsewhere.
+- `looptender: paused`, `stop requested`, `awaiting user`, `completed`, or `disabled`: the loop's control state.
 
 The expanded banner and card hover show the actual target thread (or adapter for non-BB targets), whether this is that thread, declared completion even under another hold, runtime evidence source/freshness, last recorded action/outcome/target/time, and the existing note/send/fallback summary. A completion declaration is not independently verified task success. Failed and dry-run actions remain labeled; missing history and zero timestamps are unavailable, never proof that nothing was sent.
 
