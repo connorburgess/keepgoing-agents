@@ -100,7 +100,7 @@ func dockCommand(e env, args []string) int {
 		e.errf("dock: no random source for the access token")
 		return exitFailed
 	}
-	reader := &dockReader{ctx: e.ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon}
+	reader := &dockReader{ctx: e.ctx, directory: *directory, refresh: *refresh, staleAfter: *staleAfter, query: inspectDaemon, versions: true}
 	if *offline {
 		reader.query = func(ctx context.Context, dir, current string, _ bool) daemonStatus {
 			return inspectDaemon(ctx, dir, current, true)
@@ -319,8 +319,12 @@ type dockReader struct {
 	mu    sync.Mutex
 	cache map[bool]dockCached
 
-	// panelDir is where the clients' reports are read from; empty means the
-	// default panel directory. services caches service file digests.
+	// versions asks for the Versions view: the page's endpoint does, while
+	// panel list and client review/apply, which never show it, do not, so
+	// they hash no service file and read no client report. panelDir is
+	// where the clients' reports are read from; empty means the default
+	// panel directory. services caches service file digests.
+	versions bool
 	panelDir string
 	services dockServiceFiles
 }
@@ -434,13 +438,15 @@ func (d *dockReader) read(ctx context.Context, identifiers bool) dockReport {
 		}
 	})
 	r := buildDockReport(inputs, now, d.refresh, d.staleAfter, identifiers, true, omitted, ctx.Err() == nil)
-	var clients *clientsFile
-	var clientsErr error
-	if dir := panelClientsDir(d.panelDir); dir != "" {
-		clients, clientsErr = loadClients(dir)
+	if d.versions {
+		var clients *clientsFile
+		var clientsErr error
+		if dir := panelClientsDir(d.panelDir); dir != "" {
+			clients, clientsErr = loadClients(dir)
+		}
+		v := dockVersionsOf(r.Loops, clients, clientsErr, now)
+		r.Versions = &v
 	}
-	self, _ := os.Executable()
-	r.Versions = dockVersionsOf(r.Loops, clients, clientsErr, self, identifiers, now)
 	return r
 }
 
@@ -458,7 +464,9 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	}
 	in.Client = readClientStatus(ctx, dir, entry.ID, false, false, d.staleAfter, now, query)
 	in.Daemon = daemon
-	in.ServiceFile, in.ServicePath = d.services.compare(ctx, entry.StateDir)
+	if d.versions {
+		in.ServiceFile = d.services.compare(ctx, entry.StateDir)
+	}
 	if in.Client.Snapshot == nil {
 		return in
 	}

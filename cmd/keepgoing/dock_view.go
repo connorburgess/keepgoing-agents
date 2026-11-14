@@ -75,8 +75,8 @@ type dockReport struct {
 	Allowances        []dockAllowance `json:"allowances"`
 	AllowancesOmitted int             `json:"allowancesOmitted"`
 	// Versions is where each build on this computer runs, against the newest
-	// one seen here.
-	Versions dockVersions `json:"versions"`
+	// one seen here. Only the page's endpoint fills it.
+	Versions *dockVersions `json:"versions,omitempty"`
 }
 
 // dockRoutesLine is the count line of the routes view and the picker.
@@ -886,12 +886,12 @@ type dockInput struct {
 	// not read. Hostname is this computer's name, shown only with identifiers.
 	Timeline *timelineReport
 	Hostname string
-	// Daemon is the loop's daemon as this read asked it; ServiceFile and
-	// ServicePath are its service's recorded file against this panel's
-	// binary (dockServiceFiles), empty when no service is recorded.
+	// Daemon is the loop's daemon as this read asked it; ServiceFile is its
+	// service's recorded file against this panel's binary
+	// (dockServiceFiles), empty when no service is recorded or the Versions
+	// view was not asked for.
 	Daemon      daemonStatus
 	ServiceFile string
-	ServicePath string
 	// LaneTitles is the loop's private lane-titles file; nil when missing or
 	// unusable.
 	LaneTitles *state.LaneTitles
@@ -974,9 +974,6 @@ func buildDockReport(inputs []dockInput, now time.Time, refresh, staleAfter time
 	r.Routes, r.RoutesOmitted = dockRoutes(r.Loops, now)
 	dockShareAcrossLoops(r.Loops, r.Routes, now)
 	r.Allowances, r.AllowancesOmitted = dockAllowances(r.Routes)
-	// The reader adds the clients' reports and this binary's path; built
-	// here too, so a report always has the view.
-	r.Versions = dockVersionsOf(r.Loops, nil, nil, "", identifiers, now)
 	sort.SliceStable(r.NeedsYou, func(i, j int) bool {
 		a, b := r.NeedsYou[i].WaitedSeconds, r.NeedsYou[j].WaitedSeconds
 		if a == nil || b == nil {
@@ -1323,7 +1320,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 	if in.Daemon.State == "responsive" {
 		l.Versions.Daemon = in.Daemon.version
 	}
-	l.Versions.Service, l.Versions.ServicePath = in.ServiceFile, in.ServicePath
+	l.Versions.Service = in.ServiceFile
 	l.PickerState = l.Phrase
 	if st != nil {
 		np := st.NoProgress

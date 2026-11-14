@@ -9,27 +9,37 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/control"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // A local program that runs this CLI, such as the BB plugin or the macOS
 // menu, may say which version of itself it is with --client NAME@VERSION on
-// the read commands it calls (status, client status). The CLI then records,
-// in the panel's private directory, that client's name and version, this
-// executable's path and build label, and when it was seen, so the panel's
-// Versions view can say which build each of them runs. Nothing is recorded
-// without the flag. Recording is best effort: it never changes the command's
-// output or exit code, and a record busy with another writer is skipped.
+// the read commands it calls (status, client status, panel list). The CLI then
+// records, in the panel's private directory, that client's name and version,
+// this CLI's own build label, and when it was seen, so the panel's Versions
+// view can say which builds they run. No path is recorded. Nothing is recorded
+// without the flag, and the directory is never created for it: a panel
+// directory that does not exist yet gets no report. Recording is best effort:
+// it never changes the command's output or exit code, and a record busy with
+// another writer is skipped.
 
 const (
 	clientsName  = "clients.json"
 	clientsLock  = "clients"
 	maxClients   = 8
 	maxClientsSz = 16 << 10
+	// clientRewrite is how old an unchanged report may be before the next
+	// one rewrites it; the plugin and the menu ask often.
+	clientRewrite = time.Hour
+	// clientFresh is how recent a report must be to count: an older one is
+	// shown as not seen since, and counts for nothing.
+	clientFresh = 7 * 24 * time.Hour
 )
 
 // Known client names. A name carries no product name, so it survives the
@@ -43,11 +53,10 @@ type clientsFile struct {
 	Clients []clientReport `json:"clients"`
 }
 
-// clientReport is one client's last report.
+// clientReport is one client's last report: one per client name.
 type clientReport struct {
 	Name          string    `json:"name"`
 	ClientVersion string    `json:"clientVersion"`
-	CLIPath       string    `json:"cliPath"`
 	CLIVersion    string    `json:"cliVersion"`
 	SeenAt        time.Time `json:"seenAt"`
 }
@@ -55,7 +64,7 @@ type clientReport struct {
 // parseClientFlag reads NAME@VERSION. ok is false for an unknown name or a
 // version that is not a short plain label.
 func parseClientFlag(v string) (name, ver string, ok bool) {
-	i := bytes.LastIndexByte([]byte(v), '@')
+	i := strings.LastIndexByte(v, '@')
 	if i <= 0 {
 		return "", "", false
 	}
@@ -66,18 +75,15 @@ func parseClientFlag(v string) (name, ver string, ok bool) {
 	return name, ver, true
 }
 
-// recordClient records one report in the panel's directory. It returns no
-// error a caller should show: the command it rides on has already answered.
+// recordClient records one report in the panel's directory, which must
+// already exist and be private. It returns no error a caller should show:
+// the command it rides on has already answered.
 func recordClient(panelDir, name, ver string, now time.Time) {
-	exe, err := os.Executable()
-	if err != nil {
+	dir := panelClientsDir(panelDir)
+	if dir == "" {
 		return
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	dir, err := panelDirectory(panelDir)
-	if err != nil {
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || registry.CheckDirectory(dir) != nil {
 		return
 	}
 	l, err := lock.AcquireNamed(dir, clientsLock)
@@ -86,19 +92,18 @@ func recordClient(panelDir, name, ver string, now time.Time) {
 	}
 	defer l.Release()
 	f, err := loadClients(dir)
-	if err != nil {
+	if err != nil || f == nil {
 		// An unreadable record is replaced, not repaired: it holds nothing a
 		// decision depends on.
 		f = &clientsFile{Version: 1}
 	}
-	if f == nil {
-		f = &clientsFile{Version: 1}
-	}
-	r := clientReport{Name: name, ClientVersion: ver, CLIPath: exe, CLIVersion: dockBuildLabel(version), SeenAt: now.UTC()}
+	r := clientReport{Name: name, ClientVersion: ver, CLIVersion: dockBuildLabel(version), SeenAt: now.UTC()}
 	kept := []clientReport{r}
 	for _, c := range f.Clients {
-		if c.Name != name || c.CLIPath != exe {
+		if c.Name != name {
 			kept = append(kept, c)
+		} else if c.ClientVersion == r.ClientVersion && c.CLIVersion == r.CLIVersion && now.Sub(c.SeenAt) >= 0 && now.Sub(c.SeenAt) < clientRewrite {
+			return // unchanged and recent: nothing to write
 		}
 	}
 	sort.SliceStable(kept, func(i, j int) bool { return kept[i].SeenAt.After(kept[j].SeenAt) })
@@ -163,10 +168,12 @@ func loadClients(dir string) (*clientsFile, error) {
 	if d.Decode(&f) != nil || d.Decode(new(any)) != io.EOF || f.Version != 1 || len(f.Clients) > maxClients {
 		return nil, errClients
 	}
+	seen := map[string]bool{}
 	for _, c := range f.Clients {
-		if !clientNames[c.Name] || !clientVersionPattern.MatchString(c.ClientVersion) || !filepath.IsAbs(c.CLIPath) || c.SeenAt.IsZero() {
+		if !clientNames[c.Name] || seen[c.Name] || !clientVersionPattern.MatchString(c.ClientVersion) || dockBuildLabel(c.CLIVersion) != c.CLIVersion || c.SeenAt.IsZero() {
 			return nil, errClients
 		}
+		seen[c.Name] = true
 	}
 	return &f, nil
 }

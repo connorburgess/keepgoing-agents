@@ -30,12 +30,14 @@ const (
 
 // dockVersions is the Versions view.
 type dockVersions struct {
-	// Newest is the newest plain release label among the rows, or this
-	// panel's own label when none is a plain release; Reference says which.
+	// Newest is the newest plain release label among the places seen now
+	// (this panel, each loop's last check and daemon) and the clients'
+	// reports of the last seven days; or this panel's own label when none is
+	// a plain release. Reference says which.
 	Newest    string `json:"newest"`
 	Reference string `json:"reference"` // newest_release, this_panel
-	// Summary is the picker's line; Behind counts rows older than Newest or
-	// a different build from it.
+	// Summary is the picker's line; Behind counts the rows that differ from
+	// Newest: older, a different build, or a service on a different file.
 	Summary string           `json:"summary"`
 	Behind  int              `json:"behind"`
 	Lede    string           `json:"lede"`
@@ -48,7 +50,7 @@ type dockVersions struct {
 	Clients string `json:"clients"` // available, none, unavailable
 }
 
-// dockVersionRow is one place a build runs.
+// dockVersionRow is one place a build runs. It carries no path.
 type dockVersionRow struct {
 	// Kind is panel, check, daemon, service, client or client_cli.
 	Kind  string `json:"kind"`
@@ -56,14 +58,16 @@ type dockVersionRow struct {
 	// Key is the loop's page key for check, daemon and service rows.
 	Key   string `json:"key,omitempty"`
 	Label string `json:"label,omitempty"`
-	// Availability is current, older, different, unknown or not_recorded;
-	// for a service, same_file, different_file or unknown.
+	// Availability is current, older, different (which is newer is not
+	// known), newer (a plugin or menu newer than this build expects),
+	// unknown or not_recorded; for a service, same_file, different_file or
+	// unknown; for a client not seen for seven days, stale.
 	Availability string `json:"availability"`
 	Text         string `json:"text"`
-	// Update says how to bring it up to the newest build, when it is not.
+	// Update says how to bring it up to the newest build. Only for an older
+	// row, and for a service on a different file when this panel is the
+	// newest build: never advice to move to an older or unordered build.
 	Update string `json:"update,omitempty"`
-	// Path is shown only with identifiers.
-	Path string `json:"path,omitempty"`
 	// Seen is when a client last reported, in words.
 	Seen string `json:"seen,omitempty"`
 }
@@ -82,9 +86,8 @@ type dockLoopVersions struct {
 	Daemon string `json:"daemon,omitempty"`
 	// Service is the comparison of its service's recorded file with this
 	// panel's binary: same_file, different_file or unknown; empty when no
-	// service is recorded.
-	Service     string `json:"service,omitempty"`
-	ServicePath string `json:"-"`
+	// service is recorded or the view was not asked for.
+	Service string `json:"service,omitempty"`
 }
 
 // dockVersionAgainst words a label against the reference build.
@@ -112,7 +115,9 @@ func dockVersionAgainst(label, ref, refKind string) (string, string) {
 	if order, ok := dockReleaseOrder(label, ref); ok && order < 0 {
 		return "older", productName + " " + label + ", older than " + refWords + "."
 	}
-	return "different", productName + " " + label + ", a different build from " + refWords + "."
+	// A dev or dirty build on either side: different, and which is newer is
+	// not known, so no advice follows.
+	return "different", productName + " " + label + ", a different build from " + refWords + "; which of them is newer is not known."
 }
 
 // dockNewest is the newest plain release among labels, or the panel's own
@@ -137,52 +142,52 @@ func dockNewest(labels []string, panel string) (string, string) {
 }
 
 // dockComponentAgainst words a plugin or menu version against the one this
-// build was released with. Their numbers are their own, never keepgoing's.
+// build expects. Their numbers are their own, never keepgoing's.
 func dockComponentAgainst(name, v, bundled string) (string, string) {
 	switch o, ok := dockReleaseOrder("v"+v, "v"+bundled); {
 	case v == bundled:
-		return "current", name + " " + v + ", the version this panel's build was released with."
+		return "current", name + " " + v + ", the version this build expects."
 	case ok && o < 0:
-		return "older", name + " " + v + ", older than the " + bundled + " this panel's build was released with."
+		return "older", name + " " + v + ", older than the " + bundled + " this build expects."
 	case ok && o > 0:
-		return "different", name + " " + v + ", newer than the " + bundled + " this panel's build was released with."
+		return "newer", name + " " + v + ", newer than this build expects (" + bundled + ")."
 	default:
-		return "different", name + " " + v + ", a different version from the " + bundled + " this panel's build was released with."
+		return "different", name + " " + v + ", a different version from the " + bundled + " this build expects; which is newer is not known."
 	}
 }
 
 var dockClientTitles = map[string]string{"bb-plugin": "BB plugin", "macos-menu": "macOS menu"}
 
 // dockVersionsOf builds the view from the loops read and the clients'
-// reports. panelPath is this binary's path, shown only with identifiers.
-func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, panelPath string, identifiers bool, now time.Time) dockVersions {
+// reports.
+func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, now time.Time) dockVersions {
+	fresh := func(c clientReport) bool { return now.Sub(c.SeenAt) < clientFresh }
 	labels := []string{version}
 	for _, l := range loops {
 		labels = append(labels, l.Build.Recorded, l.Versions.Daemon)
 	}
 	if clients != nil {
 		for _, c := range clients.Clients {
-			labels = append(labels, c.CLIVersion)
+			if fresh(c) {
+				labels = append(labels, c.CLIVersion)
+			}
 		}
 	}
 	ref, refKind := dockNewest(labels, version)
 	v := dockVersions{Newest: ref, Reference: refKind, Rows: []dockVersionRow{}, Unrecorded: []dockVersionLoop{}, Clients: "none"}
-	path := func(p string) string {
-		if identifiers {
-			return p
-		}
-		return ""
-	}
 	add := func(r dockVersionRow) {
-		if r.Availability == "older" || r.Availability == "different" || r.Availability == "different_file" {
+		switch r.Availability {
+		case "older", "different", "different_file":
 			v.Behind++
-		} else {
+		}
+		if r.Availability != "older" && r.Availability != "different_file" {
 			r.Update = ""
 		}
 		v.Rows = append(v.Rows, r)
 	}
 	a, t := dockVersionAgainst(version, ref, refKind)
-	add(dockVersionRow{Kind: "panel", Title: "This panel", Label: dockBuildLabel(version), Availability: a, Text: t, Path: path(panelPath),
+	panelCurrent := a == "current"
+	add(dockVersionRow{Kind: "panel", Title: "This panel", Label: dockBuildLabel(version), Availability: a, Text: t,
 		Update: "Start the panel again from the newest build: " + productName + " panel stop, then " + productName + " panel, with that binary."})
 	for _, l := range loops {
 		a, t := dockVersionAgainst(l.Build.Recorded, ref, refKind)
@@ -198,13 +203,15 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, pa
 				Update: "Restart its daemon from the newest build: it keeps running the binary it started with until then."})
 		}
 		if l.Versions.Service != "" {
-			r := dockVersionRow{Kind: "service", Title: l.Name + ": service", Key: l.Key, Availability: l.Versions.Service, Path: path(l.Versions.ServicePath)}
+			r := dockVersionRow{Kind: "service", Title: l.Name + ": service", Key: l.Key, Availability: l.Versions.Service}
 			switch l.Versions.Service {
 			case "same_file":
 				r.Text = "Its service runs the same file as this panel."
 			case "different_file":
-				r.Text = "Its service runs a different file from this panel's binary. Which build that is is not known: " + productName + " does not run it to ask."
-				r.Update = "Replace the file its service runs with the newest build, then restart the service."
+				r.Text = "Its service runs a different file from this panel. Which build that is is not known: " + productName + " does not run it to ask."
+				if panelCurrent && refKind == "newest_release" {
+					r.Update = "Replace the file its service runs with this panel's build, the newest here, then restart the service."
+				}
 			default:
 				r.Text = "Whether its service runs the same file as this panel is unknown: the recorded file could not be read."
 			}
@@ -219,18 +226,22 @@ func dockVersionsOf(loops []dockLoop, clients *clientsFile, clientsErr error, pa
 		for _, c := range clients.Clients {
 			name := dockClientTitles[c.Name]
 			bundled, update := bundledPluginVersion, "Update the plugin in BB with bb plugin update keepgoing, or install it again from the newest build's source."
+			cliUpdate := "Set the plugin's keepgoingPath to the newest build."
 			if c.Name == "macos-menu" {
 				bundled, update = bundledMenuVersion, "Build the menu again from the newest build's source with integrations/macos/scripts/make-app.sh, then reopen it."
+				cliUpdate = "Start the menu with --executable set to the newest build."
+			}
+			if !fresh(c) {
+				// Not seen for a week: shown, counted for nothing.
+				add(dockVersionRow{Kind: "client", Title: name, Label: c.ClientVersion, Availability: "stale",
+					Text: name + " " + c.ClientVersion + ", not seen since " + c.SeenAt.Format("2 Jan 2006") + "."})
+				continue
 			}
 			seen := "Last reported " + dockAgo(now, c.SeenAt) + "."
 			a, t := dockComponentAgainst(name, c.ClientVersion, bundled)
 			add(dockVersionRow{Kind: "client", Title: name, Label: c.ClientVersion, Availability: a, Text: t, Update: update, Seen: seen})
 			a, t = dockVersionAgainst(c.CLIVersion, ref, refKind)
-			cliUpdate := "Set the plugin's keepgoingPath to the newest build."
-			if c.Name == "macos-menu" {
-				cliUpdate = "Start the menu with --executable set to the newest build."
-			}
-			add(dockVersionRow{Kind: "client_cli", Title: name + ": the " + productName + " it runs", Label: dockBuildLabel(c.CLIVersion), Availability: a, Text: t, Update: cliUpdate, Path: path(c.CLIPath), Seen: seen})
+			add(dockVersionRow{Kind: "client_cli", Title: name + ": the " + productName + " it runs", Label: dockBuildLabel(c.CLIVersion), Availability: a, Text: t, Update: cliUpdate, Seen: seen})
 		}
 	}
 	switch {
@@ -285,21 +296,21 @@ func (c *dockServiceFiles) digest(ctx context.Context, path string) ([sha256.Siz
 }
 
 // compare says whether the loop's recorded service file is this panel's.
-func (c *dockServiceFiles) compare(ctx context.Context, stateDir string) (string, string) {
+func (c *dockServiceFiles) compare(ctx context.Context, stateDir string) string {
 	h := localServiceHost()
 	p, exists, err := readServicePlan(h, stateDir)
 	if err != nil {
 		if exists {
-			return "unknown", ""
+			return "unknown"
 		}
-		return "", ""
+		return ""
 	}
 	if !exists {
-		return "", ""
+		return ""
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return "unknown", p.Executable
+		return "unknown"
 	}
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
@@ -308,10 +319,10 @@ func (c *dockServiceFiles) compare(ctx context.Context, stateDir string) (string
 	b, sb := c.digest(ctx, self)
 	switch {
 	case sa != "available" || sb != "available":
-		return "unknown", p.Executable
+		return "unknown"
 	case a == b:
-		return "same_file", p.Executable
+		return "same_file"
 	default:
-		return "different_file", p.Executable
+		return "different_file"
 	}
 }

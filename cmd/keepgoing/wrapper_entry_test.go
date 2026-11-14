@@ -37,8 +37,12 @@ func TestMain(m *testing.M) {
 	// here or names its own.
 	os.Setenv(config.RoutesFileEnv, filepath.Join(private, config.RoutesFileName))
 	// Nor the panel's directory, where --client reports are kept, in this
-	// process. A test that moves HOME to a home of its own gets the real
-	// lookup under it; a test that runs the binary passes --panel-directory.
+	// process: panelStateBase, a package variable, points at a private
+	// directory. A test that moves HOME to a home of its own gets the real
+	// lookup under it, as the userdir tests need. On Linux that lookup reads
+	// XDG_STATE_HOME first, so it too points somewhere private unless a test
+	// sets its own. A binary a test runs gets the same environment.
+	os.Setenv("XDG_STATE_HOME", filepath.Join(private, "xdg-state"))
 	home := os.Getenv("HOME")
 	realStateBase := panelStateBase
 	panelStateBase = func() (string, error) {

@@ -50,22 +50,47 @@ public struct LocalClient {
         return v.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".+-".unicodeScalars.contains($0)) }
     }
 
-    /// Executables that refused `--client` as an unknown flag (an older CLI).
-    /// They are asked again without it, and not given it again.
+    /// Executables that refused `--client` as an unknown flag (an older CLI),
+    /// by path, size and modification time, so a CLI upgraded in place is
+    /// given the flag again. A refusal is remembered only when the same call
+    /// without the flag then succeeded.
     private static let noClientFlag = NSLock()
     private static var refusedClientFlag = Set<String>()
-    private static func refusesClientFlag(_ path: String) -> Bool {
-        noClientFlag.lock(); defer { noClientFlag.unlock() }
-        return refusedClientFlag.contains(path)
+    static func executableIdentity(_ url: URL) -> String? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = a[.size] as? NSNumber, let modified = a[.modificationDate] as? Date else { return nil }
+        return "\(url.path)|\(size)|\(modified.timeIntervalSince1970)"
     }
-    private static func markRefusesClientFlag(_ path: String) {
+    private static func refusesClientFlag(_ id: String?) -> Bool {
+        guard let id else { return false }
         noClientFlag.lock(); defer { noClientFlag.unlock() }
-        refusedClientFlag.insert(path)
+        return refusedClientFlag.contains(id)
+    }
+    private static func markRefusesClientFlag(_ id: String?) {
+        guard let id else { return }
+        noClientFlag.lock(); defer { noClientFlag.unlock() }
+        refusedClientFlag.insert(id)
     }
     /// Every loop and its state in the panel's words. The read is bounded by
     /// the CLI at 20 seconds, so this waits a little longer than that.
+    ///
+    /// The read carries `--client macos-menu@VERSION` so the panel's Versions
+    /// view can say which menu runs. A CLI too old to know the flag answers
+    /// with a usage error (exit 2) and no output; then the same read runs
+    /// without it, and only if that succeeds is the CLI remembered as one
+    /// that refuses the flag. A timeout is never retried.
     public func panelList() throws -> PanelList {
-        let (data, code) = try run(MenuBuilder.arguments(.readList)!, timeout: 25)
+        let arguments = MenuBuilder.arguments(.readList)!
+        let id = LocalClient.executableIdentity(executable)
+        if let menuVersion, !LocalClient.refusesClientFlag(id) {
+            let (data, code) = try run(arguments + ["--client", "macos-menu@" + menuVersion], timeout: 25)
+            guard code == 2 && data.isEmpty else { return try Contract.panelList(data, exit: code) }
+            let (again, againCode) = try run(arguments, timeout: 25)
+            let list = try Contract.panelList(again, exit: againCode)
+            LocalClient.markRefusesClientFlag(id)
+            return list
+        }
+        let (data, code) = try run(arguments, timeout: 25)
         return try Contract.panelList(data, exit: code)
     }
     /// Whether the panel's background server is running, and when it will
@@ -156,13 +181,6 @@ public struct LocalClient {
         guard Contract.validID(entry.id) else { throw ClientFailure.invalidResponse }
         var args = ["client", "status", "--id", entry.id, "--json"]
         if privateText { args.append("--private") }
-        if let menuVersion, !LocalClient.refusesClientFlag(executable.path) {
-            let (data, code) = try run(args + ["--client", "macos-menu@" + menuVersion])
-            // An older CLI refuses the flag as a usage error (exit 2) and
-            // prints nothing: ask again without it.
-            guard code == 2 && data.isEmpty else { return try Contract.status(data, exit: code, entry: entry) }
-            LocalClient.markRefusesClientFlag(executable.path)
-        }
         let (data, code) = try run(args)
         return try Contract.status(data, exit: code, entry: entry)
     }
@@ -227,6 +245,8 @@ public struct LocalClient {
         guard drained.wait(timeout: deadline) == .success else { throw ClientFailure.timedOut }
         let (data, tooLarge) = stdout.result()
         guard !tooLarge, !stderr.result().1 else { throw ClientFailure.outputLimit }
-        return (data, process.terminationStatus)
+        // A process ended by a signal has no exit code; terminationStatus is
+        // then the signal's number, which must not be read as one.
+        return (data, process.terminationReason == .exit ? process.terminationStatus : -1)
     }
 }

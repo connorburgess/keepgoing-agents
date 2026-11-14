@@ -1,8 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { PLUGIN_VERSION, clientArgs, withClientFlag, forgetRefusals } from "./client-flag.ts";
+import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PLUGIN_VERSION, clientArgs, withClientFlag, forgetRefusals, cliIdentity, type CallOutcome } from "./client-flag.ts";
 import { commandOnHost } from "./setup-host.ts";
+
+type R = CallOutcome & { out: string };
+const outcome = (r: R): CallOutcome => r;
+const ok: R = { code: 0, emptyStdout: false, timedOut: false, out: "{}" };
+const refusal: R = { code: 2, emptyStdout: true, timedOut: false, out: "" };
 
 test("the reported version is package.json's, under a name with no product name", async () => {
   const pkg = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
@@ -13,27 +20,52 @@ test("the reported version is package.json's, under a name with no product name"
 test("an older CLI that refuses --client is asked again without it, and not given it again", async () => {
   forgetRefusals();
   const calls: string[][] = [];
-  const call = async (extra: string[]) => { calls.push(extra); return extra.length ? { code: 2, stdout: "" } : { code: 0, stdout: "{}" }; };
-  const refusedFlag = (r: { code: number; stdout: string }) => r.code === 2 && r.stdout === "";
-  assert.deepEqual(await withClientFlag("/fictional/older", call, refusedFlag, (r) => r.code === 0), { code: 0, stdout: "{}" });
-  await withClientFlag("/fictional/older", call, refusedFlag, (r) => r.code === 0);
+  const older = async (extra: string[]) => { calls.push(extra); return extra.length ? refusal : ok; };
+  assert.deepEqual(await withClientFlag("/fictional/older", older, outcome), ok);
+  await withClientFlag("/fictional/older", older, outcome);
   assert.deepEqual(calls, [clientArgs(), [], []]);
-  // A CLI that knows the flag is called once, with it.
   calls.length = 0;
-  const knows = async (extra: string[]) => { calls.push(extra); return { code: 0, stdout: "{}" }; };
-  await withClientFlag("/fictional/newer", knows, refusedFlag);
+  const knows = async (extra: string[]) => { calls.push(extra); return ok; };
+  await withClientFlag("/fictional/newer", knows, outcome);
   assert.deepEqual(calls, [clientArgs()]);
 });
 
-test("a status that fails either way is not taken for a refusal", async () => {
-  forgetRefusals();
-  const calls: string[][] = [];
-  const broken = async (extra: string[]) => { calls.push(extra); return { code: 1, data: null }; };
-  for (let i = 0; i < 2; i++) await withClientFlag("/fictional/broken", broken, (r) => r.code !== 0 && r.data === null, (r) => r.code === 0);
-  assert.deepEqual(calls, [clientArgs(), [], clientArgs(), []]);
+test("only a usage error with nothing printed, followed by a success, counts as a refusal", async () => {
+  for (const [name, first, second, calls] of [
+    ["a timeout is never retried", { code: 1, emptyStdout: true, timedOut: true, out: "" }, ok, 1],
+    ["exit 1 is not a refusal", { code: 1, emptyStdout: true, timedOut: false, out: "" }, ok, 1],
+    ["exit 2 with output is not a refusal", { code: 2, emptyStdout: false, timedOut: false, out: "usage" }, ok, 1],
+    ["a missing configuration fails both ways, so nothing is remembered", refusal, refusal, 4],
+    ["a retry that times out is not remembered", refusal, { code: 1, emptyStdout: true, timedOut: true, out: "" }, 4],
+  ] as const) {
+    forgetRefusals();
+    const seen: string[][] = [];
+    const call = async (extra: string[]) => { seen.push(extra); return extra.length ? first : second; };
+    await withClientFlag("/fictional/" + name, call, outcome);
+    await withClientFlag("/fictional/" + name, call, outcome);
+    assert.equal(seen.length, calls * (calls === 1 ? 2 : 1), name);
+    assert.ok(seen.filter((x) => x.length).length === 2, `${name}: the flag is still sent`);
+  }
 });
 
-test("the host's status passes the flag before the configuration path", async () => {
+test("a CLI upgraded in place is given the flag again", async () => {
+  forgetRefusals();
+  const dir = await mkdtemp(join(tmpdir(), "kgp-"));
+  try {
+    const bin = join(dir, "keepgoing");
+    await writeFile(bin, "old");
+    const before = await cliIdentity(bin);
+    const seen: string[][] = [];
+    const older = async (extra: string[]) => { seen.push(extra); return extra.length ? refusal : ok; };
+    await withClientFlag(bin, older, outcome);
+    await writeFile(bin, "a newer, longer build");
+    assert.notEqual(await cliIdentity(bin), before);
+    await withClientFlag(bin, async (extra) => { seen.push(extra); return ok; }, outcome);
+    assert.deepEqual(seen, [clientArgs(), [], clientArgs()]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the host's status passes the flag before the configuration path, and only on status", async () => {
   forgetRefusals();
   const record = { id: "record", threadId: "thr_example", environmentId: "env_example", projectId: "proj_example", hostId: "host_example", project: "/projects/example", provider: "codex", configPath: "/private/example/keepgoing.yaml", loop: "example-loop" };
   const seen: string[][] = [];

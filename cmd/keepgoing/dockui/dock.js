@@ -768,7 +768,7 @@
   }
 
   // ---- Versions: where each build runs ----
-  var versionDots = { current: "dot-good", same_file: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit" };
+  var versionDots = { current: "dot-good", same_file: "dot-good", newer: "dot-good", older: "dot-limit", different: "dot-limit", different_file: "dot-limit", stale: "dot-calm" };
   function renderVersions(d, pane) {
     var v = d.versions || {};
     pane.appendChild(back());
@@ -798,11 +798,6 @@
       body.appendChild(line);
       if (x.update) body.appendChild(el("p", "allow-next", x.update));
       if (x.seen) body.appendChild(el("p", "allow-next sub", x.seen));
-      if (x.path) {
-        var file = el("p", "allow-next sub");
-        put(file, ["File: ", el("code", null, x.path)]);
-        body.appendChild(file);
-      }
       li.appendChild(body);
       ul.appendChild(li);
     });

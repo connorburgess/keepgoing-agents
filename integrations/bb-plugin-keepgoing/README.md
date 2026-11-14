@@ -4,7 +4,7 @@
 
 A thin [BB](https://getbb.app) plugin for [keepgoing](../../README.md). It shows keepgoing's state on every thread a loop supervises, with Pause/Resume controls, guided setup and explicit held transfers. It also adds a `bb keepgoing` command. All decisions stay in keepgoing; the plugin only runs the `keepgoing` CLI and renders its JSON.
 
-The plugin reports its version (`--client bb-plugin@VERSION`, from `package.json`) when it reads a loop's status, so the keepgoing panel's Versions view can say which plugin and which keepgoing build it runs. A keepgoing too old to know the flag is asked again without it.
+The plugin reports its version with `--client bb-plugin@VERSION` when it reads a loop's status, so the keepgoing panel's Versions view can say which plugin and which keepgoing build it runs. The version is a constant in `client-flag.ts`, kept equal to `package.json` by a test. A keepgoing too old to know the flag answers with a usage error. The plugin then asks again without it, and stops sending it to that executable only if that second call succeeds. It sends the flag again once the executable changes: a different path, size or modification time, as after an upgrade. A plugin reload also resets this.
 
 ## Install
 

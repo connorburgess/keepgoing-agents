@@ -74,11 +74,13 @@ export const rpcContract = defineRpcContract({
 
 const CHANGED = "changed";
 
-function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(bin: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: 15_000, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+      const e = error as { code?: unknown; killed?: boolean; signal?: unknown } | null;
+      const timedOut = !!e && e.killed === true;
+      const code = e ? (typeof e.code === "number" ? e.code : 1) : 0;
+      resolve({ code, stdout: String(stdout), stderr: String(stderr), timedOut });
     });
   });
 }
@@ -135,8 +137,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const status = async (bin: string, configPath: string) => {
-    // A usage error with nothing printed is an older CLI refusing --client.
-    const result = await withClientFlag(bin, (extra) => run(bin, ["status", "--json", ...extra, "-c", configPath]), (r) => r.code === 2 && r.stdout === "", (r) => r.code === 0);
+    const result = await withClientFlag(bin, (extra) => run(bin, ["status", "--json", ...extra, "-c", configPath]), (r) => ({ code: r.code, emptyStdout: r.stdout === "", timedOut: r.timedOut }));
     if (result.code !== 0) throw new Error(`${configPath}: looptender status exited ${result.code}`);
     let raw: unknown;
     try {
