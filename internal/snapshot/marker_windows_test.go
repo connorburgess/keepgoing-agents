@@ -344,3 +344,125 @@ func TestWindowsInitialAbsenceDoesNotBecomeAnUnwaitedFailure(t *testing.T) {
 		t.Fatalf("initial absence became unavailable without a retry: %v", err)
 	}
 }
+
+func TestWindowsRemoveRefusesMalformedMarkersBeforeTouchingRecord(t *testing.T) {
+	for _, kind := range []string{"nonempty", "directory", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "state.json")
+			marker := markerFor(path)
+			if err := os.WriteFile(path, []byte("preserved"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "nonempty":
+				if err := os.WriteFile(marker, []byte("bad"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(marker, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				other := filepath.Join(dir, "other")
+				if err := os.WriteFile(other, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, marker); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			if err := Remove(path); err == nil {
+				t.Fatal("removed record with malformed marker")
+			}
+			if b, err := os.ReadFile(path); err != nil || string(b) != "preserved" {
+				t.Fatalf("record changed: %q %v", b, err)
+			}
+			if _, err := os.Lstat(marker); err != nil {
+				t.Fatalf("malformed marker removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestWindowsConcurrentRemovalsCannotCrossANewPublication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	staged := filepath.Join(dir, "staged")
+	if err := os.WriteFile(staged, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceStrict(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- removeRecordWith(path, func(p string) error { close(entered); <-release; return os.Remove(p) })
+	}()
+	<-entered
+	// This invocation must finish refused while the first still holds its
+	// marker. It must not unlink the first marker by name after a new save.
+	secondErr := Remove(path)
+	close(release)
+	firstErr := <-done
+	if secondErr == nil || firstErr != nil {
+		t.Fatalf("removals: first=%v second=%v", firstErr, secondErr)
+	}
+	if err := os.WriteFile(staged, []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceStrict(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadRecord(path); err != nil || string(b) != "new" {
+		t.Fatalf("new publication lost: %s %v", b, err)
+	}
+	if err := Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repeated removal: %v", err)
+	}
+	if _, err := os.Lstat(markerFor(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repeated removal left marker: %v", err)
+	}
+}
+
+func TestWindowsStaleRemovalPreservesANewerPublication(t *testing.T) {
+	for _, newMarker := range []bool{false, true} {
+		t.Run(fmt.Sprint("new-marker=", newMarker), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "state.json")
+			staged := filepath.Join(dir, "staged")
+			publish := func(text string) {
+				t.Helper()
+				if err := os.WriteFile(staged, []byte(text), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := ReplaceStrict(staged, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			publish("old")
+			observed, resume, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			go func() { done <- removeRecordObserved(path, os.Remove, func() { close(observed); <-resume }) }()
+			<-observed
+			if newMarker {
+				if err := Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			publish("new")
+			close(resume)
+			if err := <-done; err == nil {
+				t.Fatal("stale removal succeeded")
+			}
+			if b, err := ReadRecord(path); err != nil || string(b) != "new" {
+				t.Fatalf("new publication lost: %s %v", b, err)
+			}
+			if _, err := os.Stat(markerFor(path)); err != nil {
+				t.Fatalf("new marker lost: %v", err)
+			}
+		})
+	}
+}

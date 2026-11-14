@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // Open opens path read-only. The handle allows read/write/delete sharing, so
@@ -196,26 +197,83 @@ func holdMarker(target string) (*os.File, error) {
 	return f, nil
 }
 
-// Remove deletes a record and then its marker. It first holds DELETE access
-// on the marker: a save's non-delete-sharing guard refuses this before the
-// record is touched. A legacy record without a marker needs only deletion;
-// any marker concurrently created belongs to that new save and is left alone.
-func Remove(path string) error {
-	marker, err := openShared(markerFor(path), "remove record marker", snapshotDeleteAccess|fileReadAttributes,
-		syscall.FILE_FLAG_OPEN_REPARSE_POINT, heldByAnother)
-	if errors.Is(err, os.ErrNotExist) {
-		return os.Remove(path)
+// Remove deletes a record and then the exact marker it acquired. Saves and
+// other removers cannot acquire a conflicting marker handle meanwhile. A
+// marker replaced while this call waited is refused before touching a record.
+func Remove(path string) error { return removeRecordWith(path, os.Remove) }
+
+func removeRecordWith(path string, remove func(string) error) error {
+	return removeRecordObserved(path, remove, nil)
+}
+
+func removeRecordObserved(path string, remove func(string) error, beforeGuard func()) error {
+	before, beforeErr := Lstat(path)
+	if beforeErr != nil && !errors.Is(beforeErr, os.ErrNotExist) {
+		return beforeErr
 	}
+	// Guard legacy/unwritten records too: an absent marker must not let a
+	// deletion cross a concurrent first publication.
+	if err := ensureMarker(path); err != nil {
+		return err
+	}
+	markerPath := markerFor(path)
+	expected, err := Lstat(markerPath)
 	if err != nil {
 		return err
 	}
+	if !expected.Mode().IsRegular() || expected.Size() != 0 {
+		return fmt.Errorf("invalid record marker: %s", markerPath)
+	}
+	if beforeGuard != nil {
+		beforeGuard()
+	}
+	name, err := snapshotWindowsPath(markerPath)
+	if err != nil {
+		return err
+	}
+	handle, err := openWithRetry(func() (syscall.Handle, error) {
+		return syscall.CreateFile(&name[0], syscall.GENERIC_READ|snapshotDeleteAccess,
+			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING,
+			syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	}, heldByAnother, time.Sleep)
+	if err != nil {
+		return &os.PathError{Op: "hold marker for removal", Path: markerPath, Err: err}
+	}
+	marker := os.NewFile(uintptr(handle), markerPath)
 	defer marker.Close()
-	err = os.Remove(path)
+	info, err := marker.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 || !os.SameFile(expected, info) {
+		return fmt.Errorf("record marker changed or invalid: %s", markerPath)
+	}
+	// Refuse a save that finished while deletion waited for the marker.
+	// This includes a first publication that was absent at our observation.
+	current, currentErr := Lstat(path)
+	if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
+		return currentErr
+	}
+	beforeMissing, currentMissing := errors.Is(beforeErr, os.ErrNotExist), errors.Is(currentErr, os.ErrNotExist)
+	if beforeMissing != currentMissing || (!beforeMissing && !os.SameFile(before, current)) {
+		return fmt.Errorf("record changed before removal: %s", path)
+	}
+	err = remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if merr := os.Remove(markerFor(path)); merr != nil && !errors.Is(merr, os.ErrNotExist) {
-		return merr
+	// Deleting by this handle, not by name, cannot unlink a newer marker.
+	// FileDispositionInfo marks this object for deletion when our guard closes.
+	disposition := byte(1)
+	result, _, deleteErr := setSnapshotInformation.Call(uintptr(handle), 4, uintptr(unsafe.Pointer(&disposition)), 1)
+	if result == 0 {
+		if deleteErr == syscall.Errno(0) {
+			deleteErr = syscall.EINVAL
+		}
+		return &os.PathError{Op: "remove record marker", Path: markerPath, Err: deleteErr}
+	}
+	if closeErr := marker.Close(); closeErr != nil {
+		return closeErr
 	}
 	return err
 }
