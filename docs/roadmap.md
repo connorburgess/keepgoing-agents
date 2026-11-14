@@ -689,7 +689,7 @@ Planned, not started. keepgoing stays out of the request path. Every dollar figu
 
 #### Provider terms
 
-Planned, not started. This is the project's reading of provider terms on 14 November 2026, not legal advice; TOS8 will carry the detail. Running a provider's own unmodified CLI as the user is the permitted case. Same-provider rotation is the risky one.
+Planned, not started. This is the project's reading of provider terms on 14 November 2026, not legal advice; TOS8 will carry the detail. Running a provider's own unmodified CLI as the user is what the providers' own documentation describes; rotating between accounts of one provider to get more allowance is what their terms restrict.
 
 - [ ] **TOS1 — A restriction holds the whole provider.** An account restriction on one account holds every route on that provider, because a restriction is about the person, not one login. Extends P8.
 - [ ] **TOS2 — Claude Code's account categories as P8 signals.** Read the documented categories `account_on_hold`, `oauth_org_not_allowed`, `billing_error` and `authentication_failed` as P8 signals: they are structured, and none is a usage limit.
@@ -747,7 +747,7 @@ Planned, not started.
 
 Planned, not started. Transport is any private network the person already has. Whether Tailscale is the documented default is an owner decision.
 
-- [ ] **N1 — Phone notification presets.** ntfy, Pushover, a Telegram bot, Slack and Discord webhooks, and BB push, carrying loop, device and cause only, outbound only. Being told when a loop needs you is the most requested feature, and it works the same on every machine. Pulls H1 forward.
+- [ ] **N1 — Phone notification presets.** ntfy, Pushover, a Telegram bot, Slack and Discord webhooks, and BB push, carrying loop, device and cause only, outbound only. Being told when a loop needs you is the request users of comparable tools repeat most, and it works the same on every machine. Pulls H1 forward.
 - [ ] **V5b — Pair a browser as a panel-only device.** For one machine: a single-use code or QR with a short expiry, a hashed per-device token, and list and revoke. Pause, stop and stop-all first; resume through the existing ticket after. A phone for one machine needs none of the fleet records that H6 waits on. Pulls V5a forward.
 - [ ] **V5c — The panel as a home-screen web app.** No native app, store or gateway; Web Push from it is a later spike.
 - [ ] **H3a — Headless enrolment.** A code shown in the terminal and approved on another device, because a server has no browser. A single-use join token for containers and images is an owner decision, because it pre-grants H3's confirmation.
@@ -786,14 +786,13 @@ Most valuable for the theme first. It does not displace work in flight: the rena
 
 1. Should the README's pitch be reworded, and should several accounts of one provider stay a described capability or become an opt-in described with its risk?
 2. Should handoff between two consumer subscriptions of one provider be opt-in per pair and off by default (TOS3), and should P2 and P4 be barred from such pairs (TOS6)?
-3. Should the project ask Anthropic whether a local supervisor that runs the user's own Claude Code install is within its terms, and whether a BB route's sign-in is?
-4. Should the Cursor and Antigravity tracks continue, and should a terms review gate their release (TOS7)?
-5. Is the network-cut run against a real agent (EV3) authorized, and a weekly canary with a stored long-lived credential (EV4)? If so, where may that credential live on a server or in a container?
-6. Should Tailscale be the documented default for reaching the panel, and is embedding it worth a spike?
-7. May a single-use join token for containers stand in for H3's confirmation on a device already in the fleet (H3a)?
-8. May keepgoing install hooks into a user's Claude Code or Codex configuration with consent (E4, E5)?
-9. Is `git merge-tree --write-tree`, which can write objects into a repository, within "never edits repositories" (FC3)? May session files ever be opened for token counts?
-10. Must a loop on a metered route have a limit or an explicit opt-out (B6)? What is the default daily budget (B4)? Is a hosted, end-to-end encrypted relay a possible paid product while one person's loops over their own network stay free?
+3. Should the Cursor and Antigravity tracks continue, and should a terms review gate their release (TOS7)?
+4. Is the network-cut run against a real agent (EV3) authorized, and a weekly canary with a stored long-lived credential (EV4)? If so, where may that credential live on a server or in a container?
+5. Should Tailscale be the documented default for reaching the panel, and is embedding it worth a spike?
+6. May a single-use join token for containers stand in for H3's confirmation on a device already in the fleet (H3a)?
+7. May keepgoing install hooks into a user's Claude Code or Codex configuration with consent (E4, E5)?
+8. FC3 uses path intersection only; should `git merge-tree`, which can write objects into a repository, ever be allowed? May session files ever be opened for token counts?
+9. Must a loop on a metered route have a limit or an explicit opt-out (B6)? What is the default daily budget (B4)?
 
 #### Deliberately out of scope
 
