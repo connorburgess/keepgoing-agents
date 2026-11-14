@@ -8,9 +8,9 @@
 
 looptender supervises a coding agent: it wakes an idle session, handles structured failures with bounded retries, and can hand off to a confirmed fallback when configured. The agent does the work; looptender never edits, commits to, or merges a repository.
 
-**Name and release boundary.** The product is now **looptender** (formerly keepgoing). The released CLI is still **v0.2.0**, installed and invoked as `keepgoing`; the commands below use that executable. The BB plugin id/directory, `bb keepgoing`, `keepgoingPath`, existing service labels and webhook/wire identifiers keep their existing names. Renaming documentation does not replace any installed binary, plugin or running supervisor. Changes available only in source are marked **unreleased**.
-
 The core is a single binary for macOS, Linux and Windows. Use its daemon or an existing scheduler to check the loop. No separate loop skill is required. The host and supervisor must be running for checks to happen.
+
+The long-term aim is to code anywhere and manage large fleets without losing track of loops; [the roadmap](docs/roadmap.md) separates that vision from what is built today.
 
 ## Current availability
 
@@ -40,13 +40,13 @@ The complete live setup → multiple turns → hold → restart → recovery →
 With Homebrew on macOS or Linux:
 
 ```sh
-brew install connorburgess/tap/keepgoing
-keepgoing version
-# For an existing Homebrew installation:
-# brew update && brew upgrade keepgoing
+brew install looptender/tap/looptender
+looptender version
 ```
 
-Or download a [release archive](https://github.com/connorburgess/keepgoing-agents/releases/tag/v0.2.0) for macOS, Linux or Windows and verify it against the published SHA-256 checksums. The [package verification record](docs/release-verification.md) identifies the paths tested; not every OS/architecture has had a native installation walkthrough.
+The [Homebrew formula](https://github.com/looptender/homebrew-tap) packages v0.2.0's `keepgoing` binary and provides `looptender` as a symlink to it. Both names run the same released code. Installation and upgrade fixtures passed on macOS arm64; Intel macOS and Linux remain unverified. Existing installations need their tap receipt and command conflicts checked before changing packages; see the tap's [installation guidance](https://github.com/looptender/homebrew-tap#existing-installations).
+
+Or download a [release archive](https://github.com/looptender/looptender/releases/tag/v0.2.0) for macOS, Linux or Windows and verify it against the published SHA-256 checksums. The archives contain `keepgoing`. The [package verification record](docs/release-verification.md) identifies the paths tested; not every OS/architecture has had a native installation walkthrough.
 
 With Go 1.24 or newer:
 
@@ -54,7 +54,9 @@ With Go 1.24 or newer:
 go install github.com/connorburgess/keepgoing-agents/cmd/keepgoing@v0.2.0
 ```
 
-The released v0.2.0 command above installs `keepgoing`. The source module is being moved to `github.com/looptender/looptender`, with its command at `cmd/looptender`. After that change is merged in the transferred repository, `go install github.com/looptender/looptender/cmd/looptender@main` installs the unreleased `looptender` command. The new path's `@latest` is not available until a release declares the new module path. Old-path installs remain valid when pinned to old releases; after the module change, new versions cannot be installed through the old module path. Keep any existing `keepgoing` executable or compatibility link until the installation that manages it provides the alias. A fresh install of `cmd/looptender` creates only `looptender`; run it as `looptender`. The `keepgoing` examples below, existing schedulers and an unset BB plugin `keepgoingPath` still need a `keepgoing` executable or an explicit path/command update. On macOS/Linux, if no `keepgoing` file exists in the install directory and you choose to keep those callers unchanged, a `keepgoing` symbolic link to the new executable provides that name; the Go install does not create it.
+The Go command above installs the released `keepgoing` executable. For unreleased source, `go install github.com/looptender/looptender/cmd/looptender@main` installs only `looptender`. That module's `@latest` needs a release declaring the same module path; use the pinned command above for v0.2.0.
+
+Examples below use `keepgoing`, available from the release archives and Homebrew. With a source install, substitute `looptender` and set the BB plugin's `keepgoingPath` to its absolute path if needed. Existing schedulers need the executable named by their saved command; a source install creates no `keepgoing` alias. Source-only features are marked **unreleased**.
 
 `go install` with `@latest` selects a tagged release, not `main`. These builds report `dev` because they lack the release build label; inspect `go version -m /path/to/keepgoing` for the module version. Prebuilt archives carry an embedded version label.
 
@@ -200,8 +202,8 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Goals](docs/goals.md), [transfer](docs/transfer.md) and [local clients](docs/local-clients.md) and [the panel](docs/dock.md): task metadata and optional integrations.
 - [Agent chats](docs/agent-chats.md) and [BB plugin](integrations/bb-plugin-keepgoing/README.md): conversation supervision.
 - [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
-- [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
-- [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
+- [Architecture](docs/architecture.md): how supervision, adapters and loops fit together; [examples](examples/) and [JSON Schemas](schema/) provide configuration contracts.
+- [Roadmap](docs/roadmap.md): current priorities, planned scaling across devices and remaining acceptance gates; [feature analysis](docs/supervision-feature-analysis.md) gives checkable criteria.
 - [Where the supervisor runs](docs/command-center.md): design record on why looptender runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
 - [Loops across devices](docs/devices.md): design only, nothing built; how a loop could move between a person's machines.
