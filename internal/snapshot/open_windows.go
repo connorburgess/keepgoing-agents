@@ -76,17 +76,37 @@ const retryBudget = 250 * time.Millisecond
 const maxRetryDelay = 25 * time.Millisecond
 
 func openWithRetry(open func() (syscall.Handle, error), sleep func(time.Duration)) (syscall.Handle, error) {
+	var handle syscall.Handle
+	err := retryReplacing(func() error {
+		var err error
+		handle, err = open()
+		return err
+	}, replacementInProgress, sleep)
+	return handle, err
+}
+
+// retryReplacing calls try until it succeeds, fails in a way retry does not
+// accept, or retryBudget has been slept, and returns its last error.
+func retryReplacing(try func() error, retry func(error) bool, sleep func(time.Duration)) error {
 	delay := 2 * time.Millisecond
 	var slept time.Duration
 	for {
-		handle, err := open()
-		if err == nil || !replacementInProgress(err) || slept >= retryBudget {
-			return handle, err
+		err := try()
+		if err == nil || !retry(err) || slept >= retryBudget {
+			return err
 		}
 		sleep(delay)
 		slept += delay
 		delay = min(delay*2, maxRetryDelay)
 	}
+}
+
+// heldByAnother reports access denied or a sharing violation: what a rename
+// gets while another program, such as a reader or antivirus, has the file
+// open without allowing it to be replaced.
+func heldByAnother(err error) bool {
+	var code syscall.Errno
+	return errors.As(err, &code) && (code == syscall.ERROR_ACCESS_DENIED || code == 32 /* ERROR_SHARING_VIOLATION */)
 }
 
 // replacementInProgress reports, by Windows error code and never by text,

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -24,6 +25,7 @@ func TestWindowsControlSnapshotRenameFailurePreservesFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
+			var slept time.Duration
 			err := replaceSnapshotWith(source, target, func(handle syscall.Handle, info *snapshotRenameInfo, size uint32) error {
 				calls++
 				if handle == syscall.InvalidHandle || info.Flags != snapshotReplaceExisting|snapshotPOSIXSemantics || info.RootDirectory != 0 {
@@ -36,9 +38,12 @@ func TestWindowsControlSnapshotRenameFailurePreservesFiles(t *testing.T) {
 					t.Fatal("incorrect rename buffer size")
 				}
 				return code
-			})
-			if !errors.Is(err, code) || calls != 1 {
-				t.Fatalf("rename error/calls: %v / %d", err, calls)
+			}, func(d time.Duration) { slept += d })
+			// A rename refused while another program holds a file is tried
+			// again until the bound; anything else is not retried.
+			held := code == syscall.ERROR_ACCESS_DENIED || code == 32
+			if !errors.Is(err, code) || (held && (calls < 2 || slept < retryBudget || slept >= retryBudget+maxRetryDelay)) || (!held && calls != 1) {
+				t.Fatalf("rename error/calls/slept: %v / %d / %s", err, calls, slept)
 			}
 			for path, want := range map[string]string{source: "new", target: "old"} {
 				got, err := os.ReadFile(path)
@@ -95,8 +100,9 @@ func TestWindowsControlSnapshotReplaceFallsBackOnlyWhenUnsupported(t *testing.T)
 			err := replaceWithFallback(source, target, func(syscall.Handle, *snapshotRenameInfo, uint32) error {
 				calls++
 				return tc.code
-			})
-			if calls != 1 {
+			}, func(time.Duration) {})
+			held := tc.code == syscall.ERROR_ACCESS_DENIED || tc.code == 32
+			if (held && calls < 2) || (!held && calls != 1) {
 				t.Fatalf("rename attempts: %d", calls)
 			}
 			got, readErr := os.ReadFile(target)
@@ -113,7 +119,7 @@ func TestWindowsControlSnapshotReplaceFallsBackOnlyWhenUnsupported(t *testing.T)
 				return
 			}
 			if !errors.Is(err, tc.code) || string(got) != "old" {
-				t.Fatalf("failure was retried or changed the target: %q %v", got, err)
+				t.Fatalf("failure changed the target, or was not returned: %q %v", got, err)
 			}
 			if staged, _ := os.ReadFile(source); string(staged) != "new" {
 				t.Fatal("failure changed the staging file")
@@ -128,8 +134,38 @@ func TestWindowsControlSnapshotReplaceFallsBackOnlyWhenUnsupported(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	err := replaceSnapshotWith(source, target, func(syscall.Handle, *snapshotRenameInfo, uint32) error { return syscall.Errno(50) })
+	err := replaceSnapshotWith(source, target, func(syscall.Handle, *snapshotRenameInfo, uint32) error { return syscall.Errno(50) }, func(time.Duration) {})
 	if got, _ := os.ReadFile(target); !errors.Is(err, syscall.Errno(50)) || string(got) != "old" {
 		t.Fatalf("strict replacement fell back: %q %v", got, err)
+	}
+}
+
+// A rename refused while another program briefly holds a file is tried
+// again, and the save goes through once it is let go: both Replace and
+// ReplaceStrict, which differ only in falling back when the POSIX rename is
+// unsupported.
+func TestWindowsReplaceWaitsOutAFileHeldForAMoment(t *testing.T) {
+	for _, code := range []syscall.Errno{syscall.ERROR_ACCESS_DENIED, 32} {
+		for name, replace := range map[string]func(string, string, func(syscall.Handle, *snapshotRenameInfo, uint32) error, func(time.Duration)) error{
+			"Replace": replaceWithFallback, "ReplaceStrict": replaceSnapshotWith,
+		} {
+			t.Run(name+"/"+code.Error(), func(t *testing.T) {
+				dir := t.TempDir()
+				source, target := filepath.Join(dir, "staging"), filepath.Join(dir, "control.json")
+				os.WriteFile(source, []byte("new"), 0o600)
+				os.WriteFile(target, []byte("old"), 0o600)
+				calls := 0
+				err := replace(source, target, func(h syscall.Handle, info *snapshotRenameInfo, size uint32) error {
+					if calls++; calls <= 2 {
+						return code
+					}
+					return setSnapshotRename(h, info, size)
+				}, func(time.Duration) {})
+				got, _ := os.ReadFile(target)
+				if err != nil || calls != 3 || string(got) != "new" {
+					t.Fatalf("err %v after %d calls; target %q", err, calls, got)
+				}
+			})
+		}
 	}
 }
