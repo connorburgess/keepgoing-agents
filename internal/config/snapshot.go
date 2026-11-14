@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // Snapshots bind exactly the bytes parsed by Load, not a later read. They are
@@ -26,7 +28,7 @@ func snapshotFile(path string) sourceSnapshot {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return sourceSnapshot{path: path, absent: true}
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := snapfile.ReadFile(path)
 	if err != nil {
 		return sourceSnapshot{path: path, absent: true}
 	}
@@ -48,7 +50,7 @@ func (s sourceSnapshot) matches() bool {
 	if err != nil || !info.Mode().IsRegular() || info.Size() != s.size {
 		return false
 	}
-	f, err := os.Open(s.path)
+	f, err := snapfile.Open(s.path)
 	if err != nil {
 		return false
 	}

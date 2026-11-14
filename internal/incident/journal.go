@@ -22,9 +22,12 @@ const FileName = "incidents.json"
 // Version 9 adds, on control records, who saved the control and whether a
 // resume started a new error episode.
 // Version 10 adds the lane-work counts on tick records.
-// Version 11 adds the return to the primary on tick records and the probe
-// records of a manual `fallbacks check`.
-const SchemaVersion = 11
+// Version 11 (route-list notes) adds, on tick records, that the standard
+// route list changed since the loop's previous check, and route_change
+// records: a change to a loop's own route list, with who made it.
+// Version 13 (returns and manual probes) adds the return to the primary on
+// tick records and the probe records of a manual `fallbacks check`.
+const SchemaVersion = 13
 
 // Retention bounds the journal at MaxRecords and MaxBytes. Each tier has
 // reserved room, and MaxRecords is the sum of the reservations. A tier may
@@ -39,6 +42,10 @@ const (
 	RoutineReserved   = 64
 	MaxRecords        = KeyReserved + ConditionReserved + ActivityReserved + RoutineReserved
 	MaxBytes          = 512 * 1024
+	// RouteChangeCap bounds the route_change records within the key tier,
+	// so a run of list edits never costs the loop its handoff, retarget and
+	// ownership history: past it, the oldest list edit goes first.
+	RouteChangeCap = 16
 )
 
 // pruneOrder is the order in which tiers give up records: among tiers over
@@ -187,7 +194,7 @@ func Load(dir string) (Journal, error) {
 		if j.SchemaVersion < 10 {
 			r.Lanes = LaneWork{}
 		}
-		if j.SchemaVersion < 11 {
+		if j.SchemaVersion < 13 {
 			// Older writers recorded no return and no manual probes.
 			r.Returned = nil
 			if r.Kind == "probe" {
@@ -331,6 +338,9 @@ func (j *Journal) add(r Record) {
 		return
 	}
 	j.Records = append(j.Records, r)
+	if r.Kind == "route_change" {
+		j.capRouteChanges()
+	}
 	// Manual probe records are capped, oldest out first, so a schedule of
 	// `fallbacks check` cannot fill the condition or activity tier.
 	if r.Kind == "probe" {
@@ -356,6 +366,32 @@ func (j *Journal) add(r Record) {
 
 // MaxProbeRecords bounds the manual probe records retained.
 const MaxProbeRecords = 16
+
+// capRouteChanges prunes the oldest route_change records past their cap.
+func (j *Journal) capRouteChanges() {
+	n := 0
+	for _, r := range j.Records {
+		if r.Kind == "route_change" {
+			n++
+		}
+	}
+	for i := 0; n > RouteChangeCap && i < len(j.Records); {
+		r := j.Records[i]
+		if r.Kind != "route_change" {
+			i++
+			continue
+		}
+		p := j.Pruned.tier(r.Tier)
+		p.Count++
+		if p.NewestAt == nil || r.CheckStartedAt.After(*p.NewestAt) {
+			at := r.CheckStartedAt
+			p.NewestAt = &at
+		}
+		j.Dropped++
+		j.Records = append(j.Records[:i], j.Records[i+1:]...)
+		n--
+	}
+}
 
 // dropFromFullestTier prunes the oldest record of a tier holding more than its
 // reservation, taking routine first and key last, so volume in a lower tier
@@ -426,6 +462,9 @@ func validRecord(r Record) bool {
 	}
 	// A retarget is a move: both hashed targets are known and they differ.
 	if r.Kind == "retarget" && (!keyPattern.MatchString(r.TargetKey) || !keyPattern.MatchString(r.TargetKeyAfter) || r.TargetKey == r.TargetKeyAfter) {
+		return false
+	}
+	if r.Kind == "route_change" && (r.RouteChange == nil || !keyPattern.MatchString(r.RouteChange.TargetKey)) {
 		return false
 	}
 	// A manual probe record holds at least one captured result.

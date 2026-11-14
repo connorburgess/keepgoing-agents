@@ -80,6 +80,10 @@ Fallbacks:
   fallbacks check          Probe candidates now (--dry-run previews; --id ID, --exact)
   fallbacks list           Show recorded health and the redundancy picture
   routes list              Show the standard route list and each registered loop's routes
+  routes add|move|remove|off|on
+                           Change the standard route list (a person only), or with
+                           --loop NAME a loop's own list; preview, then confirm
+  routes check             Validate the standard list; --loop NAME [ID] probes that loop's routes
 
 Reporting:
   report test              Send a test webhook (--dry-run prints it instead)

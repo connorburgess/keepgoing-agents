@@ -120,6 +120,8 @@ Each command prints what will change, the handoff order (marking the target in u
 - **`move ID --to N`** changes only the order, which decides which fallback is tried first at the next handoff. Recorded health is kept and the loop stays on its current target.
 - **`remove ID`** takes the entry out. It refuses the fallback the loop is running on (move the loop first with `keepgoing retarget primary`) and a loop's only fallback, because a fallbacks file cannot be empty; turn handoff off instead. If the fallbacks left cannot meet the redundancy rule, the preview warns that handoffs will be refused.
 
+**Who may move or remove.** A person, or the BB thread that owns the loop. Another BB thread is refused, as before. Unreleased: any BB thread is now also refused, with exit code 2 and nothing written, while the loop has no recorded owner, as for the [standard route list](routes.md#changing-it); checked in the preview and again under the lock. Each `move` and `remove` that is written adds a `route_change` record to the loop's [timeline](diagnostics.md): the operation, the fallback's hashed key and who made it as a role (`owner_thread` or `terminal`), never an identity. If that record cannot be written, the change stands and the text output says so; the `--json` result does not carry that note. `handoff` and `add` are unchanged by this.
+
 What `remove` does with the fallback's records, decided again under the lock when the change is written, not from the preview:
 
 | Record | What happens |
@@ -133,7 +135,7 @@ So a fallback added later under the same id starts a new session with no check r
 
 How the files are edited:
 
-- `move` and `remove` cut and paste the entry's own lines. A comment block directly above an entry, with no blank line between, belongs to it and moves or goes with it; the preview lists those lines. Headings and notes set apart by a blank line stay where they are. Every other byte is left as it was, including line endings, blank lines and inline `{...}` values. A candidates list written inline on one line is refused; edit it by hand.
+- `move` and `remove` cut and paste the entry's own lines. A comment block directly above an entry, with no blank line between and at the entry's own indentation, belongs to it and moves or goes with it (unreleased: a less indented heading, or a more indented commented-out key of the entry before, stays where it is); the preview lists those lines. Headings and notes set apart by a blank line stay where they are. Every other byte is left as it was, including line endings, blank lines and inline `{...}` values. A candidates list written inline on one line is refused; edit it by hand.
 - `handoff` changes only the list itself when `errors.failover_on` is written inline (`failover_on: [...]`), keeping a comment after it. When the key is absent or written as a block list, `keepgoing.yaml` is re-emitted as described for `fallbacks add`: comments and permission bits are kept, indentation is normalized, CRLF becomes LF and blank lines between entries are dropped.
 
 A running daemon rereads its configuration on its interval or at the next control change and uses the new setup from then on; until it has, its checks are skipped because the files no longer match what it loaded. See [loaded configuration checks](operations.md#loaded-configuration-checks).

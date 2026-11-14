@@ -232,6 +232,8 @@ type tick struct {
 	// child-error notice and what to record.
 	// newThreadCapped: a handoff needed a new thread and the loop had created
 	// its maximum. newThreadUnresolved: a creation's outcome is unknown.
+	// incidentRouteListChanged: this check read a changed standard list.
+	incidentRouteListChanged bool
 	// incidentNewThread: this check recorded a created thread.
 	newThreadCapped     bool
 	newThreadUnresolved bool
@@ -2016,6 +2018,9 @@ func (t *tick) record(actErr error) error {
 	}
 	if t.res.Handoff != nil {
 		extra["handoff"] = t.res.Handoff
+	}
+	if t.res.Routes != nil {
+		extra["routes"] = t.res.Routes
 	}
 	if len(t.res.Probes) > 0 {
 		extra["probes"] = t.res.Probes

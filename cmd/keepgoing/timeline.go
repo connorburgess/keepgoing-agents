@@ -87,7 +87,7 @@ type timelineTier struct {
 
 // Event kinds are a fixed vocabulary derived from typed records. An event can
 // carry several: a handoff check is also a check and usually a probe.
-var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "collapsed", "control", "notification"}
+var timelineKindNames = []string{"check", "dry_run", "wake", "nudge", "reprompt", "handoff", "switch_back", "return", "retarget", "ownership", "probe", "hold", "stop", "limit_wait", "limit_wait_report", "turn_retry", "child_retry", "route_list", "route_change", "collapsed", "control", "notification"}
 
 // moves selects every recorded change of who has the loop.
 var timelineMoveKinds = []string{"handoff", "switch_back", "return", "retarget", "ownership"}
@@ -391,6 +391,9 @@ func timelineKinds(r incident.Record) []string {
 		if r.Lanes != (incident.LaneWork{}) {
 			kinds = append(kinds, "child_retry")
 		}
+		if r.RouteListChanged {
+			kinds = append(kinds, "route_list")
+		}
 	case "control":
 		kinds = append(kinds, "control")
 		if c := r.ControlChange; c != nil && (c.OwnershipChanged || c.Operation == "daemon_takeover" || c.Operation == "transfer_begin" || c.Operation == "transfer_finish") {
@@ -400,6 +403,8 @@ func timelineKinds(r incident.Record) []string {
 		kinds = append(kinds, "retarget")
 	case "probe":
 		kinds = append(kinds, "probe")
+	case "route_change":
+		kinds = append(kinds, "route_change")
 	}
 	if entered {
 		kinds = append(kinds, "hold")
@@ -427,7 +432,7 @@ func timelineTarget(key string) string {
 }
 
 func readTimeline(dir string, now time.Time, stale time.Duration, limit int, filter timelineFilter) timelineReport {
-	r := timelineReport{SchemaVersion: 7, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
+	r := timelineReport{SchemaVersion: 9, ReadAt: now, Filter: filter, StaleAfter: stale.String(), Control: readTimelineControl(dir), Sources: []timelineSource{}, Events: []timelineEntry{}, NextSteps: []string{}}
 	j, jerr := incident.Load(dir)
 	deliveries, derr := report.LoadDeliveries(dir)
 	r.Sources = append(r.Sources, timelineSource{Source: incident.FileName, Availability: historyAvailability(jerr, len(j.Records)), SchemaVersion: j.SchemaVersion, Retained: len(j.Records), Dropped: j.Dropped}, timelineSource{Source: report.DeliveryFile, Availability: historyAvailability(derr, len(deliveries.Records)), SchemaVersion: deliveries.SchemaVersion, Retained: len(deliveries.Records), Dropped: deliveries.Dropped})
@@ -540,7 +545,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		{"supervisor_checks", historyAvailability(jerr, r.Summary.RetainedChecks), "Retained checks show past supervisor execution, including held checks; they do not prove present liveness or continuous scheduling."},
 		{"agent_connectivity", historyAvailability(jerr, observations), "Use each observed adapter/source/category/code and retry field. Active can include provider retries; stream errors do not establish an internet root cause."},
 		{"notifications", historyAvailability(derr, len(deliveries.Records)), "Attempts and HTTP responses are recorded separately. Application/human receipt is unverified; later acceptance does not erase earlier retained failures."},
-		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5, and a return to the primary after a fallback is removed or disabled, or has no created thread on record, from schema 11. Older records and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
+		{"target_moves", historyAvailability(jerr, targetRecords), "Handoffs, switch-backs and manual retargets are recorded with hashed target aliases from history schema 5, and a return to the primary after a fallback is removed or disabled, or has no created thread on record, from schema 13. Older records and work moved to another conversation outside keepgoing are not recorded; run and chat identity is planned separately as run discovery."},
 		{"scheduler", "unavailable", "No scheduler queried; registration, last scheduler result and next run are unavailable in this offline view."},
 		{"supervisor_liveness", "unavailable", "No daemon endpoint or process queried; recent records are not a live heartbeat."},
 		{"ci_waits", "unavailable", "No CI query or persisted CI-wait evidence read; provider errors and held checks are not evidence of a CI wait."},
@@ -554,7 +559,7 @@ func readTimeline(dir string, now time.Time, stale time.Duration, limit int, fil
 		"Latest summary references use retained source sequence order and can refer to events hidden by --limit. Dry-run checks are labelled and excluded from active/send/hold summaries.",
 		"Provider event time, network root cause, installed/running binary identity and delivery receipt remain unavailable. Build labels describe recorded commands only.",
 		"Target keys correlate configured aliases only; they identify no run, chat or provider session. Config changes and reused directories can mix sessions under one key. Delivery records deliberately contain no endpoint or target identity.",
-		"Filters select displayed events only; summaries, sources and layers describe all retained evidence. Control saves and deliveries record no target, so --target hides them. Probe rows cover probes run by a check and, from history schema 11, manual fallback checks.",
+		"Filters select displayed events only; summaries, sources and layers describe all retained evidence. Control saves and deliveries record no target, so --target hides them. Probe rows cover probes run by a check and, from history schema 13, manual fallback checks.",
 	}
 	if r.Control.State != "enabled" && r.Control.State != "unavailable" {
 		r.NextSteps = append(r.NextSteps, "Review current control flags and historical hold evidence. Resolve the cause before explicitly enabling/resuming; this view never clears a hold.")
@@ -696,6 +701,14 @@ func describeIncident(r incident.Record) string {
 	if r.Kind == "retarget" {
 		return fmt.Sprintf("manual retarget saved: target %s -> %s; recorded build %s; no probe, send or provider check is implied", timelineTarget(r.TargetKey), timelineTarget(r.TargetKeyAfter), r.Build)
 	}
+	if r.Kind == "route_change" && r.RouteChange != nil {
+		c := r.RouteChange
+		by := map[string]string{"owner_thread": "the owning BB thread", "terminal": "a person (no BB thread identity)"}[c.Caller]
+		if by == "" {
+			by = "an unrecorded caller"
+		}
+		return fmt.Sprintf("route list change saved: %s route %s in the loop's own list, by %s; recorded build %s; the loop uses it after its next configuration reload", c.Operation, timelineTarget(c.TargetKey), by, r.Build)
+	}
 	if r.Kind == "probe" {
 		return "manual fallbacks check (recorded build " + r.Build + ")" + describeProbes(r.Probes) + "; health saved; no session was observed and nothing was sent"
 	}
@@ -737,6 +750,9 @@ func describeIncident(r incident.Record) string {
 			why = "could not be used (reason unavailable)"
 		}
 		text += fmt.Sprintf("; RETURNED TO THE PRIMARY: the loop was on %s, which %s, so this check ran on the primary", timelineTarget(ret.FromKey), why)
+	}
+	if r.RouteListChanged {
+		text += "; ROUTE LIST: the standard route list changed since this loop's previous check, and this check used the new list (keepgoing routes list shows it)"
 	}
 	text += describeProbes(r.Probes)
 	if r.NewThread {
