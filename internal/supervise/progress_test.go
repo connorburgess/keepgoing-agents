@@ -248,3 +248,49 @@ func TestNoProgressPollEvidenceGates(t *testing.T) {
 		}
 	}
 }
+
+// The no-progress flag's window starts at ProgressChangedAt: the first
+// fingerprint is a baseline, a credit for time in which nothing could make
+// progress moves the timeout's LastProgressAt but not it, and a verified
+// change sets it.
+func TestProgressChangedAtIsTheUncreditedChangeTime(t *testing.T) {
+	w := newWorld(t, true, false)
+	progressTick(t, w, t0, "same")
+	st, err := state.Load(w.dir)
+	if err != nil || !st.ProgressChangedAt.Equal(t0) || !st.ProgressBaseline {
+		t.Fatalf("first fingerprint: %+v %v", st, err)
+	}
+	// A credit never passes the latest observation, so observe once more.
+	progressTick(t, w, t0.Add(25*time.Minute), "same")
+	p, err := state.LoadProgress(w.dir)
+	if err != nil || p == nil {
+		t.Fatalf("%v", err)
+	}
+	if _, err := state.CreditProgress(w.dir, *p, 20*time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	progressTick(t, w, t0.Add(30*time.Minute), "same")
+	st, _ = state.Load(w.dir)
+	if !st.LastProgressAt.After(t0) || !st.ProgressChangedAt.Equal(t0) || !st.ProgressBaseline {
+		t.Fatalf("after a credit: last progress %v, changed %v baseline %t", st.LastProgressAt, st.ProgressChangedAt, st.ProgressBaseline)
+	}
+	progressTick(t, w, t0.Add(40*time.Minute), "changed")
+	st, _ = state.Load(w.dir)
+	if !st.ProgressChangedAt.Equal(t0.Add(40*time.Minute)) || st.ProgressBaseline {
+		t.Fatalf("after a change: %v baseline %t", st.ProgressChangedAt, st.ProgressBaseline)
+	}
+	progressTick(t, w, t0.Add(50*time.Minute), "changed")
+	if st, _ = state.Load(w.dir); !st.ProgressChangedAt.Equal(t0.Add(40 * time.Minute)) {
+		t.Fatalf("an unchanged check moved it: %v", st.ProgressChangedAt)
+	}
+	// A state from before the field, with a fingerprint already recorded:
+	// the next check starts a baseline rather than claiming a change.
+	st.ProgressChangedAt, st.ProgressBaseline = time.Time{}, false
+	if err := state.Save(w.dir, st); err != nil {
+		t.Fatal(err)
+	}
+	progressTick(t, w, t0.Add(55*time.Minute), "changed")
+	if st, _ = state.Load(w.dir); !st.ProgressChangedAt.Equal(t0.Add(55*time.Minute)) || !st.ProgressBaseline {
+		t.Fatalf("an older state: %v baseline %t", st.ProgressChangedAt, st.ProgressBaseline)
+	}
+}
