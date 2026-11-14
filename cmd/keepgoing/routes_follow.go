@@ -227,7 +227,11 @@ func routeSourceChange(req routeChangeRequest, path, file string, apply bool) (r
 	if err := writeRouteSource(again); err != nil {
 		return routeChangeRefused(req, refuseRoute("write_failed", "%v", err)), exitFailed
 	}
-	if recordRouteChange(cfg.Loop.StateDir, req.op, "", req.caller) != nil {
+	recorded := recordRouteChange(cfg.Loop.StateDir, req.op, "", req.caller) == nil
+	if again.out.FailoverOn != nil && recorded {
+		recorded = recordRouteChange(cfg.Loop.StateDir, "handoff_on", "", req.caller) == nil
+	}
+	if !recorded {
 		again.out.Warnings = append(again.out.Warnings, "the change was saved, but could not be recorded in the loop's history (keepgoing timeline)")
 	}
 	again.out.Outcome = "changed"
@@ -299,7 +303,25 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		if !ok {
 			return nil, refuseRoute("edit_by_hand", "The configuration file's loop section cannot be changed line by line; set loop.routes: standard by hand.")
 		}
-		if !sameLoopAfterEdit(raw, edited, func(x *config.Loop) { x.Fallbacks, x.Routes = "", config.RoutesStandard }) {
+		// Guided setup also turns handoff on for rate limits, as init does,
+		// but only when it is off: a setting of the loop's own is kept.
+		handoffOn := req.handoff && len(l.Errors.FailoverOn) == 0
+		if handoffOn {
+			// Only an inline list is changed, keeping the line; any other
+			// form is left to a person rather than re-emitting the file.
+			next, ok := setInlineFailoverOn(edited, []string{"rate_limit"})
+			if !ok {
+				return nil, refuseRoute("edit_by_hand", "The configuration file's errors.failover_on is not written as an inline list, so it cannot be changed line by line; set it to [rate_limit] by hand.")
+			}
+			edited = next
+			o.FailoverOn = &failoverChange{Before: []string{}, After: []string{"rate_limit"}}
+		}
+		if !sameLoopAfterEdit(raw, edited, func(x *config.Loop) {
+			x.Fallbacks, x.Routes = "", config.RoutesStandard
+			if handoffOn {
+				x.Errors.FailoverOn = []string{"rate_limit"}
+			}
+		}) {
 			return nil, refuseRoute("edit_by_hand", "The configuration file's loop section cannot be changed line by line; set loop.routes: standard by hand.")
 		}
 		p.configYAML = edited
@@ -383,7 +405,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 			v.BelowMinHealthy = belowMinHealthy(cfg, after, after.Redundancy.MinHealthy, current, req.now, p.clear...)
 		}
 		o.Loops = append(o.Loops, v)
-		if len(l.Errors.FailoverOn) == 0 {
+		if len(l.Errors.FailoverOn) == 0 && o.FailoverOn == nil {
 			o.Warnings = append(o.Warnings, "handoff is off (errors.failover_on is empty); the loop does not hand off until it is turned on")
 		}
 	}
@@ -392,7 +414,7 @@ func planRouteSource(req routeChangeRequest, cfg *config.Config, file string) (*
 		fallbacksRaw, _ = os.ReadFile(l.Fallbacks)
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "route_change/1\x00source\x00%s\x00%s\x00%s\x00%x\x00%x\x00%x\x00%s\x00%q\x00%q", req.op, l.Name, file, sha256.Sum256(raw), sha256.Sum256(fallbacksRaw), sha256.Sum256(routesRaw), cfg.SourcesDigest(), current, p.clear)
+	fmt.Fprintf(h, "route_change/1\x00source\x00%s\x00%s\x00%s\x00%x\x00%x\x00%x\x00%s\x00%q\x00%q\x00%t", req.op, l.Name, file, sha256.Sum256(raw), sha256.Sum256(fallbacksRaw), sha256.Sum256(routesRaw), cfg.SourcesDigest(), current, p.clear, req.handoff)
 	o.Expect = fmt.Sprintf("%x", h.Sum(nil))
 	return p, nil
 }
@@ -564,6 +586,9 @@ func printRouteSource(e env, o routeChangeOut) {
 		fmt.Fprintf(w, "Loop %s: stop following the standard route list and keep a copy of its routes as the loop's own.\n", o.Loop)
 	} else {
 		fmt.Fprintf(w, "Loop %s: follow the standard route list.\n", o.Loop)
+	}
+	if f := o.FailoverOn; f != nil {
+		fmt.Fprintf(w, "  errors.failover_on: [%s] -> [%s]: the loop hands off to these routes on a rate limit\n", strings.Join(f.Before, ", "), strings.Join(f.After, ", "))
 	}
 	for _, l := range o.Loops {
 		fmt.Fprintf(w, "  on %s; hands off to %s -> %s\n", l.Current, idList(l.Before), idList(l.After))

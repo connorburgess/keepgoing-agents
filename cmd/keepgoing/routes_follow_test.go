@@ -162,7 +162,7 @@ func TestInitOffersTheStandardListOnlyWhenAsked(t *testing.T) {
 	wizard := filepath.Join(f.root, "wizard")
 	input := strings.Join([]string{"example-loop", f.project, "", "Complete and verify the fictional example task.", "no", "codex", "", "", "", "", "", "", "", "", "", "", wizard, ""}, "\n")
 	code, out, errOut = f.run(t, nil, input)
-	if code != 0 || !strings.Contains(out, "Follow your standard route list for handoffs? 1 of its 4 routes applies to this loop. (yes/no) [yes]") || strings.Contains(out, "Next fallback agent") || !strings.Contains(out, "Routes: follows your standard route list; 1 apply to this loop: codex-headless.") {
+	if code != 0 || !strings.Contains(out, "Follow your standard route list for handoffs? 1 of its 3 switched-on routes applies to this loop. (yes/no) [yes]") || strings.Contains(out, "Next fallback agent") || !strings.Contains(out, "Routes: follows your standard route list; 1 apply to this loop: codex-headless.") {
 		t.Fatalf("wizard: %d %s %s", code, out, errOut)
 	}
 	if cfg := loadFixture(t, filepath.Join(wizard, config.FileName)); !cfg.Loop.FollowsStandard() {

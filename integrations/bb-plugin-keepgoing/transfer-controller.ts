@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { type SetupRecord, type SetupTarget } from "./setup-contract.ts";
+import { targetOf, type SetupRecord, type SetupTarget } from "./setup-contract.ts";
 import { holdsSchema, moveSummarySchema, transferInput, type MoveIntent, type TransferResult } from "./transfer-contract.ts";
 
 export interface TransferDependencies {
@@ -32,8 +32,7 @@ const statusSchema = z.object({
 });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function savedTarget(r: SetupRecord): SetupTarget {
-  const { id, configPath, loop, startJson, startJsonBin, ...target } = r;
-  return target;
+  return targetOf(r);
 }
 function compatible(a: SetupTarget, b: SetupTarget) {
   return a.threadId !== b.threadId && a.projectId === b.projectId && a.environmentId === b.environmentId && a.hostId === b.hostId && a.project === b.project && a.provider === b.provider;
