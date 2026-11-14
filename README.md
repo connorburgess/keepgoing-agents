@@ -197,6 +197,7 @@ Decisions use structured status: exit codes, JSON fields, HTTP status and provid
 - [Agent chats](docs/agent-chats.md) and [BB plugin](integrations/bb-plugin-keepgoing/README.md): conversation supervision.
 - [Integration evidence](docs/integrations.md), [testing](docs/testing.md) and [release verification](docs/release-verification.md): what was actually checked and what remains open.
 - [Roadmap](docs/roadmap.md) and [feature analysis](docs/supervision-feature-analysis.md): priorities and checkable acceptance criteria.
+- [Current scale limits and read-only benchmarks](docs/scale-baseline.md): local bounds, loss domains and measurement scope; no fleet capacity claim.
 - [Architecture](docs/architecture.md), [examples](examples/) and [JSON Schemas](schema/): implementation and integration contracts.
 - [Where the supervisor runs](docs/command-center.md): design record on why looptender runs on the machine where the agents live, and how a person elsewhere is reached (mostly planned).
 - [Glossary](docs/glossary.md): what loop, lane, route, device and hold mean.
