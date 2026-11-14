@@ -1496,7 +1496,7 @@ func TestDockSentencesSayNoMoreThanTheirRecords(t *testing.T) {
 	}
 	// Lanes from a listing too old to be current are not listed.
 	stale := runsLoop{Blocker: runsBlocker{Availability: blockerUnknown, Reason: "last_check_older_than_stale_after", Children: []runsChild{{Status: "active"}}}}
-	if l := dockLaneList(stale, true, false, true, dockNow); len(l.Lanes) != 0 || l.Availability != "stale" {
+	if l := dockLaneList(stale, true, false, true, nil, dockNow); len(l.Lanes) != 0 || l.Availability != "stale" {
 		t.Errorf("%+v", l)
 	}
 	// "Overdue" only where scheduled tests run: not with tests off, not while

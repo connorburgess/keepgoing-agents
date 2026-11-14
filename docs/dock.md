@@ -137,7 +137,17 @@ The route the loop's records name as current is marked, in one of two ways:
 
 The current route is not tested, so it gets no readiness verdict, only the age of its last test, unless that test recorded a failure. When another loop holds a newer usage reading or test result for the same route, the page shows it, marked as another loop's, so one route does not read differently on different pages.
 
-**Lanes** are listed one per row under the loop's current route, the ones that need a person first: its state (working, waiting for an answer, failed) and "Lane 1", "Lane 2" and so on. keepgoing records a lane's state and a hashed key, not its title, its thread or which route it is on, and the page says so once under the list; a lane that is itself a registered loop is named and linked. The hashed key appears only with identifiers. The heading keeps the counts and the age of the listing.
+**Lanes** are listed one per row under the loop's current route, the ones that need a person first: its state (working, waiting for an answer, failed) and "Lane 1", "Lane 2" and so on. keepgoing records a lane's state, a hashed key and, for a BB thread, the lane's title, but not its thread or which route it is on, and the page says so once under the list. A lane that is itself a registered loop is named and linked. The hashed key appears only with identifiers. The heading keeps the counts and the age of the listing.
+
+**Lane titles.**
+- **Source:** a lane's title is the `title` BB reported for that child thread in the `bb thread show` reply the check already makes; nothing else of the lane is read, no log and no message.
+- **Shown only with "Show identifiers and notes"**, as hold notes are, because it is the person's own text. By default a lane row says "title withheld" when one is recorded, so the panel's default is safe for a shared screen.
+- **Matched to the listing:** a title is shown only when it was recorded by the same check as the listing shown; otherwise the lane reads as having none.
+- **Storage:** titles are kept in a private file, `lane-titles.json` (mode 0600) in the loop's state directory:
+  - only for the lanes of the newest complete listing, at most 64, each cut to 120 characters with control characters removed;
+  - an incomplete listing leaves the file as it was;
+  - a title is not in the run graph, `state.json`, the incident history, `status`, the timeline, `runs`, a report or a webhook, and the macOS menu and `keepgoing panel list` never carry one.
+- **No effect on supervision:** no decision reads a title, and removing the file changes only what the panel can show.
 
 **Recent activity** lists the five newest entries of the retained history, newest first, in the same plain words: checks with their action and cause, moves to another route and returns to the first with the route's name, holds, control changes worded from the flags they changed, and reports with their recorded outcome. An unbroken run of identical checks is one line with the count and when it began. A send that returned is shown as sent with "delivery is not confirmed". It says how many entries are retained and whether older history was pruned; `keepgoing timeline` has the rest.
 
@@ -285,7 +295,7 @@ Nothing is retried by itself; a new attempt is a new review. A saved hold is not
 
 This is the first slice. The rest is not implemented.
 
-1. **Read-only view** (this slice): the picker, needs you, one loop through its routes with its last decision, hold, lanes and recent activity, and routes across loops with each account group's allowance. A lane's title is not shown because none is recorded; recording one privately is a separate planned change, and the lane rows have room for it.
+1. **Read-only view** (this slice): the picker, needs you, one loop through its routes with its last decision, hold, lanes and recent activity, and routes across loops with each account group's allowance. A lane's title is recorded privately for a BB thread and shown with identifiers (see above).
 2. **Controls**: pause, resume and stop from a loop's page are built ([above](#changes-from-the-page-keepgoing-panel---allow-changes)), through the existing registered commands' own functions. Pause all and stop all are built (below). Still planned: other picker commands. The page will not get its own control logic.
 3. **Configuration**, starting with a loop's routes: their order, switching one off or on, and whether the loop follows a shared standard list or has its own; later limits, the usage-switch threshold and which reports are sent. It will be a front end to the existing guided commands (`fallbacks add|move|remove|handoff`, with their `--dry-run --json` previews, confirmation, ownership and transfer guards and comment-preserving edits), never its own logic or its own file writes. The route rows already carry a position and an opaque route key for this. Credentials and logins will never be shown or edited.
 4. **Actions on many lanes at once** from the routes view, such as moving every lane on one route to another or changing their effort level. This depends on two things keepgoing does not have: lanes as first-class records (today it knows a loop's lanes only as counts and hashes, and never changes them), and a group (a coordinator and its lanes) so one action can apply to all members.

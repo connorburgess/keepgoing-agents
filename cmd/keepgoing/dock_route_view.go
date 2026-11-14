@@ -72,7 +72,10 @@ type dockLane struct {
 	Number int    `json:"number"`
 	State  string `json:"state"` // working, waiting or failed
 	Phrase string `json:"phrase"`
-	// Title is always empty in this schema; TitleEvidence says why.
+	// Title is the title BB reported for the lane at the check that listed
+	// it, included only with identifiers, as hold notes are, since it is the
+	// person's own text. TitleEvidence is recorded (Title is set), withheld (a
+	// title is recorded; the view has no identifiers) or not_recorded.
 	Title         string `json:"title,omitempty"`
 	TitleEvidence string `json:"titleEvidence"`
 	// Loop names the registered loop this lane is, when it is one; LoopKey
@@ -329,11 +332,20 @@ func dockDeviceOf(st *statusOut, hostname string, identifiers bool, now time.Tim
 
 // dockLaneList lists each lane of the last verified listing, most in need of
 // a person first. keys maps a registration ID to that loop's key in the report.
-func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now time.Time) dockLanes {
+// titles is the loop's private lane-titles file, nil when it is missing or
+// unusable; its titles are used only when it was written by the check that
+// made the listing shown.
+func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, titles *state.LaneTitles, now time.Time) dockLanes {
 	c := dockChildWork(r, known)
 	out := dockLanes{Availability: c.Availability, Lanes: []dockLane{}, Heading: "This loop's lanes"}
 	if out.Availability != "current" && out.Availability != "held" {
 		return out
+	}
+	byKey := map[string]string{}
+	if titles != nil && c.CheckedAt != nil && titles.CheckedAt.Equal(*c.CheckedAt) {
+		for _, t := range titles.Titles {
+			byKey[t.Key] = t.Title
+		}
 	}
 	rank := map[string]int{"awaiting_input": 0, "error": 1, "active": 2}
 	children := append([]runsChild{}, r.Blocker.Children...)
@@ -362,8 +374,15 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now ti
 		if s := child.Supervised; s.Availability == recordRecorded && s.RegistrationID != "" {
 			l.Loop, l.LoopKey = clip(s.Loop, dockMaxText), dockKey(s.RegistrationID)
 		}
+		key := strings.TrimPrefix(child.Ref, "child:")
 		if identifiers {
-			l.Key = strings.TrimPrefix(child.Ref, "child:")
+			l.Key = key
+		}
+		if title, ok := byKey[key]; ok {
+			l.TitleEvidence = "withheld"
+			if identifiers {
+				l.Title, l.TitleEvidence = clip(title, dockMaxText), "recorded"
+			}
 		}
 		out.Lanes = append(out.Lanes, l)
 	}
@@ -390,7 +409,10 @@ func dockLaneList(r runsLoop, known bool, identifiers bool, current bool, now ti
 		when += "at an unknown time"
 	}
 	out.Heading = "This loop's lanes \u00B7 " + strings.Join(counts, ", ") + " \u00B7 " + when
-	out.Footer = "keepgoing records each lane's state, not its title or which route it is on"
+	out.Footer = "keepgoing records each lane's state and, when BB reports one, its title, which is shown with identifiers and notes; not which route it is on"
+	if identifiers {
+		out.Footer = "keepgoing records each lane's state and, when BB reports one, its title; not which route it is on"
+	}
 	if current {
 		out.Footer += "; they are listed under the loop's current route"
 	}
