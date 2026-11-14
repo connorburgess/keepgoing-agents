@@ -53,10 +53,10 @@ func openWithRetry(open func() (syscall.Handle, error), sleep func(time.Duration
 	}
 }
 
-// replacementInProgress classifies by Windows error code, never by text.
-// replacementInProgress reports the answers Windows can give a reader that
-// arrives while another process replaces the file: access denied, a sharing
-// violation, or the file not found at all. A record a reader finds missing
+// replacementInProgress reports, by Windows error code and never by text,
+// the answers Windows can give a reader that arrives while another process
+// replaces the file: access denied, a sharing violation, or the file not
+// found at all. A record a reader finds missing
 // is otherwise believed absent and read as new, so "not found" is retried
 // the same bounded way before it is believed (CI saw an existing state.json
 // reported missing during its replacement). A missing directory is not: no

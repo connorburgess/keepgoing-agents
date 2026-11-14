@@ -69,7 +69,7 @@ Reliability of supervision comes before new features: a day of live supervision 
    - an explicit `resume` starts a new error episode (#173);
    - never two loops acting on one session at once (#195), and every send recorded before it is made and settled only from a check that read it (#196), with killed-check, full-disk and unwritable-state-directory scenarios ([T2, T3](#test-suites)). Both had an independent review by the coordinator before merge, with its findings fixed before merge;
    - #200 merged: a check that cannot observe its session sends one error report, not two (fixture-tested);
-   - the timing-test and Windows record fixes.
+   - the timing-test and Windows record fixes. On Windows a record that is really missing now takes about 30 ms per read before it is believed missing; if the panel ever feels slow there with many loops, a cheaper signal than the retry could replace it.
    Still open:
    - **Prove recovery live.** Cut the network on a supervised loop with child threads for longer than the provider's own retries, with nobody watching, and record whether the loop and its children come back. Until this passes once, the items above are fixture evidence only.
    - **Recovering failed lanes.** Today the parent is told and the owner can be told; nothing restarts a failed lane. Landed in #183, released in v0.2.0, fixture-tested: opt-in ([R9c](#priority-reliability-checkpoints)), retrying errored direct children by reference, bounded per check and per child, with an owner report when one is given up. The decision item in [children in error](#35-children-in-error) is still open.
