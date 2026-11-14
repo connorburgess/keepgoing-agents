@@ -36,6 +36,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // DirEnv names a directory to use instead of the default. Loops given
@@ -44,28 +45,8 @@ import (
 const DirEnv = envvar.Prefix + string(envvar.SessionDir)
 
 // StateHome is the user's state directory, where keepgoing keeps runtime
-// files that belong to no single loop: $XDG_STATE_HOME or ~/.local/state on
-// Linux and other Unix systems, Application Support on macOS, and the local
-// application data folder on Windows.
-func StateHome() (string, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return os.UserConfigDir() // ~/Library/Application Support
-	case "windows":
-		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return d, nil
-		}
-		return os.UserConfigDir()
-	}
-	if d := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(d) {
-		return d, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "state"), nil
-}
+// files that belong to no single loop; see userdir.StateHome.
+func StateHome() (string, error) { return userdir.StateHome() }
 
 // UndeterminedError: there is no user state directory to keep claims in
 // (no HOME and no XDG_STATE_HOME). Checks go ahead unprotected.
@@ -114,11 +95,12 @@ func Dir(repair ...bool) (dir string, tightened bool, err error) {
 			fix: "unset one of them, or set both to the same directory"}
 	}
 	if dir == "" {
-		base, err := StateHome()
-		if err != nil || base == "" {
+		// Under the state directory, in looptender/, or in keepgoing/ on a
+		// computer that already has one: see userdir.
+		dir, err = userdir.State("sessions")
+		if err != nil {
 			return "", false, &UndeterminedError{Reason: "no user state directory: HOME and XDG_STATE_HOME are not set"}
 		}
-		dir = filepath.Join(base, "keepgoing", "sessions")
 	}
 	if !filepath.IsAbs(dir) {
 		return "", false, &UnsafeError{Path: dir, Problem: "is not an absolute path"}

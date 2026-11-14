@@ -27,6 +27,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/report"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 	"github.com/connorburgess/keepgoing-agents/internal/state"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // Diagnostics never return raw command output, environment values, task text,
@@ -115,6 +116,7 @@ func doctor(e env, args []string, run doctorRun) int {
 		r.add("registry.directory", "ok", name+" is set: commands use the registry in "+dir+" when no --directory is given.", "Unset it to use the default registry.")
 	}
 	doctorVariables(&r)
+	doctorUserDirectory(&r, userdir.Look())
 	// A check claims its session before acting on it. Doctor says what is
 	// wrong with the claim directory, in terms of its real cause.
 	if status, message, fix := sessionDirectoryCheck(); status != "" {
@@ -747,5 +749,21 @@ func doctorVariables(r *doctorReport) {
 	}
 	if len(earlier) > 0 {
 		r.add("environment.earlier_names", "ok", "Read under an earlier name: "+strings.Join(earlier, ", ")+". Earlier names still work; the current names begin "+envvar.Prefix+" in place of "+envvar.LegacyPrefix+".", "")
+	}
+}
+
+// doctorUserDirectory says which name the tool's per-user directories go by
+// on this computer, and warns when directories of both names exist: only the
+// earlier name's are read then, and what is in the others is not seen.
+func doctorUserDirectory(r *doctorReport, f userdir.Found) {
+	const holds = "the loop registry, the standard route list, session claims and the panel's files"
+	switch {
+	case len(f.Ignored) > 0:
+		r.add("user.directory", "warning", "Directories of both names exist. Those named "+userdir.LegacyName+" are used ("+strings.Join(f.Used, ", ")+"); nothing in "+strings.Join(f.Ignored, ", ")+" is read. They hold "+holds+".",
+			"If "+strings.Join(f.Ignored, " and ")+" holds nothing you need, remove it. Do not rename either while a loop is being checked.")
+	case f.Name == userdir.LegacyName:
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.LegacyName+", the tool's earlier name, because this computer already has one ("+strings.Join(f.Used, ", ")+"). Nothing is moved; a computer without one uses "+userdir.Name+".", "")
+	default:
+		r.add("user.directory", "ok", "Per-user files ("+holds+") are kept in directories named "+userdir.Name+" under the user configuration and state directories.", "")
 	}
 }

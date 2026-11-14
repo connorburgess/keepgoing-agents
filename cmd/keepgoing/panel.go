@@ -24,6 +24,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
 	"github.com/connorburgess/keepgoing-agents/internal/session"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 // keepgoing panel opens the page that keepgoing dock serves, without an
@@ -110,9 +111,17 @@ func panelSocketLimit() int {
 // the session claims. Builds before this kept them under the configuration
 // directory, which is a different place on Linux; see panelRetireLegacy.
 var (
-	panelStateBase  = session.StateHome
-	panelLegacyBase = os.UserConfigDir
+	panelStateBase  = userdir.StateHome
+	panelLegacyBase = userdir.ConfigHome
 )
+
+// panelDirName is the name of the tool's directory under those two places:
+// looptender, or keepgoing on a computer that already has one; see userdir.
+func panelDirName() string {
+	state, _ := panelStateBase()
+	config, _ := panelLegacyBase()
+	return userdir.NameIn(config, state)
+}
 
 // panelDirectory resolves the private directory for the record, the locks and
 // the socket: never a loop's directory and never inside a Git checkout. It
@@ -124,7 +133,7 @@ func panelDirectory(path string) (string, error) {
 		if err != nil {
 			return "", bad
 		}
-		path = filepath.Join(base, "keepgoing", "panel")
+		path = filepath.Join(base, panelDirName(), "panel")
 	}
 	return panelPrivateDirectory(path, bad)
 }
@@ -145,8 +154,10 @@ func panelLegacy() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	legacy := filepath.Join(base, "keepgoing", "panel")
-	if session.CleanPath(legacy) == session.CleanPath(filepath.Join(now, "keepgoing", "panel")) {
+	// An earlier build only ever used the earlier name. Where that directory
+	// exists, the earlier name is the one in use now as well.
+	legacy := filepath.Join(base, userdir.LegacyName, "panel")
+	if session.CleanPath(legacy) == session.CleanPath(filepath.Join(now, panelDirName(), "panel")) {
 		return "", false // the same place on this platform
 	}
 	if info, err := os.Lstat(legacy); err != nil || !info.IsDir() || registry.CheckDirectory(legacy) != nil {

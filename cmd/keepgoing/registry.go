@@ -12,6 +12,7 @@ import (
 	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/registry"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 type registrySummary struct {
@@ -39,7 +40,7 @@ func registryCommand(e env, args []string) int {
 	}
 	fs := flag.NewFlagSet("registry "+op, flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
-	directory := fs.String("directory", "", "private registry directory (default: user config/keepgoing/registry)")
+	directory := fs.String("directory", "", "private registry directory (default: the registry in the user configuration directory)")
 	cfgPath := fs.String("c", "", "add: existing loop config")
 	id := fs.String("id", "", "remove: registration ID")
 	private := fs.Bool("private", false, "list: include private config and runtime paths")
@@ -153,11 +154,10 @@ func registryDirectory(path string) (string, error) {
 		}
 	}
 	if path == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
+		var err error
+		if path, err = userdir.Config("registry"); err != nil {
 			return "", bad
 		}
-		path = filepath.Join(base, "keepgoing", "registry")
 	}
 	dir, err := canonicalFuturePath(path)
 	if err != nil {

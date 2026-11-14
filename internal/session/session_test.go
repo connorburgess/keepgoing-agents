@@ -12,6 +12,7 @@ import (
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
+	"github.com/connorburgess/keepgoing-agents/internal/userdir"
 )
 
 func TestIdentityAndKey(t *testing.T) {
@@ -257,18 +258,58 @@ func TestDirIsPrivate(t *testing.T) {
 	if _, _, err := Dir(true); !errors.As(err, &unsafe) || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("a link: %v", err)
 	}
-	// Without the override it is under the user's state directory.
+	// Without the override it is under the user's state directory: in
+	// looptender/ on a computer with no earlier files.
 	t.Setenv(DirEnv, "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
-	dir, _, err = Dir(true)
-	want := filepath.Join(home, "state", "keepgoing", "sessions")
+	base := filepath.Join(home, "state")
 	if runtime.GOOS == "darwin" {
-		want = filepath.Join(home, "Library", "Application Support", "keepgoing", "sessions")
+		base = filepath.Join(home, "Library", "Application Support")
 	}
-	if err != nil || dir != want {
+	dir, _, err = Dir(true)
+	if want := filepath.Join(base, "looptender", "sessions"); err != nil || dir != want {
 		t.Fatalf("%s %v, want %s", dir, err, want)
+	}
+}
+
+// A computer that already has the tool's directory under its earlier name
+// keeps its claims there, wherever that directory is: a build from before
+// the rename, and every other loop, take their claims in the same place.
+func TestDirKeepsTheEarlierDirectory(t *testing.T) {
+	for _, where := range []string{"state", "config"} {
+		t.Run(where, func(t *testing.T) {
+			t.Setenv(DirEnv, "")
+			t.Setenv("KEEPGOING_SESSION_DIR", "")
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+			t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+			t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+			config, err := userdir.ConfigHome()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := userdir.StateHome()
+			if err != nil {
+				t.Fatal(err)
+			}
+			earlier := filepath.Join(map[string]string{"state": state, "config": config}[where], "keepgoing")
+			if err := os.MkdirAll(earlier, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			dir, _, err := Dir(true)
+			if want := filepath.Join(state, "keepgoing", "sessions"); err != nil || dir != want {
+				t.Fatalf("%s %v, want %s", dir, err, want)
+			}
+			if _, err := os.Lstat(filepath.Join(state, "looptender")); err == nil {
+				t.Fatal("a looptender directory was made beside the earlier one")
+			}
+		})
 	}
 }
 

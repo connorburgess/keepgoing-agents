@@ -16,9 +16,11 @@ The wizard shows the target, project, account directory when explicitly selected
 
 It writes `keepgoing.yaml`, `prompt.md`, and, if needed, `fallbacks.yaml` into a **new** directory beneath the OS user configuration directory:
 
-- macOS: `~/Library/Application Support/keepgoing/loops/<name>`
-- Linux: `$XDG_CONFIG_HOME/keepgoing/loops/<name>` or `~/.config/keepgoing/loops/<name>`
-- Windows: `%AppData%\keepgoing\loops\<name>`
+- macOS: `~/Library/Application Support/looptender/loops/<name>`
+- Linux: `$XDG_CONFIG_HOME/looptender/loops/<name>` or `~/.config/looptender/loops/<name>`
+- Windows: `%AppData%\looptender\loops\<name>`
+
+On a computer that already has a `keepgoing` directory from before the rename, the directory is `keepgoing/loops/<name>` in the same place; see [per-user directories](configuration.md#per-user-directories).
 
 Runtime state will live in that directory's `state` subdirectory. `--directory` selects a different new directory. Setup refuses paths inside the project or any Git checkout, including paths reached through existing symlinks, and refuses existing destinations even if empty. New directories use mode `0700` and files use `0600` on Unix; existing parent permissions are preserved. On Windows, filesystem ACLs govern access. Tasks and account configuration paths stay outside the checkout; account files are never copied.
 
