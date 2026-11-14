@@ -27,7 +27,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"s"}' \
 `
 
 // A manual check of a Claude candidate records the reading its probe carried.
-// The Codex candidate's healthy probe carries none, and the primary was never
+// The fake Codex app-server has no reading, and the primary was never
 // probed, so both stay unavailable.
 func TestUsageReadingsInFallbacksListAndStatus(t *testing.T) {
 	f := newFixture(t)
@@ -52,8 +52,8 @@ func TestUsageReadingsInFallbacksListAndStatus(t *testing.T) {
 		t.Fatalf("check: %d %s", code, errs)
 	}
 	probes := f.read("probes")
-	if strings.Count(probes, "\n") != 2 || !strings.Contains(probes, "--output-format stream-json --verbose") {
-		t.Fatalf("one probe per candidate, no extra calls: %q", probes)
+	if strings.Count(probes, "\n") != 3 || strings.Count(probes, "codex exec ") != 1 || strings.Count(probes, "codex app-server") != 1 || !strings.Contains(probes, "--output-format stream-json --verbose") {
+		t.Fatalf("one model probe per candidate plus one structured read: %q", probes)
 	}
 	want := "claude-other-account: example_window 80% resets 2030-03-17 18:46Z allowed_warning; seven_day 22% resets 2030-03-17 17:46Z allowed; observed under a minute ago (claude_rate_limit_event)\n"
 	for _, cmd := range [][]string{{"fallbacks", "list"}, {"status"}} {
@@ -172,7 +172,7 @@ func TestUsageReadingIsDisplayOnlyAndGoesStale(t *testing.T) {
 }
 
 // Each check whose probe carries a reading adds it to the history; no extra
-// probe or provider call is made for it. Two readings are too few for a rate,
+// model call is made for it (Codex adds a structured read). Two readings are too few for a rate,
 // and the line says once where the route's readings come from.
 func TestUsageHistoryFromChecksAndProjectionLines(t *testing.T) {
 	f := newFixture(t)
@@ -182,8 +182,8 @@ func TestUsageHistoryFromChecksAndProjectionLines(t *testing.T) {
 			t.Fatalf("check: %d %s", code, errs)
 		}
 	}
-	if probes := f.read("probes"); strings.Count(probes, "\n") != 4 {
-		t.Fatalf("one probe per candidate per check, no extra calls: %q", probes)
+	if probes := f.read("probes"); strings.Count(probes, "\n") != 6 || strings.Count(probes, "codex exec ") != 2 || strings.Count(probes, "codex app-server") != 2 {
+		t.Fatalf("one model probe per candidate per check plus one structured read: %q", probes)
 	}
 	reg, err := health.Load(filepath.Join(f.dir, "state"))
 	if err != nil {
@@ -304,5 +304,65 @@ func TestProjectionWording(t *testing.T) {
 	headless := config.Candidate{ID: "headless", Agent: config.Agent{Adapter: "claude", Provider: "claude-code"}}
 	if !usageOf(nil, headless, d(11), allowance.DisplayRules(0)).ProbesOnly {
 		t.Fatal("a headless route's readings also come only from probes today")
+	}
+}
+
+// Exercise the real stdio lookup, persistence and display together without a
+// provider. A later broken lookup must not freshen the older reading.
+func TestSuccessfulCodexUsageReadAndUnavailableRefresh(t *testing.T) {
+	f := newFixture(t)
+	cli := filepath.Join(f.dir, "bin", "codex")
+	write(t, cli, `#!/bin/sh
+echo "codex $*" >> "$FAKE_BB/probes"
+if [ "$1" = app-server ]; then
+ while IFS= read -r line; do
+  case "$line" in
+   *'"id":1'*) echo '{"id":1,"result":{}}' ;;
+   *'"id":2'*) echo '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":40,"resetsAt":1900000000}}}}' ;;
+  esac
+ done
+else
+ echo '{"type":"turn.completed","usage":{}}'
+fi
+`, 0o755)
+	if code, out, errs := f.run("fallbacks", "check"); code != exitOK {
+		t.Fatalf("check: %d %s %s", code, out, errs)
+	}
+	calls := f.read("probes")
+	if strings.Count(calls, "codex exec ") != 1 || strings.Count(calls, "codex app-server") != 1 {
+		t.Fatalf("extra model call or missing structured read: %s", calls)
+	}
+	reg, err := health.Load(filepath.Join(f.dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := reg.Candidates["codex-main"].Usage
+	if !before.Available() {
+		t.Fatal("missing reading")
+	}
+	write(t, cli, `#!/bin/sh
+if [ "$1" = app-server ]; then exit 1; fi
+echo '{"type":"turn.completed","usage":{}}'
+`, 0o755)
+	if code, _, errs := f.run("fallbacks", "check"); code != exitOK {
+		t.Fatalf("failed usage read changed health: %d %s", code, errs)
+	}
+	reg, err = health.Load(filepath.Join(f.dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := reg.Candidates["codex-main"]
+	if !entry.Last.OK || !entry.Usage.At.Equal(before.At) {
+		t.Fatalf("reading refreshed or health changed: %+v", entry)
+	}
+	for _, command := range [][]string{{"fallbacks", "list", "--json"}, {"status", "--json"}} {
+		_, out, _ := f.run(command...)
+		if !strings.Contains(out, `"source": "codex_rate_limits_read"`) || !strings.Contains(out, `"used": 0.4`) {
+			t.Fatalf("missing usage in %v: %s", command, out)
+		}
+	}
+	_, out, _ := f.run("fallbacks", "list", "--json", "-now", "2030-03-18T00:00:00Z")
+	if !strings.Contains(out, `"state": "stale"`) {
+		t.Fatalf("older reset reading not stale: %s", out)
 	}
 }

@@ -209,7 +209,7 @@ func TestEndToEndRateLimitHandoff(t *testing.T) {
 	if v["action"] != "wake" || !strings.Contains(f.read("thr_primary.told"), "Continue the fictional loop.") {
 		t.Fatalf("wake: %v", v)
 	}
-	if probes := f.read("probes"); strings.Count(probes, "\n") != 2 || !strings.Contains(probes, "--model claude-haiku-5-5") {
+	if probes := f.read("probes"); strings.Count(probes, "\n") != 3 || strings.Count(probes, "codex exec ") != 1 || strings.Count(probes, "codex app-server") != 1 || !strings.Contains(probes, "--model claude-haiku-5-5") {
 		t.Fatalf("scheduled probes: %q", probes)
 	}
 
