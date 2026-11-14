@@ -181,7 +181,7 @@ func UpdateChecked(stateDir string, fn func(*File) error) (File, error) {
 // CheckControlPath refuses file aliases whose lock would belong to a different
 // state directory. A symlink to the state directory itself shares its locks.
 func CheckControlPath(stateDir string) error {
-	info, err := os.Lstat(filepath.Join(stateDir, FileName))
+	info, err := snapshot.Lstat(filepath.Join(stateDir, FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

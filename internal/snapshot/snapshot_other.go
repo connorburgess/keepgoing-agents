@@ -13,3 +13,7 @@ func Replace(source, target string) error { return os.Rename(source, target) }
 
 // ReplaceStrict is Replace; the two differ only on Windows.
 func ReplaceStrict(source, target string) error { return os.Rename(source, target) }
+
+// Lstat is os.Lstat. On Windows it asks again before believing a record that
+// is replaced by rename is missing.
+func Lstat(path string) (os.FileInfo, error) { return os.Lstat(path) }
