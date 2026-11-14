@@ -891,7 +891,7 @@ func panelStatusCommand(e env, args []string) int {
 			fmt.Fprintf(e.stdout, "It stops by itself after %s without a page reading from it: in about %s if nothing does.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
 		}
 		if st.ChangesAllowed {
-			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
+			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, and replace the file that runs a loop's checks with its own build, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
 		} else {
 			fmt.Fprintln(e.stdout, "Read-only: started without --allow-changes.")
 		}

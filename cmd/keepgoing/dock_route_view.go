@@ -629,6 +629,14 @@ func dockControlPhrase(r incident.Record) string {
 	add(b.Paused, a.Paused, "paused", "pause released")
 	add(b.AwaitingUser, a.AwaitingUser, "held for a person", "hold for a person released")
 	add(b.Completed, a.Completed, "marked finished", "finished mark removed")
+	if c := r.ControlChange; c != nil && len(parts) == 0 {
+		switch c.Operation {
+		case "panel_replace_build":
+			return "The file that runs its checks was replaced with the panel's build, from the panel"
+		case "panel_undo_replace_build":
+			return "The file that runs its checks was restored from its backup, from the panel"
+		}
+	}
 	if len(parts) == 0 {
 		return "A control change was saved; no hold changed"
 	}

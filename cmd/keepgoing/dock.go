@@ -466,6 +466,8 @@ func (d *dockReader) readLoop(ctx context.Context, dir string, entry registry.En
 	in.Daemon = daemon
 	if d.versions {
 		in.ServiceFile = d.services.compare(ctx, entry.StateDir)
+		bc, _ := buildAssess(entry.StateDir, daemon)
+		in.BuildChange = &bc
 	}
 	if in.Client.Snapshot == nil {
 		return in

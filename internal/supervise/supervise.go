@@ -39,6 +39,11 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// Executable is the absolute path of the file running this check. Each
+	// real check records it privately (state.CheckExecutableName), so a
+	// panel allowed to make changes can offer to replace that file with its
+	// own build. Empty records nothing.
+	Executable string
 	// StopOnly: the check is run by a command that carries out a stop at once
 	// (keepgoing stop --now). It does nothing unless a stop is requested.
 	StopOnly bool
@@ -2082,6 +2087,10 @@ func (t *tick) record(actErr error) error {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
 		return errors.Join(actErr, err)
+	}
+	if t.opts.Executable != "" && !t.opts.DryRun {
+		// Best effort: the record only lets a panel offer a replacement.
+		_ = state.SaveCheckExecutable(t.loop.StateDir, t.opts.Executable, t.opts.Version, t.now)
 	}
 	// A return to the primary happened only once it is saved; the history
 	// records it from here, whatever the check's outcome.
