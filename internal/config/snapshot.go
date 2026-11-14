@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	snapfile "github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
@@ -85,6 +86,25 @@ func (c *Config) CheckSources() error {
 	return nil
 }
 
+// ReadAt is when Load read this configuration's file; zero for one parsed
+// from memory.
+func (c *Config) ReadAt() time.Time { return c.readAt }
+
+// SourcesUnavailable reports that a file this configuration was read from can
+// no longer be read at all: removed, renamed, no longer a regular file, or
+// not readable. A file that can be read but has changed is not unavailable:
+// it says what the loop should do now. A source that was absent when the
+// configuration was read, and a configuration parsed from memory, are never
+// unavailable.
+func (c *Config) SourcesUnavailable() bool {
+	for _, s := range []sourceSnapshot{c.source, fallbackSource(c), c.routesSource} {
+		if s.path != "" && !s.absent && sourceUnreadable(s.path) {
+			return true
+		}
+	}
+	return false
+}
+
 // Path is the absolute path Load read this configuration from; empty for a
 // configuration parsed from memory.
 func (c *Config) Path() string { return c.source.path }
@@ -108,4 +128,24 @@ func fallbackSource(c *Config) sourceSnapshot {
 		return sourceSnapshot{}
 	}
 	return c.FallbackSet.source
+}
+
+// Unlike a snapshot, this check does not treat a readable file over the size
+// limit as unavailable: it may be an invalid edit, not a missing source.
+func sourceUnreadable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	f, err := snapfile.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
+	_, err = io.Copy(io.Discard, io.LimitReader(f, (1<<20)+1))
+	return err != nil
 }

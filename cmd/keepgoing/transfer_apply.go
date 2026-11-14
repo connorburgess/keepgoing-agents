@@ -24,6 +24,13 @@ func checkTransferSources(cfg *config.Config, allowStop bool) error {
 	if err := cfg.CheckSources(); err != nil {
 		return err
 	}
+	return checkTransferRecord(cfg, allowStop)
+}
+
+// checkTransferRecord is checkTransferSources without the check that the
+// configuration's files are unchanged: the control record, the pending
+// transfer rule and the transferred BB target.
+func checkTransferRecord(cfg *config.Config, allowStop bool) error {
 	if info, err := os.Lstat(filepath.Join(cfg.Loop.StateDir, control.FileName)); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("control.json must not be a symlink; use the original state directory")
 	}
