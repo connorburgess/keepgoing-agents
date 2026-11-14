@@ -47,6 +47,13 @@ func TestMain(m *testing.M) {
 	// sets its own. A binary a test runs gets the same environment.
 	os.Setenv("XDG_STATE_HOME", filepath.Join(private, "xdg-state"))
 	home := os.Getenv("HOME")
+	realConfigHome := buildUserConfigHome
+	buildUserConfigHome = func() (string, error) {
+		if os.Getenv("HOME") != home {
+			return realConfigHome()
+		}
+		return filepath.Join(private, "config"), nil
+	}
 	realStateBase := panelStateBase
 	panelStateBase = func() (string, error) {
 		if os.Getenv("HOME") != home {

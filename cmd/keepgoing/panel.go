@@ -82,7 +82,8 @@ type panelRecord struct {
 	Version  string `json:"version"`
 	// Changes: started with --allow-changes. Since StartedAt, as the mode
 	// never changes while the server runs.
-	Changes bool `json:"changes,omitempty"`
+	Changes        bool   `json:"changes,omitempty"`
+	BuildAuthority string `json:"buildAuthority,omitempty"`
 }
 
 var (
@@ -357,7 +358,8 @@ func writePanelRecord(dir string, rec panelRecord) error {
 
 // panelRequest is one message on the private socket.
 type panelRequest struct {
-	Op string `json:"op"` // open, status or stop
+	CallerKind string `json:"callerKind,omitempty"`
+	Op         string `json:"op"` // open, status or stop
 	// Key is the page key of the loop to open; empty opens the overview.
 	Key string `json:"key,omitempty"`
 	// File asks for the opening as a private file to hand to a browser
@@ -504,11 +506,11 @@ type panelOptions struct {
 }
 
 // panelServerEnvironment is everything the background server is given: where
-// the user's files are, a fixed search path, and the locale and time zone.
+// the user's files are, the startup BB identity, a fixed search path, and the locale and time zone.
 // Nothing else the caller had in its environment reaches it.
 func panelServerEnvironment() []string {
 	env := []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
-	for _, name := range []string{"HOME", "USER", "LOGNAME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+	for _, name := range []string{"BB_THREAD_ID", "HOME", "USER", "LOGNAME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
 		if v, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+v)
 		}
@@ -611,7 +613,11 @@ func panelRemoveLeftovers(dir string) {
 // reply is still only ever a loopback opening address for the server's own
 // port, or the name of a launch page inside the private directory.
 func panelRequestOpening(ctx context.Context, dir string, rec panelRecord, key string, asFile bool) (string, error) {
-	reply, err := panelControl(ctx, dir, panelRequest{Op: "open", Key: key, File: asFile})
+	if rec.Changes && !panelBuildReuseAllowed(rec, panelCallerKind()) {
+		return "", errors.New("panel build authority differs or is unknown; explicitly stop and restart the panel")
+	}
+
+	reply, err := panelControl(ctx, dir, panelRequest{Op: "open", Key: key, File: asFile, CallerKind: panelCallerKind()})
 	if err != nil {
 		return "", err
 	}
@@ -674,7 +680,7 @@ const panelUsage = `Usage: keepgoing panel [--loop NAME] [--no-open] [--idle 30m
 Open the keepgoing panel, the page about every registered loop, in your
 browser. The panel's background process, for this computer only, is started when
 none is running and stops by itself when unused. It is read-only unless it was started
-with --allow-changes, which lets the page pause, stop and resume loops, each
+with --allow-changes, which lets the page pause, stop and resume loops and replace a loop’s own build, each
 after a review and a confirmation. Supervision is not affected by starting,
 stopping or closing it.`
 
@@ -703,7 +709,7 @@ func panelCommand(e env, args []string) int {
 	refresh := fs.Duration("refresh", dockDefaultRefresh, "how often the page reads again (5s to 10m)")
 	staleAfter := fs.Duration("stale-after", defaultStaleAfter, "age at which a check or child listing is shown as stale")
 	offline := fs.Bool("offline", false, "do not ask each loop's local daemon for its next check")
-	changes := fs.Bool("allow-changes", false, "let the page pause, stop and resume loops (a panel this command starts; a running one keeps its own mode)")
+	changes := fs.Bool("allow-changes", false, "let the page pause, stop and resume loops and replace a loop’s own build (a panel this command starts; a running one keeps its own mode)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(e.stdout, panelUsage)
@@ -728,6 +734,13 @@ func panelCommand(e env, args []string) int {
 		return exitUsage
 	}
 	if *panelDir == "" {
+		if legacy, running := panelLegacyRunning(); running {
+			presence, old := panelFind(e.ctx, legacy)
+			if presence != panelRunning || ((old.Changes || *changes) && !panelBuildReuseAllowed(old, panelCallerKind())) {
+				e.errf("panel: legacy panel build authority differs or is unknown; explicitly stop the panel before restarting it")
+				return exitFailed
+			}
+		}
 		if legacy, stopped := panelRetireLegacy(); stopped {
 			fmt.Fprintf(e.stdout, "Stopped a panel an earlier build started at %s.\n", legacy)
 		}
@@ -748,6 +761,10 @@ func panelCommand(e env, args []string) int {
 	_ = lk.Release()
 	if err != nil {
 		e.errf("panel: %v", err)
+		return exitFailed
+	}
+	if rec.Changes && !panelBuildReuseAllowed(rec, panelCallerKind()) {
+		e.errf("panel: build authority differs from this caller or is unknown; stop the panel explicitly and restart it from the intended person or agent")
 		return exitFailed
 	}
 	if !started {
@@ -784,7 +801,7 @@ func panelCommand(e env, args []string) int {
 	}
 	mode := ""
 	if rec.Changes {
-		mode = " Changes are allowed from the page: pause, stop and resume, each after a review. " + panelExposure + " keepgoing panel stop turns them off."
+		mode = " Changes are allowed from the page: pause, stop, resume and replace a loop’s own build, each after a review. " + panelExposure + " keepgoing panel stop turns them off."
 	}
 	if browser == nil {
 		fmt.Fprintf(e.stdout, why+"Open this address in a browser on this computer within 30 seconds. It works once:\n\n  %s\n\nAnyone who can read this terminal can use it during those 30 seconds. Run keepgoing panel again for a new one. keepgoing panel stop ends the panel's background process; supervision is not affected.%s\n", opening, mode)
@@ -891,7 +908,7 @@ func panelStatusCommand(e env, args []string) int {
 			fmt.Fprintf(e.stdout, "It stops by itself after %s without a page reading from it: in about %s if nothing does.\n", idle, (time.Duration(*st.IdleRemainingSeconds) * time.Second).Round(time.Minute))
 		}
 		if st.ChangesAllowed {
-			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
+			fmt.Fprintf(e.stdout, "Changes allowed for %s: the page can pause, stop and resume loops, and replace a loop's own build, each after a review. %s keepgoing panel stop turns them off.\n", dockSpan(time.Duration(*st.ChangesAllowedSeconds)*time.Second), panelExposure)
 		} else {
 			fmt.Fprintln(e.stdout, "Read-only: started without --allow-changes.")
 		}
@@ -1115,4 +1132,16 @@ func panelListCommand(e env, args []string) int {
 		return exitFailed
 	}
 	return exitOK
+}
+
+// This class is captured in the running process record and carried by each
+// socket opening. Missing/old authority never grants a build-capable opening.
+func panelCallerKind() string {
+	if os.Getenv("BB_THREAD_ID") != "" {
+		return "agent"
+	}
+	return "person"
+}
+func panelBuildReuseAllowed(rec panelRecord, caller string) bool {
+	return (caller == "person" || caller == "agent") && rec.BuildAuthority == caller
 }

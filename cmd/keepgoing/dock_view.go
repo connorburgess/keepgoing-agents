@@ -193,6 +193,9 @@ type dockLoop struct {
 	// Versions is what else the read found about the builds the loop runs:
 	// its daemon's label and its service's file. The Versions view lists them.
 	Versions dockLoopVersions `json:"versions"`
+	// BuildChange is what may be done about the file that runs its checks;
+	// offered as a button only by a panel started with --allow-changes.
+	BuildChange *dockBuildChange `json:"buildChange,omitempty"`
 	// Can is which changes fit the loop's control flags as read: pause when
 	// not paused, stop when no stop is requested, resume when any hold is
 	// set. Empty when the flags could not be read. A page offers them only
@@ -893,6 +896,10 @@ type dockInput struct {
 	// view was not asked for.
 	Daemon      daemonStatus
 	ServiceFile string
+	// BuildChange is what a panel allowed to make changes could do about
+	// the file that runs the loop's checks (replace_build.go); nil when the
+	// Versions view was not asked for.
+	BuildChange *dockBuildChange
 	// LaneTitles is the loop's private lane-titles file; nil when missing or
 	// unusable.
 	LaneTitles *state.LaneTitles
@@ -1308,6 +1315,20 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		need = &dockNeed{Kind: "overdue", Reason: "Its checks have stopped: " + snap.Runtime.OverdueMessage + ".",
 			Action: "Find out why no check has run, and start its scheduler again if it stopped; the next check ends this.", Since: snap.Runtime.CheckedAt, SinceEvidence: "last_check"}
 	}
+	// After this panel replaced the file that runs its checks: a check that
+	// failed since, or checks that stopped coming, is said with the
+	// replacement, and its page offers Undo.
+	if bc := in.BuildChange; bc != nil && !bc.updatedAt.IsZero() {
+		when := bc.updatedAt
+		switch {
+		case need != nil && need.Kind == "overdue":
+			need.Reason += " The file that runs its checks was replaced from this panel before they stopped."
+			need.Action = "Look at the loop's page, where the replacement can be undone, and start its scheduler again if it stopped."
+		case need == nil && st != nil && st.State.LastCheck != nil && st.State.LastCheck.At.After(when) && st.State.LastCheck.Outcome == "failed":
+			need = &dockNeed{Kind: "build_replaced", Reason: "Its last check, since the file that runs its checks was replaced from this panel, failed.",
+				Action: "Look at the check on the loop's page; undo the replacement there if the new build is the cause.", Since: &when, SinceEvidence: "last_check"}
+		}
+	}
 	if need != nil {
 		need.Key, need.Loop = l.Key, l.Name
 		if need.Since != nil {
@@ -1330,6 +1351,7 @@ func projectDockLoop(in dockInput, now time.Time, staleAfter time.Duration, iden
 		l.Versions.Daemon = in.Daemon.version
 	}
 	l.Versions.Service = in.ServiceFile
+	l.BuildChange = in.BuildChange
 	l.PickerState = l.Phrase
 	if st != nil {
 		np := st.NoProgress

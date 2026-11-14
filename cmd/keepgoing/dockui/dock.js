@@ -571,6 +571,7 @@
     dl.appendChild(fact("Next check", nextCheck(l.nextCheck)));
     dl.appendChild(fact("Limits", limits(l.limits, l.limitWait)));
     if (l.build && l.build.text) dl.appendChild(fact("Build", l.build.availability === "unknown" || l.build.availability === "not_recorded" ? unknown(l.build.text) : el("span", null, l.build.text)));
+    if (l.buildChange && l.buildChange.text) dl.appendChild(fact("Its file", el("span", l.buildChange.pending ? "c-warn" : null, l.buildChange.text)));
     if (l.noProgress) {
       var np = l.noProgress, pf = frag();
       pf.appendChild(np.availability === "not_available" ? unknown(np.text) : el("span", null, np.text));
@@ -730,13 +731,16 @@
       return box;
     }
     var can = list(l.can);
-    if (!can.length) return c ? box : null;
+    // The build change, for one loop only, labelled by the server.
+    var bc = !all && l.buildChange && l.buildChange.action ? l.buildChange : null;
+    if (!can.length && !bc) return c ? box : null;
     var actions = el("div", "change-buttons");
     actions.setAttribute("role", "group");
     actions.setAttribute("aria-label", all ? "Change every loop" : "Change this loop");
     can.forEach(function (a) {
       if (ACTION_LABEL[a]) actions.appendChild(button(ACTION_LABEL[a] + (all ? " all…" : "…"), "act-" + a, "", function () { prepareChange(l.key, a); }));
     });
+    if (bc) actions.appendChild(button(bc.label + "…", "act-" + bc.action, "", function () { prepareChange(l.key, bc.action); }));
     box.appendChild(actions);
     return box;
   }

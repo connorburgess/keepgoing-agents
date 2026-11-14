@@ -136,7 +136,17 @@ func daemonOf(ctx context.Context) supervise.DaemonInfo {
 // scheduler identity, and the daemon running it, when one is.
 func tickOptions(e env, cfg *config.Config, dryRun bool) supervise.Options {
 	return supervise.Options{Version: version, DryRun: dryRun, Reporter: reporter(e, cfg), Routine: suppliedRoutine(e.ctx),
-		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx)}
+		RoutineIgnored: e.ctx.Value(routineIgnoredKey{}) != nil, Daemon: daemonOf(e.ctx), Executable: checkExecutable(), ExecutableImage: processExecutableImage}
+}
+
+// Capture once during process initialization, before a command or check starts.
+var processExecutableImage = state.CaptureExecutableImage()
+
+func checkExecutable() string {
+	if processExecutableImage == nil {
+		return ""
+	}
+	return processExecutableImage.Path
 }
 
 // tickOnce runs one pass under the tick lock.
