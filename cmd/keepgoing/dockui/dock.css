@@ -360,7 +360,8 @@ h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.005em; font-weight: 650; 
 .change-result { margin: 0; padding: 0.5rem 0.75rem; border-radius: 8px; max-width: 70ch; }
 .change-result.is-done { background: var(--good-soft); }
 .change-result.is-refused, .change-result.is-review_again { background: var(--sunk); }
-.change-result.is-uncertain { background: var(--warn-soft); }
+.change-result.is-uncertain, .change-result.is-partial { background: var(--warn-soft); }
+.change-lines { margin: 0.5rem 0 0; padding-left: 1.25rem; max-width: 70ch; }
 @media (forced-colors: active) {
   .change.is-review, .change-result { border: 1px solid CanvasText; }
   .btn.is-primary { forced-color-adjust: none; background: ButtonText; color: ButtonFace; }

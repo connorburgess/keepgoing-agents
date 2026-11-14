@@ -3,6 +3,8 @@ package supervise
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,17 @@ type ProbeFunc func(ctx context.Context, c config.Candidate, tier probe.Tier, ti
 // Options tune a tick. Zero values use the real implementations.
 type Options struct {
 	Version string // build label of the caller, for historical diagnostics
+	// StopOnly: the check is run by a command that carries out a stop at once
+	// (keepgoing stop --now). It does nothing unless a stop is requested.
+	StopOnly bool
+	// Deadline, when set and sooner than the check's own hard limit, is the
+	// check's hard limit instead: a stop carried out for a caller that has
+	// less time than a check (the page and the menu).
+	Deadline time.Time
+	// CallerThread is the BB thread the command runs in, for a stop carried
+	// out at once: if the stop covers it, it is stopped after every other
+	// target. Empty for a check, and for the panel and the menu.
+	CallerThread string
 	// SessionDir is the private directory of session claims shared by every
 	// loop this user runs; empty means session.Dir().
 	SessionDir  string
@@ -59,6 +72,11 @@ type Options struct {
 	// RoutineIgnored says the caller supplied an identity that could not be
 	// recorded. The check runs as usual and says so once.
 	RoutineIgnored bool
+	// Daemon is the daemon running this check, when one is: when it started
+	// and when its previous pass ended. A daemon that ran the last check
+	// too, with no pass since, was running through any gap: the computer
+	// slept.
+	Daemon DaemonInfo
 	// Threads creates and finds BB threads for handoffs to candidates with
 	// bb.new_thread. Swapped in tests.
 	Threads func(cli string) ThreadCreator
@@ -119,11 +137,17 @@ type Result struct {
 	// Recovery says how a re-prompt was carried out: turn_retry re-ran the
 	// failed turn by reference with no new text, prompt sent the wake text.
 	Recovery string `json:"recovery,omitempty"`
+	// Lanes is the lane work this check did under bb.children.retry_errored:
+	// counts only. Absent when it did none.
+	Lanes *state.LaneCheck `json:"lanes,omitempty"`
 	// ErroredChildren is how many direct child threads were in error.
 	// ErroredChildrenPartial: child discovery was incomplete, so the count is
 	// a lower bound. ChildErrorNote is set when this check's wake announces
 	// them. ChildErrorNoticeStopped: the notice was given up after repeated
 	// rejected sends.
+	// LaneStop is what a stop that covers the lanes did on this check, by
+	// count (keepgoing stop --lanes).
+	LaneStop                *state.LaneStop `json:"laneStop,omitempty"`
 	ErroredChildren         int             `json:"erroredChildren,omitempty"`
 	ErroredChildrenPartial  bool            `json:"erroredChildrenPartial,omitempty"`
 	ChildErrorNote          bool            `json:"childErrorNote,omitempty"`
@@ -151,6 +175,8 @@ type Result struct {
 }
 
 type tick struct {
+	heldNudge   bool      // this check held back a nudge
+	wakeAtStart time.Time // LastWakeAt as this check found it
 	// claims are the session claims this check holds, by key. A check holds
 	// its active session's claim from before it first observes it until it
 	// ends, and a fallback's or the primary's before it probes or sends there.
@@ -171,6 +197,20 @@ type tick struct {
 	// turnRetryAlreadyQueued: this check asked for a turn retry and was told
 	// one was already queued.
 	turnRetryAlreadyQueued bool
+	// lanesRetried is how many of the errored lanes keepgoing has asked BB to
+	// retry and has not given up on, after this check's lane work. The
+	// notice to the session says so.
+	lanesRetried int
+	// laneRecoveryOn: the observed target has bb.children.retry_errored set.
+	laneRecoveryOn bool
+	// lanesInRecovery are the errored lanes keepgoing is recovering or will
+	// recover, under the hashes the child-error notice record uses. It lives
+	// for one check and is never saved.
+	lanesInRecovery map[string]bool
+	// lanesPerEpisode is the active target's episode limit, for the report.
+	lanesPerEpisode int
+	// incidentLanes is this check's lane work, for the incident history.
+	incidentLanes incident.LaneWork
 	// handoffAvailable is the last engine input's view of whether a confirmed
 	// fallback could take the loop.
 	handoffAvailable bool
@@ -217,12 +257,35 @@ type tick struct {
 	unsettledBriefs     []control.Brief // briefs an earlier check recorded, outcome unknown
 	briefHold           []control.Brief // briefs named by a hold already raised for them
 	stopRequested       bool            // a stop is requested in control.json
-	stopsMade           []string        // targets this check sent a stop to
-	stBeforeRecords     state.File      // state before the records were handled, to undo them
-	quietFailure        bool            // a failure already reported by an earlier check
-	failure             *failureReport  // wording for the one error report of a failed check
-	observeSpent        time.Duration   // observation time used by a lookup for an unsettled thread creation
-	lateReports         int             // reports started after the budget was spent
+	// stopLanesFor is the request, in control.json, for the stop to cover
+	// the lanes; zero when none. laneStopsRecorded are the lanes an earlier
+	// check recorded a stop of, for this request, without saving whether it
+	// was made; laneStopReportRecorded says its report was recorded so.
+	stopLanesFor           time.Time
+	stopLanesDropQueued    bool
+	laneStopsRecorded      map[string]bool
+	laneStopReportRecorded bool
+	// parentStopped: this check stopped the supervised conversation.
+	parentStopped bool
+	// laneStop is this check's stop of the lanes, once it has walked them.
+	laneStop *state.LaneStop
+	// sendsRead: this check read the send records (countUnrecordedSends).
+	// A check that did not settles none of them.
+	sendsRead bool
+	// keepFailureCounters: this check says nothing about whether checks
+	// work (a stop-only check whose stop was lifted), so it leaves the
+	// counts of failed checks as they were.
+	keepFailureCounters bool
+	stopsMade           []string // targets this check sent a stop to
+	enabled             bool     // the loop is enabled in control.json
+	schedule            state.ScheduleInput
+	startClock          time.Time      // the check's own clock when it began
+	gap                 *state.Gap     // a gap this check is the first after, to report once recorded
+	stBeforeRecords     state.File     // state before the records were handled, to undo them
+	quietFailure        bool           // a failure already reported by an earlier check
+	failure             *failureReport // wording for the one error report of a failed check
+	observeSpent        time.Duration  // observation time used by a lookup for an unsettled thread creation
+	lateReports         int            // reports started after the budget was spent
 	lateProbed          bool
 	graphFailed         bool
 	graphClosed         bool
@@ -305,7 +368,11 @@ func Tick(ctx context.Context, cfg *config.Config, opts Options) (Result, error)
 	now := opts.Now.UTC()
 	res := Result{At: now, Loop: cfg.Loop.Name, Action: string(decide.None), DryRun: opts.DryRun}
 	t := &tick{ctx: ctx, cfg: cfg, loop: cfg.Loop, fb: cfg.FallbackSet, opts: opts, now: now, res: &res}
-	t.deadline = opts.Clock().Add(tickBudget(cfg.Loop) + checkTail)
+	t.startClock = opts.Clock()
+	t.deadline = t.startClock.Add(tickBudget(cfg.Loop) + checkTail)
+	if !opts.Deadline.IsZero() && opts.Deadline.Before(t.deadline) {
+		t.deadline = opts.Deadline
+	}
 	t.reserve = reserveFingerprint + reserveSend + reserveReports
 	if opts.Online != nil {
 		// The connectivity check is mandatory when it is needed, so its
@@ -522,12 +589,23 @@ func (t *tick) run() error {
 	}
 	res.Control = ctl.Summary()
 	t.briefHold, t.stopRequested = ctl.BriefHold, ctl.Stop
+	if ctl.Stop && ctl.StopLanesAt != nil {
+		t.stopLanesFor = ctl.StopLanesAt.UTC()
+		t.stopLanesDropQueued = ctl.StopLanesDropQueued
+	}
+	t.enabled = ctl.Enabled
 	t.incidentControl = incident.Gate(ctl.Gate())
 	if t.st, err = state.Load(loop.StateDir); err != nil {
 		return err
 	}
 	t.incidentStateLoaded = true
+	t.wakeAtStart = t.st.LastWakeAt
 	t.savedSends = t.st.SendsRecorded
+	// Whether a check was overdue is judged from the records as they were
+	// before this check, and nothing is sent or reserved for it here: the
+	// report goes out after this check is saved (see record).
+	t.schedule = t.scheduleInput(ctl)
+	t.gap = t.gapToReport()
 	if !ctl.Stop {
 		t.st.StopRequestedSent = false
 	}
@@ -542,6 +620,13 @@ func (t *tick) run() error {
 	gate := ctl.Gate()
 	if gate.Stop {
 		return t.stop(target, agent, gate)
+	}
+	if t.opts.StopOnly {
+		// A command asked for a stop and carries it out itself; a resume
+		// has lifted it since. Nothing else is done in its name.
+		res.State, res.Action, res.Reason, res.Window = "not observed", string(decide.None), "stop no longer requested; nothing done", "not checked"
+		t.keepFailureCounters = true
+		return t.record(nil)
 	}
 	if !gate.Enabled || gate.Paused || gate.AwaitingUser || gate.Completed {
 		switch {
@@ -819,6 +904,9 @@ func (t *tick) run() error {
 	if obs.State != decide.Active {
 		t.st.Nudges = 0 // the turn ended; a new one starts a fresh count
 	}
+	if t.st.Nudges == 0 {
+		t.st.HeldNudges = 0 // held-back nudges are part of the same count
+	}
 
 	failover := decide.Failover{
 		Eligible:          contains(loop.Errors.FailoverOn, string(obs.ErrorClass)),
@@ -834,11 +922,12 @@ func (t *tick) run() error {
 		ProgressTracked: len(loop.Progress.Repositories) > 0, RetrySilentFor: t.retrySilentFor(obs, target),
 		StallAfter: loop.Progress.StallAfter.Duration, MinWakeInterval: loop.Progress.MinWakeInterval.Duration,
 		Failover: failover,
-		Nudges:   t.st.Nudges, MaxNudges: loop.Progress.MaxNudges,
+		Nudges:   t.st.Nudges, HeldNudges: t.st.HeldNudges, MaxNudges: loop.Progress.MaxNudges,
 		Reprompts: t.st.Reprompts, MaxReprompts: loop.Errors.MaxReprompts,
 		SinceLastReprompt: sinceReprompt, Backoff: loop.Errors.Backoff.Duration,
 		SwitchBackReady: t.switchBackReady(target),
 	}
+	in.HungTurn = t.hungTurn(obs, progressed, in)
 	if failover.Eligible && obs.State == decide.Error && t.fb != nil && !summary.Meets {
 		t.warn("handoff refused: %d of the required %d distinct healthy fallbacks", summary.Distinct, summary.Min)
 	}
@@ -857,6 +946,18 @@ func (t *tick) run() error {
 	}
 	kept, unannounced := decide.CoveredChildren(decide.ChildHashes(obs.ErroredChildren), decide.ChildHashes(obs.HealthyChildren),
 		t.st.ChildErrorsAnnounced, !obs.ChildrenUnverified, t.now, loop.Progress.MinWakeInterval.Duration)
+	// Lane recovery runs here, before the decision, so that the decision and
+	// the notice already know which lanes are being recovered. It is gated on
+	// what the engine would decide with every unannounced lane counted, which
+	// differs from the final decision only in whether a notice is due and in
+	// what a dead network changes, and lane work waits for the network itself.
+	in.UnannouncedErroredChildren = len(unannounced)
+	in.ChildErrorNoticeAttempts, in.MaxChildErrorNotices = t.st.ChildErrorNoticeAttempts, loop.Errors.MaxReprompts
+	t.recoverLanes(a, agent, obs, decide.Decide(in), inWindow)
+	// A lane keepgoing is recovering is not announced to the session: there
+	// is nothing for it to do yet. It is announced like any other the moment
+	// it is given up or turns out not to be retryable.
+	unannounced = t.lanesNotInRecovery(unannounced)
 	t.childNoticeKept, t.childNoticeNew = kept, unannounced
 	if !t.opts.DryRun {
 		t.st.ChildErrorsAnnounced = kept
@@ -890,7 +991,7 @@ func (t *tick) run() error {
 	// switch-back does not trigger a check, but is not sent when this check
 	// has already found the network down.
 	recovering := obs.State == decide.Error || obs.State == decide.Active
-	needsNetwork := d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
+	needsNetwork := d.HeldNudge || d.Action == decide.Reprompt || d.Action == decide.Handoff || d.Action == decide.Nudge || (recovering && d.Action == decide.AwaitUser)
 	sendsAnyway := d.Action == decide.Wake || d.Action == decide.SwitchBack || obs.State == decide.Active
 	if (needsNetwork && t.networkDown()) || (sendsAnyway && t.networkGated) {
 		in.NetworkDown = true
@@ -1031,6 +1132,9 @@ func (t *tick) run() error {
 func (t *tick) stop(target string, agent config.Agent, gate decide.Control) error {
 	res := t.res
 	res.Window = "not checked"
+	// A stop takes no fingerprint and sends no prompt: of the time kept back
+	// for the mandatory steps, only one report's remains.
+	t.reserve = min(t.reserve, minReportTime)
 	// Stop wins over every other rule. It waits only while another loop's
 	// live check holds the session, which the claim proves; if the claim
 	// cannot be taken for any other reason, the stop goes ahead without it.
@@ -1059,6 +1163,9 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	t.awaitingInput = obs.AwaitingInput
 	if err != nil {
 		res.State, res.Reason = string(decide.Unknown), "stop requested; could not verify state"
+		// The lanes are found and stopped on their own: stop wins.
+		t.stopLanes(a)
+		t.finishLaneStop(parentNotObserved)
 		return t.record(err)
 	}
 	res.State = string(obs.State)
@@ -1090,7 +1197,12 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			}
 			stopped = append(stopped, id)
 		}
-		stopOne(target, a)
+		// The caller's own thread is stopped last: its stop may end the
+		// command that carries the stop out.
+		own := t.isCaller(agent)
+		if !own {
+			stopOne(target, a)
+		}
 		seen := map[string]bool{target: true}
 		for _, b := range briefs {
 			if seen[b.Target] {
@@ -1126,7 +1238,18 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 			}
 			stopOne(b.Target, ba)
 		}
+		t.stopLanes(a)
+		if own {
+			t.warn("this command runs in %s; it is stopped last", target)
+			stopOne(target, a)
+		}
+		parent := parentStopFailed
+		if slices.Contains(stopped, target) {
+			parent = parentStopped
+		}
 		t.stopsMade = stopped
+		// After the supervised thread's own stop, so the report says how it went.
+		t.finishLaneStop(parent)
 		if len(errs) == 0 && !waiting {
 			t.st.StopRequestedSent = true // otherwise the next check stops them all again
 		}
@@ -1140,6 +1263,8 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	if len(t.unsettledBriefs) > 0 {
 		// Already stopped for this request: hold for the new briefs.
 		t.st.LastState = string(obs.State)
+		t.stopLanes(a)
+		t.finishLaneStop(parentStoppedEarlier)
 		return t.record(t.holdForBriefs())
 	}
 	d := t.decide("stop", decide.Input{Obs: obs, Control: gate})
@@ -1148,10 +1273,31 @@ func (t *tick) stop(target string, agent config.Agent, gate decide.Control) erro
 	}
 	res.Action, res.Reason = string(d.Action), d.Reason
 	var actErr error
-	if !t.opts.DryRun && d.Action == decide.Stop {
+	parent := parentNotRunning
+	if t.st.StopRequestedSent {
+		parent = parentStoppedEarlier
+	}
+	stopParent := !t.opts.DryRun && d.Action == decide.Stop
+	caller := stopParent && t.isCaller(agent)
+	if caller {
+		// The caller's own thread is stopped last: its stop may end the
+		// command that carries the stop out.
+		t.stopLanes(a)
+		t.warn("this command runs in %s; it is stopped last", target)
+	}
+	if stopParent {
 		actErr = t.act(a, d)
+		parent = parentStopped
+		if actErr != nil {
+			parent = parentStopFailed
+		}
 	}
 	t.st.LastState = string(obs.State)
+	if !caller {
+		t.stopLanes(a)
+	}
+	// After the supervised thread's own stop, so the report says how it went.
+	t.finishLaneStop(parent)
 	return t.record(actErr)
 }
 
@@ -1194,7 +1340,48 @@ func (t *tick) scheduledProbes(active, activeGroup string) (ran int) {
 			t.report("probe_failed", fmt.Sprintf("%s: scheduled probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
 		}
 	}
+	if t.timingProbe() {
+		ran++
+	}
 	return ran
+}
+
+// timingProbe runs the first route's usage-aware timing probe when it is due.
+// It is the one scheduled probe of a route in use: the owner turned timing on
+// to read that allowance. It runs under the same conditions as the other
+// scheduled probes, counts against the route's own daily cap, and only
+// collects a reading; nothing decides from it.
+func (t *tick) timingProbe() bool {
+	if !t.loop.TimingOn() || t.fb == nil || t.reg == nil {
+		return false
+	}
+	c := t.loop.PrimaryCandidate()
+	due, _, near := t.reg.TimingProbe(c, *t.loop.Timing, t.fb.Probe, probe.UsageIdentity(c), t.now)
+	if !due {
+		return false
+	}
+	if t.networkDown() {
+		t.skipProbe(c.ID, probe.Scheduled, "network_down")
+		return false
+	}
+	if t.left() < t.fb.Probe.Timeout.Duration {
+		t.skipProbe(c.ID, probe.Scheduled, "tick_timeout")
+		return false
+	}
+	r := t.opts.Probe(t.ctx, c, probe.Scheduled, t.fb.Probe.Timeout.Duration)
+	r.At, r.Tier = t.now, probe.Scheduled
+	t.reg.Record(c.ID, r)
+	t.probeSucceeded = t.probeSucceeded || r.OK
+	if near != nil {
+		t.reg.MarkNearReset(c.ID, *near, t.now)
+	}
+	t.keepFailure(c.ID, r)
+	t.res.Probes = append(t.res.Probes, ProbeNote{ID: c.ID, Tier: r.Tier, OK: r.OK, ErrorClass: r.ErrorClass, Detail: r.Detail})
+	t.incidentProbes.Add(c.ID, string(r.Tier), r.OK, r.ErrorClass)
+	if !r.OK {
+		t.report("probe_failed", fmt.Sprintf("%s: timing probe of %s failed (%s)", t.loop.Name, c.ID, r.ErrorClass), map[string]any{"candidate": c.ID, "probe": r})
+	}
+	return true
 }
 
 // handoff tries healthy candidates in order. Each must pass an exact-target
@@ -1508,6 +1695,20 @@ func (t *tick) keepFailure(id string, r probe.Result) {
 
 func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 	loop := t.loop
+	if d.HeldNudge {
+		// Recorded exactly as a nudge is, and not sent: the stall rule's
+		// spacing, count and hold then follow as if it had been.
+		c := decide.Attempted(decide.Nudge, decide.Counters{
+			Nudges: t.st.Nudges, Reprompts: t.st.Reprompts, LastSendAt: t.st.LastWakeAt, LastRepromptAt: t.st.LastRepromptAt,
+		}, t.now)
+		t.st.Nudges, t.st.Reprompts, t.st.LastWakeAt, t.st.LastRepromptAt = c.Nudges, c.Reprompts, c.LastSendAt, c.LastRepromptAt
+		t.st.HeldNudges++
+		t.st.LastHeldNudgeAt, t.heldNudge = t.now, true
+		if t.st.HungTurn != nil {
+			t.st.HungTurn.HeldNudges++
+		}
+		return nil
+	}
 	switch d.Action {
 	case decide.Wake, decide.Nudge, decide.Reprompt:
 		reserved := false
@@ -1532,9 +1733,9 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		childErrors := decide.ChildErrorNote(t.decisionInput, d)
 		if d.ChildErrorWake {
 			// Notice only: the parent is waiting on other children on purpose.
-			text = prompt.ChildErrorsOnly(childErrors, t.decisionInput.Obs.ActiveChildren)
+			text = prompt.ChildErrorsOnlyRetried(childErrors, t.decisionInput.Obs.ActiveChildren, t.lanesRetried)
 		} else {
-			text = prompt.WithChildErrors(text, childErrors)
+			text = prompt.WithChildErrorsRetried(text, childErrors, t.lanesRetried)
 		}
 		if !reserved {
 			if _, err := t.reserveSend(string(d.Action), t.res.Target); err != nil {
@@ -1547,6 +1748,10 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 		}
 		err = t.send(a, text, mode, t.res.Target, string(d.Action))
 		t.reserve = reserveReports + t.reserveNetwork // the send has been made
+		var refused adapter.ErrNotStarted
+		if errors.As(err, &refused) {
+			return t.startRefused(refused.Reason)
+		}
 		t.childNoticeSent(childErrors, err)
 		// The adapter was called: count the attempt whatever it returned, so a
 		// failing or unsupported send cannot repeat on every check outside the
@@ -1600,8 +1805,35 @@ func (t *tick) act(a adapter.Adapter, d decide.Decision) error {
 			return err
 		}
 		t.st.StopRequestedSent = true
-		t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		t.parentStopped = true
+		if !t.laneReportToCome() {
+			t.report("stop", fmt.Sprintf("%s: stopped %s", loop.Name, t.res.Target), nil)
+		} // otherwise the lanes' stop report says it, once
 	}
+	return nil
+}
+
+// startRefused handles a send the adapter refused before anything could reach
+// the agent, for a reason on this machine that a person has to put right.
+// Nothing was sent, so nothing is spent: the send is given back and no nudge,
+// re-prompt or notice attempt is counted, which also means the refusal cannot
+// use up an episode's re-prompts and end in a hold. It is reported once, when
+// it begins, and stands in the state for status and doctor until a send is
+// accepted. The check itself succeeded: it observed, decided, and was told no.
+func (t *tick) startRefused(reason string) error {
+	// The send's record is the newest one this check reserved, whether here or
+	// for a turn retry that fell back to the prompt.
+	if err := state.RefundSend(t.loop.StateDir, t.loop.Limits.MaxSends, t.st.SendsRecorded); err != nil {
+		return err
+	}
+	t.res.Recovery = ""
+	t.res.Reason = "nothing was sent: " + reason
+	if t.st.StartRefused != nil && t.st.StartRefused.Reason == reason {
+		return nil
+	}
+	t.st.StartRefused = &state.StartRefused{Since: t.now, Reason: reason}
+	// An existing report type, so no configuration has to learn a new one.
+	t.report("error", fmt.Sprintf("%s: no turn can be started: %s", t.loop.Name, reason), map[string]any{"target": t.res.Target, "cause": "start_refused"})
 	return nil
 }
 
@@ -1628,10 +1860,21 @@ func (t *tick) send(a adapter.Adapter, message prompt.Message, mode adapter.Mode
 	attempt := t.graphBegin(target, action, string(mode), message)
 	err := a.Send(t.ctx, message.Text, mode)
 	outcome := "adapter_returned"
-	if err != nil {
+	var refused adapter.ErrNotStarted
+	switch {
+	case errors.As(err, &refused):
+		outcome = "not_started" // nothing reached the agent
+	case err != nil:
 		outcome = "adapter_error"
 	}
-	t.graphFinish(attempt, outcome)
+	if outcome != "not_started" {
+		t.st.StartRefused = nil // the adapter is starting turns again
+	}
+	graphOutcome := outcome
+	if outcome == "not_started" {
+		graphOutcome = "adapter_error" // the run graph has no finer word
+	}
+	t.graphFinish(attempt, graphOutcome)
 	t.st.LastPromptSend = &state.PromptSend{
 		Version: 1, CheckAt: t.now, Target: target, Action: action, Mode: string(mode), Outcome: outcome,
 		GoalID: message.GoalID, GoalRevision: message.GoalRevision,
@@ -1647,7 +1890,14 @@ type failureReport struct {
 }
 
 func (t *tick) record(actErr error) error {
+	// Something was sent this check when the time of the last wake moved
+	// and it was not for a held-back nudge.
+	if t.st.LastWakeAt.After(t.wakeAtStart) && !t.heldNudge {
+		t.st.LastSentAt = t.st.LastWakeAt
+	}
 	t.noteCheckGap()
+	state.NoteScheduleGap(&t.st, t.schedule, t.now)
+	reportGap := t.markCheckGap()
 	t.st.CheckedAt = t.now
 	// The count is of consecutive checks. Any check that did not end in that
 	// answer breaks the run, including one that was held or sent nothing.
@@ -1664,21 +1914,30 @@ func (t *tick) record(actErr error) error {
 	t.noteNetwork()
 	// Consecutive failed checks, so a loop that keeps running without
 	// completing a check is visible. A dry run changes nothing.
-	switch outcome {
-	case "failed":
+	switch {
+	case t.keepFailureCounters:
+	case outcome == "failed":
 		if t.st.FailedChecks == 0 {
 			t.st.FailedSince = t.now
 		}
 		t.st.FailedChecks++
-	case "succeeded":
+	case outcome == "succeeded":
 		t.st.FailedChecks, t.st.FailedSince = 0, time.Time{}
 	}
 	t.st.LastCheck = &state.Check{At: t.now, Version: t.opts.Version,
 		Target: t.res.Target, ObservedTarget: t.observedTarget, ObservedState: t.res.State, AwaitingInput: t.awaitingInput, RetrySignal: t.res.RetrySignal, ErroredChildren: t.res.ErroredChildren, ErroredChildrenPartial: t.res.ErroredChildrenPartial, ChildErrorNoticeStopped: t.res.ChildErrorNoticeStopped,
 		Action: t.res.Action, Reason: t.res.Reason, Outcome: outcome, DryRun: t.opts.DryRun}
+	// A dry run leaves the identity of the last real check: it is the one
+	// a later gap is about.
+	if r := t.opts.Routine; !t.opts.DryRun && r.Source != "" {
+		t.st.StartedBy = &state.Routine{Source: r.Source, Routine: r.Routine}
+	} else if !t.opts.DryRun {
+		t.st.StartedBy = nil // started without a scheduler identity
+	}
 	if t.st.UnconfirmedReprompts > t.st.Reprompts {
 		t.st.UnconfirmedReprompts = t.st.Reprompts // counted in an episode that has ended
 	}
+	t.st.CheckFinishedAt = t.now.Add(max(0, t.opts.Clock().Sub(t.startClock)))
 	if err := state.Save(t.loop.StateDir, t.st); err != nil {
 		// Say what the check did as well as why it could not be saved: a
 		// send it refused to make is the cause, and the save its symptom.
@@ -1708,6 +1967,11 @@ func (t *tick) record(actErr error) error {
 		} else if !t.quietFailure {
 			t.report("error", fmt.Sprintf("%s: tick failed: %v", t.loop.Name, actErr), nil)
 		}
+	}
+	// After the error report, so it cannot take one of the late-report
+	// slots the error report needs.
+	if reportGap {
+		t.reportCheckGap()
 	}
 	if t.res.DryRun {
 		extra["dryRun"] = true
@@ -1772,7 +2036,7 @@ func contains(list []string, s string) bool {
 // countUnrecordedSends.
 func (t *tick) reserveSend(action, target string, key ...string) (int64, error) {
 	max := t.loop.Limits.MaxSends
-	if action == "stop" || strings.HasPrefix(action, "report:") {
+	if action == "stop" || strings.HasPrefix(action, "stop:") || strings.HasPrefix(action, "report:") {
 		max = 0 // recorded, but not a send against the allowance
 	}
 	intent := state.SendIntent{At: t.now, Action: action, Target: target}
@@ -1783,8 +2047,32 @@ func (t *tick) reserveSend(action, target string, key ...string) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+	if !t.sendsRead && (action == laneStopAction || action == "report:"+laneStopReport) {
+		// A check that has not read the send records (it could not observe
+		// its target) settles nothing: its lane records stay unsettled beside
+		// the ones it did not read, for the next check that reads them all.
+		return seq, nil
+	}
 	t.st.SendsRecorded = seq
 	return seq, nil
+}
+
+// laneReportToCome reports whether a stop of the lanes will send the stop
+// report that covers the supervised thread too: one is asked for and its
+// report has not gone out. A stop of the thread made once that report has
+// gone out (a later check, or a retry after a failed stop) sends its own.
+func (t *tick) laneReportToCome() bool {
+	if t.stopLanesFor.IsZero() {
+		return false
+	}
+	l := t.st.LaneStop
+	return l == nil || !l.For.Equal(t.stopLanesFor) || !l.Reported
+}
+
+// isCaller reports whether agent's session is the BB thread the command
+// carrying out this stop runs in.
+func (t *tick) isCaller(agent config.Agent) bool {
+	return t.opts.CallerThread != "" && agent.Adapter == "bb" && agent.BB != nil && agent.BB.Thread == t.opts.CallerThread
 }
 
 // holdForBriefs raises the hold for briefs to other conversations whose
@@ -1850,6 +2138,125 @@ func copyState(f state.File) state.File {
 	return c
 }
 
+// scheduleInput is what the overdue rule needs besides state.json.
+func (t *tick) scheduleInput(ctl control.File) state.ScheduleInput {
+	return ScheduleInput(&t.loop, ctl, t.opts.Daemon)
+}
+
+// windowID names an operating window by its contents, so a changed window
+// is told from the old one.
+func windowID(w *config.Window) string {
+	days := make([]string, 0, len(w.Days))
+	for d, span := range w.Days {
+		days = append(days, d+"="+strings.Join(span, "-"))
+	}
+	slices.Sort(days)
+	sum := sha256.Sum256([]byte(w.TZ + "|" + strings.Join(days, ",")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// DaemonInfo is what is known of a daemon verified to be running a loop:
+// when it started, when its last pass ended and the next check it set.
+// Zero values are unknown.
+type DaemonInfo struct {
+	StartedAt, LastPassAt, LastPassStartedAt, NextCheckAt time.Time
+}
+
+// ScheduleInput is what the overdue rule needs besides state.json, for the
+// supervisor and for everything that reads a loop's status, so they judge
+// alike.
+func ScheduleInput(loop *config.Loop, ctl control.File, d DaemonInfo) state.ScheduleInput {
+	in := state.ScheduleInput{DaemonInterval: loop.Daemon.Interval.Duration, Enabled: ctl.Enabled,
+		Held: ctl.Paused || ctl.AwaitingUser || ctl.Completed, StopRequested: ctl.Stop, ControlChangedAt: ctl.UpdatedAt,
+		DaemonStartedAt: d.StartedAt, DaemonLastPassAt: d.LastPassAt, DaemonLastPassStartedAt: d.LastPassStartedAt, DaemonNextCheckAt: d.NextCheckAt,
+		TurnedAwayAt: state.TurnedAwayAt(loop.StateDir)}
+	if w := loop.Window; w != nil {
+		in.WindowID = windowID(w)
+		in.InWindow = func(from, to time.Time) time.Duration {
+			if d, err := window.Overlap(w, from, to); err == nil {
+				return d
+			}
+			return to.Sub(from)
+		}
+	}
+	return in
+}
+
+// gapToReport is the gap this check is the first after, if it has not been
+// reported: one a dry run saw, or the one the overdue rule finds before
+// this check.
+func (t *tick) gapToReport() *state.Gap {
+	if g := t.st.CheckGapPending; g != nil {
+		c := *g
+		return &c
+	}
+	sch := state.ScheduleOf(t.st, t.schedule, t.now)
+	if !sch.Overdue {
+		return nil
+	}
+	return &state.Gap{From: sch.LastCheckAt, To: t.now, For: sch.For, Usual: sch.Usual, Threshold: sch.Threshold, Windowed: t.schedule.InWindow != nil,
+		StartedBy: sch.StartedBy, Blocked: sch.Blocked, NotRecorded: sch.NotRecorded}
+}
+
+// markCheckGap settles the gap in the state about to be saved: that save
+// also records this check's time, which ends the gap, so no later check
+// reports it. A dry run reports nothing and leaves it for the next real
+// check. It says whether to report it after the save.
+func (t *tick) markCheckGap() bool {
+	g := t.gap
+	if g == nil || !t.loop.Report.ReportsEvent(checkGapEvent) {
+		if !t.opts.DryRun {
+			t.st.CheckGapPending = nil
+		}
+		return false
+	}
+	if t.opts.DryRun {
+		t.st.CheckGapPending = g
+		return false
+	}
+	t.st.CheckGapPending = nil
+	return true
+}
+
+// reportCheckGap sends the check_gap report for a gap already saved as
+// reported. Killed before the save, nothing was sent and the next check
+// reports it; killed after, it is marked, and never sent twice.
+func (t *tick) reportCheckGap() {
+	g := t.gap
+	length := state.ShortDuration(g.For)
+	if g.Windowed {
+		length += " of its working hours"
+	}
+	text := fmt.Sprintf("%s: no check was recorded from %s to %s (%s%s)", t.loop.Name, g.From.UTC().Format(time.RFC3339), g.To.UTC().Format(time.RFC3339), length, usualClause(g))
+	switch r := g.StartedBy; {
+	case g.NotRecorded:
+		text += ": the daemon was running checks, but they were not being recorded; its error output says why."
+	case g.Blocked:
+		text += ": checks were started, but each found an earlier check still running, which may have hung."
+	case r != nil && r.Source == state.RoutineBBAutomation:
+		text += ": the computer may have slept, or the BB automation that runs this loop (" + r.Routine + ") may have disabled itself and been turned back on; check it in BB's Automations."
+	default:
+		text += ": the computer may have slept, or the scheduler that runs keepgoing tick had stopped."
+	}
+	text += " Checks are running again."
+	data := map[string]any{"lastCheckAt": g.From, "gap": state.ShortDuration(g.For)}
+	if g.Usual > 0 {
+		data["usual"] = state.ShortDuration(g.Usual)
+	}
+	t.report(checkGapEvent, text, data)
+}
+
+// usualClause says what the gap is measured against.
+func usualClause(g *state.Gap) string {
+	if g.Usual <= 0 {
+		return fmt.Sprintf(", longer than the %s a loop may go without a check before its usual interval is known", state.ShortDuration(g.Threshold))
+	}
+	return ", where checks normally run every " + state.ShortDuration(g.Usual)
+}
+
+// checkGapEvent is the report event for a gap in which no check ran.
+const checkGapEvent = "check_gap"
+
 // reserveReport records a report that is sent once, whose record of having
 // been sent is otherwise only saved at the end of the check, before it is
 // delivered: a supervisor stopped while it is delivered does not send it
@@ -1872,6 +2279,7 @@ func (t *tick) countUnrecordedSends() error {
 	if err != nil {
 		return t.sendRecordUnreadable(err)
 	}
+	t.sendsRead = true
 	if !t.opts.DryRun {
 		t.st.SendRecordUnreadable = false
 	}
@@ -1911,6 +2319,26 @@ func (t *tick) countUnrecordedSends() error {
 			// Settled by its own record in state.json, saved before the
 			// conversation was created (see createThread).
 			agentSend = false
+		case laneRetryAction:
+			// A lane's failed turn, retried by reference: counted for that
+			// lane as a made retry, so it is spaced and capped. It is not a
+			// send to the supervised session. Nothing if lane recovery has
+			// been switched off since.
+			agentSend = false
+			if _, agent := t.resolve(t.st.Target()); agent.BB.RetryErroredLanes() && t.st.Lanes != nil {
+				l := t.st.Lanes
+				r := l.Retries[p.Key]
+				if r.DayStart.IsZero() {
+					r.DayStart = p.At
+				}
+				r.Attempts, r.DayRetries, r.LastAt, r.NoOps = r.Attempts+1, r.DayRetries+1, p.At, 0
+				if l.Retries == nil {
+					l.Retries = map[string]state.LaneRetry{}
+				}
+				l.Retries[p.Key] = r
+				l.EpisodeRetries++
+				t.warn("a lane retry was recorded at %s but that check could not save what happened, so it may have been made; it is counted as made", p.At.Format(time.RFC3339))
+			}
 		case "child_notice":
 			if t.st.ChildErrorNoticeFor != p.Key {
 				t.st.ChildErrorNoticeFor, t.st.ChildErrorNoticeAttempts = p.Key, 0
@@ -1922,8 +2350,17 @@ func (t *tick) countUnrecordedSends() error {
 			// StopRequestedSent.
 			agentSend = false
 			t.warn("a stop to %s was recorded at %s but that check could not save what happened, so it may not have been made; it is made again if the stop is still requested", p.Target, p.At.Format(time.RFC3339))
+		case laneStopAction, "report:" + laneStopReport:
+			// Read by stopLanes, which looks at the lane again (see
+			// laneStopRecords). Not a send to the agent.
+			agentSend = false
 		case "report:awaiting_input":
 			t.st.AwaitingReported, agentSend = true, false
+		case "report:hung_turn":
+			if t.st.HungTurn != nil {
+				t.st.HungTurn.Reported = true
+			}
+			agentSend = false
 		case "report:degraded", "report:recovered":
 			t.st.Degraded, agentSend = p.Action == "report:degraded", false
 		case "report:switch_back_stopped":
@@ -2020,6 +2457,11 @@ func (t *tick) observeProgress() (state.Progress, error) {
 
 // newAdapter builds an adapter and gives it this check's time.
 func (t *tick) newAdapter(a config.Agent, stateDir, target string) (adapter.Adapter, error) {
+	if t.opts.StopOnly {
+		// A stop carried out by a command: bb as the latest check found it,
+		// when this PATH cannot find the configured bare name.
+		a, _ = stopAgent(a, t.st)
+	}
 	ad, err := t.opts.NewAdapter(a, stateDir, target)
 	if c, ok := ad.(adapter.CheckTimer); ok && err == nil {
 		c.CheckAt(t.now)
@@ -2113,6 +2555,13 @@ func (t *tick) observe(a adapter.Adapter) (decide.Observation, error) {
 	obs, err := a.Observe(ctx)
 	if err == nil && ctx.Err() != nil {
 		err = fmt.Errorf("observation exceeded %s", limit)
+	}
+	if c, ok := a.(adapter.CLIPather); ok && !t.opts.DryRun && !t.opts.StopOnly {
+		// Where the system found the configured executable for this check,
+		// for a stop run later from a shorter PATH.
+		if p := c.CLIPath(); p != "" {
+			t.st.BBPath = p
+		}
 	}
 	return obs, err
 }
@@ -2291,7 +2740,7 @@ func (t *tick) verifyOutage() {
 // the scheduled interval look like an outage.
 const (
 	cadenceWindow   = 5
-	cadenceMinGaps  = 3
+	cadenceMinGaps  = state.CadenceMinGaps
 	missedGapFactor = 3
 )
 
@@ -2395,7 +2844,7 @@ func (t *tick) noteNetwork() {
 // re-prompt) describe routine work.
 var essentialReports = map[string]bool{
 	"await_user": true, "error": true, "stop": true, "handoff": true, "switch_back": true,
-	"complete": true, limitWaitEvent: true, childErrorEvent: true, "network_wait": true,
+	"complete": true, limitWaitEvent: true, childErrorEvent: true, laneRecoveryEvent: true, "network_wait": true, checkGapEvent: true, hungTurnEvent: true,
 }
 
 // maxLateReports bounds how many reports a check may start after its budget
@@ -2406,7 +2855,7 @@ const maxLateReports = 3
 // using anything up.
 func (t *tick) canReport(typ string) bool {
 	// A report that makes a single attempt would be lost into a dead network.
-	if (typ == limitWaitEvent || typ == childErrorEvent) && t.networkDown() {
+	if (typ == limitWaitEvent || typ == childErrorEvent || typ == laneRecoveryEvent) && t.networkDown() {
 		return false
 	}
 	return t.left() >= minReportTime || (essentialReports[typ] && t.lateReports < maxLateReports)

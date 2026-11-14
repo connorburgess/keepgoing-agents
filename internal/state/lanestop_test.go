@@ -1,0 +1,103 @@
+package state
+
+import (
+	"testing"
+	"time"
+)
+
+// A resume that starts a new episode counts the sends it settles as the
+// agent's, so it moves the time of the last send. A lane stop is not one:
+// neither it nor the stop report moves it.
+func TestSettleIntoEpisodeDoesNotCountLaneStops(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	for _, a := range []string{"stop:lane", "report:stop_lanes", "stop"} {
+		if _, err := Reserve(dir, 0, 0, SendIntent{At: at, Action: a, Target: "h"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var f File
+	if err := SettleIntoEpisode(dir, &f); err != nil {
+		t.Fatal(err)
+	}
+	if !f.LastWakeAt.IsZero() || f.SendsRecorded != 3 {
+		t.Fatalf("%v %d", f.LastWakeAt, f.SendsRecorded)
+	}
+}
+
+// The lane key is made once, kept private, and read back the same.
+func TestLaneKeyIsMadeOnceAndReadBack(t *testing.T) {
+	dir := t.TempDir()
+	k1, err := LaneKey(dir)
+	if err != nil || len(k1) != 32 {
+		t.Fatal(err)
+	}
+	k2, err := LaneKey(dir)
+	if err != nil || string(k1) != string(k2) {
+		t.Fatal("the lane key changed")
+	}
+	if LaneHash(k1, "thr_lane_a") == LaneHash(make([]byte, 32), "thr_lane_a") || len(LaneHash(k1, "thr_lane_a")) != 24 {
+		t.Fatal("the lane hash does not depend on the key")
+	}
+}
+
+// A brief record is never dropped when the pending records are trimmed, and
+// lane stops go first.
+func TestTrimmingPendingRecordsKeepsBriefs(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	reserve := func(a string) {
+		t.Helper()
+		if _, err := Reserve(dir, 0, 0, SendIntent{At: at, Action: a, Target: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reserve("handoff")
+	reserve("wake")
+	for i := 0; i < 2*maxPending; i++ {
+		reserve("stop:lane")
+	}
+	reserve("switch_back")
+	l, err := LoadLedger(dir)
+	if err != nil || len(l.Pending) != maxPending {
+		t.Fatalf("%d %v", len(l.Pending), err)
+	}
+	if l.Pending[0].Action != "handoff" || l.Pending[1].Action != "wake" || l.Pending[len(l.Pending)-1].Action != "switch_back" {
+		t.Fatalf("%v %v %v", l.Pending[0].Action, l.Pending[1].Action, l.Pending[len(l.Pending)-1].Action)
+	}
+	// With nothing but other sends, the oldest of those go, and briefs stay.
+	dir = t.TempDir()
+	reserve("handoff")
+	for i := 0; i < 2*maxPending; i++ {
+		reserve("wake")
+	}
+	l, _ = LoadLedger(dir)
+	if len(l.Pending) != maxPending || l.Pending[0].Action != "handoff" {
+		t.Fatalf("%d %v", len(l.Pending), l.Pending[0].Action)
+	}
+}
+
+// A resume that settles an unsettled lane retry counts it for that lane, as
+// a check would, and does not take it for a send to the supervised session.
+func TestSettleIntoEpisodeCountsALaneRetryForItsLane(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	if _, err := Reserve(dir, 0, 0, SendIntent{At: at, Action: LaneRetryAction, Target: Primary, Key: "lanehash"}); err != nil {
+		t.Fatal(err)
+	}
+	f := File{Lanes: &LaneRecovery{Retries: map[string]LaneRetry{"lanehash": {Attempts: 1}}}}
+	if err := SettleIntoEpisode(dir, &f); err != nil {
+		t.Fatal(err)
+	}
+	r := f.Lanes.Retries["lanehash"]
+	if !f.LastWakeAt.IsZero() || f.SendsRecorded != 1 || r.Attempts != 2 || r.DayRetries != 1 || !r.LastAt.Equal(at) || f.Lanes.EpisodeRetries != 1 {
+		t.Fatalf("%v %d %+v %d", f.LastWakeAt, f.SendsRecorded, r, f.Lanes.EpisodeRetries)
+	}
+	// With lane recovery off (no record), it is settled and counts for nothing.
+	dir = t.TempDir()
+	Reserve(dir, 0, 0, SendIntent{At: at, Action: LaneRetryAction, Target: Primary, Key: "lanehash"})
+	var g File
+	if err := SettleIntoEpisode(dir, &g); err != nil || !g.LastWakeAt.IsZero() || g.SendsRecorded != 1 || g.Lanes != nil {
+		t.Fatalf("%v %+v", err, g)
+	}
+}

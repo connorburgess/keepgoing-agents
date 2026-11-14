@@ -32,6 +32,8 @@ func TestCursorRecoversInitializedSessionAfterWrapperCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready := filepath.Join(root, "child-ready")
+	// The record comes first: a wrapper runs only the turn its record names.
+	saveStopRecord(t, dir, Record{StopKey: key, StartedAt: time.Now().UTC(), Argv0: filepath.Base(self), Liveness: livenessLock})
 	cmd, err := wrapperCommand([]string{self, "-p", "--output-format", "stream-json"}, root, string(dir), []string{envTurnKey + "=" + key, "KEEPGOING_TEST_HELPER=cursor-crash", "KEEPGOING_TEST_RESULT=" + ready}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +66,6 @@ func TestCursorRecoversInitializedSessionAfterWrapperCrash(t *testing.T) {
 			t.Error("disposable crash child failed to exit during cleanup")
 		}
 	})
-	saveStopRecord(t, dir, Record{PID: cmd.Process.Pid, StopKey: key, StartedAt: time.Now().UTC(), Argv0: filepath.Base(self)})
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		b, err := os.ReadFile(ready)

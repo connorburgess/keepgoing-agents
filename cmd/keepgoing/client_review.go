@@ -91,10 +91,12 @@ type clientReviewPreview struct {
 	Lost    string `json:"lost"`
 	Refused string `json:"refused"`
 	Expired string `json:"expired"`
+	// Stop is a stop's options; see stopChoices.
+	Stop *stopChoices `json:"stop,omitempty"`
 }
 
 const (
-	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--directory private-registry] [--json]"
+	clientReviewUsage   = "usage: keepgoing client review pause|stop|resume --loop KEY [--directory private-registry] [--json]; keepgoing client apply pause|stop|resume --loop KEY --expect VALUE [--lanes [--drop-queued]] [--immediately] [--directory private-registry] [--json]; keepgoing client review pause|stop --all [--json]; keepgoing client apply pause|stop --all --expect KEY=VALUE... [--lanes] [--json]"
 	clientReviewExpired = "This review expired. Nothing was changed. Review it again."
 	clientReviewOther   = "This review is for another loop or another change. Nothing was changed. Review it again."
 	clientReviewOwned   = "This loop is supervised for another conversation, so it can be resumed only from that conversation or from outside BB. Nothing was changed."
@@ -106,8 +108,16 @@ func clientReviewCommand(e env, args []string) int {
 	fs.SetOutput(io.Discard)
 	key := fs.String("loop", "", "the loop's key, as panel list --json gives it")
 	directory := fs.String("directory", "", "private registry directory")
-	expect := fs.String("expect", "", "apply: the expect value of the review confirmed")
+	var expects []string
+	fs.Func("expect", "apply: the expect value of the review confirmed; with --all, KEY=VALUE for each loop, repeated", func(v string) error {
+		expects = append(expects, v)
+		return nil
+	})
+	all := fs.Bool("all", false, "every loop at once (pause or stop; apply stop --all takes --lanes alone)")
 	asJSON := fs.Bool("json", false, "print JSON")
+	lanes := fs.Bool("lanes", false, "apply stop: also stop the lanes")
+	immediately := fs.Bool("immediately", false, "apply stop: carry the stop out in this command")
+	dropQueued := fs.Bool("drop-queued", false, "apply stop, with --lanes: also delete the messages queued in lanes that have not started; their text is not kept")
 	help := func() int {
 		fmt.Fprintln(e.stdout, clientReviewUsage)
 		fs.SetOutput(e.stdout)
@@ -129,7 +139,22 @@ func clientReviewCommand(e env, args []string) int {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || (command == "review" && *expect != "") || (command == "apply" && !clientExpectPattern.MatchString(*expect)) {
+	if *all {
+		// For every loop, a stop takes --lanes alone: whether each loop is
+		// stopped at once is what its own review said, and queued messages
+		// are never deleted for every loop at once.
+		if *immediately || *dropQueued || (*lanes && (command != "apply" || action != "stop")) {
+			e.errf("client: %s", clientReviewUsage)
+			return exitUsage
+		}
+		return clientGroupCommand(e, command, action, *directory, expects, *asJSON, *key != "", *lanes)
+	}
+	expect := ""
+	if len(expects) == 1 {
+		expect = expects[0]
+	}
+	if fs.NArg() != 0 || !panelKeyPattern.MatchString(*key) || len(expects) > 1 || (command == "review" && expect != "") || (command == "apply" && !clientExpectPattern.MatchString(expect)) ||
+		((*lanes || *immediately || *dropQueued) && (command != "apply" || action != "stop")) || (*dropQueued && !*lanes) {
 		e.errf("client: %s", clientReviewUsage)
 		return exitUsage
 	}
@@ -143,7 +168,7 @@ func clientReviewCommand(e env, args []string) int {
 	if command == "review" {
 		reply, code = clientReview(e.ctx, *directory, *key, action, now, time.Local)
 	} else {
-		reply, code = clientApply(e.ctx, *directory, *key, action, *expect, os.Getenv("BB_THREAD_ID"), now)
+		reply, code = clientApply(e.ctx, *directory, *key, action, expect, os.Getenv("BB_THREAD_ID"), now, holdOptions{Lanes: *lanes, Now: *immediately, DropQueued: *dropQueued})
 	}
 	reply.SchemaVersion = 1
 	if *asJSON {
@@ -161,7 +186,23 @@ func clientReviewCommand(e env, args []string) int {
 		if *directory != "" {
 			dir = " --directory " + shellQuote(*directory)
 		}
-		fmt.Fprintf(e.stdout, "To confirm before it expires: keepgoing client apply %s --loop %s --expect %s%s\n", p.Action, p.Key, p.Expect, dir)
+		if p.Stop != nil {
+			for _, o := range p.Stop.Options {
+				flags := ""
+				if o.Lanes {
+					flags += " --lanes"
+				}
+				if o.DropQueued {
+					flags += " --drop-queued"
+				}
+				if p.Stop.Immediately {
+					flags += " --immediately"
+				}
+				fmt.Fprintf(e.stdout, "%s: keepgoing client apply %s --loop %s --expect %s%s%s\n", o.Label, p.Action, p.Key, p.Expect, flags, dir)
+			}
+		} else {
+			fmt.Fprintf(e.stdout, "To confirm before it expires: keepgoing client apply %s --loop %s --expect %s%s\n", p.Action, p.Key, p.Expect, dir)
+		}
 	} else if reply.Result != nil {
 		fmt.Fprintln(e.stdout, reply.Result.Text)
 	}
@@ -187,18 +228,23 @@ func clientReview(ctx context.Context, directory, key, action string, now time.T
 	}
 	p := r.preview
 	out := &clientReviewPreview{Action: p.Action, Key: p.Key, Title: p.Title, Lines: []string{}, Confirm: p.Confirm,
-		Expect: clientExpect(key, action, p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired}
+		Expect: clientExpect(key, clientStopTag(action, p.Stop), p.ExpiresAt, r.digest), ExpiresAt: p.ExpiresAt, Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Stop: p.Stop}
 	for _, l := range p.Lines {
 		out.Lines = append(out.Lines, l.renderLocal(now, loc))
 	}
 	return clientReviewReply{Preview: out}, exitOK
 }
 
-func clientApply(ctx context.Context, directory, key, action, expect, caller string, now time.Time) (clientReviewReply, int) {
+func clientApply(ctx context.Context, directory, key, action, expect, caller string, now time.Time, opts holdOptions) (clientReviewReply, int) {
 	refuse := func(text string) (clientReviewReply, int) {
 		return clientReviewReply{Result: &panelResult{Outcome: "review_again", Text: text, Retry: true}}, exitFailed
 	}
-	digest, expires, ok := parseClientExpect(expect, key, action)
+	// A stop's value also binds the options its review offered: an option
+	// it did not offer is refused, as the page refuses it.
+	digest, expires, offered, ok := parseClientStopExpect(expect, key, action)
+	if ok && action == "stop" && !offered.offers(opts) {
+		return refuse("This review did not offer that stop. Nothing was changed. Review it again.")
+	}
 	switch {
 	case !ok:
 		return refuse(clientReviewOther)
@@ -218,7 +264,7 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 	}
 	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
 	defer cancel()
-	res := panelOutcome(action, panelApply(ctx, directory, entry.ID, action, "", caller, digest))
+	res := panelOutcome(action, panelApply(ctx, directory, entry.ID, action, "", caller, digest, opts))
 	switch {
 	case res.Outcome == "done":
 		return clientReviewReply{Result: &res}, exitOK
@@ -226,4 +272,232 @@ func clientApply(ctx context.Context, directory, key, action, expect, caller str
 		return clientReviewReply{Result: &res}, exitSkipped
 	}
 	return clientReviewReply{Result: &res}, exitFailed
+}
+
+// clientGroupPreview is the review of one change to every loop: a line per
+// loop (up to eight), the total and what the change does, and each loop's
+// own expect value for the loops it changes.
+type clientGroupPreview struct {
+	Action    string            `json:"action"`
+	Title     string            `json:"title"`
+	Lines     []string          `json:"lines"`
+	Confirm   string            `json:"confirm"`
+	ExpiresAt time.Time         `json:"expiresAt"`
+	Lost      string            `json:"lost"`
+	Refused   string            `json:"refused"`
+	Expired   string            `json:"expired"`
+	Loops     []clientGroupLoop `json:"loops"`
+	// Stop: for a stop, the options of the whole (the conversations alone,
+	// or with the lanes of the loops that have them); client apply stop
+	// --all takes --lanes for the second.
+	Stop *stopChoices `json:"stop,omitempty"`
+}
+
+type clientGroupLoop struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	// Expect is set for each loop the change is made to: client apply
+	// --all --expect KEY=VALUE takes it back.
+	Expect string `json:"expect,omitempty"`
+}
+
+type clientGroupReply struct {
+	SchemaVersion int                 `json:"schemaVersion"`
+	Group         *clientGroupPreview `json:"group,omitempty"`
+	Result        *panelResult        `json:"result,omitempty"`
+}
+
+func clientGroupCommand(e env, command, action, directory string, expects []string, asJSON, withLoop, lanes bool) int {
+	if !panelGroupActions[action] || withLoop || (command == "review" && len(expects) > 0) || (command == "apply" && (len(expects) == 0 || len(expects) > 128)) {
+		e.errf("client: %s", clientReviewUsage)
+		return exitUsage
+	}
+	targets := map[string]string{}
+	for _, x := range expects {
+		key, value, ok := strings.Cut(x, "=")
+		if _, dup := targets[key]; !ok || dup || !panelKeyPattern.MatchString(key) || !clientExpectPattern.MatchString(value) {
+			e.errf("client: %s", clientReviewUsage)
+			return exitUsage
+		}
+		targets[key] = value
+	}
+	if _, err := registryDirectory(directory); err != nil {
+		e.errf("client %s: registry directory unavailable", command)
+		return exitUsage
+	}
+	var reply clientGroupReply
+	code := exitOK
+	if command == "review" {
+		reply, code = clientGroupReview(e.ctx, directory, action, time.Now(), time.Local)
+	} else {
+		reply, code = clientGroupApply(e.ctx, directory, action, expects, os.Getenv("BB_THREAD_ID"), time.Now(), lanes)
+	}
+	reply.SchemaVersion = 1
+	if asJSON {
+		if json.NewEncoder(e.stdout).Encode(reply) != nil {
+			return exitFailed
+		}
+		return code
+	}
+	if g := reply.Group; g != nil {
+		fmt.Fprintln(e.stdout, g.Title)
+		for _, l := range g.Lines {
+			fmt.Fprintln(e.stdout, l)
+		}
+	} else if r := reply.Result; r != nil {
+		fmt.Fprintln(e.stdout, r.Text)
+		for _, l := range r.Lines {
+			fmt.Fprintln(e.stdout, l)
+		}
+	}
+	return code
+}
+
+func clientGroupReview(ctx context.Context, directory, action string, now time.Time, loc *time.Location) (clientGroupReply, int) {
+	reader := &dockReader{ctx: ctx, directory: directory, refresh: dockDefaultRefresh, staleAfter: defaultStaleAfter, query: inspectDaemon}
+	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
+	defer cancel()
+	now = now.UTC()
+	g, refused := panelGroupReview(ctx, directory, reader, action, now)
+	if refused != nil {
+		return clientGroupReply{Result: refused}, exitFailed
+	}
+	p := g.preview
+	out := &clientGroupPreview{Action: action, Title: p.Title, Lines: []string{}, Confirm: p.Confirm, ExpiresAt: p.ExpiresAt, Stop: p.Stop,
+		Lost: p.Lost, Refused: p.Refused, Expired: clientReviewExpired, Loops: []clientGroupLoop{}}
+	for _, l := range p.Lines {
+		out.Lines = append(out.Lines, l.renderLocal(now, loc))
+	}
+	for _, it := range g.items {
+		l := clientGroupLoop{Key: it.Key, Name: it.Name}
+		if it.Fits {
+			l.Expect = clientExpect(it.Key, clientGroupTag(action, it.lanes(), it.now()), p.ExpiresAt, it.digest)
+		}
+		out.Loops = append(out.Loops, l)
+	}
+	return clientGroupReply{Group: out}, exitOK
+}
+
+// clientGroupApply changes each loop named, with its own expect value: a
+// value for another loop or change, or past its time, refuses that loop
+// alone, and the rest go ahead.
+func clientGroupApply(ctx context.Context, directory, action string, expects []string, caller string, now time.Time, lanes bool) (clientGroupReply, int) {
+	var targets []panelGroupTarget
+	names := map[string]string{}
+	var refused []panelLoopTo
+	for _, x := range expects {
+		key, value, _ := strings.Cut(x, "=")
+		name := ""
+		if entry, _, _, ok := panelEntry(directory, key); ok {
+			name = clip(entry.Loop, dockMaxText)
+		} else {
+			refused = append(refused, panelLoopTo{Key: key, Name: key, Outcome: "refused", Text: key + ": not " + panelDone[action] + ". This loop is no longer registered. Nothing was changed."})
+			continue
+		}
+		digest, expires, loopLanes, loopNow, ok := parseClientGroupExpect(value, key, action)
+		switch {
+		case !ok:
+			// A value for another loop, a loop registered after the review, or
+			// another change: this loop was not part of the review confirmed.
+			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: name + ": not part of this review, so it was not " + panelDone[action] + "; review it again."})
+		case !now.Before(expires):
+			refused = append(refused, panelLoopTo{Key: key, Name: name, Outcome: "review_again", Text: name + ": the review expired, so it was not " + panelDone[action] + "; review it again."})
+		default:
+			targets = append(targets, panelGroupTarget{Key: key, Digest: digest, Lanes: loopLanes, Now: loopNow})
+			names[key] = name
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, panelChangeTimeout)
+	defer cancel()
+	g := panelGroupApply(ctx, directory, action, "", caller, targets, names, lanes)
+	g.Loops = append(refused, g.Loops...)
+	g = panelGroupTotal(action, g)
+	res := &panelResult{Outcome: g.Outcome, Text: g.Text, Retry: g.Retry, Lines: g.Lines}
+	if g.Outcome == "done" {
+		return clientGroupReply{Result: res}, exitOK
+	}
+	return clientGroupReply{Result: res}, exitFailed
+}
+
+// clientGroupTag is the change a loop's expect value in a review of every
+// loop is made for. For a stop it also binds what that loop's own review
+// offered: its lanes too, and a stop carried out at once.
+func clientGroupTag(action string, lanes, now bool) string {
+	if action != "stop" {
+		// Its own, so a single loop's value never stands in for a group's.
+		return action + "+all"
+	}
+	t := "stop+all"
+	if lanes {
+		t += "+lanes"
+	}
+	if now {
+		t += "+now"
+	}
+	return t
+}
+
+// parseClientGroupExpect reads a loop's expect value from a review of every
+// loop, and what that loop's own review offered.
+func parseClientGroupExpect(value, key, action string) (digest string, expires time.Time, lanes, now, ok bool) {
+	for _, l := range []bool{false, true} {
+		for _, n := range []bool{false, true} {
+			if action != "stop" && (l || n) {
+				continue
+			}
+			if d, e, ok := parseClientExpect(value, key, clientGroupTag(action, l, n)); ok {
+				return d, e, l, n, true
+			}
+		}
+	}
+	return "", time.Time{}, false, false, false
+}
+
+// clientStopTag is the change a single loop's expect value is made for. For
+// a stop it also binds the options the review offered: whether it can be
+// carried out at once, and which of the conversation (c), its lanes (l) and
+// its lanes with their queued messages (lq) it offered.
+func clientStopTag(action string, c *stopChoices) string {
+	if action != "stop" || c == nil {
+		return action
+	}
+	t := action
+	if c.Immediately {
+		t += "/now"
+	}
+	for _, o := range c.Options {
+		switch {
+		case o.Lanes && o.DropQueued:
+			t += "/lq"
+		case o.Lanes:
+			t += "/l"
+		default:
+			t += "/c"
+		}
+	}
+	return t
+}
+
+// parseClientStopExpect reads a single loop's expect value and, for a stop,
+// the options its review offered (nil: none, the plain stop).
+func parseClientStopExpect(value, key, action string) (string, time.Time, *stopChoices, bool) {
+	if action != "stop" {
+		d, e, ok := parseClientExpect(value, key, action)
+		return d, e, nil, ok
+	}
+	var shapes []*stopChoices
+	shapes = append(shapes, nil)
+	for _, now := range []bool{false, true} {
+		for _, opts := range [][]stopOption{
+			{{}}, {{}, {Lanes: true}}, {{}, {Lanes: true}, {Lanes: true, DropQueued: true}},
+		} {
+			shapes = append(shapes, &stopChoices{Immediately: now, Options: opts})
+		}
+	}
+	for _, c := range shapes {
+		if d, e, ok := parseClientExpect(value, key, clientStopTag(action, c)); ok {
+			return d, e, c, true
+		}
+	}
+	return "", time.Time{}, nil, false
 }

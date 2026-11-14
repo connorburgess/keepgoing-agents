@@ -55,6 +55,7 @@ func fallbacksCheck(e env, cfg *config.Config, now time.Time, only string, exact
 		e.errf("%v", err)
 		return exitUsage
 	}
+	plan.Timing = cfg.TimingSummary()
 	w := e.stderr
 	if dryRun {
 		w = e.stdout

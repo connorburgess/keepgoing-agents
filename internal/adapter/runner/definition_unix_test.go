@@ -332,7 +332,10 @@ func TestDefinedAgentOutputBound(t *testing.T) {
 	if h.dir.Session() != "" {
 		t.Fatalf("the send took a session from unread output: %q", h.dir.Session())
 	}
-	waitPhase(t, Dir(string(h.dir)), Running)
+	// The new turn ends at once, so it may already be finished: it started.
+	if st, err := h.dir.Status(); err != nil || (st.Phase != Running && st.Phase != Finished) {
+		t.Fatalf("the turn after oversize output reads as %+v %v", st, err)
+	}
 	h.dir.Stop()
 }
 

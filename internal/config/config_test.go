@@ -290,6 +290,24 @@ func TestNewThreadCandidateConfig(t *testing.T) {
 	}
 }
 
+// hung_turn is a known event but not a default one: a loop receives it only
+// by naming it, or all, in report.events.
+func TestHungTurnReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "hung_turn") || contains(DefaultReportEvents, "hung_turn") {
+		t.Fatal("hung_turn must be a known event and not a default one")
+	}
+	if (&Report{Events: DefaultReportEvents}).ReportsEvent("hung_turn") || !(&Report{Events: []string{"hung_turn"}}).ReportsEvent("hung_turn") {
+		t.Fatal("subscription to hung_turn")
+	}
+}
+
+// check_gap is a known event, and opt-in: not in the default list.
+func TestCheckGapReportIsOptIn(t *testing.T) {
+	if !contains(ReportEvents, "check_gap") || contains(DefaultReportEvents, "check_gap") {
+		t.Fatal("check_gap must be a known event and not a default one")
+	}
+}
+
 // The no-progress flag's thresholds: unset is the default, 0 is off, and
 // both are read as written.
 func TestNoProgressFlagThresholds(t *testing.T) {

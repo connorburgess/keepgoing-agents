@@ -18,8 +18,11 @@ public struct PanelLoop: Decodable, Equatable {
     /// Which changes fit the loop's control flags, as the page offers them:
     /// pause, stop, resume. Absent from a CLI that has no client review.
     public var can: [String]? = nil
+    /// The time of the loop's last check, when it needs a person because its
+    /// checks have stopped. See OverdueNotices.
+    public let overdueSince: String?
 
-    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil, can: [String]? = nil) {
+    public init(key: String, name: String, state: String, phrase: String, needsYou: Bool, noProgress: String? = nil, can: [String]? = nil, overdueSince: String? = nil) {
         self.key = key
         self.name = name
         self.state = state
@@ -27,6 +30,7 @@ public struct PanelLoop: Decodable, Equatable {
         self.needsYou = needsYou
         self.noProgress = noProgress
         self.can = can
+        self.overdueSince = overdueSince
     }
 }
 
@@ -39,6 +43,9 @@ public struct PanelList: Decodable, Equatable {
     public let unread: Int
     public let omitted: Int
     public let loops: [PanelLoop]
+    /// Changes that can be made to every loop at once (`client review|apply
+    /// --all`). Absent from a CLI that cannot.
+    public var canAll: [String]? = nil
 }
 
 /// What `keepgoing panel status --json` says about the panel's background
@@ -120,7 +127,18 @@ public enum MenuCommand: Equatable {
     case review(LoopAction, key: String)
     /// Runs `keepgoing client apply <action> --loop <key> --expect <digest>
     /// [--lanes] [--immediately] --json`, only from a confirmed review.
-    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool)
+    /// `--drop-queued` deletes messages queued in lanes that have not
+    /// started; it is passed only with `--lanes`, and only for the stop
+    /// option that says so.
+    case apply(LoopAction, key: String, expect: String, lanes: Bool, immediately: Bool, dropQueued: Bool = false)
+    /// Runs `keepgoing client review pause|stop --all --json`, which reads
+    /// and changes nothing; its review is then shown for confirmation.
+    case reviewAll(LoopAction)
+    /// Runs `keepgoing client apply pause|stop --all --expect KEY=VALUE…
+    /// [--lanes] --json`, only from a confirmed review of every loop.
+    /// `--lanes` is for a stop, when its option says so; whether each loop
+    /// stops at once is what that loop's own review said.
+    case applyAll(LoopAction, expects: [LoopExpect], lanes: Bool = false)
     case quit
 }
 
@@ -280,6 +298,14 @@ public enum MenuBuilder {
                                     accessibilityHelp: choices.count > 1 ? "Shows what you can do with this loop." : "Opens this loop in the panel.",
                                     toolTip: short == name ? "" : name, command: choices.count > 1 ? nil : .openLoop(key: loop.key), submenu: choices.count > 1 ? choices : []))
             }
+            if list.canAll?.contains("pause") == true {
+                rows.append(action("Pause All Loops…", .reviewAll(.pause), symbol: "pause.circle",
+                                   help: "Shows which loops pausing every loop changes, then asks you to confirm."))
+            }
+            if list.canAll?.contains("stop") == true {
+                rows.append(action("Stop All Loops…", .reviewAll(.stop), symbol: "stop.circle",
+                                   help: "Shows which loops stopping every loop changes, then asks you to confirm."))
+            }
             let total = list.loops.count + list.omitted
             // Whenever some loops are not listed here, whether this menu cut
             // them or the CLI did.
@@ -346,9 +372,19 @@ public enum MenuBuilder {
         case .openPanelWithChanges: return ["panel", "--allow-changes"]
         case .stopPanel: return ["panel", "stop"]
         case .review(let action, let key): return Contract.validKey(key) ? ["client", "review", action.rawValue, "--loop", key, "--json"] : nil
-        case .apply(let action, let key, let expect, let lanes, let immediately):
-            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately) else { return nil }
-            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : []) + ["--json"]
+        case .apply(let action, let key, let expect, let lanes, let immediately, let dropQueued):
+            guard Contract.validKey(key), Contract.validExpect(expect), action == .stop || (!lanes && !immediately && !dropQueued), !dropQueued || lanes else { return nil }
+            return ["client", "apply", action.rawValue, "--loop", key, "--expect", expect] + (lanes ? ["--lanes"] : []) + (immediately ? ["--immediately"] : [])
+                + (dropQueued ? ["--drop-queued"] : []) + ["--json"]
+        case .reviewAll(let action): return action != .resume ? ["client", "review", action.rawValue, "--all", "--json"] : nil
+        case .applyAll(let action, let expects, let lanes):
+            let keys = expects.map(\.key)
+            guard action != .resume, !lanes || action == .stop, (1...128).contains(expects.count), Set(keys).count == keys.count,
+                  expects.allSatisfy({ Contract.validKey($0.key) && Contract.validExpect($0.expect) }) else { return nil }
+            var arguments: [String] = ["client", "apply", action.rawValue, "--all"]
+            for e in expects { arguments += ["--expect", e.key + "=" + e.expect] }
+            if lanes { arguments.append("--lanes") }
+            return arguments + ["--json"]
         case .quit: return nil
         }
     }

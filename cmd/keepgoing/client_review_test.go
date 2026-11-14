@@ -81,7 +81,7 @@ func TestClientReviewIsThePanelsReview(t *testing.T) {
 			p.Refused != page.Preview.Refused || !p.ExpiresAt.Equal(page.Preview.ExpiresAt) || p.Key != dockKey(e.ID) || p.Action != x.action {
 			t.Errorf("%s %s: the menu's review differs from the page's:\n%+v\n%q", x.loop, x.action, p, want)
 		}
-		if digest, expires, ok := parseClientExpect(p.Expect, dockKey(e.ID), x.action); !ok || digest != controlDigest(before) || expires.Unix() != p.ExpiresAt.Unix() {
+		if digest, expires, _, ok := parseClientStopExpect(p.Expect, dockKey(e.ID), x.action); !ok || digest != controlDigest(before) || expires.Unix() != p.ExpiresAt.Unix() {
 			t.Errorf("%s: expect does not bind the record reviewed, the loop, the action and the expiry", x.loop)
 		}
 		if after := controlOf(t, e); !reflect.DeepEqual(after, before) || incidentCount(t, e) != records {
@@ -205,12 +205,12 @@ func TestClientApplyRefusesAReviewForAnythingElse(t *testing.T) {
 	}
 	// Past its time, even for the loop and action reviewed.
 	digest, expires, _ := parseClientExpect(review.Preview.Expect, dockKey(alpha.ID), "pause")
-	if reply, code := clientApply(context.Background(), d.directory, dockKey(alpha.ID), "pause", review.Preview.Expect, "", expires.Add(11*time.Second)); code != exitFailed || reply.Result.Text != clientReviewExpired {
+	if reply, code := clientApply(context.Background(), d.directory, dockKey(alpha.ID), "pause", review.Preview.Expect, "", expires.Add(11*time.Second), holdOptions{}); code != exitFailed || reply.Result.Text != clientReviewExpired {
 		t.Errorf("an expired review was applied: %d %+v", code, reply.Result)
 	}
 	// A value whose expiry was moved does not check.
 	moved := clientExpectPattern.ReplaceAllString(review.Preview.Expect, "r1.9999999999.${2}.${3}")
-	if reply, code := clientApply(context.Background(), d.directory, dockKey(alpha.ID), "pause", moved, "", time.Now()); code != exitFailed || reply.Result.Text != clientReviewOther {
+	if reply, code := clientApply(context.Background(), d.directory, dockKey(alpha.ID), "pause", moved, "", time.Now(), holdOptions{}); code != exitFailed || reply.Result.Text != clientReviewOther {
 		t.Errorf("a changed expiry was accepted: %d %+v", code, reply.Result)
 	}
 	if !reflect.DeepEqual(controlOf(t, alpha), beforeA) || !reflect.DeepEqual(controlOf(t, beta), beforeB) {
@@ -255,7 +255,7 @@ func TestClientApplyResumeIsRefusedFromAnotherConversation(t *testing.T) {
 		t.Fatal("prepare-resume allowed what client apply refused")
 	}
 	// The resume function itself refuses it too, past the plain check.
-	if r := panelApply(context.Background(), d.directory, e.ID, "resume", "", "thr_example_other", controlDigest(before)); r.ControlSave == "confirmed" {
+	if r := panelApply(context.Background(), d.directory, e.ID, "resume", "", "thr_example_other", controlDigest(before), holdOptions{}); r.ControlSave == "confirmed" {
 		t.Fatalf("%+v", r)
 	}
 	// From outside BB, as a person at a terminal or the menu.

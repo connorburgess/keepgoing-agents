@@ -89,6 +89,34 @@ public struct LocalClient {
     }
     static let notStarted = "keepgoing could not be started, so nothing was changed. Check the keepgoing executable this menu was started with."
     static let notAccepted = "keepgoing did not accept this request, so nothing ran and nothing was changed. The menu and keepgoing may be different versions."
+    /// The review of one change to every loop, by `client review --all`,
+    /// which changes nothing.
+    public func reviewAll(_ action: LoopAction) throws -> GroupReading {
+        guard let arguments = MenuBuilder.arguments(.reviewAll(action)) else { throw ClientFailure.invalidResponse }
+        let (data, code) = try run(arguments, timeout: 25)
+        return try Contract.groupReview(data, exit: code, action: action)
+    }
+    /// Makes one confirmed change to every loop reviewed, by `client apply
+    /// --all`, once. Each loop is changed only if its record is the one
+    /// reviewed; the result names each loop's outcome.
+    public func applyAll(_ command: MenuCommand, review: GroupReview) -> ChangeResult {
+        guard case .applyAll = command, let arguments = MenuBuilder.arguments(command) else {
+            return ChangeResult(outcome: "refused", text: LocalClient.notAccepted)
+        }
+        do {
+            // A stop of every loop saves every stop, then carries out those
+            // that can be at once in the time keepgoing gives a change; this
+            // waits a little longer than that.
+            let (data, code) = try run(arguments, timeout: 120)
+            if let result = try? Contract.groupApplied(data) { return result }
+            if code == 2 && data.isEmpty { return ChangeResult(outcome: "refused", text: LocalClient.notAccepted) }
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        } catch ClientFailure.unavailable {
+            return ChangeResult(outcome: "refused", text: LocalClient.notStarted)
+        } catch {
+            return ChangeResult(outcome: "uncertain", text: Contract.text(review.lost))
+        }
+    }
     public func registry() throws -> [Registration] {
         let (data, code) = try run(["registry", "list", "--json"])
         return try Contract.registry(data, exit: code)
