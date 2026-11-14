@@ -1,11 +1,13 @@
 // Shows keepgoing's state beside each supervised thread: a row in the thread
 // context card when bb shows the card, and a segment in the context banner
-// above the composer when it shows the banner.
+// above the composer when it shows the banner. On the New thread screen it
+// adds the Keep going switch and its banner to the composer.
 import {
   definePluginApp,
   experimental_THREAD_INFO_ROW_GROUPS as ROW_GROUPS,
   experimental_ThreadContextCardRow as ContextRow,
   experimental_useThreadContextKind as useContextKind,
+  useComposer,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
@@ -14,6 +16,8 @@ import type { LoopView, rpcContract } from "./server";
 import { diagnosticLines, dateLabel } from "./status-details";
 import { SetupPanel } from "./setup-panel";
 import { TransferPanel } from "./transfer-panel";
+import { KeepGoingBanner, KeepGoingSwitch, turnOn } from "./new-thread-control";
+import { NewThreadOutcome, outcomeLabel, useOutcome } from "./new-thread-outcome";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
@@ -111,7 +115,7 @@ function ToggleButton({ loop, threadId, onDone }: { loop: LoopView; threadId: st
   </>;
 }
 
-function ThreadSetup({ threadId, onChanged }: { threadId: string; onChanged(): void }) {
+function ThreadSetup({ threadId, onChanged, hideStart = false }: { threadId: string; onChanged(): void; hideStart?: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const call = useCallback((input: Parameters<typeof rpc.call<"setup">>[1]) => rpc.call("setup", input), [rpc]);
   const [generation, setGeneration] = useState(0);
@@ -120,7 +124,7 @@ function ThreadSetup({ threadId, onChanged }: { threadId: string; onChanged(): v
     if (result.moved) setGeneration(n => n + 1);
     return result;
   }, [rpc]);
-  return <><SetupPanel key={`${threadId}-${generation}`} threadId={threadId} call={call} onChanged={onChanged} />
+  return <><SetupPanel key={`${threadId}-${generation}`} threadId={threadId} call={call} onChanged={onChanged} hideStart={hideStart} />
     <TransferPanel key={`move-${threadId}`} threadId={threadId} call={transfer} onChanged={onChanged} /></>;
 }
 
@@ -128,46 +132,98 @@ function StatusWarning({ refresh }: { refresh(): void }) {
   return <div role="alert">Status could not be verified for every registered loop. Controls and setup are hidden until refreshed. <button type="button" style={buttonStyle} onClick={refresh}>Refresh status</button></div>;
 }
 
+// What a thread created with Keep going on shows about that request.
+function useThreadOutcome(threadId: string, loop: LoopView | undefined) {
+  const rpc = useRpc<typeof rpcContract>();
+  const call = useCallback((input: Parameters<typeof rpc.call<"newThread">>[1]) => rpc.call("newThread", input), [rpc]);
+  const start = useCallback((input: { action: "start"; threadId: string }) => rpc.call("setup", input), [rpc]);
+  const { outcome } = useOutcome(threadId, call, `${loop?.controlState ?? ""}:${loop?.checkedAt ?? ""}`);
+  // Pause and stop go to the loop's own recorded configuration, as the ordinary controls do.
+  const control = useCallback((action: "pause" | "stop") => loop
+    ? rpc.call("control", { configPath: loop.configPath, action, managedId: loop.managedId, expectedThreadId: threadId })
+    : Promise.resolve({ ok: false, message: "Status is not loaded yet." }), [rpc, loop, threadId]);
+  return { outcome, start, control };
+}
+
+const READY_NOT_STARTED = "looptender: ready, not started";
+// A thread started from the New thread screen carries its own Pause and Stop.
+const KEEPING_GOING = "looptender: keeping this going";
+
 function CardRow({ threadId }: { threadId: string }) {
   const { loop, refresh, failed, loaded } = useLoop(threadId);
+  const { outcome, start, control } = useThreadOutcome(threadId, loop);
+  const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   const [open, setOpen] = useState(false);
   return <div>
     {failed && <StatusWarning refresh={refresh} />}
+    {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
     {!loaded ? <ContextRow icon="Repeat" label="looptender: checking status" /> : !loop ? <ContextRow icon="Repeat" label="looptender" action={!failed && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Supervise this thread</button>} /> : <ContextRow
       icon="Repeat"
-      label={failed ? "looptender: status unavailable (previous snapshot)" : label(loop)}
+      label={failed ? "looptender: status unavailable (previous snapshot)" : created ?? label(loop)}
       title={describe(loop).join("\n")}
       trailing={loop.handoffs > 0 ? `${loop.handoffs} handoffs` : undefined}
-      action={<>{!failed && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}{!failed && loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
+      action={<>{!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}{!failed && loop.managedId && <button type="button" style={buttonStyle} onClick={() => setOpen(!open)} aria-expanded={open}>Setup</button>}</>}
     />}
-    {open && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} /></div>}
+    {open && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
   </div>;
 }
 
 function BannerSummary({ threadId, isExpanded, onToggle }: { threadId: string; isExpanded: boolean; onToggle(): void }) {
   const { loop, failed, loaded } = useLoop(threadId);
+  const { outcome } = useThreadOutcome(threadId, loop);
+  const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   return (
     <button type="button" onClick={onToggle} aria-expanded={isExpanded} title={failed ? "Status could not be refreshed. Open details to retry." : loop ? describe(loop).join("\n") : "Set up a loop for this thread"}
       style={{ background: "none", border: 0, padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}>
-      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : loop ? label(loop) : "Supervise this thread"}
+      {failed ? "looptender: status unavailable" : !loaded ? "looptender: checking status" : created ?? (loop ? label(loop) : "Supervise this thread")}
     </button>
   );
 }
 
 function BannerDetails({ threadId, isExpanded }: { threadId: string; isExpanded: boolean }) {
   const { loop, refresh, failed, loaded } = useLoop(threadId);
+  const { outcome, start, control } = useThreadOutcome(threadId, loop);
+  const created = outcomeLabel(outcome, loop?.controlState, loop?.supervising);
   if (!isExpanded) return null;
   return <>
     {failed && <StatusWarning refresh={refresh} />}
+    {loaded && !failed && <NewThreadOutcome threadId={threadId} outcome={outcome} controlState={loop?.controlState} supervising={loop?.supervising} start={start} control={control} onChanged={refresh} />}
     {loop && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 12px 6px", fontSize: 12, opacity: 0.8 }}>
       <div>{failed && <div>Previous snapshot</div>}{describe(loop).map((line, i) => <div key={i}>{line}</div>)}</div>
-      {!failed && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}
+      {!failed && created !== KEEPING_GOING && <ToggleButton loop={loop} threadId={threadId} onDone={refresh} />}
     </div>}
-    {loaded && (!loop || loop.managedId) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} /></div>}
+    {loaded && (!loop || loop.managedId) && <div hidden={failed}><ThreadSetup key={threadId} threadId={threadId} onChanged={refresh} hideStart={created === READY_NOT_STARTED} /></div>}
   </>;
 }
 
+function ComposerSwitch() {
+  return <KeepGoingSwitch composer={useComposer()} />;
+}
+
+function ComposerBanner() {
+  const rpc = useRpc<typeof rpcContract>();
+  const call = useCallback((input: Parameters<typeof rpc.call<"newThread">>[1]) => rpc.call("newThread", input), [rpc]);
+  return <KeepGoingBanner composer={useComposer()} call={call} />;
+}
+
 export default definePluginApp((app) => {
+  // New thread screen only. The banner draws its own frame, so nothing shows
+  // while the switch is off.
+  app.composer.customize({
+    id: "keepgoing-new-thread",
+    scopes: ["new-thread"],
+    actions: [{ id: "keep-going", component: ComposerSwitch }],
+    banners: [{ id: "keep-going", chrome: "bare", component: ComposerBanner }],
+    // The action row is not drawn in the compact layout; this row reaches the
+    // same switch from the menu beside Send.
+    sendMenu: [{
+      id: "keep-going",
+      label: "Keep going…",
+      icon: "Repeat",
+      description: "Supervise the thread this message creates",
+      run: ({ composer }) => { if (composer.scope.kind === "new-thread") turnOn(composer.key); },
+    }],
+  });
   app.slots.experimental_threadContextCardRow({
     id: "keepgoing",
     group: ROW_GROUPS.lifecycle,
