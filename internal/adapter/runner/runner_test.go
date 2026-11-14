@@ -43,6 +43,10 @@ func waitPhase(t *testing.T, d Dir, want Phase) Status {
 // Synthetic result objects with the field names Claude Code prints.
 const claudeOK = `{"type":"result","subtype":"success","is_error":false,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"terminal_reason":"completed","result":"done"}`
 const claudeLimited = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":429,"result":"You have hit your usage limit"}`
+const claudeForbidden = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":403,"result":"example"}`
+const claudeRefused = `{"type":"result","subtype":"success","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"stop_reason":"refusal","result":"example"}`
+const claudeRefusedQuietly = `{"type":"result","subtype":"success","is_error":false,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"stop_reason":"refusal","result":"example"}`
+const claudeForbiddenAfterAuthSubtype = `{"type":"result","subtype":"authentication_failed","is_error":true,"session_id":"00000000-0000-4000-8000-000000000001","api_error_status":null,"terminal_reason":"forbidden","result":"example"}`
 const claudeProseOnly = `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"s","api_error_status":null,"result":"usage limit reached 429"}`
 
 func TestClaudeTurnLifecycle(t *testing.T) {
@@ -90,6 +94,14 @@ func TestClaudeErrorClassification(t *testing.T) {
 	}{
 		{claudeLimited, "1", decide.ErrRateLimit},
 		{claudeProseOnly, "1", decide.ErrUnknown},
+		{claudeForbidden, "1", decide.ErrRestricted},
+		// Claude Code reports a model refusal in stop_reason, usually with
+		// subtype "success"; neither that nor a zero exit makes it a
+		// finished turn to wake again.
+		{claudeRefused, "1", decide.ErrRefused},
+		{claudeRefusedQuietly, "0", decide.ErrRefused},
+		// A restriction in one field outranks another class in an earlier one.
+		{claudeForbiddenAfterAuthSubtype, "1", decide.ErrRestricted},
 		{"not json at all: usage limit", "1", decide.ErrUnknown},
 	} {
 		dir := t.TempDir()
@@ -154,6 +166,37 @@ const codexWithHookWarning = `{"type":"thread.started","thread_id":"00000000-000
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"OK"}}
 {"type":"turn.completed","usage":{"input_tokens":21000,"cached_input_tokens":13000,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}`
+
+// A forbidden status or permission code in a Codex event is a restriction. A
+// refusal the stream carries only as a message stays unknown.
+func TestParseCodexEventsRestricted(t *testing.T) {
+	for _, events := range []string{
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","status":403}}`,
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","code":"permission_denied"}}`,
+	} {
+		if o := ParseCodexEvents([]byte(events)); !o.Failed || o.Class != decide.ErrRestricted {
+			t.Errorf("%s: %+v", events, o)
+		}
+	}
+	// Codex's own identifiers for a policy block are a refusal, and nothing a
+	// later event reports replaces a refusal or restriction.
+	for _, events := range []string{
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","code":"cyberPolicy"}}`,
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"error","message":"example","code":"misalignmentPolicyViolation"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","code":"usage_limit_reached"}}`,
+		`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","code":"rate_limit_exceeded","type":"policy","status":429}}`,
+	} {
+		if o := ParseCodexEvents([]byte(events)); !o.Failed || o.Class != decide.ErrRefused {
+			t.Errorf("%s: %+v", events, o)
+		}
+	}
+	if o := ParseCodexEvents([]byte(`{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"error","message":"example","code":"usage_limit_reached"}` + "\n" + `{"type":"turn.failed","error":{"message":"example","status":403}}`)); o.Class != decide.ErrRestricted {
+		t.Errorf("a later restriction must replace an earlier limit: %+v", o)
+	}
+	refusedInProse := `{"type":"thread.started","thread_id":"t"}` + "\n" + `{"type":"turn.failed","error":{"message":"I can't help with that request."}}`
+	if o := ParseCodexEvents([]byte(refusedInProse)); !o.Failed || o.Class != decide.ErrUnknown {
+		t.Errorf("prose: %+v", o)
+	}
+}
 
 func TestParseCodexEventsIgnoresErrorItems(t *testing.T) {
 	o := ParseCodexEvents([]byte(codexWithHookWarning))

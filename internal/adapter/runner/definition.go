@@ -266,23 +266,42 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 		r.Waiting = true
 		return r
 	}
-	if matches(d.Finished, result, code, codeKnown) {
+	// A refusal or a restriction the definition declares is read before the
+	// finished rule, so a turn the agent reports as finished but declined is
+	// not counted as done.
+	class, detail, classified := definedErrorClass(d, result, code, codeKnown)
+	if matches(d.Finished, result, code, codeKnown) && !(classified && config.DeclinedClass(string(class))) {
 		r.Completed = true
 		return r
 	}
+	if !classified {
+		return r
+	}
+	r.Class, r.Evidence = class, detail
+	return r
+}
+
+// definedErrorClass reads the definition's declared error fields. Its last
+// result is false when the definition declares no structured errors.
+func definedErrorClass(d config.Definition, result map[string]any, code int, codeKnown bool) (decide.ErrorClass, evidence.Detail, bool) {
 	e := d.Errors
 	if e == nil || !d.Capabilities.StructuredErrors {
-		return r
+		return decide.ErrUnknown, evidence.Detail{}, false
 	}
 	detail := evidence.Detail{Source: "custom_result"}
 	if codeKnown {
 		detail.ExitCode = evidence.Number(code)
 	}
+	// The declared code decides first, then the HTTP status, then the exit
+	// code, as before; except that a restriction or a refusal in any of the
+	// three outranks whatever the others say, so no mapping of one field can
+	// turn a declined turn into a limit.
+	byCode, byStatus, byExit := decide.ErrUnknown, decide.ErrUnknown, decide.ErrUnknown
 	if e.Field != "" {
 		if v, ok := fieldCode(result, e.Field); ok {
 			detail.Code = v
 			if class, mapped := e.Classes[v]; mapped {
-				r.Class = decide.ErrorClass(class)
+				byCode = decide.ErrorClass(class)
 			}
 		}
 	}
@@ -290,17 +309,14 @@ func readDefined(d config.Definition, workdir string, stdout []byte, code int, c
 		if v, ok := fieldCode(result, e.HTTPStatusField); ok {
 			if n, err := strconv.Atoi(v); err == nil && n >= 100 && n <= 599 {
 				detail.HTTPStatus = evidence.Number(n)
-				if r.Class == decide.ErrUnknown {
-					r.Class = adapter.ClassifyCode(v)
-				}
+				byStatus = adapter.ClassifyCode(v)
 			}
 		}
 	}
-	if class, mapped := e.ExitCodes[code]; mapped && codeKnown && r.Class == decide.ErrUnknown {
-		r.Class = decide.ErrorClass(class)
+	if class, mapped := e.ExitCodes[code]; mapped && codeKnown {
+		byExit = decide.ErrorClass(class)
 	}
-	r.Evidence = evidence.Clean(detail)
-	return r
+	return adapter.Prefer(byCode, byStatus, byExit), evidence.Clean(detail), true
 }
 
 // readSessionFile reads a session identity the agent wrote: a small regular

@@ -574,6 +574,12 @@
       list(np.lines).forEach(function (s) { pf.appendChild(el("div", "sub", s)); });
       dl.appendChild(fact("Progress", pf));
     }
+    if (l.refusals && (l.refusals.text || l.refusals.question)) {
+      var rf = frag();
+      if (l.refusals.text) rf.appendChild(el("span", null, l.refusals.text));
+      if (l.refusals.question) rf.appendChild(el("div", "sub", "Question: " + l.refusals.question));
+      dl.appendChild(fact("Refusals", rf));
+    }
     dl.appendChild(fact("Device", (state.identifiers && dev.hostText) || dev.text || unknown()));
     checks.appendChild(dl);
     if (list(l.issues).length) {

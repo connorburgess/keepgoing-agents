@@ -88,7 +88,7 @@ var Adapters = []Adapter{
 	{ID: "bb", Title: "BB thread", Registered: true, Activator: true, WakePoller: true, TurnRetrier: true, LaneRecoverer: true, LaneStopper: true, SessionEvidence: true,
 		Files: []string{"internal/adapter/bb/bb.go", "internal/adapter/bb/children.go", "internal/adapter/bb/cursor.go", "internal/adapter/bb/lanes.go", "internal/adapter/bb/wake.go"},
 		Inputs: []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "ErrorClass", "ErroredChildren", "Evidence",
-			"Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}},
+			"ErrorTurn", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}},
 	{ID: "claude", Title: "Claude Code headless", Registered: true, SessionEvidence: true,
 		Files:  []string{"internal/adapter/runner/claude.go", "internal/adapter/runner/spec.go"},
 		Inputs: []string{"ErrorClass", "Evidence", "State"}},
@@ -114,7 +114,7 @@ var Adapters = []Adapter{
 // ObservationFields is every field of decide.Observation. A new field must be
 // added here, and to the Inputs of each adapter that sets it.
 var ObservationFields = []string{"ActiveChildIDs", "ActiveChildren", "AwaitingChildren", "AwaitingInput", "Background", "ChildTitles", "ChildrenUnverified", "DeferredInteraction", "ErrorClass",
-	"ErroredChildren", "Evidence", "Gone", "HealthyChildren", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}
+	"ErrorTurn", "ErroredChildren", "Evidence", "Gone", "HealthyChildren", "ModelFallback", "Queued", "ResetsAt", "RetryDeclined", "RetryExpired", "RetryKnown", "RetryUnverified", "Retrying", "State", "Turn", "TurnUnknown"}
 
 func t(path, test string) Ref { return Ref{Path: path, Test: test} }
 func d(path string) Ref       { return Ref{Path: path} }
@@ -171,13 +171,21 @@ var Matrix = []Behaviour{
 			"cursor":  {Yes, Live, "The turn's process state, exit code and bounded event stream. Live once, on one CLI version on macOS.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorLifecycleOnThisPlatform")}},
 			"process": {Yes, Fixture, "The JSON the status command prints.", []Ref{t(processTest, "TestObserveJSON")}},
 		})},
-	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
+	{ID: "error_classes", Title: "Structured error classes", What: "Classify a failure as rate_limit, auth, restricted, refused, overloaded or network from structured fields. Anything else is unknown, and unknown never fails over.",
 		Cells: merge(map[string]Cell{
 			"bb":      {Yes, Live, "From real provider error and rate-limit events.", []Ref{d(providers), t(bbTest, "TestObserveStructuredRateLimit")}},
 			"claude":  {Yes, Fixture, "From api_error_status, terminal_reason and subtype. A real usage-limit result has not been captured.", []Ref{t(runnerTest, "TestClaudeErrorClassification")}},
 			"codex":   {Yes, Live, "Live for a usage limit, read from the app-server's structured snapshot because the event stream carries it only as prose. Other classes are fixture-only.", []Ref{d(providers), t(runnerTest, "TestCodexTurnLimitClassifiedFromAppServerNotProse")}},
 			"cursor":  {Missing, Live, "Every failure is unknown: the CLI has no structured error contract. A live usage limit and an untrusted directory were both an exit code and stderr text. Connection records add a diagnostic category only.", []Ref{d("docs/cursor.md"), t(cursorTest, "TestCursorFailuresRemainUnknown"), t(cursorTest, "TestCursorConnectionRecordsAreDiagnosticOnly")}},
 			"process": {Yes, Fixture, "From errorClass in the status JSON or the exit_codes map.", []Ref{t(processTest, "TestObserveExitCodeMap")}},
+		})},
+	{ID: "restricted", Title: "Refusals continue, restrictions hold", What: "Recognise, from a structured field, a provider denying permission (restricted) or a model or provider declining the turn (refused). A restriction holds for a person at once and a person's resume asks for exactly one more try. A refusal is continued in the same session with spacing that grows to 10 minutes, and after refusal.ask_after refusals in a row asks a person; until a turn finishes without a refusal, no error on that route moves the work. A restriction outranks a refusal. Neither ever causes a handoff. A refusal no structured field reports stays unknown or looks like a finished turn.",
+		Cells: merge(map[string]Cell{
+			"bb":      {Partial, Fixture, "Restricted: a provider error with HTTP 403, a permission code or oauth_org_not_allowed, in any field, including BB's category \"unauthorized\" with status 403. Refused: BB's category \"policy\". Shapes read from BB 0.48.1's bundled providers, not captured live. A model refusal that ends a turn normally is not reported by BB in a structured form and looks idle. When the provider answers with another model after a refusal (provider/modelFallback with reason refusal), that is a timeline note only: no hold and no continue. An errored turn is named by its thread and the log position of its start, so a refused turn is counted once.", []Ref{t("internal/adapter/bb/bb_test.go", "TestObserveForbiddenIsRestricted"), t("internal/adapter/bb/bb_test.go", "TestObserveNamesTheErroredTurn"), t("internal/adapter/bb/bb_test.go", "TestObserveModelFallbackAfterARefusal"), t("internal/adapter/bb/bb_test.go", "TestObservePolicyBlockIsRefused"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"claude":  {Yes, Fixture, "Restricted: HTTP 403 in api_error_status, or a permission code in any result field. Refused: stop_reason \"refusal\", which Claude Code documents for a declined turn, whether or not the result is marked as an error. Neither has been captured from the real CLI.", []Ref{t(runnerTest, "TestClaudeErrorClassification"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"codex":   {Partial, Fixture, "Restricted: an event carrying HTTP 403 or a permission code. Refused: the codes cyberPolicy and misalignmentPolicyViolation, or the type policy. Whether codex exec prints those codes was not captured; a failure carried only as a message is unknown or looks like a finished turn.", []Ref{t(runnerTest, "TestParseCodexEventsRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
+			"cursor":  {Missing, None, "Every failure is unknown.", nil},
+			"process": {Yes, Fixture, "When the status command reports errorClass restricted or refused, or an exit code is mapped to either.", []Ref{t(processTest, "TestObserveRestricted"), t("internal/decide/restricted_test.go", "TestRestrictedHoldsAndNeverMoves"), t("internal/decide/restricted_test.go", "TestRefusedContinuesWithSpacingAndNeverMoves")}},
 		})},
 	{ID: "retry_expiry", Title: "Stale retry-notice expiry", What: "Stop honouring a provider's \"retrying\" notice when nothing fresh stands behind it.",
 		Cells: merge(map[string]Cell{
@@ -334,6 +342,7 @@ var customCells = map[string]Cell{
 	"new_conversation": {Yes, Fixture, "A candidate has no saved session, so the handoff brief starts one.", []Ref{t(definedTest, "TestDefinedAgentTurnLifecycle")}},
 	"run_graph":        {Partial, Fixture, "Runs and sends are recorded. The session identifier is the agent's own shape and is not shown.", []Ref{t(definedReadTest, "TestDefinitionBecomesASpecification")}},
 	"stop":             {Partial, Fixture, "With can_be_stopped: the same wrapper as the built-in headless agents. Without it a stop is refused and nothing is signalled.", []Ref{t(definedTest, "TestDefinedAgentStop")}},
+	"restricted":       {Partial, Fixture, "A definition may map its agent's own codes or exit codes to restricted or refused, and HTTP 403 in http_status_field is restricted; either in any field wins over a limit and over a matching finished rule, and restricted wins over refused. Validation refuses a definition that maps a code keepgoing itself reads as a refusal or restriction to a class a loop may fail over on. What the agent does not report in a declared field stays unknown or looks like a finished turn.", []Ref{t(definedReadTest, "TestDefinitionDeclaredRefusalsAndRestrictions"), t(definedReadTest, "TestDeclinedTurnIsNotFinished"), t("internal/config/custom_test.go", "TestCustomDefinitionCannotRelabelARefusalAsALimit")}},
 	"child_recovery":   {Missing, None, "A defined agent reports no child conversations to recover.", nil},
 	"stop_lanes":       {NA, None, "Not applicable: a defined agent reports no child conversations. The stop goes ahead and its report says lanes do not apply.", nil},
 	"permissions":      {Partial, Fixture, "With structured_waiting: a turn that ends on the declared waiting rule raises one awaiting-user hold. Nothing is approved or answered.", []Ref{t(definedTest, "TestDefinedAgentWaitingRaisesOneHold")}},
