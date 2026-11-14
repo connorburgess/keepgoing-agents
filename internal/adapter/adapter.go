@@ -76,6 +76,14 @@ type TurnRetrier interface {
 	StillFailed(ctx context.Context) (bool, error)
 }
 
+// KillReporter is implemented by adapters that can tell when the host ended
+// one of their provider commands with a signal they did not send. The
+// affected read is already treated as unverified; the count lets a check say
+// why.
+type KillReporter interface {
+	HostKills() int
+}
+
 // CLIPather is implemented by adapters that run a provider executable: the
 // absolute path the system resolved for it on the last command started, or
 // "" before one was. A check records it, so a caller with a shorter PATH (the

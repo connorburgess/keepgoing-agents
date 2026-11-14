@@ -379,6 +379,8 @@ Incident schema 8 adds `turnRetry` on tick records: `none`, `retried`, `queued`,
 
 Incident schema 9 adds two fields to a control record's `controlChange`: `caller`, the role that saved the control (`owner_thread`, `other_thread`, `terminal`, `client`, or `unavailable` where it is not recorded; never an identity), and `newEpisode`, true when a `resume` cleared a hold keepgoing had raised for a spent per-episode allowance and so [started a new error episode](operations.md#what-resume-starts-over). `timeline` prints both. Older binaries do not read a schema 9 journal.
 
+**A provider command killed by the host.** Unreleased source. When a `bb` command of a check is ended by a signal keepgoing did not send (the operating system does this to a process on a machine that is out of memory or badly overloaded), the read it was making is treated as unverified, as before, and the check now also carries a warning: `N provider command(s) of this check were killed by the host, not by keepgoing's time limit; what they were reading was treated as unverified`. A check that waits with `provider retry state unverified` or `child status unverified` and has this warning was not looking at a provider problem. Go reports a kill by signal only on Unix, so on Windows the warning is never given.
+
 Offline fixtures cover each kind, combined filters, relative and absolute bounds, alias hashing, filter-independent summaries, limit ordering, refused arguments, legacy records without target evidence, dry runs and unchanged runtime files. They use fictional journals; no live handoff, switch-back or limit was observed for this change.
 
 ### Collapsed and pruned history

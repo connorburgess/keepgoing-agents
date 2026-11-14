@@ -33,6 +33,8 @@ type Adapter struct {
 	// cliPath is the absolute path of the bb executable this adapter last
 	// started: where the system found the configured command.
 	cliPath string
+	// hostKills counts bb commands ended by a signal this adapter did not send.
+	hostKills int
 }
 
 // CLIPath implements adapter.CLIPather: the absolute path of the bb
@@ -473,6 +475,13 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 			a.cliPath = p
 		}
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == -1 && ctx.Err() == nil {
+		// Ended by a signal that was not this adapter's time limit: the host
+		// killed it, as it does when out of memory or badly overloaded. Go
+		// reports -1 only for a signal, so on Windows this never fires.
+		a.hostKills++
+	}
 	if err != nil && ctx.Err() != nil {
 		// Stopped at the limit: whatever it printed, the command did not end
 		// on its own.
@@ -480,6 +489,10 @@ func (a *Adapter) exec(ctx context.Context, stdin string, args ...string) ([]byt
 	}
 	return stdout.Bytes(), err
 }
+
+// HostKills implements adapter.KillReporter: how many bb commands of this
+// adapter were ended by a signal it did not send.
+func (a *Adapter) HostKills() int { return a.hostKills }
 
 // errStopped marks a bb command that was killed at its time limit or because
 // the check was cancelled.
