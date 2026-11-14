@@ -78,8 +78,8 @@ type Loop struct {
 	// Probe says how to confirm the primary works; used by switch-back.
 	Probe Probe `yaml:"probe"`
 	// Timing is usage-aware timing for the loop's first route. Off by
-	// default. Until the step decision exists (roadmap U4) it only collects
-	// usage readings of the first route's allowance; it never changes routes.
+	// default. It collects usage readings of the first route's allowance and,
+	// with steps, moves the loop between them at turn boundaries.
 	Timing *Timing `yaml:"timing,omitempty"`
 }
 

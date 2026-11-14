@@ -125,23 +125,49 @@ func TestTimingStepAppliedAtATurnBoundary(t *testing.T) {
 	if res.Action != offRes.Action || len(large.sent)+len(p.sent) != len(op.sent) || len(p.sent) != 0 {
 		t.Fatalf("timing changed what was sent: %s %v %v, without timing %s %v", res.Action, large.sent, p.sent, offRes.Action, op.sent)
 	}
-	if w.reports[0].Type != "timing" || w.reports[0].Text != "example-loop: timing stepped up to example-large: the seven_day allowance resets in 2h 0m with 40% unused (reading 20m old)" ||
-		w.reports[1].Type != "wake" || w.reports[1].Text != "example-loop: wake example-large (idle)" {
+	// The step is reported after the check's state, which records it, is saved.
+	if w.reports[0].Type != "wake" || w.reports[0].Text != "example-loop: wake example-large (idle)" ||
+		w.reports[1].Type != "timing" || w.reports[1].Text != "example-loop: timing stepped up to example-large: the seven_day allowance resets in 2h 0m with 40% unused (reading 20m old)" {
 		t.Fatalf("report: %+v", w.reports)
 	}
 }
 
-// Every gate the check can see keeps the thread as it is.
+// Timing steps only on the engine's own wake of an idle session whose turn
+// ended. Every gate the check can see keeps the thread as it is, including
+// each idle observation on which the engine holds back its wake.
 func TestTimingStepGates(t *testing.T) {
+	idle := func(edit func(*decide.Observation)) func(*testing.T, *world) {
+		return func(t *testing.T, w *world) {
+			o := decide.Observation{State: decide.Idle}
+			edit(&o)
+			w.adapters["primary"].obs = o
+		}
+	}
 	for name, set := range map[string]func(*testing.T, *world){
-		"paused": func(t *testing.T, w *world) {
-			control.Update(w.dir, func(f *control.File) { f.Paused = true })
-		},
+		"paused":         func(t *testing.T, w *world) { control.Update(w.dir, func(f *control.File) { f.Paused = true }) },
+		"disabled":       func(t *testing.T, w *world) { control.Update(w.dir, func(f *control.File) { f.Enabled = false }) },
+		"awaiting user":  func(t *testing.T, w *world) { control.Update(w.dir, func(f *control.File) { f.AwaitingUser = true }) },
 		"a turn running": func(t *testing.T, w *world) { w.adapters["primary"].obs = decide.Observation{State: decide.Active} },
 		"in error": func(t *testing.T, w *world) {
 			w.adapters["primary"].obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrUnknown}
 		},
 		"unknown": func(t *testing.T, w *world) { w.adapters["primary"].obs = decide.Observation{State: decide.Unknown} },
+		// Idle, with the engine holding its wake back.
+		"idle, retry scan incomplete":  idle(func(o *decide.Observation) { o.RetryUnverified = true }),
+		"idle, children unverified":    idle(func(o *decide.Observation) { o.ChildrenUnverified = true }),
+		"idle, children working":       idle(func(o *decide.Observation) { o.ActiveChildren = 1 }),
+		"idle, an interaction pending": idle(func(o *decide.Observation) { o.AwaitingInput = true }),
+		"idle, messages queued":        idle(func(o *decide.Observation) { o.Queued = 1 }),
+		"idle, background jobs":        idle(func(o *decide.Observation) { o.Background = 1 }),
+		"idle, outside the window": func(t *testing.T, w *world) {
+			w.cfg.Loop.Window = &config.Window{TZ: "UTC", Days: map[string][]string{"Sun": {"09:00", "10:00"}}}
+		},
+		"idle, network down": func(t *testing.T, w *world) {
+			// Probes are due and the network is down, so the engine holds
+			// its idle wake back.
+			seedHealth(t, w, func(e *health.Entry) { e.LastSched = time.Time{} })
+			w.offline = true
+		},
 		"a person's retarget, reset not reached": func(t *testing.T, w *world) {
 			at := t0.Add(2 * time.Hour)
 			editState(t, w, func(s *state.File) {
@@ -156,10 +182,13 @@ func TestTimingStepGates(t *testing.T) {
 		set(t, w)
 		res := runTick(t, w, t0)
 		if large := w.adapters["example-large"]; large != nil && large.activated > 0 {
-			t.Errorf("%s: stepped (%+v)", name, res.Timing)
+			t.Errorf("%s: stepped (action %s, %+v)", name, res.Action, res.Timing)
 		}
 		if st := loadState(t, w); st.Target() != state.Primary || countReports(w, "timing") != 0 {
 			t.Errorf("%s: %s, reports %s", name, st.Target(), w.reportTypes())
+		}
+		if strings.HasPrefix(name, "idle") && res.Action == "wake" {
+			t.Errorf("%s: the engine woke the session, so this case does not test a held-back wake", name)
 		}
 	}
 }
@@ -181,26 +210,66 @@ func TestTimingStopDuringTheCheckWins(t *testing.T) {
 	}
 }
 
-// A failed activation keeps the loop where it is, the wake still goes out
-// there, and after max_reprompts failures for the step and window instance
-// timing stops trying and reports once.
-func TestTimingStepFailureAndCap(t *testing.T) {
+// A failed step up keeps the loop where it is and keeps the record of the
+// step for the next check to repair; the wake still goes out there. After
+// max_reprompts failures for the window instance timing stops trying that
+// step up and reports once, and status and the check agree it gave up.
+func TestTimingStepUpFailureAndCap(t *testing.T) {
 	w := stepsWorld(t)
 	p := w.primary(decide.Observation{State: decide.Idle})
 	nearReset(t, w, t0)
 	w.adapters["example-large"] = &fakeAdapter{name: "example-large", activateErr: errors.New("fictional bb failure")}
 	res := runTick(t, w, t0)
-	if res.Timing.Outcome != "failed" || len(p.sent) != 1 || res.Target != state.Primary {
-		t.Fatalf("first failure: %+v, sent %v", res.Timing, p.sent)
+	st := loadState(t, w)
+	if res.Timing.Outcome != "failed" || len(p.sent) != 1 || res.Target != state.Primary || st.Timing.Pending == nil {
+		t.Fatalf("first failure: %+v, sent %v, pending %+v", res.Timing, p.sent, st.Timing.Pending)
 	}
 	res = runTick(t, w, t0.Add(10*time.Minute))
 	if res.Timing.Outcome != "capped" || countReports(w, "timing") != 1 {
 		t.Fatalf("second failure: %+v, reports %s", res.Timing, w.reportTypes())
 	}
+	activated := p.activated
 	res = runTick(t, w, t0.Add(20*time.Minute))
-	st := loadState(t, w)
-	if res.Timing.Outcome != "capped" || countReports(w, "timing") != 1 || st.Timing.Failures != 2 || !st.Timing.Capped || st.Target() != state.Primary {
+	st = loadState(t, w)
+	if res.Timing.Reason != "gave_up" || res.Timing.Outcome != "stay" || countReports(w, "timing") != 1 || st.Timing.Failures != 2 || !st.Timing.Capped || st.Target() != state.Primary {
 		t.Fatalf("after the cap: %+v %+v, reports %s", res.Timing, st.Timing, w.reportTypes())
+	}
+	// The pending record left by the failures was repaired by setting the
+	// route on record, primary, on the thread.
+	if p.activated <= activated-1 || st.Timing.Pending != nil {
+		t.Fatalf("repair: activated %d, pending %+v", p.activated, st.Timing.Pending)
+	}
+}
+
+// A return to primary is never capped: it is tried at every turn boundary,
+// its first failure is reported once, and its success once.
+func TestTimingReturnIsRetriedNotCapped(t *testing.T) {
+	w := stepsWorld(t)
+	p := w.primary(decide.Observation{State: decide.Idle})
+	p.activateErr = errors.New("fictional bb failure")
+	w.adapters["example-large"] = &fakeAdapter{name: "example-large", obs: decide.Observation{State: decide.Idle}}
+	editState(t, w, func(s *state.File) {
+		s.ActiveTarget, s.TargetSetBy = "example-large", state.SetByTiming
+		s.Timing = &state.TimingRecord{LastMove: &state.TimingMove{At: t0.Add(-3 * time.Hour), From: state.Primary, To: "example-large", Action: "up", Window: "seven_day", ResetsAt: t0.Add(-time.Minute)}}
+	})
+	for i := 0; i < 4; i++ {
+		res := runTick(t, w, t0.Add(time.Duration(i)*10*time.Minute))
+		if res.Timing == nil || res.Timing.Action != "back" || res.Timing.Outcome != "failed" {
+			t.Fatalf("check %d: %+v", i, res.Timing)
+		}
+	}
+	if n := countReports(w, "timing"); n != 1 {
+		t.Fatalf("%d timing reports for the failures: %s", n, w.reportTypes())
+	}
+	if st := loadState(t, w); st.Timing.Capped || st.Timing.Failures != 4 || st.Target() != "example-large" {
+		t.Fatalf("%+v", st.Timing)
+	}
+	p.activateErr = nil
+	res := runTick(t, w, t0.Add(50*time.Minute))
+	st := loadState(t, w)
+	if res.Timing.Outcome != "applied" || st.Target() != state.Primary || countReports(w, "timing") != 2 || st.Timing.Failures != 0 ||
+		!strings.Contains(w.reports[len(w.reports)-1].Text+w.reports[len(w.reports)-2].Text, "returned to primary") {
+		t.Fatalf("%+v %+v %s", res.Timing, st.Timing, w.reportTypes())
 	}
 }
 
@@ -324,5 +393,135 @@ func TestTimingDryRunChangesNothing(t *testing.T) {
 	}
 	if st := loadState(t, w); st.Target() != state.Primary || st.Timing != nil {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// A loop that is held, stopped or off is never touched: a step recorded and
+// not settled waits for a check that acts.
+func TestTimingRepairWaitsForACheckThatActs(t *testing.T) {
+	for name, set := range map[string]func(*control.File){
+		"paused":        func(f *control.File) { f.Paused = true },
+		"disabled":      func(f *control.File) { f.Enabled = false },
+		"awaiting user": func(f *control.File) { f.AwaitingUser = true },
+		"stopped":       func(f *control.File) { f.Stop = true },
+	} {
+		w := stepsWorld(t)
+		p := w.primary(decide.Observation{State: decide.Idle})
+		editState(t, w, func(s *state.File) {
+			s.Timing = &state.TimingRecord{Pending: &state.TimingMove{At: t0.Add(-10 * time.Minute), From: state.Primary, To: "example-large", Action: "up"}}
+		})
+		control.Update(w.dir, set)
+		runTick(t, w, t0)
+		if large := w.adapters["example-large"]; p.activated != 0 || (large != nil && large.activated != 0) {
+			t.Errorf("%s: the thread was changed", name)
+		}
+		if st := loadState(t, w); st.Timing == nil || st.Timing.Pending == nil {
+			t.Errorf("%s: the record of the step was dropped", name)
+		}
+	}
+}
+
+// The step is on disk before the thread is changed.
+func TestTimingStepRecordedBeforeTheThreadChanges(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	nearReset(t, w, t0)
+	large := &fakeAdapter{name: "example-large"}
+	w.adapters["example-large"] = large
+	seen := false
+	large.onActivate = func() {
+		st := loadState(t, w)
+		seen = st.Timing != nil && st.Timing.Pending != nil && st.Timing.Pending.To == "example-large"
+	}
+	runTick(t, w, t0)
+	if !seen || large.activated != 1 {
+		t.Fatalf("the step was not on disk when the thread changed (activated %d)", large.activated)
+	}
+}
+
+// Leaving a step through configuration: timing turned off, the step dropped
+// from steps, or its fallback removed. In each the thread is set back to
+// primary's model and effort, recorded as a configuration move.
+func TestTimingLeftConfigurationReturnsToPrimary(t *testing.T) {
+	onStep := func(t *testing.T, w *world, setBy string) {
+		editState(t, w, func(s *state.File) {
+			s.ActiveTarget, s.TargetSetBy = "example-large", setBy
+			s.Timing = &state.TimingRecord{LastMove: &state.TimingMove{At: t0.Add(-3 * time.Hour), From: state.Primary, To: "example-large", Action: "up", Window: "seven_day", ResetsAt: t0.Add(3 * time.Hour)}}
+		})
+		w.adapters["example-large"] = &fakeAdapter{name: "example-large", obs: decide.Observation{State: decide.Idle}}
+	}
+	for name, c := range map[string]struct {
+		setBy string
+		edit  func(*world)
+	}{
+		"timing turned off":              {state.SetByTiming, func(w *world) { w.cfg.Loop.Timing.Enabled = false }},
+		"timing removed":                 {state.SetByTiming, func(w *world) { w.cfg.Loop.Timing = nil }},
+		"step dropped from steps":        {state.SetByTiming, func(w *world) { w.cfg.Loop.Timing.Steps = []string{"primary"}; w.cfg.Loop.Timing.Ceiling = "primary" }},
+		"step's fallback removed":        {state.SetByTiming, func(w *world) { w.cfg.FallbackSet.Candidates = w.cfg.FallbackSet.Candidates[:3] }},
+		"a same-thread fallback removed": {state.SetByHandoff, func(w *world) { w.cfg.FallbackSet.Candidates = w.cfg.FallbackSet.Candidates[:3] }},
+	} {
+		w := stepsWorld(t)
+		p := w.primary(decide.Observation{State: decide.Idle})
+		onStep(t, w, c.setBy)
+		c.edit(w)
+		runTick(t, w, t0)
+		st := loadState(t, w)
+		if p.activated != 1 || st.Target() != state.Primary || st.TargetSetBy != state.SetByConfiguration || st.ReapplyRoute {
+			t.Errorf("%s: activated %d, %s by %s, reapply %v", name, p.activated, st.Target(), st.TargetSetBy, st.ReapplyRoute)
+		}
+	}
+}
+
+// A check that moved the loop because its route left the configuration made
+// another move: timing does not step in the same check.
+func TestTimingConfigurationMoveIsAnotherMove(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	nearReset(t, w, t0)
+	editState(t, w, func(s *state.File) { s.ActiveTarget, s.TargetSetBy = "deleted-candidate", state.SetByHandoff })
+	res := runTick(t, w, t0)
+	if large := w.adapters["example-large"]; (large != nil && large.activated > 0) || res.Timing == nil || res.Timing.Reason != "other_move" {
+		t.Fatalf("%+v", res.Timing)
+	}
+}
+
+// A retarget made with no reset known, here while timing was off: the first
+// reset a reading shows after it is saved, and never moved again.
+func TestTimingRetargetWaitIsSavedOnce(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	w.adapters["example-large"] = &fakeAdapter{name: "example-large", obs: decide.Observation{State: decide.Idle}}
+	editState(t, w, func(s *state.File) { s.ActiveTarget, s.TargetSetBy = "example-large", state.SetByRetarget })
+	nearReset(t, w, t0) // read 20 minutes before the check: before the wait starts
+	runTick(t, w, t0)
+	st := loadState(t, w)
+	if st.Timing == nil || st.Timing.Retarget == nil || !st.Timing.Retarget.At.Equal(t0) || st.Timing.Retarget.ResetsAt != nil {
+		t.Fatalf("first check: %+v", st.Timing)
+	}
+	first := nearReset(t, w, t0.Add(time.Hour)) // read after the wait started
+	runTick(t, w, t0.Add(time.Hour))
+	st = loadState(t, w)
+	if r := st.Timing.Retarget; r.ResetsAt == nil || !r.ResetsAt.Equal(first) {
+		t.Fatalf("second check: %+v", r)
+	}
+	nearReset(t, w, t0.Add(30*time.Hour)) // a later reading of a later instance
+	runTick(t, w, t0.Add(2*time.Hour))
+	if r := loadState(t, w).Timing.Retarget; !r.ResetsAt.Equal(first) {
+		t.Fatalf("the saved reset moved: %+v", r)
+	}
+}
+
+// A handoff from a step records the reset the provider reported: the step is
+// on the first route's allowance, so switch-back waits for it.
+func TestTimingHandoffFromAStepRecordsTheReset(t *testing.T) {
+	w := stepsWorld(t)
+	w.primary(decide.Observation{State: decide.Idle})
+	nearReset(t, w, t0)
+	runTick(t, w, t0)
+	resets := t0.Add(5 * time.Hour)
+	w.adapters["example-large"].obs = decide.Observation{State: decide.Error, ErrorClass: decide.ErrRateLimit, ResetsAt: resets}
+	runTick(t, w, t0.Add(10*time.Minute))
+	if st := loadState(t, w); st.TargetSetBy != state.SetByHandoff || !st.PrimaryResetsAt.Equal(resets) {
+		t.Fatalf("%s by %s, primary resets %s", st.Target(), st.TargetSetBy, st.PrimaryResetsAt)
 	}
 }

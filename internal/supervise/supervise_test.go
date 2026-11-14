@@ -31,6 +31,7 @@ type fakeAdapter struct {
 	activateErr error
 	onSend      func() // runs after a send is recorded by the fake
 	onObserve   func() // runs when the fake is observed
+	onActivate  func() // runs before the fake's model is changed
 	observed    int
 }
 
@@ -58,6 +59,9 @@ func (f *fakeAdapter) Stop(context.Context) error {
 	return nil
 }
 func (f *fakeAdapter) Activate(context.Context) error {
+	if f.onActivate != nil {
+		f.onActivate()
+	}
 	if f.activateErr != nil {
 		return f.activateErr
 	}
@@ -71,6 +75,7 @@ type world struct {
 	sessions string // this world's session claims
 	adapters map[string]*fakeAdapter
 	probeOK  map[string]bool // exact and scheduled outcome per candidate
+	offline  bool            // the connectivity check finds the network down
 	probes   []string
 	reports  []report.Event
 }
@@ -102,7 +107,17 @@ func (w *world) opts(now time.Time) Options {
 			return probe.Result{ErrorClass: "rate_limit"}
 		},
 		Reporter: w,
+		Online:   w.onlineCheck(),
 	}
+}
+
+// onlineCheck is the connectivity check: none (the loop's own settings)
+// unless the world is offline.
+func (w *world) onlineCheck() func(context.Context) bool {
+	if !w.offline {
+		return nil
+	}
+	return func(context.Context) bool { return false }
 }
 
 func (w *world) reportTypes() string {

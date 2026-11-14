@@ -13,29 +13,39 @@ import (
 )
 
 // TimingNote is what usage-aware timing decided in a check, and what came of
-// it: applied, failed (with the cap reached or not), not applied because a
-// stop or pause arrived, or a stay.
+// it: applied, failed, capped (a step up timing stopped trying), held (a stop
+// or pause arrived during the check), dry_run or stay.
 type TimingNote struct {
-	Action string `json:"action"`
-	To     string `json:"to,omitempty"`
-	Rule   string `json:"rule"`
-	Reason string `json:"reason"`
-	Text   string `json:"text"`
-	// Outcome is applied, failed, capped, held, dry_run or stay.
+	Action  string `json:"action"`
+	To      string `json:"to,omitempty"`
+	Rule    string `json:"rule"`
+	Reason  string `json:"reason"`
+	Text    string `json:"text"`
 	Outcome string `json:"outcome"`
 	Error   string `json:"error,omitempty"`
 }
 
-// settleTimingIntent: a step was recorded and the check that recorded it did
-// not settle it, so the thread may be on either route. The record wins: the
-// route state names is applied again (a model change is idempotent), and
-// timing decides afresh at the next turn boundary.
-func (t *tick) settleTimingIntent(target string, agent config.Agent) {
+// LeftConfiguration is the reason a loop on a step timing chose returns to
+// the first route when that step left the configuration.
+const LeftConfiguration = "left_configuration"
+
+// reapplyRoute sets the model and effort of the route on record on the
+// thread, when the thread may not match it: a step was recorded and not
+// settled (the check that recorded it ended, or its activation failed), or
+// the loop was moved to the first route because its route left the
+// configuration. It runs in a check that acts: after stop, pause and the
+// other holds, and with the session claimed. A model change is idempotent.
+func (t *tick) reapplyRoute(target string) {
 	tr := t.st.Timing
-	if tr == nil || tr.Pending == nil || t.opts.DryRun {
+	pending := tr != nil && tr.Pending != nil
+	if (!pending && !t.st.ReapplyRoute) || t.opts.DryRun {
 		return
 	}
-	p := tr.Pending
+	if t.left() < repairRouteTime {
+		t.warn("the thread may not be on %s, the route on record; there is no time left in this check to set it, so the next check does", target)
+		return
+	}
+	agent := t.stepAgent(target)
 	a, err := t.newAdapter(agent, t.loop.StateDir, target)
 	if err == nil {
 		if act, ok := a.(adapter.Activator); ok {
@@ -43,34 +53,78 @@ func (t *tick) settleTimingIntent(target string, agent config.Agent) {
 		}
 	}
 	if err != nil {
-		t.warn("timing: a step to %s was recorded and not settled, and %s could not be applied again (%v); the next check tries again", p.To, target, err)
+		t.warn("the thread may not be on %s, the route on record, and it could not be set (%v); the next check tries again", target, err)
 		return
 	}
-	tr.Pending = nil
-	t.warn("timing: a step from %s to %s was recorded and not settled; the thread was set to %s, the route on record", p.From, p.To, target)
+	if pending {
+		t.warn("timing: a step from %s to %s was recorded and not settled; the thread was set to %s, the route on record", tr.Pending.From, tr.Pending.To, target)
+		tr.Pending = nil
+	}
+	if t.st.ReapplyRoute {
+		t.warn("the thread's model and effort were set to %s's: the route the loop was on left the configuration", target)
+		t.st.ReapplyRoute = false
+	}
+}
+
+// stepAgent is the agent for a route timing applies. A step on the loop's
+// own BB thread that sets only its model or only its effort takes the other
+// from the first route, so a step's effort never carries over from the step
+// before it.
+func (t *tick) stepAgent(id string) config.Agent {
+	_, agent := t.resolve(id)
+	if id == state.Primary || agent.BB == nil || t.loop.BB == nil {
+		return agent
+	}
+	bb := *agent.BB
+	if bb.Model == "" {
+		bb.Model = t.loop.BB.Model
+	}
+	if bb.Reasoning == "" {
+		bb.Reasoning = t.loop.BB.Reasoning
+	}
+	agent.BB = &bb
+	return agent
+}
+
+// atTurnBoundary: the engine is waking an idle session whose turn ended. An
+// idle session it does not wake is one something held back (a retry or child
+// scan it could not verify, children working, an interaction or queued
+// messages pending, background jobs, outside the window, the network down),
+// and timing does not act on it either.
+func atTurnBoundary(d decide.Decision, obs decide.Observation) bool {
+	return obs.State == decide.Idle && d.Action == decide.Wake && !d.ChildErrorWake
 }
 
 // timingStep decides with usage-aware timing at a turn boundary and, when it
 // decides a move, applies it to the loop's own BB thread before the check's
-// wake, if any, so the next turn runs on the new route. It sends nothing of
-// its own. The move is recorded before the thread is changed, and stop and
-// pause, read again just before, win. It returns the adapter the check's
-// send, if any, goes through: the new route's when the step was applied.
+// wake, so the next turn runs on the new route. It sends nothing of its own.
+// The move is recorded before the thread is changed, and stop and pause, read
+// again just before, win. It returns the adapter the wake goes through: the
+// new route's when the step was applied.
 func (t *tick) timingStep(a adapter.Adapter, d decide.Decision, obs decide.Observation, gate decide.Control) adapter.Adapter {
 	l := t.loop
+	boundary := atTurnBoundary(d, obs)
+	if timing.LeftConfiguration(l, t.st) {
+		return t.returnFromLeftStep(a, boundary)
+	}
 	if !l.TimingOn() || len(l.Timing.Steps) == 0 {
 		return a
 	}
 	in := timing.FromRecords(t.cfg, t.st, t.reg, t.now)
 	in.Held = gate.Paused || gate.Stop || gate.AwaitingUser || gate.Completed || d.Action == decide.AwaitUser || d.Action == decide.Stop
 	in.InError = obs.State == decide.Error
-	in.RefusalOrUnknown = obs.State == decide.Unknown
-	in.TurnEnded = obs.State == decide.Idle && (d.Action == decide.None || d.Action == decide.Wake)
+	in.Unknown = obs.State == decide.Unknown
+	in.TurnEnded = boundary
 	in.OtherMove = t.resolvedMove
+	if !t.opts.DryRun && in.Retarget != nil && (t.st.Timing == nil || t.st.Timing.Retarget == nil) {
+		// A retarget with no record of its own: save the wait now, so the
+		// reset it waits for is not moved again.
+		t.timingRecord().Retarget = &state.TimingRetarget{At: in.Retarget.At}
+	}
 	if at := timing.RetargetReset(in); at != nil {
 		in.Retarget.ResetsAt = at
-		if !t.opts.DryRun && t.st.Timing != nil && t.st.Timing.Retarget != nil {
-			t.st.Timing.Retarget.ResetsAt = at
+		if !t.opts.DryRun {
+			t.timingRecord().Retarget.ResetsAt = at
 		}
 	}
 	dec := timing.Decide(in)
@@ -79,65 +133,117 @@ func (t *tick) timingStep(a adapter.Adapter, d decide.Decision, obs decide.Obser
 	if dec.Action == timing.Stay {
 		return a
 	}
-	if t.opts.DryRun {
-		note.Outcome = "dry_run"
-		return a
-	}
-	if t.st.Timing == nil {
-		t.st.Timing = &state.TimingRecord{}
-	}
-	tr := t.st.Timing
 	var resets time.Time
 	if dec.ResetsAt != nil {
 		resets = dec.ResetsAt.UTC()
 	}
-	if tr.Capped && tr.FailedTo == dec.To && tr.FailedResetsAt.Equal(resets) {
-		note.Outcome = "capped"
+	move := state.TimingMove{At: t.now, From: in.Current, To: dec.To, Action: dec.Action, Rule: dec.Rule, Reason: dec.Reason, Window: dec.Window, ResetsAt: resets, Text: note.Text}
+	return t.applyStep(a, move, note)
+}
+
+// returnFromLeftStep returns a loop on a step that left the configuration to
+// the first route at the next turn boundary.
+func (t *tick) returnFromLeftStep(a adapter.Adapter, boundary bool) adapter.Adapter {
+	from := t.st.Target()
+	note := &TimingNote{Action: timing.Back, To: state.Primary, Rule: timing.RuleGate, Reason: LeftConfiguration,
+		Text: fmt.Sprintf("return to %s: %s is no longer a timing step", state.Primary, from), Outcome: "stay"}
+	t.res.Timing = note
+	if !boundary {
+		return a
+	}
+	move := state.TimingMove{At: t.now, From: from, To: state.Primary, Action: timing.Back, Rule: timing.RuleGate, Reason: LeftConfiguration, Text: note.Text}
+	return t.applyStep(a, move, note)
+}
+
+// applyStep makes a decided move: stop and pause are read again, the move is
+// recorded before the thread is changed, then the thread is changed.
+func (t *tick) applyStep(a adapter.Adapter, move state.TimingMove, note *TimingNote) adapter.Adapter {
+	l := t.loop
+	if t.opts.DryRun {
+		note.Outcome = "dry_run"
 		return a
 	}
 	// Stop and pause win: a control change written during this check means
 	// the thread is not changed.
-	if c, err := control.Load(l.StateDir); err != nil || c.Paused || c.Stop || c.AwaitingUser || c.Completed {
+	if c, err := control.Load(l.StateDir); err != nil || !c.Enabled || c.Paused || c.Stop || c.AwaitingUser || c.Completed {
 		note.Outcome = "held"
 		return a
 	}
-	move := state.TimingMove{At: t.now, From: in.Current, To: dec.To, Action: dec.Action, Rule: dec.Rule, Reason: dec.Reason, Window: dec.Window, ResetsAt: resets, Text: note.Text}
+	tr := t.timingRecord()
 	if err := t.recordTimingIntent(&move); err != nil {
-		t.warn("timing: the step to %s was not recorded, so it was not made: %v", dec.To, err)
+		t.warn("timing: the step to %s was not recorded, so it was not made: %v", move.To, err)
 		note.Outcome, note.Error = "failed", "not recorded"
 		return a
 	}
-	_, agent := t.resolve(dec.To)
-	na, err := t.newAdapter(agent, l.StateDir, dec.To)
+	na, err := t.newAdapter(t.stepAgent(move.To), l.StateDir, move.To)
 	if err == nil {
 		if act, ok := na.(adapter.Activator); ok {
 			err = act.Activate(t.ctx)
 		}
 	}
-	tr.Pending = nil
 	if err != nil {
-		if tr.FailedTo != dec.To || !tr.FailedResetsAt.Equal(resets) {
-			tr.FailedTo, tr.FailedResetsAt, tr.Failures, tr.Capped = dec.To, resets, 0, false
-		}
-		tr.Failures++
-		note.Outcome, note.Error = "failed", err.Error()
-		t.warn("timing: could not step to %s (%v); staying on %s", dec.To, err, in.Current)
-		if tr.Failures >= l.Errors.MaxReprompts {
-			tr.Capped = true
-			note.Outcome = "capped"
-			t.report("timing", fmt.Sprintf("%s: timing could not step to %s %d times for this %s window and stops trying until it resets; staying on %s", l.Name, dec.To, tr.Failures, dec.Window, in.Current),
-				map[string]any{"from": in.Current, "to": dec.To, "rule": dec.Rule, "reason": dec.Reason, "failures": tr.Failures, "outcome": "capped"})
-		}
+		// The record of the step is kept: the thread may be partly changed,
+		// and the next check sets it back to the route on record.
+		t.timingFailed(move, note, err)
 		return a
 	}
+	failed := 0
+	if tr.FailedTo == move.To && tr.FailedAction == move.Action {
+		failed = tr.Failures
+	}
+	tr.Pending = nil
 	tr.LastMove = &move
-	tr.Failures, tr.FailedTo, tr.FailedResetsAt, tr.Capped = 0, "", time.Time{}, false
-	t.st.ActiveTarget, t.st.TargetSetBy = dec.To, state.SetByTiming
-	t.res.Target = dec.To
+	if move.Action == timing.Up {
+		tr.LastUp = &move
+	}
+	tr.Failures, tr.FailedTo, tr.FailedAction, tr.FailedWindow, tr.FailedResetsAt, tr.Capped, tr.FailReported = 0, "", "", "", time.Time{}, false, false
+	t.st.ActiveTarget, t.st.TargetSetBy, t.st.ReapplyRoute = move.To, state.SetByTiming, false
+	if move.Reason == LeftConfiguration {
+		t.st.TargetSetBy = state.SetByConfiguration
+	}
+	t.res.Target = move.To
 	note.Outcome = "applied"
-	t.report("timing", fmt.Sprintf("%s: timing %s", l.Name, timingPast(note.Text)),
-		map[string]any{"from": in.Current, "to": dec.To, "rule": dec.Rule, "reason": dec.Reason, "window": dec.Window, "outcome": "applied"})
+	text := fmt.Sprintf("%s: timing %s", l.Name, timingPast(note.Text))
+	if failed > 0 {
+		text += fmt.Sprintf(" (after %d failed attempts)", failed)
+	}
+	data := map[string]any{"from": move.From, "to": move.To, "rule": move.Rule, "reason": move.Reason, "window": move.Window, "outcome": "applied"}
+	// The step is reported once the check's state, which records it, is saved.
+	t.afterSave = append(t.afterSave, func() { t.report("timing", text, data) })
 	return na
+}
+
+// timingFailed records a failed activation. Only a step up is capped: after
+// errors.max_reprompts failures for one window instance timing stops trying
+// it and reports once. A return or a step down is tried again at every turn
+// boundary, and its first failure is reported once.
+func (t *tick) timingFailed(move state.TimingMove, note *TimingNote, err error) {
+	l, tr := t.loop, t.timingRecord()
+	if tr.FailedTo != move.To || tr.FailedAction != move.Action || !tr.FailedResetsAt.Equal(move.ResetsAt) {
+		tr.FailedTo, tr.FailedAction, tr.FailedWindow, tr.FailedResetsAt, tr.Failures, tr.Capped, tr.FailReported = move.To, move.Action, move.Window, move.ResetsAt, 0, false, false
+	}
+	tr.Failures++
+	note.Outcome, note.Error = "failed", err.Error()
+	t.warn("timing: could not move to %s (%v); staying on %s", move.To, err, move.From)
+	data := map[string]any{"from": move.From, "to": move.To, "rule": move.Rule, "reason": move.Reason, "failures": tr.Failures}
+	switch {
+	case move.Action == timing.Up && tr.Failures >= l.Errors.MaxReprompts:
+		tr.Capped = true
+		note.Outcome = "capped"
+		data["outcome"] = "capped"
+		t.report("timing", fmt.Sprintf("%s: timing could not step up to %s %d times for this %s window and stops trying until it resets; staying on %s", l.Name, move.To, tr.Failures, move.Window, move.From), data)
+	case move.Action != timing.Up && !tr.FailReported:
+		tr.FailReported = true
+		data["outcome"] = "failed"
+		t.report("timing", fmt.Sprintf("%s: timing could not move from %s to %s (%v); it tries again at each turn boundary", l.Name, move.From, move.To, err), data)
+	}
+}
+
+func (t *tick) timingRecord() *state.TimingRecord {
+	if t.st.Timing == nil {
+		t.st.Timing = &state.TimingRecord{}
+	}
+	return t.st.Timing
 }
 
 // recordTimingIntent saves the step in state.json before the thread is
@@ -154,7 +260,7 @@ func (t *tick) recordTimingIntent(m *state.TimingMove) error {
 	if err := state.Save(t.loop.StateDir, saved); err != nil {
 		return err
 	}
-	t.st.Timing.Pending = m
+	t.timingRecord().Pending = m
 	return nil
 }
 
