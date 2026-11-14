@@ -282,6 +282,16 @@ Not exercised: a service-managed daemon restart, a host reboot, power loss (the 
 
 `go test ./internal/scenario -run TestScenarioHeadless` runs the offline scenario for headless Claude Code and Codex through the built binary with a stand-in CLI and a moved check clock; see the [scenario suite](#scenario-suite-t2). The stand-ins' failure output is an assumption about the real CLIs, not an observation.
 
+## Adapter contract suite (T1)
+
+`go test ./internal/adapter/conformance` runs the [adapter contract](adapters.md#the-adapter-contract) against the process, Claude Code and Codex adapters. The test binary is its own stand-in agent: it is started again as the status command, the wrapper, the CLI or the Codex app-server, and a file in a temporary directory tells it which situation to act out. No provider is contacted. The home and temporary directories are pointed at watched directories for the run.
+
+A case an adapter is known not to meet is listed in `known` in `builtin_test.go` with the words its failure must contain, and printed as `KNOWN GAP`. The test fails with `FIXED KNOWN GAP` when the case stops failing, and with a plain failure when it fails for another reason, until the entry is deleted or corrected in the same change. An adapter added to the factory needs a stand-in and an entry in that test; a check added to the kit needs a fault in `faults_test.go` that only it catches.
+
+Mutations of the runner that the suite was checked to catch: no refusal of a send into a running turn, a crashed turn read as a rate limit, a completed result accepted from a failed exit, a prompt file created with mode 0644, and a session that is never saved.
+
+`keepgoing adapter check` runs the one case that only reads, for a process adapter. Its tests (`go test ./cmd/keepgoing -run TestAdapterCheck`) run on every platform with the test binary as the status command. They check that only the status command is started, once; that the loop's directory is byte-identical afterwards; that BB, Claude Code, Codex and Cursor loops are refused with nothing started and nothing changed, including the saved BB log position; and that the report repeats neither the wrapper's output nor a path. It has not been run against a real agent.
+
 ## On a machine with Go
 
 ```sh
