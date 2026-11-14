@@ -210,7 +210,8 @@ func TestScenarioTwoSupervisorsOnOneLoop(t *testing.T) {
 		nothingSent(step), noCalls(step)))
 
 	// Operator B takes the loop over. The daemon operator A started notices
-	// at its next control check and stops by itself.
+	// at its next control check and stops by itself. The takeover waits for
+	// the tick lock that daemon takes for each control poll.
 	r = w.RunAs(operatorB, "enable", "-c", w.Config, "--take-over")
 	step = w.record("take over", r, nil)
 	w.Check(step, "takeover", all(exit(step, 0), holds(step, "paused"), nothingSent(step)))

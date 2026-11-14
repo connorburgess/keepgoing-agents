@@ -959,7 +959,19 @@ func controlCaller(f control.File) string {
 
 func controlCmd(e env, cfg *config.Config, cmd, note string, takeOver ...bool) int {
 	if cmd == "enable" || cmd == "resume" {
-		l, err := lock.Acquire(cfg.Loop.StateDir)
+		acquire := lock.Acquire
+		takingOver := cmd == "enable" && len(takeOver) > 0 && takeOver[0]
+		if takingOver {
+			// The old owner's supervisor takes the check lock for each check
+			// and control poll; a takeover waits that out instead of being
+			// skipped, so the person asking for it does not have to guess.
+			acquire = func(dir string) (*lock.Lock, error) { return acquireWithin(e.ctx, dir, takeoverLockWait) }
+		}
+		l, err := acquire(cfg.Loop.StateDir)
+		if takingOver && errors.Is(err, lock.ErrHeld) {
+			e.errf("enable --take-over: the old owner's supervisor held this loop's check lock for all of %s, so nothing was taken over. It is busy with a check; run enable --take-over again.", takeoverLockWait)
+			return exitSkipped
+		}
 		if err != nil {
 			return ownershipError(e, err)
 		}

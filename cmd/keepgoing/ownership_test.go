@@ -355,3 +355,73 @@ func TestEnableTakeoverPreservesDisabled(t *testing.T) {
 		t.Fatal("same owner enable did not preserve pause and generation")
 	}
 }
+
+// takeoverFixture is a loop owned by thr_first, with the check lock held
+// by this test as the old owner's supervisor holds it during a check, and
+// the caller switched to thr_second.
+func takeoverFixture(t *testing.T) (*fixture, *lock.Lock) {
+	t.Helper()
+	f := newFixture(t)
+	t.Setenv("BB_THREAD_ID", "thr_first")
+	if c, _, e := f.run("enable"); c != 0 {
+		t.Fatal(e)
+	}
+	held, err := lock.Acquire(filepath.Join(f.dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Release() })
+	t.Setenv("BB_THREAD_ID", "thr_second")
+	t.Cleanup(func() { lockRetried = nil })
+	return f, held
+}
+
+// enable --take-over waits for the check lock instead of being skipped:
+// the lock is released while it waits, and the takeover happens.
+func TestTakeoverWaitsForTheCheckLock(t *testing.T) {
+	f, held := takeoverFixture(t)
+	waits := 0
+	lockRetried = func() {
+		if waits++; waits == 1 {
+			held.Release()
+		}
+	}
+	if code, _, errs := f.run("enable", "--take-over"); code != 0 || waits != 1 {
+		t.Fatalf("exit %d after %d waits: %s", code, waits, errs)
+	}
+	if c := ownerControl(t, f); c.Ownership == nil || c.Ownership.ThreadID != "thr_second" {
+		t.Fatalf("%+v", c.Ownership)
+	}
+}
+
+// A lock held for the whole wait ends it: exit 75, nothing taken over, and
+// the message says the old supervisor is busy and to run it again.
+func TestTakeoverGivesUpOnALockHeldForTheWholeWait(t *testing.T) {
+	f, _ := takeoverFixture(t)
+	old := takeoverLockWait
+	takeoverLockWait = 300 * time.Millisecond
+	t.Cleanup(func() { takeoverLockWait = old })
+	before, _ := os.ReadFile(filepath.Join(f.dir, "state", control.FileName))
+	start := time.Now()
+	code, _, errs := f.run("enable", "--take-over")
+	if took := time.Since(start); code != exitSkipped || took < takeoverLockWait ||
+		!strings.Contains(errs, "held this loop's check lock for all of 300ms, so nothing was taken over") || !strings.Contains(errs, "run enable --take-over again") {
+		t.Fatalf("exit %d after %s: %s", code, took, errs)
+	}
+	if after, _ := os.ReadFile(filepath.Join(f.dir, "state", control.FileName)); string(after) != string(before) {
+		t.Fatal("a takeover that gave up changed control")
+	}
+}
+
+// Only a takeover waits: an ordinary enable or resume is still skipped at
+// once while a check holds the lock.
+func TestOnlyATakeoverWaitsForTheCheckLock(t *testing.T) {
+	f, _ := takeoverFixture(t)
+	t.Setenv("BB_THREAD_ID", "thr_first")
+	lockRetried = func() { t.Error("waited for the lock") }
+	for _, cmd := range []string{"enable", "resume"} {
+		if code, _, errs := f.run(cmd); code != exitSkipped || !strings.Contains(errs, "lock held by another process") {
+			t.Fatalf("%s: exit %d: %s", cmd, code, errs)
+		}
+	}
+}
