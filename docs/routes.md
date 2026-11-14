@@ -6,9 +6,9 @@ What exists in this build: the list's file format, how a loop follows it, what h
 
 ## The file
 
-`routes.yaml` lives in the user configuration directory, in `keepgoing/routes.yaml` beside the loop registry, never inside a loop's directory or a repository. `KEEPGOING_ROUTES_FILE` (an absolute path) names another location; that path is refused inside a Git checkout, because the list names private account directories. The default location is not checked for a checkout. A JSON schema is in [`schema/routes.schema.json`](../schema/routes.schema.json).
+`routes.yaml` lives in the user configuration directory, in `keepgoing/routes.yaml` beside the loop registry, never inside a loop's directory or a repository. `LOOPTENDER_ROUTES_FILE` (an absolute path; also read under its [earlier name](configuration.md#environment-variables), `KEEPGOING_ROUTES_FILE`) names another location; that path is refused inside a Git checkout, because the list names private account directories. The default location is not checked for a checkout. A JSON schema is in [`schema/routes.schema.json`](../schema/routes.schema.json).
 
-The file is read as the loop registry is: a regular file of at most 1 MiB, owned by you and not readable or writable by anyone else (`chmod 600`). A symbolic link you own is followed wherever it points, a dotfiles checkout included, as dotfile managers create them; the file it names must pass the same checks. The type is checked before the file is opened, so a FIFO or device at the path is refused rather than read. A file that fails any check is unreadable, and `routes list` gives the reason as a fixed code: `not_private`, `not_owned`, `not_regular`, `too_large`, `inside_checkout`, `unreadable` or `invalid`. `validate` also lists what makes an invalid list invalid. Paths in a route (`account_dir`, `probe.account_dir`) are at most 4096 bytes.
+The file is read as the loop registry is: a regular file of at most 1 MiB, owned by you and not readable or writable by anyone else (`chmod 600`). A symbolic link you own is followed wherever it points, a dotfiles checkout included, as dotfile managers create them; the file it names must pass the same checks. The type is checked before the file is opened, so a FIFO or device at the path is refused rather than read. A file that fails any check is unreadable, and `routes list` gives the reason as a fixed code: `not_private`, `not_owned`, `not_regular`, `too_large`, `inside_checkout`, `named_twice` (the variable's two names are set to different files), `unreadable` or `invalid`. `validate` also lists what makes an invalid list invalid. Paths in a route (`account_dir`, `probe.account_dir`) are at most 4096 bytes.
 
 ```yaml
 version: 1
@@ -141,7 +141,7 @@ Refusal codes:
 | `review_again` | What the preview showed has changed (exit 75). |
 | `usage` | The request is malformed. |
 
-The file reason codes above (`not_private`, `not_owned`, `not_regular`, `too_large`, `inside_checkout`, `unreadable`, `invalid`) are also refusal codes. Refusal texts name no path and carry no raw error.
+The file reason codes above (`not_private`, `not_owned`, `not_regular`, `too_large`, `inside_checkout`, `named_twice`, `unreadable`, `invalid`) are also refusal codes. Refusal texts name no path and carry no raw error.
 
 `routes check --json` prints `kind: "route_check"`: `state`, `problem`, `errors` (what makes an invalid list invalid, naming no path), `routes` (how many), and `loops[]` with the routes that apply to each following loop and those that do not. It exits non-zero for an unreadable or invalid list.
 

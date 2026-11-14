@@ -33,13 +33,15 @@ import (
 	"time"
 
 	"github.com/connorburgess/keepgoing-agents/internal/config"
+	"github.com/connorburgess/keepgoing-agents/internal/envvar"
 	"github.com/connorburgess/keepgoing-agents/internal/lock"
 	"github.com/connorburgess/keepgoing-agents/internal/snapshot"
 )
 
 // DirEnv names a directory to use instead of the default. Loops given
-// different directories do not see each other's claims.
-const DirEnv = "KEEPGOING_SESSION_DIR"
+// different directories do not see each other's claims. The variable's
+// earlier name, KEEPGOING_SESSION_DIR, is still read; see envvar.
+const DirEnv = envvar.Prefix + string(envvar.SessionDir)
 
 // StateHome is the user's state directory, where keepgoing keeps runtime
 // files that belong to no single loop: $XDG_STATE_HOME or ~/.local/state on
@@ -73,7 +75,7 @@ func (e *UndeterminedError) Error() string { return e.Reason }
 
 // Fix says what a person can do.
 func (e *UndeterminedError) Fix() string {
-	return "set HOME, or KEEPGOING_SESSION_DIR to a private directory"
+	return "set HOME, or " + DirEnv + " to a private directory"
 }
 
 // UnsafeError: the claim directory, or a file in it, is in a state that
@@ -83,13 +85,17 @@ func (e *UndeterminedError) Fix() string {
 type UnsafeError struct {
 	Path    string
 	Problem string
+	fix     string // what to do, when removing Path is not it
 }
 
 func (e *UnsafeError) Error() string { return e.Path + " " + e.Problem }
 
 // Fix says what a person can do.
 func (e *UnsafeError) Fix() string {
-	return "remove " + e.Path + " if it is not keepgoing's, or set KEEPGOING_SESSION_DIR to a private directory of your own"
+	if e.fix != "" {
+		return e.fix
+	}
+	return "remove " + e.Path + " if it is not keepgoing's, or set " + DirEnv + " to a private directory of your own"
 }
 
 // Dir returns the private directory for claims and records, creating it.
@@ -97,8 +103,16 @@ func (e *UnsafeError) Fix() string {
 // made 0700 when repair is set, and tightened is then true; status and doctor
 // look without repairing. Anything that cannot be repaired safely is an
 // *UnsafeError, and no user state directory at all an *UndeterminedError.
+//
+// The variable's two names set to different directories are an *UnsafeError
+// too: honouring either would hide the claims kept in the other.
 func Dir(repair ...bool) (dir string, tightened bool, err error) {
-	dir = os.Getenv(DirEnv)
+	dir, _, err = envvar.SessionDir.Path()
+	if err != nil {
+		v := envvar.SessionDir
+		return "", false, &UnsafeError{Path: "the session claim directory", Problem: "is named twice: " + v.Name() + " and " + v.Legacy() + " are set to different directories",
+			fix: "unset one of them, or set both to the same directory"}
+	}
 	if dir == "" {
 		base, err := StateHome()
 		if err != nil || base == "" {

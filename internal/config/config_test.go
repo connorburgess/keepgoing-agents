@@ -320,3 +320,22 @@ func TestNoProgressFlagThresholds(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// A report with no names of its own reads the current variable names; the
+// sender also reads their earlier names. Names the file gives are kept.
+func TestReportVariableNameDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(valid + "  report: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.URLEnv != "LOOPTENDER_WEBHOOK_URL" || r.SecretEnv != "LOOPTENDER_WEBHOOK_SECRET" {
+		t.Fatalf("defaults: %q %q", r.URLEnv, r.SecretEnv)
+	}
+	cfg, err = Parse([]byte(valid + "  report: {url_env: KEEPGOING_WEBHOOK_URL, secret_env: KG_SECRET}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Loop.Report; r.URLEnv != "KEEPGOING_WEBHOOK_URL" || r.SecretEnv != "KG_SECRET" {
+		t.Fatalf("configured: %q %q", r.URLEnv, r.SecretEnv)
+	}
+}

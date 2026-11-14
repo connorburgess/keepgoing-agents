@@ -385,7 +385,7 @@ esac
 	if code != 0 || !strings.Contains(out.String(), "Build and test: success") {
 		t.Errorf("ci-wait: %d %s", code, out.String())
 	}
-	t.Setenv("KEEPGOING_NET_PROBE", "true") // online: a real failure is returned at once
+	t.Setenv("LOOPTENDER_NET_PROBE", "true") // online: a real failure is returned at once
 	if code := run(context.Background(), []string{"net-retry", "--", "/bin/sh", "-c", "exit 4"}, io.Discard, io.Discard); code != 4 {
 		t.Errorf("net-retry exit = %d", code)
 	}
